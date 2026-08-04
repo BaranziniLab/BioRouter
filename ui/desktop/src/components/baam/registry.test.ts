@@ -154,6 +154,57 @@ describe('loadRegistry — freshness that raises and never lowers', () => {
     expect(effectivePrivacy(registry, 'spokeagent')).toBe('public');
   });
 
+  /**
+   * The OTHER layer, pinned by its own contract rather than by the classifier's.
+   *
+   * `withUsableEntriesOnly` is what lets every downstream consumer assume an
+   * entry is an object — the two Browse lists map over these arrays and read
+   * `.name`, `.description` and `.tags` off each one, so a single `null` is a
+   * `TypeError` inside React render, in files with no test of this input. The
+   * classifier survives without this layer (it filters again internally, on
+   * purpose), which is exactly why the boundary needs an assertion of its own:
+   * review measured that removing it left every other test here green.
+   */
+  it('strips non-entries before any consumer sees the document', async () => {
+    mockFetch({
+      extensions: [null, 'nonsense', [], { extension_name: 'ucsfomopagent' }],
+      skills: [null, { id: 'r-scripting' }],
+    });
+    const { registry } = await loadRegistry();
+    expect(registry.extensions).toEqual([{ extension_name: 'ucsfomopagent' }]);
+    expect(registry.skills).toEqual([{ id: 'r-scripting' }]);
+  });
+
+  /**
+   * The same hostile document, but handed STRAIGHT to the classifier.
+   *
+   * Two layers drop non-object entries: `withUsableEntriesOnly` at
+   * `loadRegistry`'s boundary, and the `isEntry` filter inside `privateKeysIn`.
+   * They are deliberately redundant — but review measured that removing *either*
+   * one left every test in this file green, because the test above reaches the
+   * classifier only through the boundary, so the boundary alone satisfies it.
+   *
+   * This pins the inner layer, and it is not a hypothetical: `effectivePrivacy`
+   * is documented as callable with a document that never went through
+   * `loadRegistry`, it runs during React render, and a classifier that throws on
+   * a hostile input has failed in the one direction it exists to prevent.
+   */
+  it('classifies a document that never went through the boundary', () => {
+    const raw = {
+      version: 2,
+      source: 'test',
+      skills: [],
+      extensions: [null, 'nonsense', [], { extension_name: 'cdwagent', privacy: 'private' }],
+    } as unknown as BaamRegistry;
+
+    expect(() => effectivePrivacy(raw, 'ucsfomopagent')).not.toThrow();
+    expect(effectivePrivacy(raw, 'ucsfomopagent')).toBe('private');
+    expect(effectivePrivacy(raw, 'cdwagent')).toBe('private');
+    expect(effectivePrivacy(raw, 'spokeagent')).toBe('public');
+    // …and the prose that travels with the badge is total on the same input.
+    expect(() => extensionProvenance(raw, 'spokeagent')).not.toThrow();
+  });
+
   it('a hung registry does not hang the modal', async () => {
     // Fake timers, not an eleven-second wall-clock wait: the assertion the plan
     // wrote is `< 12_000`, and the renderer's budget is deliberately just above

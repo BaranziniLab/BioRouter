@@ -21204,7 +21204,7 @@ cd ui/desktop && npx vitest run \
   src/components/settings/extensions/ExtensionsSection.privacy.test.tsx 2>&1 | tail -6
 ```
 
-Expected: **`5 test files`, `35 passed`**. A run that reports any `skipped` has matched suite *paths*
+Expected: **`5 test files`, `37 passed`**. A run that reports any `skipped` has matched suite *paths*
 and filtered out tests; a run that reports fewer than 5 files means one was never created.
 
 ⚠ **These counts are MEASURED, not predicted, and re-measure rather than trusting them.** The
@@ -21213,9 +21213,9 @@ figures originally written here — `3 test files`, `registry.test.ts` 3 passed,
 supersets of all three without anyone updating this line. That fails safe (a re-runner sees more
 than the plan promised and investigates; it cannot read as a false pass) but it is precisely the
 stale-count drift this plan warns about elsewhere, so the current per-file figures are recorded and
-dated: `registry.test.ts` **8**, `BrowseExtensionsModal.test.tsx` **1**,
+dated: `registry.test.ts` **10**, `BrowseExtensionsModal.test.tsx` **1**,
 `BrxtInstallModal.test.tsx` **2**, `registryCache.test.ts` **17**,
-`ExtensionsSection.privacy.test.tsx` **7** — 35 total, measured 2026-08-03.
+`ExtensionsSection.privacy.test.tsx` **7** — 37 total, measured 2026-08-03.
 
 ⚠ **The last two files are on this list because review found the gate omitted them.** They are the
 only coverage of two of Step 3's four deliverables — the disk cache and the handler composition
@@ -21261,7 +21261,7 @@ echo "  it(...) title exactly as written in Step 1."
 # ...and the other two in that file actually run too, so a single live term
 # cannot hide them.
 npx vitest run src/components/baam/registry.test.ts 2>&1 | tail -4
-echo "expect: 1 test file, 8 passed (measured 2026-08-03; the plan originally"
+echo "expect: 1 test file, 10 passed (measured 2026-08-03; the plan originally"
 echo "  predicted 3 and the implementation landed a superset — re-measure,"
 echo "  do not trust this number)"
 test -f src/components/BrxtInstallModal.test.tsx || echo "MISSING: the fourth test has no file"
@@ -21304,8 +21304,17 @@ and reverted; every one is killed, and the named test is the only one that kills
 | a failed fetch never replays the cache | `replays the cached document as stale when the fetch fails` |
 | a cache-write failure fails the fetch that just succeeded | `still returns the live document when the cache cannot be written` |
 | `response.ok` is ignored | `treats a non-2xx as a failure rather than parsing the error page` |
+| the boundary sanitiser `withUsableEntriesOnly` is dropped | `strips non-entries before any consumer sees the document` |
+| the inner `isEntry` filter in `privateKeysIn` is dropped | `classifies a document that never went through the boundary` |
 
-Three of those seven were previously covered by **nothing**: the persistence of a learned badge, the
+The last two are the two layers that deliberately overlap. Review measured that removing *either*
+one alone left every test green, because the malformed-entry test reached the classifier only
+through the boundary — so each is now pinned by its own contract: the boundary by what it hands
+downstream (the Browse lists read `.name`/`.description`/`.tags` off every entry, in files with no
+test of this input), the inner filter by `effectivePrivacy` being documented as callable with a
+document that never went through `loadRegistry`.
+
+Three of those nine were previously covered by **nothing**: the persistence of a learned badge, the
 timeout wiring (grep-only), and the whole `fetch fails → replay as stale` branch. The first survived
 review's mutation run; the other two were unreachable while the composition lived in `main.ts`,
 which is why `utils/registryCache.ts` exists.
