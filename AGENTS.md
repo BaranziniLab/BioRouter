@@ -36,19 +36,21 @@ cargo clippy --fix
 ```bash
 just generate-openapi        # after server changes
 just run-ui                  # start desktop
-cd ui/desktop && npm test    # test UI
+cd ui/desktop && npm run test:run   # test UI (single pass; bare `npm test` is watch mode and never exits)
 ```
 
 ## Structure
 ```
 crates/
-├── biorouter         # core logic
-├── biorouter-acp     # Agent Communication Protocol
-├── biorouter-bench   # benchmarking
-├── biorouter-cli     # CLI entry
-├── biorouter-server  # backend (binary: biorouterd)
-├── biorouter-mcp     # MCP extensions
-└── biorouter-test    # test utilities
+├── biorouter          # core logic
+├── biorouter-acp      # Agent Communication Protocol
+├── biorouter-bench    # benchmarking
+├── biorouter-cli      # CLI entry
+├── biorouter-headless # headless browser-served server (binary)
+├── biorouter-sandbox  # capability-scoped sandboxed execution
+├── biorouter-server   # backend (binary: biorouterd)
+├── biorouter-mcp      # MCP extensions
+└── biorouter-test     # test utilities
 
 ui/desktop/           # Electron app
 ```
@@ -62,6 +64,20 @@ ui/desktop/           # Electron app
 # 5. cargo test -p <crate>
 # 6. ./scripts/clippy-lint.sh
 # 7. [if server] just generate-openapi
+# 8. just check-everything      <- what CI actually gates on; do not skip
+```
+
+`just check-everything` runs all seven checks, three of which nothing else in
+this file mentions:
+
+```bash
+cargo fmt --all
+./scripts/clippy-lint.sh
+cd ui/desktop && npm run lint:check
+./scripts/check-openapi-schema.sh
+./scripts/check-version-consistency.sh   # CLI/daemon/GUI/README versions agree
+./scripts/check-brand-consistency.sh     # productName "Biorouter" + brand assets
+./scripts/check-no-cross-drift.sh        # cross-compile recipes / glibc floor pin
 ```
 
 ## Rules
@@ -88,6 +104,7 @@ Logging: Clean up existing logs, don't add more unless for errors or security ev
 
 Never: Edit ui/desktop/openapi.json manually
 Never: Edit Cargo.toml use cargo add
+Never: Hand-edit a version file — use `scripts/release.sh bump <ver|major|minor|patch>`. Six files must move together (Cargo.toml, ui/desktop/package.json, package-lock.json x2, openapi.json, README badge) and `just check-versions` fails if one drifts
 Never: Skip cargo fmt
 Never: Merge without ./scripts/clippy-lint.sh
 Never: Comment self-evident operations (`// Initialize`, `// Return result`), getters/setters, constructors, or standard Rust idioms
@@ -97,3 +114,5 @@ Never: Comment self-evident operations (`// Initialize`, `// Return result`), ge
 - Server: crates/biorouter-server/src/main.rs
 - UI: ui/desktop/src/main.ts
 - Agent: crates/biorouter/src/agents/agent.rs
+- Workspace ext: crates/biorouter/src/agents/workspace_extension.rs
+- Subagents: crates/biorouter/src/agents/subagent_tool.rs

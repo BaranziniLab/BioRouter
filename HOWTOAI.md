@@ -50,9 +50,19 @@ BioRouter benefits from thoughtful AI-assisted development, but contributors mus
 
 Before submitting AI assisted code, confirm that:  
 - You understand every line  
-- All tests pass locally (happy path + error cases)  
 - Docs are updated and accurate  
 - Code follows existing patterns  
+- The checks below pass locally (happy path + error cases)
+
+```bash
+just check-everything               # what CI gates on: fmt, clippy, UI lint,
+                                    # OpenAPI schema, version consistency,
+                                    # brand consistency, cross-compile drift
+cargo test -p <crate>               # the crates you touched
+cd ui/desktop && npm run test:run   # frontend; bare `npm test` is watch mode
+                                    # and will never exit
+just generate-openapi               # REQUIRED after any server-route change
+```
 
 **Always get human review** for: 
 
@@ -68,11 +78,13 @@ Before submitting AI assisted code, confirm that:
 
 - Protect sensitive files with `.biorouterignore` (e.g., `.env*`, `*.key`, `target/`, `.git/`)
 - Guide BioRouter with `.biorouterhints` (patterns, error handling, formatting, tests, docs)
-- Use `/plan` to structure work, and choose modes wisely:
-  - **Chat** for understanding
-  - **Smart Approval** for most dev work
-  - **Approval** for critical areas
-  - **Autonomous** only with safety nets  
+- Use `/plan` to structure work, and choose a permission mode deliberately. There are four, switched with the `/mode` slash command (see [`docs/security/permission-modes.md`](docs/security/permission-modes.md)):
+  - **Completely Autonomous** (`auto`) — modifies files, uses extensions and deletes without approval
+  - **Manual Approval** (`approve`) — confirms before every tool or extension use
+  - **Smart Approval** (`smart_approve`) — risk-based; auto-approves low-risk actions, flags the rest
+  - **Chat Only** (`chat`) — conversation only, no tools and no file modification
+- **Completely Autonomous is applied by default.** So the action that matters is *turning the mode down* for critical work — not turning autonomy up. Chat Only for reading and understanding, Smart Approval for most dev work, Manual Approval for security-sensitive or hard-to-undo areas.
+- The safety nets are not mode settings and cannot be toggled: a small fixed set of actions prompts even in Completely Autonomous — writes or deletes under a protected system directory, your home directory itself, or a credential store, and reads or writes of a **global** memory category. Do not mistake those prompts for the mode failing to apply.
 
 ---
 
@@ -193,7 +205,7 @@ Key insight: Message → Agent → Provider (LLM) → Tool execution → Respons
 Ask: "I want to add a new shell command tool. Where should I look?"
 AI might suggest: rg "shell" crates/biorouter-mcp/ -l
 
-Then ask: "Explain the structure of crates/biorouter-mcp/src/developer/tools/shell.rs"
+Then ask: "Explain the structure of crates/biorouter-mcp/src/developer/shell.rs"
 ```
 
 **Understanding patterns:**
@@ -213,11 +225,15 @@ Then: "What's the difference between streaming and non-streaming providers?"
 **Step 1 - Explore existing tools:**
 ```bash
 # Ask AI: "Show me the structure of an existing MCP tool"
-ls crates/biorouter-mcp/src/developer/tools/
+# The developer server's modules sit directly under developer/ — there is no
+# tools/ subdirectory: shell.rs, text_editor.rs, background.rs, jail.rs,
+# lang.rs, paths.rs, undo_history.rs, rmcp_developer.rs, mod.rs, plus the
+# analyze/, editor_models/, prompts/ and tests/ directories.
+ls crates/biorouter-mcp/src/developer/
 
 # Pick a simple one to study
 # Ask AI: "Explain this tool implementation line by line"
-cat crates/biorouter-mcp/src/developer/tools/shell.rs
+cat crates/biorouter-mcp/src/developer/shell.rs
 ```
 
 **Step 2 - Ask AI to draft your new tool:**
