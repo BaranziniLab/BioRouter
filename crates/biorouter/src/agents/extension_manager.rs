@@ -4874,6 +4874,29 @@ mod tests {
         dispatched.result.await.expect("the mock client answers");
     }
 
+    /// What a hand-renamed `config.yaml` entry looks like: the map key and the
+    /// entry's own `name` are BOTH the new name, and the only surviving link to
+    /// the install is the `--directory` argument, which is where the server's
+    /// code physically lives.
+    fn renamed_entry(new_name: &str, install_dir: &str) -> ExtensionConfig {
+        ExtensionConfig::Stdio {
+            name: new_name.to_string(),
+            description: "renamed by hand in config.yaml".to_string(),
+            cmd: "uv".to_string(),
+            args: vec![
+                "run".to_string(),
+                "--directory".to_string(),
+                install_dir.to_string(),
+                "server.py".to_string(),
+            ],
+            envs: crate::agents::extension::Envs::default(),
+            env_keys: vec![],
+            timeout: Some(300),
+            bundled: None,
+            available_tools: vec![],
+        }
+    }
+
     /// **Task 43 / DR-23's gate, Step 3.1.** Install a private extension,
     /// rename it in `config.yaml`, and every enforcing gate must still refuse.
     ///
@@ -4912,22 +4935,7 @@ mod tests {
         let (_dir, em, sm, id) = manager_with_a_session().await;
         em.add_client(
             "mystuff".to_string(),
-            ExtensionConfig::Stdio {
-                name: "mystuff".to_string(),
-                description: "renamed by hand in config.yaml".to_string(),
-                cmd: "uv".to_string(),
-                args: vec![
-                    "run".to_string(),
-                    "--directory".to_string(),
-                    install_dir.to_string(),
-                    "server.py".to_string(),
-                ],
-                envs: crate::agents::extension::Envs::default(),
-                env_keys: vec![],
-                timeout: Some(300),
-                bundled: None,
-                available_tools: vec![],
-            },
+            renamed_entry("mystuff", install_dir),
             Arc::new(MockClient {}),
             None,
             None,
@@ -5007,6 +5015,18 @@ mod tests {
     /// What CAN go missing is the local provenance store, so that is what this
     /// test removes — the store empty, and separately a record naming an id the
     /// snapshot has never heard of. Neither may lower anything.
+    ///
+    /// ⚠ **The RENAMED entry is asserted here too, and it is the only case where
+    /// any of this bites.** An entry still under its installed name is private by
+    /// name alone; taking provenance away from it changes nothing, which is why a
+    /// version of this test written only against `cdwagent` and `ucsfomopagent`
+    /// passes identically against pre-Task-43 code. The renamed fixture below is
+    /// what makes the retention claim mean something: its ONLY route to Private
+    /// is the record, so a resolver that let a second, useless record displace
+    /// the useful one — precedence instead of union — fails here. The one thing
+    /// that genuinely does lower it is deleting the record outright, and that is
+    /// the residual, asserted next door in
+    /// [`the_residual_bar_is_a_rename_plus_removing_the_record`].
     #[tokio::test]
     async fn nothing_a_public_model_can_take_away_lowers_a_private_extension() {
         use crate::privacy::ProviderTier::{Private, Public};
@@ -5027,22 +5047,117 @@ mod tests {
         crate::privacy::provenance::insert_test_record("ucsfomopagent", "an-id-nobody-publishes");
         assert_eq!(crate::privacy::classify_extension("ucsfomopagent"), Private);
 
-        // And the gate that reads it is still closed.
+        // A RENAMED entry, whose only route to Private is its record, keeps it
+        // when a second record naming an unknown id is added alongside.
+        let install_dir = "/home/researcher/.config/biorouter/extensions/Gate32Renamed";
+        crate::privacy::provenance::insert_test_record_at(
+            "gate32-renamed-as-installed",
+            "cdwagent",
+            Some(install_dir),
+        );
+        crate::privacy::provenance::insert_test_record_at(
+            "gate32-renamed-decoy",
+            "an-id-this-build-has-never-seen",
+            Some(install_dir),
+        );
+        let renamed = renamed_entry("gate32-mystuff", install_dir);
+        assert_eq!(
+            crate::privacy::classify_extension("gate32-mystuff"),
+            Public,
+            "the fixture only discriminates if the NAME alone reads public"
+        );
+        assert_eq!(
+            crate::privacy::classify_extension_entry("gate32-mystuff", Some(&renamed)),
+            Private,
+            "a record naming an id the snapshot does not publish displaced the one that did — \
+             the sources are unioned, not tried in order"
+        );
+
+        // And the gate that reads it is still closed, for both.
         let (_dir, em, _sm, id) = manager_with_a_session().await;
         em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
             .await;
-        assert!(
-            em.dispatch_tool_call(
+        em.add_client(
+            "gate32-mystuff".to_string(),
+            renamed,
+            Arc::new(MockClient {}),
+            None,
+            None,
+        )
+        .await;
+        for tool in ["ucsfomopagent__tool", "gate32-mystuff__tool"] {
+            assert!(
+                em.dispatch_tool_call(
+                    &id,
+                    call(tool),
+                    crate::privacy::CallCapability::for_test(Public, true),
+                    CancellationToken::default(),
+                )
+                .await
+                .is_err(),
+                "with the provenance store carrying nothing useful, the compiled snapshot must \
+                 still refuse {tool}"
+            );
+        }
+    }
+
+    /// **The residual, asserted rather than left to be discovered.**
+    ///
+    /// Step 2 says an unreachable registry retains the last known tier and never
+    /// defaults to public. For a renamed entry there is no *last known tier* to
+    /// retain — DR-23 forbids storing one, which is the whole point — so what is
+    /// retained is the identity RECORD, and the honest statement of the bar is
+    /// that removing that record returns the entry to its config-name answer.
+    /// After a rename that answer is Public.
+    ///
+    /// So the evasion is **two** edits, not one: rename the entry, then delete
+    /// the provenance file. `docs/security/privacy-tiers.md` §5.3 states it at
+    /// that height; this test is what stops the statement drifting upward.
+    ///
+    /// It is not a regression — before Task 43 the rename alone sufficed — and it
+    /// cannot be closed without reintroducing exactly the locally-forgeable
+    /// stored tier DR-23 deleted.
+    ///
+    /// ⚠ "The store is gone" is modelled as "no record matches this fixture",
+    /// which is what deletion reduces to at the resolver: `registry_ids_for`
+    /// returns an empty vector for an absent file, an unreadable one and a
+    /// fixture nothing was recorded for alike. The additive test store cannot be
+    /// emptied (see `provenance::test_records`), so the fixture below is simply
+    /// one nothing was ever recorded for.
+    #[tokio::test]
+    async fn the_residual_bar_is_a_rename_plus_removing_the_record() {
+        let install_dir = "/home/researcher/.config/biorouter/extensions/ResidualNoRecord";
+        let renamed = renamed_entry("residual-mystuff", install_dir);
+
+        assert_eq!(
+            crate::privacy::classify_extension_entry("residual-mystuff", Some(&renamed)),
+            crate::privacy::ProviderTier::Public,
+            "with no record to find, a renamed entry falls back to the config-name join — this \
+             is the documented residual, and if it ever changes §5.3 is now wrong"
+        );
+
+        // Stated at the gate as well as at the resolver, because §5.3's claim is
+        // about enforcement and a resolver-only assertion would not notice a
+        // gate that had grown a second, stricter source.
+        let (_dir, em, _sm, id) = manager_with_a_session().await;
+        em.add_client(
+            "residual-mystuff".to_string(),
+            renamed,
+            Arc::new(MockClient {}),
+            None,
+            None,
+        )
+        .await;
+        let dispatched = em
+            .dispatch_tool_call(
                 &id,
-                call("ucsfomopagent__tool"),
-                crate::privacy::CallCapability::for_test(Public, true),
+                call("residual-mystuff__tool"),
+                crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
                 CancellationToken::default(),
             )
             .await
-            .is_err(),
-            "with the provenance store carrying nothing useful, the compiled snapshot must \
-             still refuse"
-        );
+            .expect("no record means the config-name join, which reads public");
+        dispatched.result.await.expect("the mock client answers");
     }
 
     /// **Step 3.3, structural.** No tier is persisted on the config entry, so a

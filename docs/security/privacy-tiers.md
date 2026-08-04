@@ -419,9 +419,27 @@ by key falls back to matching that directory against the config's own arguments,
 — never by parsing for a `--directory` flag. The install directory is the link a rename cannot
 break: repointing it means relocating the server's code, not editing a label.
 
-The honest limit: editing `args` to point at a copy of the directory evades this, and `config.yaml`
-is agent-writable because [DR-17](privacy-tiers-execution-plan.md) descoped the filesystem barrier.
-Evasion still only returns the answer the config-name join would have given, never anything lower.
+**The honest limit, stated at its real height.** There are two ways past the install-directory join,
+and the cheaper one has to be named first or the bar reads higher than it is:
+
+1. **Rename the entry *and* remove its record.** The provenance store is an ordinary file in the
+   config directory, and [DR-17](privacy-tiers-execution-plan.md) descoped the filesystem barrier —
+   so `config.yaml` is agent-writable and so is its sibling. Delete or truncate
+   `extension-provenance.json` and the renamed entry falls back to the config-name join, which after
+   a rename answers Public. The stat-keyed cache picks the deletion up on the next lookup, so this
+   takes effect immediately rather than at the next restart. This is **two edits**, not one, and it
+   is the actual bar.
+2. **Repoint `args` at a copy of the directory.** Strictly harder — it means relocating the server's
+   code, not editing a label — and it is what the directory match is designed to cost.
+
+Neither is a regression: before DR-23 the rename *alone* sufficed, and both routes still only return
+the answer the config-name join would have given, never anything lower. Nor can either be closed
+here, because DR-23 forbids storing a tier — there is no retained value left to fall back on once
+the identity record is gone, and inventing one would recreate the locally-forgeable field DR-23
+deleted. The residual is asserted, not merely described:
+`the_residual_bar_is_a_rename_plus_removing_the_record` in `extension_manager.rs` pins it, so the
+next reader finds it in a test rather than discovering it.
+
 Callers that hold a config must therefore use `classify_extension_entry`; the name-only
 `classify_extension` cannot see the directory and is for callers that genuinely have only a name.
 
