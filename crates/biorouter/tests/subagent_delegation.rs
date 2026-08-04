@@ -319,19 +319,36 @@ async fn steering_mid_delegation_costs_no_subagent_results() {
 /// against a child this run actually created.
 ///
 /// ⚠ **The mint side is deliberately NOT here, and could not be.** Writing a
-/// grant requires naming `privacy::grant`'s proof-of-user type, and Task 49's
-/// `the_proof_of_user_is_constructed_in_exactly_one_place` fails the build for
-/// any file under `crates/` outside that module and the one HTTP handler that so
-/// much as mentions it — an integration binary cannot mint one, which is the
-/// control working. (This comment therefore spells the type's name nowhere: that
-/// audit's file set is matched against the whole file, comments included, so
-/// naming it here would fail the build. Widening the asserted set to admit a
-/// test file is the one repair that would actually cost something.) The granted-parent direction therefore lives in
+/// grant requires naming `privacy::grant`'s `UserCrossAffiliationGrant`, and
+/// Task 49's `the_proof_of_user_is_constructed_in_exactly_one_place` fails the
+/// build for any file under `crates/` outside that module and the one HTTP
+/// handler whose *code* mentions it — an integration binary cannot mint one,
+/// which is the control working. (That audit skips comments, so this paragraph
+/// may name the type; it did not until review found it scanning whole files, and
+/// the contortion of writing a comment that avoids a word is exactly the tax a
+/// comment-blind audit charges. `grant::record_for_test` is `#[cfg(test)]
+/// pub(crate)`, so it is not reachable from an integration binary either —
+/// making it reachable is the one repair that would actually cost something.)
+///
+/// So the granted-parent direction lives in
 /// `privacy::grant::tests::a_subagent_inherits_its_parents_grants_and_the_parent_inherits_nothing`,
-/// where `record_for_test` is reachable. What that test cannot see, and this one
-/// can, is whether production ever links the child to the parent at all: with
-/// `parent_session_id` unstamped, the walk silently finds nothing and every
-/// inheritance assertion elsewhere stays green while the feature is dead.
+/// where `record_for_test` IS reachable, and it is the discriminating half: the
+/// "nothing is granted" assertions below would pass equally against an
+/// `is_granted` that returned `false` unconditionally. What that test cannot
+/// see, and this one can, is whether production ever links the child to the
+/// parent at all: with `parent_session_id` unstamped, the walk silently finds
+/// nothing and every inheritance assertion elsewhere stays green while the
+/// feature is dead.
+///
+/// ⚠ **Residual, on the gate's own wording.** "A child cannot hold a grant its
+/// parent lacks" is not what `is_granted` enforces: its walk reads *upward*, so
+/// a grant recorded directly on a child is honoured for that child and invisible
+/// to the parent. Nothing in production mints one there — the single writer is
+/// an HTTP handler behind `X-User-Action`, i.e. the user — so it is latent
+/// rather than live, and narrowing the walk to "the ancestor chain must hold it"
+/// would silently void an approval a user gave at the point of refusal inside a
+/// subagent's turn. What IS enforced, and what this test asserts, is the half
+/// DR-26 states: a spawn manufactures no authority of its own.
 #[tokio::test]
 async fn a_subagent_is_linked_to_its_parent_and_gains_no_grant_by_being_spawned() {
     let h = harness(vec![call("only", Call::sub("solo", "ok:solo"))]).await;

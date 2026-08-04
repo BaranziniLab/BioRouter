@@ -738,18 +738,38 @@ mod tests {
             }
             let src = std::fs::read_to_string(p)
                 .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
-            if src.contains(named) {
-                naming.push(rel.clone());
-            }
+            let mut names_it = false;
             for line in src.lines() {
                 let code = line.trim_start();
+                // ⚠ The comment skip covers the NAMING set too, and it must:
+                // prose cannot hold a proof-of-user and cannot construct one, so
+                // a file that only *mentions* the type is not a way to accept a
+                // cross-institutional flow. The twin audit
+                // (`knowledge::tier_user::tests::the_proof_of_user_is_constructed_in_exactly_one_place`)
+                // learned this the expensive way — it scanned whole files, a
+                // `///` line in THIS module's header named its type, and the
+                // audit went red across a task boundary with nobody's code at
+                // fault. This copy is line-wise from the start so the two cannot
+                // disagree about what a mention is, and so the next person is
+                // not taught to relax an assertion to make prose compile.
+                //
+                // ⚠ Residual, stated because it is invisible: only `//` is
+                // skipped. A `/* … */` block that names the type WILL trip this,
+                // and the repair is to write the comment with `//`, never to
+                // widen the skip — a skip that swallowed a line starting with
+                // `*` could swallow a real construction, which is the one
+                // direction an audit must never fail in.
                 if code.starts_with("//") {
                     continue;
                 }
+                names_it |= code.contains(named);
                 let hits = code.matches(minted).count();
                 if hits > 0 {
                     *constructions.entry(rel.clone()).or_default() += hits;
                 }
+            }
+            if names_it {
+                naming.push(rel.clone());
             }
         }
         assert!(
