@@ -144,16 +144,8 @@ pub fn exists_in(config_dir: &Path) -> bool {
 /// only ever absent or complete.
 pub fn write_in(config_dir: &Path, enabled: bool) -> std::io::Result<()> {
     std::fs::create_dir_all(config_dir)?;
-    let record = MasterSwitchRecord {
-        enabled,
-        changed_at: chrono::Utc::now().to_rfc3339(),
-    };
-    let body = serde_json::to_string_pretty(&record)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // Named per process, so two Biorouter processes writing at the same moment
-    // stage into different files and each rename lands a complete record.
-    let staging = config_dir.join(format!("{SWITCH_FILE_NAME}.{}.tmp", std::process::id()));
-    std::fs::write(&staging, body)?;
+    let staging = staging_path(config_dir);
+    std::fs::write(&staging, body(enabled)?)?;
     match std::fs::rename(&staging, path_in(config_dir)) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -162,6 +154,68 @@ pub fn write_in(config_dir: &Path, enabled: bool) -> std::io::Result<()> {
             Err(e)
         }
     }
+}
+
+/// The record's serialised body, timestamped now.
+fn body(enabled: bool) -> std::io::Result<String> {
+    let record = MasterSwitchRecord {
+        enabled,
+        changed_at: chrono::Utc::now().to_rfc3339(),
+    };
+    serde_json::to_string_pretty(&record)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+/// Where a write stages before it is published.
+///
+/// Named per process, so two Biorouter processes writing at the same moment
+/// stage into different files and each publish lands a complete record.
+fn staging_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(format!("{SWITCH_FILE_NAME}.{}.tmp", std::process::id()))
+}
+
+/// Record the answer **only if this install has none** — the migration's write.
+///
+/// ⚠ **Why this is not `exists_in` followed by [`write_in`].** That pair is
+/// check-then-act, and across processes the interleaving it admits loses the
+/// user's answer: P1 records the carried `off` and removes the key; P2, which
+/// passed `exists_in` before P1's write, then reads a `config.yaml` P1 has
+/// already cleaned, carries nothing, and writes the default `on` over it. Both
+/// hosts run the migration at start-up, so the two processes are `biorouterd`
+/// and the CLI launched together on the one boot where it runs at all. `Err`
+/// with [`std::io::ErrorKind::AlreadyExists`] means somebody else migrated.
+///
+/// ⚠ **The publish is a `hard_link`, not a `rename`.** It needs to be both
+/// *exclusive* (rename silently replaces) and *all-or-nothing* (a `create_new`
+/// followed by a write leaves a zero-length record if the process dies between
+/// them, and a zero-length record reads as nothing recorded — ON — while
+/// permanently blocking the migration that would have carried the user's `off`
+/// across). Linking a fully-written staging file into place is the one operation
+/// that is both.
+fn claim_in(config_dir: &Path, enabled: bool) -> std::io::Result<()> {
+    std::fs::create_dir_all(config_dir)?;
+    let target = path_in(config_dir);
+    let staging = staging_path(config_dir);
+    std::fs::write(&staging, body(enabled)?)?;
+    let claimed = match std::fs::hard_link(&staging, &target) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+        // A filesystem with no hard links at all — FAT, some network mounts —
+        // rejects the call for its own reason rather than reporting the target.
+        // Ask directly, so a record that is already there still reads as
+        // "somebody else migrated" and not as an unexplained I/O failure.
+        Err(_) if target.exists() => Err(std::io::ErrorKind::AlreadyExists.into()),
+        // Otherwise fall back to the check-then-rename `write_in` uses: the
+        // exclusivity is then only best-effort, which is what every platform had
+        // before this, and stranding the user's carried answer on such a
+        // filesystem would be the worse trade.
+        Err(_) => std::fs::rename(&staging, &target),
+    };
+    // Do not leave the staging file in the user's config directory — on the
+    // winning path it is now a second link to the record, on every other path it
+    // is litter.
+    let _ = std::fs::remove_file(&staging);
+    claimed
 }
 
 /// [`write_in`], for the directory a given [`Config`] lives in.
@@ -184,10 +238,17 @@ pub fn write_for(config: &Config, enabled: bool) -> std::io::Result<()> {
 /// one start-up after the upgrade is enough to close the door for good.
 ///
 /// ⚠ **Write first, delete second.** If the store cannot be written — an
-/// unwritable configuration directory — the key stays where it is and this
-/// returns `false`, so the user's answer is preserved for the next attempt
-/// rather than destroyed by a half-finished migration. The interim resolves to
-/// ON, which is the safe direction and is what a failed read has always meant.
+/// unwritable configuration directory, or another process claiming it first —
+/// the key stays where it is and this returns `false`, so the user's answer is
+/// preserved for the next attempt rather than destroyed by a half-finished
+/// migration. The interim resolves to ON, which is the safe direction and is
+/// what a failed read has always meant.
+///
+/// ⚠ **The write is [`claim_in`], not [`write_in`].** The `exists_in` short
+/// circuit above is an optimisation — it keeps the common start-up from reading
+/// the whole values map — and not the exclusion: two processes can both pass it
+/// and the loser would otherwise overwrite the winner's carried answer with the
+/// default. See `claim_in` for the interleaving.
 ///
 /// ⚠ **The key is deleted only when it was there.** [`Config::delete`] does not
 /// check presence — it loads the mapping, removes nothing, and saves it back
@@ -214,7 +275,7 @@ pub fn migrate_once(config: &Config) -> bool {
         .and_then(|values| values.get(super::PRIVACY_TIERS_CONFIG_KEY));
     let carried = recorded.and_then(super::privacy_tiers_value_is_on);
     let key_was_present = recorded.is_some();
-    if write_in(&dir, carried.unwrap_or(true)).is_err() {
+    if claim_in(&dir, carried.unwrap_or(true)).is_err() {
         return false;
     }
     if key_was_present {
@@ -280,6 +341,40 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(path_in(dir.path()), r#"{"enabled": false}"#).unwrap();
         assert_eq!(read_in(dir.path()), Some(false));
+    }
+
+    /// The migration's write is an exclusive **claim**, not a plain write.
+    ///
+    /// `exists_in` then [`write_in`] is check-then-act across processes, and the
+    /// interleaving it admits ends with the loser's DEFAULT overwriting the
+    /// winner's carried answer: P1 records `off` and removes the key; P2, which
+    /// passed `exists_in` before P1's write, then reads a `config.yaml` P1 has
+    /// already cleaned, carries nothing, and records the default `on`. The two
+    /// processes are not hypothetical — both hosts run the migration at start-up,
+    /// so they are `biorouterd` and the CLI launched together on the one boot
+    /// where the migration runs at all.
+    #[test]
+    fn a_second_claim_never_overwrites_the_first() {
+        let dir = tempfile::tempdir().unwrap();
+        claim_in(dir.path(), false).expect("the first claim wins");
+
+        let err = claim_in(dir.path(), true).expect_err("the second claim must not overwrite");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            read_in(dir.path()),
+            Some(false),
+            "the loser's default overwrote the winner's carried answer"
+        );
+
+        // Neither the winning nor the losing path may leave staging files in the
+        // user's configuration directory.
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.ends_with(".tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "staging files left behind: {leftovers:?}");
     }
 
     #[test]
