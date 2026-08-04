@@ -977,15 +977,13 @@ mod app_provider_bind {
     /// with no capability is being *created* rather than changed.
     ///
     /// The live binding first, because it is the constructed instance and so
-    /// sees endpoint demotions the name cannot. The session ROW second, and it
-    /// is not optional: an app agent is dropped from the LRU and rebuilt with
-    /// nothing bound on every daemon restart, so reading only the live binding
-    /// would make "wait for a restart, then reconnect" a working escalation —
-    /// exactly the *"only on restart is not a control"* reasoning DR-22 applies
-    /// to the master switch.
-    ///
-    /// The row can only be asked by NAME, so it gets `provider_is_private_for_app`'s
-    /// name-keyed answer, whose unregistered default is Public.
+    /// sees endpoint demotions a name cannot. The session ROW second, and it is
+    /// not optional: an app agent is dropped from the LRU and rebuilt with
+    /// nothing bound on every daemon restart, and `AgentManager::default_provider`
+    /// has no production setter — so after a restart this row read is the
+    /// *dominant* path, and reading only the live binding would make "wait for a
+    /// restart, then reconnect" a working escalation. That is DR-22's own
+    /// *"only on restart is not a control"* reasoning applied to this gate.
     ///
     /// A row that cannot be read at all reports `Some(Public)`, not `None`: the
     /// fail-safe direction is the one where an error refuses a raise rather than
@@ -994,23 +992,67 @@ mod app_provider_bind {
         if let Ok(bound) = agent.provider().await {
             return Some(bound.tier());
         }
-        match agent
+        let session = match agent
             .config
             .session_manager
             .get_session(session_id, false)
             .await
         {
-            Ok(session) => match session.provider_name.as_deref().map(str::trim) {
-                Some(name) if !name.is_empty() => {
-                    Some(if provider_is_private_for_app(name).await {
-                        ProviderTier::Private
-                    } else {
-                        ProviderTier::Public
-                    })
-                }
-                _ => None,
-            },
-            Err(_) => Some(ProviderTier::Public),
+            Ok(session) => session,
+            Err(_) => return Some(ProviderTier::Public),
+        };
+        let name = session
+            .provider_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())?;
+        Some(row_capability(name, session.model_config).await)
+    }
+
+    /// The tier of the provider a session ROW names — asked of a **constructed
+    /// instance**, never of the name alone.
+    ///
+    /// The name is not good enough here, and the gap runs in the direction that
+    /// *grants* capability. `ollama`'s registry entry is
+    /// `.with_tier(ProviderTier::Private)` unconditionally while its instance
+    /// `tier()` reads the resolved base URL, so an app session created on a
+    /// **remote** ollama is genuinely Public-capable but its row reads Private
+    /// by name. `raise_needs_user_action(Private, Private)` is false, so a later
+    /// bind to a genuinely private model would have been admitted — a restart
+    /// plus a manifest edit, which is exactly the channel DR-21 closes. The row
+    /// stores `model_config` beside `provider_name` (they are written together
+    /// by the one `UPDATE` in `bind_provider_if_allowed`), so the instance can
+    /// simply be rebuilt and asked.
+    ///
+    /// ⚠ Two fallbacks, in the order that keeps each one honest:
+    ///
+    ///  * If the row carries no model config, or the provider cannot be
+    ///    constructed, the name-keyed registry tier is all that is left. That is
+    ///    narrower than it sounds: the name is only wrong for providers whose
+    ///    tier is *endpoint-dependent*, and those are precisely the self-hosted
+    ///    ones that construct with no credential at all — so this fallback is
+    ///    reached almost only where the name is already the authoritative
+    ///    answer. Preferring a blanket Public here instead would strand an app
+    ///    created on a credentialed private provider (`versa_*`) the first time
+    ///    its credential is briefly unreadable.
+    ///  * An unregistered name gets `provider_is_private_for_app`'s own default,
+    ///    Public. Unknown must be the less privileged answer.
+    ///
+    /// The durable fix is to persist the bound provider's tier on the row, so
+    /// the capability a session was created with is a stored fact rather than a
+    /// re-derivation. That is a session-store schema change and squarely outside
+    /// this task; it is written down here so the next author does not have to
+    /// re-derive the reason.
+    async fn row_capability(name: &str, model: Option<ModelConfig>) -> ProviderTier {
+        if let Some(model) = model {
+            if let Ok(provider) = app_provider(name, model).await {
+                return provider.tier();
+            }
+        }
+        if provider_is_private_for_app(name).await {
+            ProviderTier::Private
+        } else {
+            ProviderTier::Public
         }
     }
 
@@ -9590,8 +9632,9 @@ mod tests {
     /// `configure_main_provider`'s global fallback is deterministic instead of
     /// binding whatever the developer has configured.
     mod privacy_dr21 {
+        use super::super::app_provider_bind;
         use super::super::{configure_main_provider, configure_worker_provider};
-        use super::privacy_capability::{lock_env_for, PRIVATE_HOST};
+        use super::privacy_capability::{lock_env_for, PRIVATE_HOST, PUBLIC_HOST};
         use super::privacy_task24::{agent_over, tiered};
         use biorouter::privacy::{ProviderTier, SessionClassification};
         use biorouter::session::session_manager::SessionType;
@@ -9881,6 +9924,147 @@ mod tests {
                     .provider_name
                     .as_deref(),
                 Some("ollama")
+            );
+        }
+
+        /// **The row read, and the pair of rows is the point.**
+        ///
+        /// Every test above holds a LIVE binding, so each one stops at
+        /// `established_capability`'s first line and none of them ever reaches
+        /// the session row below it. That branch is not an edge case: an app
+        /// agent is rebuilt with **nothing bound** on every daemon restart and
+        /// on every LRU eviction, and `AgentManager::default_provider` has no
+        /// production setter at all — so after a restart the row read is the
+        /// *dominant* path, and deleting it makes "wait for a restart, then
+        /// reconnect" a working escalation. That is DR-22's own *"only on
+        /// restart is not a control"* reasoning, applied to this gate.
+        ///
+        /// `ollama` is the fixture because it is the one provider where the
+        /// NAME and the INSTANCE disagree: its registry entry is
+        /// `.with_tier(ProviderTier::Private)` unconditionally, while
+        /// `Provider::tier()` on a constructed instance reads the resolved base
+        /// URL. So the provider name is identical in both rows and only the host
+        /// moves:
+        ///
+        /// | Host | The session was created… | …so a later private bind is |
+        /// |---|---|---|
+        /// | loopback | private-capable | allowed — a rebind, not a raise |
+        /// | remote | public-capable | **refused** — exactly DR-21's raise |
+        ///
+        /// Each wrong implementation fails a different row. A **name-keyed** row
+        /// read answers Private twice and admits row 2's raise. A row read that
+        /// always answers Public refuses row 1 and strands every private app on
+        /// every restart. A **deleted** row read fails both. Only asking the
+        /// constructed instance passes both.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_restart_reads_the_rows_capability_off_the_instance_not_the_name() {
+            for (host, created_private) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+                let session = session_over(&session_manager, dir.path(), "dr21-restart").await;
+
+                // The session is CREATED on `ollama` — the one moment DR-21
+                // leaves open. The agent that did it is then dropped, which is
+                // what a restart or an eviction does.
+                {
+                    let creating = agent_over(session_manager.clone(), dir.path());
+                    let p = app_provider_bind::app_provider("ollama", model_config("qwen3.5:4b"))
+                        .await
+                        .expect("the fixture provider is constructible");
+                    assert_eq!(
+                        p.tier().is_private(),
+                        created_private,
+                        "fixture: `ollama` on {host} must be {} — if both rows agree, this test \
+                         cannot tell a name-keyed read from an instance-keyed one",
+                        if created_private { "private" } else { "public" }
+                    );
+                    app_provider_bind::bind_app_provider(&creating, &session, p)
+                        .await
+                        .map_err(|e| e.to_string())
+                        .expect("a bind at session creation is not a raise");
+                }
+
+                // …and this is the app coming back afterwards.
+                let restarted = agent_over(session_manager.clone(), dir.path());
+                assert!(
+                    restarted.provider().await.is_err(),
+                    "the fixture must have NOTHING live to read, or the row branch never runs"
+                );
+
+                let outcome = app_provider_bind::bind_app_provider(
+                    &restarted,
+                    &session,
+                    app_provider_bind::adopt_for_test(tiered("llamacpp", ProviderTier::Private)),
+                )
+                .await;
+                let row = session_manager.get_session(&session, false).await.unwrap();
+
+                if created_private {
+                    outcome.map_err(|e| e.to_string()).expect(
+                        "an app CREATED on a private model must be able to come back to one after \
+                         a restart — refusing here strands every private app on every restart",
+                    );
+                    assert_eq!(row.provider_name.as_deref(), Some("llamacpp"));
+                } else {
+                    let refusal = outcome.err().unwrap_or_else(|| {
+                        panic!(
+                            "a restart is not a way to raise a session created on a REMOTE \
+                             `ollama`: its registry entry says Private, its instance says Public, \
+                             and the session only ever carried Public"
+                        )
+                    });
+                    assert!(
+                        matches!(refusal, app_provider_bind::AppBindError::TierFixed(_)),
+                        "and it is DR-21's refusal, not an incidental bind failure: {refusal}"
+                    );
+                    assert!(refusal.to_string().contains("llamacpp"), "{refusal}");
+                    assert_eq!(
+                        row.provider_name.as_deref(),
+                        Some("ollama"),
+                        "the refused bind must not have been persisted"
+                    );
+                    assert_eq!(row.privacy_tier, SessionClassification::Public);
+                }
+            }
+        }
+
+        /// The fail-safe arm of the same read: a row that cannot be read **at
+        /// all** reports Public, so an error refuses a raise rather than
+        /// granting one.
+        ///
+        /// It must refuse as DR-21 and not merely fail later inside the bind:
+        /// an implementation that returns `None` here reaches `raw_bind`, whose
+        /// own "no such session" error is an `AppBindError::Failed` — which the
+        /// callers treat as *"try the next rung"* rather than *"stop"*.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_session_row_that_cannot_be_read_at_all_refuses_the_raise() {
+            let _warm = crate::state::AppState::new().await.unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(dir.path(), PRIVATE_HOST);
+
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+
+            // Nothing bound, and no row under this id at all.
+            let outcome = app_provider_bind::bind_app_provider(
+                &agent,
+                "dr21-no-such-session",
+                app_provider_bind::adopt_for_test(tiered("llamacpp", ProviderTier::Private)),
+            )
+            .await;
+
+            let refusal = outcome
+                .err()
+                .expect("an unreadable row must not grant a capability");
+            assert!(
+                matches!(refusal, app_provider_bind::AppBindError::TierFixed(_)),
+                "the fail-safe direction is DR-21's refusal, which stops the caller's rung chain; \
+                 a plain failure does not: {refusal}"
             );
         }
     }
