@@ -54,6 +54,13 @@ export interface ProvenanceRecord {
    * which is the enforcement failure DR-23 names. It does not change the
    * `--directory` argument the install wrote, because that is where the
    * server's code physically lives.
+   *
+   * ⚠ Must be an ABSOLUTE path, or at minimum contain a path separator. The
+   * Rust reader compares it against the config's whole argument list and
+   * ignores any recorded value not shaped like a path, so that a record
+   * claiming `"run"` cannot match the `run` in every `uv run --directory …`
+   * config at once. A bare word written here is a record the daemon will never
+   * match — which reads as no provenance, i.e. as a downgrade.
    */
   install_dir?: string;
   source_url?: string;

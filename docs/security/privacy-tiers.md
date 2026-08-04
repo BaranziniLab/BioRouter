@@ -2257,7 +2257,7 @@ See §15.5 and §16 for what the backfill actually does to a real machine on day
 | Runtime read — column missing from a projection, unparseable value | fail **closed** (private, with `error!`) | a bug, not a decision. Every session shows a Private badge: immediately visible, immediately fixed, safe meanwhile. The tolerant `try_get(…).ok().flatten()` convention would silently read public, and `branch_point_msg_uid` already being absent from `list_sessions_by_types`'s projection is the live proof that a projection gets missed. |
 | Import of a session with no `privacy_tier` | fail **closed** (private) | an imported transcript of unknown provenance is treated as sensitive; unlike migration, there is no local evidence to reason from |
 | Unknown provider | Public | fail-**safe**, not fail-open: Public is the *less* privileged tier |
-| Unlisted extension | Public | fail-open, **operator ruling R11(ii)**, isolated to one function `classify_extension(name)` with one const and one comment naming the ruling, so reversing it later is a one-line change rather than an audit |
+| Unlisted extension | Public | fail-open, **operator ruling R11(ii)**, isolated to the final `ProviderTier::Public` of one function — `classify_extension_entry`, which `classify_extension(name)` now delegates to — with one const and one comment naming the ruling, so reversing it later is a one-line change rather than an audit |
 | Any gate's lookup fails | refuse | encoded as a refusal inside `Ok(...)`, never as `Err` |
 | NULL `parent_session_id` | `other` ⇒ read-only | safe for R6 |
 

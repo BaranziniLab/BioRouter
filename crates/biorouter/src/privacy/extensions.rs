@@ -73,11 +73,20 @@ pub fn classify_extension(name: &str) -> ProviderTier {
 /// key, or the name a model named in `manage_extensions`. `config` is the entry
 /// behind it when there is one; passing it is what lets a renamed entry still be
 /// found, via the install directory in its arguments (see
-/// [`super::provenance::find`]).
+/// [`super::provenance::registry_ids_for`]).
 ///
 /// Private if **any** of these says so: the key, the config's own declared name,
 /// or the registry id of the record found by either of those or by the install
 /// directory. Anything else is Public — R11(ii), fail-open.
+///
+/// ⚠ **The residual, so this is not read as airtight.** The record lives in an
+/// ordinary file in the config dir, and DR-17 descoped the filesystem barrier —
+/// so renaming the entry AND deleting `extension-provenance.json` returns the
+/// answer to the config-name join, which after a rename is Public. Two edits,
+/// not one, and not a regression: before this task the rename alone sufficed.
+/// It cannot be closed here without storing a tier, which is precisely what
+/// DR-23 deleted. `docs/security/privacy-tiers.md` §5.3 states the bar at that
+/// height and `the_residual_bar_is_a_rename_plus_removing_the_record` pins it.
 pub fn classify_extension_entry(
     key: &str,
     config: Option<&crate::agents::extension::ExtensionConfig>,
@@ -277,7 +286,11 @@ mod tests {
     #[test]
     fn a_renamed_private_extension_is_still_private_through_its_install_directory() {
         use crate::agents::extension::{Envs, ExtensionConfig};
-        let install_dir = "/home/researcher/.config/biorouter/extensions/CDWAgent";
+        // ⚠ A directory no other test records. `provenance::test_records` is
+        // process-global and additive, so a shared one lends this fixture's
+        // registry id to someone else's and both go green on provenance only one
+        // of them stated.
+        let install_dir = "/home/researcher/.config/biorouter/extensions/CDWAgentResolverFixture";
         super::super::provenance::insert_test_record_at(
             "cdwagent-before-the-rename",
             "cdwagent",

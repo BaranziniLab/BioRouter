@@ -35,6 +35,34 @@
 //! guarding it. Sessions have exactly one gated writer because a session's tier
 //! is stored; an extension's is not, and this file stores identity, not tier.
 //!
+//! ⚠ **What a forged record CAN do is deny, and that is worth saying out loud.**
+//! Raise-only means no disclosure, not no harm: a record naming a private
+//! registry id and an `install_dir` shared by many configs would mark all of
+//! them Private, and a public model would then be refused by every one. So the
+//! directory match is deliberately narrow — whole-argument equality, and only
+//! against a recorded value shaped like a path (`looks_like_a_path`), which is
+//! what stops a record claiming `install_dir: "run"` from matching the `run` in every
+//! `uv run --directory …` config the marketplace writes. Nothing here is a
+//! privilege boundary; it is the difference between a wrong record costing one
+//! extension and costing all of them.
+//!
+//! # Two implementations, one format
+//!
+//! The writer that matters today is TypeScript
+//! (`ui/desktop/src/utils/extensionProvenance.ts`), because the registry id only
+//! exists where the marketplace install happens. So [`PROVENANCE_FILE`], the
+//! schema version, the field names and the [`name_to_key`] reduction all exist
+//! twice, and each side unit-tests its own half against a hand-written fixture
+//! rather than a shared one.
+//!
+//! ⚠ **Drift is silent and it is a DOWNGRADE**, which is the direction that
+//! matters: a record the reader cannot find reads as "no provenance", and no
+//! provenance returns a renamed entry to the config-name join. It does not throw
+//! and it does not warn. The known divergence is deliberate and test-only — the
+//! desktop hardcodes `~/.config/biorouter` while this side resolves through
+//! [`Paths`], so the `BIOROUTER_PATH_ROOT` seam moves one and not the other.
+//! Anything else that diverges is a bug in whichever side moved.
+//!
 //! # What is stored
 //!
 //! `<config dir>/extension-provenance.json`, keyed by
@@ -100,7 +128,7 @@ pub struct ExtensionProvenance {
     /// map key alone is not enough. `config.yaml`'s entry can be renamed after
     /// the install, which changes both the map key and the entry's `name` — but
     /// not the `--directory` argument the install wrote, because moving that
-    /// would stop the extension launching at all. See [`find`].
+    /// would stop the extension launching at all. See [`registry_ids_for`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub install_dir: Option<String>,
     /// The URL the `.brxt` was downloaded from.
@@ -198,7 +226,25 @@ fn matches_install_dir(record: &ExtensionProvenance, referenced_paths: &[String]
     record
         .install_dir
         .as_deref()
-        .is_some_and(|dir| !dir.is_empty() && referenced_paths.iter().any(|p| p == dir))
+        .is_some_and(|dir| looks_like_a_path(dir) && referenced_paths.iter().any(|p| p == dir))
+}
+
+/// A recorded `install_dir` is matched only if it is shaped like a path.
+///
+/// The arguments this is compared against are a whole command line, not a list
+/// of paths — every `.brxt` config is `uv run --directory <dir> <entry>`, so
+/// `run`, `--directory` and the entry point are all in it. Without this, a
+/// record claiming `install_dir: "run"` would match EVERY marketplace-installed
+/// extension at once and lend them all its registry id.
+///
+/// That is denial rather than disclosure, since the union only ever raises — but
+/// a single forged line that refuses every extension to every public model is
+/// worth one predicate. The predicate is a separator rather than
+/// [`Path::is_absolute`] on purpose: the writer is the Electron main process and
+/// may be recording a Windows path this build is not compiled for, and losing a
+/// legitimate record IS a downgrade.
+fn looks_like_a_path(dir: &str) -> bool {
+    dir.contains('/') || dir.contains('\\')
 }
 
 /// Record where `config_name` came from, merging into whatever is already on
@@ -244,8 +290,8 @@ fn record_at(
 }
 
 /// Parse the store at `path`. Any failure — absent, unreadable, not JSON, JSON
-/// of the wrong shape — is an empty store. See [`lookup`] for why that is not a
-/// silent downgrade.
+/// of the wrong shape — is an empty store. See [`registry_ids_for`] for why
+/// that is not a silent downgrade.
 fn read_store_at(path: &Path) -> Store {
     let Ok(raw) = std::fs::read_to_string(path) else {
         return Store::default();
@@ -278,16 +324,40 @@ fn cache() -> &'static CachedStore {
     CACHE.get_or_init(|| Mutex::new(None))
 }
 
+/// The cache lock, taken so that a poisoned mutex cannot take the daemon with
+/// it.
+///
+/// Nothing inside the critical section can panic today — it is a comparison, a
+/// clone and an assignment — so poisoning should be unreachable. But this lock
+/// is on the path of every privacy gate, and `unwrap()` here turns a panic
+/// somewhere else in the process into a panic in the security resolver on the
+/// next tool call. The cached value is a plain snapshot with no invariant a
+/// half-finished write could break, so recovering the inner value is always
+/// sound; the worst case is one stale read, which the stat key corrects on the
+/// call after.
+fn lock_cache() -> std::sync::MutexGuard<'static, Option<(StatKey, Arc<Store>)>> {
+    cache().lock().unwrap_or_else(|e| e.into_inner())
+}
+
 fn invalidate_cache() {
-    *cache().lock().unwrap() = None;
+    *lock_cache() = None;
 }
 
 fn cached_store_at(path: &Path) -> Arc<Store> {
+    // ⚠ A blocking `stat` (and, when the file has changed, a blocking read and
+    // parse) on an async gate path — `allowed_extension_keys` calls this once
+    // per installed extension that is not already private by name, while it
+    // holds the extension map's tokio mutex. That is deliberate and measured
+    // rather than overlooked: it is one syscall against a file in the config
+    // dir, no `await` is held across the std mutex below, and the alternative —
+    // reading the store once per process — is what makes a freshly installed
+    // private extension classify Public until the daemon restarts. Freshness is
+    // the direction that costs disclosure; latency is not.
     let stamp = std::fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok().map(|t| (t, m.len())));
     let key: StatKey = (path.to_path_buf(), stamp);
-    let mut guard = cache().lock().unwrap();
+    let mut guard = lock_cache();
     if let Some((cached_key, store)) = guard.as_ref() {
         if *cached_key == key {
             return store.clone();
@@ -298,12 +368,31 @@ fn cached_store_at(path: &Path) -> Arc<Store> {
     store
 }
 
-/// Additive test provenance, consulted by [`find`] ahead of the file.
+/// Additive test provenance, consulted by [`registry_ids_for`] ahead of the
+/// file.
 ///
 /// ⚠ Process-global and never cleared, on purpose. Tests in this crate run in
-/// parallel in one process, so a store a test could *clear* would be a race;
-/// one it can only add a uniquely-named entry to is not. Every caller therefore
-/// uses a config name and an install directory no other test uses.
+/// parallel in one process, so a store a test could *clear* would be a race; one
+/// it can only add to is not.
+///
+/// ⚠ **What is required of a caller, stated as the rule it actually is.** A
+/// record is found by its key OR by its install directory, so:
+///
+///  * The **install directory** must be unique to the test that writes it.
+///    Sharing one lends a registry id to another test's fixture, and because the
+///    union only raises, the borrowing test goes green on provenance it did not
+///    state. This is the one that bites.
+///  * The **key** need not be unique, only consistent: two records under one key
+///    overwrite, so two tests that both want `cdwagent` under `cdwagent` agree
+///    by construction. Where they would disagree, use distinct names.
+///
+/// An earlier version of this comment claimed both were unique of every caller,
+/// which was false: `privacy::extensions` and `agents::extension_manager` both
+/// recorded `…/extensions/CDWAgent`. They agreed on `cdwagent`, so nothing was
+/// wrong — but deleting either test would have left the other silently propped
+/// up by it, and a comment asserting a property the tests do not hold is worse
+/// than no comment. The resolver's fixture now uses a directory of its own, so
+/// the rule above is true rather than aspirational.
 #[cfg(test)]
 fn test_records() -> &'static Mutex<HashMap<String, ExtensionProvenance>> {
     static RECORDS: OnceLock<Mutex<HashMap<String, ExtensionProvenance>>> = OnceLock::new();
@@ -380,6 +469,16 @@ mod tests {
         assert_eq!(record.bundle_sha256.as_deref(), Some("abc123"));
     }
 
+    fn dir_record(install_dir: Option<&str>) -> ExtensionProvenance {
+        ExtensionProvenance {
+            registry_id: "cdwagent".to_string(),
+            install_dir: install_dir.map(str::to_string),
+            source_url: None,
+            bundle_sha256: None,
+            recorded_at: None,
+        }
+    }
+
     /// An empty or absent `install_dir` matches nothing.
     ///
     /// A record written by a build that did not have the field, or by a writer
@@ -388,17 +487,51 @@ mod tests {
     /// `Some("") == Some("")` comparison would have produced.
     #[test]
     fn an_empty_install_dir_matches_nothing() {
-        for dir in [None, Some(String::new())] {
-            let record = ExtensionProvenance {
-                registry_id: "cdwagent".to_string(),
-                install_dir: dir,
-                source_url: None,
-                bundle_sha256: None,
-                recorded_at: None,
-            };
+        for dir in [None, Some("")] {
+            let record = dir_record(dir);
             assert!(!matches_install_dir(&record, &[]));
             assert!(!matches_install_dir(&record, &[String::new()]));
             assert!(!matches_install_dir(&record, &["run".to_string()]));
+        }
+    }
+
+    /// **A record cannot claim a bare word and match every extension at once.**
+    ///
+    /// The list it is compared against is a whole command line, not a list of
+    /// paths: every `.brxt` config is `uv run --directory <dir> <entry>`, so
+    /// `run`, `--directory` and `server.py` are all in it. A forged record
+    /// claiming `install_dir: "run"` would therefore have matched EVERY
+    /// marketplace-installed extension and lent them all its registry id.
+    ///
+    /// That is denial rather than disclosure — the union only ever raises, so
+    /// the result is refusals, not leaks — but one forged line refusing every
+    /// extension to every public model is worth a predicate. A real recorded
+    /// directory still matches, in both platforms' spellings, because losing a
+    /// legitimate record IS a downgrade.
+    #[test]
+    fn a_recorded_install_dir_that_is_not_a_path_matches_nothing() {
+        let uv_args = [
+            "run".to_string(),
+            "--directory".to_string(),
+            "/home/r/.config/biorouter/extensions/CDWAgent".to_string(),
+            "server.py".to_string(),
+        ];
+        for bare in ["run", "--directory", "server.py", "uv", "."] {
+            assert!(
+                !matches_install_dir(&dir_record(Some(bare)), &uv_args),
+                "`{bare}` was accepted as an install directory, so one forged record marks \
+                 every uv-launched extension private"
+            );
+        }
+        for real in [
+            "/home/r/.config/biorouter/extensions/CDWAgent",
+            "C:\\Users\\r\\.config\\biorouter\\extensions\\CDWAgent",
+        ] {
+            assert!(
+                matches_install_dir(&dir_record(Some(real)), &[real.to_string()]),
+                "a real recorded directory stopped matching, which loses the record and \
+                 downgrades the entry: {real}"
+            );
         }
     }
 
