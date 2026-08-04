@@ -608,6 +608,87 @@ mod bypass_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// `POST /agent/update_working_dir`.
+    ///
+    /// ⚠ Like [`post_reply_with`], the caller MUST already hold this session's
+    /// turn lock: the first thing this handler does after the gate is claim that
+    /// lock, and a request that gets past both repoints a real chat at a
+    /// directory and RESTARTS its agent there. Holding the lock makes "the gate
+    /// let it through" observable as a 409, with nothing moved.
+    async fn post_update_working_dir(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        post_json(
+            crate::routes::agent::routes(state),
+            "/agent/update_working_dir",
+            serde_json::json!({
+                "session_id": session_id,
+                "working_dir": "/tmp/task58_session_reach",
+            }),
+            user_action,
+        )
+        .await
+    }
+
+    /// `POST /agent/add_extension`.
+    ///
+    /// The command names nothing that exists, so an accepted request has no MCP
+    /// server to spawn — but it would still reach `get_agent`, which MINTS an
+    /// agent from the developer's own configuration. That is why only the
+    /// refusing arm of this route is driven, and it is refused before that call.
+    async fn post_add_extension(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        post_json(
+            crate::routes::agent::routes(state),
+            "/agent/add_extension",
+            serde_json::json!({
+                "session_id": session_id,
+                "config": {
+                    "type": "stdio",
+                    "name": "task58-probe",
+                    "description": "",
+                    "cmd": "/nonexistent/task58",
+                    "args": [],
+                    "timeout": null,
+                },
+            }),
+            user_action,
+        )
+        .await
+    }
+
+    /// One JSON POST at `router`, with the proof-of-user header when supplied.
+    async fn post_json(
+        router: axum::Router,
+        uri: &str,
+        body: serde_json::Value,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/json");
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let res = router
+            .oneshot(
+                builder
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     async fn post_knowledge_active(
         state: Arc<AppState>,
         body: serde_json::Value,
@@ -672,9 +753,15 @@ mod bypass_tests {
         }
     }
 
-    /// One private chat with a marker message in it, bound to a private provider.
-    /// The returned guard deletes it.
-    async fn seed_private_chat(state: &Arc<AppState>, label: &str) -> SeededChat {
+    /// One chat at `tier` with a marker message in it. A private one is raised
+    /// the way a real one gets there — by binding a private provider — rather
+    /// than by writing the column, so what these tests refuse is the same state
+    /// a user's own chat reaches. The returned guard deletes it.
+    async fn seed_chat(
+        state: &Arc<AppState>,
+        label: &str,
+        tier: SessionClassification,
+    ) -> SeededChat {
         let manager = state.session_manager();
         let session = manager
             .create_session(
@@ -691,18 +778,24 @@ mod bypass_tests {
             )
             .await
             .unwrap();
-        manager
-            .update(&session.id)
-            .provider_name("versa_azure")
-            .model_config(ModelConfig::new("gpt-4o").unwrap())
-            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
-            .apply()
-            .await
-            .unwrap();
+        if tier == SessionClassification::Private {
+            manager
+                .update(&session.id)
+                .provider_name("versa_azure")
+                .model_config(ModelConfig::new("gpt-4o").unwrap())
+                .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+                .apply()
+                .await
+                .unwrap();
+        }
         SeededChat {
             state: state.clone(),
             id: session.id,
         }
+    }
+
+    async fn seed_private_chat(state: &Arc<AppState>, label: &str) -> SeededChat {
+        seed_chat(state, label, SessionClassification::Private).await
     }
 
     /// Issue #56 Task 58 / #47. **The bypass itself, as a named regression
@@ -778,6 +871,147 @@ mod bypass_tests {
         );
 
         drop(turn_guard);
+    }
+
+    /// Issue #56 Task 58, Step 4.1: **a public target is unaffected.**
+    ///
+    /// The half a gate written only for its refusal never drives, and the
+    /// expensive one to get wrong. [`super::target_tier`] resolves a real row out
+    /// of the real store, so if it ever mis-read a valid public session — a
+    /// column renamed, a default that flips, a transient store error swallowed
+    /// into `Unreadable` — then EVERY header-less caller would be refused on
+    /// EVERY public chat, and every other assertion in this module would still
+    /// pass. [`super::tests::a_public_target_is_reachable_by_every_caller`] pins
+    /// the decision; this pins that a real public row on this machine arrives at
+    /// that decision as `Public`.
+    ///
+    /// Each route is driven to a status only its own body can produce, so
+    /// "not a 403" is nowhere the assertion:
+    ///
+    /// * `GET /sessions/{id}` returns the transcript, and the marker is in it;
+    /// * `POST /reply` and `POST /agent/update_working_dir` each stop at the turn
+    ///   lock this test holds — the first thing each does after the gate — so
+    ///   their 409 is a status the gate cannot produce. Holding it is also what
+    ///   keeps a request that got through from spawning a real turn against real
+    ///   provider credentials, or repointing a chat and restarting its agent.
+    ///
+    /// ⚠ `POST /agent/add_extension` is deliberately NOT driven on this arm, and
+    /// that is a cost of the route rather than an omission: passing its gate
+    /// means `get_agent` mints a real agent from the developer's own
+    /// configuration and the handler then attaches an extension to it. Its
+    /// refusing arm is driven by
+    /// [`the_other_two_gated_routes_refuse_a_private_chat_over_http`], and there
+    /// is nothing between its gate and its handler that the other three do not
+    /// also have — it is the same `session_reach(` call, with `Public` returning
+    /// `Ok(())` unconditionally.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_public_chat_is_reachable_over_http_by_a_caller_that_proves_nothing() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let public = seed_chat(
+            &state,
+            "Task 58 public (test fixture)",
+            SessionClassification::Public,
+        )
+        .await;
+
+        // READ. The whole transcript, to a caller carrying nothing but the
+        // daemon secret — which is exactly the request the gate must not touch.
+        let (status, body) = get_session_with(state.clone(), public.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the gate is a wall in front of the user: it refused a PUBLIC chat ({body})"
+        );
+        assert!(
+            body.contains(MARKER_IN_THE_TRANSCRIPT),
+            "a public read came back without the conversation: {body}"
+        );
+
+        let turn_guard = state
+            .try_begin_turn_idempotent(
+                public.id(),
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .expect("no turn is running in a session created a moment ago");
+
+        let (status, body) = post_reply_with(state.clone(), public.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "/reply refused an unproven caller on a PUBLIC chat; 409 here is the turn lock \
+             this test holds, i.e. the request reached the handler as it should ({body})"
+        );
+
+        let (status, body) = post_update_working_dir(state.clone(), public.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::CONFLICT,
+            "/agent/update_working_dir refused an unproven caller on a PUBLIC chat; 409 here \
+             is the turn lock this test holds ({body})"
+        );
+
+        drop(turn_guard);
+    }
+
+    /// The two routes on the gated list that
+    /// [`holding_the_secret_you_cannot_read_a_private_transcript_or_run_a_turn_in_it`]
+    /// does not drive, on their refusing arm, over HTTP.
+    ///
+    /// Neither is additional capability — `/reply` dominates both, and it is
+    /// already covered. They are here because "the gate is on this route" is
+    /// otherwise only [`super::tests::every_gated_route_resolves_the_tier_before_it_touches_the_session`],
+    /// and a source scan cannot see a `session_reach(` call whose result was
+    /// discarded.
+    ///
+    /// The refusal is asserted by its full text, not by its status, because these
+    /// two return it through `ErrorResponse` — a JSON envelope — while
+    /// `GET /sessions/{id}` returns it as plain text. One sentence has to survive
+    /// both shapes, or a client cannot recognise the boundary it hit.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_other_two_gated_routes_refuse_a_private_chat_over_http() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Task 58 routes (test fixture)").await;
+
+        // Held for the same reason as everywhere else here: if the gate ever
+        // stopped firing, this request would repoint a real chat and restart its
+        // agent rather than merely returning the wrong status.
+        let turn_guard = state
+            .try_begin_turn_idempotent(
+                private.id(),
+                tokio_util::sync::CancellationToken::new(),
+                None,
+            )
+            .expect("no turn is running in a session created a moment ago");
+
+        let (status, body) = post_update_working_dir(state.clone(), private.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a caller holding only the daemon secret repointed a private chat at a directory \
+             of its choosing and restarted its agent there ({body})"
+        );
+        assert!(
+            body.contains(SESSION_OUT_OF_REACH),
+            "the refusal did not survive the JSON envelope: {body}"
+        );
+
+        drop(turn_guard);
+
+        let (status, body) = post_add_extension(state.clone(), private.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a caller holding only the daemon secret attached tools to a private chat ({body})"
+        );
+        assert!(
+            body.contains(SESSION_OUT_OF_REACH),
+            "the refusal did not survive the JSON envelope: {body}"
+        );
     }
 
     /// Issue #56 Task 58, Step 4.3, over HTTP: the refusal is not an oracle.
