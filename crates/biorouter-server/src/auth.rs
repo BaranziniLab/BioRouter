@@ -247,31 +247,44 @@ pub async fn check_token(
     }
 }
 
+/// The body of `signature`'s function in `src`: everything after the signature
+/// up to the next line that is a bare `}` at column 0 — which is
+/// `awk '/sig/,/^}/'` in Rust.
+///
+/// It lives here, beside the route-shape scans that need it, because it is the
+/// ONE span a structural assertion about a handler is allowed to read. Several
+/// route facts in this crate cannot be asserted behaviourally — `AppState::new()`
+/// opens the developer's REAL session database — and the failure mode of a
+/// whole-file `contains` is that it finds the fact in the handler *next door*.
+/// A second copy of this extractor is how two scans start disagreeing about
+/// where a function ends, so there is one, and the tests that use it each carry
+/// a negative control proving it did not over-read.
+///
+/// `split_once` rather than byte-index slicing so the whole thing is panic-free
+/// by construction (`clippy::string_slice`).
+///
+/// `#[cfg(test)]`, so it is absent from every shipped binary.
+#[cfg(test)]
+pub(crate) fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
+    let (_, from_signature) = src
+        .split_once(signature)
+        .unwrap_or_else(|| panic!("`{signature}` is not in this file"));
+    from_signature
+        .split_once("\n}\n")
+        .map_or(from_signature, |(body, _)| body)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{is_public_app_get, is_unauthenticated_path, secret_matches, user_action_matches};
+    use super::{
+        body_of, is_public_app_get, is_unauthenticated_path, secret_matches, user_action_matches,
+    };
     use axum::http::Method;
 
     /// SHA-256 of `key` — what the launcher hands the daemon on stdin, and the
     /// only form of the user-action key the daemon ever holds.
     fn digest_of(key: &str) -> [u8; 32] {
         <sha2::Sha256 as sha2::Digest>::digest(key.as_bytes()).into()
-    }
-
-    /// The body of `signature`'s function in `src`: everything after the
-    /// signature up to the next line that is a bare `}` at column 0 — which is
-    /// `awk '/sig/,/^}/'` in Rust, so the source scan below and Step 5's gate
-    /// read the same span.
-    ///
-    /// `split_once` rather than byte-index slicing so the whole thing is
-    /// panic-free by construction (`clippy::string_slice`).
-    fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
-        let (_, from_signature) = src
-            .split_once(signature)
-            .unwrap_or_else(|| panic!("`{signature}` is not in this file"));
-        from_signature
-            .split_once("\n}\n")
-            .map_or(from_signature, |(body, _)| body)
     }
 
     #[test]
@@ -521,15 +534,25 @@ mod tests {
         // The negative control, so the scan is provably not vacuous: a handler in
         // the same file that has neither must come back with neither, or
         // `body_of` is over-reading past a function end.
-        let unguarded = body_of(agent_rs, "async fn agent_remove_extension");
-        assert!(
-            !unguarded.contains("user_action_proof("),
-            "the body scan is over-reading: a handler with no guard reported one"
-        );
-        assert!(
-            !unguarded.contains(mint),
-            "the body scan is over-reading: a handler that mints nothing reported the proof"
-        );
+        //
+        // BOTH directions. `agent_remove_extension` sits AFTER the grant handler
+        // in the file and `agent_add_extension` BEFORE it, and a control on one
+        // side only passes against an extractor that over-reads towards the
+        // other.
+        for control in [
+            "async fn agent_remove_extension",
+            "async fn agent_add_extension",
+        ] {
+            let unguarded = body_of(agent_rs, control);
+            assert!(
+                !unguarded.contains("user_action_proof("),
+                "the body scan is over-reading: {control} has no guard and reported one"
+            );
+            assert!(
+                !unguarded.contains(mint),
+                "the body scan is over-reading: {control} mints nothing and reported the proof"
+            );
+        }
     }
 
     /// DR-26 / Task 49 again, from the other side: adding the grant route must

@@ -1085,6 +1085,25 @@ const CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT: &str =
      not enabled here, or the model bound right now is already covered by agreements that reach \
      it. Nothing was recorded.";
 
+/// …and when the chat is not loaded in this daemon at all.
+///
+/// ⚠ **A distinct sentence, and this route must not fold it into the one above.**
+/// The two states are indistinguishable to the caller and completely different to
+/// the user: "nothing to accept" says the risk you saw is gone, "this chat is not
+/// loaded" says ask again once it is. Reporting the second as the first is open
+/// question 23's mistake with a different subject — it sends the person at the
+/// keyboard hunting for a mismatch to fix when what they need is to open the
+/// chat.
+///
+/// It is a refusal rather than a load, because the affiliation a grant is keyed
+/// on can only be sampled off the model this chat is actually bound to. Loading
+/// the chat here to answer would read the process default instead — a grant
+/// recorded against the wrong institution, which no later call would match.
+const CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED: &str =
+    "That chat is not loaded in this daemon right now, so the model it is bound to — and \
+     therefore whose agreements cover it — cannot be read. Nothing was recorded. Open the chat \
+     and approve the flow there.";
+
 /// Record the user's acceptance of one cross-institutional data flow (issue #56,
 /// DR-26 / Task 49).
 ///
@@ -1122,7 +1141,8 @@ const CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT: &str =
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused (issue #56, DR-26): only the user may accept a \
                                       cross-institutional data flow"),
-        (status = 424, description = "Agent not initialized"),
+        (status = 424, description = "That chat is not loaded in this daemon, so the model it is \
+                                      bound to cannot be read"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -1155,7 +1175,17 @@ async fn agent_cross_affiliation_grant(
         }
     }
 
-    let agent = state.get_agent(request.session_id.clone()).await?;
+    // PEEK, never `get_agent`. This route inspects a chat; creating one to
+    // inspect it reads the process default provider rather than the chat's
+    // binding, answers "nothing to accept" for a chat that has plenty, and
+    // leaves a bare agent cached under a real session id. See
+    // `AppState::peek_agent`.
+    let Some(agent) = state.peek_agent(&request.session_id).await else {
+        return Err(ErrorResponse {
+            status: StatusCode::FAILED_DEPENDENCY,
+            message: CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED.to_string(),
+        });
+    };
 
     // ONE sample: the warning the user is accepting and the affiliation the grant
     // is keyed on come from the same read of the bound provider. Two reads would
@@ -1791,9 +1821,10 @@ pub fn routes(state: Arc<AppState>) -> Router {
 }
 
 #[cfg(test)]
-mod cross_affiliation_grant_copy_tests {
-    //! Issue #56 DR-26 / Task 49: what the grant route's three refusals may and
-    //! may not say.
+mod cross_affiliation_grant_route_tests {
+    //! Issue #56 DR-26 / Task 49: what the grant route's four refusals may and
+    //! may not say, and the one shape of the handler that cannot regress
+    //! silently.
     //!
     //! The behaviour these guard is not testable at the HTTP layer here —
     //! `AppState::new()` opens the developer's REAL session database (see
@@ -1802,9 +1833,88 @@ mod cross_affiliation_grant_copy_tests {
     //! declassification pair.
 
     use super::{
-        CROSS_AFFILIATION_GRANT_NEEDS_USER, CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT,
-        CROSS_AFFILIATION_GRANT_NO_KEY,
+        CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED, CROSS_AFFILIATION_GRANT_NEEDS_USER,
+        CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT, CROSS_AFFILIATION_GRANT_NO_KEY,
     };
+
+    const SOURCE: &str = include_str!("agent.rs");
+
+    /// ⚠ **The grant route INSPECTS a chat, and an inspection must never mint
+    /// one.** `AppState::get_agent` is `AgentManager::get_or_create_agent`,
+    /// whose own sibling `peek_agent` documents the hazard verbatim: it reads
+    /// the process-wide mode at creation time and leaves a bare, provider-less,
+    /// extension-less agent cached under that session id.
+    ///
+    /// Three things go wrong on that miss path, and all three are silent. The
+    /// minted agent enumerates no extensions, so a user who just watched a
+    /// refusal in that very chat is told there is nothing to accept — the
+    /// control is unusable in exactly the case it is needed, after a daemon
+    /// restart or an LRU eviction. Its provider is the process default rather
+    /// than the chat's, so the "one sample" the whole route is built around
+    /// would be a sample of the wrong model's affiliation. And the bare agent
+    /// stays cached under a real session id for whoever asks next.
+    ///
+    /// Both directions of the negative control, because `body_of` reads forward
+    /// from a signature to the next column-0 `}`: `agent_add_extension` sits
+    /// BEFORE this handler in the file and `agent_remove_extension` AFTER, and
+    /// each legitimately creates. An over-reading extractor reports one of them
+    /// as peeking, or reports this handler as creating.
+    #[test]
+    fn the_grant_route_looks_up_the_live_agent_and_never_creates_one() {
+        // Assembled, so this assertion is not itself a match for the scan.
+        let peek = concat!("peek", "_agent(");
+        let create = concat!("get", "_agent(");
+
+        let handler = crate::auth::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
+        assert!(
+            handler.contains(peek),
+            "the grant route no longer looks the chat up without creating it"
+        );
+        assert!(
+            !handler.contains(create),
+            "the grant route mints an agent to inspect a chat. On a miss that agent has the \
+             process default provider and no extensions, so the affiliation the grant is keyed \
+             on is the wrong model's and the user is told there is nothing to accept."
+        );
+
+        for (name, body) in [
+            (
+                "agent_add_extension",
+                crate::auth::body_of(SOURCE, "async fn agent_add_extension"),
+            ),
+            (
+                "agent_remove_extension",
+                crate::auth::body_of(SOURCE, "async fn agent_remove_extension"),
+            ),
+        ] {
+            assert!(
+                body.contains(create),
+                "{name} is the control for this scan and must still create on miss"
+            );
+            assert!(
+                !body.contains(peek),
+                "the body scan is over-reading: {name} reported the grant route's lookup"
+            );
+        }
+    }
+
+    /// …and the refusal that miss produces says what actually happened.
+    ///
+    /// Reporting "this chat is not loaded" as "there is nothing to accept" is
+    /// the same class of error open question 23 rejected for the keyless daemon:
+    /// it sends the person at the keyboard looking for a mismatch to fix when
+    /// what they need is to open the chat.
+    #[test]
+    fn a_chat_that_is_not_loaded_is_told_so_and_not_that_there_is_nothing_to_accept() {
+        assert_ne!(
+            CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED,
+            CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT
+        );
+        assert!(CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED.contains("Nothing was recorded"));
+        // It names the act that clears it, which is neither a retry nor a
+        // setting: open the chat again.
+        assert!(CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED.contains("Open the chat"));
+    }
 
     /// A refusal that carries a renderer marker is claiming to be a different
     /// refusal, and the toast it triggers sends the user somewhere that cannot

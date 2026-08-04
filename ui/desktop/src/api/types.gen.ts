@@ -3006,7 +3006,7 @@ export type AgentCrossAffiliationGrantErrors = {
      */
     403: unknown;
     /**
-     * Agent not initialized
+     * That chat is not loaded in this daemon, so the model it is bound to cannot be read
      */
     424: unknown;
     /**

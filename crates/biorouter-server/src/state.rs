@@ -352,6 +352,23 @@ impl AppState {
         self.agent_manager.get_or_create_agent(session_id).await
     }
 
+    /// Look up a live agent for `session_id` **without creating one**.
+    ///
+    /// ⚠ **The route that INSPECTS a chat wants this, never [`Self::get_agent`].**
+    /// That one is `AgentManager::get_or_create_agent`, and its miss path mints a
+    /// bare agent bound to the process default provider with no extensions, then
+    /// caches it under the session id — so an inspection reads today's global
+    /// config instead of the chat's, gets an empty answer, and leaves a
+    /// placeholder behind for whoever asks next. `AgentManager::peek_agent`'s own
+    /// doc records that hazard; this is the accessor that makes it avoidable from
+    /// a route.
+    ///
+    /// `None` is a real answer — a daemon restart or an LRU eviction — and a
+    /// caller must say so rather than reporting it as an empty chat.
+    pub async fn peek_agent(&self, session_id: &str) -> Option<Arc<biorouter::agents::Agent>> {
+        self.agent_manager.peek_agent(session_id).await
+    }
+
     pub async fn get_agent_for_route(
         &self,
         session_id: String,

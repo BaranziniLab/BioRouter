@@ -234,7 +234,7 @@
           "super::routes::agent"
         ],
         "summary": "Record the user's acceptance of one cross-institutional data flow (issue #56,",
-        "description": "DR-26 / Task 49).\n\n⚠ **This route is a reversal of `/agent/add_extension`'s posture and the\ndifference is the ruling, not an inconsistency.** That route refuses a private\nextension on a public session *outright*, with no user-proof branch, because\nattaching one is a raise the user cannot authorize either. A Private↔Private\ncross-institution flow is the opposite case: both endpoints are already\nprivate, the tier boundary is not being crossed, and DR-26 states explicitly\nthat legitimate cross-institutional work under a real DUA exists and that the\nuser may accept the stated risk. Blocking it outright is the design\nresearchers route around by turning the feature off. So this route exists, and\nthe tier refusal beside it is untouched.\n\nThe grant is keyed on the **triple** (session, extension, model affiliation),\nwhere the affiliation is read by the daemon from the same sample that produced\nthe warning — never from the request. Re-binding to a different institution's\nmodel changes the triple, so the acceptance does not carry over.",
+        "description": "DR-26 / Task 49).\n\n⚠ **This route is a reversal of `/agent/add_extension`'s posture and the\ndifference is the ruling, not an inconsistency.** That route refuses a private\nextension on a public session *outright*, with no user-proof branch, because\nattaching one is a raise the user cannot authorize either. A Private↔Private\ncross-institution flow is the opposite case: both endpoints are already\nprivate, the tier boundary is not being crossed, and DR-26 states explicitly\nthat legitimate cross-institutional work under a real DUA exists and that the\nuser may accept the stated risk. Blocking it outright is the design\nresearchers route around by turning the feature off. So this route exists, and\nthe tier refusal beside it is untouched.\n\nThe grant is keyed on the **triple** (session, extension, model affiliation),\nwhere the affiliation is read by the daemon from the same sample that produced\nthe warning — never from the request. Re-binding to a different institution's\nmodel changes the triple, so the acceptance does not carry over.\n\n⚠ **Nothing in the desktop UI calls this yet, and that is the missing half of\nthe flow.** `agentCrossAffiliationGrant` exists in the generated client\n(`ui/desktop/src/api/sdk.gen.ts`) and nothing outside `src/api/` calls it, so\nthe generated call also attaches no `X-User-Action` header — which this route\nrequires. Until the dialog lands, the sequence DR-26 describes stops one step\nshort: the model is refused and told to ask, and the person at the keyboard\nhas no button. The backend half is complete and testable; the surface is the\ntask that follows, and no comment here should be read as claiming otherwise.",
         "operationId": "agent_cross_affiliation_grant",
         "requestBody": {
           "content": {
@@ -267,7 +267,7 @@
             "description": "Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow"
           },
           "424": {
-            "description": "Agent not initialized"
+            "description": "That chat is not loaded in this daemon, so the model it is bound to cannot be read"
           },
           "500": {
             "description": "Internal server error"
