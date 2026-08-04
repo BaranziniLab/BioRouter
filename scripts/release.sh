@@ -407,9 +407,77 @@ cmd_all() {
   log "draft created; run the native Windows smoke workflow, then: scripts/release.sh publish $v"
 }
 
+# ── version resolution ───────────────────────────────────────────────────────
+# Accepts a literal `X.Y.Z` (optionally `vX.Y.Z`, since that is how the tags are
+# spelled and it is the obvious thing to paste), or one of three keywords that
+# compute the next version from the tree's current one:
+#
+#   major        1.88.6 → 2.0.0     the FIRST number; resets the other two
+#   minor        1.88.6 → 1.89.0    the SECOND number; resets the third
+#   patch        1.88.6 → 1.88.7    the THIRD number
+#
+# `minor-minor` is accepted as an alias for `patch`, because "the minor minor
+# version" is how the third number gets described in practice and a script that
+# rejects the user's own vocabulary is a script people stop using.
+current_version() {
+  perl -0ne 'print $1 if /\[workspace\.package\].*?version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s' Cargo.toml
+}
+
+resolve_version() {
+  local want="$1" cur part
+  cur="$(current_version)"
+  [ -n "$cur" ] || die "could not read the current version from Cargo.toml [workspace.package]"
+
+  case "$want" in
+    major|minor|patch|minor-minor)
+      part="$want"
+      [ "$part" = minor-minor ] && part=patch
+      IFS=. read -r a b c <<<"$cur"
+      case "$part" in
+        major) echo "$((a + 1)).0.0" ;;
+        minor) echo "$a.$((b + 1)).0" ;;
+        patch) echo "$a.$b.$((c + 1))" ;;
+      esac
+      ;;
+    v[0-9]*.[0-9]*.[0-9]*|[0-9]*.[0-9]*.[0-9]*)
+      local v="${want#v}"
+      [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        || die "malformed version '$want' — expected X.Y.Z, or one of: major minor patch"
+      # Going backwards silently is a real hazard: electron-updater compares
+      # versions, so a lower number ships an update clients will refuse and a
+      # `latest-mac.yml` that disagrees with its own assets.
+      if [ "$(printf '%s\n%s\n' "$cur" "$v" | sort -V | tail -1)" = "$cur" ] && [ "$v" != "$cur" ]; then
+        die "refusing to bump BACKWARDS: $cur → $v. Pass the version explicitly again if this is deliberate — but check the update feed first."
+      fi
+      echo "$v"
+      ;;
+    *)
+      die "unrecognised version '$want' — expected X.Y.Z, or one of: major minor patch (minor-minor = patch)"
+      ;;
+  esac
+}
+
 CMD="${1:-}"; VER="${2:-}"
 case "$CMD" in
-  bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish|all)
-    need_version "$VER"; "cmd_${CMD}" "$VER" ;;
-  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish|all} <version>" ;;
+  bump|all)
+    need_version "$VER"
+    RESOLVED="$(resolve_version "$VER")"
+    if [ "$RESOLVED" != "$VER" ]; then
+      log "resolved '$VER' → $RESOLVED (current: $(current_version))"
+    fi
+    "cmd_${CMD}" "$RESOLVED"
+    [ "$CMD" = bump ] && log "later phases take this explicitly, e.g. scripts/release.sh backends $RESOLVED"
+    ;;
+  backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish)
+    need_version "$VER"
+    # Keywords are deliberately REFUSED here. These phases run against a tree
+    # that `bump` has already rewritten, so `minor` would resolve against the
+    # NEW current version and compute a version one step too far — building
+    # 1.90.0 artifacts for a 1.89.0 tree, with nothing to catch it until verify.
+    case "$VER" in
+      major|minor|patch|minor-minor)
+        die "'$VER' is only valid for 'bump' and 'all'. This phase needs the explicit version the tree is already at: $(current_version)" ;;
+    esac
+    "cmd_${CMD}" "$VER" ;;
+  *) die "usage: scripts/release.sh {bump|backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish|all} <version|major|minor|patch>" ;;
 esac
