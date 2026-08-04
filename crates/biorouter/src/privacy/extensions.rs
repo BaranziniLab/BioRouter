@@ -1,4 +1,46 @@
+use std::collections::BTreeSet;
+
+use super::affiliation::{ExtensionAffiliation, InstitutionId};
 use super::ProviderTier;
+
+/// The compiled marketplace snapshot, as the resolver reads it.
+///
+/// A struct rather than three direct reads of [`super::registry_private`], so
+/// the resolver itself can be exercised against a catalog the real one does not
+/// contain. The tree's only two private extensions are both UCSF-tagged, so the
+/// rows that decide the most — a private extension with **no** affiliation, and
+/// one naming an institution the registry does not publish — would otherwise
+/// have no test on the resolver at all, only on a rule extracted beside it.
+struct RegistrySnapshot {
+    /// Keys whose extensions must never be admitted to a public session.
+    private: &'static [&'static str],
+    /// Key → the institutions whose agreements that extension's data is under.
+    ///
+    /// A key **absent** from here declares nothing, which is
+    /// [`ExtensionAffiliation::Any`]. A key present with an **empty** list
+    /// permits nothing. The two are opposite answers; see [`affiliation_for`].
+    affiliations: &'static [(&'static str, &'static [&'static str])],
+}
+
+/// The snapshot the running app resolves against.
+const REGISTRY: RegistrySnapshot = RegistrySnapshot {
+    private: super::registry_private::PRIVATE_EXTENSIONS,
+    affiliations: super::registry_private::EXTENSION_AFFILIATIONS,
+};
+
+/// What the registry says about one installed extension: its tier, and — DR-26's
+/// third axis — whose agreements its data is under.
+///
+/// The two travel together because they come from **one** resolution. Two
+/// lookups would let them disagree about the same entry, and the disagreement
+/// would be silent: a rename is invisible to a name-only affiliation lookup but
+/// not to the config-aware tier resolver, so a connector holding UCSF PHI would
+/// come back Private *and* unconstrained.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExtensionClassification {
+    pub tier: ProviderTier,
+    pub affiliation: ExtensionAffiliation,
+}
 
 /// The single function implementing R11, both halves.
 ///
@@ -91,27 +133,113 @@ pub fn classify_extension_entry(
     key: &str,
     config: Option<&crate::agents::extension::ExtensionConfig>,
 ) -> ProviderTier {
+    resolve_extension(key, config).tier
+}
+
+/// **The** registry resolution: tier and affiliation for one config entry, in
+/// one call.
+///
+/// [`classify_extension_entry`] is this function's `tier` field. A caller that
+/// needs the affiliation must come here rather than look it up separately —
+/// DR-26/Task 47: "affiliation rides the same resolution, in the same call. Two
+/// lookups would let tier and affiliation disagree about the same extension."
+pub fn resolve_extension(
+    key: &str,
+    config: Option<&crate::agents::extension::ExtensionConfig>,
+) -> ExtensionClassification {
+    resolve_in(&REGISTRY, key, config)
+}
+
+fn resolve_in(
+    registry: &RegistrySnapshot,
+    key: &str,
+    config: Option<&crate::agents::extension::ExtensionConfig>,
+) -> ExtensionClassification {
+    let identities = identities(key, config);
+    let tier = if identities.iter().any(|k| is_private_key(registry, k)) {
+        ProviderTier::Private
+    } else {
+        ProviderTier::Public
+    };
+    ExtensionClassification {
+        tier,
+        affiliation: affiliation_for(registry, &identities),
+    }
+}
+
+/// Every key this entry could be known by: the caller's key, the config's own
+/// declared name, and the `name_to_key` reduction of every registry id recorded
+/// for either of those or for an install directory the config's arguments name.
+///
+/// ⚠ **The provenance store is consulted unconditionally**, where the tier-only
+/// resolver used to skip it once a name matched the private set. That shortcut
+/// cannot survive affiliation: it stops at the first identity that proves
+/// Private, so the affiliation would be whatever that one identity declared and
+/// the answer would depend on which join matched first — the exact
+/// first-match-wins bug `a_key_match_does_not_mask_an_install_directory_match`
+/// was written to forbid. The cost is one `stat` of a config-dir file (the store
+/// itself is stat-cached) for extensions that are already private by name, which
+/// is the two the snapshot publishes.
+fn identities(
+    key: &str,
+    config: Option<&crate::agents::extension::ExtensionConfig>,
+) -> Vec<String> {
     use crate::config::extensions::name_to_key;
     let mut keys = vec![name_to_key(key)];
     if let Some(config) = config {
         let declared = name_to_key(&config.name());
-        if declared != keys[0] {
+        if !keys.contains(&declared) {
             keys.push(declared);
         }
     }
-    if keys.iter().any(|k| is_private_key(k)) {
-        return ProviderTier::Private;
-    }
-    // Reached only for a name the snapshot does not know, so nothing already
-    // private by name pays for the store lookup.
     let referenced = config.map(referenced_paths).unwrap_or_default();
-    if super::provenance::registry_ids_for(&keys, &referenced)
-        .iter()
-        .any(|id| is_private_key(&name_to_key(id)))
-    {
-        return ProviderTier::Private;
+    // ⚠ Looked up with the CONFIG keys only. Feeding recorded ids back in would
+    // let one record reach another record's row, chaining identities the install
+    // never claimed.
+    for id in super::provenance::registry_ids_for(&keys, &referenced) {
+        let id = name_to_key(&id);
+        if !keys.contains(&id) {
+            keys.push(id);
+        }
     }
-    ProviderTier::Public
+    keys
+}
+
+/// The union of what every matched identity declares.
+///
+/// ⚠ **Over all matches, never the first**, for the reason Task 43 landed for
+/// the tier: which join matches first is an accident of iteration order, and
+/// the losing order is the dangerous one.
+///
+/// ⚠ **"Declared nothing" and "declared an empty allowlist" are different, and
+/// the difference is the whole of Step 2.** An identity absent from the table
+/// contributes no row and no institution; if *no* identity has a row the answer
+/// is [`ExtensionAffiliation::Any`] — unconstrained, reachable from every
+/// private model — which is the correct default for the many extensions under no
+/// institutional agreement. A row that exists with an empty list permits
+/// nothing. Collapsing the two (`institutions.is_empty() → Any`) turns a typo
+/// into a granted flow, so the presence of a row is tracked separately from what
+/// the row holds.
+///
+/// A public identity has no row, which is why a forged provenance record naming
+/// a public registry id cannot erase a private name's institution: it adds an
+/// identity that declares nothing, and nothing unions to nothing.
+fn affiliation_for(registry: &RegistrySnapshot, identities: &[String]) -> ExtensionAffiliation {
+    let mut declared = false;
+    let mut institutions = BTreeSet::new();
+    for (key, named) in registry.affiliations {
+        if identities.iter().any(|identity| identity == key) {
+            declared = true;
+            // Interning takes a process-wide mutex, so it happens only for a row
+            // that actually matched — a public extension pays nothing.
+            institutions.extend(named.iter().map(|id| InstitutionId::new(id)));
+        }
+    }
+    if declared {
+        ExtensionAffiliation::Institutions(institutions)
+    } else {
+        ExtensionAffiliation::Any
+    }
 }
 
 /// The filesystem paths a config names, for matching against a recorded
@@ -128,8 +256,8 @@ fn referenced_paths(config: &crate::agents::extension::ExtensionConfig) -> Vec<S
 }
 
 /// Membership of the compiled marketplace snapshot, on an already-reduced key.
-fn is_private_key(key: &str) -> bool {
-    super::registry_private::PRIVATE_EXTENSIONS.contains(&key)
+fn is_private_key(registry: &RegistrySnapshot, key: &str) -> bool {
+    registry.private.contains(&key)
 }
 
 /// The compiled-in private set, by `name_to_key` key.
@@ -389,6 +517,297 @@ mod tests {
         assert_eq!(
             classify_extension("renamed-with-no-record"),
             ProviderTier::Public
+        );
+    }
+
+    // ----------------------------------------------------------------------
+    // Task 47 / DR-26: affiliation, resolved from the same registry read as the
+    // tier.
+    //
+    // Two lookups would let tier and affiliation disagree about one extension —
+    // the renamed entry below is exactly where they would, since the rename
+    // moves the name and not the install directory. So there is one resolver,
+    // and these tests read both fields out of one call.
+    //
+    // Several rows cannot be exercised against the real snapshot, whose only two
+    // private extensions are both UCSF-tagged. Those use a synthetic
+    // `RegistrySnapshot` through `resolve_in` — the same code path, a different
+    // catalog — rather than testing a hand-extracted rule that the resolver
+    // might not be the one using.
+    // ----------------------------------------------------------------------
+
+    use crate::privacy::affiliation::{
+        compatible, cross_affiliation_warning, ExtensionAffiliation, InstitutionId,
+        ModelAffiliation,
+    };
+
+    fn inst(name: &str) -> InstitutionId {
+        InstitutionId::new(name)
+    }
+
+    fn owned_by(names: &[&str]) -> ExtensionAffiliation {
+        ExtensionAffiliation::institutions(names.iter().map(|n| inst(n)))
+    }
+
+    /// A `.brxt`-shaped config: `uv run --directory <install_dir> server.py`.
+    fn uv_config(name: &str, install_dir: &str) -> crate::agents::extension::ExtensionConfig {
+        use crate::agents::extension::{Envs, ExtensionConfig};
+        ExtensionConfig::Stdio {
+            name: name.to_string(),
+            description: "fixture".to_string(),
+            cmd: "uv".to_string(),
+            args: vec![
+                "run".to_string(),
+                "--directory".to_string(),
+                install_dir.to_string(),
+                "server.py".to_string(),
+            ],
+            envs: Envs::default(),
+            env_keys: vec![],
+            timeout: Some(300),
+            bundled: None,
+            available_tools: vec![],
+        }
+    }
+
+    /// The generated table, stated once where a human reads it — the same
+    /// reasoning as `the_generated_set_is_exactly_these_two_keys`. An assertion
+    /// that merely checked `cdwagent` is UCSF would pass while a generator bug
+    /// tagged a third extension, or dropped an institution from the map that the
+    /// warning copy needs.
+    #[test]
+    fn the_generated_affiliation_table_is_exactly_these_two_rows() {
+        assert_eq!(
+            super::super::registry_private::EXTENSION_AFFILIATIONS,
+            &[
+                ("cdwagent", &["ucsf"] as &[&str]),
+                ("ucsfomopagent", &["ucsf"]),
+            ],
+            "the compiled-in affiliation table changed. It is generated from the \
+             data-affiliation annotations in landing/baam.html by \
+             landing/scripts/build-registry.mjs"
+        );
+        assert_eq!(
+            super::super::registry_private::INSTITUTIONS,
+            &[("ucsf", "UCSF")],
+            "the institution display-name map changed; DR-26's warning renders from it"
+        );
+    }
+
+    /// Affiliation only ever qualifies a PRIVATE extension — "under whose
+    /// agreements" is a question that arises once data is private. A row keyed
+    /// on something the private set does not publish would be dead weight the
+    /// resolver could never reach, and is more likely a mis-keyed row that was
+    /// meant to constrain a real connector.
+    #[test]
+    fn every_affiliated_key_is_a_key_the_private_set_publishes() {
+        for (key, _) in super::super::registry_private::EXTENSION_AFFILIATIONS {
+            assert!(
+                private_extension_ids().any(|k| k == *key),
+                "{key} declares an affiliation but is not in the private set"
+            );
+        }
+    }
+
+    /// Every institution the table names has a display name, or DR-26's
+    /// requirement that the warning NAME both institutions degrades to a raw
+    /// slug for a connector this build ships.
+    #[test]
+    fn every_institution_the_table_names_has_a_display_name() {
+        for (key, institutions) in super::super::registry_private::EXTENSION_AFFILIATIONS {
+            for id in *institutions {
+                assert!(
+                    crate::privacy::affiliation::institution_display_name(inst(id)).is_some(),
+                    "{key} names institution {id:?}, which has no display name to warn with"
+                );
+            }
+        }
+    }
+
+    /// **Step 3, first assertion.** A UCSF-tagged extension is still `ucsf` when
+    /// the registry is taken away.
+    ///
+    /// ⚠ In Rust "take the registry away" cannot mean a failed fetch: there is
+    /// no fetch. The compiled snapshot IS the registry here, linked into the
+    /// binary, so "unreachable registry retains" holds by construction. What can
+    /// still go missing or lie are the three inputs below, and none of them may
+    /// lower the answer.
+    #[test]
+    fn a_ucsf_extension_keeps_its_affiliation_when_its_provenance_does_not_help() {
+        // (a) No provenance record at all — the join is the name join, which is
+        //     what every pre-Task-43 install has.
+        let resolved = resolve_extension("cdwagent", None);
+        assert_eq!(resolved.tier, ProviderTier::Private);
+        assert_eq!(resolved.affiliation, owned_by(&["ucsf"]));
+
+        // (b) A recorded id the snapshot does not publish. It contributes no
+        //     institution and must not displace the name-derived one.
+        //     ⚠ Deliberately the same (key, id) pair as
+        //     `an_unknown_recorded_id_retains_the_name_derived_tier`:
+        //     `test_records` is process-global, so two records under one key must
+        //     agree rather than race.
+        super::super::provenance::insert_test_record("ucsfomopagent", "an-id-nobody-publishes");
+        let resolved = resolve_extension("ucsfomopagent", None);
+        assert_eq!(resolved.tier, ProviderTier::Private);
+        assert_eq!(resolved.affiliation, owned_by(&["ucsf"]));
+
+        // (c) A recorded PUBLIC id against a name the snapshot knows as private.
+        //     A public extension declares no affiliation, so a resolver that
+        //     took the last matching row — or that treated "some identity
+        //     declares nothing" as unconstrained — would answer `Any` here and
+        //     silently clear the flow. Same pairing rule as (b).
+        super::super::provenance::insert_test_record("cdwagent", "playwrightagent");
+        let resolved = resolve_extension("cdwagent", None);
+        assert_eq!(resolved.tier, ProviderTier::Private);
+        assert_eq!(
+            resolved.affiliation,
+            owned_by(&["ucsf"]),
+            "a public identity declares nothing; it must not erase the private one's institution"
+        );
+    }
+
+    /// **Why affiliation had to ride the config-aware resolution.** A rename
+    /// rewrites both the map key and the entry's own `name`, so a name-only
+    /// affiliation lookup answers `Any` — an unconstrained extension every
+    /// private model may reach — for a connector holding UCSF PHI. The tier and
+    /// the affiliation come out of ONE call, so they cannot disagree about it.
+    #[test]
+    fn a_renamed_private_extension_keeps_both_its_tier_and_its_affiliation() {
+        // ⚠ An install directory no other test records; see `test_records`.
+        let install_dir =
+            "/home/researcher/.config/biorouter/extensions/CDWAgentAffiliationFixture";
+        super::super::provenance::insert_test_record_at(
+            "cdwagent-before-the-affiliation-rename",
+            "cdwagent",
+            Some(install_dir),
+        );
+        let renamed = uv_config("mystuff-affiliation", install_dir);
+
+        let resolved = resolve_extension("mystuff-affiliation", Some(&renamed));
+        assert_eq!(resolved.tier, ProviderTier::Private);
+        assert_eq!(
+            resolved.affiliation,
+            owned_by(&["ucsf"]),
+            "the rename moved the name, not the directory the install unpacked into"
+        );
+    }
+
+    /// A public extension is unconstrained, because affiliation is a question
+    /// about private data. This is the row that must NOT become a mismatch.
+    #[test]
+    fn a_public_extension_declares_no_affiliation() {
+        let resolved = resolve_extension("playwrightagent", None);
+        assert_eq!(resolved.tier, ProviderTier::Public);
+        assert_eq!(resolved.affiliation, ExtensionAffiliation::Any);
+    }
+
+    // ---- The rows the real snapshot cannot exercise ------------------------
+
+    /// **Step 3, second assertion.** A private extension with no
+    /// `affiliation` is `Any`.
+    ///
+    /// The tree's two private extensions are both UCSF-tagged, so this row has
+    /// no representative in the real catalog — and it is the row that decides
+    /// whether every unconstrained connector becomes a cross-institutional
+    /// warning on the day this ships. `private-no-affiliation.html` pins the
+    /// generator's half (no row emitted); this pins the resolver's.
+    #[test]
+    fn an_untagged_private_extension_is_unconstrained_not_a_mismatch() {
+        const SNAPSHOT: RegistrySnapshot = RegistrySnapshot {
+            private: &["untaggedagent"],
+            affiliations: &[],
+        };
+        let resolved = resolve_in(&SNAPSHOT, "UntaggedAgent", None);
+        assert_eq!(resolved.tier, ProviderTier::Private);
+        assert_eq!(resolved.affiliation, ExtensionAffiliation::Any);
+        // ...and therefore reachable from an institution's model without a warning.
+        assert!(compatible(
+            &ModelAffiliation::Institution(inst("ucsf")),
+            &resolved.affiliation
+        ));
+    }
+
+    /// **Step 3, third assertion.** An affiliation naming an institution the
+    /// registry does not publish is a **mismatch**, and the warning surfaces the
+    /// raw id.
+    ///
+    /// Failing open on a typo is how a real constraint disappears: `atlantis`
+    /// has no display name, and a resolver that dropped what it could not name
+    /// would turn a constrained connector into an unconstrained one.
+    #[test]
+    fn an_institution_the_registry_does_not_publish_is_a_mismatch_that_names_it() {
+        const SNAPSHOT: RegistrySnapshot = RegistrySnapshot {
+            private: &["atlantisagent"],
+            affiliations: &[("atlantisagent", &["atlantis"])],
+        };
+        let resolved = resolve_in(&SNAPSHOT, "AtlantisAgent", None);
+        assert_eq!(resolved.tier, ProviderTier::Private);
+        assert_eq!(resolved.affiliation, owned_by(&["atlantis"]));
+
+        let bound = ModelAffiliation::Institution(inst("ucsf"));
+        assert!(
+            !compatible(&bound, &resolved.affiliation),
+            "an institution the registry cannot name must not be silently cleared"
+        );
+        let warning = cross_affiliation_warning(bound, "AtlantisAgent", &resolved.affiliation)
+            .expect("a mismatch must produce a warning");
+        assert!(
+            warning.contains("atlantis"),
+            "the warning must surface the raw id: {warning}"
+        );
+        assert!(
+            warning.contains("UCSF"),
+            "the warning must also name the institution the model is bound to: {warning}"
+        );
+    }
+
+    /// An explicitly EMPTY allowlist permits nothing, and is not `Any`.
+    ///
+    /// The generator refuses `data-affiliation=""`, so this cannot arrive from
+    /// `baam.html` — it is the hand-edit direction, and it must fail closed. A
+    /// resolver written as "no institutions collected → unconstrained" reads an
+    /// empty allowlist as a granted flow, which is the one mistake DR-26 calls
+    /// out about conflating the two.
+    #[test]
+    fn an_explicitly_empty_allowlist_is_not_unconstrained() {
+        const SNAPSHOT: RegistrySnapshot = RegistrySnapshot {
+            private: &["emptyallowlistagent"],
+            affiliations: &[("emptyallowlistagent", &[])],
+        };
+        let resolved = resolve_in(&SNAPSHOT, "EmptyAllowlistAgent", None);
+        assert_ne!(resolved.affiliation, ExtensionAffiliation::Any);
+        assert!(!compatible(
+            &ModelAffiliation::Institution(inst("ucsf")),
+            &resolved.affiliation
+        ));
+    }
+
+    /// **The union is over ALL matching identities, never the first.** Task 43
+    /// learned this for the tier (`a_key_match_does_not_mask_an_install_directory_match`);
+    /// affiliation inherits it exactly, so a base matching several institutions
+    /// carries all of them rather than whichever join happened to match first.
+    #[test]
+    fn affiliation_unions_over_every_matched_identity() {
+        const SNAPSHOT: RegistrySnapshot = RegistrySnapshot {
+            private: &["unionfixturea", "unionfixtureb"],
+            affiliations: &[("unionfixturea", &["alpha"]), ("unionfixtureb", &["beta"])],
+        };
+        // ⚠ An install directory no other test records; see `test_records`.
+        let install_dir = "/home/researcher/.config/biorouter/extensions/UnionAffiliationFixture";
+        super::super::provenance::insert_test_record_at(
+            "union-affiliation-fixture",
+            "unionfixtureb",
+            Some(install_dir),
+        );
+        // Named for one private extension, launched out of another's directory.
+        let config = uv_config("Union Fixture A", install_dir);
+
+        let resolved = resolve_in(&SNAPSHOT, "unionfixturea", Some(&config));
+        assert_eq!(resolved.tier, ProviderTier::Private);
+        assert_eq!(
+            resolved.affiliation,
+            owned_by(&["alpha", "beta"]),
+            "the key match and the install-directory match are both identities of this entry"
         );
     }
 }

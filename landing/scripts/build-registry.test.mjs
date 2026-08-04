@@ -198,7 +198,41 @@ test('a private extension with no affiliation is unconstrained, not rejected', (
     false,
     'absent means unconstrained and must stay absent, never [] '
   );
-  assert.match(readFileSync(rs, 'utf8'), /&\["unaffiliatedagent"\];/);
+  const rust = readFileSync(rs, 'utf8');
+  assert.match(rust, /&\["unaffiliatedagent"\];/);
+  // ...and NO row in the affiliation table. A row with an empty list would be
+  // read by `affiliation_for` as "permits nothing", turning the correct default
+  // (unconstrained) into a permanent cross-institutional warning.
+  assert.match(rust, /EXTENSION_AFFILIATIONS: &\[\(&str, &\[&str\]\)\] = &\[\];/);
+});
+
+test('the compiled-in snapshot carries affiliation and the institution names', () => {
+  // DR-26 / Task 47. There is no network path to the registry from Rust, so the
+  // compiled snapshot IS the registry there: an affiliation the generator does
+  // not emit here is an affiliation the daemon and the CLI can never enforce.
+  // The institution map has to come too, because DR-26 requires the warning to
+  // NAME both institutions, and the display name lives only in this map.
+  const out = outPath();
+  const rs = rustPath();
+  const r = run({ input: fixture('happy'), out, args: ['--emit-rust', rs] });
+  assert.equal(r.code, 0, r.both);
+
+  const rust = readFileSync(rs, 'utf8');
+  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] = &\["privatefixtureagent"\];/);
+  assert.match(
+    rust,
+    /EXTENSION_AFFILIATIONS: &\[\(&str, &\[&str\]\)\] =\s*&\[\("privatefixtureagent", &\["ucsf"\]\)\];/
+  );
+  assert.match(rust, /INSTITUTIONS: &\[\(&str, &str\)\] = &\[\("ucsf", "UCSF"\)\];/);
+
+  // Keyed on the extension NAME, exactly like the private set beside it — the
+  // download-derived id is a different string (`suffixed-download` proves it),
+  // and an affiliation keyed on the wrong one silently never matches.
+  assert.equal(
+    rust.includes('"publicfixtureagent"'),
+    false,
+    'a public extension has no affiliation to declare and must not appear'
+  );
 });
 
 test('--input without --out is refused rather than defaulted', () => {

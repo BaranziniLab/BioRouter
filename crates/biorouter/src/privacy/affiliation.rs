@@ -11,10 +11,16 @@
 //! linkage nobody papered. Both pass every tier gate this campaign built, which
 //! is why this cannot be expressed by subdividing the tier lattice.
 //!
-//! This module is the vocabulary and the single comparison. It decides nothing
-//! on its own: a mismatch **warns and asks**, it does not block (DR-19 applied
-//! to the third axis), and the warning, the grant and the gates that consult
-//! them are the tasks that follow.
+//! This module is the vocabulary, the single comparison, and the words a
+//! mismatch is stated in. It decides nothing on its own: a mismatch **warns and
+//! asks**, it does not block (DR-19 applied to the third axis), and the grant
+//! and the gates that consult them are the tasks that follow.
+//!
+//! [`cross_affiliation_warning`] lives here rather than beside a gate because
+//! DR-26 makes the warning the product: it must name both institutions
+//! specifically enough for the user to act on, and a copy composed at each gate
+//! would drift into the shrug ("this may be a compliance risk") the ruling
+//! rejects.
 //!
 //! ⚠ **The inversion to get right.** [`ModelAffiliation::Local`] is the *most*
 //! permissive value, not a peer of the institutions — see [`compatible`].
@@ -237,6 +243,101 @@ pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool 
         ExtensionAffiliation::Any => true,
         ExtensionAffiliation::Institutions(allowed) => allowed.contains(bound),
     }
+}
+
+/// The published display name for an institution id, or `None` if the registry
+/// does not publish one.
+///
+/// The map is generated into the compiled snapshot beside `PRIVATE_EXTENSIONS`
+/// (`registry_private::INSTITUTIONS`) from `registry.json`'s `institutions`
+/// field, so there is no second hand-maintained list to drift.
+///
+/// ⚠ **`None` is not an error and must never be treated as one.** Task 47: an
+/// affiliation naming an institution the registry does not publish is a
+/// *mismatch* whose raw id is surfaced — failing open on a typo is how a real
+/// constraint disappears. The absence of a display name changes only how the
+/// institution is rendered, never whether it counts.
+pub fn institution_display_name(id: InstitutionId) -> Option<&'static str> {
+    super::registry_private::INSTITUTIONS
+        .iter()
+        .find(|(published, _)| *published == id.as_str())
+        .map(|(_, name)| *name)
+}
+
+/// How an institution is written in a warning: `UCSF (ucsf)` when the registry
+/// publishes a name for it, and the bare id when it does not.
+///
+/// The id is included even when a display name exists, because the id is what
+/// appears in `registry.json`, in `baam.html`'s `data-affiliation` and in a
+/// support conversation — a user asked to accept a cross-institutional risk
+/// should be able to match the warning to the record.
+fn label(id: InstitutionId) -> String {
+    match institution_display_name(id) {
+        Some(name) => format!("{name} ({id})"),
+        None => id.as_str().to_string(),
+    }
+}
+
+/// The copy shown to a user before a cross-affiliation flow proceeds — `None`
+/// when there is nothing to warn about.
+///
+/// ⚠ **It returns `None` for every compatible pair, and that is the point.** A
+/// composer callers had to guard themselves would eventually put a compliance
+/// warning on UCSF's Versa reaching the UCSF OMOP agent — the arrangement
+/// everyone approved — which is precisely the prompt fatigue DR-19 warns about.
+/// The mismatch test and the copy are one call, so they cannot disagree.
+///
+/// DR-26 requires the warning be specific enough to act on: it names the
+/// extension, the institution(s) whose data it holds, and the institution whose
+/// agreements cover the bound model. A user can only accept a risk that was
+/// stated to them.
+///
+/// This composes the sentence; it does not decide anything, does not record a
+/// grant and does not block. Where it is surfaced — a refusal at dispatch, a
+/// mark in discovery, a bind-time prompt — is the tasks that follow.
+pub fn cross_affiliation_warning(
+    model: ModelAffiliation,
+    extension: &str,
+    ext: &ExtensionAffiliation,
+) -> Option<String> {
+    if compatible(&model, ext) {
+        return None;
+    }
+    // Both `let … else` arms are unreachable: `compatible` already returned
+    // true for every `Local` model and every `Any` extension, so a mismatch is
+    // always a bound institution against an allowlist. They are written as
+    // early returns rather than `unreachable!()` because a warning composer is
+    // reached from a refusal path, and a panic there converts a control into an
+    // outage.
+    let ModelAffiliation::Institution(bound) = model else {
+        return None;
+    };
+    let ExtensionAffiliation::Institutions(owners) = ext else {
+        return None;
+    };
+
+    let held_by = if owners.is_empty() {
+        // Not a sentence with a blank in it: an empty allowlist is a real state
+        // (a hand-edited snapshot), it permits nothing, and saying so is more
+        // useful than naming zero institutions.
+        "no institution at all — its allowlist names none".to_string()
+    } else {
+        owners
+            .iter()
+            .map(|id| label(*id))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    Some(format!(
+        "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
+         {held_by}, but this chat is bound to a model covered by {}'s agreements. Using it \
+         would send `{extension}`'s inputs and results across that boundary. Compliance does \
+         not transfer between institutions: a model approved at one has no permission over \
+         another's data unless a BAA, DUA or IRB approval covers this specific flow. Proceed \
+         only if you know one does.",
+        label(bound)
+    ))
 }
 
 #[cfg(test)]
@@ -560,6 +661,92 @@ mod tests {
         let parsed: InstitutionId = serde_json::from_str("\" UCSF \"").unwrap();
         assert_eq!(parsed, inst("ucsf"));
         assert_eq!(serde_json::to_string(&parsed).unwrap(), "\"ucsf\"");
+    }
+
+    // ------------------------------------------------ The warning (Task 47).
+    //
+    // DR-26: a mismatch WARNS, and the warning is the product. "This may be a
+    // compliance risk" is a shrug — it must name the institution that owns the
+    // extension, the institution whose model is bound, and what will be sent
+    // where, because a user can only accept a risk that was stated to them.
+
+    /// A warning is offered for a mismatch and for nothing else. A composer that
+    /// produced copy for a compatible pair would put a compliance warning on the
+    /// arrangement everyone approved — UCSF's Versa reaching the UCSF OMOP agent
+    /// — which is the prompt fatigue DR-19 exists to avoid.
+    #[test]
+    fn a_compatible_pair_has_no_warning() {
+        for (model, ext) in [
+            (ModelAffiliation::Local, allowlist(&["stanford"])),
+            (ModelAffiliation::Local, ExtensionAffiliation::Any),
+            (bound("ucsf"), ExtensionAffiliation::Any),
+            (bound("ucsf"), allowlist(&["ucsf"])),
+            (bound("ucsf"), allowlist(&["stanford", "ucsf"])),
+        ] {
+            assert_eq!(
+                cross_affiliation_warning(model, "SomeAgent", &ext),
+                None,
+                "{model:?} vs {ext:?} is compatible and must not warn"
+            );
+        }
+    }
+
+    /// The warning names the extension, the institution that owns its data and
+    /// the institution the bound model is covered by — all three, because
+    /// dropping any one leaves a sentence the user cannot act on.
+    #[test]
+    fn the_warning_names_the_extension_and_both_institutions() {
+        let warning =
+            cross_affiliation_warning(bound("ucsf"), "AtlantisAgent", &allowlist(&["stanford"]))
+                .expect("a mismatch must warn");
+        assert!(warning.contains("AtlantisAgent"), "{warning}");
+        assert!(warning.contains("stanford"), "{warning}");
+        assert!(warning.contains("ucsf"), "{warning}");
+        assert!(
+            warning.contains("UCSF"),
+            "the published display name: {warning}"
+        );
+    }
+
+    /// An institution the registry does not publish has no display name, and the
+    /// raw id is surfaced instead. Task 47's Step 2: failing open on a typo is
+    /// how a real constraint disappears, so the unknown id must reach the user's
+    /// eyes rather than being dropped for being unrenderable.
+    #[test]
+    fn an_institution_with_no_display_name_is_surfaced_raw() {
+        assert_eq!(institution_display_name(inst("ucsf")), Some("UCSF"));
+        assert_eq!(institution_display_name(inst("atlantis")), None);
+
+        let warning =
+            cross_affiliation_warning(bound("ucsf"), "AtlantisAgent", &allowlist(&["atlantis"]))
+                .expect("a mismatch must warn");
+        assert!(warning.contains("atlantis"), "{warning}");
+    }
+
+    /// Every owner is named, not just the first. An allowlist that omits the
+    /// bound institution may still name several, and a user deciding whether a
+    /// DUA covers the flow needs all of them.
+    #[test]
+    fn the_warning_names_every_owner_of_a_multi_institution_allowlist() {
+        let warning = cross_affiliation_warning(
+            bound("ucsf"),
+            "SharedAgent",
+            &allowlist(&["broad", "stanford"]),
+        )
+        .expect("a mismatch must warn");
+        assert!(warning.contains("broad"), "{warning}");
+        assert!(warning.contains("stanford"), "{warning}");
+    }
+
+    /// An empty allowlist permits nothing, and says so in words rather than
+    /// producing a sentence with a blank where the institution should be.
+    #[test]
+    fn an_empty_allowlist_warns_without_naming_an_institution_it_does_not_have() {
+        let empty = ExtensionAffiliation::Institutions(BTreeSet::new());
+        let warning = cross_affiliation_warning(bound("ucsf"), "EmptyAgent", &empty)
+            .expect("an empty allowlist admits nothing, so it must warn");
+        assert!(warning.contains("EmptyAgent"), "{warning}");
+        assert!(warning.contains("no institution"), "{warning}");
     }
 
     // ---------------------------------------------------------------- Fixtures

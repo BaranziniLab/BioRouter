@@ -2,8 +2,8 @@
 //!
 //! `landing/scripts/build-registry.mjs` writes this in the same run as
 //! `landing/registry.json` and the desktop fallback snapshot, from the
-//! `data-privacy` / `data-extension-name` annotations on the extension cards
-//! in `landing/baam.html`. Regenerate all three with:
+//! `data-privacy` / `data-extension-name` / `data-affiliation` annotations on
+//! the extension cards in `landing/baam.html`. Regenerate all three with:
 //!
 //!     node landing/scripts/build-registry.mjs
 //!
@@ -28,3 +28,22 @@
 /// lookup. That makes the entry match either spelling the registry publishes:
 /// the id (`cdwagent`) or the bundle `manifest.name` (`CDWAgent`).
 pub const PRIVATE_EXTENSIONS: &[&str] = &["cdwagent", "ucsfomopagent"];
+
+/// Whose agreements each private extension's data is under — DR-26's third
+/// axis, keyed by the same `name_to_key` key as the set above.
+///
+/// A private extension with NO institutional constraint has **no row here**.
+/// Absent means unconstrained (`ExtensionAffiliation::Any`, reachable from any
+/// private model); an empty allowlist would mean the opposite — permits nothing
+/// — so the generator refuses `data-affiliation=""` rather than emitting one.
+pub const EXTENSION_AFFILIATIONS: &[(&str, &[&str])] =
+    &[("cdwagent", &["ucsf"]), ("ucsfomopagent", &["ucsf"])];
+
+/// Institution id → display name, for the warning copy.
+///
+/// DR-26 requires a cross-affiliation warning to NAME both institutions:
+/// "this may be a compliance risk" is a shrug, not a warning a user can act on.
+/// An id absent from this map has no display name, so the warning surfaces the
+/// raw id — and, being absent from every allowlist that does not literally spell
+/// it, it is a mismatch rather than a silent pass.
+pub const INSTITUTIONS: &[(&str, &str)] = &[("ucsf", "UCSF")];

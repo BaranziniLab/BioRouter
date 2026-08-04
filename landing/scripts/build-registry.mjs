@@ -658,25 +658,73 @@ for (const e of extensions) {
 // tree failing `cargo fmt --check`: a slice literal stays on one line while it
 // fits inside rustfmt's 100-column default, and wraps four-space-indented when
 // it does not.
+//
+// Three consts, not one, and all three are security artifacts:
+//
+//   PRIVATE_EXTENSIONS      which extensions a public session may not reach
+//   EXTENSION_AFFILIATIONS  whose agreements each private extension's data is
+//                           under (DR-26's third axis)
+//   INSTITUTIONS            id -> display name, which is what lets a
+//                           cross-institutional warning NAME the two
+//                           institutions rather than shrug at the user
+//
+// They are emitted together because they are one catalog. An affiliation that
+// reached registry.json but not this file would be an affiliation the daemon
+// and the CLI can never enforce, and a second hand-maintained list beside
+// PRIVATE_EXTENSIONS is exactly what Task 47 forbids.
+
+/**
+ * A slice-literal const, wrapped the way rustfmt would wrap it: on one line
+ * while it fits in the 100-column default, then with the value moved to its own
+ * indented line, then one element per line.
+ */
+function renderSliceConst(head, cells) {
+  const oneLine = `${head} = &[${cells.join(', ')}];`;
+  if (oneLine.length <= 100) return oneLine;
+  const hanging = `${head} =\n    &[${cells.join(', ')}];`;
+  if (hanging.split('\n').every((line) => line.length <= 100)) return hanging;
+  return `${head} = &[\n${cells.map((c) => `    ${c},`).join('\n')}\n];`;
+}
+
 function renderPrivateSet(exts) {
-  const keys = exts
-    .filter((e) => e.privacy === 'private')
-    .map((e) => e.extension_name)
-    .sort();
+  const privateExts = exts.filter((e) => e.privacy === 'private');
+  const keys = privateExts.map((e) => e.extension_name).sort();
   const decl = 'pub const PRIVATE_EXTENSIONS: &[&str] = &[';
   const inline = `${decl}${keys.map((k) => `"${k}"`).join(', ')}];`;
   const body =
     inline.length <= 100
       ? inline
       : `${decl}\n${keys.map((k) => `    "${k}",`).join('\n')}\n];`;
+
+  // Only entries that DECLARE an affiliation get a row. An extension with no
+  // declaration must produce no row at all, never a row with an empty list:
+  // absent means unconstrained, an empty allowlist permits nothing, and the two
+  // are opposite answers.
+  const affiliationRows = privateExts
+    .filter((e) => Array.isArray(e.affiliation) && e.affiliation.length > 0)
+    .map((e) => [e.extension_name, [...e.affiliation].sort()])
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .map(([key, insts]) => `("${key}", &[${insts.map((i) => `"${i}"`).join(', ')}])`);
+  const affiliations = renderSliceConst(
+    'pub const EXTENSION_AFFILIATIONS: &[(&str, &[&str])]',
+    affiliationRows
+  );
+
+  const institutions = renderSliceConst(
+    'pub const INSTITUTIONS: &[(&str, &str)]',
+    Object.entries(INSTITUTIONS)
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([id, name]) => `("${id}", "${name}")`)
+  );
+
   return (
     [
       '//! **Generated file — do not edit by hand.**',
       '//!',
       '//! `landing/scripts/build-registry.mjs` writes this in the same run as',
       '//! `landing/registry.json` and the desktop fallback snapshot, from the',
-      '//! `data-privacy` / `data-extension-name` annotations on the extension cards',
-      '//! in `landing/baam.html`. Regenerate all three with:',
+      '//! `data-privacy` / `data-extension-name` / `data-affiliation` annotations on',
+      '//! the extension cards in `landing/baam.html`. Regenerate all three with:',
       '//!',
       '//!     node landing/scripts/build-registry.mjs',
       '//!',
@@ -701,6 +749,24 @@ function renderPrivateSet(exts) {
       '/// lookup. That makes the entry match either spelling the registry publishes:',
       '/// the id (`cdwagent`) or the bundle `manifest.name` (`CDWAgent`).',
       body,
+      '',
+      '/// Whose agreements each private extension\'s data is under — DR-26\'s third',
+      '/// axis, keyed by the same `name_to_key` key as the set above.',
+      '///',
+      '/// A private extension with NO institutional constraint has **no row here**.',
+      '/// Absent means unconstrained (`ExtensionAffiliation::Any`, reachable from any',
+      '/// private model); an empty allowlist would mean the opposite — permits nothing',
+      '/// — so the generator refuses `data-affiliation=""` rather than emitting one.',
+      affiliations,
+      '',
+      '/// Institution id → display name, for the warning copy.',
+      '///',
+      '/// DR-26 requires a cross-affiliation warning to NAME both institutions:',
+      '/// "this may be a compliance risk" is a shrug, not a warning a user can act on.',
+      '/// An id absent from this map has no display name, so the warning surfaces the',
+      '/// raw id — and, being absent from every allowlist that does not literally spell',
+      '/// it, it is a mismatch rather than a silent pass.',
+      institutions,
     ].join('\n') + '\n'
   );
 }

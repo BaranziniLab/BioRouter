@@ -43,7 +43,10 @@ pub mod visibility;
 pub use alt_provider::assert_alt_provider_allowed;
 pub use capability::CallCapability;
 pub use config_keys::is_capability_key;
-pub use extensions::{classify_extension, classify_extension_entry, private_extension_ids};
+pub use extensions::{
+    classify_extension, classify_extension_entry, private_extension_ids, resolve_extension,
+    ExtensionClassification,
+};
 pub use refusal::{raise_needs_user_action, PrivacyRefusal};
 
 /// The master privacy-tier switch (R7, DR-15). `true` — the default — means
