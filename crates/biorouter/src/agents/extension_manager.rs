@@ -5169,6 +5169,14 @@ mod tests {
     /// that has `developer__shell` — round-trips away instead of being carried
     /// into the record, so an implementation that later grew such a field would
     /// have to fail this test to exist.
+    ///
+    /// ⚠ **This half does not guard the field DR-23 actually deleted**, and
+    /// review was right to say so. The removed field lived on `struct Extension`,
+    /// not on `ExtensionConfig`, which never carried a tier — so re-adding
+    /// `Extension.tier` and stamping it at admission passes everything below.
+    /// [`the_tier_is_resolved_at_read_time_not_stamped_at_admission`] is the half
+    /// that catches that, and the two are deliberately separate: one is about
+    /// what reaches `config.yaml`, the other about when the answer is computed.
     #[test]
     fn no_tier_is_persisted_on_the_config_entry() {
         let stdio = ExtensionConfig::Stdio {
@@ -5211,6 +5219,91 @@ mod tests {
             crate::privacy::classify_extension(&hand_edited.name()),
             crate::privacy::ProviderTier::Private,
             "the hand-written tier changed the answer"
+        );
+    }
+
+    /// **Step 3.3's other half: the tier is COMPUTED at read time, not stamped
+    /// at admission.** This is what guards the field DR-23 deleted.
+    ///
+    /// `Extension.tier` was a `ProviderTier` written once by `add_extension`,
+    /// `add_client` and `add_inprocess_server` and read by every gate — a
+    /// snapshot of the answer at admission, which is precisely what "re-derived
+    /// per read" forbids. Deleting a field is not something a test can observe
+    /// directly; what it can observe is the behaviour only a *stamp* has, so
+    /// this drives the one input that can change AFTER admission and asserts the
+    /// gate notices.
+    ///
+    /// The entry is admitted while nothing ties it to a private install, and the
+    /// gate lets it through. The provenance record then appears — exactly what a
+    /// marketplace install writes into `extension-provenance.json` while the
+    /// daemon is already running — and the same gate, on the same manager, on
+    /// the same admitted entry, must now refuse. Any implementation that stamps
+    /// at admission serves the stale Public answer and fails here, whatever it
+    /// calls the field.
+    ///
+    /// ⚠ It also pins the direction that matters operationally: a freshly
+    /// installed private extension is refused from the next lookup, not from the
+    /// next restart. Without that, "install and use immediately" is a window in
+    /// which enforcement is off.
+    #[tokio::test]
+    async fn the_tier_is_resolved_at_read_time_not_stamped_at_admission() {
+        let install_dir = "/home/researcher/.config/biorouter/extensions/StampCheck";
+        let (_dir, em, _sm, id) = manager_with_a_session().await;
+        em.add_client(
+            "stampcheck".to_string(),
+            renamed_entry("stampcheck", install_dir),
+            Arc::new(MockClient {}),
+            None,
+            None,
+        )
+        .await;
+
+        // Before the record exists, this entry is public by every route.
+        let dispatched = em
+            .dispatch_tool_call(
+                &id,
+                call("stampcheck__tool"),
+                crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("nothing yet says this entry is private");
+        dispatched.result.await.expect("the mock client answers");
+        assert!(
+            em.get_prefixed_tools(None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|t| t.name.as_ref() == "stampcheck__tool"),
+            "Gate E hid an entry nothing had classified private"
+        );
+
+        // The install's record lands after admission. A stamped tier cannot see
+        // this; a resolver called at the point of decision must.
+        crate::privacy::provenance::insert_test_record_at(
+            "stampcheck-as-installed",
+            "cdwagent",
+            Some(install_dir),
+        );
+
+        assert!(
+            em.dispatch_tool_call(
+                &id,
+                call("stampcheck__tool"),
+                crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
+                CancellationToken::default(),
+            )
+            .await
+            .is_err(),
+            "Gate C served an answer decided at admission, which is the stored tier DR-23 removed"
+        );
+        assert!(
+            !em.get_prefixed_tools(None)
+                .await
+                .unwrap()
+                .iter()
+                .any(|t| t.name.as_ref() == "stampcheck__tool"),
+            "Gate E served an answer decided at admission"
         );
     }
 
