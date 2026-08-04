@@ -16,6 +16,7 @@
 //! | 14 | `privacy_refusal(extension, extension_tier, caller_tier) -> Option<ErrorData>` |
 //! | 18A | [`ASK_THE_USER_TO_SWITCH`], [`raise_needs_user_action`] and the three HTTP-channel variants |
 //! | 23 | the two spawn variants and `PrivacyRefusal::spawn_upgrade` / `spawn_downgrade` |
+//! | 41 | [`PrivacyRefusal::AppSessionTierFixed`], DR-21's app-runtime refusal |
 
 use super::{ProviderTier, SessionClassification};
 use crate::session::session_manager::Session;
@@ -187,6 +188,37 @@ pub enum PrivacyRefusal {
          start a new chat on it and give it the task directly."
     )]
     PublicChildOfPrivateParent { requested: ProviderTier },
+
+    /// DR-21 / Task 41: a Biorouter **app** session was asked to move to a more
+    /// private model than the one it was created on.
+    ///
+    /// An app session's capability tier is decided at session creation and
+    /// cannot be changed afterwards — not by a manifest edit, not by a
+    /// reconnect, not by a client frame. All three channels are agent-authored:
+    /// `agent_drafter__declare_profiles` lets a Public model write the
+    /// manifest's `model`, and `ClientFrame::ModelSelect` arrives on
+    /// `GET /apps/{id}/agent`, a route exempt from secret-key auth entirely. So
+    /// there is no user-proof branch here and there deliberately is not one: a
+    /// per-manifest grant would be exactly the scoped permission DR-21 refused
+    /// to invent.
+    ///
+    /// The way out is **not** [`ASK_THE_USER_TO_SWITCH`] — an app has no model
+    /// picker, and switching this session is the very thing that is refused.
+    /// It is a fresh app session, which is the same shape as
+    /// [`Self::PublicChildOfPrivateParent`]'s "start a new chat".
+    ///
+    /// §14.4: it names the provider the caller itself asked for and nothing
+    /// else — not the model the app is on (which would tell a public model
+    /// which providers are private), not the app, not the session.
+    #[error(
+        "An app's model is fixed when its session is created, so this app cannot be switched to \
+         '{requested}', which is a more private model than the one it started on. Nothing was \
+         changed and the app is still on its current model. Do not retry — the same call will be \
+         refused again, and no manifest field, frame or setting changes it. If this app really \
+         needs that model, it has to be *created* on it: tell the user, so they can set the app's \
+         model and start a fresh session for it."
+    )]
+    AppSessionTierFixed { requested: String },
 }
 
 impl PrivacyRefusal {
@@ -209,7 +241,8 @@ impl PrivacyRefusal {
     /// refusals about a *channel*, not about a session whose contents collided
     /// with a model, and inventing a classification for them would put a
     /// fabricated pair on the GUI's repair card. Task 18A's handlers render
-    /// those three straight from [`std::fmt::Display`] and never ask.
+    /// those three straight from [`std::fmt::Display`] and never ask. DR-21's
+    /// app refusal joins them for the same reason.
     pub fn session_classification(&self) -> Option<SessionClassification> {
         match self {
             Self::PublicModelOnPrivateSession { .. } => Some(SessionClassification::Private),
@@ -220,7 +253,10 @@ impl PrivacyRefusal {
             // a session whose stored contents collided with a model. Inventing a
             // classification for it would put a fabricated pair on the GUI card.
             | Self::PrivateChildOfPublicParent { .. }
-            | Self::PublicChildOfPrivateParent { .. } => None,
+            | Self::PublicChildOfPrivateParent { .. }
+            // DR-21 is about WHEN an app session's tier may be set, not about a
+            // stored transcript, so it has no classification either.
+            | Self::AppSessionTierFixed { .. } => None,
         }
     }
 
@@ -233,7 +269,13 @@ impl PrivacyRefusal {
             | Self::PublicChildOfPrivateParent { requested } => Some(*requested),
             Self::TierRaiseNeedsUser { .. }
             | Self::PrivateExtensionOverHttp { .. }
-            | Self::CapabilityConfigNeedsUser { .. } => None,
+            | Self::CapabilityConfigNeedsUser { .. }
+            // The refused bind was necessarily private (a raise is the only
+            // thing DR-21's guard fires on), but this is a refusal about a
+            // channel rather than about a session/model pair, so it reports the
+            // same `None` its DR-16 siblings do rather than seeding a repair
+            // card the app has no way to act on.
+            | Self::AppSessionTierFixed { .. } => None,
         }
     }
 
@@ -247,7 +289,11 @@ impl PrivacyRefusal {
             | Self::PrivateExtensionOverHttp { .. }
             | Self::CapabilityConfigNeedsUser { .. }
             | Self::PrivateChildOfPublicParent { .. }
-            | Self::PublicChildOfPrivateParent { .. } => None,
+            | Self::PublicChildOfPrivateParent { .. }
+            // §14.4: an app refusal reaches the app's own page and the model
+            // reading it. It carries no session id for the same reason the
+            // spawn refusals do not.
+            | Self::AppSessionTierFixed { .. } => None,
         }
     }
 }
@@ -634,6 +680,55 @@ mod tests {
         }
 
         assert_eq!(refusal.provider_tier(), Some(ProviderTier::Public));
+        assert_eq!(refusal.session_classification(), None);
+        assert_eq!(refusal.session_id(), None);
+    }
+
+    /// DR-21's refusal. Same §14.4 bound as the spawn pair, and the same extra
+    /// obligation: it must name a way out, and its way out is a *fresh app
+    /// session* rather than [`ASK_THE_USER_TO_SWITCH`] — an app has no model
+    /// picker, and switching this session is the very thing being refused. That
+    /// exclusion is asserted here rather than left as a silent omission from
+    /// `every_refusal_ends_in_the_same_two_ways_out_sentence`'s list.
+    #[test]
+    fn the_app_tier_refusal_names_the_boundary_and_the_way_out_and_no_other_provider() {
+        let refusal = PrivacyRefusal::AppSessionTierFixed {
+            requested: "llamacpp".into(),
+        };
+        let msg = refusal.to_string();
+
+        // It says what the boundary IS: the tier is fixed at creation.
+        assert!(msg.contains("created"), "{msg}");
+        // It is a refusal, not a warning: nothing moved.
+        assert!(msg.contains("Nothing was changed"), "{msg}");
+        assert!(
+            msg.contains("Do not retry"),
+            "a refusal the model will retry is a loop: {msg}"
+        );
+        // The wall is not something the app can unlock by rewriting its own
+        // manifest — which is the channel this refusal exists to close.
+        assert!(msg.contains("no manifest field, frame or setting"), "{msg}");
+        // The way out, and it is a different one.
+        assert!(msg.contains("start a fresh session"), "{msg}");
+        assert!(
+            !msg.contains(ASK_THE_USER_TO_SWITCH),
+            "an app has no model picker, and switching this session is what was refused: {msg}"
+        );
+
+        // R10's disclosure bound: the caller's own name may be named — and must
+        // be, or the loop below is vacuous — but no other provider's tier may be
+        // inferable from it.
+        assert!(msg.contains("llamacpp"), "{msg}");
+        for leak in ["versa_azure", "versa_bedrock", "ollama", "anthropic"] {
+            assert!(!msg.contains(leak), "app refusal leaked {leak}: {msg}");
+        }
+        for content in ["20260801_7", "Patient MRN 4471 workup", "phi/cohort-3"] {
+            assert!(!msg.contains(content), "{msg}");
+        }
+
+        // A channel refusal, like its DR-16 siblings: no fabricated session/model
+        // pair for a repair card the app cannot act on.
+        assert_eq!(refusal.provider_tier(), None);
         assert_eq!(refusal.session_classification(), None);
         assert_eq!(refusal.session_id(), None);
     }
