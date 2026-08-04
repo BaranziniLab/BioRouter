@@ -584,10 +584,10 @@ mod tests {
         let tier_decision = handler
             .split_once("session_reach(")
             .map_or(handler, |(_, after_the_gate)| after_the_gate);
-        let (before_the_refusal, _) = tier_decision
-            .split_once("PrivateExtensionOverHttp")
-            .expect("the tier refusal now runs BEFORE the reach gate, so this scan no longer \
-                     covers the span its claim is about");
+        let (before_the_refusal, _) = tier_decision.split_once("PrivateExtensionOverHttp").expect(
+            "the tier refusal now runs BEFORE the reach gate, so this scan no longer \
+                     covers the span its claim is about",
+        );
         // Back to the `if` that guards it — the last one before the refusal,
         // whatever a reformat does to the line breaks inside the condition.
         let (_, guard) = before_the_refusal

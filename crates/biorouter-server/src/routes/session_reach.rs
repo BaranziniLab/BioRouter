@@ -890,11 +890,7 @@ mod bypass_tests {
         //    gate lets through stops at a 409 instead of spawning a real turn
         //    against real provider credentials.
         let turn_guard = state
-            .try_begin_turn_idempotent(
-                private_id,
-                tokio_util::sync::CancellationToken::new(),
-                None,
-            )
+            .try_begin_turn_idempotent(private_id, tokio_util::sync::CancellationToken::new(), None)
             .expect("no turn is running in a session created a moment ago");
 
         let (status, _) = post_reply_with(state.clone(), private_id, None).await;
@@ -905,8 +901,8 @@ mod bypass_tests {
              private chat"
         );
 
-        let (status, _) = post_reply_with(state.clone(), private_id, Some(TEST_USER_ACTION_KEY))
-            .await;
+        let (status, _) =
+            post_reply_with(state.clone(), private_id, Some(TEST_USER_ACTION_KEY)).await;
         assert_eq!(
             status,
             StatusCode::CONFLICT,
