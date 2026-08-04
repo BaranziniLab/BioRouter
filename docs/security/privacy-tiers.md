@@ -60,7 +60,7 @@ converse is unrestricted: a private model may read anything.
 The five gates sit on *tool calls*, and **that is where this design's guarantee ends.** A
 public-capability session also holds tools that run arbitrary commands and read arbitrary paths, and
 the private material is ordinary files on disk. §9.5 specifies a sixth control that would close that
-channel — a two-layer read-deny over four directories and one file. **It is descoped for v1 by
+channel — a two-layer read-deny over four directories and two files. **It is descoped for v1 by
 operator ruling, and this design does not claim it.**
 
 **So state the boundary plainly, because a reader must not infer a stronger one.** A public model
@@ -1149,7 +1149,7 @@ holds).
 > ⛔ **DESCOPED for v1 by operator ruling ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)), 2026-07-30 — retained, not deleted.**
 > *"We don't have to enforce and encrypt every single step along the way. for now."* Everything in
 > §9.5 below specifies the **filesystem** channel and is not being built: Layer A (the argument
-> barrier), Layer B (the OS sandbox), the four roots and the `config.yaml` entry. The execution plan's
+> barrier), Layer B (the OS sandbox), the four roots and the two file entries. The execution plan's
 > Tasks 14A–14F carry the same banner and keep the measured platform analysis, which is the expensive
 > part and stays true.
 >
@@ -1238,7 +1238,7 @@ working on Windows.
 
 #### 9.5.2 The entries
 
-**Four roots**, and one file:
+**Four roots**, and two files:
 
 | Entry | Resolved by | Why |
 |---|---|---|
@@ -1246,15 +1246,24 @@ working on Windows.
 | `<config>/knowledge` | `knowledge::paths::knowledge_root()` | the tree the KB barrier gates |
 | `<config>/memory` | `memory::global_memory_dir()` | the global store §9.3 B3 is about |
 | `<config>/agent_drafter` | `agent_drafter::default_root()` | app source, `.vault/`, **and app ids** |
-| `<config>/config.yaml` | `Paths::config_dir()` + `CONFIG_YAML_NAME` | **the master switch itself.** §10.6's toggle is loaded from this file at startup, and it is an ordinary non-`SecretGuard` file: a public model can edit it and the next restart has privacy tiers off. Five tools can write it — `text_editor`, `shell`, `cache` **delete**, `kb_export`'s `dest_path` and `export_app`'s `target_dir` — so protecting one of them protects nothing |
+| `<config>/privacy-tiers.json` | `privacy::master_switch::path_for` | **the master switch itself.** §10.6's toggle is loaded from this record at startup, and it is an ordinary non-`SecretGuard` file: a public model can edit it and the next restart has privacy tiers off |
+| `<config>/config.yaml` | `Paths::config_dir()` + `CONFIG_YAML_NAME` | **hooks.** A planted `PermissionRequest` hook loads from here (§17 Q2) and is the one control that can bypass the spawn-downgrade approval. Five tools can write it — `text_editor`, `shell`, `cache` **delete**, `kb_export`'s `dest_path` and `export_app`'s `target_dir` — so protecting one of them protects nothing, and the same five reach every other entry in this table |
 
-Note the two different directories: the session store is under `data_dir`, the other four under
+⚠ **The switch's row moved, and an implementer working from this table must not harden the wrong
+file.** Before [DR-22](privacy-tiers-execution-plan.md#dr-22--the-master-switch-does-not-live-in-configyaml) the toggle
+lived in `config.yaml` and this table had one file entry, which is where that row's reasoning came
+from. Task 42 moved the value to `privacy-tiers.json` and *retired* the `config.yaml` key — it is
+read once at migration and ignored for ever after — so `config.yaml` is no longer a route to the
+switch, and `privacy-tiers.json` is. `config.yaml` stays in the table on its own merits, which are
+hooks.
+
+Note the two different directories: the session store is under `data_dir`, the other five under
 `config_dir`. A deny list written against one prefix misses most of them, and every test that
 relocates both with `BIOROUTER_PATH_ROOT` still passes.
 
 Two properties of the entry list, both learned the hard way:
 
-- **The `config.yaml` entry denies reads as well as writes,** because telling a read from a write
+- **The two file entries deny reads as well as writes,** because telling a read from a write
   means knowing which argument of which tool is a destination — the per-tool knowledge this design
   has just finished abandoning. The cost is stated in §16: a public chat cannot view `config.yaml`
   through a tool. The user can still open it.
@@ -1364,7 +1373,7 @@ public-capability chat loses the shell — which for a commercial model on a Win
 common configuration, and is a large part of why R7's opt-out is a master switch. A
 public-capability chat also cannot read its own history through the `biorouter` CLI (that reads the
 session store), cannot `cat` its own drafted app's source (that is the fourth root), and cannot view
-`config.yaml` through a tool (that is the fifth entry). All four are the control working as
+`config.yaml` through a tool (that is the sixth entry). All four are the control working as
 specified.
 
 #### 9.5.5 The second-order path, stated honestly
@@ -2286,8 +2295,14 @@ and every session resolves its provider through `restore_provider_from_session` 
 passes Gate A. Where the backfilled tier and the stored provider disagree, Gate B's repair path
 rebinds from the row silently if it can.
 
-**Existing configs:** no migration. No key renamed, no extension entry rewritten, `config.yaml`
-untouched. The opt-out key is absent, which means the default (`on`). One sharp edge to pre-empt: a
+**Existing configs:** one migration, and it touches `config.yaml` only on the installs that set the
+opt-out. No key renamed, no extension entry rewritten.
+[DR-22](privacy-tiers-execution-plan.md#dr-22--the-master-switch-does-not-live-in-configyaml) moves
+the master switch out of `config.yaml` into `privacy-tiers.json`, so the first start after the
+upgrade records this install's answer there and removes `BIOROUTER_PRIVACY_TIERS` from `config.yaml`
+**if it was set** — carrying an existing `off` across rather than silently resetting it. An install
+that never set it, which is nearly all of them, gets the new record and its `config.yaml` is not
+written at all. Absent the key the answer is the default (`on`). One sharp edge to pre-empt: a
 user with `BIOROUTER_LEAD_MODEL` set to a public lead over a private worker now holds a **Public**
 composite, so their private sessions become unrunnable until they change it — hence the pre-flight
 warning in §14.6.
@@ -2424,10 +2439,14 @@ prediction stands for whatever the next narrowest reading of it turns out to be.
    from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from
    `.biorouter/hooks.yaml` in the working directory, both writable by an agent with `text_editor`.
    An operator wanting zero risk makes it a `Deny`.
-3. ~~**Does the R7 opt-out really stop at Gate C?**~~ **RULED — it stops nowhere.**
-   `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and both read-deny layers
-   (§10.6). The cost is that nothing is recorded while it is off and re-enabling does not
-   reclassify the gap; the typed confirmation states it.
+3. ~~**Does the R7 opt-out really stop at Gate C?**~~ **RULED — it stops nowhere.** Turning the
+   master switch off in Settings → Privacy disables every gate, the ratchet and both read-deny
+   layers (§10.6). The cost is that nothing is recorded while it is off and re-enabling does not
+   reclassify the gap; the typed confirmation states it. ⚠ The `BIOROUTER_PRIVACY_TIERS=off`
+   spelling this entry used to carry names **no channel that exists**: hardening measure (1)
+   bypasses `Config::get_param`'s environment branch, so the variable was never read, and
+   [DR-22](privacy-tiers-execution-plan.md#dr-22--the-master-switch-does-not-live-in-configyaml) retired
+   the `config.yaml` key it looked like. Settings → Privacy is the one door.
 4. **Is the first cross-tier write approval remembered per (caller, target) or per call?**
    Per-pair-per-session-lifetime was chosen because a confirmation on every steer of a public worker
    is miserable and would be clicked through.
