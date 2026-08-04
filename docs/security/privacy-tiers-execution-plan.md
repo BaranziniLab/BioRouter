@@ -21111,6 +21111,8 @@ show it nowhere.
 | Modify | `ui/desktop/src/components/baam/BrowseExtensionsModal.tsx` | `live` consumption `:23`/`:32`/`:35`/`:100` |
 | Modify | `ui/desktop/src/components/BrxtInstallModal.tsx` | the config write `:152-161` — records **no provenance whatsoever** |
 | **Create** | `ui/desktop/src/components/BrxtInstallModal.test.tsx` | new — verified absent; the fourth test below `render`s this component and has nowhere else to go |
+| **Create** | `ui/desktop/src/utils/registryCache.ts` | new — **added during implementation, not planned here, and the omission was the point.** `main.ts` imports `electron` at the top level and cannot be unit-tested, and the renderer's tests stop at the IPC boundary — so with the timeout, the validation, the atomic write and the stale replay all inline in `main.ts`, an implementation with **no disk cache at all** passed every test this task has, and one that imported this module and never *called* it would too. The Electron-free half moves here: `isRegistryDocument`, `writeLastGoodRegistry`, `readLastGoodRegistry`, `REGISTRY_FETCH_TIMEOUT_MS` and the whole `fetchRegistryWithLastGood` composition. `main.ts` keeps only what needs Electron — `registryCachePath()` (`app`) and the write-failure warning (`log`) |
+| **Create** | `ui/desktop/src/utils/registryCache.test.ts` | new — the only coverage of the disk cache **and** of the handler's `fetch fails → replay as `stale: true`` branch, which is the entire reason the last-good cache exists |
 
 ⚠ **The file path is load-bearing, and its absence is what made this task's gate vacuous.** The
 gate ran `npx vitest run registry -t "downgrade is never honoured"`. Measured: `registry` matches
@@ -21156,10 +21158,27 @@ it('the brxt install modal says the resulting badge out loud', () => {
 - [ ] **Step 2: Run** → **FAIL** on all four.
 
 - [ ] **Step 3: Implement** — a 10 s `AbortController`, a last-good write, the union rule, the
-staleness line surfaced on the Extensions settings cards as well as in the modals, and the three
+staleness line surfaced on the Extensions settings screen as well as in the modals, and the three
 provenance strings of §13.5: *"Private — published on the Biorouter marketplace"*, *"Public —
 published on the Biorouter marketplace"*, *"Public — installed from a file, not on the marketplace.
 Any model can call it."*
+
+Two amendments to that sentence, both made during implementation and recorded here rather than left
+to be rediscovered as drift:
+
+- **"on the Extensions settings *cards*" became once above the list**, and deliberately: the line
+  describes the *catalogue*, which is one object shared by every card on the screen, so repeating it
+  on twenty rows is noise — and noise is exactly what makes the stale case invisible. What is
+  per-card is the provenance sentence, which genuinely varies per extension.
+  `ExtensionsSection.tsx` renders it once above `ExtensionList`; `ExtensionsSection.privacy.test.tsx`
+  asserts it.
+- **Five provenance strings, not three.** The union has branches where §13.5's private string —
+  which asserts *publication* — is simply false: a key learned from a catalogue that no longer lists
+  it, and the compiled baseline read against a document that does not. That branch says *"Private —
+  the Biorouter marketplace publishes this name as private"*. And a built-in extension fits neither
+  marketplace sentence, so it says *"Public — built into Biorouter, not on the marketplace. Any
+  model can call it."* The original three are still emitted verbatim wherever they are true, and
+  `ExtensionsSection.privacy.test.tsx` asserts them verbatim.
 
 Two naming consequences to write down as **known rather than discovered**: a hand-installed
 extension *named* `ucsfomopagent` inherits the private badge (fail-closed, fine); and a genuinely
@@ -21180,19 +21199,52 @@ fix in this task.
 cd ui/desktop && npx vitest run \
   src/components/baam/registry.test.ts \
   src/components/baam/BrowseExtensionsModal.test.tsx \
-  src/components/BrxtInstallModal.test.tsx 2>&1 | tail -6
+  src/components/BrxtInstallModal.test.tsx \
+  src/utils/registryCache.test.ts \
+  src/components/settings/extensions/ExtensionsSection.privacy.test.tsx 2>&1 | tail -6
 ```
 
-Expected: `3 test files`, with `registry.test.ts` reporting **3 passed** and
-`BrxtInstallModal.test.tsx` **1 passed**. A run that reports `3 skipped` has matched suite *paths*
-and filtered out every test; a run that reports `2 test files` means one of the two new files was
-never created.
+Expected: **`5 test files`, `35 passed`**. A run that reports any `skipped` has matched suite *paths*
+and filtered out tests; a run that reports fewer than 5 files means one was never created.
+
+⚠ **These counts are MEASURED, not predicted, and re-measure rather than trusting them.** The
+figures originally written here — `3 test files`, `registry.test.ts` 3 passed,
+`BrxtInstallModal.test.tsx` 1 passed — were the plan's *expectation*, and the implementation landed
+supersets of all three without anyone updating this line. That fails safe (a re-runner sees more
+than the plan promised and investigates; it cannot read as a false pass) but it is precisely the
+stale-count drift this plan warns about elsewhere, so the current per-file figures are recorded and
+dated: `registry.test.ts` **8**, `BrowseExtensionsModal.test.tsx` **1**,
+`BrxtInstallModal.test.tsx` **2**, `registryCache.test.ts` **17**,
+`ExtensionsSection.privacy.test.tsx` **7** — 35 total, measured 2026-08-03.
+
+⚠ **The last two files are on this list because review found the gate omitted them.** They are the
+only coverage of two of Step 3's four deliverables — the disk cache and the handler composition
+(`registryCache.test.ts`), and the §13.5 strings and the settings freshness line
+(`ExtensionsSection.privacy.test.tsx`) — so the earlier three-file command passed with **both files
+deleted**. CI's full-suite run covers them; this task's own gate did not, and a gate that depends on
+a different job to be non-vacuous is not a gate.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd ui/desktop
-grep -c "AbortController" src/main.ts ; echo "expect: >= 1 (0 today)"
+# ⚠ NOT `grep -c AbortController`. That was this gate's own weakest line and it
+# is now its own counterexample: the word survives in `main.ts` ONLY inside a
+# comment explaining that a comment satisfies the grep, so the original
+# `grep -c AbortController src/main.ts >= 1` still passes against a main process
+# with no timeout at all. It also passed on a controller whose `signal` was
+# never handed to `fetch` — a reviewer had to confirm that wiring by reading it,
+# because nothing automated could.
+#
+# The timeout is now a unit test instead. Its fake `fetch` settles ONLY when
+# handed an abort signal that fires, which separates the three implementations
+# grep cannot tell apart: no timeout, a controller never wired in, and the word
+# in a comment. Each leaves the promise pending and fails on the test timeout.
+npx vitest run src/utils/registryCache.test.ts \
+  -t "aborts a host that accepts the connection and then says nothing" 2>&1 | tail -4
+echo "expect: '1 passed' — NOT '1 skipped'"
+# ...and the handler actually CALLS the module rather than merely importing it.
+grep -c "fetchRegistryWithLastGood" src/main.ts ; echo "expect: >= 1"
 # The union rule is a function, not four inline ORs.
 grep -rn "effectivePrivacy" src/components/baam/ | wc -l ; echo "expect: >= 2 (definition + consumers; 0 today)"
 # A live fetch can never lower a compiled-in badge. ⚠ The FILE PATH, not the
@@ -21209,10 +21261,28 @@ echo "  it(...) title exactly as written in Step 1."
 # ...and the other two in that file actually run too, so a single live term
 # cannot hide them.
 npx vitest run src/components/baam/registry.test.ts 2>&1 | tail -4
-echo "expect: 1 test file, 3 passed"
+echo "expect: 1 test file, 8 passed (measured 2026-08-03; the plan originally"
+echo "  predicted 3 and the implementation landed a superset — re-measure,"
+echo "  do not trust this number)"
 test -f src/components/BrxtInstallModal.test.tsx || echo "MISSING: the fourth test has no file"
 npx vitest run src/components/BrxtInstallModal.test.tsx 2>&1 | tail -4
-echo "expect: 1 test file, 1 passed"
+echo "expect: 1 test file, 2 passed"
+# ⚠ The two files review found the gate omitting. Without these lines, this Step
+# passes with BOTH deleted, and they are the only coverage of two of Step 3's
+# four deliverables.
+test -f src/utils/registryCache.test.ts || echo "MISSING: nothing covers the disk cache"
+npx vitest run src/utils/registryCache.test.ts 2>&1 | tail -4
+echo "expect: 1 test file, 17 passed"
+npx vitest run src/components/settings/extensions/ExtensionsSection.privacy.test.tsx 2>&1 | tail -4
+echo "expect: 1 test file, 7 passed"
+# The learned badge is DURABLE, not merely remembered for the life of the module.
+# Both loadRegistry calls in the persistence test share one module instance, so a
+# memory-only store was indistinguishable from a persisted one: measured,
+# replacing privateSet.ts's localStorage read AND write with an in-memory Set
+# left all 8 tests in registry.test.ts green.
+npx vitest run src/components/baam/registry.test.ts \
+  -t "an upgrade takes effect on the next successful fetch and persists" 2>&1 | tail -4
+echo "expect: '1 passed'"
 ```
 
 **What this catches.** The natural implementation — trusting the live document — which lets a
@@ -21222,10 +21292,29 @@ enforces it. And, before that, it catches the state this gate was in: a vitest i
 reported success while running none of the four tests, because the file they belong in did not exist
 and no Files-table row created it.
 
+**Verified by mutation, not by reading** (2026-08-03). Each of these was applied to the tree, run,
+and reverted; every one is killed, and the named test is the only one that kills it:
+
+| Mutant | Killed by |
+|---|---|
+| `effectivePrivacy` trusts the live document | `a downgrade is never honoured…` |
+| the learned set is memory-only (no localStorage read, or no write, or neither) | `an upgrade takes effect… and persists` |
+| the `AbortController` is constructed but its `signal` never reaches `fetch` | `aborts a host that accepts the connection and then says nothing` |
+| the document is cached *before* it is validated | `neither returns nor caches a 200 that is not a catalogue` |
+| a failed fetch never replays the cache | `replays the cached document as stale when the fetch fails` |
+| a cache-write failure fails the fetch that just succeeded | `still returns the live document when the cache cannot be written` |
+| `response.ok` is ignored | `treats a non-2xx as a failure rather than parsing the error page` |
+
+Three of those seven were previously covered by **nothing**: the persistence of a learned badge, the
+timeout wiring (grep-only), and the whole `fetch fails → replay as stale` branch. The first survived
+review's mutation run; the other two were unreachable while the composition lived in `main.ts`,
+which is why `utils/registryCache.ts` exists.
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git add ui/desktop/src/main.ts ui/desktop/src/components/baam ui/desktop/src/components/BrxtInstallModal.tsx
+git add ui/desktop/src/main.ts ui/desktop/src/components/baam ui/desktop/src/components/BrxtInstallModal.tsx \
+        ui/desktop/src/utils/registryCache.ts ui/desktop/src/utils/registryCache.test.ts
 git commit -m "feat(marketplace): last-good registry with a timeout, and a union rule that only raises (#56)"
 ```
 
