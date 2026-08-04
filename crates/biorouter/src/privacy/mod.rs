@@ -17,6 +17,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod affiliation;
 pub mod alt_provider;
 pub mod capability;
 pub mod config_keys;
