@@ -107,7 +107,17 @@ describe('mixingModeFromConfig', () => {
  */
 describe('the grant call has exactly one caller in the renderer', () => {
   const srcRoot = join(__dirname, '..');
-  const skipDirs = new Set(['node_modules', 'api']);
+
+  /**
+   * The generated client, identified by PATH and not by directory name.
+   *
+   * ⚠ `src/api/` is exempt because it is where the call is *defined* — every
+   * generated operation names itself there, so including it would make the audit
+   * assert nothing. Matching the name `api` at any depth instead would exempt
+   * `src/components/anything/api/` too, and a caller planted there was measured
+   * to pass this audit untouched. One directory is exempt, and it is that one.
+   */
+  const generatedClient = join(srcRoot, 'api');
 
   /**
    * Production sources only.
@@ -125,7 +135,7 @@ describe('the grant call has exactly one caller in the renderer', () => {
     readdirSync(dir).flatMap((entry) => {
       const full = join(dir, entry);
       if (statSync(full).isDirectory()) {
-        return skipDirs.has(entry) ? [] : walk(full);
+        return full === generatedClient || entry === 'node_modules' ? [] : walk(full);
       }
       return isProduction(entry) ? [full] : [];
     });
