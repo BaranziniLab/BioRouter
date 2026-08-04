@@ -19,6 +19,19 @@ vi.mock('../api', async () => {
   };
 });
 
+// Issue #56 Task 58 / #47. `POST /reply` and `GET /sessions/{id}` now resolve
+// the named chat's tier before they do anything, and refuse a private one
+// without the proof-of-user — so the store attaches it, and the assertions
+// below name it rather than tolerating whatever is there.
+//
+// `importOriginal` rather than a bare factory: this module also exports the
+// refusal predicates the diverge path uses, and replacing the whole module
+// would take those away from anything else in this graph.
+vi.mock('../utils/userAction', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../utils/userAction')>()),
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
+}));
+
 const tokenState: TokenState = {
   accumulatedInputTokens: 0,
   accumulatedOutputTokens: 0,
@@ -222,8 +235,16 @@ describe('ChatStreamRegistry', () => {
 
     expect(getSession).toHaveBeenCalledWith({
       path: { session_id: '20260716_27' },
+      // Issue #56 Task 58: reading a private chat's transcript needs this.
+      headers: { 'X-User-Action': 'test-key' },
       throwOnError: true,
     });
+    // …and so does running a turn in one. `/reply` is the route that dominates
+    // every other session-addressing route, so the renderer losing this header
+    // would make every private chat unusable — which is the failure this pins.
+    expect(reply).toHaveBeenCalledWith(
+      expect.objectContaining({ headers: { 'X-User-Action': 'test-key' } })
+    );
     expect(controller.getSnapshot().session?.name).toBe('Apple Watch News');
     window.removeEventListener('message-stream-finished', onFinished);
   });
@@ -726,10 +747,12 @@ describe('ChatStreamRegistry', () => {
       path: { session_id: sourceSessionId },
       body: { timestamp: 10, editType: 'diverge', expectedMessageIds: ['u1'] },
       // Issue #56 DR-19: `diverge` mints a new session inheriting this chat's
-      // provider, so it carries the user-action proof. Empty here because the
-      // harness has no `window.electron` bridge to mint a key from — the shape
-      // is what this pins; the two `edit` cases below must NOT carry it.
-      headers: {},
+      // provider, so it carries the user-action proof. It used to be asserted
+      // EMPTY here, because the harness had no `window.electron` bridge to mint
+      // a key from and only the shape could be pinned; Task 58 gave this file a
+      // `userActionHeaders` mock, so the real key can now be named — which is
+      // the stronger claim. The two `edit` cases below must still NOT carry it.
+      headers: { 'X-User-Action': 'test-key' },
       throwOnError: true,
     });
     expect(onDiverged).toHaveBeenCalledTimes(1);

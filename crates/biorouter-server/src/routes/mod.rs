@@ -124,6 +124,7 @@ pub mod reset;
 pub mod schedule;
 pub mod session;
 pub mod session_events;
+pub mod session_reach;
 pub mod setup;
 pub mod status;
 pub mod tunnel;
@@ -163,6 +164,19 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(session_events::routes(state.clone()))
         .nest(
             "/knowledge",
-            knowledge::router(state.knowledge_service.clone()),
+            // Issue #56 Task 58 / #47. `POST /knowledge/active` repoints a named
+            // chat's knowledge bases and its KB-less write target, so it is a
+            // session-addressing route and takes the same gate as the other
+            // four. It is layered rather than called from the handler because
+            // this router is state-typed on `Arc<KnowledgeService>` so that it
+            // can be tested without an `AppState` — see
+            // `session_reach::gate_knowledge_active`, which explains the choice
+            // and buffers the body only for the one route it gates.
+            knowledge::router(state.knowledge_service.clone()).layer(
+                axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    session_reach::gate_knowledge_active,
+                ),
+            ),
         )
 }

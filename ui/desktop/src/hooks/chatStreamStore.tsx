@@ -913,6 +913,9 @@ class ChatStreamController {
           try {
             const response = await getSession({
               path: { session_id: this.sessionId },
+              // Issue #56 Task 58: reading a private chat needs the
+              // proof-of-user.
+              headers: await userActionHeaders(),
               throwOnError: true,
             });
             const data = response.data;
@@ -1272,6 +1275,14 @@ class ChatStreamController {
       }
 
       const { stream } = await reply({
+        // Issue #56 Task 58 / #47: `/reply` runs an agent turn, with tools, in
+        // whatever session the body names, and `session_id` is a request
+        // parameter rather than a credential — so a turn in a PRIVATE chat now
+        // needs the same proof-of-user the model picker sends. The renderer is
+        // the user's surface, so every call it makes is a user act; the model
+        // reaching this route over HTTP is precisely the caller the header
+        // separates out.
+        headers: await userActionHeaders(),
         body: {
           session_id: this.sessionId,
           user_message: newMessage,
@@ -1635,6 +1646,8 @@ class ChatStreamController {
       } else {
         const sessionResponse = await getSession({
           path: { session_id: targetSessionId },
+          // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
 

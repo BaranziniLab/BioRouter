@@ -4,6 +4,7 @@ import SessionHistoryView from './SessionHistoryView';
 import { useLocation } from 'react-router-dom';
 import { getSession, Session } from '../../api';
 import { useNavigation } from '../../hooks/useNavigation';
+import { userActionHeaders } from '../../utils/userAction';
 
 const SessionsView: React.FC = () => {
   const [selectedSession, setSelectedSession] = useState<Session | null>(null);
@@ -21,6 +22,8 @@ const SessionsView: React.FC = () => {
     try {
       const response = await getSession<true>({
         path: { session_id: sessionId },
+        // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       setSelectedSession(response.data);

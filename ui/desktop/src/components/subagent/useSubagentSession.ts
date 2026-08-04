@@ -7,6 +7,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { cancelTurn, getSession, getSessionExtensions } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 
 type SubagentSessionInfo = {
   isSubagent: boolean;
@@ -93,7 +94,13 @@ export function useSubagentSession(sessionId: string): SubagentSessionInfo {
       // Session" has created one; a GET /sessions/ then 404s on every such
       // mount. There is nothing to look up, so do not ask.
       if (!sessionId) return;
-      const session = (await getSession({ path: { session_id: sessionId } })).data;
+      const session = (
+        await getSession({
+          path: { session_id: sessionId },
+          // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+          headers: await userActionHeaders(),
+        })
+      ).data;
       if (cancelled || !session || session.session_type !== 'sub_agent') return;
       // The spawn-context record: first message stamped provenance spawn_context
       // (Task 32). Casing verified against the generated client: `MessageMetadata`

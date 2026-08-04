@@ -2901,6 +2901,10 @@ export type AgentAddExtensionErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     */
+    403: unknown;
+    /**
      * Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model
      */
     409: unknown;
@@ -3371,6 +3375,10 @@ export type UpdateWorkingDirErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -5705,6 +5713,10 @@ export type GetSessionErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
     /**
      * Session not found
      */

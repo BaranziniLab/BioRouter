@@ -29,6 +29,7 @@ import { Workflow } from '../workflow';
 import MessageQueue from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
 import { getSession, llamacppStatus, Message } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import type { SessionClassification } from '../api/types.gen';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
@@ -245,7 +246,11 @@ export default function ChatInput({
 
     const fetchSessionWorkingDir = async () => {
       try {
-        const response = await getSession({ path: { session_id: sessionId } });
+        const response = await getSession({
+          path: { session_id: sessionId },
+          // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+          headers: await userActionHeaders(),
+        });
         if (response.data?.working_dir) {
           setSessionWorkingDir(response.data.working_dir);
         }
@@ -303,7 +308,12 @@ export default function ChatInput({
     const readTier = async () => {
       const issued = ++latestIssued;
       try {
-        const response = await getSession({ path: { session_id: sessionId } });
+        const response = await getSession({
+          path: { session_id: sessionId },
+          // Issue #56 Task 58: and this read is *about* the tier, so it is
+          // exactly the read the gate refuses without the header.
+          headers: await userActionHeaders(),
+        });
         if (!cancelled && issued === latestIssued && response.data?.privacy_tier) {
           setSessionPrivacyTier(response.data.privacy_tier);
         }

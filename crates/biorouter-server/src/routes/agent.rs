@@ -938,6 +938,10 @@ async fn update_agent_provider(
     responses(
         (status = 200, description = "Extension added", body = String),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent — an unproven caller \
+                                      is told the same thing for both) and the request carried no \
+                                      proof it came from the user"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): a \
                                       private extension cannot be attached to a chat running on \
                                       a public model"),
@@ -947,8 +951,30 @@ async fn update_agent_provider(
 )]
 async fn agent_add_extension(
     State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<AddExtensionRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
+    // Issue #56 Task 58 / #47. FIRST, before the agent is fetched — `get_agent`
+    // CREATES one for a session that has none, so a gate below it would let an
+    // unproven caller materialise an agent for a chat it may not address, and
+    // the refusals downstream (424 "not initialized", the tier 409) would tell
+    // it what it had found. `session_id` is a request parameter, not a
+    // credential; see `routes::session_reach`.
+    //
+    // ⚠ This is NOT a relaxation of the outright refusal below. That one is
+    // about the EXTENSION's tier against the chat's model and stays
+    // unconditional — attaching a private extension to a public chat is not a
+    // raise the user can authorize either. This one is about whether the caller
+    // may address the named chat at all, and it is a no-op for every public
+    // chat, which is precisely the case that refusal governs.
+    crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &request.session_id,
+        &headers,
+    )
+    .await?;
+
     let agent = state.get_agent(request.session_id.clone()).await?;
 
     // Issue #56 DR-16. `/agent/add_extension` hands `request.config` straight to
@@ -1502,6 +1528,10 @@ pub(crate) async fn apply_working_dir_update(
         (status = 200, description = "Working directory updated and agent restarted successfully"),
         (status = 400, description = "Bad request - invalid directory path"),
         (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent — an unproven caller \
+                                      is told the same thing for both) and the request carried no \
+                                      proof it came from the user"),
         (status = 404, description = "Session not found"),
         (
             status = 409,
@@ -1512,9 +1542,19 @@ pub(crate) async fn apply_working_dir_update(
 )]
 async fn update_working_dir(
     State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(payload): Json<UpdateWorkingDirRequest>,
 ) -> Result<StatusCode, ErrorResponse> {
     let session_id = payload.session_id.clone();
+
+    // Issue #56 Task 58 / #47. Before the turn lock, whose 409 tells an
+    // unproven caller whether the chat it named is busy — the disclosure the
+    // refusal is worded to withhold. This route repoints a chat at a directory
+    // of the caller's choosing and restarts its agent there; `session_id` is a
+    // request parameter, not a credential. See `routes::session_reach`.
+    crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+        .await?;
 
     // Serialize with `/reply`'s per-session turn lock (BR-33) by claiming the
     // turn slot for the whole update + restart. Without it, a first message

@@ -411,6 +411,10 @@ async fn list_sidebar_sessions(
     responses(
         (status = 200, description = "Session history retrieved successfully", body = Session),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent — an unproven caller \
+                                      is told the same thing for both) and the request carried no \
+                                      proof it came from the user (body = plain text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -422,17 +426,29 @@ async fn list_sidebar_sessions(
 async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<Json<Session>, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Syntax only, and deliberately ahead of the gate: an id this rejects cannot
+    // name a session on any machine, so answering it discloses nothing about
+    // THIS one. Everything below here is about the store.
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
-    let session = state
-        .session_manager()
-        .get_session(&session_id, true)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    // Issue #56 Task 58 / #47. Before the transcript read — this route's whole
+    // output is the conversation, so a gate placed after it would have already
+    // loaded what it is refusing. `session_id` is a request parameter, not a
+    // credential; see `routes::session_reach`.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    let Ok(session) = state.session_manager().get_session(&session_id, true).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
 
-    Ok(Json(session))
+    Json(session).into_response()
 }
 #[utoipa::path(
     get,

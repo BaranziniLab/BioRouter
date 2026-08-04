@@ -9,6 +9,7 @@ import {
   useState,
 } from 'react';
 import { listBases, getActive, setActive } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 /**
  * `KbListEntry` is `Manifest & { tier }` — the manifest the daemon stores plus
  * the privacy tier, which lives in `.kb-tiers` and not in `manifest.yaml`
@@ -236,19 +237,28 @@ export function KnowledgeProvider({
       if (primary.kind === 'set') localStorage.setItem(storageKey, primary.id);
       if (primary.kind === 'clear') localStorage.removeItem(storageKey);
       if (nextHiddenKbIds) localStorage.setItem(hiddenStorageKey, JSON.stringify(nextHiddenKbIds));
-      void setActive({
-        body: {
-          // The three primary gestures are mutually exclusive on the wire: two
-          // of them in one body is a 400 naming both fields, not a precedence
-          // rule. At most one of these is ever true.
-          primary_kb: primary.kind === 'set' ? primary.id : undefined,
-          clear_primary: primary.kind === 'clear',
-          inherit_primary: primary.kind === 'inherit',
-          hidden_kbs: nextHiddenKbIds ?? undefined,
-          session_id: sessionId || undefined,
-        },
-        throwOnError: false,
-      })
+      // Issue #56 Task 58: this POST names a chat, and repointing a PRIVATE
+      // chat's knowledge bases needs the proof-of-user. `userActionHeaders`
+      // resolves to `{}` rather than rejecting when there is no bridge, so the
+      // chain below is unchanged in shape and the `.catch` still means what it
+      // meant.
+      void userActionHeaders()
+        .then((headers) =>
+          setActive({
+            headers,
+            body: {
+              // The three primary gestures are mutually exclusive on the wire:
+              // two of them in one body is a 400 naming both fields, not a
+              // precedence rule. At most one of these is ever true.
+              primary_kb: primary.kind === 'set' ? primary.id : undefined,
+              clear_primary: primary.kind === 'clear',
+              inherit_primary: primary.kind === 'inherit',
+              hidden_kbs: nextHiddenKbIds ?? undefined,
+              session_id: sessionId || undefined,
+            },
+            throwOnError: false,
+          })
+        )
         .then((res) => {
           // A newer edit is already in flight (or has already answered): this
           // answer describes a selection the user has clicked past, so applying

@@ -21,6 +21,7 @@ import { Loader2, Pause, Play, Edit, Square, Eye, AlertTriangle } from '../icons
 import cronstrue from 'cronstrue';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
 import { getSession, Session } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 
 interface ScheduleSessionMeta {
   id: string;
@@ -213,6 +214,8 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     try {
       const response = await getSession<true>({
         path: { session_id: sessionId },
+        // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       setSelectedSession(response.data);

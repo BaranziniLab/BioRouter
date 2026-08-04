@@ -136,6 +136,9 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
+          },
           "409": {
             "description": "Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model"
           },
@@ -737,6 +740,9 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
           },
           "404": {
             "description": "Session not found"
@@ -3734,6 +3740,9 @@
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
           },
           "404": {
             "description": "Session not found"

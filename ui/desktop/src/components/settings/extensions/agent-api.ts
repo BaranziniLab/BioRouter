@@ -1,6 +1,7 @@
 import { toastService } from '../../../toasts';
 import { agentAddExtension, ExtensionConfig, agentRemoveExtension } from '../../../api';
 import { errorMessage } from '../../../utils/conversionUtils';
+import { userActionHeaders } from '../../../utils/userAction';
 import {
   createExtensionRecoverHints,
   formatExtensionErrorMessage,
@@ -21,6 +22,11 @@ export async function addToAgent(
 
   try {
     await agentAddExtension({
+      // Issue #56 Task 58: attaching tools to a private chat needs the
+      // proof-of-user. This does NOT relax the DR-16 refusal beside it — a
+      // private extension on a public chat is still refused outright, and no
+      // header changes that.
+      headers: await userActionHeaders(),
       body: { session_id: sessionId, config: extensionConfig },
       throwOnError: true,
     });
