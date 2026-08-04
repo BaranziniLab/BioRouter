@@ -2,7 +2,9 @@
 
 This guide covers how to build BioRouter for all supported platforms from a macOS Apple Silicon development machine. Follow the steps in order — some steps depend on previous ones.
 
-> **Version placeholder:** File names below use `<version>` for the workspace version — currently **1.87.2** (kept in sync across `Cargo.toml` and `ui/desktop/package.json`). Substitute the real version when you build.
+> **The supported path is [`scripts/release.sh`](scripts/release.sh)**, documented in [RELEASE.md](RELEASE.md). It encodes every step below as a resumable phase, including the invariants that are easy to get wrong by hand (the pinned Linux cross-compile image, the packaged artifact names, the exact asset list). Use this document as the manual/debugging reference for when a phase fails or you need to understand what one does.
+>
+> **Version placeholder:** File names below use `<version>` for the workspace version. The single source of truth is `[workspace.package].version` in `Cargo.toml`; `scripts/check-version-consistency.sh` fails CI if any of the other five copies drift from it. Substitute the real version when you build — never hardcode one.
 
 ---
 
@@ -28,19 +30,22 @@ Before building, ensure the following are installed and configured:
 
 | Tool | Install |
 |------|---------|
-| **Rust** (with `cargo`) | https://rustup.rs |
-| **Node.js** v24+ | https://nodejs.org |
+| **Rust 1.92** (with `cargo`) | https://rustup.rs — the channel is pinned in `rust-toolchain.toml`, so rustup selects it automatically |
+| **Node.js 24.x** (not newer) | https://nodejs.org — `ui/desktop/package.json` declares `engines: { "node": "^24.0.0" }`, and hermit pins 24.10.0 |
 | **npm** | bundled with Node.js |
 | **Docker Desktop** | https://www.docker.com/products/docker-desktop (required for Linux build) |
 | **Xcode Command Line Tools** | `xcode-select --install` |
+
+> **Node 24.x means 24.x, not "24 or newer."** Under Node 26 `electron-forge package` exits 0 having produced no `.app` — a silent no-op that looks like a build succeeding — and the `appdmg` / `macos-alias` native modules the DMG maker needs do not build at all.
 
 Also required for macOS signed builds — see [One-Time Setup](#one-time-setup):
 - Apple Developer certificate imported into your keychain
 - Apple app-specific password (from appleid.apple.com)
 
-All commands below assume you start from the repo root:
+All commands below assume you start from the repo root **with the hermit toolchain activated** — it is what pins Node 24, and every packaging step below depends on it:
 ```bash
 cd /path/to/biorouter
+source bin/activate-hermit
 ```
 
 ---
@@ -92,11 +97,13 @@ What this does:
 
 **Verify notarization:**
 ```bash
-spctl --assess --verbose out/BioRouter-darwin-arm64/BioRouter.app
+spctl --assess --verbose out/Biorouter-darwin-arm64/Biorouter.app
 # Expected: accepted  source=Notarized Developer ID
 ```
 
-Output: `out/BioRouter-darwin-arm64/BioRouter.zip`
+Output: `out/Biorouter-darwin-arm64/Biorouter.zip` — a build **intermediate**, not a release asset.
+
+> **The packaged product is named `Biorouter`, not `BioRouter`.** `productName` in `ui/desktop/package.json` is `Biorouter`, and every packaged path, `.app`, dmg, deb, rpm and zip follows it (`scripts/check-brand-consistency.sh` enforces this). The `just` recipes and the Rust binaries are unaffected — only the packaged names use this spelling.
 
 ---
 
@@ -140,11 +147,11 @@ npm run bundle:intel
 
 **Verify notarization:**
 ```bash
-spctl --assess --verbose out/BioRouter-darwin-x64/BioRouter.app
+spctl --assess --verbose out/Biorouter-darwin-x64/Biorouter.app
 # Expected: accepted  source=Notarized Developer ID
 ```
 
-Output: `out/BioRouter-darwin-x64/BioRouter_intel_mac.zip`
+Output: `out/Biorouter-darwin-x64/Biorouter_intel_mac.zip` — again a build intermediate, not a release asset.
 
 After this step, restore the ARM binary so subsequent builds aren't broken:
 
@@ -158,37 +165,17 @@ just copy-binary
 
 The Linux build runs entirely inside Docker — no Linux machine needed. Docker Desktop must be running.
 
-This is a two-stage process.
-
-### Stage A — Cross-compile Rust for Linux x64
+Run it through the recipe, not by hand:
 
 ```bash
-docker run --rm \
-  --platform linux/amd64 \
-  -v "$(pwd):/workspace" \
-  -v "biorouter-linux-cache:/root/.cargo/registry" \
-  -w /workspace \
-  rust:latest \
-  bash -c "
-    rustup target add x86_64-unknown-linux-gnu && \
-    dpkg --add-architecture amd64 && \
-    apt-get update -q && \
-    apt-get install -y --no-install-recommends \
-      gcc-x86-64-linux-gnu g++-x86-64-linux-gnu \
-      protobuf-compiler cmake \
-      libxcb1-dev:amd64 libbz2-dev:amd64 && \
-    export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc && \
-    export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++ && \
-    export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar && \
-    export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc && \
-    export PKG_CONFIG_ALLOW_CROSS=1 && \
-    export PKG_CONFIG_PATH_x86_64_unknown_linux_gnu=/usr/lib/x86_64-linux-gnu/pkgconfig && \
-    export PROTOC=/usr/bin/protoc && \
-    cargo build --release --target x86_64-unknown-linux-gnu
-  "
+just make-ui-linux
 ```
 
-The `biorouter-linux-cache` Docker volume caches the Cargo registry between runs to speed up subsequent builds. On the first run this will take ~5-10 minutes; subsequent runs are much faster.
+That does both stages: it sources `scripts/cross-env.sh` and cross-compiles the Rust backend for `x86_64-unknown-linux-gnu`, then runs `ui/desktop/scripts/build-linux-deb.sh` in a `node:20-bookworm` container to produce the `.deb` and `.rpm`. `scripts/release.sh linux-backend <version>` is the stage-A-only equivalent, and it wipes the target dir first so nothing stale survives.
+
+> **Never inline the cross-compile image into a command.** The glibc floor lives in exactly one place — `LINUX_RUST_IMG` in [`scripts/cross-env.sh`](scripts/cross-env.sh), pinned to `rust:1.92-bullseye` (glibc 2.31). The rolling `rust:latest` is now trixie (glibc 2.39) and produces a Linux backend that will not start on Debian 12, Ubuntu 22.04, or RHEL/Rocky 9. This recipe used to pin `rust:latest` and silently raised the floor; `scripts/check-no-cross-drift.sh` (part of `just check-everything`) and `scripts/check-glibc-floor.sh` now exist to stop it drifting back. A hand-rolled `docker run` bypasses both gates.
+
+The build caches the Cargo registry in a Docker volume between runs. On the first run this takes ~5-10 minutes; subsequent runs are much faster.
 
 Verify the Linux binary was produced:
 ```bash
@@ -196,26 +183,14 @@ ls -lh target/x86_64-unknown-linux-gnu/release/biorouter
 # Expected: ~100-115MB ELF 64-bit binary
 ```
 
-### Stage B — Package into .deb and .rpm
-
-```bash
-docker run --rm \
-  --platform linux/amd64 \
-  -v "$(pwd):/workspace" \
-  -v "biorouter-linux-npm-cache:/root/.npm" \
-  -w /workspace/ui/desktop \
-  node:20-bookworm \
-  bash /workspace/ui/desktop/scripts/build-linux-deb.sh
-```
-
-The `build-linux-deb.sh` script:
+The `build-linux-deb.sh` stage:
 1. Installs `fakeroot`, `dpkg`, and `rpm` inside the container
-2. Swaps the macOS ARM binary in `src/bin/` with the Linux x64 binary
-3. Runs `electron-forge make` for `linux/x64` producing `.deb` and `.rpm`
+2. Runs `npm ci` and swaps the macOS ARM binary in `src/bin/` for the Linux x64 binary
+3. Runs `electron-forge make` for `linux/x64` with the `maker-deb` + `maker-rpm` targets
 
 Outputs:
 - `ui/desktop/out/make/deb/x64/biorouter_<version>_amd64.deb`
-- `ui/desktop/out/make/rpm/x64/BioRouter-<version>-1.x86_64.rpm`
+- `ui/desktop/out/make/rpm/x64/Biorouter-<version>-1.x86_64.rpm`
 
 ---
 
@@ -253,7 +228,7 @@ Under the hood `npm run bundle:windows` (via `prepare-platform-binaries.js`):
 4. Fetches the `llamacpp/llama-server.exe` sidecar and verifies `biorouter.exe` + `biorouterd.exe` are present (packaging aborts if either is missing)
 5. Runs `electron-forge make` for `win32/x64`
 
-Output: `out/make/zip/win32/x64/BioRouter-win32-x64-<version>.zip`
+Output: `out/make/zip/win32/x64/Biorouter-win32-x64-<version>.zip`
 
 After this, restore the ARM binary again:
 ```bash
@@ -283,7 +258,7 @@ APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> \
 npm run bundle:dmg
 ```
 
-Output: `out/make/BioRouter-<version>-arm64.dmg`
+Output: `out/make/Biorouter-<version>-arm64.dmg`
 
 ### Intel DMG
 
@@ -301,7 +276,7 @@ APPLE_APP_SPECIFIC_PASSWORD=<app-specific-password> \
 npm run bundle:intel-dmg
 ```
 
-Output: `out/make/BioRouter-<version>-x64.dmg`
+Output: `out/make/Biorouter-<version>-x64.dmg`
 
 Restore the ARM binary after:
 
@@ -313,19 +288,27 @@ just copy-binary
 
 ## Output Artifacts
 
-After completing all steps, your distributable files are:
+A release carries **exactly 11 assets** — the list `release_assets()` in `scripts/release.sh` prints, and which `draft` refuses to proceed without:
 
 | Platform | File | Location |
 |----------|------|----------|
-| macOS Apple Silicon (DMG) | `BioRouter-<version>-arm64.dmg` | `ui/desktop/out/make/` |
-| macOS Intel (DMG) | `BioRouter-<version>-x64.dmg` | `ui/desktop/out/make/` |
-| macOS Apple Silicon (zip) | `BioRouter.zip` | `ui/desktop/out/BioRouter-darwin-arm64/` |
-| macOS Intel (zip) | `BioRouter_intel_mac.zip` | `ui/desktop/out/BioRouter-darwin-x64/` |
-| Linux Ubuntu / Pop!_OS | `biorouter_<version>_amd64.deb` | `ui/desktop/out/make/deb/x64/` |
-| Linux Fedora / RHEL | `BioRouter-<version>-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
-| Windows x64 | `BioRouter-win32-x64-<version>.zip` | `ui/desktop/out/make/zip/win32/x64/` |
+| macOS Apple Silicon (DMG) | `Biorouter-<version>-arm64.dmg` | `ui/desktop/out/make/` |
+| macOS Intel (DMG) | `Biorouter-<version>-x64.dmg` | `ui/desktop/out/make/` |
+| macOS Apple Silicon (auto-update zip) | `Biorouter-darwin-arm64-<version>.zip` | `ui/desktop/out/make/zip/darwin/arm64/` |
+| macOS Intel (auto-update zip) | `Biorouter-darwin-x64-<version>.zip` | `ui/desktop/out/make/zip/darwin/x64/` |
+| macOS (auto-update manifest) | `latest-mac.yml` | `ui/desktop/out/make/` |
+| Windows x64 | `Biorouter-win32-x64-<version>.zip` | `ui/desktop/out/make/zip/win32/x64/` |
+| Linux Ubuntu / Pop!_OS (GUI) | `biorouter_<version>_amd64.deb` | `ui/desktop/out/make/deb/x64/` |
+| Linux Fedora / RHEL (GUI) | `Biorouter-<version>-1.x86_64.rpm` | `ui/desktop/out/make/rpm/x64/` |
+| Linux headless CLI (deb) | `biorouter-cli_<version>_amd64.deb` | `dist/cli/` |
+| Linux headless CLI (rpm) | `biorouter-cli-<version>-1.x86_64.rpm` | `dist/cli/` |
+| Linux headless (browser-served) | `biorouter-headless-linux-x64.tar.gz` | `dist/` |
 
-Upload all five files to the GitHub Release assets.
+**Do not upload** `out/Biorouter-darwin-arm64/Biorouter.zip` or `out/Biorouter-darwin-x64/Biorouter_intel_mac.zip`. Those unversioned `ditto` archives are build intermediates.
+
+### The macOS auto-update manifest
+
+`latest-mac.yml` is generated by `scripts/release.sh mac-manifest <version>` (also run automatically by `draft`) from the two versioned darwin zips. It is load-bearing: without it, electron-updater 404s and the in-app one-click "Restart & Update" silently degrades to the assisted GitHub-download fallback. electron-updater picks the architecture from the `arm64`/`x64` token in the zip filename, so both clients share one manifest.
 
 ---
 
@@ -335,14 +318,27 @@ These steps only need to be done once per development machine.
 
 ### Import the Apple Developer Certificate
 
-The `.p12` file and full instructions are in `APPLE_DEVELOPER_NOTES.md` (gitignored, keep local).
+The `.p12` file and full instructions live in `notarization/` (the whole directory is gitignored, keep it local): `notarization/UCSF-AppleDeveloper-Main_Application.p12` and `notarization/APPLE_DEVELOPER_NOTES.md`.
 
 ```bash
-security import UCSF-AppleDeveloper-Main_Application.p12 \
+security import notarization/UCSF-AppleDeveloper-Main_Application.p12 \
   -k ~/Library/Keychains/login.keychain-db \
   -P "<p12-passphrase>" \
   -T /usr/bin/codesign \
   -T /usr/bin/productbuild
+```
+
+### Seed the Notarization Credentials into the Keychain
+
+`scripts/release.sh` resolves the notarization credentials in this order: the `APPLE_ID` /
+`APPLE_APP_SPECIFIC_PASSWORD` environment variables → the macOS Keychain →
+`notarization/APPLE_DEVELOPER_NOTES.md`. The Keychain is the preferred store — encrypted at rest, no
+plaintext on disk — and it is what lets an unattended `scripts/release.sh mac-arm64 <version>` run
+with no environment variables set. Seed it once:
+
+```bash
+security add-generic-password -s biorouter-notarization -a APPLE_ID -w <apple-id> -A -U
+security add-generic-password -s biorouter-notarization -a APPLE_APP_SPECIFIC_PASSWORD -w <password> -A -U
 ```
 
 ### Install the Apple Developer ID G2 Intermediate Certificate
@@ -393,11 +389,11 @@ npm install
 
 ### `401 Unauthorized` during notarization
 
-The app-specific password must be generated for the personal Apple ID used for notarization (not the UCSF email). See `APPLE_DEVELOPER_NOTES.md` (gitignored, kept local) for the account details and how to generate a replacement if needed.
+The app-specific password must be generated for the personal Apple ID used for notarization (not the UCSF email). See `notarization/APPLE_DEVELOPER_NOTES.md` (gitignored, kept local) for the account details and how to generate a replacement if needed.
 
 ### `cannot find -lxcb` or `cannot find -lbz2` in Linux Docker build
 
-The cross-compilation environment needs AMD64 dev headers. This is handled automatically by the Docker command in Stage A via `dpkg --add-architecture amd64` — if you see these errors, ensure you are running the full Stage A command exactly as written above.
+The cross-compilation environment needs AMD64 dev headers. `scripts/cross-env.sh` installs them (via `dpkg --add-architecture amd64`) as part of the pinned recipe — if you see these errors, you are almost certainly running a hand-rolled `docker run` instead of `just make-ui-linux` / `scripts/release.sh linux-backend`.
 
 ### Keychain access dialog during signing
 
