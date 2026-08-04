@@ -18,13 +18,34 @@ use zip::{write::FileOptions, ZipArchive, ZipWriter};
 struct Provenance {
     schema: u32,
     tier: String,
+    /// The institutions whose content this base holds (issue #56, DR-26 /
+    /// Task 50). ⚠ **An archive is a transfer**, so DR-26's third axis has to
+    /// ride with it: without this a UCSF chat could export a base it owns
+    /// (permitted — it is the owner) and any other institution's chat could
+    /// import the archive and read the content with no gate crossed, because an
+    /// unclaimed base is reachable from every private model.
+    ///
+    /// `#[serde(default)]` — an archive written before this field existed
+    /// carries no owners, which is the same **Missing** direction
+    /// [`crate::knowledge::tier::affiliation`] takes for a store that predates
+    /// the axis (AR-2's accepted fail-open), not the **Unreadable** one. The
+    /// unknown-ownership case never reaches an archive at all: `export_brkb`
+    /// refuses to package a base whose owners it cannot establish.
+    #[serde(default)]
+    owners: Vec<String>,
 }
 
 /// Pack a knowledge base directory (including .git, manifest.yaml, raw/, knowledge/, .biorouter-knowledge/)
 /// into a .brkb zip and write the bytes to `out`. Walks the directory tree.
 ///
-/// `is_private` is stamped into the `<kb_id>/.brkb-provenance` entry.
-pub fn export<W: Write + Seek>(kb_root: &Path, out: &mut W, is_private: bool) -> Result<()> {
+/// `is_private` and `owners` are stamped into the `<kb_id>/.brkb-provenance`
+/// entry.
+pub fn export<W: Write + Seek>(
+    kb_root: &Path,
+    out: &mut W,
+    is_private: bool,
+    owners: &std::collections::BTreeSet<String>,
+) -> Result<()> {
     let mut zip = ZipWriter::new(out);
     let opts = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
     let kb_id = kb_root
@@ -34,8 +55,14 @@ pub fn export<W: Write + Seek>(kb_root: &Path, out: &mut W, is_private: bool) ->
         .to_string();
     walk(kb_root, kb_root, &kb_id, &mut zip, opts)?;
     let provenance = serde_json::to_vec(&Provenance {
-        schema: 1,
+        // 1 -> 2 with `owners`, and a label rather than a gate for the reason
+        // `tier::SCHEMA` is one: an older binary parses `tier` exactly as before
+        // and never sees the new field, where a reader that refused an
+        // unfamiliar number would read every archive this build writes as
+        // having no marker at all — which is the fail-open direction.
+        schema: 2,
         tier: if is_private { "private" } else { "public" }.to_string(),
+        owners: owners.iter().cloned().collect(),
     })?;
     zip.start_file(format!("{kb_id}/{PROVENANCE_ENTRY}"), opts)?;
     zip.write_all(&provenance)?;
@@ -91,19 +118,31 @@ fn safe_join(target: &Path, rel: &Path) -> Result<PathBuf> {
     Ok(target.join(rel))
 }
 
+/// What an import landed on: the new id, and what the archive claimed about
+/// itself on both of issue #56's axes.
+///
+/// A struct rather than a tuple because the two provenance fields are read the
+/// same way and must stay together — `import_brkb` raises to
+/// `max(marker, importer)` on the tier and to the UNION on the affiliation, and
+/// a caller that used one and dropped the other is exactly the laundering path
+/// [`Provenance::owners`] exists to close.
+#[derive(Debug)]
+pub struct Imported {
+    pub id: String,
+    /// The archive's privacy claim, `None` when the marker is absent or
+    /// malformed. A FLOOR: it can only raise the new base, never lower it.
+    pub provenance_private: Option<bool>,
+    /// The institutions the archive says its content belongs to. Empty for an
+    /// archive with no marker, or one written before DR-26.
+    pub owners: std::collections::BTreeSet<String>,
+}
+
 /// Unpack a .brkb zip into a fresh directory under `knowledge_root` and return
-/// the new kb_id together with the archive's privacy claim (issue #56).
+/// the new kb_id together with the archive's provenance (issue #56).
 ///
 /// The .brkb is expected to contain exactly one top-level directory (the kb_id at export time).
 /// If that id collides with an existing KB at the destination, suffix with `-N` to disambiguate.
-///
-/// The second element is the `<kb_id>/.brkb-provenance` marker, `None` when it
-/// is absent or malformed. It is a FLOOR: `import_brkb` raises the new base to
-/// `max(marker, importer)` and never to the marker alone.
-pub fn import<R: Read + Seek>(
-    zip_bytes: R,
-    knowledge_root: &Path,
-) -> Result<(String, Option<bool>)> {
+pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Imported> {
     let mut archive = ZipArchive::new(zip_bytes).context("open zip archive")?;
     // Detect the single top-level directory.
     let mut top_names: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -140,6 +179,7 @@ pub fn import<R: Read + Seek>(
     let target = knowledge_root.join(&id);
     std::fs::create_dir_all(&target)?;
     let mut provenance_private: Option<bool> = None;
+    let mut owners: std::collections::BTreeSet<String> = Default::default();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let entry_name = entry.name().to_string();
@@ -153,9 +193,22 @@ pub fn import<R: Read + Seek>(
         if rel == Path::new(PROVENANCE_ENTRY) {
             let mut raw = String::new();
             if entry.read_to_string(&mut raw).is_ok() {
-                provenance_private = serde_json::from_str::<Provenance>(&raw)
-                    .ok()
-                    .map(|p| p.tier == "private");
+                if let Ok(p) = serde_json::from_str::<Provenance>(&raw) {
+                    provenance_private = Some(p.tier == "private");
+                    // Normalised on the way in, exactly as the wire id is
+                    // (`affiliation::caller_affiliation`): an archive written by
+                    // hand, or by a build whose normaliser differed, must not
+                    // land a `UCSF` that mismatches the `ucsf` every model
+                    // states. Empty ids are dropped rather than recorded — an
+                    // owner nothing can ever match would make the base
+                    // permanently unreachable with no declassification path.
+                    owners.extend(
+                        p.owners
+                            .into_iter()
+                            .map(|o| crate::knowledge::affiliation::normalize_institution(&o))
+                            .filter(|o| !o.is_empty()),
+                    );
+                }
             }
             continue;
         }
@@ -183,7 +236,11 @@ pub fn import<R: Read + Seek>(
             crate::knowledge::manifest::save(&target, &m)?;
         }
     }
-    Ok((id, provenance_private))
+    Ok(Imported {
+        id,
+        provenance_private,
+        owners,
+    })
 }
 
 #[cfg(test)]
@@ -210,7 +267,13 @@ mod tests {
         // Import into a new root, expect a non-colliding id.
         let dir2 = tempfile::tempdir().unwrap();
         let svc2 = KnowledgeService::new(dir2.path().to_path_buf());
-        let new_id = svc2.import_brkb(&bytes, false).unwrap();
+        let new_id = svc2
+            .import_brkb(
+                &bytes,
+                false,
+                &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+            )
+            .unwrap();
         assert_eq!(new_id, "orig");
         assert!(dir2.path().join("orig").join("manifest.yaml").exists());
         assert!(dir2
@@ -229,6 +292,46 @@ mod tests {
         assert!(bases.iter().any(|b| b.id == "orig"));
     }
 
+    /// Issue #56 DR-26 / Task 50. The owner set survives the archive, and an
+    /// archive written before the field existed still imports — carrying no
+    /// owners, which is the **Missing** direction (AR-2's accepted fail-open),
+    /// not a refusal.
+    #[test]
+    fn the_provenance_marker_round_trips_the_owner_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("orig", "Orig", None).unwrap();
+        let kb_root = dir.path().join("orig");
+
+        let owners: std::collections::BTreeSet<String> =
+            ["stanford".to_string(), "ucsf".to_string()].into();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        export(&kb_root, &mut buf, true, &owners).unwrap();
+        let bytes = buf.into_inner();
+
+        let dest = tempfile::tempdir().unwrap();
+        let imported = import(std::io::Cursor::new(bytes), dest.path()).unwrap();
+        assert_eq!(imported.provenance_private, Some(true));
+        assert_eq!(imported.owners, owners, "the owner set did not survive");
+
+        // A pre-DR-26 archive: the marker exists but has no `owners` field.
+        let dest2 = tempfile::tempdir().unwrap();
+        let mut buf2 = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut buf2);
+            let opts = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("old/knowledge/x.md", opts).unwrap();
+            zip.write_all(b"body").unwrap();
+            zip.start_file(format!("old/{PROVENANCE_ENTRY}"), opts)
+                .unwrap();
+            zip.write_all(br#"{"schema":1,"tier":"private"}"#).unwrap();
+            zip.finish().unwrap();
+        }
+        let old = import(std::io::Cursor::new(buf2.into_inner()), dest2.path()).unwrap();
+        assert_eq!(old.provenance_private, Some(true));
+        assert!(old.owners.is_empty(), "{:?}", old.owners);
+    }
+
     #[test]
     fn import_assigns_suffix_on_collision() {
         let dir = tempfile::tempdir().unwrap();
@@ -236,7 +339,13 @@ mod tests {
         svc.create_base("dup", "Dup", None).unwrap();
         let bytes = svc.export_brkb("dup").unwrap();
         // Import into the SAME root — should collide.
-        let new_id = svc.import_brkb(&bytes, false).unwrap();
+        let new_id = svc
+            .import_brkb(
+                &bytes,
+                false,
+                &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+            )
+            .unwrap();
         assert_eq!(new_id, "dup-2");
         assert!(dir.path().join("dup").exists());
         assert!(dir.path().join("dup-2").exists());

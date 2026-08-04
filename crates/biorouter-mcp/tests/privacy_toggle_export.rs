@@ -69,7 +69,16 @@ async fn the_forced_export_location_follows_the_master_toggle() {
     // over the SAME root, because `KnowledgeServer::service` is private — the
     // store is on disk, so the server built above sees it.
     biorouter_mcp::knowledge::service::KnowledgeService::new(root.clone())
-        .create_base_as("omop", "OMOP", None, /* caller_is_private */ true)
+        .create_base_as(
+            "omop",
+            "OMOP",
+            None,
+            /* caller_is_private */ true,
+            // DR-26's axis is not what this test is about, and `Unstated` adds
+            // no owner — so the forced-export-location assertions below are
+            // still about the TIER and nothing else.
+            &biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
         .expect("create the private base");
     assert!(biorouter_mcp::knowledge::tier::is_private(&root, "omop"));
     let page = root.join("omop").join("knowledge").join("x.md");

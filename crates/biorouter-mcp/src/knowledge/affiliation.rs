@@ -193,6 +193,25 @@ pub fn caller_affiliation(meta: &rmcp::model::Meta) -> CallerAffiliation {
     }
 }
 
+/// The institutions a caller's content belongs to, as a set — what the ratchet
+/// adds when this caller writes into a base.
+///
+/// ONE definition of "which callers contribute an owner", because both
+/// [`super::tier::raise_affiliation_unlocked`] and `import_brkb`'s union need
+/// it and two copies is how they come to disagree.
+///
+/// [`CallerAffiliation::Local`] and [`CallerAffiliation::Unstated`] contribute
+/// **nothing**, for two different reasons that happen to agree — see
+/// [`super::tier::raise_affiliation_unlocked`], which spells both out. In
+/// particular a sentinel owner for `Unstated` would make the base permanently
+/// unreachable from every institutional model with no declassification path.
+pub fn contributed_owners(caller: &CallerAffiliation) -> BTreeSet<String> {
+    match caller {
+        CallerAffiliation::Institution(id) => std::iter::once(id.clone()).collect(),
+        CallerAffiliation::Local | CallerAffiliation::Unstated => BTreeSet::new(),
+    }
+}
+
 /// **The** affiliation comparison for a knowledge base. May a session whose
 /// model is covered by `caller` read or write a base owned by `kb`?
 ///

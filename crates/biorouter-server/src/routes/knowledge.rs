@@ -1941,9 +1941,16 @@ pub async fn import_brkb(
     let bytes = file_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
 
     // Issue #56: the USER importing from the Knowledge view, not a model. The
-    // archive's own provenance marker still applies as a floor.
+    // archive's own provenance marker still applies as a floor — on both axes:
+    // no model is bound here, so the importer contributes no institution
+    // (`Unstated`), but the owners the archive carries are still recorded, or
+    // routing an archive through this route would strip them (DR-26 / Task 50).
     let new_id = svc
-        .import_brkb(&bytes, /* importer_is_private */ false)
+        .import_brkb(
+            &bytes,
+            /* importer_is_private */ false,
+            &biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "id": new_id })))

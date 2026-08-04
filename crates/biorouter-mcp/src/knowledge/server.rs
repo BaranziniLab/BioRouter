@@ -567,6 +567,10 @@ impl KnowledgeServer {
                 &p.name,
                 p.color.as_deref(),
                 Self::caller_is_private(Some(&context)),
+                // Issue #56 DR-26 / Task 50: the third axis is stamped in the
+                // same transaction as the tier, by the same argument — see
+                // `create_base_as`.
+                &Self::caller_affiliation(Some(&context)),
             )
             .map_err(into_err)?;
         ok_json(&m)
@@ -1110,9 +1114,17 @@ impl KnowledgeServer {
         // — the marker can only raise, never lower — and because the loop
         // always lands on a FRESH id, classifying there can never re-tier an
         // existing base.
+        // Issue #56 DR-26 / Task 50: and the archive's own owners are unioned
+        // with this caller's inside `import_brkb`, which is what stops
+        // `kb_export` + `kb_import` from being a way to strip an institution's
+        // claim while both endpoints stay Private and no gate fires.
         let new_id = self
             .service
-            .import_brkb(&bytes, Self::caller_is_private(Some(&context)))
+            .import_brkb(
+                &bytes,
+                Self::caller_is_private(Some(&context)),
+                &Self::caller_affiliation(Some(&context)),
+            )
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "imported_kb_id": new_id }))
     }
@@ -1947,6 +1959,28 @@ mod tests {
         (tmp, path.to_string_lossy().to_string())
     }
 
+    /// The same fixture on DR-26's axis: a base whose content belongs to
+    /// `institution`, stamped through the production ratchet rather than by
+    /// writing the store, and exported to a file.
+    fn brkb_fixture_owned_by(institution: &str) -> (tempfile::TempDir, String) {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_root = tmp.path().join("src-root");
+        std::fs::create_dir_all(&src_root).unwrap();
+        let svc = KnowledgeService::new(src_root.clone());
+        svc.create_base("shipped", "Shipped", None).unwrap();
+        seed_page(&src_root, "shipped", "knowledge/x.md", "SENTINEL");
+        crate::knowledge::tier::raise_unlocked(&src_root, "shipped", true).unwrap();
+        svc.raise_affiliation(
+            "shipped",
+            &CallerAffiliation::Institution(institution.to_string()),
+        )
+        .unwrap();
+        let bytes = svc.export_brkb("shipped").unwrap();
+        let path = tmp.path().join("shipped.brkb");
+        std::fs::write(&path, &bytes).unwrap();
+        (tmp, path.to_string_lossy().to_string())
+    }
+
     fn imported_kb_id(out: &CallToolResult) -> String {
         let text = out
             .content
@@ -2496,6 +2530,135 @@ mod tests {
             crate::knowledge::tier::is_private(&root, &imported_kb_id(&out)),
             "a public chat imported a private base's archive and got a public base"
         );
+    }
+
+    /// ⚠ **An archive is a transfer, so it carries its owners.** DR-26's own
+    /// case arriving through export/import, which the two tools whose subject id
+    /// is minted by the call are the only way to reach.
+    ///
+    /// A UCSF chat may `kb_export` a base UCSF owns — it is the owner, so no
+    /// gate fires. If the archive drops the owner set, the base a Stanford-bound
+    /// chat imports from it reads UNCLAIMED, and `affiliation::reachable` treats
+    /// an unclaimed base as permissive for every private model. Both endpoints
+    /// are Private, so every tier gate in this campaign says yes and UCSF
+    /// content lands in a Stanford model's context with nothing crossed.
+    ///
+    /// The positive control is the second import: the same archive into a UCSF
+    /// chat still reads, or this gate is just "refuse every import".
+    #[tokio::test]
+    async fn a_ucsf_base_cannot_be_laundered_into_a_stanford_chat_through_an_export() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        let (_fx, path) = brkb_fixture_owned_by("ucsf");
+
+        let out = call_tool_as_affiliated(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": path }),
+            "stanford",
+        )
+        .await
+        .expect("the import itself is not the refusal; what it lands on is what gates");
+        let laundered = imported_kb_id(&out);
+
+        let held = crate::knowledge::tier::affiliation(&root, &laundered);
+        assert!(
+            held.owners().expect("a readable store").contains("ucsf"),
+            "the archive's owners did not survive the import: {held:?}"
+        );
+
+        let err = call_tool_as_affiliated(
+            &srv,
+            "kb_search",
+            serde_json::json!({ "kb_id": laundered, "query": "SENTINEL" }),
+            "stanford",
+        )
+        .await
+        .expect_err("a Stanford model read UCSF content it had imported from an archive");
+        let msg = err.to_string();
+        assert!(msg.contains("Cross-institutional"), "{msg}");
+        assert!(
+            !msg.contains("SENTINEL"),
+            "the refusal carried content: {msg}"
+        );
+
+        // The positive control. A UCSF chat imports the same archive — the
+        // collision loop lands it on a fresh id — and reads it, because the
+        // content never left the institution that owns it.
+        let out = call_tool_as_affiliated(
+            &srv,
+            "kb_import",
+            serde_json::json!({ "src_path": path }),
+            "ucsf",
+        )
+        .await
+        .expect("a UCSF chat may import a UCSF archive");
+        let mine = imported_kb_id(&out);
+        assert_ne!(mine, laundered, "the second import reused the first id");
+        call_tool_as_affiliated(
+            &srv,
+            "kb_search",
+            serde_json::json!({ "kb_id": mine, "query": "SENTINEL" }),
+            "ucsf",
+        )
+        .await
+        .expect("a UCSF model may read UCSF content it imported itself");
+    }
+
+    /// The other id-minting tool, on the same axis. `kb_create_base` stamps the
+    /// TIER at creation (DR-18(b),
+    /// `a_base_created_from_a_private_chat_is_born_private`); an implementation
+    /// that stamped only the tier would leave every base an institutional chat
+    /// makes reading as unclaimed until its first `kb_write_page` — and
+    /// `create_base_as` is also how the apps runtime and the CLI make one.
+    #[tokio::test]
+    async fn a_base_created_from_an_institutions_chat_is_born_carrying_that_institution() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+        call_tool_as_affiliated(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "omop", "name": "OMOP" }),
+            "ucsf",
+        )
+        .await
+        .unwrap();
+        let held = crate::knowledge::tier::affiliation(&root, "omop");
+        assert!(
+            held.owners().expect("a readable store").contains("ucsf"),
+            "a base born in a UCSF chat records no owner: {held:?}"
+        );
+        assert!(
+            crate::knowledge::tier::affiliation(&root, "default")
+                .owners()
+                .expect("a readable store")
+                .is_empty(),
+            "creating one base claimed another"
+        );
+
+        // …so another institution's model cannot write into it, and the chat
+        // that made it still can — or the stamp is just "claim everything".
+        let err = call_tool_as_affiliated(
+            &srv,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "omop", "path": "knowledge/x.md",
+                "content": "c", "commit_message": "m"
+            }),
+            "stanford",
+        )
+        .await
+        .expect_err("a Stanford chat wrote into a base UCSF owns");
+        assert!(err.to_string().contains("Cross-institutional"));
+        call_tool_as_affiliated(
+            &srv,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "omop", "path": "knowledge/x.md",
+                "content": "c", "commit_message": "m"
+            }),
+            "ucsf",
+        )
+        .await
+        .expect("the institution that made the base may write into it");
     }
 
     // ── Issue #56, Task 10C: the barrier at CP1 ──────────────────────────────

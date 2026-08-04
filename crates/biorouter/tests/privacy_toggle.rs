@@ -583,7 +583,16 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     // hand-made directory would leave row 14 passing vacuously in BOTH columns:
     // an empty catalog contains no private base either.
     biorouter_mcp::knowledge::service::KnowledgeService::new(kb_root.to_path_buf())
-        .create_base_as("omop", "OMOP", None, /* caller_is_private */ true)
+        .create_base_as(
+            "omop",
+            "OMOP",
+            None,
+            /* caller_is_private */ true,
+            // DR-26's axis is not what this row is about; `Unstated` is the
+            // restrictive value and adds no owner, so the tier assertions below
+            // stay the only thing under test.
+            &biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
         .expect("create the private base");
     assert!(biorouter_mcp::knowledge::tier::is_private(kb_root, "omop"));
     assert!(biorouter_mcp::knowledge::tier::assert_reachable(

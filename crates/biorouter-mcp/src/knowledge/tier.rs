@@ -399,11 +399,26 @@ pub fn affiliation(root: &Path, kb_id: &str) -> KbAffiliation {
 /// control.** A write that raised the tier and not the affiliation would put an
 /// institution's content into a base that no institution is recorded as owning
 /// — which reads as unclaimed and is therefore reachable from every other
-/// institution's model. The pairing is pinned through production by
-/// `server::tests::every_tool_that_ratchets_the_tier_also_records_the_callers_institution`,
-/// which drives the SAME probe table the tier ratchet is proved with — a grep
-/// census over call sites was considered and rejected: it would have counted
-/// test constructions and said nothing about whether the raise actually ran.
+/// institution's model.
+///
+/// Production has **three** `raise_unlocked` sites and each is paired by a
+/// different mechanism, which is worth stating because an earlier version of
+/// this comment claimed a single test covered all of them and shipped two
+/// unpaired:
+///
+/// 1. `KnowledgeServer::call_tool`'s ratchet, for the seventeen tools that name
+///    an existing base — pinned through production by
+///    `server::tests::every_tool_that_ratchets_the_tier_also_records_the_callers_institution`,
+///    which drives the SAME probe table the tier ratchet is proved with. (A grep
+///    census over call sites was considered and rejected there: it would have
+///    counted test constructions and said nothing about whether the raise
+///    actually ran.)
+/// 2. `create_base_as` and 3. `import_brkb`, the two tools whose subject id is
+///    minted BY the call and which that parameterisation is therefore
+///    structurally blind to — `every_tool_the_router_exposes_is_classified_by_the_probe_table`
+///    chains both past the table by name. They are paired **structurally**
+///    instead, by `KnowledgeService::stamp_new_base_unlocked`: one function that
+///    does both, so there is no second call site to forget.
 ///
 /// [`CallerAffiliation::Local`] and [`CallerAffiliation::Unstated`] add nothing,
 /// for two different reasons that happen to agree:
@@ -426,17 +441,37 @@ pub fn raise_affiliation_unlocked(
     kb_id: &str,
     caller: &CallerAffiliation,
 ) -> Result<()> {
+    add_owners_unlocked(
+        root,
+        kb_id,
+        crate::knowledge::affiliation::contributed_owners(caller),
+    )
+}
+
+/// The same ratchet, given the owners directly rather than a caller to derive
+/// one from — for `import_brkb`, where the institutions being added are the
+/// ones the **archive** carried and there is no single caller to name.
+///
+/// One writer for the map, so "does a stamp ever remove an owner?" is decided in
+/// exactly one place; [`raise_affiliation_unlocked`] is the one-owner case of
+/// this function and nothing else touches [`Store::affiliations`] except
+/// [`forget_unlocked`], which drops the whole row when the base goes away.
+pub fn add_owners_unlocked(root: &Path, kb_id: &str, owners: BTreeSet<String>) -> Result<()> {
+    // DR-15 / AR-7: with the master toggle off, nothing ratchets — see
+    // [`raise_affiliation_unlocked`]'s closing paragraph.
     if !crate::privacy_toggle::privacy_tiers_enabled() {
         return Ok(());
     }
-    let CallerAffiliation::Institution(id) = caller else {
+    if owners.is_empty() {
         return Ok(());
-    };
+    }
     let mut store = load_for_write(root)?;
-    let owners = store.affiliations.entry(kb_id.to_string()).or_default();
-    if !owners.insert(id.clone()) {
-        // Already recorded. Skipping the write keeps a read-heavy path from
-        // rewriting the store on every tool call.
+    let recorded = store.affiliations.entry(kb_id.to_string()).or_default();
+    let before = recorded.len();
+    recorded.extend(owners);
+    if recorded.len() == before {
+        // Every owner was already recorded. Skipping the write keeps a
+        // read-heavy path from rewriting the store on every tool call.
         return Ok(());
     }
     save(root, &store)
@@ -693,8 +728,22 @@ mod tests {
     }
 
     fn import_brkb_as(root: &Path, bytes: &[u8], importer_is_private: bool) -> String {
+        import_brkb_as_full(
+            root,
+            bytes,
+            importer_is_private,
+            &CallerAffiliation::Unstated,
+        )
+    }
+
+    fn import_brkb_as_full(
+        root: &Path,
+        bytes: &[u8],
+        importer_is_private: bool,
+        importer_affiliation: &CallerAffiliation,
+    ) -> String {
         crate::knowledge::service::KnowledgeService::new(root.to_path_buf())
-            .import_brkb(bytes, importer_is_private)
+            .import_brkb(bytes, importer_is_private, importer_affiliation)
             .unwrap()
     }
 
@@ -963,6 +1012,66 @@ mod tests {
         // …and it is not extracted back out into the imported base either.
         let new_id = import_brkb_as(&root, &bytes, false);
         assert!(!root.join(&new_id).join(".brkb-provenance").exists());
+    }
+
+    /// Issue #56 DR-26 / Task 50. The store side of the export/import laundering
+    /// path: an archive of a claimed base carries the claim, and importing it
+    /// UNIONS it with the importer's own institution.
+    ///
+    /// ⚠ The union, not the archive's set alone and not the importer's alone. A
+    /// Stanford chat importing a UCSF archive lands a base owned by both, which
+    /// is out of reach of both their models — the fail-closed direction, and the
+    /// same disjunction the tier takes one axis over.
+    #[test]
+    fn an_archive_carries_its_owners_and_an_import_unions_them_with_the_importers() {
+        let (_d, root) = tempdir_with_bases(&["omop"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_unlocked(&root, "omop", true).unwrap();
+        raise_affiliation_unlocked(&root, "omop", &bound("ucsf")).unwrap();
+        let bytes = export_brkb_with_provenance(&root, "omop");
+
+        // Imported by a Stanford chat: both institutions now own it.
+        let landed = import_brkb_as_full(&root, &bytes, true, &bound("stanford"));
+        let owners = affiliation(&root, &landed);
+        let owners = owners.owners().expect("a readable store");
+        assert!(
+            owners.contains("ucsf") && owners.contains("stanford"),
+            "{owners:?}"
+        );
+        assert!(!crate::knowledge::affiliation::reachable(
+            &bound("stanford"),
+            &affiliation(&root, &landed)
+        ));
+
+        // …and imported by a UCSF chat it is still just UCSF's, or the union is
+        // indistinguishable from "claim everything".
+        let mine = import_brkb_as_full(&root, &bytes, true, &bound("ucsf"));
+        let owners = affiliation(&root, &mine);
+        assert_eq!(
+            owners.owners().expect("a readable store"),
+            &["ucsf".to_string()].into_iter().collect::<BTreeSet<_>>()
+        );
+        assert!(crate::knowledge::affiliation::reachable(
+            &bound("ucsf"),
+            &affiliation(&root, &mine)
+        ));
+    }
+
+    /// The one case with nothing honest to stamp into an archive: an unreadable
+    /// store, where whose content the base holds is *unknown* rather than
+    /// "nobody's". Writing an empty owner set there would let a corrupt store
+    /// launder every base on the machine, so the export refuses.
+    #[test]
+    fn a_base_whose_owners_cannot_be_read_is_not_exportable() {
+        let (_d, root) = tempdir_with_bases(&["omop"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        std::fs::write(crate::knowledge::paths::kb_tiers_path(&root), "{ not json").unwrap();
+        assert_eq!(affiliation(&root, "omop"), KbAffiliation::Unknown);
+        let err = crate::knowledge::service::KnowledgeService::new(root.clone())
+            .export_brkb("omop")
+            .expect_err("a base whose owners cannot be established was packaged anyway");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("unreadable"), "{msg}");
     }
 
     #[test]
