@@ -6626,6 +6626,28 @@ mod tests {
         )
     }
 
+    /// The refusal a dispatch produced, as text.
+    ///
+    /// ⚠ **`.is_err()` alone is not an assertion about this gate.** A dispatch
+    /// can fail for a dozen unrelated reasons, so a test that only checks for an
+    /// error passes just as happily against a mismatch that was never asked
+    /// about. `ToolCallResult` carries no `Debug`, so `.expect()` is unavailable
+    /// and the error is taken out by hand.
+    async fn refusal_text(
+        em: &ExtensionManager,
+        session_id: &str,
+        tool: &str,
+        cap: crate::privacy::CallCapability,
+    ) -> String {
+        match em
+            .dispatch_tool_call(session_id, call(tool), cap, CancellationToken::default())
+            .await
+        {
+            Ok(_) => panic!("`{tool}` was dispatched, and this call had to be refused"),
+            Err(e) => e.to_string(),
+        }
+    }
+
     /// The exact warning DR-26 requires, for the fixture every test here shares.
     /// Asserted against the composer rather than restated, so the copy cannot
     /// drift between the surfaces that state it.
@@ -6902,18 +6924,16 @@ mod tests {
         em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
             .await;
 
-        // Ungranted, the mismatch refuses. Without this the test could pass
-        // against a gate that stopped running altogether.
+        // Ungranted, the mismatch refuses — and refuses with THIS gate's
+        // refusal, not merely with some error. Without the first half the test
+        // could pass against a gate that stopped running altogether; without the
+        // second it could pass against a dispatch that failed for an unrelated
+        // reason and never reached the affiliation question at all.
         assert!(
-            em.dispatch_tool_call(
-                &id,
-                call("ucsfomopagent__tool"),
-                bound_to("stanford"),
-                CancellationToken::default(),
-            )
-            .await
-            .is_err(),
-            "an ungranted cross-institutional dispatch is refused"
+            refusal_text(&em, &id, "ucsfomopagent__tool", bound_to("stanford"))
+                .await
+                .contains(&expected_warning("ucsfomopagent", "stanford")),
+            "an ungranted cross-institutional dispatch is refused with the DR-26 warning"
         );
 
         crate::privacy::grant::record_for_test(
@@ -6941,14 +6961,9 @@ mod tests {
         // Re-bound to a THIRD institution's model: same session, same
         // extension, different third axis, so the grant does not reach it.
         assert!(
-            em.dispatch_tool_call(
-                &id,
-                call("ucsfomopagent__tool"),
-                bound_to("mayo"),
-                CancellationToken::default(),
-            )
-            .await
-            .is_err(),
+            refusal_text(&em, &id, "ucsfomopagent__tool", bound_to("mayo"))
+                .await
+                .contains(&expected_warning("ucsfomopagent", "mayo")),
             "re-binding to another institution's model invalidates the grant"
         );
     }
@@ -6977,14 +6992,9 @@ mod tests {
         .unwrap();
 
         assert!(
-            em.dispatch_tool_call(
-                &id,
-                call("cdwagent__tool"),
-                bound_to("stanford"),
-                CancellationToken::default(),
-            )
-            .await
-            .is_err(),
+            refusal_text(&em, &id, "cdwagent__tool", bound_to("stanford"))
+                .await
+                .contains(&expected_warning("cdwagent", "stanford")),
             "the grant named the OMOP connector, not every UCSF connector"
         );
     }
