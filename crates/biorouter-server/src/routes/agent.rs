@@ -1222,8 +1222,18 @@ async fn agent_cross_affiliation_grant(
     // `privacy::grant::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
     // It is minted here, inside the handler that checked the guard above, and
     // nowhere a tool call can reach.
+    //
+    // ⚠ **Written through THIS AGENT's session manager, not `AppState`'s.** A
+    // grant that is not visible to the gate that reads it is a control that
+    // silently does nothing, so the write and the read must be the same store —
+    // and `Agent::with_config` hands `Arc::clone(&config.session_manager)` to
+    // `ExtensionManager::new`, which is the very handle Gate C's
+    // `cross_affiliation_denial` queries. Taking it from the agent makes that
+    // identity structural. `state.session_manager()` resolves to the same `Arc`
+    // today, through `AgentManager`, but only because nothing has ever built an
+    // agent on a different one.
     biorouter::privacy::grant::record(
-        state.session_manager(),
+        &agent.config.session_manager,
         &request.session_id,
         &request.extension,
         affiliation,
