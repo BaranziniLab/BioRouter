@@ -66,7 +66,7 @@ impl Agent {
             }
         }
 
-        let (completer, caller_capability) = self
+        let (completer, caller_capability, caller_affiliation) = self
             .conversation_ingest_completer(&svc, &kb_id, session)
             .await?;
 
@@ -78,6 +78,11 @@ impl Agent {
                 // run on — the KB's default model when a scheduled job names
                 // one, otherwise this agent's own.
                 caller_capability,
+                // Issue #56 DR-26 / Task 50 Step 3. Off the SAME provider as the
+                // tier above — a cross-session ingest carries another chat's
+                // content into a base, so whose agreements cover the digesting
+                // model is exactly the question this axis asks.
+                caller_affiliation,
                 sessions,
                 completer,
                 focus: arguments
@@ -110,7 +115,14 @@ impl Agent {
         svc: &KnowledgeService,
         kb_id: &str,
         session: &Session,
-    ) -> Result<(Box<dyn Completer>, ProviderTier), ErrorData> {
+    ) -> Result<
+        (
+            Box<dyn Completer>,
+            ProviderTier,
+            Option<crate::privacy::affiliation::ModelAffiliation>,
+        ),
+        ErrorData,
+    > {
         if should_use_knowledge_default_model(session) {
             let manifest = svc.get_base(kb_id).map_err(internal)?;
             if let Some(model) = manifest.default_model {
@@ -129,8 +141,8 @@ impl Agent {
                 "a model provider is required to digest conversations: {e}"
             ))
         })?;
-        let (completer, tier) = ProviderCompleter::paired(provider);
-        Ok((Box::new(completer), tier))
+        let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+        Ok((Box::new(completer), tier, affiliation))
     }
 }
 
@@ -241,7 +253,11 @@ fn should_use_knowledge_default_model(session: &Session) -> bool {
 async fn build_model_ref_completer(
     model: &ModelRef,
     session: crate::privacy::SessionClassification,
-) -> anyhow::Result<(Box<dyn Completer>, ProviderTier)> {
+) -> anyhow::Result<(
+    Box<dyn Completer>,
+    ProviderTier,
+    Option<crate::privacy::affiliation::ModelAffiliation>,
+)> {
     if biorouter_mcp::knowledge::test_mode::env_enabled() {
         // No provider exists on this path, so there is no instance to read a
         // tier from — the same fail-safe-for-a-ratchet reasoning as the two
@@ -250,6 +266,9 @@ async fn build_model_ref_completer(
         return Ok((
             Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter),
             ProviderTier::Public,
+            // No provider, so no affiliation to read. `None` is what a public
+            // model carries, and the tier beside it already says Public.
+            None,
         ));
     }
 
@@ -263,8 +282,8 @@ async fn build_model_ref_completer(
         session,
         "the knowledge base's default model",
     )?;
-    let (completer, tier) = ProviderCompleter::paired(provider);
-    Ok((Box::new(completer), tier))
+    let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier, affiliation))
 }
 
 /// Slugify a display name into a valid KB id (lowercase, a-z0-9-, no leading /

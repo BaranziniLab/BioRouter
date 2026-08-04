@@ -183,6 +183,16 @@ pub struct ConversationIngestArgs {
     /// verbatim the failure this task exists to prevent: every file would
     /// report a non-zero `caller_is_private` count while ratcheting nothing.
     pub caller_capability: crate::privacy::ProviderTier,
+    /// Whose agreements cover that same provider — DR-26's third axis (issue
+    /// #56, Task 50 Step 3). Required and non-defaulted for the reason above:
+    /// a cross-session ingest carries one chat's content into a knowledge base,
+    /// so the digesting model's institution is what the base ends up owned by.
+    ///
+    /// `None` is a public model (for which affiliation never applies) or a
+    /// private one that states nothing; both read
+    /// `CallerAffiliation::Unstated` on the far side of the crate boundary,
+    /// which is the restrictive answer.
+    pub caller_affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
     pub sessions: Vec<Session>,
     pub completer: Box<dyn Completer>,
     pub focus: Option<String>,
@@ -296,6 +306,11 @@ pub async fn ingest_conversation(
             // `IngestArgs` lives in biorouter-mcp, which cannot name
             // ProviderTier. This same value drove the refusal above.
             caller_is_private: caller.is_private(),
+            // Issue #56 DR-26 / Task 50: the third axis makes the same
+            // crossing, through the one translation that owns the vocabulary.
+            caller_affiliation: crate::privacy::affiliation::caller_affiliation(
+                args.caller_affiliation,
+            ),
             source: SourceInput::Text {
                 text: rendered.markdown,
                 title: Some(format!("Conversation — {}", rendered.title)),
@@ -453,6 +468,7 @@ mod tests {
             ConversationIngestArgs {
                 kb_id: "soul".into(),
                 caller_capability: crate::privacy::ProviderTier::Public,
+                caller_affiliation: None,
                 sessions: vec![session],
                 completer: Box::new(SilentCompleter),
                 focus: None,
@@ -599,6 +615,7 @@ mod tests {
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
                 sessions: vec![private],
                 completer: Box::new(WritingCompleter::new()),
                 focus: None,
@@ -644,6 +661,7 @@ mod tests {
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Private,
+                caller_affiliation: None,
                 sessions: vec![session_with(
                     "mine",
                     SessionClassification::Private,
@@ -679,6 +697,7 @@ mod tests {
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
                 sessions: vec![session_with(
                     "mine",
                     SessionClassification::Public,
@@ -708,6 +727,7 @@ mod tests {
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
                 sessions: vec![
                     session_with("pub", SessionClassification::Public, "PUBLIC-SENTINEL"),
                     session_with("priv", SessionClassification::Private, "PHI cohort notes"),

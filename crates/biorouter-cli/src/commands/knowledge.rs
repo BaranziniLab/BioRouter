@@ -76,7 +76,12 @@ fn resolve_kb(
 async fn build_completer(
     provider: Option<String>,
     model: Option<String>,
-) -> Result<(Box<dyn Completer>, ProviderTier)> {
+) -> Result<(
+    Box<dyn Completer>,
+    ProviderTier,
+    // Issue #56 DR-26 / Task 50: the third axis, off the same `Arc`.
+    Option<biorouter::privacy::affiliation::ModelAffiliation>,
+)> {
     // Honour the same offline test-mode switch the server uses, so CLI knowledge
     // macros (ingest / query / ingest-conversation) can be exercised without a
     // reachable LLM provider.
@@ -88,6 +93,7 @@ async fn build_completer(
         return Ok((
             Box::new(biorouter::knowledge::test_mode::TestModeCompleter),
             ProviderTier::Public,
+            None,
         ));
     }
     let config = Config::global();
@@ -100,8 +106,8 @@ async fn build_completer(
 
     let model_config = ModelConfig::new(&model)?;
     let provider = biorouter::providers::create(&provider, model_config).await?;
-    let (completer, tier) = ProviderCompleter::paired(provider);
-    Ok((Box::new(completer), tier))
+    let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier, affiliation))
 }
 
 /// First 10 characters of a commit sha, for compact display.
@@ -464,7 +470,8 @@ pub async fn handle_ingest(
         _ => bail!("Provide exactly one of --url, --file, or --text"),
     };
 
-    let (completer, caller_capability) = build_completer(provider, model).await?;
+    let (completer, caller_capability, caller_affiliation) =
+        build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
     spinner.start(format!("ingesting into {}...", kb_id));
@@ -476,6 +483,9 @@ pub async fn handle_ingest(
             // Issue #56. The tier of the provider that was CONSTRUCTED, never
             // of the `--provider` name the user typed.
             caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             source,
             completer,
             focus,
@@ -596,7 +606,8 @@ pub async fn handle_ingest_conversation(
         );
     }
 
-    let (completer, caller_capability) = build_completer(provider, model).await?;
+    let (completer, caller_capability, caller_affiliation) =
+        build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
     spinner.start(format!("digesting {} conversation(s)...", loaded.len()));
@@ -607,6 +618,7 @@ pub async fn handle_ingest_conversation(
             kb_id: kb_id.clone(),
             // Issue #56. The tier of the provider that was CONSTRUCTED.
             caller_capability,
+            caller_affiliation,
             sessions: loaded,
             completer,
             focus,
@@ -674,11 +686,13 @@ pub async fn handle_lint(
     // instance to read a tier from and no model that can write. Public, for the
     // same reason as the test-mode branch above — and Task 10C's barrier still
     // refuses a public caller reading a private base.
-    let (completer, caller_capability) = if fix {
-        let (c, tier) = build_completer(provider, model).await?;
-        (Some(c), tier)
+    let (completer, caller_capability, caller_affiliation) = if fix {
+        let (c, tier, affiliation) = build_completer(provider, model).await?;
+        (Some(c), tier, affiliation)
     } else {
-        (None, ProviderTier::Public)
+        // No provider, so no institution either. `None` pairs with the Public
+        // tier beside it — the restrictive reading on both axes.
+        (None, ProviderTier::Public, None)
     };
 
     let spinner = cliclack::spinner();
@@ -690,6 +704,9 @@ pub async fn handle_lint(
             kb_id: kb_id.clone(),
             // Issue #56. The tier of the provider the autofix will run on.
             caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             completer,
             autofix: fix,
             bounds: SubAgentBounds::default(),
@@ -760,7 +777,8 @@ pub async fn handle_query(
     if let Some(notice) = notice {
         println!("{notice}");
     }
-    let (completer, caller_capability) = build_completer(provider, model).await?;
+    let (completer, caller_capability, caller_affiliation) =
+        build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
     spinner.start(format!("querying {}...", kb_id));
@@ -771,6 +789,9 @@ pub async fn handle_query(
             kb_id: kb_id.clone(),
             // Issue #56. `query` writes — see `QueryArgs::caller_is_private`.
             caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             question,
             completer,
             file_as_page: save,
@@ -1196,9 +1217,10 @@ mod tests {
                 ("http://ollama.invalid:11434", ProviderTier::Public),
             ] {
                 let _env = lock_env(base_env(host));
-                let (_c, tier) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
-                    .await
-                    .unwrap();
+                let (_c, tier, _a) =
+                    build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
+                        .await
+                        .unwrap();
                 assert_eq!(tier, want, "OLLAMA_HOST={host}");
             }
         }
@@ -1219,7 +1241,7 @@ mod tests {
             ));
             let _env = lock_env(env);
 
-            let (_c, tier) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
+            let (_c, tier, _a) = build_completer(Some("ollama".into()), Some("qwen3.5:4b".into()))
                 .await
                 .unwrap();
             assert_eq!(

@@ -197,6 +197,11 @@ pub struct LintArgs {
     /// The capability of the model this macro will run (issue #56). Required,
     /// so every production caller is a compile error rather than an omission.
     pub caller_is_private: bool,
+    /// Whose agreements cover that model — DR-26's third axis (issue #56, Task
+    /// 50). Required for the same reason `caller_is_private` is: an omission
+    /// must be a compile error. `Unstated` is its `Default`, so a caller that
+    /// cannot determine one fails closed.
+    pub caller_affiliation: crate::knowledge::affiliation::CallerAffiliation,
     pub completer: Option<Box<dyn Completer>>,
     pub autofix: bool,
     pub bounds: SubAgentBounds,
@@ -222,8 +227,16 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     // Issue #56. Before the sub-agent, not after: an autofix that fails halfway
     // has already written pages. Task 10C (CP2) puts the barrier on the line
     // above — a lint's `scan` reads every page, and an autofix rewrites them.
-    crate::knowledge::tier::assert_reachable(svc.root(), &args.kb_id, args.caller_is_private)?;
+    crate::knowledge::tier::assert_reachable(
+        svc.root(),
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
     svc.raise_tier(&args.kb_id, args.caller_is_private)?;
+    // Issue #56 DR-26 / Task 50 Step 1: beside the tier raise, never without
+    // it — see `KnowledgeService::raise_affiliation`.
+    svc.raise_affiliation(&args.kb_id, &args.caller_affiliation)?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the
@@ -488,6 +501,7 @@ mod tests {
             LintArgs {
                 kb_id: "k".into(),
                 caller_is_private: false,
+                caller_affiliation: Default::default(),
                 completer: None,
                 autofix: false,
                 bounds: SubAgentBounds::default(),
@@ -555,6 +569,7 @@ mod tests {
             LintArgs {
                 kb_id: "k".into(),
                 caller_is_private: false,
+                caller_affiliation: Default::default(),
                 completer: Some(Box::new(NothingToFix)),
                 autofix: true,
                 bounds: SubAgentBounds::default(),
@@ -594,6 +609,7 @@ mod tests {
             LintArgs {
                 kb_id: "k".into(),
                 caller_is_private: true,
+                caller_affiliation: Default::default(),
                 completer: None,
                 autofix: false,
                 bounds: SubAgentBounds::default(),

@@ -1137,6 +1137,8 @@ async fn build_completer(
     (
         Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>,
         biorouter::privacy::ProviderTier,
+        // Issue #56 DR-26 / Task 50: the third axis, off the same `Arc`.
+        Option<biorouter::privacy::affiliation::ModelAffiliation>,
     ),
     (StatusCode, String),
 > {
@@ -1149,6 +1151,7 @@ async fn build_completer(
         return Ok((
             Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter),
             biorouter::privacy::ProviderTier::Public,
+            None,
         ));
     }
 
@@ -1157,8 +1160,8 @@ async fn build_completer(
     let provider = biorouter::providers::create(&model.provider, model_config)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    let (completer, tier) = ProviderCompleter::paired(provider);
-    Ok((Box::new(completer), tier))
+    let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier, affiliation))
 }
 
 /// Issue #56, Task 10C. Refuse a macro run whose model may not reach the target
@@ -1181,11 +1184,18 @@ fn assert_macro_target_reachable(
     svc: &Arc<KnowledgeService>,
     kb_id: &str,
     caller_capability: biorouter::privacy::ProviderTier,
+    // Issue #56 DR-26 / Task 50: the third axis, so this pre-check asks the
+    // caller's whole identity and not half of it. A pre-check that answered a
+    // narrower question than the barrier would open the SSE stream on a flow
+    // the barrier is about to refuse — which is the failure this function
+    // exists to prevent, in the other direction.
+    caller_affiliation: Option<biorouter::privacy::affiliation::ModelAffiliation>,
 ) -> Result<(), (StatusCode, String)> {
     biorouter_mcp::knowledge::tier::assert_reachable(
         svc.root(),
         kb_id,
         caller_capability.is_private(),
+        &biorouter::privacy::affiliation::caller_affiliation(caller_affiliation),
     )
     .map_err(|e| (StatusCode::CONFLICT, e.to_string()))
 }
@@ -1394,7 +1404,7 @@ pub async fn check_model(
     Json(body): Json<CheckModelBody>,
 ) -> Result<Json<CheckModelResponse>, (StatusCode, Json<CheckModelResponse>)> {
     let completer = match build_completer(&body.model).await {
-        Ok((c, _tier)) => c,
+        Ok((c, _tier, _affiliation)) => c,
         Err((_status, msg)) => {
             return Err((
                 StatusCode::BAD_GATEWAY,
@@ -1437,8 +1447,8 @@ pub async fn ingest(
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let (source, model, focus) = parse_ingest_request(&headers, req).await?;
 
-    let (completer, caller_capability) = build_completer(&model).await?;
-    assert_macro_target_reachable(&svc, &id, caller_capability)?;
+    let (completer, caller_capability, caller_affiliation) = build_completer(&model).await?;
+    assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1456,6 +1466,9 @@ pub async fn ingest(
             // constructed — never `body.model.provider`, the string the caller
             // supplied, which `providers::create` is free to ignore.
             caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             source,
             completer,
             focus,
@@ -1526,7 +1539,7 @@ pub async fn ingest_conversation(
         }
     }
 
-    let (completer, caller_capability) = build_completer(&body.model).await?;
+    let (completer, caller_capability, caller_affiliation) = build_completer(&body.model).await?;
     // Issue #56, Gate G. Before the stream opens, and before a single transcript
     // is rendered: this route is the same private -> public laundering primitive
     // as the platform tool, reachable with nothing but the secret key.
@@ -1546,6 +1559,7 @@ pub async fn ingest_conversation(
             // Issue #56. Same rule as the other three macro routes: the tier of
             // the constructed provider, not of the requested name.
             caller_capability,
+            caller_affiliation,
             sessions,
             completer,
             focus,
@@ -1594,8 +1608,8 @@ pub async fn query_kb(
     Path(id): Path<String>,
     Json(body): Json<QueryBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
-    let (completer, caller_capability) = build_completer(&body.model).await?;
-    assert_macro_target_reachable(&svc, &id, caller_capability)?;
+    let (completer, caller_capability, caller_affiliation) = build_completer(&body.model).await?;
+    assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1610,6 +1624,9 @@ pub async fn query_kb(
             // Issue #56. `query` writes — its sub-agent holds kb_write_page,
             // kb_append_log and kb_add_raw_source unconditionally.
             caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             question: body.question,
             completer,
             file_as_page: body.file_as_page.unwrap_or(false),
@@ -1661,16 +1678,20 @@ pub async fn lint(
     // instance to read a tier from and nothing a model can write. It reports
     // Public and the ratchet is a no-op — the same reasoning as the test-mode
     // branch of `build_completer`, and it is not a caller-supplied literal.
-    let (completer, caller_capability): (
+    let (completer, caller_capability, caller_affiliation): (
         Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>>,
         biorouter::privacy::ProviderTier,
+        Option<biorouter::privacy::affiliation::ModelAffiliation>,
     ) = if autofix {
-        let (c, tier) = build_completer(&body.model).await?;
-        (Some(c), tier)
+        let (c, tier, affiliation) = build_completer(&body.model).await?;
+        (Some(c), tier, affiliation)
     } else {
-        (None, biorouter::privacy::ProviderTier::Public)
+        // A read-only lint builds no provider, so there is no institution to
+        // read. `None` pairs with the Public tier beside it — the restrictive
+        // reading on both axes.
+        (None, biorouter::privacy::ProviderTier::Public, None)
     };
-    assert_macro_target_reachable(&svc, &id, caller_capability)?;
+    assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1684,6 +1705,9 @@ pub async fn lint(
             kb_id: id,
             // Issue #56. The tier of the provider the autofix will run on.
             caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             completer,
             autofix,
             bounds: SubAgentBounds::default(),

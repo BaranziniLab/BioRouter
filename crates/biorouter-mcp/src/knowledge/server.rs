@@ -1,4 +1,5 @@
 use crate::knowledge::{
+    affiliation::CallerAffiliation,
     convert::SourceInput,
     service::KnowledgeService,
     store::SearchScope,
@@ -291,6 +292,22 @@ impl KnowledgeServer {
             .unwrap_or(false)
     }
 
+    /// Issue #56 DR-26 / Task 50. The caller's **affiliation**, the third axis,
+    /// off the second `_meta` key.
+    ///
+    /// Delegates to [`crate::knowledge::affiliation::caller_affiliation`] for
+    /// the reason [`Self::caller_is_private`] delegates to its reader: CP1 here
+    /// and CP4 in `agent_drafter` must not drift.
+    ///
+    /// No context — an in-crate unit test, or a caller with no request — reads
+    /// [`CallerAffiliation::Unstated`], which is the restrictive answer and
+    /// matches `caller_is_private`'s `false`.
+    fn caller_affiliation(context: Option<&RequestContext<RoleServer>>) -> CallerAffiliation {
+        context
+            .map(|c| crate::knowledge::affiliation::caller_affiliation(&c.meta))
+            .unwrap_or(CallerAffiliation::Unstated)
+    }
+
     /// The base this call names, or `None` when it names none (issue #56).
     fn gated_kb_id(
         &self,
@@ -332,9 +349,19 @@ impl KnowledgeServer {
     /// only the first. That is why its doc comment ("an explicit `kb_id` always
     /// wins and is never filtered against the session's set") stays true and
     /// this check lives above it rather than inside it.
-    fn assert_kb_reachable(&self, kb_id: &str, caller_private: bool) -> Result<(), ErrorData> {
-        crate::knowledge::tier::assert_reachable(self.service.root(), kb_id, caller_private)
-            .map_err(|e| ErrorData::invalid_request(e.to_string(), None))
+    fn assert_kb_reachable(
+        &self,
+        kb_id: &str,
+        caller_private: bool,
+        caller_affiliation: &CallerAffiliation,
+    ) -> Result<(), ErrorData> {
+        crate::knowledge::tier::assert_reachable(
+            self.service.root(),
+            kb_id,
+            caller_private,
+            caller_affiliation,
+        )
+        .map_err(|e| ErrorData::invalid_request(e.to_string(), None))
     }
 
     /// Whether this caller must be kept away from `kb_id`. The one predicate
@@ -1136,6 +1163,10 @@ impl ServerHandler for KnowledgeServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let caller_private = Self::caller_is_private(Some(&context));
+        // Issue #56 DR-26 / Task 50 Step 1. Read from the SAME request meta as
+        // the bit above, at the same instant, so the two axes of one caller's
+        // identity cannot come from two reads.
+        let caller_affiliation = Self::caller_affiliation(Some(&context));
         let name = request.name.to_string();
 
         if let Some(kb_id) = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))? {
@@ -1146,7 +1177,7 @@ impl ServerHandler for KnowledgeServer {
             // the raise, covers all fourteen — including the ones that resolve
             // an ABSENT id to the session's primary, because `gated_kb_id`
             // resolves it exactly as the tool will.
-            self.assert_kb_reachable(&kb_id, caller_private)?;
+            self.assert_kb_reachable(&kb_id, caller_private, &caller_affiliation)?;
             if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
                 // BEFORE the write: a raise that only lands on success leaves
                 // content in a base whose tier never moved if the write panics
@@ -1171,6 +1202,17 @@ impl ServerHandler for KnowledgeServer {
                 // the failed write left no content.
                 self.service
                     .raise_tier(&kb_id, caller_private)
+                    .map_err(into_err)?;
+                // Issue #56 DR-26 / Task 50 Step 1. BESIDE the tier raise, never
+                // instead of it and never without it: a write that raised the
+                // tier and not the affiliation would put an institution's
+                // content into a base no institution is recorded as owning,
+                // which reads as unclaimed and is therefore reachable from every
+                // other institution's model.
+                // `every_tool_that_ratchets_the_tier_also_records_the_callers_institution`
+                // drives every ratcheting tool through this seam and pins it.
+                self.service
+                    .raise_affiliation(&kb_id, &caller_affiliation)
                     .map_err(into_err)?;
             }
         }
@@ -1794,6 +1836,50 @@ mod tests {
         session_id: Option<&str>,
         caller: Caller,
     ) -> Result<CallToolResult, ErrorData> {
+        call_tool_as_full(
+            srv,
+            name,
+            args,
+            session_id,
+            caller,
+            // Issue #56 DR-26. `Unstated` and not `Local`, so the ~40 existing
+            // callers of this seam keep testing the TIER axis against the
+            // restrictive value: a `Local` default would clear every
+            // institutional base and silently make a future affiliation
+            // assertion vacuous.
+            &CallerAffiliation::Unstated,
+        )
+        .await
+    }
+
+    /// The same seam again, with DR-26's third axis stated. Named separately
+    /// rather than added to the two above so a test that means to exercise
+    /// affiliation says so.
+    async fn call_tool_as_affiliated(
+        srv: &KnowledgeServer,
+        name: &str,
+        args: serde_json::Value,
+        institution: &str,
+    ) -> Result<CallToolResult, ErrorData> {
+        call_tool_as_full(
+            srv,
+            name,
+            args,
+            None,
+            Private,
+            &CallerAffiliation::Institution(institution.to_string()),
+        )
+        .await
+    }
+
+    async fn call_tool_as_full(
+        srv: &KnowledgeServer,
+        name: &str,
+        args: serde_json::Value,
+        session_id: Option<&str>,
+        caller: Caller,
+        affiliation: &CallerAffiliation,
+    ) -> Result<CallToolResult, ErrorData> {
         use tokio::io::AsyncReadExt as _;
 
         let (mut client, server_side) = tokio::io::duplex(64 * 1024);
@@ -1809,6 +1895,15 @@ mod tests {
                 crate::knowledge::tier::capability_meta_value(caller.is_private()).to_string(),
             ),
         );
+        // Issue #56 DR-26 / Task 50. Written through the production formatter,
+        // never a literal: the reader compares against its own spelling, and a
+        // hand-typed copy here would drift silently.
+        if let Some(wire) = crate::knowledge::affiliation::capability_meta_value(affiliation) {
+            meta.0.insert(
+                crate::knowledge::affiliation::CAPABILITY_AFFILIATION_META_KEY.to_string(),
+                serde_json::Value::String(wire),
+            );
+        }
         if let Some(sid) = session_id {
             meta.0.insert(
                 SESSION_ID_META_KEY.to_string(),
@@ -2087,6 +2182,134 @@ mod tests {
                 probe.ratchets
             );
         }
+    }
+
+    /// Issue #56 DR-26 / Task 50 Step 1, and the reason a grep census over
+    /// `raise_tier` call sites was not what got written: this drives the SAME
+    /// probe table through the SAME seam and asserts the affiliation ratchet
+    /// fires wherever the tier one does.
+    ///
+    /// ⚠ **A tool that raised the tier and not the affiliation is the hole.**
+    /// It would put a UCSF chat's content into a base no institution is
+    /// recorded as owning, which reads as unclaimed and is therefore reachable
+    /// from every other institution's model — a laundering path with no gate
+    /// crossed. `every_tool_the_router_exposes_is_classified_by_the_probe_table`
+    /// is what keeps this parameterisation exhaustive as tools are added.
+    #[tokio::test]
+    async fn every_tool_that_ratchets_the_tier_also_records_the_callers_institution() {
+        for probe in KB_TOOL_PROBES {
+            let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
+            let _ =
+                call_tool_as_affiliated(&srv, probe.name, probe.args_for("default"), "ucsf").await;
+
+            let owners = crate::knowledge::tier::affiliation(&root, "default");
+            let recorded = owners.owners().expect("a readable store").contains("ucsf");
+            assert_eq!(
+                recorded, probe.ratchets,
+                "{} ratchets={} on the tier axis, but the affiliation store says \
+                 recorded={recorded}",
+                probe.name, probe.ratchets
+            );
+        }
+    }
+
+    /// The end-to-end shape of DR-26 for knowledge bases, through CP1: a base
+    /// two institutions' content has landed in is reachable from **neither** of
+    /// their models. Both callers are PRIVATE, so every tier gate in this
+    /// campaign says yes and only the third axis refuses.
+    ///
+    /// ⚠ **The two-owner state is seeded through the production ratchet, not by
+    /// writing twice, and the reason is a finding worth recording.** With the
+    /// barrier ABOVE the raise at this choke point (`call_tool`), a second
+    /// institution's write is refused *before* it can add itself — so a base
+    /// cannot accumulate two owners through `kb_*` at all. The state is still
+    /// reachable: a hand-edited store, Step 3's cross-session ingest, and any
+    /// future KB-scoped grant (which DR-26 requires and this task does not
+    /// ship — see `tier::cross_affiliation_refusal`) each produce it. That is
+    /// exactly why `affiliation::reachable` must not stop at the first matching
+    /// owner, and why this asserts the refusal rather than assuming the state is
+    /// unreachable.
+    #[tokio::test]
+    async fn a_base_two_institutions_wrote_into_is_out_of_reach_of_both() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&["shared"]);
+
+        // A UCSF chat writes: permitted, and it claims the base.
+        call_tool_as_affiliated(
+            &srv,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "shared",
+                "path": "knowledge/ucsf.md",
+                "content": "SENTINEL-UCSF",
+                "commit_message": "m",
+            }),
+            "ucsf",
+        )
+        .await
+        .expect("a UCSF chat may write into an unclaimed base");
+
+        // Stanford's write is refused by the barrier — which is the control
+        // working, and the reason the second owner has to be seeded through the
+        // production ratchet instead.
+        let refused = call_tool_as_affiliated(
+            &srv,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "shared",
+                "path": "knowledge/stanford.md",
+                "content": "SENTINEL-STANFORD",
+                "commit_message": "m",
+            }),
+            "stanford",
+        )
+        .await
+        .expect_err("a Stanford chat may not write into a base holding UCSF content");
+        assert!(refused.to_string().contains("Cross-institutional"));
+
+        srv.service
+            .raise_affiliation(
+                "shared",
+                &CallerAffiliation::Institution("stanford".to_string()),
+            )
+            .unwrap();
+
+        let owners = crate::knowledge::tier::affiliation(&root, "shared");
+        let owners = owners.owners().expect("a readable store");
+        assert!(
+            owners.contains("ucsf") && owners.contains("stanford"),
+            "{owners:?}"
+        );
+
+        // Now neither institution's model may read it.
+        for institution in ["ucsf", "stanford"] {
+            let err = call_tool_as_affiliated(
+                &srv,
+                "kb_search",
+                serde_json::json!({ "kb_id": "shared", "query": "SENTINEL" }),
+                institution,
+            )
+            .await
+            .expect_err("a model matching only one of two owners is a mismatch");
+            let msg = err.to_string();
+            assert!(msg.contains("Cross-institutional"), "{msg}");
+            assert!(msg.contains("ucsf") && msg.contains("stanford"), "{msg}");
+            assert!(
+                !msg.contains("SENTINEL"),
+                "the refusal carried content: {msg}"
+            );
+        }
+
+        // …and a local model still reaches it, because no transfer occurs.
+        call_tool_as_full(
+            &srv,
+            "kb_search",
+            serde_json::json!({ "kb_id": "shared", "query": "SENTINEL" }),
+            None,
+            Private,
+            &CallerAffiliation::Local,
+        )
+        .await
+        .expect("a local model reaches every private base");
     }
 
     /// The claim on `KB_ID_GATED_TOOLS` — that a twentieth `kb_*` tool is

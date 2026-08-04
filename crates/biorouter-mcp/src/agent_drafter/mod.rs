@@ -1397,6 +1397,10 @@ fn stage_full_payload(
     include: Option<&serde_json::Value>,
     // Issue #56 (CP4). The capability of the session that asked for the export.
     caller_is_private: bool,
+    // Issue #56 DR-26 / Task 50. Whose agreements cover that session's model —
+    // the third axis, threaded beside the tier so the barrier below asks one
+    // caller's whole identity rather than half of it.
+    caller_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
 ) -> StagedPayload {
     let agent = manifest.agent.clone().unwrap_or_default();
 
@@ -1434,9 +1438,12 @@ fn stage_full_payload(
                     // export, matching `search_visible_bases`: the rest of the
                     // payload is still useful and the user is told what was left
                     // out.
-                    if let Err(e) =
-                        crate::knowledge::tier::assert_reachable(svc.root(), kb, caller_is_private)
-                    {
+                    if let Err(e) = crate::knowledge::tier::assert_reachable(
+                        svc.root(),
+                        kb,
+                        caller_is_private,
+                        caller_affiliation,
+                    ) {
                         out.notes
                             .push(format!("skipped knowledge base '{kb}': {e}"));
                         continue;
@@ -1602,8 +1609,12 @@ impl AgentDrafterServer {
         &self,
         params: Parameters<ExportAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.export_app_inner(params.0, /* caller_is_private */ false)
-            .await
+        self.export_app_inner(
+            params.0,
+            /* caller_is_private */ false,
+            Default::default(),
+        )
+        .await
     }
 
     async fn configure_app_public(
@@ -1638,6 +1649,15 @@ impl AgentDrafterServer {
     /// silently stops matching the day the key changes.
     fn caller_is_private(context: &RequestContext<RoleServer>) -> bool {
         crate::knowledge::tier::caller_is_private(&context.meta)
+    }
+
+    /// The caller's **affiliation**, from the same request meta (issue #56,
+    /// DR-26 / Task 50). Delegates for the reason above: CP4 and CP1 must read
+    /// one key with one reader.
+    fn caller_affiliation(
+        context: &RequestContext<RoleServer>,
+    ) -> crate::knowledge::affiliation::CallerAffiliation {
+        crate::knowledge::affiliation::caller_affiliation(&context.meta)
     }
 
     /// The chat session id carried in a tool call's request meta, if present.
@@ -2871,14 +2891,19 @@ impl AgentDrafterServer {
         // Split into an `_inner` exactly like `create_app`/`create_app_inner`
         // above: the eight unit tests below drive the body without fabricating a
         // `RequestContext`, and the capability still enters at the one seam.
-        self.export_app_inner(params.0, Self::caller_is_private(&context))
-            .await
+        self.export_app_inner(
+            params.0,
+            Self::caller_is_private(&context),
+            Self::caller_affiliation(&context),
+        )
+        .await
     }
 
     async fn export_app_inner(
         &self,
         p: ExportAppParams,
         caller_is_private: bool,
+        caller_affiliation: crate::knowledge::affiliation::CallerAffiliation,
     ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         if !store.exists(&p.id) {
@@ -2926,7 +2951,13 @@ impl AgentDrafterServer {
         let manifest = store.load_manifest(&p.id).map_err(internal)?;
 
         let staged = if mode == "full" {
-            stage_full_payload(&manifest, &target, p.include.as_ref(), caller_is_private)
+            stage_full_payload(
+                &manifest,
+                &target,
+                p.include.as_ref(),
+                caller_is_private,
+                &caller_affiliation,
+            )
         } else {
             StagedPayload::empty()
         };
@@ -4209,6 +4240,7 @@ br.run("hello", "#missing");
                     ..Default::default()
                 },
                 /* caller_is_private */ false,
+                Default::default(),
             )
             .await
             .unwrap();
@@ -4243,6 +4275,7 @@ br.run("hello", "#missing");
                 ..Default::default()
             },
             /* caller_is_private */ true,
+            Default::default(),
         )
         .await
         .unwrap();

@@ -446,6 +446,23 @@ impl KnowledgeService {
         crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)
     }
 
+    /// Take the root lock and record that this base now holds content belonging
+    /// to the caller's institution (issue #56, DR-26 / Task 50 Step 1).
+    ///
+    /// The affiliation twin of [`Self::raise_tier`], with its lock discipline
+    /// and its deadlock rule. ⚠ **Call it wherever `raise_tier` is called and
+    /// nowhere else**: the two axes ratchet together or a base gains an
+    /// institution's content without gaining its owner, which reads as unclaimed
+    /// and is reachable from every other institution's model.
+    pub fn raise_affiliation(
+        &self,
+        kb_id: &str,
+        caller: &crate::knowledge::affiliation::CallerAffiliation,
+    ) -> Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::raise_affiliation_unlocked(&self.root, kb_id, caller)
+    }
+
     /// Take the root lock and SET `kb_id`'s tier on the user's behalf (issue #56
     /// DR-18) — the one call in the tree that can lower one.
     ///

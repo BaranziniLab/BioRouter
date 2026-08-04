@@ -105,12 +105,16 @@ async fn main() -> Result<()> {
             // one binding, which is this caller's whole gate (it has no
             // behavioural row: `[[bin]]` targets are never compiled by
             // `cargo test --lib`).
-            let (completer, caller_capability) = ProviderCompleter::paired(provider_for_task);
+            let (completer, caller_capability, caller_affiliation) =
+                ProviderCompleter::paired(provider_for_task);
             ingest(
                 &svc_for_task,
                 IngestArgs {
                     kb_id,
                     caller_is_private: caller_capability.is_private(),
+                    caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                        caller_affiliation,
+                    ),
                     source: SourceInput::Path(file_path),
                     completer: Box::new(completer),
                     focus: None,

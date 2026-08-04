@@ -69,7 +69,11 @@ const INSTITUTION_PREFIX: &str = "institution:";
 /// wire has no way to distinguish "absent because public" from "absent because
 /// the provider stated nothing" — and both must be read the same restrictive
 /// way here.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// ⚠ **[`Self::Unstated`] is the `Default`**, which is what makes an argument
+/// struct that forgets this axis fail *closed*. `Local` would be the opposite
+/// and is the one value that must never be reached by omission — it is the most
+/// permissive in the model.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum CallerAffiliation {
     /// Runs on this machine; the data never leaves it. The **most** permissive
     /// value — see the module header.
@@ -85,6 +89,7 @@ pub enum CallerAffiliation {
     /// private model with no stated affiliation the same treatment as a foreign
     /// institution's: it mismatches every claimed base. Reading absence as "no
     /// constraint" is the fail-open this axis exists to prevent.
+    #[default]
     Unstated,
 }
 

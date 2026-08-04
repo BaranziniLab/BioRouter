@@ -579,7 +579,13 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         .create_base_as("omop", "OMOP", None, /* caller_is_private */ true)
         .expect("create the private base");
     assert!(biorouter_mcp::knowledge::tier::is_private(kb_root, "omop"));
-    assert!(biorouter_mcp::knowledge::tier::assert_reachable(kb_root, "omop", false).is_err());
+    assert!(biorouter_mcp::knowledge::tier::assert_reachable(
+        kb_root,
+        "omop",
+        false,
+        &biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated,
+    )
+    .is_err());
 
     // 9  G     (Task 11) — conversation ingest.
     let private_row = sm6.get_session(&s6.id, false).await.unwrap();
@@ -722,7 +728,13 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         load_off.contains(PRIVATE_SESSION_TITLE),
         "the chatrecall LOAD guard was still armed with privacy tiers off: {load_off}"
     );
-    assert!(biorouter_mcp::knowledge::tier::assert_reachable(kb_root, "omop", false).is_ok());
+    assert!(biorouter_mcp::knowledge::tier::assert_reachable(
+        kb_root,
+        "omop",
+        false,
+        &biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated,
+    )
+    .is_ok());
     assert!(
         !biorouter::knowledge::conversation_ingest::refuses_every_session(
             ProviderTier::Public,

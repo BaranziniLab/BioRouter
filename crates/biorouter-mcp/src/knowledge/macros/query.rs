@@ -32,6 +32,11 @@ pub struct QueryArgs {
     /// query and a write is a sentence in the system prompt. A prompt is not a
     /// control, so `query` raises like the other two macros.
     pub caller_is_private: bool,
+    /// Whose agreements cover that model — DR-26's third axis (issue #56, Task
+    /// 50). Required for the same reason `caller_is_private` is: an omission
+    /// must be a compile error. `Unstated` is its `Default`, so a caller that
+    /// cannot determine one fails closed.
+    pub caller_affiliation: crate::knowledge::affiliation::CallerAffiliation,
     pub question: String,
     pub completer: Box<dyn Completer>,
     pub file_as_page: bool,
@@ -104,8 +109,16 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     // sub-agent, not after. Task 10C (CP2) puts the barrier on the line above:
     // a `query` reads the whole base into a model's context, which is the
     // disclosure this issue is about even when `file_as_page` is false.
-    crate::knowledge::tier::assert_reachable(svc.root(), &args.kb_id, args.caller_is_private)?;
+    crate::knowledge::tier::assert_reachable(
+        svc.root(),
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
     svc.raise_tier(&args.kb_id, args.caller_is_private)?;
+    // Issue #56 DR-26 / Task 50 Step 1: beside the tier raise, never without
+    // it — see `KnowledgeService::raise_affiliation`.
+    svc.raise_affiliation(&args.kb_id, &args.caller_affiliation)?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the
@@ -325,6 +338,7 @@ mod tests {
             QueryArgs {
                 kb_id: "k".into(),
                 caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "How does zone-2 affect HRV?".into(),
                 completer: Box::new(completer),
                 file_as_page: false,
@@ -374,6 +388,7 @@ mod tests {
             QueryArgs {
                 kb_id: "k".into(),
                 caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "What is zone-2 HRV effect?".into(),
                 completer: Box::new(completer),
                 file_as_page: true,
@@ -434,6 +449,7 @@ mod tests {
             QueryArgs {
                 kb_id: "k".into(),
                 caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "What is the zone-2 HRV effect?".into(),
                 completer: Box::new(completer),
                 file_as_page: true,
@@ -484,6 +500,7 @@ mod tests {
             QueryArgs {
                 kb_id: "k".into(),
                 caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "What is HRV?".into(),
                 completer: Box::new(completer),
                 file_as_page: true,
@@ -550,6 +567,7 @@ mod tests {
             QueryArgs {
                 kb_id: "k".into(),
                 caller_is_private: true,
+                caller_affiliation: Default::default(),
                 question: "what is n?".into(),
                 completer: Box::new(RefusesImmediately),
                 file_as_page: false,

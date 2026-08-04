@@ -307,18 +307,29 @@ mod tests {
             }
             let src = std::fs::read_to_string(p)
                 .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
-            if src.contains(named) {
-                naming.push(rel.clone());
-            }
+            let mut names_it = false;
             for line in src.lines() {
                 let code = line.trim_start();
+                // ⚠ The comment skip covers the NAMING set too, and it did not
+                // until issue #56's Task 49 tripped it: `privacy::grant`'s
+                // header cites this proof-of-user by name to explain why the
+                // cross-affiliation one is a separate type, and the audit read
+                // that sentence as a third site. Prose cannot hold a proof and
+                // cannot construct one, so a file that only *mentions* the type
+                // is not a way to publicize a base — failing on it teaches the
+                // next person to relax the assertion, which is the one repair
+                // that would actually cost something.
                 if code.starts_with("//") {
                     continue;
                 }
+                names_it |= code.contains(named);
                 let hits = code.matches(minted).count();
                 if hits > 0 {
                     *constructions.entry(rel.clone()).or_default() += hits;
                 }
+            }
+            if names_it {
+                naming.push(rel.clone());
             }
         }
         assert!(

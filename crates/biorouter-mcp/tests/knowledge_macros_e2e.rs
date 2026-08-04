@@ -117,6 +117,7 @@ async fn macros_e2e_ingest_query_lint() {
             // Issue #56: this file is the only out-of-`src/` constructor of the
             // macro `Args`, and `cargo test --lib` cannot see it.
             caller_is_private: false,
+            caller_affiliation: Default::default(),
             source: SourceInput::Text {
                 text: "HRV improves after zone-2.".into(),
                 title: Some("HRV note".into()),
@@ -160,6 +161,7 @@ async fn macros_e2e_ingest_query_lint() {
         QueryArgs {
             kb_id: "e2e".into(),
             caller_is_private: false,
+            caller_affiliation: Default::default(),
             question: "Does zone-2 affect HRV?".into(),
             completer: Box::new(query_completer),
             file_as_page: false,
@@ -235,6 +237,7 @@ async fn ingest_supported_path_formats_builds_graph_nodes() {
             IngestArgs {
                 kb_id: "formats".into(),
                 caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Path(path.clone()),
                 completer: Box::new(TestModeCompleter),
                 focus: None,

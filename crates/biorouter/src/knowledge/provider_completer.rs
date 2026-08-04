@@ -52,9 +52,21 @@ impl ProviderCompleter {
     /// `the_completer_and_the_capability_come_from_the_same_provider` assert the
     /// completer and the tier came from the same `Arc` rather than merely from
     /// two calls that agreed.
-    pub fn paired(provider: Arc<dyn Provider>) -> (Self, crate::privacy::ProviderTier) {
+    ///
+    /// Issue #56 DR-26 / Task 50: the AFFILIATION comes off the same `Arc` in
+    /// the same expression, for the reason the tier does. Two reads of one
+    /// provider is how a chat ends up gated on one model's tier and another's
+    /// institution.
+    pub fn paired(
+        provider: Arc<dyn Provider>,
+    ) -> (
+        Self,
+        crate::privacy::ProviderTier,
+        Option<crate::privacy::affiliation::ModelAffiliation>,
+    ) {
         let tier = provider.tier();
-        (Self::new(provider), tier)
+        let affiliation = provider.affiliation();
+        (Self::new(provider), tier, affiliation)
     }
 }
 
@@ -657,16 +669,18 @@ mod tests {
         // directions, and the third assertion is the one that matters: `paired`
         // cannot be implemented as "wrap A, look up B" because there is only one
         // argument.
-        let (_c, tier) = ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Private));
+        let (_c, tier, _a) =
+            ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Private));
         assert_eq!(tier, ProviderTier::Private);
-        let (_c, tier) = ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Public));
+        let (_c, tier, _a) =
+            ProviderCompleter::paired(stub_provider_with_tier(ProviderTier::Public));
         assert_eq!(tier, ProviderTier::Public);
 
         // The completer really wraps the provider whose tier was reported —
         // `ProviderCompleter.provider` is a pub field, so this is a plain
         // pointer comparison and needs no downcast.
         let p = stub_provider_with_tier(ProviderTier::Private);
-        let (c, tier) = ProviderCompleter::paired(Arc::clone(&p));
+        let (c, tier, _a) = ProviderCompleter::paired(Arc::clone(&p));
         assert_eq!(tier, ProviderTier::Private);
         assert!(
             Arc::ptr_eq(&c.provider, &p),

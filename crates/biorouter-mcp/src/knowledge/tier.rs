@@ -46,12 +46,32 @@
 //!    user-writable, and the threat model is "a public model reads private
 //!    notes", not "a local attacker with a shell".
 
+use crate::knowledge::affiliation::{CallerAffiliation, KbAffiliation};
 use crate::knowledge::types::KbTier;
 use anyhow::Result;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-const SCHEMA: u32 = 1;
+/// Bumped 1 -> 2 by DR-26 / Task 50 Step 1, which adds [`Store::affiliations`].
+///
+/// ⚠ **A version stamp, not a gate, and deliberately so.** Nothing reads it —
+/// the store's whole downgrade-safety argument (see [`Store::provenance`]) is
+/// that serde ignores unknown fields, so an older binary reads `bases` exactly
+/// as before and never sees the new map. A reader that *refused* an unfamiliar
+/// schema number would read the file as unparseable, which [`load`] treats as
+/// PRIVATE for every base at once — locking a user out of all their knowledge
+/// bases the first time they ran yesterday's build. The stamp is here so a human
+/// reading the file, or a future migration that genuinely needs to branch, can
+/// tell the two shapes apart.
+///
+/// The "migration" is therefore the absence of the new map: every base written
+/// before this axis existed has no recorded owners and is reachable from every
+/// private model. That is the **Missing** direction of the discipline below —
+/// a fact ("this build never recorded any"), matching the tier migration's
+/// fail-open (AR-2) — and it is not the same as the **Unreadable** direction,
+/// where the answer is unknown and reads restrictively
+/// ([`KbAffiliation::Unknown`]).
+const SCHEMA: u32 = 2;
 
 pub(super) const PUBLIC: &str = "public";
 pub(super) const PRIVATE: &str = "private";
@@ -93,6 +113,24 @@ pub(super) struct Store {
     /// reason can never outlive the value it describes.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub(super) provenance: BTreeMap<String, Provenance>,
+    /// kb id -> the institutions whose content this base holds (issue #56,
+    /// DR-26 / Task 50 Step 1). The **union of what it ingested**, and monotone:
+    /// [`raise_affiliation_unlocked`] only ever adds, and only
+    /// [`forget_unlocked`] removes, when the base itself goes away.
+    ///
+    /// ⚠ **Not an allowlist.** Every id here is an OWNER the reader has to be
+    /// covered by, so a base holding two institutions' content is reachable from
+    /// neither of their models — see
+    /// [`crate::knowledge::affiliation::reachable`]. Reading it as "who may
+    /// reach this", which is what the extension side of DR-26 means by a set, is
+    /// the mistake that fails open.
+    ///
+    /// A THIRD sibling map for the reason [`Self::provenance`] is a second one:
+    /// an older binary parses `bases` unchanged and simply never sees this
+    /// field, where a richer value type would make the whole file unparseable to
+    /// it — and [`load`] reads unparseable as PRIVATE for every base at once.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(super) affiliations: BTreeMap<String, BTreeSet<String>>,
 }
 
 /// How a base's tier came to hold the value it holds — written only when a
@@ -113,6 +151,7 @@ impl Default for Store {
             schema: SCHEMA,
             bases: BTreeMap::new(),
             provenance: BTreeMap::new(),
+            affiliations: BTreeMap::new(),
         }
     }
 }
@@ -189,7 +228,16 @@ fn load(root: &Path) -> StoreState {
 pub(super) fn load_for_write(root: &Path) -> Result<Store> {
     match load(root) {
         StoreState::Missing => Ok(Store::default()),
-        StoreState::Parsed(store) => Ok(store),
+        StoreState::Parsed(mut store) => {
+            // The schema-1 -> 2 migration, and the whole of it: the next write
+            // stamps the current version. Nothing branches on the number (see
+            // [`SCHEMA`]), so this is a label being brought up to date rather
+            // than a transformation — the new axis's absence already means
+            // "no owners recorded", which is the correct reading of every store
+            // written before it existed.
+            store.schema = SCHEMA;
+            Ok(store)
+        }
         StoreState::Unreadable => anyhow::bail!(
             "the knowledge-base tier store is unreadable, so it cannot be updated without \
              erasing the classifications already in it. Repair or remove {}",
@@ -306,6 +354,148 @@ pub fn is_private(root: &Path, kb_id: &str) -> bool {
     }
 }
 
+/// Whose content this base holds (issue #56, DR-26 / Task 50 Step 1).
+///
+/// Lock-free, like every other reader here.
+///
+/// The three states of [`load`] map onto DR-26's discipline exactly as the tier
+/// does, and the mapping is the whole of Step 0's "fail closed" warning:
+///
+/// * **Missing** — the store has never been written, so nothing was ever
+///   recorded. `Owners(∅)`: no institution claims this content, and inventing a
+///   constraint nobody wrote down would lock a user out of their own notes.
+///   Matches the tier's fail-open migration (AR-2).
+/// * **Parsed** — whatever the ratchet recorded, `Owners(∅)` for a base it never
+///   touched.
+/// * **Unreadable** — the answer is *unknown*, which is emphatically not "no
+///   constraint": [`KbAffiliation::Unknown`], reachable only from a local model.
+///   The one exception is a base with no directory, which has nothing to leak
+///   and must stay creatable — decision (3)'s third direction, the same
+///   exception [`is_private`] makes.
+pub fn affiliation(root: &Path, kb_id: &str) -> KbAffiliation {
+    match load(root) {
+        StoreState::Missing => KbAffiliation::Owners(BTreeSet::new()),
+        StoreState::Parsed(store) => KbAffiliation::Owners(
+            store
+                .affiliations
+                .get(kb_id)
+                .cloned()
+                .unwrap_or_else(BTreeSet::new),
+        ),
+        StoreState::Unreadable => {
+            if super::paths::kb_root(root, kb_id).exists() {
+                KbAffiliation::Unknown
+            } else {
+                KbAffiliation::Owners(BTreeSet::new())
+            }
+        }
+    }
+}
+
+/// Monotone, on DR-26's third axis. Adds the caller's institution to the set of
+/// institutions whose content this base holds, and can never remove one.
+///
+/// ⚠ **It ratchets wherever [`raise_unlocked`] does, and that pairing is the
+/// control.** A write that raised the tier and not the affiliation would put an
+/// institution's content into a base that no institution is recorded as owning
+/// — which reads as unclaimed and is therefore reachable from every other
+/// institution's model. The pairing is pinned through production by
+/// `server::tests::every_tool_that_ratchets_the_tier_also_records_the_callers_institution`,
+/// which drives the SAME probe table the tier ratchet is proved with — a grep
+/// census over call sites was considered and rejected: it would have counted
+/// test constructions and said nothing about whether the raise actually ran.
+///
+/// [`CallerAffiliation::Local`] and [`CallerAffiliation::Unstated`] add nothing,
+/// for two different reasons that happen to agree:
+///
+/// * `Local` genuinely contributes no institution's data — the content came off
+///   this machine, and no agreement governs it.
+/// * `Unstated` is the absence of an answer, and the alternative (recording a
+///   sentinel owner) would make the base **permanently** unreachable from every
+///   institutional model with no declassification path, which AR-1 rejects. It
+///   is the same direction the tier ratchet already takes for an absent `_meta`
+///   key, where the caller collapses to public and nothing is raised. What
+///   protects the base is the barrier, not this: an unstated caller cannot READ
+///   a base any institution claims.
+///
+/// DR-15 / AR-7: with the master toggle off, nothing ratchets — a ratchet that
+/// kept firing would be a deferred, permanent impact on a feature the user
+/// turned off, and this axis is monotone in exactly the way the tier is.
+pub fn raise_affiliation_unlocked(
+    root: &Path,
+    kb_id: &str,
+    caller: &CallerAffiliation,
+) -> Result<()> {
+    if !crate::privacy_toggle::privacy_tiers_enabled() {
+        return Ok(());
+    }
+    let CallerAffiliation::Institution(id) = caller else {
+        return Ok(());
+    };
+    let mut store = load_for_write(root)?;
+    let owners = store.affiliations.entry(kb_id.to_string()).or_default();
+    if !owners.insert(id.clone()) {
+        // Already recorded. Skipping the write keeps a read-heavy path from
+        // rewriting the store on every tool call.
+        return Ok(());
+    }
+    save(root, &store)
+}
+
+/// The words a knowledge-base cross-institutional mismatch is stated in.
+///
+/// DR-26 makes the warning the product: "this may be a compliance risk" is a
+/// shrug, and a user can only accept a risk that was stated to them. So it names
+/// the institution(s) whose content the base holds and the institution whose
+/// agreements cover the bound model — and, like [`KB_PRIVATE_REFUSAL`], no base
+/// id, no page and no snippet (§14.4).
+///
+/// ⚠ **The remedy it offers is to change the model, not to approve the flow, and
+/// that is a narrowing of DR-26 recorded rather than hidden.** The
+/// cross-affiliation grant (`biorouter::privacy::grant`) is keyed on
+/// (session, EXTENSION, model affiliation) and lives in the session database,
+/// which this crate cannot reach — `assert_reachable` is a synchronous function
+/// in `biorouter-mcp` with no `SessionManager`, by the same crate-boundary
+/// constraint this whole task exists to widen. A KB-scoped grant needs a fourth
+/// carrier across that boundary and a subject that is a base rather than a
+/// connector; until it exists, the actionable statement is the one the model can
+/// act on, which is the shape [`KB_PRIVATE_REFUSAL`] already takes.
+fn cross_affiliation_refusal(owners: &BTreeSet<String>, caller: &CallerAffiliation) -> String {
+    let held_by = if owners.is_empty() {
+        "an institution this build cannot determine — the classification store could not be read"
+            .to_string()
+    } else {
+        owners.iter().cloned().collect::<Vec<_>>().join(", ")
+    };
+    let model_side = match caller {
+        CallerAffiliation::Institution(id) => {
+            format!("this chat is bound to a model covered by {id}'s agreements")
+        }
+        // Naming an institution here would be a lie, and "we cannot tell" is
+        // what the user can act on. Same position `affiliation::unstated_model`
+        // takes on the extension side.
+        CallerAffiliation::Unstated => {
+            "this chat is bound to a private model that does not state whose agreements cover it"
+                .to_string()
+        }
+        // Unreachable: a local caller clears every base (`reachable` returns
+        // before comparing). Written as a real arm rather than `unreachable!()`
+        // because a refusal composer is reached from a refusal path, and a panic
+        // there converts a control into an outage.
+        CallerAffiliation::Local => "this chat is bound to a local model".to_string(),
+    };
+    format!(
+        "Cross-institutional data flow. This knowledge base holds content belonging to {held_by}, \
+         and {model_side}. Reading or writing it would send that content across an institutional \
+         boundary. Compliance does not transfer between institutions: a model approved at one has \
+         no permission over another's data unless a BAA, DUA or IRB approval covers this specific \
+         flow. Ask the user to switch this chat to a model covered by that institution's \
+         agreements — Settings > Models, or the model chip in the composer. Do not retry with a \
+         different knowledge base id, through an export, or through a raw-source search; the \
+         boundary is the same everywhere."
+    )
+}
+
 /// The single refusal for CP1..CP4. `Ok(())` permits.
 ///
 /// DR-15's master opt-out is read HERE, at the choke point, and nowhere above
@@ -318,15 +508,46 @@ pub fn is_private(root: &Path, kb_id: &str) -> bool {
 /// A direct read of the process-global rather than a `CallCapability`: this
 /// crate cannot see `biorouter`, which is exactly why the atomic lives in
 /// `crate::privacy_toggle` (see that module).
-pub fn assert_reachable(root: &Path, kb_id: &str, caller_is_private: bool) -> Result<()> {
-    if !crate::privacy_toggle::privacy_tiers_enabled()
-        || caller_is_private
-        || !is_private(root, kb_id)
-    {
+pub fn assert_reachable(
+    root: &Path,
+    kb_id: &str,
+    caller_is_private: bool,
+    caller_affiliation: &CallerAffiliation,
+) -> Result<()> {
+    // DR-15's master opt-out, read ONCE for both axes. Neither the tier check
+    // below nor DR-26's runs with the feature off, and reading the toggle twice
+    // is the two-reads race in miniature.
+    if !crate::privacy_toggle::privacy_tiers_enabled() {
         return Ok(());
     }
-    anyhow::bail!(KB_PRIVATE_REFUSAL)
+    if !caller_is_private {
+        // The tier axis has the whole answer for a public caller: it is refused
+        // outright if the base is private, and if the base is public there is no
+        // institutional boundary to cross either. Stating a second, different
+        // reason for one crossing is what
+        // `gate_cross_affiliation`'s tier guard avoids on the extension side.
+        return if is_private(root, kb_id) {
+            anyhow::bail!(KB_PRIVATE_REFUSAL)
+        } else {
+            Ok(())
+        };
+    }
+    // Issue #56 DR-26 / Task 50 Step 1: the caller is private, so the tier axis
+    // permits and the remaining question is *under whose agreements*.
+    let held = affiliation(root, kb_id);
+    if crate::knowledge::affiliation::reachable(caller_affiliation, &held) {
+        return Ok(());
+    }
+    anyhow::bail!(cross_affiliation_refusal(
+        held.owners().unwrap_or(&EMPTY_OWNERS),
+        caller_affiliation
+    ))
 }
+
+/// The owner set a refusal names when there is none to name — an unreadable
+/// store, where [`KbAffiliation::Unknown`] carries no institutions.
+static EMPTY_OWNERS: std::sync::LazyLock<BTreeSet<String>> =
+    std::sync::LazyLock::new(BTreeSet::new);
 
 /// Monotone. Registers `kb_id` at the caller's tier if absent, raises it to
 /// private if the caller is private, and can never lower an existing ENTRY.
@@ -422,7 +643,13 @@ pub fn forget_unlocked(root: &Path, kb_id: &str) -> Result<()> {
     // something went wrong, and leaving it would hand a base created later under
     // the same id a history that is not its own.
     let had_provenance = store.provenance.remove(kb_id).is_some();
-    if store.bases.remove(kb_id).is_none() && !had_provenance {
+    // Issue #56 DR-26 / Task 50 Step 1: the third map, for the reason the second
+    // one is dropped here. An id reused after a delete must be classified by its
+    // own creator on BOTH axes — inheriting the owners of a base that no longer
+    // exists would make a fresh base unreachable from the model that just made
+    // it, with nothing on screen to explain why.
+    let had_affiliation = store.affiliations.remove(kb_id).is_some();
+    if store.bases.remove(kb_id).is_none() && !had_provenance && !had_affiliation {
         return Ok(());
     }
     save(root, &store)
@@ -560,7 +787,13 @@ mod tests {
         let (_d, root) = tempdir_with_bases(&["default"]);
         ensure_migrated_unlocked(&root).unwrap();
         assert!(!is_private(&root, "not-created-yet"));
-        assert_reachable(&root, "not-created-yet", /* caller_is_private */ false).unwrap();
+        assert_reachable(
+            &root,
+            "not-created-yet",
+            /* caller_is_private */ false,
+            &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
+        .unwrap();
     }
 
     #[test]
@@ -789,10 +1022,205 @@ mod tests {
         let (_d, root) = tempdir_with_bases(&["omop"]);
         ensure_migrated_unlocked(&root).unwrap();
         raise_unlocked(&root, "omop", true).unwrap();
-        let s = assert_reachable(&root, "omop", false)
-            .unwrap_err()
-            .to_string();
+        let s = assert_reachable(
+            &root,
+            "omop",
+            false,
+            &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(s.contains("private model"));
         assert!(!s.contains("omop"), "the refusal named the base: {s}");
+    }
+
+    // ------------------------------------------------- DR-26 / Task 50 Step 1:
+    // a base's affiliation is the union of what it ingested, and it ratchets.
+
+    use crate::knowledge::affiliation::{CallerAffiliation, KbAffiliation};
+
+    fn bound(name: &str) -> CallerAffiliation {
+        CallerAffiliation::Institution(name.to_string())
+    }
+
+    fn owners_of(root: &Path, kb_id: &str) -> Vec<String> {
+        match affiliation(root, kb_id) {
+            KbAffiliation::Owners(o) => o.into_iter().collect(),
+            KbAffiliation::Unknown => panic!("the owners of {kb_id} were unreadable"),
+        }
+    }
+
+    /// DR-26's sentence, made executable: "a knowledge base's affiliation is the
+    /// **union** of what they ingested and ratchets like classification".
+    ///
+    /// The headline row of Task 50's gate is the last assertion — a base holding
+    /// two institutions' content is reachable from **neither** of their models,
+    /// because a model matching only one of the owners is a mismatch. That is
+    /// the opposite of the extension side's allowlist, and it is what an
+    /// implementation reaching for `contains` gets wrong.
+    #[test]
+    fn a_bases_affiliation_is_the_union_of_the_institutions_that_wrote_into_it() {
+        let (_d, root) = tempdir_with_bases(&["shared"]);
+        ensure_migrated_unlocked(&root).unwrap();
+
+        raise_affiliation_unlocked(&root, "shared", &bound("ucsf")).unwrap();
+        assert_eq!(owners_of(&root, "shared"), vec!["ucsf".to_string()]);
+        assert_reachable(&root, "shared", true, &bound("ucsf")).unwrap();
+
+        raise_affiliation_unlocked(&root, "shared", &bound("stanford")).unwrap();
+        assert_eq!(
+            owners_of(&root, "shared"),
+            vec!["stanford".to_string(), "ucsf".to_string()]
+        );
+
+        assert!(
+            assert_reachable(&root, "shared", true, &bound("ucsf")).is_err(),
+            "a UCSF model reached a base that also holds Stanford's content"
+        );
+        assert!(assert_reachable(&root, "shared", true, &bound("stanford")).is_err());
+        // …and a local model still reaches it, because no transfer occurs.
+        assert_reachable(&root, "shared", true, &CallerAffiliation::Local).unwrap();
+    }
+
+    /// The ratchet is monotone on this axis too: nothing a later caller does
+    /// removes an institution already recorded. A base that has held UCSF
+    /// content holds it permanently.
+    #[test]
+    fn the_affiliation_ratchet_never_drops_an_institution() {
+        let (_d, root) = tempdir_with_bases(&["omop"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_affiliation_unlocked(&root, "omop", &bound("ucsf")).unwrap();
+
+        // A local model writes next: it contributes no institution, and it must
+        // not clear the one already there.
+        raise_affiliation_unlocked(&root, "omop", &CallerAffiliation::Local).unwrap();
+        // …nor does a caller whose affiliation never reached this crate.
+        raise_affiliation_unlocked(&root, "omop", &CallerAffiliation::Unstated).unwrap();
+        assert_eq!(owners_of(&root, "omop"), vec!["ucsf".to_string()]);
+        assert!(assert_reachable(&root, "omop", true, &bound("stanford")).is_err());
+    }
+
+    /// A base nobody has ratcheted — every base that existed before this axis
+    /// did — carries no owners and is reachable from every private model.
+    ///
+    /// This is the **Missing** direction of Step 0's fail-closed rule, not the
+    /// Unreadable one: the affiliations map being absent is a fact ("this build
+    /// never recorded any"), and inventing constraints nobody wrote down is how
+    /// a feature locks a user out of their own notes. It matches the tier
+    /// migration, which made every pre-existing base public (AR-2).
+    #[test]
+    fn a_base_that_predates_this_axis_carries_no_owners() {
+        let (_d, root) = tempdir_with_bases(&["default"]);
+        // A schema-1 store, exactly as an older build wrote it.
+        std::fs::write(
+            crate::knowledge::paths::kb_tiers_path(&root),
+            r#"{"schema":1,"bases":{"default":"private"}}"#,
+        )
+        .unwrap();
+
+        assert!(is_private(&root, "default"), "the tier still reads");
+        assert_eq!(owners_of(&root, "default"), Vec::<String>::new());
+        for caller in [
+            CallerAffiliation::Local,
+            bound("ucsf"),
+            CallerAffiliation::Unstated,
+        ] {
+            assert_reachable(&root, "default", true, &caller).unwrap();
+        }
+    }
+
+    /// The **Unreadable** direction, which is the one Step 0's ⚠ is about: a
+    /// store this build cannot parse means the owners are unknown, and unknown
+    /// must not read as "no constraint". Only a local model — which transfers
+    /// nothing — gets through.
+    #[test]
+    fn an_unreadable_store_makes_an_existing_bases_owners_unknown() {
+        let (_d, root) = tempdir_with_bases(&["omop"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        std::fs::write(
+            crate::knowledge::paths::kb_tiers_path(&root),
+            "{not json at all",
+        )
+        .unwrap();
+
+        assert_eq!(affiliation(&root, "omop"), KbAffiliation::Unknown);
+        assert!(assert_reachable(&root, "omop", true, &bound("ucsf")).is_err());
+        assert!(assert_reachable(&root, "omop", true, &CallerAffiliation::Unstated).is_err());
+        assert_reachable(&root, "omop", true, &CallerAffiliation::Local).unwrap();
+
+        // …but a base that does not exist on disk has nothing to leak, so an
+        // unreadable store must not ban creating or importing one — decision
+        // (3)'s third direction, which `is_private` already keeps.
+        assert_eq!(
+            affiliation(&root, "not-created-yet"),
+            KbAffiliation::Owners(Default::default())
+        );
+        assert_reachable(&root, "not-created-yet", true, &bound("ucsf")).unwrap();
+    }
+
+    /// The refusal is DR-26's product: it must name the institution that owns
+    /// the content and the institution whose model is bound, because a user can
+    /// only act on a risk that was stated to them. It still names no base and no
+    /// page — that half of §14.4 is unchanged.
+    #[test]
+    fn the_cross_institutional_refusal_names_both_sides_and_no_content() {
+        let (_d, root) = tempdir_with_bases(&["omop-cohort-412"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_affiliation_unlocked(&root, "omop-cohort-412", &bound("ucsf")).unwrap();
+
+        let s = assert_reachable(&root, "omop-cohort-412", true, &bound("stanford"))
+            .unwrap_err()
+            .to_string();
+        assert!(s.contains("ucsf"), "the owning institution: {s}");
+        assert!(s.contains("stanford"), "the bound institution: {s}");
+        assert!(
+            s.contains("does not transfer"),
+            "why compliance does not carry over: {s}"
+        );
+        assert!(!s.contains("omop-cohort-412"), "named the base: {s}");
+
+        // The unstated-model arm names no institution for the model side rather
+        // than inventing one — "we cannot tell" is the actionable statement.
+        let unstated =
+            assert_reachable(&root, "omop-cohort-412", true, &CallerAffiliation::Unstated)
+                .unwrap_err()
+                .to_string();
+        assert!(unstated.contains("ucsf"), "{unstated}");
+        assert!(
+            unstated.contains("does not state"),
+            "the unstated arm must say so: {unstated}"
+        );
+    }
+
+    /// Deleting a base drops BOTH axes, so an id reused later is classified by
+    /// its own creator rather than by a base that no longer exists — the
+    /// affiliation half of `deleting_a_base_forgets_its_tier_so_the_id_can_be_reused`.
+    #[test]
+    fn deleting_a_base_forgets_its_affiliation_too() {
+        let (_d, root) = tempdir_with_bases(&["omop"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_affiliation_unlocked(&root, "omop", &bound("ucsf")).unwrap();
+        forget_unlocked(&root, "omop").unwrap();
+        assert_eq!(owners_of(&root, "omop"), Vec::<String>::new());
+        assert_reachable(&root, "omop", true, &bound("stanford")).unwrap();
+    }
+
+    /// A store this build writes carries schema 2, and an older build still
+    /// reads its `bases` map — the downgrade-safety argument on [`Store`],
+    /// which is why the new axis is a sibling map rather than a richer value
+    /// type. A downgrade that could not parse the file at all would read every
+    /// base PRIVATE and lock the user out of all of them at once.
+    #[test]
+    fn a_schema_two_store_is_still_readable_by_a_reader_that_knows_only_bases() {
+        let (_d, root) = tempdir_with_bases(&["omop"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_unlocked(&root, "omop", true).unwrap();
+        raise_affiliation_unlocked(&root, "omop", &bound("ucsf")).unwrap();
+
+        let raw = std::fs::read_to_string(crate::knowledge::paths::kb_tiers_path(&root)).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed["schema"], 2);
+        assert_eq!(parsed["bases"]["omop"], "private");
+        assert_eq!(parsed["affiliations"]["omop"][0], "ucsf");
     }
 }
