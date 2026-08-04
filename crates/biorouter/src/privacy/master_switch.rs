@@ -188,6 +188,15 @@ pub fn write_for(config: &Config, enabled: bool) -> std::io::Result<()> {
 /// returns `false`, so the user's answer is preserved for the next attempt
 /// rather than destroyed by a half-finished migration. The interim resolves to
 /// ON, which is the safe direction and is what a failed read has always meant.
+///
+/// ⚠ **The key is deleted only when it was there.** [`Config::delete`] does not
+/// check presence — it loads the mapping, removes nothing, and saves it back
+/// through `save_values`, which takes a backup and re-serialises the whole file.
+/// Called unconditionally it would rewrite every user's hand-maintained
+/// `config.yaml` on the first start after the upgrade, stripping comments and
+/// formatting to remove a key that was never there, and would make both hosts
+/// write that file at startup on that one launch through a staging path
+/// (`config.tmp`) that is not per process.
 pub fn migrate_once(config: &Config) -> bool {
     let dir = dir_of(config);
     if exists_in(&dir) {
@@ -199,17 +208,20 @@ pub fn migrate_once(config: &Config) -> bool {
     // `BIOROUTER_PRIVACY_TIERS=off biorouterd` a one-token disable, and a
     // migration that honoured the environment would hand that lever back on the
     // one start-up where it still mattered.
-    let carried = config
-        .all_values()
-        .ok()
-        .and_then(|values| values.get(super::PRIVACY_TIERS_CONFIG_KEY).cloned())
-        .and_then(|value| super::privacy_tiers_value_is_on(&value));
+    let values = config.all_values().ok();
+    let recorded = values
+        .as_ref()
+        .and_then(|values| values.get(super::PRIVACY_TIERS_CONFIG_KEY));
+    let carried = recorded.and_then(super::privacy_tiers_value_is_on);
+    let key_was_present = recorded.is_some();
     if write_in(&dir, carried.unwrap_or(true)).is_err() {
         return false;
     }
-    // `delete` on an absent key is not an error worth reporting: the common case
-    // is a fresh install that never had one, and the store is already written.
-    let _ = config.delete(super::PRIVACY_TIERS_CONFIG_KEY);
+    if key_was_present {
+        // An error here is not worth reporting: the store is already written, so
+        // the key is inert whether or not it goes.
+        let _ = config.delete(super::PRIVACY_TIERS_CONFIG_KEY);
+    }
     true
 }
 
@@ -295,6 +307,35 @@ mod tests {
                 .unwrap()
                 .contains_key(super::super::PRIVACY_TIERS_CONFIG_KEY),
             "the migration must remove the key, not leave it beside the store to drift"
+        );
+    }
+
+    /// The migration must not touch `config.yaml` on an install that never had
+    /// the key — which is ~every install.
+    ///
+    /// [`Config::delete`] does not check presence: it loads the mapping, removes
+    /// nothing, and hands the result to `save_values`, which takes a backup and
+    /// re-serialises the whole file. So an unconditional delete rewrites every
+    /// user's hand-maintained `config.yaml` on the first start after the upgrade
+    /// — stripping their comments and formatting to remove a key that was never
+    /// there — and it makes BOTH hosts, `biorouterd` and the CLI, write that
+    /// file at startup on that one launch, through a staging path
+    /// (`config.tmp`) that is not per process.
+    #[test]
+    fn an_install_that_never_had_the_key_keeps_its_config_file_byte_for_byte() {
+        let dir = tempfile::tempdir().unwrap();
+        let config_path = dir.path().join("config.yaml");
+        let hand_written = "# the user wrote this comment\nBIOROUTER_MODEL: gpt-4o\n";
+        std::fs::write(&config_path, hand_written).unwrap();
+        let config =
+            Config::new_with_file_secrets(config_path.clone(), dir.path().join("secrets.yaml"))
+                .expect("scratch config");
+
+        assert!(migrate_once(&config));
+        assert_eq!(
+            std::fs::read_to_string(&config_path).unwrap(),
+            hand_written,
+            "the migration rewrote a config.yaml it had nothing to remove from"
         );
     }
 
