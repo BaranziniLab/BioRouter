@@ -35,15 +35,36 @@ If you use Biorouter, Copilot, Claude, or other AI tools to help with your PRs:
 - Document your changes  
 - Ask for review if security or core code is involved  
 
+**⛔ Enforced by CI**
+
+- **Strip AI co-author trailers before you push.** The `no-ai-coauthor` check
+  rejects any commit message containing a `Co-Authored-By:` line naming an AI tool
+  (Anthropic, Claude, OpenAI, ChatGPT, Gemini, Copilot) — and several of these tools
+  add that trailer by default. It is a *required* status check, so one such trailer
+  anywhere in your branch blocks the merge until you rewrite the message.
+
 👉 Full guide here: [Responsible AI-Assisted Coding Guide](./HOWTOAI.md)
 
 ---
 
 ## Prerequisites
 
-Biorouter includes rust binaries alongside an electron app for the GUI. To work
-on the rust backend, you will need to [install rust and cargo][rustup]. To work
-on the App, you will also need to [install node and npm][nvm] - we recommend through nvm.
+Biorouter includes rust binaries alongside an electron app for the GUI.
+
+**Rust.** [Install rust and cargo][rustup]. You do not need to pick a version:
+`rust-toolchain.toml` pins the channel (currently `1.92`) and rustup selects it
+automatically inside the repo.
+
+**Node 24.** `ui/desktop/package.json` declares `"engines": { "node": "^24.0.0" }`.
+The easiest way to get a matching Node is the hermit environment that ships with
+the repo — `source bin/activate-hermit` (see [Getting Started](#getting-started))
+puts Node 24 on your PATH, so it is the recommended path. If you would rather
+manage it yourself, [install node and npm][nvm] through nvm and select 24.
+
+A newer Node is not a safe substitute, and it fails in ways that look like
+application bugs rather than version problems: under Node 26 `electron-forge
+package` exits 0 without producing an `.app`, and the `macos-alias` / `appdmg`
+native modules the macOS dmg maker needs only build under Node 24.
 
 We provide a shortcut to standard commands using [just][just] in our `justfile`.
 
@@ -108,7 +129,25 @@ just run-ui
 This command builds a release build of Rust (equivalent to `cargo build -r`) and starts the Electron process.
 The app opens a window and displays first-time setup. After completing setup, Biorouter is ready for use.
 
-Make GUI changes in `ui/desktop`.
+Make GUI changes in `ui/desktop`. When you do, run the frontend checks from that
+directory:
+
+```
+npm run test:run    # vitest unit tests
+npm run lint:check  # typecheck + eslint (zero warnings) + theme codegen + contrast
+```
+
+`npm run test:run` is **required to merge** — it is the `Unit tests (vitest)`
+status check on `main`, and it runs on every pull request whether or not you
+touched `ui/desktop`. `npm run lint:check` is the same set of gates as the CI
+`Static checks` job; that job runs on every pull request but is *not* a required
+check, so it will not block a merge on its own.
+
+### Running every check at once
+
+`just check-everything` is the single precommit entry point. It chains
+`cargo fmt`, the clippy lint script, `npm run lint:check`, the OpenAPI schema
+check, and the version, brand, and cross-compile-drift consistency checks.
 
 ### Regenerating the OpenAPI schema
 
@@ -131,8 +170,13 @@ To debug the Biorouter server, run it from an IDE. The configuration will depend
 
 ```
 export BIOROUTER_SERVER__SECRET_KEY=test
-cargo run --package biorouter-server --bin biorouterd -- agent   # or: `just run-server`
+cargo run --package biorouter-server --bin biorouterd -- agent   # or: `just debug-server`
 ```
+
+`just debug-server` is the recipe that sets `BIOROUTER_SERVER__SECRET_KEY=test`, so
+it pairs with `just debug-ui` below (which sends `X-Secret-Key: test`). Plain
+`just run-server` does **not** set the secret, and a UI started with `just debug-ui`
+cannot talk to it.
 
 The server listens on port `3000` by default; this can be changed by setting the
 `BIOROUTER_PORT` environment variable.
@@ -264,19 +308,7 @@ export BIOROUTER_PATH_ROOT="/tmp/biorouter-test"
 BIOROUTER_PATH_ROOT="/tmp/biorouter-dev" cargo run -p biorouter-cli -- session
 ```
 
-This creates isolated `config/`, `data/`, and `state/` directories under the specified path, preventing your test sessions from affecting your main Biorouter installation. See the [environment variables guide](http://biorouter.ucsf.edu/docs/guides/environment-variables) for more details.
-
-## Enable traces in Biorouter with [locally hosted Langfuse](https://langfuse.com/docs/deployment/self-host)
-
-- Start a local Langfuse using the docs [here](https://langfuse.com/self-hosting/docker-compose). Create an organization and project and create API credentials.
-- Set the environment variables so that Biorouter can connect to the langfuse server:
-
-```
-export LANGFUSE_INIT_PROJECT_PUBLIC_KEY=publickey-local
-export LANGFUSE_INIT_PROJECT_SECRET_KEY=secretkey-local
-```
-
-Then you can view your traces at http://localhost:3000
+This creates isolated `config/`, `data/`, and `state/` directories under the specified path, preventing your test sessions from affecting your main Biorouter installation. See the [environment variables reference](docs/configuration/environment-variables.md) for more details.
 
 ## Conventional Commits
 
@@ -289,17 +321,22 @@ This project follows the [Conventional Commits](https://www.conventionalcommits.
 
 ## Developer Certificate of Origin
 
-This project requires a [Developer Certificate of Origin](https://en.wikipedia.org/wiki/Developer_Certificate_of_Origin) sign-offs on all commits. This is a statement indicating that you are allowed to make the contribution and that the project has the right to distribute it under its license. When you are ready to commit, use the `--signoff` flag to attach the sign-off to your commit.
+We ask contributors to add a [Developer Certificate of Origin](https://en.wikipedia.org/wiki/Developer_Certificate_of_Origin) sign-off to their commits. This is a statement indicating that you are allowed to make the contribution and that the project has the right to distribute it under its license. When you are ready to commit, use the `--signoff` flag to attach the sign-off to your commit.
 
 ```
 git commit --signoff ...
 ```
 
+Sign-off is currently a request, not a gate: there is no DCO check among the
+repository's workflows and it is not one of the required status checks, so a
+missing sign-off will not block your pull request. Most of the existing history
+predates the practice.
+
 ## Contributing workflows
 
 Workflows are reusable, shareable YAML files that capture a Biorouter session so
 others can run it. Documentation and examples live in
-[`docs/guides/workflows/`](docs/guides/workflows/). To share one with the
+[`docs/workflows/`](docs/workflows/). To share one with the
 community, open a submission using the
 [`Submit a workflow`](.github/ISSUE_TEMPLATE/submit-workflow.yml) GitHub issue
 template and paste your YAML into the form — we'll review it and add it to the
@@ -307,12 +344,16 @@ cookbook.
 
 ## Other Ways to Contribute
 
-There are numerous ways to be an open source contributor and contribute to Biorouter. We're here to help you on your way! Here are some suggestions to get started. If you have any questions or need help, feel free to reach out to us on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
+There are numerous ways to be an open source contributor and contribute to Biorouter. We're here to help you on your way! Here are some suggestions to get started. If you have any questions or need help, feel free to reach out to us by [opening an issue](https://github.com/BaranziniLab/biorouter/issues).
+
+> [!NOTE]
+> GitHub Discussions is not enabled on this repository. Issues are the public
+> venue for questions, feedback, and proposals.
 
 - **Stars on GitHub:** If you resonate with our project and find it valuable, consider starring Biorouter on GitHub! 🌟
-- **Ask Questions:** Your questions not only help us improve but also benefit the community. If you have a question, don't hesitate to ask it on [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
-- **Give Feedback:** Have a feature you want to see or encounter an issue with Biorouter, [click here to open an issue](https://github.com/BaranziniLab/biorouter/issues/new/choose) or [start a discussion](https://github.com/BaranziniLab/biorouter/discussions).
+- **Ask Questions:** Your questions not only help us improve but also benefit the community. If you have a question, don't hesitate to [open an issue](https://github.com/BaranziniLab/biorouter/issues/new/choose).
+- **Give Feedback:** Have a feature you want to see or encounter an issue with Biorouter? [Click here to open an issue](https://github.com/BaranziniLab/biorouter/issues/new/choose).
 - **Improve Documentation:** Good documentation is key to the success of any project. You can help improve the quality of our existing docs or add new pages.
-- **Help Other Members:** See another community member stuck? Or a contributor blocked by a question you know the answer to? Reply to community threads or do a code review for others to help.
-- **Showcase Your Work:** Working on a project or written a blog post recently? Share it with the community in [GitHub Discussions](https://github.com/BaranziniLab/biorouter/discussions).
+- **Help Other Members:** See another community member stuck? Or a contributor blocked by a question you know the answer to? Reply to open issues or do a code review for others to help.
+- **Showcase Your Work:** Working on a project or written a blog post recently? Share it with the community in an [issue](https://github.com/BaranziniLab/biorouter/issues/new/choose).
 - **Spread the Word:** Help us reach more people by sharing Biorouter's project and website.

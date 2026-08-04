@@ -1,25 +1,37 @@
-# BioRouter Technical Governance and Stewardship
+# Biorouter Technical Governance and Stewardship
 
-Learn about BioRouter's governance structure and how to participate
+Learn about Biorouter's governance structure and how to participate
 
-BioRouter follows a lightweight technical governance model designed to support rapid iteration while maintaining community involvement. This document outlines how the project is organized and how decisions are made.
+Biorouter follows a lightweight technical governance model designed to support rapid iteration while maintaining community involvement. This document outlines how the project is organized and how decisions are made.
+
+> [!IMPORTANT]
+> **Status: target-state model; the roles below are not yet fully populated.**
+> Biorouter is today maintained by a single Core Maintainer — see
+> [MAINTAINERS.md](MAINTAINERS.md) for the current membership. The group is below
+> the three-to-seven size this document aims for, so every rule below that calls
+> for a *majority vote of Core Maintainers* describes how decisions will be made
+> once the group is grown, not how they are made today. Until then, decisions rest
+> with the Core Maintainer listed in MAINTAINERS.md, taken in the open on GitHub.
+> Read this document as the model the project is committing to, and treat any gap
+> between it and MAINTAINERS.md as a gap to be closed by appointing maintainers,
+> not as a description of a body that already exists.
 
 ## Core Values
-BioRouter's governance is guided by three fundamental values:
+Biorouter's governance is guided by three fundamental values:
 
-* **Open**: BioRouter is open source, but we go beyond code availability. We plan and build in the open. Our roadmap as well as BioRouter recipes, extensions, and prompts are editable and shareable. Our goal is to make BioRouter the most hackable agent available.
-* **Flexible**: we prefer open models – but we don't restrict ourselves. BioRouter equally supports remotely deployed frontier models as well as local private models, whether open or proprietary.
-* **Choice**: We're not bound to any one model, protocol, or stack. BioRouter is built for choice and open standards, adapting to your tools, workflow, and identity as a creator.
+* **Open**: Biorouter is open source, but we go beyond code availability. We plan and build in the open. Our roadmap as well as Biorouter recipes, extensions, and prompts are editable and shareable. Our goal is to make Biorouter the most hackable agent available.
+* **Flexible**: we prefer open models – but we don't restrict ourselves. Biorouter equally supports remotely deployed frontier models as well as local private models, whether open or proprietary.
+* **Choice**: We're not bound to any one model, protocol, or stack. Biorouter is built for choice and open standards, adapting to your tools, workflow, and identity as a creator.
 
 ## Roles
 
 ### Contributors
 
-Anyone in the community who contributes to BioRouter through issues, pull requests, or discussions. Community contributions of all kinds, from code and bug reports to feature requests and discussion participation, help ensure BioRouter evolves in directions that serve real user needs and remains aligned with how people actually use the project.
+Anyone in the community who contributes to Biorouter through issues, pull requests, or discussions. Community contributions of all kinds, from code and bug reports to feature requests and discussion participation, help ensure Biorouter evolves in directions that serve real user needs and remains aligned with how people actually use the project.
 
 ### Maintainers
 
-Maintainers are trusted community members responsible for key components of BioRouter. They review pull requests, guide contributors, and ensure technical and community health within their domain.
+Maintainers are trusted community members responsible for key components of Biorouter. They review pull requests, guide contributors, and ensure technical and community health within their domain.
 
 #### Responsibilities
 
@@ -32,16 +44,16 @@ Maintainers have write access to create branches on the repository but not full 
 
 ### Core Maintainers
 
-Core Maintainers have broad technical understanding of BioRouter and are responsible for the project's overall direction, technical consistency, and long-term vision.
+Core Maintainers have broad technical understanding of Biorouter and are responsible for the project's overall direction, technical consistency, and long-term vision.
 
 #### Responsibilities
 
-* Setting the overall technical direction and vision for BioRouter
-* Define and uphold BioRouter's technical direction and principles.
+* Setting the overall technical direction and vision for Biorouter
+* Define and uphold Biorouter's technical direction and principles.
 * Resolve disputes escalated by Maintainers.
 * Appoint and remove Maintainers.
 * Ensure the balance between innovation and stability.
-* Steward BioRouter in the best interest of the open community.
+* Steward Biorouter in the best interest of the open community.
 
 Core Maintainers have admin access across all repositories but use standard contribution workflows (e.g., pull requests) for transparency.
 
@@ -49,9 +61,9 @@ Core Maintainers have admin access across all repositories but use standard cont
 
 ### Day-to-Day Decisions
 
-* Most technical and process decisions are made through consensus in pull requests, GitHub Discussions, or the UCSF Slack.
+* Most technical and process decisions are made through consensus in issues and pull requests on GitHub. GitHub Discussions is not enabled on the repository; issues are the public venue for questions and proposals.
 * Core Maintainers can approve and merge changes quickly when there's clear benefit.
-* Significant architectural changes should have discussion in a GitHub issue or discussion before implementation.
+* Significant architectural changes should be discussed in a GitHub issue before implementation.
 * Core Maintainers may step in when disputes arise or when decisions have project-wide impact.
 
 ### Dispute Resolution
@@ -59,22 +71,22 @@ Core Maintainers have admin access across all repositories but use standard cont
 * If Maintainers cannot reach consensus, the matter is escalated to Core Maintainers.
 * Core Maintainers aim for consensus through discussion.
 * If no resolution is reached after reasonable discussion, Core Maintainers may hold a simple majority vote to resolve the issue.
-* All dispute resolutions should be publicly announced on GitHub and the UCSF Slack.
+* All dispute resolutions must be publicly announced on GitHub, which is the record of decision. Announcements may also be relayed to the UCSF Slack for lab members.
 
 This process ensures fairness and transparency while enabling timely decision-making.
 
 ### Deadlocks
 
-In the event of a decision deadlock in the process above, BioRouter's maintainer, Wanjun Gu, steps in as a tie breaker to remove the deadlock and make progress.
+In the event of a decision deadlock in the process above, Biorouter's maintainer, Wanjun Gu, steps in as a tie breaker to remove the deadlock and make progress.
 
 ### Major Changes
 
 Major architectural or directional changes should:
 
-1. Be proposed as a GitHub issue or discussion.
+1. Be proposed as a GitHub issue.
 2. Undergo open community review for at least one week.
 3. Require approval from a majority of Core Maintainers.
-4. Be publicly announced on GitHub and the UCSF Slack.
+4. Be publicly announced on GitHub.
 
 ## Selection and Removal of Maintainers
 
@@ -92,7 +104,7 @@ Major architectural or directional changes should:
    * Alignment with the project’s values.
 2. Discussion among all Core Maintainers.
 3. Approval by majority vote.
-4. Public announcement on GitHub and the UCSF Slack.
+4. Public announcement on GitHub.
 
 ### Core Maintainer Appointment
 
@@ -104,7 +116,7 @@ We aim to have between 3 and 7 Core Maintainers at any time. We strive for an od
    * Long-term commitment to the project’s values
 2. Discussion among all Core Maintainers.
 3. Approval by majority vote.
-4. Public announcement on GitHub and the UCSF Slack.
+4. Public announcement on GitHub.
 
 ### Removal
 
@@ -129,8 +141,8 @@ If a Core Maintainer leaves for any reason:
 
 ### Channels
 
-* **GitHub**: The canonical home for issues, pull requests, and documentation.
-* **UCSF Slack**: Used for real-time collaboration and informal discussions.
+* **GitHub**: The canonical home for issues, pull requests, and documentation, and the only venue of record for decisions. GitHub Discussions is not enabled; use issues.
+* **UCSF Slack**: An internal Baranzini Lab channel, not reachable by outside contributors and with no public join path. It is used for real-time collaboration and informal chat only. Nothing decided there counts until it is written down on GitHub, so an outside contributor loses no standing by not being in it.
 
 ### Transparency
 
@@ -152,48 +164,48 @@ If a Core Maintainer leaves for any reason:
 
 #### Contributing
 
-* Discuss first: For new features or architectural changes, open an issue or discussion.
+* Discuss first: For new features or architectural changes, open an issue.
 * Keep PRs focused: Smaller, focused changes are easier to review and merge.
 * Write meaningful tests: Tests should guard against real bugs, not just increase coverage.
-* Engage with the community: All Maintainers should be active on GitHub and the UCSF Slack, and be responsive to other contributors.
+* Engage with the community: All Maintainers should be active on GitHub — the venue every contributor can reach — and be responsive to other contributors.
 
 #### Release Process
 
 * Regular releases with clear documentation of delivered features.
 * Quick bug fixes or security resolutions are cherry-picked to patch releases when needed.
-* All releases are tested by multiple Core Maintainers or Maintainers before publication.
+* Every release is tested before publication by the maintainer cutting it. Review by a second maintainer is the goal, but with the Core Maintainer group at its present size it is not what happens today — do not read this as a multi-party release gate.
 
 ## Governance Changes
 
-This governance model may evolve as BioRouter grows. Any proposed modification to this document must:
+This governance model may evolve as Biorouter grows. Any proposed modification to this document must:
 
 1. Be proposed through a GitHub issue with rationale.
 2. Undergo open community discussion for at least one week.
 3. Be approved by a majority of Core Maintainers.
 4. Clear communication of changes to the community.
-5. Implemented via a pull request to the GOVERNANCE.md file in the main BioRouter repository.
+5. Implemented via a pull request to the GOVERNANCE.md file in the main Biorouter repository.
 
 ## Current Membership
 
-Core Maintainers and Maintainers are listed in the main BioRouter repository's [MAINTAINERS.md](https://github.com/BaranziniLab/biorouter/blob/main/MAINTAINERS.md) file with their areas of expertise where applicable.
+Core Maintainers and Maintainers are listed in the main Biorouter repository's [MAINTAINERS.md](https://github.com/BaranziniLab/biorouter/blob/main/MAINTAINERS.md) file with their areas of expertise where applicable.
 
 ## Summary
 
-### BioRouter's governance prioritizes
+### Biorouter's governance prioritizes
 
 * **Speed**: Minimal process to support rapid experimentation
 * **Openness**: Transparent decision-making and community involvement
-* **Autonomy**: Empowering users and contributors to shape BioRouter
+* **Autonomy**: Empowering users and contributors to shape Biorouter
 * **Quality**: Thoughtful review while avoiding bureaucracy
 
-We believe this balance enables BioRouter to remain innovative while building a strong, engaged community around the shared goal of creating the most hackable, user-controlled AI agent available.
+We believe this balance enables Biorouter to remain innovative while building a strong, engaged community around the shared goal of creating the most hackable, user-controlled AI agent available.
 
 # General Project Policies
 
-BioRouter is developed and maintained by the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at the University of California, San Francisco. It builds on the open-source [Goose](https://github.com/block/goose) project from Block, which provided the foundation for this work.
+Biorouter is developed and maintained by the [Baranzini Lab](https://baranzinilab.ucsf.edu/) at the University of California, San Francisco. It builds on the open-source [Goose](https://github.com/block/goose) project from Block, which provided the foundation for this work.
 
-BioRouter participants acknowledge that the copyright in all new contributions will be retained by the copyright holder as independent works of authorship and that no contributor or copyright holder will be required to assign copyrights to the project.
-Except as described below, all code and specification contributions to the project must be made using the Apache License, Version 2.0 available at (the “Project License”).
+Biorouter participants acknowledge that the copyright in all new contributions will be retained by the copyright holder as independent works of authorship and that no contributor or copyright holder will be required to assign copyrights to the project.
+Except as described below, all code and specification contributions to the project must be made using the Apache License, Version 2.0, available at https://www.apache.org/licenses/LICENSE-2.0 (the “Project License”).
 
 All outbound code and specifications will be made available under the Project License. The Core Maintainers may approve the use of an alternative open license or licenses for inbound or outbound contributions on an exception basis.
 All documentation (excluding specifications) will be made available under the Creative Commons Attribution 4.0 International license, available at: https://creativecommons.org/licenses/by/4.0.
