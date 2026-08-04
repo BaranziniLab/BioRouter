@@ -538,9 +538,16 @@ mod bypass_tests {
     use std::sync::Arc;
     use tower::ServiceExt;
 
-    /// A string that appears in the private chat and nowhere else, so "the
+    /// A string that appears in the seeded chat and nowhere else, so "the
     /// transcript came back" is an assertion rather than an impression.
-    const SECRET_IN_THE_TRANSCRIPT: &str = "patient MRN 12345 task58";
+    ///
+    /// ⚠ **Unmistakably a fixture, and deliberately not shaped like a record.**
+    /// These tests seed into the developer's REAL session database —
+    /// `AppState::new()` opens it — so a row that ever escapes [`SeededChat`]'s
+    /// cleanup lands in their own sidebar. A marker that read like a patient
+    /// identifier would then be a privacy incident invented by the test suite of
+    /// the privacy feature.
+    const MARKER_IN_THE_TRANSCRIPT: &str = "task58-transcript-marker-not-real-data";
 
     async fn get_session_with(
         state: Arc<AppState>,
@@ -627,9 +634,47 @@ mod bypass_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
-    /// One private chat with a marker message in it, bound to a private
-    /// provider. Returns its id; the caller deletes it.
-    async fn seed_private_chat(state: &Arc<AppState>, label: &str) -> String {
+    /// A chat seeded by this module, which deletes itself when the test's scope
+    /// ends — **including on a panic**, which a `delete_session` at the end of
+    /// the test body cannot do.
+    ///
+    /// ⚠ The store here is the developer's REAL session database, so a row that
+    /// outlives a failing assertion is a chat in their own sidebar, forever, with
+    /// no obvious provenance. `block_in_place` is what lets an async delete run
+    /// from `Drop`, and it is only legal on a multi-threaded runtime — so
+    /// `#[tokio::test(flavor = "multi_thread")]` on every test below is a
+    /// requirement of this type, not a habit.
+    struct SeededChat {
+        state: Arc<AppState>,
+        id: String,
+    }
+
+    impl SeededChat {
+        fn id(&self) -> &str {
+            &self.id
+        }
+    }
+
+    impl Drop for SeededChat {
+        fn drop(&mut self) {
+            let state = self.state.clone();
+            let id = std::mem::take(&mut self.id);
+            tokio::task::block_in_place(|| {
+                tokio::runtime::Handle::current().block_on(async move {
+                    // Reported, never panicked: on the unwind path a second panic
+                    // aborts the process and takes the real failure's message with
+                    // it, which would turn a legible assertion into a bare abort.
+                    if let Err(e) = state.session_manager().delete_session(&id).await {
+                        eprintln!("task 58: could not clean up the seeded chat {id}: {e}");
+                    }
+                })
+            });
+        }
+    }
+
+    /// One private chat with a marker message in it, bound to a private provider.
+    /// The returned guard deletes it.
+    async fn seed_private_chat(state: &Arc<AppState>, label: &str) -> SeededChat {
         let manager = state.session_manager();
         let session = manager
             .create_session(
@@ -642,7 +687,7 @@ mod bypass_tests {
         manager
             .add_message(
                 &session.id,
-                &Message::user().with_text(SECRET_IN_THE_TRANSCRIPT),
+                &Message::user().with_text(MARKER_IN_THE_TRANSCRIPT),
             )
             .await
             .unwrap();
@@ -654,7 +699,10 @@ mod bypass_tests {
             .apply()
             .await
             .unwrap();
-        session.id
+        SeededChat {
+            state: state.clone(),
+            id: session.id,
+        }
     }
 
     /// Issue #56 Task 58 / #47. **The bypass itself, as a named regression
@@ -671,32 +719,32 @@ mod bypass_tests {
     async fn holding_the_secret_you_cannot_read_a_private_transcript_or_run_a_turn_in_it() {
         install_test_user_action_key();
         let state = AppState::new().await.unwrap();
-        let manager = state.session_manager();
-        let private_id = seed_private_chat(&state, "Task 58 Private").await;
+        let private = seed_private_chat(&state, "Task 58 private (test fixture)").await;
+        let private_id = private.id();
 
         // 1. READ. A caller holding only the daemon secret must not get the
         //    transcript.
-        let (status, body) = get_session_with(state.clone(), &private_id, None).await;
+        let (status, body) = get_session_with(state.clone(), private_id, None).await;
         assert_eq!(
             status,
             StatusCode::FORBIDDEN,
             "a caller holding only the daemon secret read a private transcript"
         );
         assert!(
-            !body.contains(SECRET_IN_THE_TRANSCRIPT),
+            !body.contains(MARKER_IN_THE_TRANSCRIPT),
             "the refusal carried the private conversation in its body"
         );
 
         // 2. …and the person at the keyboard still can.
         let (status, body) =
-            get_session_with(state.clone(), &private_id, Some(TEST_USER_ACTION_KEY)).await;
+            get_session_with(state.clone(), private_id, Some(TEST_USER_ACTION_KEY)).await;
         assert_eq!(
             status,
             StatusCode::OK,
             "the user cannot read their own chat"
         );
         assert!(
-            body.contains(SECRET_IN_THE_TRANSCRIPT),
+            body.contains(MARKER_IN_THE_TRANSCRIPT),
             "the user's own read did not return the conversation"
         );
 
@@ -706,13 +754,13 @@ mod bypass_tests {
         //    against real provider credentials.
         let turn_guard = state
             .try_begin_turn_idempotent(
-                &private_id,
+                private_id,
                 tokio_util::sync::CancellationToken::new(),
                 None,
             )
             .expect("no turn is running in a session created a moment ago");
 
-        let (status, _) = post_reply_with(state.clone(), &private_id, None).await;
+        let (status, _) = post_reply_with(state.clone(), private_id, None).await;
         assert_eq!(
             status,
             StatusCode::FORBIDDEN,
@@ -720,8 +768,8 @@ mod bypass_tests {
              private chat"
         );
 
-        let (status, _) =
-            post_reply_with(state.clone(), &private_id, Some(TEST_USER_ACTION_KEY)).await;
+        let (status, _) = post_reply_with(state.clone(), private_id, Some(TEST_USER_ACTION_KEY))
+            .await;
         assert_eq!(
             status,
             StatusCode::CONFLICT,
@@ -730,7 +778,6 @@ mod bypass_tests {
         );
 
         drop(turn_guard);
-        manager.delete_session(&private_id).await.unwrap();
     }
 
     /// Issue #56 Task 58, Step 4.3, over HTTP: the refusal is not an oracle.
@@ -749,13 +796,12 @@ mod bypass_tests {
     async fn an_unproven_caller_cannot_tell_a_private_chat_from_one_that_does_not_exist() {
         install_test_user_action_key();
         let state = AppState::new().await.unwrap();
-        let manager = state.session_manager();
-        let private_id = seed_private_chat(&state, "Task 58 Oracle").await;
+        let chat = seed_private_chat(&state, "Task 58 oracle (test fixture)").await;
         // Syntactically valid (so `is_valid_session_id` cannot answer for the
         // store) and not a session on this machine.
         let absent_id = "task58-no-such-session-0000";
 
-        let private = get_session_with(state.clone(), &private_id, None).await;
+        let private = get_session_with(state.clone(), chat.id(), None).await;
         let absent = get_session_with(state.clone(), absent_id, None).await;
         assert_eq!(
             private, absent,
@@ -767,7 +813,7 @@ mod bypass_tests {
         // above a property of the *refusal* rather than of a route that answers
         // 403 to everything.
         let (status, _) =
-            get_session_with(state.clone(), &private_id, Some(TEST_USER_ACTION_KEY)).await;
+            get_session_with(state.clone(), chat.id(), Some(TEST_USER_ACTION_KEY)).await;
         assert_eq!(status, StatusCode::OK);
         let (status, _) =
             get_session_with(state.clone(), absent_id, Some(TEST_USER_ACTION_KEY)).await;
@@ -776,8 +822,6 @@ mod bypass_tests {
             StatusCode::NOT_FOUND,
             "the person at the keyboard is entitled to know the chat is not there"
         );
-
-        manager.delete_session(&private_id).await.unwrap();
     }
 
     /// The knowledge gate is a middleware, and a middleware that is layered onto
@@ -798,12 +842,11 @@ mod bypass_tests {
     async fn the_knowledge_active_gate_is_actually_wired() {
         install_test_user_action_key();
         let state = AppState::new().await.unwrap();
-        let manager = state.session_manager();
-        let private_id = seed_private_chat(&state, "Task 58 Knowledge").await;
+        let private = seed_private_chat(&state, "Task 58 knowledge (test fixture)").await;
 
         let (status, body) = post_knowledge_active(
             state.clone(),
-            serde_json::json!({ "session_id": private_id, "hidden_kbs": [] }),
+            serde_json::json!({ "session_id": private.id(), "hidden_kbs": [] }),
             None,
         )
         .await;
@@ -826,7 +869,5 @@ mod bypass_tests {
             StatusCode::FORBIDDEN,
             "the gate refused a request that names no chat at all"
         );
-
-        manager.delete_session(&private_id).await.unwrap();
     }
 }
