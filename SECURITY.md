@@ -1,3 +1,47 @@
+# Security policy
+
+## Reporting a vulnerability
+
+**Report a suspected vulnerability privately to [wanjun.gu@ucsf.edu](mailto:wanjun.gu@ucsf.edu). Do not open a public issue.** Issues on this repository are public, and Biorouter is used with clinical and other sensitive research data — a vulnerability disclosed in an issue is disclosed to everyone at once.
+
+If [private vulnerability reporting](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability#privately-reporting-a-security-vulnerability) is enabled on the repository, the Security tab → **Report a vulnerability** is an equivalent private channel. It is not always enabled; the email address above always works.
+
+Please include the Biorouter version, your platform, and the smallest set of steps that reproduces the problem. Do not include patient data, credentials, or other sensitive material in a report.
+
+**Acknowledgement.** We aim to acknowledge a report within **5 business days**, and to follow up with our assessment and an expected remediation timeline within **10 business days**. If you have not heard back in that window, send a reminder to the same address before considering any further disclosure.
+
+The Baranzini Lab recognizes the important contributions our open source community makes. Part of keeping Biorouter and its users safe is finding and fixing security issues in our open source projects, and we are grateful for reports.
+
+## Supported versions
+
+**Only the latest released version is supported.** Fixes ship in a new release; there are no backports and no patch releases for older versions.
+
+Updating is not uniform across platforms, so an old install can stay old indefinitely: macOS updates in place via `electron-updater` ("Restart & Update"), while Windows and Linux use an assisted-download fallback that requires you to reinstall the new package. Please update to the newest release before reporting, and confirm the issue still reproduces there.
+
+## Scope
+
+**In scope:**
+
+- The loopback `biorouterd` HTTP and WebSocket API, and its `BIOROUTER_SERVER__SECRET_KEY` authentication.
+- Secret storage — including the plaintext `secrets.yaml` fallback, which is selected by `BIOROUTER_DISABLE_KEYRING=true` and automatically on headless Linux. See [secret storage](docs/security/secret-storage.md).
+- MCP extension execution and the `.brxt` extension install path.
+- The `serve.mjs` server shipped with an exported Agent Drafter app.
+- The `biorouter://` URL scheme handler.
+- Permission modes and managed policy failing to constrain the agent as documented — see [permission modes](docs/security/permission-modes.md) and [managed enterprise policy](docs/security/managed-policy.md).
+
+**Out of scope:**
+
+- A model producing a wrong, misleading, or unsafe answer. Model output quality is not a Biorouter vulnerability; raise it with the model provider, and see [ACCEPTABLE_USAGE.md](ACCEPTABLE_USAGE.md) for what Biorouter may not be used for.
+- Vulnerabilities in third-party MCP extensions or models, which should go to their own maintainers.
+
+## Suspected exposure of patient data
+
+**A suspected exposure of PHI or other patient data is an institutional privacy incident, not a GitHub security advisory.** Report it first to your institution's privacy office and information security team and follow their instructions — at UCSF, the UCSF Privacy Office and UCSF IT Security. Do not file an issue or an advisory, and do not include patient data in any report.
+
+If a Biorouter defect appears to be involved, email [wanjun.gu@ucsf.edu](mailto:wanjun.gu@ucsf.edu) as well, describing the defect only — never the data.
+
+## Agent autonomy: understand this before you run Biorouter
+
 > [!CAUTION]
 > Biorouter is a biomedical research agent with access to a variety of systems that perform actions on behalf of the user on their local machine. Please be aware that since agents like Biorouter have the ability to run code and take actions on your computer, they pose a unique risk compared to chat based LLM interactions. While most foundational models include baseline protections against prompt injection, there is still inherent risk when using Biorouter to interact with the internet or through other untrusted data sources. To minimize these risks, consider taking the following precautions:
 >
@@ -9,7 +53,11 @@
 > - Only connect Biorouter with MCP extensions that you have reviewed
 >
 > In some circumstances, Biorouter may follow commands found embedded in content even if those commands conflict with the task given to Biorouter. We suggest taking the precautions above to limit risks from prompt injection. By taking these steps, you can reduce the potential security risks associated with code-executing agents and better protect your systems and users.
->
-> The Baranzini Lab recognizes the important contributions our open source community makes. Part of keeping Biorouter and its users safe is by making sure that we find and fix any security issues found in our open source projects. If you find a security vulnerability, we encourage you to privately report it in the repository’s Security tab -> Report a vulnerability.
->
-> Please see [privately reporting a security vulnerability](https://docs.github.com/en/code-security/security-advisories/guidance-on-reporting-and-writing-information-about-vulnerabilities/privately-reporting-a-security-vulnerability#privately-reporting-a-security-vulnerability) for more information. For assistance or escalation, please contact the Biorouter maintainer at [wanjun.gu@ucsf.edu](mailto:wanjun.gu@ucsf.edu)
+
+The control that decides how freely the agent may act is the **permission mode** — see [permission modes](docs/security/permission-modes.md) — and an administrator can impose a [managed enterprise policy](docs/security/managed-policy.md) that a user cannot override. `.biorouterignore` keeps chosen files out of the agent's reach.
+
+## Related documentation
+
+- [Acceptable Usage Policy](ACCEPTABLE_USAGE.md) — what Biorouter may not be used for.
+- [Security documentation index](docs/security/README.md) — permission modes, managed policy, secret storage, and data privacy.
+- [Data privacy and patient data](docs/security/data-privacy-and-phi.md) — which providers are acceptable for PHI.
