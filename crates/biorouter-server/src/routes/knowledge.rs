@@ -1004,6 +1004,14 @@ pub async fn get_active(
         (status = 200, description = "The resulting selection", body = ActiveKbResponse),
         (status = 400, description = "Unknown kb id, a primary outside the resulting set, \
                                       or conflicting primary-KB fields"),
+        // Issue #56 Task 58 / #47. Produced by the layer on this router
+        // (`routes::session_reach::gate_knowledge_active`), not by the handler
+        // below — but it is what a client receives, so it belongs here.
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      `session_id` names a private chat (or an absent one — an \
+                                      unproven caller is told the same thing for both) and the \
+                                      request carried no proof it came from the user \
+                                      (body = plain text)"),
     )
 )]
 pub async fn set_active(

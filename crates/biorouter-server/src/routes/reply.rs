@@ -902,6 +902,10 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
         (status = 200, description = "Streaming response initiated",
          body = MessageEvent,
          content_type = "text/event-stream"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent — an unproven caller \
+                                      is told the same thing for both) and the request carried no \
+                                      proof it came from the user (body = plain text)"),
         (status = 409, description = "A turn is already in flight for this session, or the \
                                       supplied `conversation_so_far` is missing messages the \
                                       server holds (nothing was written; re-read the session \

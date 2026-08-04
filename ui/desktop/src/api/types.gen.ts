@@ -4078,6 +4078,10 @@ export type SetActiveErrors = {
      * Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields
      */
     400: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
 };
 
 export type SetActiveResponses = {
@@ -5096,6 +5100,10 @@ export type ReplyData = {
 };
 
 export type ReplyErrors = {
+    /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
     /**
      * A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
      */
