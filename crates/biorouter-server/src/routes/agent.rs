@@ -1103,6 +1103,15 @@ const CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT: &str =
 /// where the affiliation is read by the daemon from the same sample that produced
 /// the warning — never from the request. Re-binding to a different institution's
 /// model changes the triple, so the acceptance does not carry over.
+///
+/// ⚠ **Nothing in the desktop UI calls this yet, and that is the missing half of
+/// the flow.** `agentCrossAffiliationGrant` exists in the generated client
+/// (`ui/desktop/src/api/sdk.gen.ts`) and nothing outside `src/api/` calls it, so
+/// the generated call also attaches no `X-User-Action` header — which this route
+/// requires. Until the dialog lands, the sequence DR-26 describes stops one step
+/// short: the model is refused and told to ask, and the person at the keyboard
+/// has no button. The backend half is complete and testable; the surface is the
+/// task that follows, and no comment here should be read as claiming otherwise.
 #[utoipa::path(
     post,
     path = "/agent/cross_affiliation_grant",

@@ -405,21 +405,30 @@ pub fn privacy_refusal(
 /// the institutions and nothing else — no session id, no title, no working
 /// directory.
 ///
-/// [`CallCapability::cross_affiliation_warning`]: super::CallCapability::cross_affiliation_warning
-/// ⚠ **The two exits it offers are not equally real in this build.** "Switch
-/// this chat to a model covered by the same institution's agreements" works
-/// today — it is a bind, and the bind surface warns rather than refusing. "Ask
-/// them to approve this specific flow" anticipates DR-26's cross-affiliation
-/// grant, scoped to (session, extension, model affiliation), which is a later
-/// task: no grant is recorded, no surface offers one, and nothing consults one.
+/// ⚠ **Both exits it offers are real in this build, and one of them is only
+/// half-wired.** "Switch this chat to a model covered by the same institution's
+/// agreements" is a bind, and the bind surface warns rather than refusing. "Ask
+/// them to approve this specific flow" is Task 49's cross-affiliation grant,
+/// scoped to (session, extension, model affiliation): it is recorded by
+/// `POST /agent/cross_affiliation_grant` behind `X-User-Action`, and
+/// [`super::grant::is_granted`] is consulted by Gate C
+/// (`ExtensionManager::cross_affiliation_denial`) before this refusal is
+/// composed at all — so a granted triple never reaches here.
 ///
-/// Kept in the copy rather than removed, because the sentence's real work is to
-/// tell the model that the decision belongs to a HUMAN and that retrying is
-/// not a way to get it — which is true now and stays true after the grant
-/// lands. But until it does, a legitimate cross-institutional user under a real
-/// DUA has only the model switch, and that gap is sequencing rather than
-/// design: it is the "researchers route around it by turning the feature off"
-/// pressure DR-26 warns about, arriving through the order the tasks ship in.
+/// ⚠ **What is NOT wired yet, stated so nobody reads more into the sentence
+/// than the tree contains.** Two of the surfaces that produce this refusal do
+/// not consult the grant, both because they hold no session id to key one on:
+/// `assert_extension_reachable` (the eight non-tool-call entries — resource and
+/// prompt reads) and the agent's own enable path. Both fail CLOSED — a refusal
+/// the user meets again, never a disclosure they did not accept — and each
+/// carries the reason at its own site. And no UI surface calls the grant route
+/// yet, so today the human's route to it is an HTTP client; the button is the
+/// task that follows. Until it lands, a legitimate cross-institutional user
+/// under a real DUA has the model switch and a route nothing clicks — the
+/// "researchers route around it by turning the feature off" pressure DR-26
+/// warns about, arriving through the order the tasks ship in.
+///
+/// [`CallCapability::cross_affiliation_warning`]: super::CallCapability::cross_affiliation_warning
 pub fn cross_affiliation_refusal(warning: &str) -> ErrorData {
     ErrorData::new(
         ErrorCode::INVALID_REQUEST,

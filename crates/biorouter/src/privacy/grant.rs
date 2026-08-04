@@ -45,6 +45,18 @@
 //! It is *not* per turn: a control that fires constantly is one people click
 //! through, which is the prompt fatigue DR-19 warns about.
 //!
+//! ⚠ **What the triple deliberately does NOT pin: the extension's own
+//! affiliation.** DR-26 specifies these three components and this implements
+//! exactly them, but the consequence should be on someone's list. The extension
+//! half is a *name key*, so if the institution behind that name changes — the
+//! entry reconfigured, or a different server installed under the same key — the
+//! stored grant still matches and Gate C permits a flow whose owning institution
+//! the user was never shown. It is not closable here: DR-26's fact 4 records
+//! that no stable extension id exists in this tree, so there is nothing finer
+//! than the name to key on. The mitigation is Task 47's provenance (or adding
+//! the extension's affiliation to the key once provenance can supply it), and it
+//! belongs there, at the parse that admits the identity, not at this store.
+//!
 //! # A subagent inherits and can never exceed
 //!
 //! [`is_granted`] walks `parent_session_id`, so a child acts within authority its
