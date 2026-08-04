@@ -20589,9 +20589,43 @@ to fail is not known to work).
 ### Task 47: Extension affiliations, resolved from the registry
 
 ⚠ **Sequence with [Task 43](#task-43-extension-tiers-re-derived-from-the-registry--dr-23)** — DR-23
-already re-derives the extension *tier* from the registry at read time. Affiliation rides the **same**
-resolution, on the same stable id, in the same call. Two lookups would let tier and affiliation
-disagree about the same extension.
+already re-derives the extension *tier* at read time. Affiliation rides the **same** resolution, in the
+same call. Two lookups would let tier and affiliation disagree about the same extension.
+
+> ⚠ **AMENDED 2026-08-04 — Task 43 shipped, and two things this task assumed are now known wrong.**
+> Build against the code, not against DR-23's original wording.
+>
+> **(a) The resolver's shape is not "look up a stable id".** Task 43 found that a rename in
+> `config.yaml` rewrites **both** the map key *and* the entry's own `name`, so a key-only lookup
+> misses and the tier drops to Public — the exact enforcement failure DR-23 exists to close. The
+> shipped resolver is therefore config-aware:
+>
+> ```rust
+> pub fn classify_extension_entry(key: &str, config: Option<&ExtensionConfig>) -> ProviderTier
+> ```
+>
+> It resolves Private if **any** of the key, the config's declared name, or a provenance record found
+> by either of those *or by the install directory in the config's arguments* says so. Affiliation must
+> take the same `(key, config)` pair and the same union — not a second, name-only path.
+> `classify_extension(name)` still exists for genuinely name-only callers and is documented as unable
+> to see a rename; do **not** reach for it from a caller that holds a config.
+>
+> **(b) The union is over ALL matching records, never the first.** First-match-wins made the answer
+> depend on which join matched first, and the losing order is the dangerous one: an entry *named* after
+> a public extension whose `args` point at a private one's install directory resolved **Public**.
+> Pinned by `a_key_match_does_not_mask_an_install_directory_match`. Affiliation inherits this exactly:
+> a base matching several institutions carries all of them.
+>
+> **(c) Step 2 below is vacuous in Rust as literally written, and knowing why matters.** There is no
+> runtime registry fetch on the Rust side — the compiled `PRIVATE_EXTENSIONS` snapshot **is** the
+> registry, linked into the binary. "Unreachable registry retains" therefore holds by construction.
+> What can still go missing or lie are three concrete inputs, and each must be asserted not to lower
+> anything: an absent provenance store, a recorded id the snapshot does not publish, and a recorded
+> PUBLIC id against a name the snapshot knows as private.
+>
+> **(d) The residual is a rename PLUS deleting the record** (`extension-provenance.json`), because
+> DR-17 descoped the filesystem barrier. Two edits, not one — and not a regression, since before
+> Task 43 the rename alone sufficed. Do not claim affiliation is airtight; state the same bar.
 
 - [ ] **Step 1: Read the field Task 33 added**
 
