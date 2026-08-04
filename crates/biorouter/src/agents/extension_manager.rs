@@ -273,6 +273,14 @@ fn dispatch_meta(
     }
     if biorouter_mcp::BUILTIN_EXTENSIONS.contains_key(client_name) {
         meta = meta.with_capability_private(cap.tier().is_private());
+        // Issue #56 DR-26 / Task 50 Step 0. The same built-ins-only disclosure,
+        // on the same terms and for the same reason: an affiliation on
+        // `CallCapability` reaches no MCP server without a `_meta` key and a
+        // matching reader. Taken off the SAME `cap` as the bit above, so the two
+        // halves of one model's identity cannot be sampled at two instants.
+        meta = meta.with_capability_affiliation(
+            crate::privacy::affiliation::caller_affiliation_meta_value(cap.affiliation()),
+        );
     }
     meta
 }
@@ -4912,6 +4920,138 @@ mod tests {
         assert_eq!(
             meta_of(&builtin).0.get(KEY).and_then(|v| v.as_str()),
             Some("private")
+        );
+    }
+
+    /// Issue #56 DR-26 / Task 50 Step 0. The affiliation crosses on the SAME
+    /// terms as the tier bit above — built-ins only — and it really crosses:
+    /// until this key existed, an affiliation on `CallCapability` reached no MCP
+    /// server at all, so every knowledge-base gate on the far side was decided
+    /// by a value that never arrived.
+    ///
+    /// ⚠ It is a SECOND key, not a richer value on the first. Both are asserted
+    /// here, on one dispatch, because the failure this guards against is one of
+    /// them being folded into the other: `tier::caller_is_private` compares
+    /// against the exact word `private`, so a `private:institution:ucsf` on the
+    /// tier key reads PUBLIC on any binary that has not been updated.
+    #[tokio::test]
+    async fn a_builtin_learns_the_callers_affiliation_and_a_third_party_never_does() {
+        use biorouter_mcp::knowledge::affiliation::CAPABILITY_AFFILIATION_META_KEY as AFFILIATION;
+        use biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY as TIER;
+        use rmcp::model::{Extensions, Meta};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+
+        let third_party = Arc::new(MetaCapturingClient::default());
+        let builtin = Arc::new(MetaCapturingClient::default());
+        em.add_mock_extension("thirdparty".to_string(), third_party.clone())
+            .await;
+        em.add_mock_extension("knowledge".to_string(), builtin.clone())
+            .await;
+
+        let ucsf = crate::privacy::CallCapability::for_test_affiliated(
+            crate::privacy::ProviderTier::Private,
+            true,
+            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new("ucsf"),
+            )),
+        );
+
+        for tool in ["thirdparty__ping", "knowledge__ping"] {
+            let result = em
+                .dispatch_tool_call(
+                    "sess-affiliation",
+                    CallToolRequestParams {
+                        task: None,
+                        name: tool.to_string().into(),
+                        arguments: Some(object!({})),
+                        meta: None,
+                    },
+                    ucsf,
+                    CancellationToken::default(),
+                )
+                .await
+                .expect("dispatch");
+            result.result.await.expect("the mock client answers");
+        }
+
+        let meta_of = |c: &Arc<MetaCapturingClient>| -> Meta {
+            let seen = c.seen.lock().unwrap().clone().expect("call_tool ran");
+            seen.inject_into_extensions(Extensions::default())
+                .get::<Meta>()
+                .cloned()
+                .unwrap_or_default()
+        };
+
+        // The third party learns neither axis.
+        assert_eq!(meta_of(&third_party).0.get(AFFILIATION), None);
+        assert_eq!(meta_of(&third_party).0.get(TIER), None);
+
+        // The built-in learns both, under two distinct keys.
+        let builtin_meta = meta_of(&builtin);
+        assert_eq!(
+            builtin_meta.0.get(TIER).and_then(|v| v.as_str()),
+            Some("private"),
+            "the tier key must keep its bare grammar"
+        );
+        assert_eq!(
+            builtin_meta.0.get(AFFILIATION).and_then(|v| v.as_str()),
+            Some("institution:ucsf")
+        );
+        // …and the reader's own parser agrees with what was written, so this is
+        // a round trip through production's writer rather than a string match.
+        assert_eq!(
+            biorouter_mcp::knowledge::affiliation::caller_affiliation(&builtin_meta),
+            biorouter_mcp::knowledge::affiliation::CallerAffiliation::Institution("ucsf".into())
+        );
+    }
+
+    /// A model that states no affiliation leaves the key OFF rather than
+    /// writing a word for it, which is exactly how an older daemon looks — and
+    /// the reader treats both the same restrictive way.
+    #[tokio::test]
+    async fn an_unstated_affiliation_writes_no_key_at_all() {
+        use biorouter_mcp::knowledge::affiliation::CAPABILITY_AFFILIATION_META_KEY as AFFILIATION;
+        use rmcp::model::{Extensions, Meta};
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let em = ExtensionManager::new_without_provider(temp_dir.path().to_path_buf());
+        let builtin = Arc::new(MetaCapturingClient::default());
+        em.add_mock_extension("knowledge".to_string(), builtin.clone())
+            .await;
+
+        let unstated = crate::privacy::CallCapability::for_test_affiliated(
+            crate::privacy::ProviderTier::Private,
+            true,
+            None,
+        );
+        let result = em
+            .dispatch_tool_call(
+                "sess-unstated",
+                CallToolRequestParams {
+                    task: None,
+                    name: "knowledge__ping".to_string().into(),
+                    arguments: Some(object!({})),
+                    meta: None,
+                },
+                unstated,
+                CancellationToken::default(),
+            )
+            .await
+            .expect("dispatch");
+        result.result.await.expect("the mock client answers");
+
+        let seen = builtin.seen.lock().unwrap().clone().expect("call_tool ran");
+        let meta = seen
+            .inject_into_extensions(Extensions::default())
+            .get::<Meta>()
+            .cloned()
+            .unwrap_or_default();
+        assert_eq!(meta.0.get(AFFILIATION), None);
+        assert_eq!(
+            biorouter_mcp::knowledge::affiliation::caller_affiliation(&meta),
+            biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated
         );
     }
 

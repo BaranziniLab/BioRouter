@@ -245,6 +245,45 @@ pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool 
     }
 }
 
+/// This model affiliation as the crate boundary carries it (DR-26 / Task 50
+/// Step 0), or `None` when there is nothing to say and the `_meta` key is
+/// omitted.
+///
+/// ⚠ **`biorouter-mcp` cannot see this module**, so the third axis reaches an
+/// MCP server the same way the tier does: as a `_meta` key whose spelling is
+/// owned by the READER's crate. This function is the one translation, and the
+/// wire word is produced by
+/// [`biorouter_mcp::knowledge::affiliation::capability_meta_value`] rather than
+/// composed here — the correction [`super::super::knowledge`]'s tier key
+/// records, applied to this axis from the start.
+///
+/// `None` — a public model, or a private one that stated nothing — leaves the
+/// key off, which the reader treats as
+/// [`CallerAffiliation::Unstated`](biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated):
+/// the most restrictive caller in that table, and the same direction absence
+/// takes on the tier key.
+pub fn caller_affiliation_meta_value(model: Option<ModelAffiliation>) -> Option<String> {
+    biorouter_mcp::knowledge::affiliation::capability_meta_value(&caller_affiliation(model))
+}
+
+/// This model affiliation in the vocabulary `biorouter-mcp` owns.
+///
+/// Split out from [`caller_affiliation_meta_value`] so the cross-crate agreement
+/// tests can drive the two tables against each other without going through the
+/// wire.
+pub fn caller_affiliation(
+    model: Option<ModelAffiliation>,
+) -> biorouter_mcp::knowledge::affiliation::CallerAffiliation {
+    use biorouter_mcp::knowledge::affiliation::CallerAffiliation;
+    match model {
+        Some(ModelAffiliation::Local) => CallerAffiliation::Local,
+        Some(ModelAffiliation::Institution(id)) => {
+            CallerAffiliation::Institution(id.as_str().to_string())
+        }
+        None => CallerAffiliation::Unstated,
+    }
+}
+
 /// The published display name for an institution id, or `None` if the registry
 /// does not publish one.
 ///
@@ -1226,6 +1265,112 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ------------------------------------- Task 50 Step 0: the crate boundary.
+    //
+    // `biorouter-mcp` cannot see this module, so DR-26's third axis exists twice
+    // — once here as the vocabulary, once there as what a `_meta` key can carry.
+    // These two tests are what keep the copies from becoming two different
+    // rulings. They live on this side because only this side can import both.
+
+    /// `InstitutionId::new` normalises with `name_to_key`; the reader's crate
+    /// re-implements that transform because it cannot import it. Two normalisers
+    /// is how `UCSF` and `ucsf` become two institutions and an institution
+    /// mismatches **itself** — which fails open in the worst way, by training
+    /// users to click through the warning.
+    #[test]
+    fn the_two_crates_normalise_an_institution_id_identically() {
+        use biorouter_mcp::knowledge::affiliation::normalize_institution;
+        for name in fuzz_corpus() {
+            assert_eq!(
+                inst(&name).as_str(),
+                normalize_institution(&name),
+                "the two crates disagree about the id of {name:?}"
+            );
+        }
+    }
+
+    /// ⚠ **A knowledge base's set is a union of OWNERS, not an allowlist** — a
+    /// model matching only one of two owners is a mismatch, where on the
+    /// extension side it would be compatible. That is DR-26 Task 50 Step 1, not
+    /// a bug, and it is why the two crates hold two functions.
+    ///
+    /// What must not drift is the *relationship*: a base owned by `S` is
+    /// reachable exactly when the model clears `Institution(o)` for **every**
+    /// `o` in `S`, which is this module's own table conjoined rather than a
+    /// second ruling. Driven over the whole cross product so a future arm on
+    /// either side cannot quietly disagree.
+    #[test]
+    fn the_knowledge_base_rule_is_dr_26s_table_conjoined_over_owners() {
+        use biorouter_mcp::knowledge::affiliation::{reachable, KbAffiliation};
+
+        let models = [
+            None,
+            Some(ModelAffiliation::Local),
+            Some(bound("ucsf")),
+            Some(bound("stanford")),
+        ];
+        let owner_sets: [&[&str]; 5] = [
+            &[],
+            &["ucsf"],
+            &["stanford"],
+            &["ucsf", "stanford"],
+            &["ucsf", "stanford", "broad"],
+        ];
+
+        for model in models {
+            let caller = caller_affiliation(model);
+            for owners in owner_sets {
+                let kb = KbAffiliation::Owners(owners.iter().map(|o| o.to_string()).collect());
+
+                // This module's table, asked once per owner and conjoined. An
+                // unstated model has no `ModelAffiliation`, so its arm is
+                // `unstated_model`, which is a mismatch for every claimed owner.
+                let expected = owners.iter().all(|owner| {
+                    let ext = ExtensionAffiliation::institution(inst(owner));
+                    match model {
+                        Some(m) => compatible(&m, &ext),
+                        None => unstated_model("kb", &ext).is_none(),
+                    }
+                });
+
+                assert_eq!(
+                    reachable(&caller, &kb),
+                    expected,
+                    "the crates disagree for model {model:?} over owners {owners:?}"
+                );
+            }
+        }
+    }
+
+    /// The wire is the only channel, so every value this side can produce must
+    /// survive it — including the two that are encoded by the key's absence.
+    #[test]
+    fn every_model_affiliation_survives_the_crate_boundary() {
+        use biorouter_mcp::knowledge::affiliation::{
+            caller_affiliation as parse, CallerAffiliation,
+        };
+
+        for model in [None, Some(ModelAffiliation::Local), Some(bound("ucsf"))] {
+            let mut meta = rmcp::model::Meta::default();
+            if let Some(wire) = caller_affiliation_meta_value(model) {
+                meta.0.insert(
+                    biorouter_mcp::knowledge::affiliation::CAPABILITY_AFFILIATION_META_KEY
+                        .to_string(),
+                    serde_json::Value::String(wire),
+                );
+            }
+            assert_eq!(
+                parse(&meta),
+                caller_affiliation(model),
+                "the wire lost {model:?}"
+            );
+        }
+        // …and a public model, whose affiliation never applies, arrives as the
+        // restrictive value rather than as a permit.
+        assert_eq!(caller_affiliation_meta_value(None), None);
+        assert_eq!(caller_affiliation(None), CallerAffiliation::Unstated);
     }
 
     // ---------------------------------------------------------------- Fixtures

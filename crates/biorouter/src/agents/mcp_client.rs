@@ -159,6 +159,23 @@ pub struct McpMeta {
     /// Distinct from `capability` above, which never leaves the process: this is
     /// the ON-THE-WIRE disclosure, and it is opt-in per extension.
     pub capability_private: Option<bool>,
+    /// Whose agreements cover the model bound to this session (issue #56, DR-26
+    /// / Task 50 Step 0), already in the wire spelling
+    /// [`biorouter_mcp::knowledge::affiliation::capability_meta_value`] produces.
+    ///
+    /// A **second** key beside [`Self::capability_private`] rather than a richer
+    /// value on that one: widening the tier key's grammar would make
+    /// `tier::caller_is_private` — which compares against the exact word
+    /// `private` — read every new-grammar value as PUBLIC in any binary that has
+    /// not been updated, and this tree ships a separately-installed PATH CLI
+    /// that routinely lags the app. The whole argument is in that module's
+    /// header.
+    ///
+    /// `None` on the same terms as `capability_private`: built-ins only, and a
+    /// built-in that receives nothing reads
+    /// [`CallerAffiliation::Unstated`](biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated),
+    /// which is the restrictive answer for every gate that consumes it.
+    pub capability_affiliation: Option<String>,
 }
 
 impl McpMeta {
@@ -168,6 +185,7 @@ impl McpMeta {
             progress_token: None,
             capability,
             capability_private: None,
+            capability_affiliation: None,
         }
     }
 
@@ -182,6 +200,19 @@ impl McpMeta {
     /// Built-ins only — see [`McpMeta::capability_private`].
     pub fn with_capability_private(mut self, private: bool) -> Self {
         self.capability_private = Some(private);
+        self
+    }
+
+    /// Disclose the caller's **affiliation** to this call's server (issue #56,
+    /// DR-26). Built-ins only — see [`McpMeta::capability_affiliation`].
+    ///
+    /// The wire spelling is composed by the reader's own crate
+    /// ([`biorouter_mcp::knowledge::affiliation::capability_meta_value`]), not
+    /// here: one spelling, one function, both sides. `None` — an unstated
+    /// affiliation — leaves the key off entirely, which is exactly how an older
+    /// daemon looks and is read the same restrictive way.
+    pub fn with_capability_affiliation(mut self, affiliation: Option<String>) -> Self {
+        self.capability_affiliation = affiliation;
         self
     }
 
@@ -200,6 +231,18 @@ impl McpMeta {
                 serde_json::Value::String(
                     biorouter_mcp::knowledge::tier::capability_meta_value(private).to_string(),
                 ),
+            );
+            extensions.insert(meta);
+        }
+        if let Some(affiliation) = &self.capability_affiliation {
+            // Issue #56 DR-26 / Task 50 Step 0. The SAME `_meta` object again,
+            // under its own key: `tier::caller_is_private` compares the tier
+            // key's value against the exact word `private`, so a richer value
+            // there would read PUBLIC on any binary that has not been updated.
+            let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
+            meta.0.insert(
+                biorouter_mcp::knowledge::affiliation::CAPABILITY_AFFILIATION_META_KEY.to_string(),
+                serde_json::Value::String(affiliation.clone()),
             );
             extensions.insert(meta);
         }
