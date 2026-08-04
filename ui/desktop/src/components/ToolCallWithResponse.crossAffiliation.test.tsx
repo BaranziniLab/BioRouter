@@ -171,6 +171,36 @@ describe('the cross-institutional refusal in the transcript', () => {
     expect(mockGrant).not.toHaveBeenCalled();
   });
 
+  it('does not open a saved transcript onto a control it cannot offer', async () => {
+    // `sessions/SessionViewComponents.tsx` renders a finished conversation and
+    // passes NO `sessionId` — deliberately, since there is no live chat to key
+    // an acceptance on — so the card returns null there. The expansion must
+    // therefore follow the CARD and not the refusal: forcing the disclosure open
+    // for a way out that is not on the surface is the disclosure opening onto
+    // nothing, and it silently drops every other saved failure's quiet default
+    // for one class of refusal that gains nothing by it.
+    render(
+      <ToolCallWithResponse
+        isCancelledMessage={false}
+        toolRequest={toolRequest}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-xaff',
+          toolResult: { status: 'error', error: grantableRefusal('ucsfomopagent') },
+        }}
+      />
+    );
+
+    // Rendered, and collapsed. `ToolCallExpandable` renders
+    // `{isExpanded && <div>{children}</div>}`, so a collapsed call has its body
+    // genuinely ABSENT from the DOM rather than merely hidden — which is what
+    // lets this assert the default rather than a style.
+    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    expect(screen.queryByText(/Cross-institutional data flow/)).not.toBeInTheDocument();
+    expect(acceptControl()).not.toBeInTheDocument();
+    expect(mockGrant).not.toHaveBeenCalled();
+  });
+
   it('records nothing until a person presses it', async () => {
     // DR-19's asymmetry, at the surface: producing the refusal is something the
     // MODEL did — it made the tool call. Rendering one must therefore never be

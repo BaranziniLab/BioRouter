@@ -821,7 +821,14 @@ function ToolCallView({
   // user does rather than a model they switch to. `null` for every other
   // failure, including the two sites that compose the same refusal without
   // consulting a grant.
-  const acceptOffer = crossAffiliationOffer(toolError);
+  //
+  // ⚠ **Gated on the session as well as on the text, so ONE expression decides
+  // both the card and the disclosure below.** A grant is keyed on a chat, and
+  // the saved-transcript surface (`sessions/SessionViewComponents.tsx`) passes
+  // none — so an offer there is an offer of nothing. Reading the session here
+  // rather than only inside the card is what stops the two from drifting into
+  // "expanded for a control that does not render".
+  const acceptOffer = sessionId ? crossAffiliationOffer(toolError) : null;
 
   // Executed sub-call telemetry (#28): what a coordinated execute_code step
   // actually ran, with exact inputs and per-call status. Shown alongside the
@@ -945,7 +952,9 @@ function ToolCallView({
     // 57). A failed tool call is otherwise a collapsed line, and a way out that
     // only exists behind a disclosure most people never open is the hard block
     // this task exists to remove, one click further away. Every other failure
-    // keeps the quiet default.
+    // keeps the quiet default — including this same refusal replayed in a saved
+    // transcript, where `acceptOffer` is null because there is no chat to accept
+    // against and the disclosure would open onto nothing.
     <ToolCallExpandable
       isStartExpanded={acceptOffer !== null}
       isForceExpand={false}
