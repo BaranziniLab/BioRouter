@@ -66,9 +66,7 @@
 
 use anyhow::Result;
 
-use super::affiliation::{
-    cross_affiliation, unstated_model, ExtensionAffiliation, ModelAffiliation,
-};
+use super::affiliation::ModelAffiliation;
 use crate::session::SessionManager;
 
 /// Proof that a human asked for this specific cross-institutional flow. A ZST
@@ -126,29 +124,6 @@ pub const GRANT_SCOPE_COPY: &str =
      to a model covered by a different institution's agreements — each of those is a different \
      data flow and would be asked again.";
 
-/// The full statement a user decides on: the mismatch, then what a yes covers.
-///
-/// Composed from [`super::affiliation::cross_affiliation`] rather than restated,
-/// so the institution names, the direction of the flow and the compliance
-/// sentence cannot drift between the refusal the model reads and the dialog the
-/// user reads. `None` for a compatible pair — there is nothing to grant, and a
-/// composer callers had to guard themselves would eventually put a compliance
-/// dialog on the arrangement everyone approved.
-pub fn grant_prompt(
-    model: Option<ModelAffiliation>,
-    extension: &str,
-    ext: &ExtensionAffiliation,
-) -> Option<String> {
-    let finding = match model {
-        Some(model) => cross_affiliation(model, extension, ext),
-        // A private model that states no affiliation. The copy names no
-        // institution for the model side because naming one would be a lie; see
-        // `affiliation::unstated_model`.
-        None => unstated_model(extension, ext),
-    }?;
-    Some(accepted_statement(&finding.warning))
-}
-
 /// The mismatch plus what a yes covers, as one sentence pair.
 ///
 /// The ONE composition of those two halves in the tree, so the dialog that asks,
@@ -157,6 +132,16 @@ pub fn grant_prompt(
 /// because the surfaces that hold one got it from the gate that decided — and
 /// re-deriving it there would be a second decision about whether there is a
 /// mismatch at all.
+///
+/// ⚠ **This module deliberately has no `model → warning → statement` composer,
+/// and one was deleted to get here.** `grant_prompt` took the three model axes
+/// and re-implemented `gate_cross_affiliation`'s `Some(model)`/`None` branch
+/// without its three guards, which is the second implementation of DR-26's table
+/// that `affiliation::compatible` and `CallCapability::cross_affiliation_warning`
+/// both warn against — at test scale, since production never called it. The
+/// production path is the gate, then this: whatever decided there IS a mismatch
+/// already holds the sentence, and Task 49's gate (3) drives that path rather
+/// than a parallel one.
 pub fn accepted_statement(warning: &str) -> String {
     format!("{warning} {GRANT_SCOPE_COPY}")
 }
@@ -326,7 +311,13 @@ async fn granted_inner(
 /// cannot mint one. Its only alternative is a hand-rolled `INSERT`, which would
 /// duplicate the writer this module exists to keep singular.
 ///
-/// `#[cfg(test)]`, so it is absent from every shipped binary.
+/// ⚠ **It is the one hole in "a grant can only be written by something that
+/// names the proof", and the hole is deliberate.** Any in-crate test can call
+/// this without naming [`UserCrossAffiliationGrant`], so the repo-walk audit
+/// does not see it. What keeps that from mattering is `#[cfg(test)]`: it is
+/// absent from every shipped binary, so no model-reachable path can call it at
+/// run time. If it ever loses that attribute, the audit above stops meaning what
+/// it says.
 #[cfg(test)]
 pub(crate) async fn record_for_test(
     sm: &SessionManager,
@@ -347,7 +338,7 @@ pub(crate) async fn record_for_test(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::privacy::affiliation::InstitutionId;
+    use crate::privacy::affiliation::{ExtensionAffiliation, InstitutionId};
     use crate::session::session_manager::SessionType;
     use std::collections::BTreeSet;
     use std::path::PathBuf;
@@ -358,6 +349,38 @@ mod tests {
 
     fn bound_to(name: &str) -> Option<ModelAffiliation> {
         Some(ModelAffiliation::Institution(InstitutionId::new(name)))
+    }
+
+    /// The statement a user decides on, assembled the way **production**
+    /// assembles it: the gate decides, and [`accepted_statement`] adds the
+    /// scope.
+    ///
+    /// ⚠ **It composes production's pieces rather than standing in for them.**
+    /// The route reaches the same two functions by a longer road —
+    /// `Agent::cross_affiliation_grant_subject` → `CallCapability::
+    /// cross_affiliation` → [`super::affiliation::gate_cross_affiliation`] —
+    /// which needs a live `ExtensionManager` and a bound provider to drive. What
+    /// this must NOT be is a third spelling of the decision: an earlier
+    /// `grant_prompt` re-implemented the gate's `Some(model)`/`None` branch and
+    /// omitted its three guards, so a gate asserted against it would keep passing
+    /// after the production composition changed underneath. Everything below runs
+    /// through the gate.
+    fn statement(
+        model: Option<ModelAffiliation>,
+        extension: &str,
+        ext: &ExtensionAffiliation,
+    ) -> Option<String> {
+        crate::privacy::affiliation::gate_cross_affiliation_warning(
+            true,
+            crate::privacy::ProviderTier::Private,
+            model,
+            extension,
+            &crate::privacy::ExtensionClassification {
+                tier: crate::privacy::ProviderTier::Private,
+                affiliation: ext.clone(),
+            },
+        )
+        .map(|warning| accepted_statement(&warning))
     }
 
     async fn session_manager_with_a_chat() -> (tempfile::TempDir, SessionManager, String) {
@@ -501,9 +524,18 @@ mod tests {
 
     /// A `parent_session_id` cycle — reachable in a hand-edited or restored
     /// database, since the column carries no referential integrity — terminates
-    /// as *not granted* rather than hanging the dispatch that asked.
+    /// rather than hanging the dispatch that asked, and still answers correctly
+    /// on the way round.
+    ///
+    /// ⚠ **The absence half alone would not discriminate.** Asserting only that
+    /// a cycle with no grant in it reads *not granted* passes just as happily
+    /// against an implementation that returned `false` without walking anywhere
+    /// — the two are indistinguishable from outside. So the cycle carries a real
+    /// grant on `b`, one hop up from `a`: finding it proves the walk ran, and
+    /// returning at all proves [`MAX_PARENT_DEPTH`] stopped it. Without the
+    /// bound this test hangs, which is the failure it is here to catch.
     #[tokio::test]
-    async fn a_parent_cycle_terminates_fail_closed() {
+    async fn a_parent_cycle_terminates_and_still_finds_a_grant_inside_it() {
         let (_dir, sm, a) = session_manager_with_a_chat().await;
         let b = sm
             .create_session(PathBuf::from("."), "b".to_string(), SessionType::User)
@@ -521,13 +553,32 @@ mod tests {
             .await
             .unwrap();
 
+        // Nothing granted anywhere in the cycle: terminates, fail-closed.
         assert!(!is_granted(&sm, &a, "ucsfomopagent", bound_to("stanford")).await);
+
+        // One hop up, inside the cycle: terminates, and the walk really walked.
+        record_for_test(&sm, &b, "ucsfomopagent", bound_to("stanford"))
+            .await
+            .unwrap();
+        assert!(
+            is_granted(&sm, &a, "ucsfomopagent", bound_to("stanford")).await,
+            "the ancestor walk did not run — a cycle test with no grant in it \
+             cannot tell that apart from a bounded walk that found nothing"
+        );
+        // …and a triple nobody granted is still not granted, so the assertion
+        // above is not passing on a lookup that stopped discriminating.
+        assert!(!is_granted(&sm, &a, "ucsfomopagent", bound_to("mayo")).await);
     }
 
     /// Task 49 gate (3). The statement the user decides on names **both**
     /// institutions, and the display names come from the registry's own map
     /// rather than from a string typed here — a hardcoded `"UCSF"` would keep
     /// passing after `registry.json` renamed it.
+    ///
+    /// Driven through [`statement`], which is the gate plus
+    /// [`accepted_statement`] — the pair production composes. Asserting this
+    /// against a composer of its own would leave the property true of a function
+    /// nothing calls.
     #[test]
     fn the_prompt_names_both_institutions_from_the_registrys_map() {
         let published = crate::privacy::registry_private::INSTITUTIONS;
@@ -540,7 +591,7 @@ mod tests {
             let institution = InstitutionId::new(id);
 
             // As the institution that OWNS the extension's data.
-            let owner_side = grant_prompt(
+            let owner_side = statement(
                 bound_to("an-unpublished-institution"),
                 "ucsfomopagent",
                 &ExtensionAffiliation::institution(institution),
@@ -558,7 +609,7 @@ mod tests {
             // …and as the institution whose model is BOUND. Both halves, because
             // a composer that names only the extension's owner satisfies half of
             // DR-26 and reads as a complete warning.
-            let model_side = grant_prompt(
+            let model_side = statement(
                 Some(ModelAffiliation::Institution(institution)),
                 "someone-elses-connector",
                 &ExtensionAffiliation::institution(InstitutionId::new(
@@ -583,7 +634,7 @@ mod tests {
     /// knows they are approving this connector for the rest of the chat.
     #[test]
     fn the_prompt_states_the_scope_of_the_approval() {
-        let prompt = grant_prompt(bound_to("stanford"), "ucsfomopagent", &ucsf_owned())
+        let prompt = statement(bound_to("stanford"), "ucsfomopagent", &ucsf_owned())
             .expect("this pair mismatches");
         assert!(prompt.contains(GRANT_SCOPE_COPY), "{prompt}");
         // The three narrowings, each stated. Generic reassurance ("your data is
@@ -594,13 +645,13 @@ mod tests {
 
         // …and it does not fire on a flow with no institutional boundary in it,
         // which is the prompt fatigue DR-19 rejects.
-        assert!(grant_prompt(
+        assert!(statement(
             Some(ModelAffiliation::Local),
             "ucsfomopagent",
             &ucsf_owned()
         )
         .is_none());
-        assert!(grant_prompt(
+        assert!(statement(
             bound_to("stanford"),
             "developer",
             &ExtensionAffiliation::Any
@@ -616,7 +667,7 @@ mod tests {
     #[test]
     fn a_model_that_states_no_affiliation_has_a_prompt_that_names_no_institution_for_it() {
         let owners = BTreeSet::from([InstitutionId::new("ucsf")]);
-        let prompt = grant_prompt(
+        let prompt = statement(
             None,
             "ucsfomopagent",
             &ExtensionAffiliation::Institutions(owners),
