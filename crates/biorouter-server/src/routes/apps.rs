@@ -829,31 +829,44 @@ fn capability_report(cfg: &AgentConfig, caller_is_private: bool) -> CapabilityRe
 /// between an agent-authored page and a private bind.
 ///
 /// Fixing three call sites leaves a fourth free to be written, so the barrier is
-/// structural rather than a comment or a grep someone can forget to run. The
-/// error codes below were **measured**, by writing each shape and compiling it:
+/// structural rather than a comment or a grep someone can forget to run. Each
+/// code below follows from the visibility of the item named beside it, and the
+/// visibility is what to check if one of them ever stops holding — not a
+/// remembered compiler run:
 ///
 ///  * [`raw_bind`] is **private**, and is the one place in this file that names
 ///    `Agent::update_provider`. Reaching it from `apps.rs` is `E0603`.
-///  * `biorouter::providers::create` is imported **here** rather than at file
-///    scope, so a new site cannot even construct a provider without coming
-///    through [`app_provider`]: a bare `create_provider(..)` outside this module
-///    is `E0425`, and `app_provider_bind::create(..)` is `E0603`.
 ///  * [`AppProvider`] holds its `Arc<dyn Provider>` in a **private field**, so
 ///    the value the sites pass around cannot be unwrapped and handed straight to
 ///    `Agent::update_provider` (`E0616`). Every provider-typed parameter in the
-///    app runtime is an `AppProvider` for exactly this reason — that is what
-///    makes the fourth site a compile error rather than a review miss. (Even
-///    *naming* the target type outside this module is `E0405` now: the
-///    `Provider` trait is no longer imported at file scope either.)
+///    app runtime is an `AppProvider` for exactly this reason. (Even *naming*
+///    the target type outside this module is `E0405` now: the `Provider` trait
+///    is no longer imported at file scope either.)
+///  * `biorouter::providers::create` is imported **here** rather than at file
+///    scope, so a bare `create(..)` outside this module is `E0425` and
+///    `app_provider_bind::create(..)` is `E0603`.
 ///
-/// ⚠ What this deliberately does NOT cover, stated so nobody re-derives it as a
-/// hole: `Agent::provider()` is a foreign crate's public accessor and still
-/// hands back a bare `Arc<dyn Provider>`, so a determined author could re-bind
-/// the provider the session is *already* running on. That is a no-op, not an
-/// escalation — the only providers reachable at file scope are the one already
-/// bound and the ones [`app_provider`] builds. Closing even that would mean
-/// making a `pub` method of another crate unreachable, which is not something
-/// this file can do.
+/// ⚠ **How far that actually reaches, stated plainly, because the first version
+/// of this comment overstated it.** The first two bullets are walls: an author
+/// who has a provider value in hand — every one in this file is an
+/// [`AppProvider`] — cannot bind it any other way, and cannot even spell the
+/// type of the thing `Agent::update_provider` wants. The third is a speed bump,
+/// not a wall: `create` is a `pub` item of another crate, so that `E0425` lasts
+/// exactly until someone adds one `use` line, and `Agent::update_provider` is a
+/// `pub` method of a foreign type, which nothing arranged inside this file can
+/// make unreachable. A determined author can still write a fourth bind site that
+/// compiles.
+///
+/// What holds that line is a test —
+/// `privacy_dr21::apps_rs_names_the_raw_bind_exactly_once_outside_its_tests`,
+/// which fails the moment a second `.update_provider(` appears in this file's
+/// production code and says what to do instead. Weaker than `E0603`, stronger
+/// than the comment Step 2 rules out: a new bind site does not have to be
+/// noticed in review.
+///
+/// ⚠ One related shape is a non-issue rather than a residual: `Agent::provider()`
+/// still hands back a bare `Arc<dyn Provider>`, so the provider a session is
+/// *already* running on can be re-bound. That is a no-op, not an escalation.
 mod app_provider_bind {
     use super::{provider_is_private_for_app, ModelConfig};
     use biorouter::agents::Agent;
@@ -1072,6 +1085,18 @@ mod app_provider_bind {
     /// DR-15's master opt-out is read INSIDE the gate, like every other #56
     /// surface, so a mid-session change is honoured and the opt-out is one
     /// auditable line rather than an absent gate.
+    ///
+    /// ⚠ **This check is read-then-write, and Gate A's is not.** Gate A stays
+    /// atomic — its predicate lives in the `UPDATE … WHERE` inside [`raw_bind`],
+    /// so no concurrent ratchet can interleave into "private session, public
+    /// provider bound". DR-21's read cannot join it there: the capability it
+    /// compares against is the *bound instance's* tier, which is not a column.
+    /// The window is therefore real but narrow, and every writer that could race
+    /// through it is serialized upstream: an app session's binds all originate on
+    /// that session's own socket loop, which handles one frame at a time, and
+    /// `configure_agent` runs once before the loop starts. Closing it properly
+    /// means persisting the created-with tier on the row — the same session-store
+    /// schema change [`row_capability`] names, and outside this task.
     pub(super) async fn bind_app_provider(
         agent: &Agent,
         session_id: &str,
@@ -1873,6 +1898,18 @@ fn stamp_agent(mut frame: serde_json::Value, agent_name: Option<&str>) -> serde_
 /// than falling through to the next rung, for the reason
 /// [`configure_main_provider`] states: a silent fallback is indistinguishable
 /// from a refusal that never happened.
+///
+/// ⚠ **What that costs, stated because it is a choice and not an oversight.** A
+/// refusal at rung 1 does not degrade to rung 2 or 3 — it returns. For a durable
+/// worker session (`get_or_create_by_external_key`) that was already bound to a
+/// public model and whose profile is then edited to name a private one, the
+/// worker ends the call with **no provider at all** rather than on the model it
+/// had. That is the same shape as the §3.7 outcome two paragraphs up, and for
+/// the same reason: a worker that quietly keeps answering after its declared
+/// model was refused is the failure Step 3 case 3 names. Falling through would
+/// bind a *legal* provider, but it would also make a refusal and a bind-that-
+/// never-happened produce the identical observable, which is exactly what this
+/// campaign has been unable to tell apart four times.
 async fn configure_worker_provider(
     agent: &biorouter::agents::Agent,
     session_id: &str,
@@ -9259,6 +9296,23 @@ mod tests {
             }
         }
 
+        /// A span of this file's own source with its comment lines removed.
+        ///
+        /// The needle the two structural tests below look for is a function
+        /// CALL, and a doc or inline comment naming that same function would
+        /// satisfy `contains` with the real call deleted — an assertion that
+        /// satisfies itself while reading as a passing gate. Today the
+        /// `ModelSelect` arm's prose happens to say `bind_app_provider` without
+        /// a paren, so those tests are sound by luck; a reword to
+        /// `bind_app_provider(…)` would silently make them vacuous. Stripping
+        /// comments removes the luck.
+        pub(super) fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
         /// Every frame the bridge has emitted since `attach`.
         pub(super) fn drain(
             rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
@@ -9547,13 +9601,14 @@ mod tests {
             // `split_once` matching here instead.
             let src = include_str!("apps.rs");
             let needle = concat!("ClientFrame::ModelSel", "ect { provider, model } => {");
-            let arm = src
-                .split_once(needle)
-                .expect("the ModelSelect arm still exists")
-                .1
-                .split_once("\n            ClientFrame::")
-                .expect("...and is still followed by another frame arm")
-                .0;
+            let arm = code_only(
+                src.split_once(needle)
+                    .expect("the ModelSelect arm still exists")
+                    .1
+                    .split_once("\n            ClientFrame::")
+                    .expect("...and is still followed by another frame arm")
+                    .0,
+            );
             assert!(
                 arm.contains("bind_app_provider("),
                 "ModelSelect must bind through `app_provider_bind::bind_app_provider` — that is \
@@ -9638,7 +9693,7 @@ mod tests {
             configure_worker_provider,
         };
         use super::privacy_capability::{lock_env_for, PRIVATE_HOST, PUBLIC_HOST};
-        use super::privacy_task24::{agent_over, drain, tiered};
+        use super::privacy_task24::{agent_over, code_only, drain, tiered};
         use biorouter::privacy::{ProviderTier, SessionClassification};
         use biorouter::session::session_manager::SessionType;
         use biorouter::session::SessionManager;
@@ -9835,18 +9890,31 @@ mod tests {
             // `split_once` matching here instead.
             let src = include_str!("apps.rs");
             let needle = concat!("ClientFrame::ModelSel", "ect { provider, model } => {");
-            let arm = src
-                .split_once(needle)
-                .expect("the ModelSelect arm still exists")
-                .1
-                .split_once("\n            ClientFrame::")
-                .expect("...and is still followed by another frame arm")
-                .0;
+            let arm = code_only(
+                src.split_once(needle)
+                    .expect("the ModelSelect arm still exists")
+                    .1
+                    .split_once("\n            ClientFrame::")
+                    .expect("...and is still followed by another frame arm")
+                    .0,
+            );
             assert!(
                 arm.contains("bind_app_provider("),
                 "ModelSelect must bind through the DR-21-guarded helper: this socket is exempt \
                  from secret-key auth, so a bare `update_provider` here is an unauthenticated \
                  capability raise. The arm reads:\n{arm}"
+            );
+            // The FOURTH emission site. The other three are driven end-to-end by
+            // the frame tests below; this arm's frame is assembled inside the
+            // socket loop, which a unit test cannot drive without a live
+            // provider and a browser — so its "refused, not ignored" half is
+            // read off the source alongside the bind. `ok:false` on its own
+            // reads to the page as an unavailable model, which invites exactly
+            // the retry DR-21's wording exists to stop.
+            assert!(
+                arm.contains("frame[\"error\"]"),
+                "a refused ModelSelect must carry the refusal, not a bare `ok:false`. The arm \
+                 reads:\n{arm}"
             );
 
             // (2) …and that helper refuses the raise. Exactly what the arm does
@@ -10063,13 +10131,73 @@ mod tests {
             )
             .await;
 
-            let refusal = outcome
-                .err()
-                .expect("an unreadable row must not grant a capability");
+            let refusal = outcome.expect_err("an unreadable row must not grant a capability");
             assert!(
                 matches!(refusal, app_provider_bind::AppBindError::TierFixed(_)),
                 "the fail-safe direction is DR-21's refusal, which stops the caller's rung chain; \
                  a plain failure does not: {refusal}"
+            );
+        }
+
+        /// **Step 2's residual, held by the only mechanism that can hold it.**
+        ///
+        /// Three of Step 2's four barriers really are compile errors, and they
+        /// are the ones that matter to an author *reusing* what this file already
+        /// has: [`app_provider_bind::raw_bind`] is private (`E0603`),
+        /// `AppProvider` keeps its handle in a private field (`E0616`), and the
+        /// `Provider` trait is not imported at file scope, so even naming the
+        /// argument type is `E0405`. Every provider-typed parameter in the app
+        /// runtime is an `AppProvider`, so no value already in hand can be
+        /// unwrapped and bound.
+        ///
+        /// The fourth is softer than the commit that introduced it claimed.
+        /// `biorouter::providers::create` is a `pub` item of another crate, so
+        /// moving its import inside the module makes a bare `create(..)` an
+        /// `E0425` only until someone writes one `use` line — and
+        /// `Agent::update_provider` is a `pub` method of a foreign type, which
+        /// nothing arranged inside this file can make unreachable. A determined
+        /// author can still write a fourth bind site that compiles.
+        ///
+        /// So the line is held here. This is weaker than `E0603` and stronger
+        /// than the comment Step 2 rules out: a new bind site does not have to be
+        /// noticed in review, it fails a test that names what to do about it.
+        #[test]
+        fn apps_rs_names_the_raw_bind_exactly_once_outside_its_tests() {
+            let src = include_str!("apps.rs");
+            // Comments stripped: the prose above `app_provider_bind` names this
+            // very call, and counting it would make the assertion about the
+            // documentation rather than about the code.
+            let production = code_only(
+                src.split_once(concat!("\n#[cfg(te", "st)]\nmod tests {"))
+                    .expect("this file still has a test half to exclude")
+                    .0,
+            );
+            let sites: Vec<&str> = production
+                .lines()
+                .filter(|line| line.contains(".update_provider("))
+                .collect();
+            assert_eq!(
+                sites.len(),
+                1,
+                "`Agent::update_provider` must be named exactly ONCE in this file's production \
+                 code — inside the private `app_provider_bind::raw_bind`, which is what makes \
+                 every other path to it an E0603. A second occurrence is an app bind that skips \
+                 DR-21 entirely: route it through `app_provider_bind::bind_app_provider` instead. \
+                 Found:\n{sites:#?}"
+            );
+
+            // …and the one that remains is that private helper, rather than
+            // something new that merely happens to be the only one left.
+            let raw_bind = production
+                .split_once("    async fn raw_bind(")
+                .expect("`raw_bind` still exists")
+                .1
+                .split_once("\n    }")
+                .expect("...and still ends")
+                .0;
+            assert!(
+                raw_bind.contains(".update_provider("),
+                "the surviving call must be `raw_bind`'s own: {raw_bind}"
             );
         }
 
@@ -10121,7 +10249,7 @@ mod tests {
         /// DR-21's refusal on a `model` frame, or a panic naming what arrived
         /// instead. Deleting the `emit_frame` call this reads leaves nothing on
         /// the bridge at all, which is the point.
-        fn refusal_frame<'a>(frames: &'a [serde_json::Value]) -> &'a serde_json::Value {
+        fn refusal_frame(frames: &[serde_json::Value]) -> &serde_json::Value {
             let frame = model_frame(frames)
                 .unwrap_or_else(|| panic!("the page must be told, on a model frame: {frames:?}"));
             assert_eq!(frame["ok"].as_bool(), Some(false), "{frame}");
