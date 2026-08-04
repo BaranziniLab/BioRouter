@@ -193,6 +193,18 @@ pub struct ConversationIngestArgs {
     /// `CallerAffiliation::Unstated` on the far side of the crate boundary,
     /// which is the restrictive answer.
     pub caller_affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+    /// The store the selected chats' **institutional** affiliations are read
+    /// from (issue #56, DR-26 / Task 50 Step 3).
+    ///
+    /// ⚠ **The manager rather than a caller-supplied map, deliberately.** A
+    /// `HashMap<session_id, institutions>` filled in by each of the three
+    /// production constructors is the enumeration trap this campaign has already
+    /// lost to three times: a caller that passes an empty map disables the gate
+    /// for its whole surface, silently and with the build green. `Session` does
+    /// not carry the column — it is a published OpenAPI type and widening it is
+    /// a wire change — so the guard does its own lookup instead, and there is
+    /// nothing for a caller to under-fill.
+    pub session_manager: std::sync::Arc<crate::session::SessionManager>,
     pub sessions: Vec<Session>,
     pub completer: Box<dyn Completer>,
     pub focus: Option<String>,
@@ -234,6 +246,16 @@ pub const REFUSED_ALL_PRIVATE: &str = "\
 Those chats are private: they were created under a model hosted inside the institution, so only a \
 private model may read them. This session is running on a public model. Ask the user to switch this \
 chat to a private model and try again.";
+
+/// Issue #56 DR-26 / Task 50 Step 3. Every selected chat crossed an
+/// institutional boundary this model's agreements do not cover.
+///
+/// Names no session, no title and no working directory, for the reason
+/// [`REFUSED_ALL_PRIVATE`] does not. It names no institution either — unlike the
+/// chat-recall refusal, this one covers a *set* of chats that may have touched
+/// several, and DR-26's "specific enough to act on" is met by the action it
+/// states rather than by an enumeration the model cannot map back to a chat.
+pub const REFUSED_ALL_CROSS_INSTITUTIONAL: &str = "Those chats reached extensions belonging to an institution whose agreements do not cover the model this ingest would run on. Compliance does not transfer between institutions: a model approved at one has no permission over another's data unless a BAA, DUA or IRB approval covers this specific flow. Ask the user to run this ingest on a model covered by that institution's agreements, or to select different chats.";
 
 /// Gate G's predicate, and the **one** place `visible_to` is consulted for a
 /// conversation ingest (issue #56).
@@ -284,7 +306,46 @@ pub async fn ingest_conversation(
     if allowed.is_empty() && !refused.is_empty() {
         anyhow::bail!("{}", REFUSED_ALL_PRIVATE);
     }
-    let refused = refused.len();
+    let mut refused = refused.len();
+
+    // Issue #56 DR-26 / Task 50 Step 3, on the line below Gate G and inside the
+    // same guard. Per session, for the reason Gate G is per session: `sessions`
+    // is a caller-supplied LIST, and one up-front check admits the rest.
+    //
+    // ⚠ **Both endpoints are private here.** A chat that queried the UCSF OMOP
+    // connector holds UCSF's data in its transcript, and digesting it writes
+    // that transcript into a knowledge base through whatever model this ingest
+    // runs on. Every tier gate says yes; only the third axis refuses.
+    //
+    // ⚠ **An unreadable answer refuses that chat rather than admitting it.**
+    // DR-26's discipline for unknown is restrictive — the same direction
+    // `KbAffiliation::Unknown` takes — and this is the arm a `.unwrap_or_default()`
+    // would quietly invert.
+    let mut compatible = Vec::with_capacity(allowed.len());
+    for session in allowed {
+        let owners = args.session_manager.session_affiliations(&session.id).await;
+        let refuse = match owners {
+            Ok(owners) => {
+                !crate::privacy::affiliation::owners_compatible(args.caller_affiliation, &owners)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "could not read a chat's institutional affiliations; refusing to digest it"
+                );
+                true
+            }
+        };
+        if refuse && crate::privacy::privacy_tiers_enabled() {
+            refused += 1;
+        } else {
+            compatible.push(session);
+        }
+    }
+    if compatible.is_empty() && refused > 0 {
+        anyhow::bail!("{}", REFUSED_ALL_CROSS_INSTITUTIONAL);
+    }
+    let allowed = compatible;
 
     let rendered = render_conversations(&allowed);
     if rendered.rendered_messages == 0 {
@@ -334,6 +395,20 @@ mod tests {
     use crate::session::session_manager::{Session, SessionType};
     use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
     use std::path::PathBuf;
+
+    /// A session manager over a throwaway store, for the affiliation lookup the
+    /// guard performs. These fixtures' sessions have no row in it, which reads
+    /// as "no institution touched" — the Missing direction, and what every
+    /// assertion here is about the TIER axis needs.
+    fn empty_session_manager() -> std::sync::Arc<crate::session::SessionManager> {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        // The manager holds the pool; the directory must outlive it.
+        std::mem::forget(dir);
+        sm
+    }
 
     fn base_session() -> Session {
         Session {
@@ -469,6 +544,7 @@ mod tests {
                 kb_id: "soul".into(),
                 caller_capability: crate::privacy::ProviderTier::Public,
                 caller_affiliation: None,
+                session_manager: empty_session_manager(),
                 sessions: vec![session],
                 completer: Box::new(SilentCompleter),
                 focus: None,
@@ -616,6 +692,7 @@ mod tests {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
                 caller_affiliation: None,
+                session_manager: empty_session_manager(),
                 sessions: vec![private],
                 completer: Box::new(WritingCompleter::new()),
                 focus: None,
@@ -662,6 +739,7 @@ mod tests {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Private,
                 caller_affiliation: None,
+                session_manager: empty_session_manager(),
                 sessions: vec![session_with(
                     "mine",
                     SessionClassification::Private,
@@ -698,6 +776,7 @@ mod tests {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
                 caller_affiliation: None,
+                session_manager: empty_session_manager(),
                 sessions: vec![session_with(
                     "mine",
                     SessionClassification::Public,
@@ -728,6 +807,7 @@ mod tests {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
                 caller_affiliation: None,
+                session_manager: empty_session_manager(),
                 sessions: vec![
                     session_with("pub", SessionClassification::Public, "PUBLIC-SENTINEL"),
                     session_with("priv", SessionClassification::Private, "PHI cohort notes"),
@@ -757,5 +837,101 @@ mod tests {
             !written.contains("PHI cohort notes"),
             "the refused transcript was rendered into the knowledge base"
         );
+    }
+
+    /// Issue #56 DR-26 / Task 50 Step 3, at the cross-session ingest surface.
+    ///
+    /// ⚠ **Both endpoints are private**, so Gate G's tier check permits and only
+    /// the third axis refuses. A chat that queried the UCSF OMOP connector holds
+    /// UCSF's data in its transcript, and digesting it writes that transcript
+    /// into a knowledge base through whatever model this ingest runs on.
+    ///
+    /// The affiliations are read from a REAL session manager, through the same
+    /// lookup production uses, because the whole point of putting the manager on
+    /// the args is that no caller can under-fill it.
+    #[tokio::test]
+    async fn a_foreign_institutions_model_may_not_digest_a_chat_that_reached_it() {
+        let (tmp, svc) = kb_service();
+        let before = tree_snapshot(tmp.path());
+
+        let dir = tempfile::tempdir().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let row = sm
+            .create_session(
+                std::path::PathBuf::from("/data/phi"),
+                "ucsf work".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.record_session_affiliation(
+            &row.id,
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        )
+        .await
+        .unwrap();
+
+        let ucsf_chat = || {
+            let mut s = session_with("x", SessionClassification::Private, "PHI cohort notes");
+            s.id = row.id.clone();
+            s
+        };
+        let stanford = Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+            crate::privacy::affiliation::InstitutionId::new("stanford"),
+        ));
+
+        let err = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Private,
+                caller_affiliation: stanford,
+                session_manager: sm.clone(),
+                sessions: vec![ucsf_chat()],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a Stanford-covered model digested a chat that reached UCSF")
+        .to_string();
+        assert!(err.contains("Compliance does not transfer"), "{err}");
+        assert!(
+            !err.contains("PHI cohort notes") && !err.contains("ucsf work"),
+            "the refusal carried content: {err}"
+        );
+        assert_eq!(
+            tree_snapshot(tmp.path()),
+            before,
+            "a refused ingest still wrote into the knowledge base"
+        );
+
+        // UCSF's own model digests it — or the gate is just "refuse everyone".
+        let ucsf = Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        ));
+        let out = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Private,
+                caller_affiliation: ucsf,
+                session_manager: sm,
+                sessions: vec![ucsf_chat()],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect("the institution's own model may digest its own chat");
+        assert_eq!(out.refused, 0);
     }
 }

@@ -1553,6 +1553,10 @@ pub async fn ingest_conversation(
 
     let focus = body.focus.clone();
     let cancel_for_macro = cancel.clone();
+    // Issue #56 DR-26 / Task 50 Step 3: the guard reads each selected chat's
+    // institutions itself — see `ConversationIngestArgs::session_manager`.
+    let session_manager_for_macro =
+        std::sync::Arc::new(biorouter::session::session_manager::SessionManager::instance());
     let macro_handle = tokio::spawn(async move {
         let args = biorouter::knowledge::conversation_ingest::ConversationIngestArgs {
             kb_id: id,
@@ -1560,6 +1564,7 @@ pub async fn ingest_conversation(
             // the constructed provider, not of the requested name.
             caller_capability,
             caller_affiliation,
+            session_manager: session_manager_for_macro,
             sessions,
             completer,
             focus,

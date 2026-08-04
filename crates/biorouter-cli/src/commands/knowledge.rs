@@ -619,6 +619,7 @@ pub async fn handle_ingest_conversation(
             // Issue #56. The tier of the provider that was CONSTRUCTED.
             caller_capability,
             caller_affiliation,
+            session_manager: std::sync::Arc::new(SessionManager::instance()),
             sessions: loaded,
             completer,
             focus,

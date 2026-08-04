@@ -2585,6 +2585,27 @@ impl ExtensionManager {
         if cap.enforced() && ext_class.tier.is_private() {
             self.raise_session_privacy(session_id, &format!("mcp:{client_name}"))
                 .await?;
+            // Issue #56 DR-26 / Task 50 Step 3: "a private chat carries the
+            // affiliation of the extensions it touched". BESIDE the tier ratchet
+            // and under the same guard, at the same permit-time instant and off
+            // the same `ext_class` — a second read of the classification here
+            // could disagree with the one the gates above decided on.
+            //
+            // ⚠ Only `Institutions` contributes. `Any` is a private extension
+            // with no institutional constraint, so touching it puts no
+            // institution's data in this chat and recording one would warn on a
+            // recall nobody needs warned about — the prompt fatigue DR-19
+            // rejects.
+            if let crate::privacy::ExtensionAffiliation::Institutions(owners) =
+                &ext_class.affiliation
+            {
+                for owner in owners {
+                    self.context
+                        .session_manager
+                        .record_session_affiliation(session_id, *owner)
+                        .await?;
+                }
+            }
         }
 
         let arguments = tool_call.arguments.clone();
@@ -6884,6 +6905,87 @@ mod tests {
             sm.get_session(&id, false).await.unwrap().privacy_tier,
             crate::privacy::SessionClassification::Private
         );
+    }
+
+    /// Issue #56 DR-26 / Task 50 Step 3: "a private chat carries the affiliation
+    /// of the extensions it touched."
+    ///
+    /// ⚠ **This is the load-bearing half of Step 3.** Chat recall and
+    /// cross-session ingest both gate on `sessions.session_affiliations`; if
+    /// nothing ever writes it, both gates read the empty set, permit everything,
+    /// and every assertion at those surfaces still passes. So the recorder is
+    /// asserted here, at the one place that writes it, through a real dispatch.
+    ///
+    /// It records only what an INSTITUTION claims: `developer` is private on no
+    /// axis and `Any` claims nothing, so touching either adds no owner. A
+    /// recorder that stamped every private extension would warn on recalls with
+    /// no institutional boundary in them, which is the prompt fatigue DR-19
+    /// rejects.
+    #[tokio::test]
+    async fn a_dispatch_records_the_extensions_institution_on_the_chat() {
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        assert!(
+            sm.session_affiliations(&id).await.unwrap().is_empty(),
+            "a fresh chat has touched nobody"
+        );
+
+        // An extension with no institutional claim adds no owner.
+        em.dispatch_tool_call(
+            &id,
+            call("developer__tool"),
+            bound_locally(),
+            CancellationToken::default(),
+        )
+        .await
+        .expect("the developer extension is reachable")
+        .result
+        .await
+        .expect("the mock client answers");
+        assert!(
+            sm.session_affiliations(&id).await.unwrap().is_empty(),
+            "an unclaimed extension put an institution on the chat"
+        );
+
+        // The UCSF connector does.
+        em.dispatch_tool_call(
+            &id,
+            call("ucsfomopagent__tool"),
+            bound_locally(),
+            CancellationToken::default(),
+        )
+        .await
+        .expect("a local model reaches every private extension")
+        .result
+        .await
+        .expect("the mock client answers");
+
+        let owners = sm.session_affiliations(&id).await.unwrap();
+        assert_eq!(
+            owners,
+            std::collections::BTreeSet::from([crate::privacy::affiliation::InstitutionId::new(
+                "ucsf"
+            )]),
+            "the chat does not carry the institution whose connector it just queried"
+        );
+
+        // Monotone: a later dispatch neither duplicates nor clears it.
+        em.dispatch_tool_call(
+            &id,
+            call("developer__tool"),
+            bound_locally(),
+            CancellationToken::default(),
+        )
+        .await
+        .expect("still reachable")
+        .result
+        .await
+        .expect("the mock client answers");
+        assert_eq!(sm.session_affiliations(&id).await.unwrap().len(), 1);
     }
 
     /// **Surface 2 — Gate E, discovery.** Listed and MARKED, never hidden.

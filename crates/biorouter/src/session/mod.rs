@@ -1,11 +1,12 @@
 pub(crate) mod chat_fts;
-mod chat_history_search;
+pub mod chat_history_search;
 mod diagnostics;
 pub mod extension_data;
 mod legacy;
 pub mod message_blobs;
 pub mod session_manager;
 
+pub use chat_history_search::SearchReach;
 pub use diagnostics::{generate_diagnostics, get_system_info, SystemInfo};
 pub use extension_data::{
     EnabledExtensionsState, ExtensionData, ExtensionState, TodoItem, TodoState, TodoStatus,

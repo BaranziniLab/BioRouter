@@ -128,6 +128,62 @@ impl ChatRecallClient {
                         )]);
                     }
 
+                    // Issue #56 DR-26 / Task 50 Step 3, on the SAME line as the
+                    // tier gate above and for the same reason it is here: the
+                    // header string below carries the session's name and working
+                    // directory, which are CONTENT under §11.4.
+                    //
+                    // ⚠ **Both endpoints are private here**, so every tier gate
+                    // this campaign built says yes and only the third axis
+                    // refuses — the operator's case, arriving through recall
+                    // instead of through a tool call. A chat that queried the
+                    // UCSF OMOP connector holds UCSF's data in its transcript
+                    // just as surely as the connector does.
+                    //
+                    // ⚠ **An unreadable answer is not an empty set.** A store
+                    // error means we cannot tell which institutions this chat
+                    // reached, and DR-26's discipline for unknown is
+                    // restrictive — the same direction `KbAffiliation::Unknown`
+                    // takes. So the `Err` arm refuses rather than falling
+                    // through, which is why `session_affiliations` returns a
+                    // `Result` instead of defaulting.
+                    if cap.enforced() {
+                        let owners = self
+                            .context
+                            .session_manager
+                            .session_affiliations(&sid)
+                            .await;
+                        let refusal = match owners {
+                            Ok(owners) => crate::privacy::affiliation::cross_affiliation_owners(
+                                cap.affiliation(),
+                                "this chat history",
+                                &owners,
+                            )
+                            .map(|finding| finding.warning),
+                            Err(error) => {
+                                tracing::warn!(
+                                    session_id = %sid,
+                                    %error,
+                                    "could not read this chat's institutional affiliations; \
+                                     refusing the recall"
+                                );
+                                Some(
+                                    "Cross-institutional data flow. Which institutions this chat \
+                                     history reached could not be determined, so this build \
+                                     cannot vouch that your model's agreements cover it."
+                                        .to_string(),
+                                )
+                            }
+                        };
+                        if let Some(warning) = refusal {
+                            return Ok(vec![Content::text(
+                                crate::privacy::refusal::chatrecall_cross_affiliation_refusal(
+                                    &warning,
+                                ),
+                            )]);
+                        }
+                    }
+
                     let conversation = loaded_session.conversation.as_ref();
 
                     if conversation.is_none() {
@@ -254,7 +310,18 @@ impl ChatRecallClient {
                     after_date,
                     before_date,
                     exclude_session_id,
-                    reach,
+                    crate::session::chat_history_search::SearchReach {
+                        tier: reach,
+                        // Issue #56 DR-26 / Task 50 Step 3. Off the SAME
+                        // admitted sample as the tier above, never a fresh
+                        // provider read from inside the driven future. Unlike
+                        // the tier, it is NOT collapsed by the master opt-out
+                        // here — the clause reads the toggle itself
+                        // (`ChatHistorySearch::filters_by_affiliation`), so the
+                        // rule holds for any caller of `search_chat_history`,
+                        // capability or not.
+                        affiliation: cap.affiliation(),
+                    },
                 )
                 .await
             {
@@ -809,5 +876,184 @@ mod tests {
             "a call admitted as public loaded a private transcript"
         );
         assert!(!text.contains("OMOP"), "leaked the session name: {text}");
+    }
+
+    // ─────────── DR-26 / Task 50 Step 3: the third axis on chat recall ───────
+
+    fn bound_to(name: &str) -> CallCapability {
+        CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new(name),
+            )),
+        )
+    }
+
+    /// The operator's case, arriving through recall instead of through a tool
+    /// call: **both** endpoints are private, so every tier gate in this campaign
+    /// says yes, and only DR-26 refuses.
+    ///
+    /// The refusal names the institution — DR-26 requires a warning specific
+    /// enough to act on — and still names no session, no title and no working
+    /// directory, because §11.4 classifies all three as content.
+    #[tokio::test]
+    async fn a_chat_that_reached_one_institution_is_not_recallable_from_another() {
+        let h = Harness::new().await;
+        let target = h
+            .private_session_named(
+                "OMOP diabetes cohort characterisation",
+                "/data/phi/cohort-2026-dm2",
+            )
+            .await;
+        h.sm.record_session_affiliation(
+            &target.id,
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        )
+        .await
+        .unwrap();
+
+        let text = h.load_via(bound_to("stanford"), &target.id).await.unwrap()[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        assert!(text.contains("Cross-institutional"), "{text}");
+        assert!(text.contains("ucsf"), "the owning institution: {text}");
+        assert!(text.contains("stanford"), "the bound institution: {text}");
+        assert!(!text.contains("OMOP"), "leaked the session name: {text}");
+        assert!(
+            !text.contains("cohort-2026-dm2"),
+            "leaked the working dir: {text}"
+        );
+
+        // The institution's own model still reads it, or the gate is just
+        // "refuse everyone".
+        assert!(h.load_via(bound_to("ucsf"), &target.id).await.unwrap()[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("OMOP diabetes cohort"));
+        // …and so does a local model, which transfers nothing.
+        assert!(h
+            .load_via_private_capability_caller(&target.id)
+            .await
+            .unwrap()[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("OMOP diabetes cohort"));
+    }
+
+    /// The union rule, at the surface. A chat that reached BOTH institutions'
+    /// connectors is recallable from neither of their models — the row an
+    /// implementation reaching for `contains` gets wrong, and the one Task 50's
+    /// gate names.
+    #[tokio::test]
+    async fn a_chat_that_reached_two_institutions_is_recallable_from_neither() {
+        let h = Harness::new().await;
+        let target = h.private_session_named("joint study", "/data/joint").await;
+        for institution in ["ucsf", "stanford"] {
+            h.sm.record_session_affiliation(
+                &target.id,
+                crate::privacy::affiliation::InstitutionId::new(institution),
+            )
+            .await
+            .unwrap();
+        }
+
+        for institution in ["ucsf", "stanford"] {
+            let text = h.load_via(bound_to(institution), &target.id).await.unwrap()[0]
+                .as_text()
+                .unwrap()
+                .text
+                .clone();
+            assert!(
+                text.contains("Cross-institutional"),
+                "a model covered by {institution} alone read a chat that reached both: {text}"
+            );
+            assert!(!text.contains("joint study"), "leaked the name: {text}");
+        }
+        // Local reaches it; it never compares.
+        assert!(h
+            .load_via_private_capability_caller(&target.id)
+            .await
+            .unwrap()[0]
+            .as_text()
+            .unwrap()
+            .text
+            .contains("joint study"));
+    }
+
+    /// A chat that touched no institution's extension is recallable from every
+    /// private model — the Missing direction. Without this the gate would refuse
+    /// every recall in an ordinary chat, which is the failure that gets a
+    /// control turned off.
+    #[tokio::test]
+    async fn an_unaffiliated_private_chat_is_recallable_from_any_private_model() {
+        let h = Harness::new().await;
+        let target = h.private_session_named("ordinary notes", "/tmp/n").await;
+        for cap in [bound_to("ucsf"), bound_to("stanford")] {
+            assert!(h.load_via(cap, &target.id).await.unwrap()[0]
+                .as_text()
+                .unwrap()
+                .text
+                .contains("ordinary notes"));
+        }
+    }
+
+    /// SEARCH is the wider hole of the two: LOAD names one session, SEARCH
+    /// sweeps every session in the store and returns snippets. The filter is in
+    /// SQL, ahead of the `LIMIT`, exactly as the tier filter beside it.
+    #[tokio::test]
+    async fn search_hides_another_institutions_chat_and_keeps_its_own() {
+        let h = Harness::new().await;
+        let ucsf = h
+            .session_containing("ucsf work", "/data/u", true, "SENTINELWORD cohort")
+            .await;
+        h.sm.record_session_affiliation(
+            &ucsf.id,
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        )
+        .await
+        .unwrap();
+        let unaffiliated = h
+            .session_containing("plain work", "/data/p", true, "SENTINELWORD notes")
+            .await;
+
+        let text = h
+            .search_via(bound_to("stanford"), "SENTINELWORD")
+            .await
+            .unwrap()[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        // The rendered result carries the working dir and the transcript, not
+        // the (LLM-generated) name, so those are what a leak would show.
+        assert!(
+            !text.contains("/data/u") && !text.contains("cohort"),
+            "a Stanford-covered model saw a UCSF chat's transcript: {text}"
+        );
+        assert!(
+            text.contains("/data/p") && text.contains("notes"),
+            "the filter must not hide a chat no institution claims: {text}"
+        );
+        let _ = unaffiliated;
+
+        // UCSF's own model sees both, or the filter is just "hide everything".
+        let mine = h
+            .search_via(bound_to("ucsf"), "SENTINELWORD")
+            .await
+            .unwrap()[0]
+            .as_text()
+            .unwrap()
+            .text
+            .clone();
+        assert!(
+            mine.contains("/data/u") && mine.contains("cohort"),
+            "{mine}"
+        );
+        assert!(mine.contains("/data/p"), "{mine}");
     }
 }

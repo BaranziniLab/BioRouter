@@ -83,6 +83,9 @@ impl Agent {
                 // content into a base, so whose agreements cover the digesting
                 // model is exactly the question this axis asks.
                 caller_affiliation,
+                // Issue #56 DR-26 / Task 50 Step 3: the guard reads each selected
+                // chat's institutions itself — see `ConversationIngestArgs`.
+                session_manager: self.config.session_manager.clone(),
                 sessions,
                 completer,
                 focus: arguments

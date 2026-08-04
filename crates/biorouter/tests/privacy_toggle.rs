@@ -335,11 +335,18 @@ async fn extension_names_and_instructions(agent: &Agent) -> String {
 
 /// Row 6's subject: Gate D, over a store this test owns.
 async fn search_as(tier: ProviderTier, sm: &SessionManager, query: &str) -> usize {
-    sm.search_chat_history(query, None, None, None, None, tier)
-        .await
-        .unwrap()
-        .results
-        .len()
+    sm.search_chat_history(
+        query,
+        None,
+        None,
+        None,
+        None,
+        biorouter::session::chat_history_search::SearchReach::tier_only(tier),
+    )
+    .await
+    .unwrap()
+    .results
+    .len()
 }
 
 /// Rows 7 and 18's subject: `chatrecall`'s LOAD guard, driven through the REAL

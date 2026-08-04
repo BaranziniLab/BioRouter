@@ -555,7 +555,9 @@ async fn compaction_shaped_rewrites_only_drop_what_they_meant_to() {
                 None,
                 // Full reach: this asserts the FTS mirror's contents, not #56's
                 // visibility filter, and the fixture's sessions are public.
-                biorouter::privacy::ProviderTier::Private,
+                biorouter::session::chat_history_search::SearchReach::tier_only(
+                    biorouter::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap();

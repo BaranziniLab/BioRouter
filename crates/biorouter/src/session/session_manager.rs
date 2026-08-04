@@ -1316,6 +1316,46 @@ impl SessionManager {
             .await
     }
 
+    /// Record that this chat has reached an extension belonging to
+    /// `institution` (issue #56, DR-26 / Task 50 Step 3).
+    ///
+    /// Monotone, and the union is computed **in SQL** for the reason
+    /// [`SessionUpdateBuilder::raise_privacy`]'s `CASE WHEN` is: a
+    /// read-modify-write from Rust has a window between the read and the write
+    /// that a concurrent tool call fits inside, and the institution it recorded
+    /// would be silently dropped. Two extensions of two institutions really can
+    /// be dispatched in one parallel tool batch, so that window is not
+    /// theoretical here.
+    ///
+    /// `NULL` and `''` are the empty set — every row that predates this column.
+    /// A value that is not a JSON array is left alone rather than replaced:
+    /// `json_each` errors on it and the statement fails, which surfaces as a
+    /// refused turn (the caller `?`s) instead of silently erasing whatever was
+    /// there.
+    pub async fn record_session_affiliation(
+        &self,
+        session_id: &str,
+        institution: crate::privacy::affiliation::InstitutionId,
+    ) -> Result<()> {
+        self.storage
+            .record_session_affiliation(session_id, institution.as_str())
+            .await
+    }
+
+    /// The institutions whose extensions this chat has touched.
+    ///
+    /// ⚠ **`Err` is not "no institutions".** An unreadable or unparseable value
+    /// means the answer is unknown, and Gate D's caller must treat that the way
+    /// `KbAffiliation::Unknown` is treated — restrictively — rather than as an
+    /// empty set. Returning a `Result` rather than defaulting is what forces
+    /// that decision to be made at the gate instead of here.
+    pub async fn session_affiliations(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::BTreeSet<crate::privacy::affiliation::InstitutionId>> {
+        self.storage.session_affiliations(session_id).await
+    }
+
     pub async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
         self.storage.get_session(id, include_messages).await
     }
@@ -1936,7 +1976,9 @@ impl SessionManager {
         after_date: Option<chrono::DateTime<chrono::Utc>>,
         before_date: Option<chrono::DateTime<chrono::Utc>>,
         exclude_session_id: Option<String>,
-        caller_capability: crate::privacy::ProviderTier,
+        // Issue #56 Gate D and DR-26 / Task 50 Step 3: both axes together — see
+        // `chat_history_search::SearchReach`.
+        reach: crate::session::chat_history_search::SearchReach,
     ) -> Result<crate::session::chat_history_search::ChatRecallResults> {
         self.storage
             .search_chat_history(
@@ -1945,7 +1987,7 @@ impl SessionManager {
                 after_date,
                 before_date,
                 exclude_session_id,
-                caller_capability,
+                reach,
             )
             .await
     }
@@ -2324,6 +2366,65 @@ impl SessionStorage {
     /// fixture id — the one way that test can lie. The two are distinguished
     /// with a single follow-up read in the zero case, on a path that is already
     /// an error.
+    /// See [`SessionManager::record_session_affiliation`]. One statement, so a
+    /// concurrent recorder cannot lose an institution between a read and a
+    /// write.
+    async fn record_session_affiliation(&self, session_id: &str, institution: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        // DR-15 / AR-7: with the master opt-out off nothing is recorded, for the
+        // reason the tier ratchet stops — this column is monotone and
+        // re-enabling never revisits a row, so a ratchet that kept firing would
+        // be a deferred, permanent impact on a feature the user turned off.
+        if !crate::privacy::privacy_tiers_enabled() {
+            return Ok(());
+        }
+        sqlx::query(
+            r#"
+            UPDATE sessions
+               SET session_affiliations = (
+                     SELECT json_group_array(value) FROM (
+                       SELECT DISTINCT value
+                         FROM json_each(COALESCE(NULLIF(session_affiliations, ''), '[]'))
+                       UNION
+                       SELECT ?2
+                       ORDER BY value
+                     )
+                   )
+             WHERE id = ?1
+            "#,
+        )
+        .bind(session_id)
+        .bind(institution)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// See [`SessionManager::session_affiliations`].
+    async fn session_affiliations(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::BTreeSet<crate::privacy::affiliation::InstitutionId>> {
+        let pool = self.pool().await?;
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT session_affiliations FROM sessions WHERE id = ?1")
+                .bind(session_id)
+                .fetch_optional(pool)
+                .await?
+                .flatten();
+        let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+            // NULL, absent or empty: this chat has touched no institution's
+            // extension, or predates the column. The Missing direction — a fact,
+            // not an unknown.
+            return Ok(Default::default());
+        };
+        let ids: Vec<String> = serde_json::from_str(&raw)?;
+        Ok(ids
+            .iter()
+            .map(|id| crate::privacy::affiliation::InstitutionId::new(id))
+            .collect())
+    }
+
     pub(crate) async fn bind_provider_if_allowed(
         &self,
         session_id: &str,
@@ -2499,6 +2600,7 @@ impl SessionStorage {
                 parent_session_id TEXT,
                 privacy_tier TEXT NOT NULL DEFAULT 'public',
                 privacy_reason TEXT,
+                session_affiliations TEXT,
                 external_key TEXT,
                 branch_point_msg_uid TEXT,
                 incarnation INTEGER NOT NULL DEFAULT 0
@@ -3308,6 +3410,13 @@ impl SessionStorage {
             ("privacy_tier", "TEXT NOT NULL DEFAULT 'public'"),
             ("privacy_reason", "TEXT"),
             ("parent_session_id", "TEXT"),
+            // Issue #56 DR-26 / Task 50 Step 3. A JSON array of institution ids
+            // — the union of the institutions whose extensions this chat has
+            // touched. NULL on every row that predates it, which reads as the
+            // empty set: the same Missing-is-permissive direction the knowledge
+            // store's affiliations map takes, and the same one the tier
+            // migration took (AR-2).
+            ("session_affiliations", "TEXT"),
         ] {
             let exists: i32 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
@@ -6223,7 +6332,9 @@ impl SessionStorage {
         after_date: Option<chrono::DateTime<chrono::Utc>>,
         before_date: Option<chrono::DateTime<chrono::Utc>>,
         exclude_session_id: Option<String>,
-        caller_capability: crate::privacy::ProviderTier,
+        // Issue #56 Gate D and DR-26 / Task 50 Step 3: both axes together — see
+        // `chat_history_search::SearchReach`.
+        reach: crate::session::chat_history_search::SearchReach,
     ) -> Result<crate::session::chat_history_search::ChatRecallResults> {
         use crate::session::chat_history_search::ChatHistorySearch;
 
@@ -6235,7 +6346,7 @@ impl SessionStorage {
             after_date,
             before_date,
             exclude_session_id,
-            caller_capability,
+            reach,
         )
         .execute()
         .await
@@ -10845,7 +10956,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap()
@@ -10861,7 +10974,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap()
@@ -10880,7 +10995,9 @@ mod tests {
             None,
             None,
             None,
-            crate::privacy::ProviderTier::Private,
+            crate::session::chat_history_search::SearchReach::tier_only(
+                crate::privacy::ProviderTier::Private,
+            ),
         )
         .await
         .unwrap()
@@ -11937,7 +12054,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap();
@@ -11971,7 +12090,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap();
@@ -12000,7 +12121,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap()
@@ -12021,7 +12144,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap()
@@ -12034,7 +12159,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap()
@@ -12112,7 +12239,9 @@ mod tests {
                 None,
                 None,
                 None,
-                crate::privacy::ProviderTier::Private,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
             )
             .await
             .unwrap();
@@ -12172,7 +12301,9 @@ mod tests {
             None,
             None,
             None,
-            crate::privacy::ProviderTier::Private,
+            crate::session::chat_history_search::SearchReach::tier_only(
+                crate::privacy::ProviderTier::Private,
+            ),
         )
         .execute()
         .await

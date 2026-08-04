@@ -64,6 +64,59 @@ pub struct ChatHistorySearch<'a> {
     /// reach — see `chatrecall_extension.rs`'s SEARCH arm, which is also where
     /// DR-15's master opt-out is applied.
     caller_capability: ProviderTier,
+    /// Issue #56 DR-26 / Task 50 Step 3. Whose agreements cover the searching
+    /// model — the third axis, filtered in SQL beside the tier.
+    ///
+    /// A private chat that reached the UCSF OMOP connector holds UCSF's data in
+    /// its transcript, and a snippet of it is exactly what this search returns.
+    /// Both endpoints being Private means every tier gate says yes, so without
+    /// this clause the operator's case leaks through search rather than through
+    /// a tool call.
+    ///
+    /// `None` is a public model (already handled by the tier clause) or a
+    /// private one that states nothing; both reach only chats that touched no
+    /// institution at all.
+    caller_affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+}
+
+/// The reach one chat-recall search runs with: DR-26's two axes together.
+///
+/// One value rather than two parameters because they are one caller's identity
+/// — a signature that takes them apart invites a call site that passes one
+/// model's tier and another's institution, and the wrong one compiles. (It also
+/// keeps `new` inside clippy's argument cap, which is the same pressure pointing
+/// the same way.)
+#[derive(Clone, Copy)]
+pub struct SearchReach {
+    /// `Public` filters private sessions out **in SQL**; `Private` is full
+    /// reach on this axis.
+    pub tier: ProviderTier,
+    /// Whose agreements cover the searching model. `None` is a public model, or
+    /// a private one that states nothing.
+    pub affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+}
+
+impl SearchReach {
+    /// A search that asks only the tier question.
+    ///
+    /// ⚠ **Measured, not assumed: nothing in production uses this today.**
+    /// `grep -rn 'search_chat_history' crates/` finds exactly one production
+    /// caller, chatrecall's SEARCH arm, and it passes a real affiliation off its
+    /// admitted capability. This exists for the fixtures that assert the tier
+    /// axis, and for any future caller genuinely outside a chat — a human
+    /// searching their own history through the GUI is entitled to see it, and
+    /// that is a different question from what a MODEL may read.
+    ///
+    /// `Local` and not `None`, so the clause is absent entirely rather than
+    /// merely satisfied: a fixture must not be silently narrowed by an axis it
+    /// is not about, and `None` — an unstated model — reaches only unaffiliated
+    /// chats, which would do exactly that.
+    pub const fn tier_only(tier: ProviderTier) -> Self {
+        Self {
+            tier,
+            affiliation: Some(crate::privacy::affiliation::ModelAffiliation::Local),
+        }
+    }
 }
 
 impl<'a> ChatHistorySearch<'a> {
@@ -74,7 +127,7 @@ impl<'a> ChatHistorySearch<'a> {
         after_date: Option<DateTime<Utc>>,
         before_date: Option<DateTime<Utc>>,
         exclude_session_id: Option<String>,
-        caller_capability: ProviderTier,
+        reach: SearchReach,
     ) -> Self {
         Self {
             pool,
@@ -83,8 +136,56 @@ impl<'a> ChatHistorySearch<'a> {
             after_date,
             before_date,
             exclude_session_id,
-            caller_capability,
+            caller_capability: reach.tier,
+            caller_affiliation: reach.affiliation,
         }
+    }
+
+    /// Issue #56 DR-26 / Task 50 Step 3. The affiliation clause and the value it
+    /// binds, or `None` when this search needs no clause.
+    ///
+    /// ⚠ **This one DOES take a placeholder, unlike the tier clause beside it,
+    /// and the ordinal discipline that comment describes is what makes it
+    /// safe**: it is appended last, immediately before `LIMIT ?`, and both
+    /// builders bind it in exactly that position — after `before_date`, before
+    /// the limit. It cannot be a literal: an institution id is
+    /// `name_to_key`-normalised, which lowercases and strips whitespace and
+    /// removes nothing else, so a quote survives into the slug.
+    ///
+    /// The three arms are DR-26's rows, not a policy of their own:
+    ///
+    /// * `Local` — reaches everything; no clause at all, because no transfer
+    ///   occurs.
+    /// * `Institution(X)` — reaches a chat only if **every** institution it
+    ///   touched is X. `NOT EXISTS (… WHERE value <> ?)` is the union rule
+    ///   (`affiliation::owners_compatible`) expressed in SQL; `EXISTS (… = ?)`
+    ///   would be the allowlist rule and would return a chat that also reached
+    ///   somebody else.
+    /// * unstated — reaches only chats that touched no institution.
+    fn affiliation_clause(&self) -> Option<(String, Option<String>)> {
+        use crate::privacy::affiliation::ModelAffiliation;
+        if !self.filters_by_affiliation() {
+            return None;
+        }
+        const TOUCHED: &str = "json_each(COALESCE(NULLIF(s.session_affiliations, ''), '[]'))";
+        match self.caller_affiliation {
+            Some(ModelAffiliation::Local) => None,
+            Some(ModelAffiliation::Institution(id)) => Some((
+                format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED} WHERE value <> ?)"),
+                Some(id.as_str().to_string()),
+            )),
+            None => Some((format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED})"), None)),
+        }
+    }
+
+    /// DR-15's master opt-out for the affiliation clause, plus the tier
+    /// narrowing DR-26 puts on the whole axis: affiliation is asked only of a
+    /// PRIVATE searcher. A public one is already confined to public chats by the
+    /// clause above, and a public chat holds no institution's data whatever a
+    /// stale row beside it says — stating a second, different reason for one
+    /// crossing is what `gate_cross_affiliation` avoids.
+    fn filters_by_affiliation(&self) -> bool {
+        self.caller_capability == ProviderTier::Private && crate::privacy::privacy_tiers_enabled()
     }
 
     /// DR-15's master opt-out for Gate D.
@@ -187,6 +288,11 @@ impl<'a> ChatHistorySearch<'a> {
         if self.filters_private_sessions() {
             sql.push_str(" AND s.privacy_tier = 'public'");
         }
+        // Issue #56 DR-26 / Task 50 Step 3 — see `affiliation_clause`. LAST, so
+        // its placeholder is the final one before `LIMIT ?`.
+        if let Some((clause, _)) = self.affiliation_clause() {
+            sql.push_str(&clause);
+        }
 
         sql.push_str(" ORDER BY bm25(messages_fts) ASC LIMIT ?");
 
@@ -200,6 +306,12 @@ impl<'a> ChatHistorySearch<'a> {
         }
         if let Some(before) = self.before_date {
             query_builder = query_builder.bind(before);
+        }
+        // Issue #56 DR-26 / Task 50 Step 3. Bound HERE — after `before_date`,
+        // before the limit — because the clause is appended in exactly that
+        // position. Moving either without the other mis-binds silently.
+        if let Some((_, Some(institution))) = self.affiliation_clause() {
+            query_builder = query_builder.bind(institution);
         }
         query_builder = query_builder.bind(self.limit as i64);
 
@@ -223,6 +335,10 @@ impl<'a> ChatHistorySearch<'a> {
         }
         if let Some(before) = self.before_date {
             query_builder = query_builder.bind(before);
+        }
+        // See the twin in `fetch_rows_fts`.
+        if let Some((_, Some(institution))) = self.affiliation_clause() {
+            query_builder = query_builder.bind(institution);
         }
 
         query_builder = query_builder.bind(self.limit as i64);
@@ -287,6 +403,12 @@ impl<'a> ChatHistorySearch<'a> {
         // only the FTS builder leaks on every un-migrated profile.
         if self.filters_private_sessions() {
             sql.push_str(" AND s.privacy_tier = 'public'");
+        }
+        // The same clause on the `LIKE` fallback, for the reason the tier clause
+        // is duplicated here: `execute` branches on a `sqlite_master` probe, so
+        // filtering only the FTS builder leaks on every un-migrated profile.
+        if let Some((clause, _)) = self.affiliation_clause() {
+            sql.push_str(&clause);
         }
 
         sql.push_str(" ORDER BY m.timestamp DESC LIMIT ?");
@@ -590,23 +712,43 @@ mod tests {
         Db { _temp, pool }
     }
 
+    /// Issue #56 DR-26: these tests assert the TIER filter, so the third axis
+    /// must not narrow them. A local model reaches everything — the affiliation
+    /// clause is absent entirely rather than merely satisfied, which is what
+    /// keeps this fixture testing what it says it does.
     async fn search_with_limit(
         tier: ProviderTier,
         db: &Db,
         query: &str,
         limit: usize,
     ) -> ChatRecallResults {
-        ChatHistorySearch::new(&db.pool, query, Some(limit), None, None, None, tier)
-            .execute()
-            .await
-            .unwrap()
+        ChatHistorySearch::new(
+            &db.pool,
+            query,
+            Some(limit),
+            None,
+            None,
+            None,
+            SearchReach::tier_only(tier),
+        )
+        .execute()
+        .await
+        .unwrap()
     }
 
     async fn search_as(tier: ProviderTier, db: &Db, query: &str) -> ChatRecallResults {
-        ChatHistorySearch::new(&db.pool, query, None, None, None, None, tier)
-            .execute()
-            .await
-            .unwrap()
+        ChatHistorySearch::new(
+            &db.pool,
+            query,
+            None,
+            None,
+            None,
+            None,
+            SearchReach::tier_only(tier),
+        )
+        .execute()
+        .await
+        .unwrap()
     }
 
     /// Everything that reaches the model. Stricter than chatrecall's prose

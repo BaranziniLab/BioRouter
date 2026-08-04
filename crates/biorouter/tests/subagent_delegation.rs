@@ -308,3 +308,75 @@ async fn steering_mid_delegation_costs_no_subagent_results() {
         "the queued steer was consumed, not left pending"
     );
 }
+
+/// Issue #56 DR-26 / Task 50 Step 2: **a subagent inherits its parent's
+/// cross-affiliation grants and can never exceed them.**
+///
+/// The inheritance is `privacy::grant::is_granted`'s walk up
+/// `sessions.parent_session_id`, and this is the end-to-end half of it: that
+/// walk is only meaningful if a REAL delegation stamps that column, and only
+/// safe if a spawn manufactures no authority of its own. Both are asserted here,
+/// against a child this run actually created.
+///
+/// ⚠ **The mint side is deliberately NOT here, and could not be.** Writing a
+/// grant requires naming `privacy::grant`'s proof-of-user type, and Task 49's
+/// `the_proof_of_user_is_constructed_in_exactly_one_place` fails the build for
+/// any file under `crates/` outside that module and the one HTTP handler that so
+/// much as mentions it — an integration binary cannot mint one, which is the
+/// control working. (This comment therefore spells the type's name nowhere: that
+/// audit's file set is matched against the whole file, comments included, so
+/// naming it here would fail the build. Widening the asserted set to admit a
+/// test file is the one repair that would actually cost something.) The granted-parent direction therefore lives in
+/// `privacy::grant::tests::a_subagent_inherits_its_parents_grants_and_the_parent_inherits_nothing`,
+/// where `record_for_test` is reachable. What that test cannot see, and this one
+/// can, is whether production ever links the child to the parent at all: with
+/// `parent_session_id` unstamped, the walk silently finds nothing and every
+/// inheritance assertion elsewhere stays green while the feature is dead.
+#[tokio::test]
+async fn a_subagent_is_linked_to_its_parent_and_gains_no_grant_by_being_spawned() {
+    let h = harness(vec![call("only", Call::sub("solo", "ok:solo"))]).await;
+    drain(&h.agent, &h.session_id)
+        .await
+        .expect("turn completes");
+
+    let sm = &h.agent.config.session_manager;
+    // `list_sessions()` is the History projection and filters `sub_agent` rows
+    // out; asking for the type explicitly is what makes an absent child
+    // distinguishable from a hidden one.
+    let children: Vec<_> = sm
+        .list_sessions_by_types(&[biorouter::session::session_manager::SessionType::SubAgent])
+        .await
+        .expect("the session store is readable")
+        .into_iter()
+        .filter(|s| s.parent_session_id.as_deref() == Some(h.session_id.as_str()))
+        .collect();
+    assert_eq!(
+        children.len(),
+        1,
+        "a delegation must stamp exactly one child with this parent's id — without \
+         that column the grant walk has nothing to climb, and 'a subagent inherits \
+         its parent's grants' is true of nothing"
+    );
+    let child = &children[0];
+    assert_ne!(child.id, h.session_id);
+
+    // Nobody granted anything, so nothing is granted — at the parent, at the
+    // child, and for every shape of model affiliation the triple can take. A
+    // spawn is not a way to acquire authority.
+    let institution = biorouter::privacy::affiliation::ModelAffiliation::Institution(
+        biorouter::privacy::affiliation::InstitutionId::new("ucsf"),
+    );
+    for model in [
+        None,
+        Some(biorouter::privacy::affiliation::ModelAffiliation::Local),
+        Some(institution),
+    ] {
+        for session in [h.session_id.as_str(), child.id.as_str()] {
+            assert!(
+                !biorouter::privacy::grant::is_granted(sm, session, "ucsfomopagent", model).await,
+                "session {session} holds a cross-affiliation grant for {model:?} that no \
+                 user ever gave"
+            );
+        }
+    }
+}

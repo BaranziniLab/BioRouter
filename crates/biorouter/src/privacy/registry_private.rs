@@ -5,7 +5,9 @@
 //! `data-privacy` / `data-extension-name` / `data-affiliation` annotations on
 //! the extension cards in `landing/baam.html`. Regenerate all three with:
 //!
-//!     node landing/scripts/build-registry.mjs
+//! ```text
+//! node landing/scripts/build-registry.mjs
+//! ```
 //!
 //! The set has to live in Rust: there is no network path to the registry from
 //! here (the only fetch is the Electron `main.ts` `registry:fetch` handler), so
@@ -13,7 +15,9 @@
 //!
 //! Drift between the three is detectable, not merely discouraged:
 //!
-//!     node landing/scripts/build-registry.mjs --check
+//! ```text
+//! node landing/scripts/build-registry.mjs --check
+//! ```
 //!
 //! regenerates all three in memory and fails if any committed copy differs. It
 //! runs in CI (the Frontend workflow) and in `just check-everything`, so a hand

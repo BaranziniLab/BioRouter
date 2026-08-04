@@ -343,6 +343,29 @@ pub const fn chatrecall_load_refusal() -> &'static str {
      the boundary is the same everywhere."
 }
 
+/// Gate D on the **third** axis (issue #56, DR-26 / Task 50 Step 3): the model
+/// asked to recall a chat that reached institutions its own agreements do not
+/// cover.
+///
+/// Not a constant, unlike [`chatrecall_load_refusal`] above, and that is DR-26
+/// rather than an inconsistency: the ruling requires the warning name the
+/// institutions specifically enough for the user to act on, and "this may be a
+/// compliance risk" is a shrug. It still names no session, no working directory
+/// and no message — only institutions, which are not content — so §11.4 holds.
+///
+/// The `warning` is composed by [`super::affiliation::cross_affiliation_owners`]
+/// and never here: one boundary must not be described two ways depending on
+/// which surface the model met it at.
+pub fn chatrecall_cross_affiliation_refusal(warning: &str) -> String {
+    format!(
+        "{warning} This chat history was not read. Only the user can accept a \
+         cross-institutional risk, and only after it has been stated to them, so do not retry — \
+         not with a different session id, not through a search, and not through code execution. \
+         Tell the user what you were trying to do and ask them to switch this chat to a model \
+         covered by that institution's agreements."
+    )
+}
+
 /// Gate C's refusal. Returns `None` when the call is permitted, so the caller
 /// reads as `if let Some(err) = privacy_refusal(..) { return Err(err.into()); }`.
 ///

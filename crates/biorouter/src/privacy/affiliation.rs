@@ -245,6 +245,79 @@ pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool 
     }
 }
 
+/// The **union-of-owners** rule (DR-26 / Task 50): may a session bound to
+/// `model` reach a subject whose content belongs to *every* institution in
+/// `owners`?
+///
+/// ⚠ **This is not [`compatible`] with a set argument, and the difference is the
+/// whole of Step 1.** [`ExtensionAffiliation::Institutions`] is an **allowlist**
+/// — a model named in it is compatible. A knowledge base's set, and a chat's,
+/// are unions of what they INGESTED or TOUCHED, so every member is an owner the
+/// reader must be covered by: a chat that reached both institutions' connectors
+/// is recallable from neither of their models. `owners.contains(bound)` — the
+/// obvious reading, and literally what the allowlist does — passes every other
+/// row and fails exactly there.
+///
+/// It is nevertheless not a second *ruling*: it is [`compatible`] asked once per
+/// owner and conjoined, which is why it is written that way rather than as its
+/// own match. An empty set is therefore compatible with everything (`all` over
+/// nothing), which is correct here and the opposite of an empty allowlist.
+pub fn owners_compatible(
+    model: Option<ModelAffiliation>,
+    owners: &BTreeSet<InstitutionId>,
+) -> bool {
+    owners.iter().all(|owner| {
+        let ext = ExtensionAffiliation::institution(*owner);
+        match model {
+            Some(model) => compatible(&model, &ext),
+            // A private model that states nothing mismatches every claimed
+            // owner — `unstated_model`'s arm, not a short circuit to compatible.
+            None => unstated_model("", &ext).is_none(),
+        }
+    })
+}
+
+/// The words a union-of-owners mismatch is stated in, or `None` when there is
+/// none.
+///
+/// The decision is [`owners_compatible`]; the copy comes from the same two
+/// composers every other surface uses, so a chat-recall refusal and a dispatch
+/// refusal cannot describe one institutional boundary differently. `subject` is
+/// what is being reached — "this chat", "this knowledge base" — and never an id,
+/// because §14.4 forbids naming content in a refusal.
+pub fn cross_affiliation_owners(
+    model: Option<ModelAffiliation>,
+    subject: &str,
+    owners: &BTreeSet<InstitutionId>,
+) -> Option<CrossAffiliation> {
+    if owners_compatible(model, owners) {
+        return None;
+    }
+    let ext = ExtensionAffiliation::Institutions(owners.clone());
+    match model {
+        Some(model) => cross_affiliation(model, subject, &ext),
+        None => unstated_model(subject, &ext),
+    }
+    // ⚠ Both composers decide with ALLOWLIST semantics, so for a model that
+    // matches one of several owners they return `None` — compatible — while
+    // `owners_compatible` above has already ruled it a mismatch. That case must
+    // still produce copy, so it falls back to the same sentence with the
+    // matching owner removed: what the user needs told is which institutions the
+    // subject holds that their model is NOT covered by.
+    .or_else(|| {
+        let unmatched: BTreeSet<InstitutionId> = owners
+            .iter()
+            .copied()
+            .filter(|o| model.map(|m| m.institution() != Some(*o)).unwrap_or(true))
+            .collect();
+        let ext = ExtensionAffiliation::Institutions(unmatched);
+        match model {
+            Some(model) => cross_affiliation(model, subject, &ext),
+            None => unstated_model(subject, &ext),
+        }
+    })
+}
+
 /// This model affiliation as the crate boundary carries it (DR-26 / Task 50
 /// Step 0), or `None` when there is nothing to say and the `_meta` key is
 /// omitted.
@@ -1342,6 +1415,72 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The union-of-owners rule is the allowlist table conjoined — including
+    /// the row that separates them, where a model matching ONE of two owners is
+    /// compatible with the allowlist and a mismatch with the union.
+    #[test]
+    fn owners_are_a_union_not_an_allowlist() {
+        let both: BTreeSet<InstitutionId> = [inst("ucsf"), inst("stanford")].into_iter().collect();
+        let one: BTreeSet<InstitutionId> = [inst("ucsf")].into_iter().collect();
+        let none: BTreeSet<InstitutionId> = BTreeSet::new();
+
+        // The separating row. The allowlist says yes; the union says no.
+        assert!(compatible(
+            &bound("ucsf"),
+            &allowlist(&["ucsf", "stanford"])
+        ));
+        assert!(!owners_compatible(Some(bound("ucsf")), &both));
+        assert!(!owners_compatible(Some(bound("stanford")), &both));
+
+        assert!(owners_compatible(Some(bound("ucsf")), &one));
+        assert!(!owners_compatible(Some(bound("stanford")), &one));
+
+        // An empty set is `all` over nothing — compatible with everything,
+        // which is the opposite of an empty allowlist.
+        for model in [None, Some(ModelAffiliation::Local), Some(bound("ucsf"))] {
+            assert!(owners_compatible(model, &none), "{model:?}");
+        }
+        // `Local` reaches everything; an unstated model reaches nothing claimed.
+        assert!(owners_compatible(Some(ModelAffiliation::Local), &both));
+        assert!(!owners_compatible(None, &one));
+    }
+
+    /// Every mismatch the union rule finds has copy, **including** the case the
+    /// allowlist composers call compatible — a model matching one of two owners.
+    /// A mismatch with no words is a refusal the user cannot act on, and DR-26
+    /// makes the warning the product.
+    #[test]
+    fn every_union_mismatch_names_the_institutions_the_model_is_not_covered_by() {
+        let both: BTreeSet<InstitutionId> = [inst("ucsf"), inst("stanford")].into_iter().collect();
+
+        let partial = cross_affiliation_owners(Some(bound("ucsf")), "this chat", &both)
+            .expect("a model matching one of two owners is a union mismatch");
+        assert!(partial.warning.contains("stanford"), "{}", partial.warning);
+        assert!(partial.warning.contains("this chat"), "{}", partial.warning);
+        assert!(
+            partial.mark.len() <= MARK_BUDGET,
+            "{} bytes",
+            partial.mark.len()
+        );
+
+        // The ordinary rows still work, and a compatible pair still has no copy.
+        assert!(
+            cross_affiliation_owners(Some(bound("mayo")), "this chat", &both)
+                .expect("a foreign model mismatches")
+                .warning
+                .contains("ucsf")
+        );
+        assert_eq!(
+            cross_affiliation_owners(Some(ModelAffiliation::Local), "this chat", &both),
+            None
+        );
+        assert_eq!(
+            cross_affiliation_owners(None, "this chat", &BTreeSet::new()),
+            None
+        );
+        assert!(cross_affiliation_owners(None, "this chat", &both).is_some());
     }
 
     /// The wire is the only channel, so every value this side can produce must
