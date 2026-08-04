@@ -20388,6 +20388,75 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+### Task 58: Session-addressing routes bypass the tier barrier entirely (#47)
+
+> **Operator ruling, 2026-08-04:** fix it in this release rather than after.
+
+⚠ **I characterised this as "contained" when proposing it. That was wrong, and the correction matters
+more than the original claim.** [Issue #47](https://github.com/BaranziniLab/biorouter/issues/47) says
+so in its own words: *"This is a property of the daemon's API surface as a whole, not of one
+endpoint."*
+
+**The concrete bypass.** `session_id` is a plain request parameter, not a credential. Authorization is
+one daemon-wide shared secret, and no session-scoped route checks that the caller has any relationship
+to the session it names. Measured on this branch:
+
+- `POST /reply` — **no privacy check of any kind.** A caller may run an agent turn, with tools, in any
+  session.
+- `GET /sessions/{session_id}` — privacy checks exist only on the diverge/copy paths
+  (`session.rs:840`, `:1123`). Reading a private transcript is ungated.
+- `POST /knowledge/active`, `POST /agent/update_working_dir`, `/agent/add_extension` — same shape.
+
+⚠ **Why this is load-bearing for THIS release rather than backlog hygiene.**
+[AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) already measured the
+daemon's own secret to be **recoverable by the agent**. So a public-tier agent can recover the secret
+and then read a private session's transcript, or run a turn inside it — defeating Gates A through H
+without touching any of them. The release's headline claim has a hole underneath it.
+
+`/reply` strictly dominates the rest: a caller who can run a turn in a session can already do anything
+that session can do.
+
+- [ ] **Step 1: Scope, stated so it is not over-read**
+
+⚠ **This task does NOT fix issue #47.** The general problem is that the daemon has no principal, and
+solving that is an authorization redesign, not a release fix. This task closes the **privacy slice**:
+a session-addressing route that reaches a **private** session must carry the user-action proof. #47
+stays open, with its residual narrowed and re-stated.
+
+- [ ] **Step 2: The mechanism already exists — do not invent one**
+
+`X-User-Action` (`auth.rs:106-118`). It is the right instrument here for a reason worth writing down:
+the daemon holds only the **digest**, while the key lives in the Electron main process and is never
+in the daemon's environment. So the very recoverability AR-11 measured does **not** hand an agent this
+proof. That asymmetry is the whole reason the mechanism works, and it must not be undone by caching
+the key daemon-side for convenience.
+
+- [ ] **Step 3: Apply at the routes, fail closed**
+
+Every session-addressing route resolves the target session's tier first, and requires the proof when
+that tier is Private. ⚠ **Resolve the tier before doing anything else** — an unproven caller must not
+learn whether a session exists, or anything about it, from the shape of the refusal. Task 49's grant
+route already does this and says why; copy that ordering.
+
+⚠ **A keyless daemon refuses rather than allows.** `just run-server` and a hand-run `biorouterd` are
+handed no key, so private sessions become unreachable over HTTP there. That is the fail-closed
+direction open question 23 already accepted, and it must not be softened with an env-var escape —
+the daemon's environment is exactly what AR-11 measured to be recoverable.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter-server --lib routes:: 2>&1 | grep "test result:"
+```
+
+1. Per route in the table above: a **private** target without the proof is refused; **with** it,
+   allowed; a **public** target is unaffected. `/reply` first — it dominates.
+2. **The bypass itself, as a named regression test:** hold the secret, name a private session, and
+   assert you cannot read its transcript or run a turn in it. This is the test that would have caught
+   the hole, and it is the one that must never be deleted.
+3. **Refusal ordering** — an unproven caller cannot distinguish "no such session" from "private
+   session" from the response.
+
 ### Task 57: The cross-affiliation grant has no UI, so the warning is really a hard block
 
 Found 2026-08-04 while drafting the release notes — by trying to write the sentence *"here is how you
