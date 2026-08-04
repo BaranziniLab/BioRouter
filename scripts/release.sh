@@ -146,6 +146,12 @@ def lock(d):
     d['packages'][''] ['version'] = v
 setver('ui/desktop/package-lock.json', lock)
 PY
+  # README badge. Not one of the five for a long time, which is exactly why it
+  # drifted to 1.87.2 while the tree was on 1.88.6 — it is the version most
+  # people actually see, on the repo's front page, and nothing moved it.
+  # `check-version-consistency.sh` now fails if this and Cargo.toml disagree.
+  perl -0pi -e "s{(badge/version-)[0-9]+\.[0-9]+\.[0-9]+(-tan\.svg)}{\${1}$v\${2}}g" README.md
+  perl -0pi -e "s{(alt=\"Version )[0-9]+\.[0-9]+\.[0-9]+(\")}{\${1}$v\${2}}g" README.md
   activate_hermit
   cargo update -p biorouter --precise "$v" >/dev/null 2>&1 || cargo check -q >/dev/null 2>&1 || true
   log "version is now: $(grep -m1 '^version' Cargo.toml)"

@@ -57,6 +57,18 @@ check "ui/desktop/package-lock.json .packages[''].version" \
       "$(jget ui/desktop/package-lock.json "['packages']['']['version']")"
 check "ui/desktop/openapi.json .info.version"       "$(jget ui/desktop/openapi.json "['info']['version']")"
 
+# ── README badge ─────────────────────────────────────────────────────────────
+# The version most people actually see, on the repo's front page. It was NOT
+# covered here until 2026-08-04, and had silently drifted to 1.87.2 while the
+# tree was on 1.88.6 — three releases stale on the first thing a visitor reads.
+# `release.sh bump` now rewrites it; this is the guard that keeps it honest.
+check "README.md badge URL" \
+      "$(grep -oE 'badge/version-[0-9]+\.[0-9]+\.[0-9]+-tan\.svg' README.md | head -1 \
+         | sed -E 's|badge/version-||; s|-tan\.svg||')"
+check "README.md badge alt text" \
+      "$(grep -oE 'alt="Version [0-9]+\.[0-9]+\.[0-9]+"' README.md | head -1 \
+         | sed -E 's|alt="Version ||; s|"||')"
+
 # ── every Rust crate must inherit the workspace version ──────────────────────
 while IFS= read -r toml; do
   if ! grep -qE '^version\.workspace[[:space:]]*=[[:space:]]*true' "$toml"; then
