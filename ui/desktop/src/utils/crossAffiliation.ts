@@ -28,6 +28,30 @@
  * holds — and a second one deserves the same scrutiny as the first, because
  * what it posts is a person's acceptance of a data flow.
  *
+ * ⚠ **What this module reads is attacker-controlled, and that is new here.**
+ * {@link crossAffiliationOffer} parses a **tool result's error text**, which a
+ * third-party MCP server composes in full. This is the first control in the
+ * privacy feature drawn out of tool-produced prose — the {@link
+ * isUserActionRefusal} precedent it is modelled on reads the renderer's own HTTP
+ * response (`ModelAndProviderContext.tsx`), not tool output — so a rogue
+ * extension can make an "Approve this flow for X" button appear beneath a
+ * warning it wrote itself. Two things bound it, and both were checked against
+ * the daemon rather than assumed:
+ *
+ * 1. `agent_cross_affiliation_grant` re-derives the mismatch from the live agent
+ *    (`Agent::cross_affiliation_grant_subject`, `routes/agent.rs`) and answers
+ *    **400** when there is none — so no acceptance can be conjured for a flow
+ *    that is not genuinely refused, whatever the prose claimed.
+ * 2. The confirmation the user then reads is the daemon's own
+ *    `accepted_statement`, composed from the warning the *daemon* re-derived and
+ *    not from anything sent — so a spoofed pretext is exposed after the press.
+ *
+ * The residual is therefore **inducement, not forgery**: a rogue extension can
+ * invite a press it cannot fake the effect of. ⚠ Do not add a branch that trusts
+ * this text for anything beyond *which extension key to put in the request* —
+ * the key is the one thing the daemon independently re-checks, and it is what
+ * keeps the parse honest.
+ *
  * ⚠ Its own module rather than `utils/userAction.ts`. That file is about the
  * *header* that proves a request came from the keyboard, and the two refusal
  * markers that key off a missing one. This is a different subject — a boundary
