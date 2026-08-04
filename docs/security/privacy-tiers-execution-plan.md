@@ -20388,6 +20388,55 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+### Task 57: The cross-affiliation grant has no UI, so the warning is really a hard block
+
+Found 2026-08-04 while drafting the release notes — by trying to write the sentence *"here is how you
+accept a cross-institution warning"* and discovering there is no answer.
+
+`POST /agent/cross_affiliation_grant` exists, is `X-User-Action`-gated, is session-scoped, and appears
+in the generated client (`ui/desktop/src/api/sdk.gen.ts:125`). **No component calls it.** Measured:
+zero references outside `api/`.
+
+⚠ **This inverts [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions).**
+The ruling is *warn, then allow if the user insists* — the whole reason a mismatch refuses rather than
+blocks. Today the refusal arrives, the model is told to ask the user, and the user has **no affordance
+to say yes**. Their only route past it is to switch the chat's model entirely. That is a hard block
+wearing a warning's clothes, and it is the failure [DR-19](#decisions-of-record) exists to prevent: a
+control people route around, because the only way through is to abandon the work.
+
+⚠ **This is the third instance of one pattern in this campaign** — the mechanism built, the entry point
+never wired. The knowledge backfill was unreachable and its notice never rendered; DR-20's system
+prompter has no callers ([Task 55](#task-55-wire-dr-20s-system-password-to-something--it-currently-has-no-callers));
+and now this. Worth naming as a class, because a code review passes all three: every unit is correct,
+and nothing calls it.
+
+- [ ] **Step 1: The affordance, where the refusal lands**
+
+The refusal already carries the warning text naming both institutions. It needs an accept control on
+the same surface, posting the grant with the user-action proof — the shape `USER_ACTION_REFUSAL_MARKER`
+already uses to turn a refusal into an actionable card.
+
+⚠ **The agent must not be able to press it.** DR-19 is unchanged: the model may *ask*, never answer.
+
+- [ ] **Step 2: Respect the mixing mode**
+
+Under [the mixing-policy setting](#task-52-the-mixing-policy-setting--dr-27): `open` never shows this
+at all, `standard` accepts on the in-app proof, `strict` additionally requires the system prompt. One
+control, three behaviours, read from the mode in one place.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cd ui/desktop && npm run test:run 2>&1 | tail -5
+```
+
+1. A mismatch refusal renders an accept control; pressing it posts the grant; the next call succeeds.
+2. **Anti-vacuity, and this is the one that matters:** assert the control is reachable from the
+   refusal a user actually sees — not merely that a handler exists. The bug being fixed is precisely
+   a correct handler nobody can reach.
+3. Under `open`, no control appears because no mismatch is raised.
+4. No tool-facing surface can trigger the grant.
+
 ### Task 55: Wire DR-20's system password to something — it currently has no callers
 
 Found 2026-08-04. [Task 44](#task-44-windows-hello-and-polkit--dr-24) built the prompter properly on
