@@ -228,6 +228,15 @@ mod tests {
         ExtensionAffiliation::institutions(names.iter().map(|n| inst(n)))
     }
 
+    /// One fixed-key hasher per call, so two ids hash comparably. A fresh
+    /// `RandomState` per id would differ regardless of the values.
+    fn hash_of(id: &InstitutionId) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        id.hash(&mut hasher);
+        hasher.finish()
+    }
+
     // ---------------------------------------------------------------- DR-26's
     // compatibility table, one named test per row. The rows are the whole
     // specification of this module; anything else in this file exists to catch
@@ -416,6 +425,46 @@ mod tests {
         fn assert_copy<T: Copy>() {}
         assert_copy::<InstitutionId>();
         assert_copy::<ModelAffiliation>();
+    }
+
+    /// `InstitutionId`'s own doc comment claims equality compares the string
+    /// **contents**, not the pointer, and rests the safety of the interned
+    /// design on it: were the table ever to hand out two pointers for one slug,
+    /// content equality still says "same institution" where pointer identity
+    /// would make an institution mismatch *itself* — the fail-open that trains
+    /// users to click through the warning.
+    ///
+    /// Nothing defended that claim. Replacing the derives with pointer
+    /// identity — the obvious "optimisation" for an interner, and one that
+    /// looks correct because the table normally does return one pointer per
+    /// slug — passed every other test in this file (measured, 16/16). So the
+    /// stated safety net could have been removed silently. This is the test
+    /// that fails instead.
+    #[test]
+    fn ids_with_equal_contents_but_distinct_pointers_are_equal() {
+        let interned = InstitutionId::new("ucsf");
+        // Bypass the interner. The interned copy is leaked and therefore still
+        // live, so a second allocation of the same bytes cannot share its
+        // address — the two pointers differ deterministically, not by luck.
+        let bypassed = InstitutionId(Box::leak(String::from("ucsf").into_boxed_str()));
+        assert!(
+            !std::ptr::eq(interned.0.as_ptr(), bypassed.0.as_ptr()),
+            "fixture is only meaningful if the two pointers really differ"
+        );
+
+        // `Eq`, which every hand-written comparison would reach for...
+        assert_eq!(interned, bypassed);
+
+        // ...`Ord`, which is what `BTreeSet::contains` uses inside
+        // `compatible`, so this is the property an actual gate depends on...
+        assert!(compatible(
+            &ModelAffiliation::Institution(interned),
+            &ExtensionAffiliation::institution(bypassed)
+        ));
+
+        // ...and `Hash`, which must agree with `Eq` or any downstream
+        // `HashSet<InstitutionId>` silently holds one institution twice.
+        assert_eq!(hash_of(&interned), hash_of(&bypassed));
     }
 
     /// "Represent `Institution(x)` on the extension side as `Institutions({x})`;
