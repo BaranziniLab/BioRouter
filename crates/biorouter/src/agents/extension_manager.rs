@@ -176,6 +176,23 @@ struct ToolsSnapshot {
     keys: Vec<String>,
 }
 
+/// What the currently-bound model may reach, on both privacy axes at once —
+/// issue #56 Task 48, DR-26.
+///
+/// The two fields answer two different questions and must never be collapsed:
+/// `allowed` is the TIER axis and it *hides*, `marked` is the AFFILIATION axis
+/// and it *annotates*. See [`ExtensionManager::extension_reach`], which is the
+/// one place either is decided.
+#[derive(Default)]
+struct ExtensionReach {
+    /// Keys this model may see at all.
+    allowed: Vec<String>,
+    /// `(key, warning)` for the members of `allowed` whose institution the bound
+    /// model's agreements do not cover. A **subset** of `allowed`: a mismatch is
+    /// listed and marked, never hidden.
+    marked: Vec<(String, String)>,
+}
+
 pub struct ExtensionManager {
     extensions: Mutex<HashMap<String, Extension>>,
     context: PlatformExtensionContext,
@@ -1228,6 +1245,18 @@ impl ExtensionManager {
     /// by two predicates that can drift apart. It is also what keeps this
     /// function from becoming a sixth reader of the provider mutex; the tier
     /// and the master opt-out are read together, once, inside the sampler.
+    ///
+    /// ⚠ **Task 48 (DR-26) deliberately does not mark here.** A mismatched
+    /// extension's instructions still ship, unannotated, and that follows from
+    /// what the two axes each protect: the tier axis withholds a private
+    /// server's prose from a model not entitled to it, while an affiliation
+    /// mismatch is between two Private endpoints where the model *is* entitled
+    /// to know the connector exists. The warning belongs where the model decides
+    /// to act — the tool descriptions Gate E marks — not repeated in prose it
+    /// reads once per turn. Repeating it there would put a compliance paragraph
+    /// in every system prompt of every affected chat, which is the prompt
+    /// fatigue DR-19 rejects, and would buy nothing: the dispatch is refused
+    /// either way.
     pub async fn get_extensions_info(&self) -> Vec<ExtensionInfo> {
         let allowed = self.allowed_extension_keys(None).await;
         self.extensions
@@ -1389,27 +1418,73 @@ impl ExtensionManager {
         &self,
         admitted: Option<crate::privacy::CallCapability>,
     ) -> Vec<String> {
+        self.extension_reach(admitted).await.allowed
+    }
+
+    /// Gate E's whole verdict for one capability: which extensions it may see,
+    /// and which of those it is **affiliation-incompatible** with (DR-26).
+    ///
+    /// ⚠ **One pass, one sample, one lock.** The two answers come from the same
+    /// [`crate::privacy::resolve_extension`] call on the same record, for the
+    /// reason that resolver exists at all: a second lookup would let the tier
+    /// and the affiliation disagree about one entry, and the disagreement would
+    /// be silent.
+    ///
+    /// ⚠ **`marked` is a SUBSET of `allowed`, never a second filter.** Gate E
+    /// hides a private extension from a public model because the tool's
+    /// *existence* is the secret; that reasoning does not carry to affiliation,
+    /// where both endpoints are Private and the user is entitled to know the
+    /// connector exists (DR-26). Hiding it would also let the agent silently
+    /// route around a tool it cannot see, with no one told why. So a mismatched
+    /// extension is listed and marked here, and refused at dispatch.
+    async fn extension_reach(
+        &self,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> ExtensionReach {
         let cap = match admitted {
             Some(cap) => cap,
             None => crate::privacy::CallCapability::sample(&self.provider).await,
         };
         let caller = cap.tier();
         let enforce = cap.enforced();
-        self.extensions
-            .lock()
-            .await
-            .iter()
-            .filter(|(k, e)| {
-                !enforce
-                    || crate::privacy::refusal::privacy_refusal(
-                        k,
-                        crate::privacy::classify_extension_entry(k, Some(&e.config)),
-                        caller,
-                    )
-                    .is_none()
-            })
-            .map(|(k, _)| k.clone())
-            .collect()
+        let mut reach = ExtensionReach::default();
+        for (key, entry) in self.extensions.lock().await.iter() {
+            let class = crate::privacy::resolve_extension(key, Some(&entry.config));
+            if enforce
+                && crate::privacy::refusal::privacy_refusal(key, class.tier, caller).is_some()
+            {
+                continue;
+            }
+            if let Some(warning) = cap.cross_affiliation_warning(key, &class) {
+                reach.marked.push((key.clone(), warning));
+            }
+            reach.allowed.push(key.clone());
+        }
+        reach
+    }
+
+    /// Every enabled extension the given capability is affiliation-incompatible
+    /// with, as `(extension key, the warning)` — DR-26's bind and enablement
+    /// surfaces, which are the same mismatch found from opposite ends.
+    ///
+    /// Neither of them blocks. A blocked-outright design is one researchers
+    /// route around by turning the feature off, and legitimate cross-
+    /// institutional work under a real DUA exists; the warning is the product.
+    ///
+    /// `admitted` follows [`Self::assert_extension_reachable`]'s rule: a caller
+    /// inside an admitted turn passes its capability, and a caller asking about
+    /// the model bound *right now* — which is what a bind and a settings screen
+    /// both want — passes `None` and gets a fresh sample.
+    pub async fn cross_affiliation_warnings(
+        &self,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> Vec<(String, String)> {
+        let mut marked = self.extension_reach(admitted).await.marked;
+        // Deterministic, so a UI listing them and a log line naming them agree
+        // across runs — `extensions` is a `HashMap` with per-process-randomised
+        // iteration order.
+        marked.sort_by(|a, b| a.0.cmp(&b.0));
+        marked
     }
 
     /// Get all tools from all clients with proper prefixing
@@ -1424,13 +1499,13 @@ impl ExtensionManager {
         // higher would freeze one model's allowed set and serve it to the next).
         // The keys the tools are RESOLVED against ride in the snapshot instead,
         // because those two must agree exactly — see [`ToolsSnapshot`].
-        let allowed = self.allowed_extension_keys(None).await;
+        let reach = self.extension_reach(None).await;
         Ok(self.filter_tools(
             &snapshot.tools,
             extension_name.as_deref(),
             None,
             &snapshot.keys,
-            &allowed,
+            &reach,
         ))
     }
 
@@ -1448,14 +1523,8 @@ impl ExtensionManager {
         admitted: Option<crate::privacy::CallCapability>,
     ) -> ExtensionResult<Vec<Tool>> {
         let snapshot = self.get_all_tools_cached().await?;
-        let allowed = self.allowed_extension_keys(admitted).await;
-        Ok(self.filter_tools(
-            &snapshot.tools,
-            None,
-            Some(exclude),
-            &snapshot.keys,
-            &allowed,
-        ))
+        let reach = self.extension_reach(admitted).await;
+        Ok(self.filter_tools(&snapshot.tools, None, Some(exclude), &snapshot.keys, &reach))
     }
 
     /// The PERMISSION EDITORS' view of the tool list: every installed
@@ -1487,12 +1556,19 @@ impl ExtensionManager {
         // answer to the overlapping-key hazard as everywhere else — no tier
         // drops it afterwards. Taking both from the snapshot means this view
         // cannot skew against itself at all.
+        //
+        // `marked` is empty for the same reason the tier filter is absent: this
+        // is the HUMAN's administrative view, and DR-26's warning is addressed
+        // to a chat with a model bound to it. Settings is nobody's prompt.
         Ok(self.filter_tools(
             &snapshot.tools,
             extension_name.as_deref(),
             None,
             &snapshot.keys,
-            &snapshot.keys,
+            &ExtensionReach {
+                allowed: snapshot.keys.clone(),
+                marked: Vec::new(),
+            },
         ))
     }
 
@@ -1511,36 +1587,52 @@ impl ExtensionManager {
         extension_name: Option<&str>,
         exclude: Option<&str>,
         installed: &[String],
-        allowed: &[String],
+        reach: &ExtensionReach,
     ) -> Vec<Tool> {
         tools
             .iter()
-            .filter(|tool| {
+            .filter_map(|tool| {
                 // Resolve against every installed key — the same set Gate C
                 // resolves against — and only THEN ask whether that extension is
                 // one this model may see. A name owned by no installed extension
                 // is dropped too.
-                let Some(tool_prefix) = Self::resolve_extension_key(installed, tool.name.as_ref())
-                else {
-                    return false;
-                };
-                if !allowed.iter().any(|k| k == tool_prefix) {
-                    return false;
+                let tool_prefix = Self::resolve_extension_key(installed, tool.name.as_ref())?;
+                if !reach.allowed.iter().any(|k| k == tool_prefix) {
+                    return None;
                 }
 
                 if let Some(excluded) = exclude {
                     if tool_prefix == excluded {
-                        return false;
+                        return None;
                     }
                 }
 
                 if let Some(name_filter) = extension_name {
-                    tool_prefix == name_filter
-                } else {
-                    true
+                    if tool_prefix != name_filter {
+                        return None;
+                    }
+                }
+
+                // Issue #56 Task 48, DR-26. A mismatched extension is LISTED —
+                // both endpoints are Private and the user is entitled to know
+                // the connector exists — and marked, so the model reads why its
+                // dispatch will be refused at the moment it considers calling.
+                // The description is the only channel the model sees before the
+                // call exists.
+                match reach.marked.iter().find(|(k, _)| k == tool_prefix) {
+                    Some((_, warning)) => Some(Tool {
+                        description: Some(
+                            match tool.description.as_deref() {
+                                Some(existing) => format!("{warning}\n\n{existing}"),
+                                None => warning.clone(),
+                            }
+                            .into(),
+                        ),
+                        ..tool.clone()
+                    }),
+                    None => Some(tool.clone()),
                 }
             })
-            .cloned()
             .collect()
     }
 
@@ -1706,6 +1798,10 @@ impl ExtensionManager {
     /// `classify_extension` was what stamped it at all three admission points —
     /// so deriving it beside the client is the same value the record carried,
     /// minus a copy that a rename could make stale.
+    /// Task 48 (DR-26): the **classification**, not just the tier. Affiliation
+    /// rides the same resolution as the tier — one `resolve_extension` call on
+    /// one record inside one critical section — because two lookups would let
+    /// the two axes disagree about the same entry, silently.
     async fn get_client_for_tool(
         &self,
         prefixed_name: &str,
@@ -1713,7 +1809,7 @@ impl ExtensionManager {
         String,
         McpClientBox,
         ExtensionConfig,
-        crate::privacy::ProviderTier,
+        crate::privacy::ExtensionClassification,
     )> {
         // Issue #56 Task 16: the SAME resolver Gate E filters with. A `find` over
         // a `HashMap` returned whichever of two overlapping keys the
@@ -1727,7 +1823,7 @@ impl ExtensionManager {
             name.to_string(),
             extension.get_client(),
             extension.config.clone(),
-            crate::privacy::classify_extension_entry(name, Some(&extension.config)),
+            crate::privacy::resolve_extension(name, Some(&extension.config)),
         ))
     }
 
@@ -1831,6 +1927,14 @@ impl ExtensionManager {
     /// broken half would be this one. Hence the explicit membership test below
     /// rather than a `map(...).unwrap_or(...)` over a resolver that already has
     /// an opinion about absent names.
+    ///
+    /// ⚠ **The unknown-name default is inverted on the TIER axis only** (see
+    /// above), and Task 48 does not extend that inversion to affiliation. An
+    /// unresolvable name gets [`crate::privacy::ExtensionAffiliation::Any`],
+    /// because there is no institution's data at a name that names no
+    /// extension: the Private tier default is what refuses the reach, and a
+    /// cross-institutional warning about a connector that does not exist is a
+    /// false positive that trains users to click through the one that mattered.
     async fn assert_extension_reachable(
         &self,
         name: &str,
@@ -1840,20 +1944,27 @@ impl ExtensionManager {
             Some(cap) => cap,
             None => crate::privacy::CallCapability::sample(&self.provider).await,
         };
-        let tier = self
-            .extensions
-            .lock()
-            .await
-            .get(name)
-            .map_or(crate::privacy::ProviderTier::Private, |extension| {
-                crate::privacy::classify_extension_entry(name, Some(&extension.config))
-            });
-        match crate::privacy::refusal::privacy_refusal(name, tier, cap.tier()) {
+        let class = self.extensions.lock().await.get(name).map_or(
+            crate::privacy::ExtensionClassification {
+                tier: crate::privacy::ProviderTier::Private,
+                affiliation: crate::privacy::ExtensionAffiliation::Any,
+            },
+            |extension| crate::privacy::resolve_extension(name, Some(&extension.config)),
+        );
+        match crate::privacy::refusal::privacy_refusal(name, class.tier, cap.tier()) {
             // DR-15's master opt-out, read through the capability so the tier
             // and the toggle can never be sampled at two different instants —
             // the same predicate Gate C asks, never a second narrower flag.
-            Some(err) if cap.enforced() => Err(err),
-            _ => Ok(()),
+            Some(err) if cap.enforced() => return Err(err),
+            _ => {}
+        }
+        // Task 48 (DR-26). These eight entry points reach a server without being
+        // a tool call, so they refuse exactly as Gate C does — the connector
+        // does not care which door the request came through, and three of them
+        // fan out over EVERY installed extension.
+        match cap.cross_affiliation_warning(name, &class) {
+            Some(warning) => Err(crate::privacy::refusal::cross_affiliation_refusal(&warning)),
+            None => Ok(()),
         }
     }
 
@@ -2210,7 +2321,7 @@ impl ExtensionManager {
         // Dispatch tool call based on the prefix naming convention. The client
         // and the config that authorizes it come out of ONE snapshot — see
         // `get_client_for_tool`.
-        let (client_name, client, client_config, ext_tier) = self
+        let (client_name, client, client_config, ext_class) = self
             .get_client_for_tool(&prefixed_name)
             .await
             .ok_or_else(|| {
@@ -2258,7 +2369,7 @@ impl ExtensionManager {
         // `Agent::call_prefetch_tool`, which runs BEFORE the turn. A gate
         // written as an inspector would be invisible to three of the four.
         //
-        // `ext_tier` is read off the RESOLVED RECORD, never off the tool-name
+        // `ext_class` is read off the RESOLVED RECORD, never off the tool-name
         // string. `normalize()` permits `_`, so extensions keyed `a` and `a__b`
         // both match `a__b__c` by prefix. `get_client_for_tool` settles that
         // with the single longest-key-wins resolver in its body — the SAME one
@@ -2282,10 +2393,30 @@ impl ExtensionManager {
         // do not introduce a second, narrower flag for this one.
         if cap.enforced() {
             if let Some(err) =
-                crate::privacy::refusal::privacy_refusal(&client_name, ext_tier, cap.tier())
+                crate::privacy::refusal::privacy_refusal(&client_name, ext_class.tier, cap.tier())
             {
                 return Err(err.into());
             }
+        }
+
+        // Issue #56 Task 48, DR-26's THIRD axis. Both endpoints are Private and
+        // the tier gate above said yes; this asks the different question —
+        // *under whose agreements?* — which no tier gate can see. UCSF's Versa
+        // reaching the UCSF OMOP agent is the arrangement everyone approved; the
+        // same model reaching another institution's connector is a
+        // cross-institutional linkage nobody papered.
+        //
+        // Gate C **refuses**, where Gate E only marks: at discovery the user is
+        // entitled to know the connector exists, but the dispatch is the
+        // disclosure, and an agent can never clear a mismatch on its own. The
+        // refusal is where the user meets the decision.
+        //
+        // ABOVE the ratchet below, deliberately and for the same reason the tier
+        // refusal is: a refused call reached no connector, so it must not
+        // permanently classify the chat. The master opt-out is inside
+        // `cross_affiliation_warning`, read off this same sample.
+        if let Some(warning) = cap.cross_affiliation_warning(&client_name, &ext_class) {
+            return Err(crate::privacy::refusal::cross_affiliation_refusal(&warning).into());
         }
 
         // BR-23: the central secret-redaction boundary — see
@@ -2330,7 +2461,7 @@ impl ExtensionManager {
         // first they would learn of it is a refusal weeks later. The cost is
         // named and accepted in AR-7 — a disclosure made while the feature was
         // off is never reclassified.
-        if cap.enforced() && ext_tier.is_private() {
+        if cap.enforced() && ext_class.tier.is_private() {
             self.raise_session_privacy(session_id, &format!("mcp:{client_name}"))
                 .await?;
         }
@@ -3487,7 +3618,7 @@ mod tests {
             )
             .await;
 
-        let (name, _client, config, tier) = extension_manager
+        let (name, _client, config, class) = extension_manager
             .get_client_for_tool("guarded__forbidden")
             .await
             .expect("the extension resolves");
@@ -3497,8 +3628,11 @@ mod tests {
             "the resolved config is the one the dispatch must be judged by"
         );
         assert!(config.is_tool_available("allowed"));
-        // Issue #56: the privacy tier rides the SAME snapshot, for the same
-        // reason — Gate C must judge the record this call was routed to.
+        // Issue #56: the privacy classification rides the SAME snapshot, for the
+        // same reason — Gate C must judge the record this call was routed to.
+        // Task 48 put the AFFILIATION in that snapshot too, on the same terms:
+        // resolving it separately would let the two axes disagree about one
+        // entry.
         //
         // Resolved from the returned (name, config) PAIR, not from the literal
         // "guarded" this test happens to know: Task 43 (DR-23) made the answer a
@@ -3506,8 +3640,8 @@ mod tests {
         // name-only classification would pass on an implementation that had
         // dropped the config half — which is exactly the rename bug.
         assert_eq!(
-            tier,
-            crate::privacy::classify_extension_entry(&name, Some(&config))
+            class,
+            crate::privacy::resolve_extension(&name, Some(&config))
         );
 
         // And once it is gone, resolution itself fails — a removal can only
@@ -6271,5 +6405,347 @@ mod tests {
             "the snapshot dropped the longer of two overlapping keys: {:?}",
             snapshot.keys
         );
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #56 Task 48: DR-26's third axis — affiliation.
+    //
+    // Tier asks how sensitive a thing is; affiliation asks under whose
+    // agreements. UCSF's Versa reaching the UCSF OMOP agent is the arrangement
+    // everyone approved; a model covered by ANOTHER institution's agreements
+    // reaching it is a cross-institutional linkage nobody papered — and it
+    // passes every tier gate above, because both endpoints are Private.
+    //
+    // ⚠ Every test below is the SAME fixture at a DIFFERENT surface, and each
+    // is its own named test on purpose. A single test asserting "a mismatch is
+    // refused" passes on an implementation that wired one gate and forgot the
+    // other four, which is the failure mode DR-26's enumeration trap warns
+    // about.
+    // ----------------------------------------------------------------------
+
+    /// A provider at a stated tier and affiliation, and nothing else.
+    ///
+    /// `provider_at` cannot express this: it builds a real `OllamaProvider`,
+    /// whose affiliation is `Local` whenever its tier is Private, and `Local` is
+    /// DR-26's *most permissive* value — a fixture built from it can never
+    /// produce a mismatch. The institutional halves have no constructor outside
+    /// their own module (`VersaAzureProvider::resolved_endpoint` is private), so
+    /// they are stated, exactly as `providers::affiliation_tests::Half` states
+    /// them.
+    struct ProviderCoveredBy {
+        tier: crate::privacy::ProviderTier,
+        affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for ProviderCoveredBy {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::empty()
+        }
+
+        fn get_name(&self) -> &str {
+            "covered-by"
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("nothing")
+        }
+
+        fn tier(&self) -> crate::privacy::ProviderTier {
+            self.tier
+        }
+
+        fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+            self.affiliation
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[Tool],
+        ) -> Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            unreachable!("this provider exists to be asked its affiliation and nothing else")
+        }
+    }
+
+    fn covered_by(name: &str) -> Arc<dyn crate::providers::base::Provider> {
+        Arc::new(ProviderCoveredBy {
+            tier: crate::privacy::ProviderTier::Private,
+            affiliation: Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new(name),
+            )),
+        })
+    }
+
+    fn a_local_model() -> Arc<dyn crate::providers::base::Provider> {
+        Arc::new(ProviderCoveredBy {
+            tier: crate::privacy::ProviderTier::Private,
+            affiliation: Some(crate::privacy::affiliation::ModelAffiliation::Local),
+        })
+    }
+
+    /// The capability a session bound to `institution`'s model carries.
+    fn bound_to(institution: &str) -> crate::privacy::CallCapability {
+        crate::privacy::CallCapability::for_test_affiliated(
+            crate::privacy::ProviderTier::Private,
+            true,
+            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new(institution),
+            )),
+        )
+    }
+
+    /// The capability a session bound to a LOCAL private model carries — the
+    /// row of DR-26's table that must pass every surface below.
+    fn bound_locally() -> crate::privacy::CallCapability {
+        crate::privacy::CallCapability::for_test_affiliated(
+            crate::privacy::ProviderTier::Private,
+            true,
+            Some(crate::privacy::affiliation::ModelAffiliation::Local),
+        )
+    }
+
+    /// The exact warning DR-26 requires, for the fixture every test here shares.
+    /// Asserted against the composer rather than restated, so the copy cannot
+    /// drift between the surfaces that state it.
+    fn expected_warning(extension: &str, institution: &str) -> String {
+        bound_to(institution)
+            .cross_affiliation_warning(
+                extension,
+                &crate::privacy::resolve_extension(extension, None),
+            )
+            .expect("the fixture only discriminates if this pair really mismatches")
+    }
+
+    /// A manager holding the UCSF-affiliated `ucsfomopagent` and the
+    /// unaffiliated public `developer`, bound to `provider`.
+    async fn affiliation_fixture(
+        provider: Arc<dyn crate::providers::base::Provider>,
+    ) -> (TempDir, ExtensionManager, SharedProvider) {
+        let dir = tempfile::tempdir().unwrap();
+        let session_manager = Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let handle: SharedProvider = Arc::new(Mutex::new(Some(provider)));
+        let em = ExtensionManager::new(handle.clone(), session_manager);
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+        (dir, em, handle)
+    }
+
+    /// **Surface 1 — Gate C, dispatch.** Refused, with the warning that offers
+    /// the approval.
+    #[tokio::test]
+    async fn gate_c_refuses_a_dispatch_across_an_affiliation_mismatch() {
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let text = match em
+            .dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                bound_to("stanford"),
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(_) => panic!("a Stanford-covered model reached a UCSF connector"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            text.contains(&expected_warning("ucsfomopagent", "stanford")),
+            "{text}"
+        );
+
+        // A refused call reached no connector, so it must not classify the chat
+        // — the same rule the tier refusal follows.
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(
+            row.privacy_tier,
+            crate::privacy::SessionClassification::Public
+        );
+        assert_eq!(row.privacy_reason, None);
+    }
+
+    /// **Surface 1, the passing row.** The identical dispatch on a LOCAL model
+    /// succeeds: `Local` is the most permissive affiliation, not a peer of the
+    /// institutions.
+    #[tokio::test]
+    async fn gate_c_lets_a_local_model_dispatch_to_every_private_extension() {
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        let dispatched = em
+            .dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                bound_locally(),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("a local model discloses nothing, so nothing needs papering");
+        dispatched.result.await.expect("the mock client answers");
+
+        // And the permitted private dispatch still ratchets, so this is a real
+        // permit rather than a gate that stopped running.
+        assert_eq!(
+            sm.get_session(&id, false).await.unwrap().privacy_tier,
+            crate::privacy::SessionClassification::Private
+        );
+    }
+
+    /// **Surface 2 — Gate E, discovery.** Listed and MARKED, never hidden.
+    ///
+    /// ⚠ Gate E hides a private extension from a public model because the
+    /// tool's *existence* is the secret. That reasoning does not carry here: in
+    /// a mismatch both endpoints are Private and the user is entitled to know
+    /// the connector exists. Hiding it would also let the agent silently route
+    /// around a tool it cannot see, with no one told why.
+    #[tokio::test]
+    async fn gate_e_lists_and_marks_a_mismatched_extensions_tools() {
+        let (_dir, em, _handle) = affiliation_fixture(covered_by("stanford")).await;
+
+        let tools = em.get_prefixed_tools(None).await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            names.contains(&"ucsfomopagent__tool"),
+            "a mismatch is marked, not hidden: {names:?}"
+        );
+        assert!(names.contains(&"developer__tool"), "{names:?}");
+
+        let marked = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "ucsfomopagent__tool")
+            .and_then(|t| t.description.clone())
+            .expect("the marked tool keeps a description");
+        assert!(
+            marked.contains(&expected_warning("ucsfomopagent", "stanford")),
+            "{marked}"
+        );
+
+        // The unaffiliated sibling is untouched, or the mark is decoration
+        // rather than a decision.
+        let sibling = tools
+            .iter()
+            .find(|t| t.name.as_ref() == "developer__tool")
+            .and_then(|t| t.description.clone())
+            .expect("the public tool keeps its description");
+        assert!(!sibling.contains("Cross-institutional"), "{sibling}");
+    }
+
+    /// **Surface 2, the passing row.** A local model sees the same list with no
+    /// mark on it.
+    #[tokio::test]
+    async fn gate_e_marks_nothing_for_a_local_model() {
+        let (_dir, em, _handle) = affiliation_fixture(a_local_model()).await;
+
+        let tools = em.get_prefixed_tools(None).await.unwrap();
+        assert!(tools
+            .iter()
+            .any(|t| t.name.as_ref() == "ucsfomopagent__tool"));
+        for tool in &tools {
+            let described = tool.description.clone().unwrap_or_default();
+            assert!(
+                !described.contains("Cross-institutional"),
+                "{}: {described}",
+                tool.name
+            );
+        }
+    }
+
+    /// **Surface 3 — Gate F, the extension channels.** `read_resource`,
+    /// `list_resources`, `list_prompts` and `get_prompt` reach a server without
+    /// being a tool call, so they refuse the same way Gate C does.
+    #[tokio::test]
+    async fn gate_f_refuses_an_extension_channel_across_an_affiliation_mismatch() {
+        let (_dir, em, _handle) = affiliation_fixture(covered_by("stanford")).await;
+
+        let err = em
+            .assert_extension_reachable("ucsfomopagent", Some(bound_to("stanford")))
+            .await
+            .expect_err("a Stanford-covered model may not probe a UCSF connector's resources");
+        assert!(
+            err.message
+                .to_string()
+                .contains(&expected_warning("ucsfomopagent", "stanford")),
+            "{}",
+            err.message
+        );
+
+        // The public sibling is still reachable, so this is a decision rather
+        // than a blanket refusal.
+        em.assert_extension_reachable("developer", Some(bound_to("stanford")))
+            .await
+            .expect("an unaffiliated extension is reachable from any private model");
+    }
+
+    /// **Surface 3, the passing row.**
+    #[tokio::test]
+    async fn gate_f_lets_a_local_model_reach_every_extension_channel() {
+        let (_dir, em, _handle) = affiliation_fixture(a_local_model()).await;
+        em.assert_extension_reachable("ucsfomopagent", Some(bound_locally()))
+            .await
+            .expect("a local model discloses nothing");
+        em.assert_extension_reachable("developer", Some(bound_locally()))
+            .await
+            .expect("…and the public sibling too");
+    }
+
+    /// **Surface 4 — bind.** Binding a model states how many enabled extensions
+    /// it is incompatible with, naming each. It does not block: DR-19 on the
+    /// third axis, and a blocked-outright design is one researchers route around
+    /// by turning the feature off.
+    ///
+    /// ⚠ The provider is swapped the way `Agent::update_provider` swaps it — by
+    /// writing the mutex — so a warning computed from a cache rather than from
+    /// the bound model fails here.
+    #[tokio::test]
+    async fn binding_a_foreign_institutions_model_warns_about_every_incompatible_extension() {
+        let (_dir, em, handle) = affiliation_fixture(a_local_model()).await;
+        assert!(
+            em.cross_affiliation_warnings(None).await.is_empty(),
+            "a local model is compatible with everything"
+        );
+
+        *handle.lock().await = Some(covered_by("stanford"));
+
+        let warnings = em.cross_affiliation_warnings(None).await;
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly the UCSF connector mismatches; `developer` is unaffiliated: {warnings:?}"
+        );
+        assert_eq!(warnings[0].0, "ucsfomopagent");
+        assert_eq!(warnings[0].1, expected_warning("ucsfomopagent", "stanford"));
+    }
+
+    /// The bind warning inherits an ADMITTED capability when it is given one,
+    /// rather than resampling — the read-then-read `CallCapability` exists to
+    /// close. Surface 5 (extension enablement) is asserted in
+    /// `extension_manager_extension.rs`, beside the predicate that owns it.
+    #[tokio::test]
+    async fn the_bind_warning_uses_the_capability_it_was_handed() {
+        let (_dir, em, _handle) = affiliation_fixture(a_local_model()).await;
+        let warnings = em
+            .cross_affiliation_warnings(Some(bound_to("stanford")))
+            .await;
+        assert_eq!(
+            warnings.len(),
+            1,
+            "the handed capability was ignored and the bound provider resampled: {warnings:?}"
+        );
+        assert_eq!(warnings[0].0, "ucsfomopagent");
     }
 }

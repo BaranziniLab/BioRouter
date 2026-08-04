@@ -7415,9 +7415,60 @@ impl Agent {
 
         #[cfg(test)]
         seams::after_bind_before_swap().await;
-        let mut current_provider = self.provider.lock().await;
-        *current_provider = Some(provider);
+        {
+            let mut current_provider = self.provider.lock().await;
+            *current_provider = Some(provider);
+        }
+
+        // Issue #56 Task 48, DR-26's third axis at the BIND surface. Binding a
+        // model covered by one institution's agreements into a chat holding
+        // another institution's connectors is the same mismatch the enable path
+        // sees from the other end, and it is discovered here first because the
+        // extensions were already attached.
+        //
+        // ⚠ **It warns; it does not refuse, and it must not.** Gate A above
+        // refuses a bind on the TIER axis because a public model in a private
+        // chat is a capability the row forbids. Affiliation is not that: both
+        // endpoints are Private, legitimate cross-institutional work under a
+        // real DUA exists, and a blocked-outright design is one researchers
+        // route around by turning the feature off (DR-19, DR-26). Refusing here
+        // would also strand a chat — the model is bound, so the only exit would
+        // be removing extensions the user cannot see the reason for.
+        //
+        // The log is not the product. The user-facing statement is
+        // [`Self::cross_affiliation_warnings`], which the GUI and CLI ask AFTER
+        // a bind; this line exists so a support transcript records that the
+        // mismatch was detected at the bind rather than only at the first
+        // refused dispatch.
+        //
+        // ⚠ On the RESTART path this can legitimately log nothing:
+        // `restore_provider_from_session` is `tokio::join!`ed with
+        // `load_extensions_from_session`, so the extension set may still be
+        // filling when this runs. That is why the query — not this loop — is
+        // what a surface asks; a log line that raced is a missing log line, and
+        // every gate that refuses reads the set at the moment it decides.
+        for (extension, warning) in self.cross_affiliation_warnings().await {
+            tracing::warn!(session_id, provider = provider_name, extension, "{warning}");
+        }
         Ok(())
+    }
+
+    /// Every enabled extension the model bound **right now** is affiliation-
+    /// incompatible with, as `(extension key, the warning)` — DR-26.
+    ///
+    /// This is the bind surface's user-facing half: "this model is incompatible
+    /// with N enabled extensions", stated specifically enough to act on. It
+    /// decides nothing and blocks nothing; a mismatch warns and asks, and the
+    /// user may proceed.
+    ///
+    /// Empty is the normal answer — for every public model (the tier gates own
+    /// those), for every local model (`Local` reaches everything private,
+    /// because no transfer occurs at all), and for a model bound to the same
+    /// institution as the extensions it can see.
+    pub async fn cross_affiliation_warnings(&self) -> Vec<(String, String)> {
+        self.extension_manager
+            .cross_affiliation_warnings(None)
+            .await
     }
 
     /// Restore the provider from session data or fall back to global config
@@ -11097,6 +11148,31 @@ mod gate_c_dispatch_tests {
             self.tier
         }
 
+        /// ⚠ **A private double must state an affiliation, because every real
+        /// private provider does** — DR-26, Task 48.
+        ///
+        /// `Some(..)` exactly while a provider's tier is Private is a property
+        /// of this build, not an accident: both deciders route *through* the
+        /// tier predicate (`ucsf_gateway_affiliation`, `self_hosted_affiliation`)
+        /// and `LeadWorkerProvider` folds both halves. Leaving this on the trait
+        /// default produced the one pairing DR-26's vocabulary says cannot exist
+        /// — Private tier, affiliation `None` — which
+        /// `CallCapability::cross_affiliation_warning` treats as *unstated*
+        /// rather than as *unconstrained*, and rightly: reading `None` as "no
+        /// institution applies" is the fail-open this axis exists to prevent.
+        ///
+        /// `Local` rather than an institution, so these tests stay about the
+        /// TIER axis they were written for: it is DR-26's identity element, the
+        /// one model affiliation compatible with every extension. `self.name`
+        /// is a provider NAME and never decides an affiliation — see
+        /// `Provider::affiliation`'s doc for why a name-keyed table is wrong.
+        fn affiliation(&self) -> Option<crate::privacy::ModelAffiliation> {
+            match self.tier {
+                ProviderTier::Private => Some(crate::privacy::ModelAffiliation::Local),
+                ProviderTier::Public => None,
+            }
+        }
+
         async fn complete_with_model(
             &self,
             _model_config: &ModelConfig,
@@ -11284,5 +11360,106 @@ mod gate_c_dispatch_tests {
             .result
             .await
             .expect("a private model may call a private extension");
+    }
+
+    /// Issue #56 Task 48, DR-26 — **the bind surface**, driven through the real
+    /// `Agent::update_provider` rather than through a mutex write.
+    ///
+    /// Binding a model covered by one institution's agreements into a chat
+    /// already holding another institution's connector is the same mismatch the
+    /// enable path finds from the opposite end. It **warns**: unlike Gate A's
+    /// tier refusal it does not block, because both endpoints are Private,
+    /// legitimate cross-institutional work under a real DUA exists, and a
+    /// blocked-outright design is one researchers route around by turning the
+    /// feature off (DR-19).
+    ///
+    /// ⚠ The bind is asserted to SUCCEED before the warning is read. A version
+    /// of this test that only checked the warning would pass on an
+    /// implementation that had turned the bind into a refusal.
+    #[tokio::test]
+    async fn binding_a_foreign_institutions_model_warns_and_still_binds() {
+        let local: Arc<dyn Provider> = Arc::new(PlainProvider {
+            name: "ollama",
+            tier: ProviderTier::Private,
+        });
+        let (_dir, agent, session) = agent_with_the_private_extension(local).await;
+        assert!(
+            agent.cross_affiliation_warnings().await.is_empty(),
+            "a local model reaches everything private — no transfer occurs at all"
+        );
+
+        let elsewhere: Arc<dyn Provider> = Arc::new(ProviderCoveredBy {
+            tier: ProviderTier::Private,
+            affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new("stanford"),
+            )),
+        });
+        agent
+            .update_provider(elsewhere, &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+
+        let warnings = agent.cross_affiliation_warnings().await;
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly the UCSF connector mismatches: {warnings:?}"
+        );
+        assert_eq!(warnings[0].0, PRIVATE_EXTENSION);
+        assert!(warnings[0].1.contains("ucsf"), "{}", warnings[0].1);
+        assert!(warnings[0].1.contains("stanford"), "{}", warnings[0].1);
+    }
+
+    /// A provider at a stated tier and affiliation. [`PlainProvider`] derives
+    /// its affiliation from its tier and so can only ever be `Local`, which is
+    /// DR-26's identity element — a fixture built from it can never produce a
+    /// mismatch.
+    struct ProviderCoveredBy {
+        tier: ProviderTier,
+        affiliation: Option<crate::privacy::ModelAffiliation>,
+    }
+
+    #[async_trait]
+    impl Provider for ProviderCoveredBy {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "covered",
+                "Covered",
+                "",
+                "covered-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "covered-by"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        fn affiliation(&self) -> Option<crate::privacy::ModelAffiliation> {
+            self.affiliation
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("covered-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("covered-model")
+        }
     }
 }

@@ -278,6 +278,26 @@ fn label(id: InstitutionId) -> String {
     }
 }
 
+/// Who an extension's allowlist says owns its data, as warning prose.
+///
+/// Shared by both composers below rather than written twice: they differ in what
+/// they say about the MODEL, and letting the extension half drift between them
+/// would leave one warning naming an institution by display name and the other
+/// by raw id for the same connector.
+fn owners_label(owners: &BTreeSet<InstitutionId>) -> String {
+    if owners.is_empty() {
+        // Not a sentence with a blank in it: an empty allowlist is a real state
+        // (a hand-edited snapshot), it permits nothing, and saying so is more
+        // useful than naming zero institutions.
+        return "no institution at all — its allowlist names none".to_string();
+    }
+    owners
+        .iter()
+        .map(|id| label(*id))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The copy shown to a user before a cross-affiliation flow proceeds — `None`
 /// when there is nothing to warn about.
 ///
@@ -316,18 +336,7 @@ pub fn cross_affiliation_warning(
         return None;
     };
 
-    let held_by = if owners.is_empty() {
-        // Not a sentence with a blank in it: an empty allowlist is a real state
-        // (a hand-edited snapshot), it permits nothing, and saying so is more
-        // useful than naming zero institutions.
-        "no institution at all — its allowlist names none".to_string()
-    } else {
-        owners
-            .iter()
-            .map(|id| label(*id))
-            .collect::<Vec<_>>()
-            .join(", ")
-    };
+    let held_by = owners_label(owners);
 
     Some(format!(
         "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
@@ -337,6 +346,82 @@ pub fn cross_affiliation_warning(
          another's data unless a BAA, DUA or IRB approval covers this specific flow. Proceed \
          only if you know one does.",
         label(bound)
+    ))
+}
+
+/// **The** gate decision on DR-26's third axis: `Some(warning)` is a mismatch.
+///
+/// [`super::CallCapability::cross_affiliation_warning`] is this function with
+/// the three model axes taken off one sample, and is what every on-the-tool-call
+/// path asks. This spelling exists for the surfaces that hold an
+/// `Arc<dyn Provider>` directly and have no admitted capability to inherit —
+/// `POST /agent/add_extension` is the one DR-26 names. Those callers read the
+/// tier and the affiliation off the **same** `Arc`, which is a single read of
+/// one object rather than the two program points `CallCapability` exists to
+/// collapse, so handing them a sampler would buy nothing and add a construction
+/// site to the census.
+///
+/// There must be exactly one of these. A gate that hand-compares affiliations is
+/// a second implementation of DR-26's table, and the two will disagree on the
+/// row nobody thought about.
+///
+/// The three guards and why each is here are documented on
+/// [`super::CallCapability::cross_affiliation_warning`].
+pub fn gate_cross_affiliation_warning(
+    enforced: bool,
+    model_tier: super::ProviderTier,
+    model: Option<ModelAffiliation>,
+    extension: &str,
+    class: &super::ExtensionClassification,
+) -> Option<String> {
+    if !enforced || !class.tier.is_private() || !model_tier.is_private() {
+        return None;
+    }
+    match model {
+        Some(model) => cross_affiliation_warning(model, extension, &class.affiliation),
+        None => unstated_model_warning(extension, &class.affiliation),
+    }
+}
+
+/// The same warning for a **private** model that stated no affiliation at all.
+///
+/// ⚠ **This arm exists because `None` must not short-circuit to compatible.**
+/// DR-26 gives `None` exactly one meaning — a public model, for which the tier
+/// gates already hold and affiliation never applies — so a Private tier with no
+/// affiliation is a combination the vocabulary says cannot exist. It was
+/// nevertheless reachable: `LeadWorkerProvider` overrode `tier()` and not
+/// `affiliation()` until `f212cd48`, and the trait default is `None`, so any
+/// future provider that overrides one and forgets the other lands here. A gate
+/// that reads `None` as "affiliation never applies" fails **open** in precisely
+/// the case DR-26 exists to catch.
+///
+/// The safe direction is the one [`crate::providers::SPANS_INSTITUTIONS`]
+/// already takes for the composite that spans two institutions: clear an
+/// extension with no institutional claim — genuinely unaffected either way —
+/// and warn for every named one. It is not *the answer*; the answer is for the
+/// provider to state its affiliation.
+///
+/// The copy deliberately does **not** name an institution for the model side.
+/// Naming one would be a lie, and DR-26 requires a warning specific enough to
+/// act on: "we cannot tell whose agreements cover this model" is actionable
+/// (bind a model that says), where an invented institution is not.
+pub fn unstated_model_warning(extension: &str, ext: &ExtensionAffiliation) -> Option<String> {
+    let ExtensionAffiliation::Institutions(owners) = ext else {
+        // `Any` — no institution claims this extension's data, so there is no
+        // boundary for an unstated model to cross.
+        return None;
+    };
+
+    let held_by = owners_label(owners);
+
+    Some(format!(
+        "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
+         {held_by}, and this chat is bound to a private model that does not state whose \
+         agreements cover it. Using it would send `{extension}`'s inputs and results to an \
+         endpoint no agreement in this build can vouch for. Compliance does not transfer \
+         between institutions: a model approved at one has no permission over another's data \
+         unless a BAA, DUA or IRB approval covers this specific flow. Bind a model whose \
+         institution is known, or proceed only if you know one does."
     ))
 }
 
@@ -747,6 +832,99 @@ mod tests {
             .expect("an empty allowlist admits nothing, so it must warn");
         assert!(warning.contains("EmptyAgent"), "{warning}");
         assert!(warning.contains("no institution"), "{warning}");
+    }
+
+    // ------------------------------------------------- Task 48: the gate's own
+    // narrowing, and the arm for a model that states nothing.
+
+    /// The unstated arm names the extension's owners exactly as the stated arm
+    /// does — the two copies share [`owners_label`] so they cannot drift into
+    /// naming one connector's institution by display name in one warning and by
+    /// raw id in the other.
+    #[test]
+    fn the_unstated_model_warning_names_the_extensions_owners_the_same_way() {
+        let ucsf = allowlist(&["ucsf"]);
+        let stated =
+            cross_affiliation_warning(bound("stanford"), "ucsfomopagent", &ucsf).expect("mismatch");
+        let unstated = unstated_model_warning("ucsfomopagent", &ucsf).expect("mismatch");
+        assert!(stated.contains("UCSF (ucsf)"), "{stated}");
+        assert!(unstated.contains("UCSF (ucsf)"), "{unstated}");
+
+        // …and it must NOT invent an institution for the model half. Naming one
+        // would be a lie, and a user can only accept a risk that was stated
+        // truthfully.
+        assert!(!unstated.contains("stanford"), "{unstated}");
+
+        let empty = ExtensionAffiliation::Institutions(BTreeSet::new());
+        assert!(unstated_model_warning("EmptyAgent", &empty)
+            .expect("an empty allowlist admits nothing, so it must warn")
+            .contains("no institution"),);
+        // `Any` is the one extension shape an unstated model still clears: no
+        // institution claims its data, so there is no boundary to cross.
+        assert_eq!(
+            unstated_model_warning("developer", &ExtensionAffiliation::Any),
+            None
+        );
+    }
+
+    /// The gate's three guards, asserted on the free function so they hold for
+    /// the surfaces that call it without a `CallCapability`
+    /// (`POST /agent/add_extension`).
+    #[test]
+    fn the_gate_asks_affiliation_only_of_two_private_endpoints_with_the_feature_on() {
+        use super::super::{ExtensionClassification, ProviderTier};
+        let ucsf_private = ExtensionClassification {
+            tier: ProviderTier::Private,
+            affiliation: allowlist(&["ucsf"]),
+        };
+        let stanford = Some(bound("stanford"));
+
+        assert!(gate_cross_affiliation_warning(
+            true,
+            ProviderTier::Private,
+            stanford,
+            "ucsfomopagent",
+            &ucsf_private
+        )
+        .is_some());
+        // The master opt-out.
+        assert_eq!(
+            gate_cross_affiliation_warning(
+                false,
+                ProviderTier::Private,
+                stanford,
+                "ucsfomopagent",
+                &ucsf_private
+            ),
+            None
+        );
+        // A public caller — already refused on the tier axis, so this must not
+        // state a second, different reason for one crossing.
+        assert_eq!(
+            gate_cross_affiliation_warning(
+                true,
+                ProviderTier::Public,
+                stanford,
+                "ucsfomopagent",
+                &ucsf_private
+            ),
+            None
+        );
+        // A public extension holds no institution's data, whatever a stale
+        // allowlist beside it says.
+        assert_eq!(
+            gate_cross_affiliation_warning(
+                true,
+                ProviderTier::Private,
+                stanford,
+                "developer",
+                &ExtensionClassification {
+                    tier: ProviderTier::Public,
+                    affiliation: allowlist(&["ucsf"]),
+                }
+            ),
+            None
+        );
     }
 
     // ---------------------------------------------------------------- Fixtures

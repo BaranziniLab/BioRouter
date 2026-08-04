@@ -1271,6 +1271,30 @@ impl biorouter::providers::base::Provider for TieredProvider {
         self.0
     }
 
+    /// ⚠ **A private double must state an affiliation, because every real
+    /// private provider does** — issue #56 DR-26, Task 48.
+    ///
+    /// `Some(..)` exactly while a provider's tier is Private is a property of
+    /// this build rather than an accident: both deciders route *through* the
+    /// tier predicate (`ucsf_gateway_affiliation`, `self_hosted_affiliation`)
+    /// and `LeadWorkerProvider` folds both halves. Leaving this on the trait
+    /// default gives the one pairing DR-26's vocabulary says cannot exist —
+    /// Private tier, affiliation `None` — which the gate treats as *unstated*
+    /// rather than as *unconstrained*, so this double would be refused at
+    /// `ucsfomopagent` for a reason these tests are not about.
+    ///
+    /// `Local` because it is DR-26's identity element: the one model
+    /// affiliation compatible with every extension, which keeps the assertions
+    /// below on the TIER axis they were written for.
+    fn affiliation(&self) -> Option<biorouter::privacy::ModelAffiliation> {
+        match self.0 {
+            biorouter::privacy::ProviderTier::Private => {
+                Some(biorouter::privacy::ModelAffiliation::Local)
+            }
+            biorouter::privacy::ProviderTier::Public => None,
+        }
+    }
+
     async fn complete_with_model(
         &self,
         _model_config: &biorouter::model::ModelConfig,

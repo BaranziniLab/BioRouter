@@ -176,7 +176,33 @@ fn check_enable_allowed(
                 None,
             ))
         }
-        Some(entry) => Ok(entry.config),
+        Some(entry) => {
+            // Task 48 / DR-26's third axis, and the LAST check before the
+            // permit because it is the narrowest: every arm above refuses a
+            // class of extension outright, where this refuses one PAIRING of an
+            // extension with one bound model.
+            //
+            // ⚠ **The agent is refused, not warned, and that is not an
+            // inconsistency with the bind surface.** DR-26's asymmetry: a user
+            // who insists may proceed past a warning; an agent never clears one
+            // automatically — it escalates to the user or the call does not
+            // happen. `extensionmanager__manage_extensions` is the agent's
+            // path, and there is no user in it. The user's own enable path is
+            // `/agent/add_extension`, which warns and proceeds.
+            //
+            // Like Gate F1 above, this fires BEFORE the server is spawned.
+            // Enabling a clinical connector pulls its credentials out of the
+            // keychain and opens the session; a refusal at the first tool call
+            // is already too late. The master opt-out reaches this through the
+            // capability, not through a second read of the global.
+            if let Some(warning) = cap.cross_affiliation_warning(
+                extension_name,
+                &crate::privacy::resolve_extension(extension_name, Some(&entry.config)),
+            ) {
+                return Err(crate::privacy::refusal::cross_affiliation_refusal(&warning));
+            }
+            Ok(entry.config)
+        }
     }
 }
 
@@ -837,5 +863,89 @@ mod tests {
         let err = check_enable_allowed(Some(renamed), false, "f1-mystuff", public_enforcing())
             .expect_err("renaming the config entry must not let a public model spawn it");
         assert!(err.message.contains("private extension"), "{}", err.message);
+    }
+
+    /// The capability a session bound to `institution`'s private model carries.
+    fn bound_to(institution: &str) -> CallCapability {
+        CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new(institution),
+            )),
+        )
+    }
+
+    /// **Task 48, surface 5 — extension enablement.** Bind and enablement are
+    /// the same mismatch found from opposite ends; this is the end where the
+    /// model is already bound and the extension arrives.
+    ///
+    /// ⚠ **The agent is refused rather than warned, and that is DR-26's
+    /// user/agent asymmetry rather than an inconsistency with the bind
+    /// surface.** A user who insists may proceed past a warning; an agent never
+    /// clears one automatically — it escalates to the user or the call does not
+    /// happen. `extensionmanager__manage_extensions` is the agent's enable path,
+    /// so the call does not happen. The USER's enable path is
+    /// `/agent/add_extension`, which warns and proceeds.
+    ///
+    /// Enabling is also the earliest point at which this can be caught:
+    /// spawning `ucsfomopagent` pulls its `CLINICAL_RECORDS_*` secrets out of
+    /// the keychain and opens a session to the UCSF CDW, which is a disclosure
+    /// no later refusal takes back.
+    #[test]
+    fn an_agent_may_not_enable_an_extension_its_model_is_affiliation_incompatible_with() {
+        let err = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            bound_to("stanford"),
+        )
+        .expect_err("a Stanford-covered model may not spawn a UCSF connector");
+        let expected = bound_to("stanford")
+            .cross_affiliation_warning(
+                "ucsfomopagent",
+                &crate::privacy::resolve_extension("ucsfomopagent", None),
+            )
+            .expect("the fixture only discriminates if this pair really mismatches");
+        assert!(err.message.contains(&expected), "{}", err.message);
+    }
+
+    /// The same call on a LOCAL private model is allowed — `Local` is DR-26's
+    /// most permissive affiliation, not a peer of the institutions.
+    #[test]
+    fn a_local_model_may_enable_every_private_extension() {
+        let config = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test_affiliated(
+                ProviderTier::Private,
+                true,
+                Some(crate::privacy::affiliation::ModelAffiliation::Local),
+            ),
+        )
+        .expect("a local model discloses nothing, so nothing needs papering");
+        assert_eq!(config.name(), "ucsfomopagent");
+    }
+
+    /// DR-15's master opt-out reaches the affiliation arm through the same
+    /// capability, not through a second read of the global.
+    #[test]
+    fn the_master_toggle_silences_the_affiliation_arm_of_the_enable_gate() {
+        let cap = CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            false,
+            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new("stanford"),
+            )),
+        );
+        let config = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            cap,
+        )
+        .expect("with privacy tiers off, nothing is refused");
+        assert_eq!(config.name(), "ucsfomopagent");
     }
 }

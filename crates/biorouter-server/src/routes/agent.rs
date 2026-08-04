@@ -929,22 +929,29 @@ async fn agent_add_extension(
     // Refused OUTRIGHT — no user-proof branch, deliberately. Attaching a private
     // extension to a public session is not a raise the user can authorize
     // either; their route is to switch the model first and then attach.
-    let capability = agent
-        .provider()
-        .await
+    // ONE read of the bound provider, from which BOTH privacy axes are taken.
+    // Two `agent.provider().await` calls would be the read-then-read
+    // `CallCapability` exists to collapse — the mutex can be reassigned between
+    // them with no turn lock — so the `Arc` is taken once and asked twice.
+    let bound = agent.provider().await.ok();
+    let capability = bound
+        .as_ref()
         .map(|p| p.tier())
         .unwrap_or(ProviderTier::Public);
     let extension_name = request.config.name();
+    // Task 43 (DR-23): the config, not just its name — a renamed entry is
+    // resolved through the install directory in its arguments. Task 48 (DR-26):
+    // one resolution carries the tier AND the affiliation, so the two axes
+    // cannot disagree about this entry.
+    let classification =
+        biorouter::privacy::resolve_extension(&extension_name, Some(&request.config));
     // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
     // `CallCapability`: `/agent/add_extension` is not a tool dispatch and has no
-    // admitted capability to inherit.
-    if biorouter::privacy::privacy_tiers_enabled()
-        // Task 43 (DR-23): the config, not just its name — a renamed entry is
-        // resolved through the install directory in its arguments.
-        && biorouter::privacy::classify_extension_entry(&extension_name, Some(&request.config))
-            .is_private()
-        && capability == ProviderTier::Public
-    {
+    // admitted capability to inherit. Read ONCE and shared with the
+    // cross-affiliation check below, so this route cannot refuse on the tier
+    // axis with tiers on and then warn — or not warn — with tiers off.
+    let enforced = biorouter::privacy::privacy_tiers_enabled();
+    if enforced && classification.tier.is_private() && capability == ProviderTier::Public {
         return Err(ErrorResponse {
             status: StatusCode::CONFLICT,
             message: PrivacyRefusal::PrivateExtensionOverHttp {
@@ -952,6 +959,36 @@ async fn agent_add_extension(
             }
             .to_string(),
         });
+    }
+
+    // Issue #56 Task 48, DR-26 at the USER's enable path. This is the same
+    // mismatch the bind surface finds from the other end, and — unlike the tier
+    // refusal above — it WARNS rather than refusing.
+    //
+    // The asymmetry with `extensionmanager__manage_extensions`, which refuses,
+    // is DR-26's user/agent rule: a user who insists proceeds past a warning; an
+    // agent never clears one automatically. This route is the user acting
+    // through the GUI's Settings > Extensions, so the extension is attached and
+    // the risk is stated.
+    //
+    // ⚠ **The log is not yet the product.** DR-26 requires the user be shown the
+    // warning before proceeding, and this route returns a bare `StatusCode` —
+    // giving it a body is an OpenAPI change and a regenerated TypeScript client,
+    // which is the UI task that follows, not this one. What lands here is the
+    // detection and the exact copy, on the one code path that would otherwise
+    // have neither.
+    if let Some(warning) = biorouter::privacy::affiliation::gate_cross_affiliation_warning(
+        enforced,
+        capability,
+        bound.as_ref().and_then(|p| p.affiliation()),
+        &extension_name,
+        &classification,
+    ) {
+        tracing::warn!(
+            session_id = request.session_id,
+            extension = extension_name,
+            "{warning}"
+        );
     }
 
     agent
@@ -1696,17 +1733,27 @@ mod add_extension_resolver_tests {
     /// file, so the scan found its own assertion and passed against a handler
     /// mutated back to the name-only form. Split across the `format!`, neither
     /// half is the needle and only the real call site can satisfy it.
+    ///
+    /// ⚠ **Task 48 (DR-26) tightened this from `classify_extension_entry` to
+    /// `resolve_extension`, which is a strengthening rather than a rename.**
+    /// The entry form is this one's `tier` field; the route now needs the
+    /// AFFILIATION too, and taking the two from separate calls is what lets
+    /// them disagree about the same entry — a connector coming back Private
+    /// *and* unconstrained, which is the whole failure DR-26 exists to catch.
+    /// One resolution, one record, both axes.
     #[test]
     fn the_add_extension_gate_resolves_from_the_config_not_from_the_name() {
         let needle = format!(
             "{}(&extension_name,Some(&request.config))",
-            "classify_extension_entry"
+            "resolve_extension"
         );
         assert!(
             squeezed().contains(&needle),
             "`/agent/add_extension` no longer hands the resolver the config it was given. \
              A renamed private extension resolves Public from its name alone, so this route \
-             would attach a clinical connector to a public session — see DR-23."
+             would attach a clinical connector to a public session — see DR-23. It must also \
+             be the resolution that carries the AFFILIATION, or the two axes can disagree \
+             about the same entry — see DR-26."
         );
     }
 

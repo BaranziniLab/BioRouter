@@ -384,6 +384,42 @@ pub fn privacy_refusal(
     ))
 }
 
+/// The refusal a **cross-affiliation** mismatch produces at a gate that refuses
+/// — Gate C (dispatch), Gate F (the extension channels) and the agent's own
+/// enable path (DR-26, Task 48).
+///
+/// `warning` is [`CallCapability::cross_affiliation_warning`]'s output verbatim,
+/// composed once in `privacy::affiliation` so every surface states the risk in
+/// the same words. This wraps it in the sentence the *model* needs and nothing
+/// more: what happened, that the user is the only one who can clear it, and that
+/// retrying is pointless.
+///
+/// ⚠ **It offers the approval; it does not perform it.** DR-26 records the
+/// approval as a grant scoped to (session, extension, model affiliation), and an
+/// agent can never clear a mismatch — it escalates to the user or the call does
+/// not happen. So this text tells the model to ask, in the same register as
+/// [`ASK_THE_USER_TO_SWITCH`]: a refusal that suggested a workaround is one the
+/// model will try.
+///
+/// §14.4: the string reaches the model's context, so it names the extension and
+/// the institutions and nothing else — no session id, no title, no working
+/// directory.
+///
+/// [`CallCapability::cross_affiliation_warning`]: super::CallCapability::cross_affiliation_warning
+pub fn cross_affiliation_refusal(warning: &str) -> ErrorData {
+    ErrorData::new(
+        ErrorCode::INVALID_REQUEST,
+        format!(
+            "{warning} This call was not made. Only the user can accept a cross-institutional \
+             risk, and only after it has been stated to them, so do not retry — not with a \
+             different tool name, not through code execution, and not through a resource read. \
+             Tell the user what you were trying to do and ask them to approve this specific flow \
+             or to switch this chat to a model covered by the same institution's agreements."
+        ),
+        None,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -565,6 +601,57 @@ mod tests {
         assert!(
             msg.contains("ucsfomopagent"),
             "the caller's own name may be named"
+        );
+    }
+
+    /// Task 48's refusal, under the same two rules as its siblings: it carries
+    /// the warning verbatim, it names no extension the caller did not ask about,
+    /// and it forecloses the workaround.
+    ///
+    /// ⚠ It deliberately does NOT end in [`ASK_THE_USER_TO_SWITCH`], which is
+    /// why it is asserted here and not in the loop below. That constant offers
+    /// exactly one way out — *switch this chat to a private model* — and this
+    /// chat is already on one. Telling the model to ask for a private model
+    /// would be advice it has already taken, and following it would produce a
+    /// loop rather than a fix.
+    #[test]
+    fn the_cross_affiliation_refusal_carries_the_warning_and_forecloses_the_workaround() {
+        let warning = "Cross-institutional data flow. The extension `ucsfomopagent` holds data \
+                       belonging to UCSF (ucsf), but this chat is bound to a model covered by \
+                       Stanford's agreements.";
+        let msg = cross_affiliation_refusal(warning).message.to_string();
+
+        assert!(msg.contains(warning), "the warning is the product: {msg}");
+        assert!(msg.contains("do not retry"), "{msg}");
+        assert!(
+            msg.contains("code execution") && msg.contains("resource read"),
+            "the workaround has to be named to be foreclosed: {msg}"
+        );
+        assert!(
+            msg.contains("user"),
+            "only the user can accept this risk, and the model has to be told so: {msg}"
+        );
+        assert!(
+            !msg.contains(ASK_THE_USER_TO_SWITCH),
+            "this chat is already on a private model; that sentence is a loop: {msg}"
+        );
+
+        // R10's disclosure bound: the message says nothing about any other
+        // extension's classification. Taken from the generator, so it cannot go
+        // quietly vacuous when the set changes.
+        for other in crate::privacy::private_extension_ids().filter(|id| *id != "ucsfomopagent") {
+            assert!(
+                !msg.contains(other),
+                "refusal leaked the classification of {other}"
+            );
+        }
+
+        // Deterministic: a model that sees a different string on retry concludes
+        // the refusal is transient and loops.
+        assert_eq!(msg, cross_affiliation_refusal(warning).message.to_string());
+        assert_eq!(
+            cross_affiliation_refusal(warning).code,
+            ErrorCode::INVALID_REQUEST
         );
     }
 
