@@ -2933,8 +2933,10 @@ not of this table. `crates/biorouter/src/privacy/system_auth.rs` now exists. Mea
 implementation commit: `cargo test -p biorouter --features privacy-test-auth --lib
 privacy::system_auth` is **22**, and the bare `cargo test -p biorouter --lib privacy::system_auth`
 is **16** — the six-test difference is the seam's own behavioural tests, which are compiled out
-without the feature. Both spellings are live and they are different numbers, exactly like
-`memory` / `memory::` above; a `pre + N` assertion has to say which one it is arithmetic on.
+without the feature. ⚠ **That is one filter under two feature sets, not two spellings** — unlike the
+`memory` / `memory::` pair above, the filter string is byte-identical in both commands. Both builds
+are live and a `pre + N` assertion has to say which *build* it is arithmetic on, which is a distinct
+hazard from the spelling one and is the reason this row was singled out in the first place.
 
 ⚠ **The creating task in the row was wrong, and the row is not being moved into the resolved table
 above.** The row named Task 29, but Task 29's landed implementation predates its own DR-20 rewrite
