@@ -129,16 +129,18 @@ fn check_enable_allowed(
     } else {
         ProviderTier::Private
     };
-    match entry {
-        None => Err(ErrorData::new(
+    let Some(entry) = entry else {
+        return Err(ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
             format!(
                 "Extension '{}' not found. Please check the extension name and try again.",
                 extension_name
             ),
             None,
-        )),
-        Some(entry) if !entry.enabled && persisted => Err(ErrorData::new(
+        ));
+    };
+    if !entry.enabled && persisted {
+        return Err(ErrorData::new(
             ErrorCode::INVALID_REQUEST,
             format!(
                 "Extension '{}' is disabled in the Biorouter configuration (enabled: false). \
@@ -149,61 +151,66 @@ fn check_enable_allowed(
                 extension_name
             ),
             None,
-        )),
-        // Gate F1. Before the permit arm below. Nothing local may GRANT private
-        // (R11(i)), so the tier still comes from the compiled-in marketplace
-        // baseline — but the entry is passed alongside the name the model asked
-        // for, because Task 43 (DR-23) resolves a renamed entry through the
-        // install directory in its arguments, which the name no longer carries.
-        // Passing the config can only raise the answer, never lower it.
-        Some(ref entry)
-            if crate::privacy::classify_extension_entry(extension_name, Some(&entry.config))
-                .is_private()
-                && caller == ProviderTier::Public =>
-        {
-            Err(ErrorData::new(
-                ErrorCode::INVALID_REQUEST,
-                format!(
-                    "Extension '{extension_name}' is a private extension: the Biorouter \
-                     marketplace marks it as reaching data held inside the institution, so only \
-                     a private model may enable or call it. This session is running on a public \
-                     model, so do not enable it. If it is needed for this task, {}",
-                    // DR-16 (Task 18A) turned this sentence into a shared
-                    // constant: the same words now reach the model through the
-                    // HTTP channels too, and two copies would drift.
-                    crate::privacy::refusal::ASK_THE_USER_TO_SWITCH
-                ),
-                None,
-            ))
-        }
-        Some(entry) => {
-            // Task 48 / DR-26's third axis, and the LAST check before the
-            // permit because it is the narrowest: every arm above refuses a
-            // class of extension outright, where this refuses one PAIRING of an
-            // extension with one bound model.
-            //
-            // ⚠ **The agent is refused, not warned, and that is not an
-            // inconsistency with the bind surface.** DR-26's asymmetry: a user
-            // who insists may proceed past a warning; an agent never clears one
-            // automatically — it escalates to the user or the call does not
-            // happen. `extensionmanager__manage_extensions` is the agent's
-            // path, and there is no user in it. The user's own enable path is
-            // `/agent/add_extension`, which warns and proceeds.
-            //
-            // Like Gate F1 above, this fires BEFORE the server is spawned.
-            // Enabling a clinical connector pulls its credentials out of the
-            // keychain and opens the session; a refusal at the first tool call
-            // is already too late. The master opt-out reaches this through the
-            // capability, not through a second read of the global.
-            if let Some(warning) = cap.cross_affiliation_warning(
-                extension_name,
-                &crate::privacy::resolve_extension(extension_name, Some(&entry.config)),
-            ) {
-                return Err(crate::privacy::refusal::cross_affiliation_refusal(&warning));
-            }
-            Ok(entry.config)
-        }
+        ));
     }
+
+    // ⚠ **ONE resolution, both axes, for the whole of this function** — and the
+    // reason this is a chain of early returns rather than the `match` it used to
+    // be. Nothing local may GRANT private (R11(i)), so the tier still comes from
+    // the compiled-in marketplace baseline; the entry is passed alongside the
+    // name the model asked for because Task 43 (DR-23) resolves a renamed entry
+    // through the install directory in its arguments, which the name no longer
+    // carries. Passing the config can only raise the answer, never lower it.
+    //
+    // Task 48 (DR-26) added the affiliation arm below, and it first asked the
+    // registry a SECOND time from a `match` guard — the exact "two lookups let
+    // the two axes disagree about one entry" pattern `resolve_extension` exists
+    // to prevent, and which that same task removed at `get_client_for_tool` and
+    // at `/agent/add_extension`. A guard cannot hand its arm a value, so the
+    // `match` was the shape that made two calls the path of least resistance.
+    // Resolved once, here; both gates below read fields off that one value.
+    let class = crate::privacy::resolve_extension(extension_name, Some(&entry.config));
+
+    // Gate F1. Before the permit below.
+    if class.tier.is_private() && caller == ProviderTier::Public {
+        return Err(ErrorData::new(
+            ErrorCode::INVALID_REQUEST,
+            format!(
+                "Extension '{extension_name}' is a private extension: the Biorouter \
+                 marketplace marks it as reaching data held inside the institution, so only \
+                 a private model may enable or call it. This session is running on a public \
+                 model, so do not enable it. If it is needed for this task, {}",
+                // DR-16 (Task 18A) turned this sentence into a shared constant:
+                // the same words now reach the model through the HTTP channels
+                // too, and two copies would drift.
+                crate::privacy::refusal::ASK_THE_USER_TO_SWITCH
+            ),
+            None,
+        ));
+    }
+
+    // Task 48 / DR-26's third axis, and the LAST check before the permit
+    // because it is the narrowest: every gate above refuses a class of
+    // extension outright, where this refuses one PAIRING of an extension with
+    // one bound model.
+    //
+    // ⚠ **The agent is refused, not warned, and that is not an inconsistency
+    // with the bind surface.** DR-26's asymmetry: a user who insists may
+    // proceed past a warning; an agent never clears one automatically — it
+    // escalates to the user or the call does not happen.
+    // `extensionmanager__manage_extensions` is the agent's path, and there is
+    // no user in it. The user's own enable path is `/agent/add_extension`,
+    // which warns and proceeds.
+    //
+    // Like Gate F1 above, this fires BEFORE the server is spawned. Enabling a
+    // clinical connector pulls its credentials out of the keychain and opens
+    // the session; a refusal at the first tool call is already too late. The
+    // master opt-out reaches this through the capability, not through a second
+    // read of the global.
+    if let Some(warning) = cap.cross_affiliation_warning(extension_name, &class) {
+        return Err(crate::privacy::refusal::cross_affiliation_refusal(&warning));
+    }
+    Ok(entry.config)
 }
 
 impl ExtensionManagerClient {
