@@ -1757,6 +1757,67 @@ mod add_extension_resolver_tests {
         );
     }
 
+    /// Issue #56 Task 48 (DR-26), the **user's** enable path — row 5 of Step
+    /// 2's table, and the half nothing pinned.
+    ///
+    /// The agent's half (`check_enable_allowed`) has three behavioural tests in
+    /// `biorouter`. This one had none: the gate above it only asserts that
+    /// `resolve_extension` is called with the config, which the TIER arm
+    /// already satisfies, so the entire DR-26 block could be deleted and every
+    /// test in the tree would stay green.
+    ///
+    /// Structural for the reason the module header gives — `AppState` opens the
+    /// real user session database and `provenance::insert_test_record` does not
+    /// exist for this crate — so this pins the two things that can silently
+    /// regress, in the order they would regress in:
+    ///
+    ///  1. the route stops asking the gate at all, and a cross-institutional
+    ///     attach happens with nothing recorded anywhere;
+    ///  2. someone "fixes the inconsistency" with the agent path by turning the
+    ///     warning into a refusal. That is DR-26's user/agent asymmetry
+    ///     inverted, not a tidy-up: a user who insists proceeds past a warning,
+    ///     an agent never clears one automatically. Refusing here would also
+    ///     leave a legitimate cross-institutional user under a real DUA with no
+    ///     way to attach their own connector at all, which is the "researchers
+    ///     turn the feature off" outcome the ruling exists to avoid.
+    ///
+    /// ⚠ Both needles are assembled at run time, for the reason the test above
+    /// documents: written as literals they would appear in this very file and
+    /// the scan would find its own assertion.
+    #[test]
+    fn the_add_extension_route_warns_on_a_mismatch_and_still_attaches() {
+        let squeezed = squeezed();
+        let gate = format!("gate_cross_affiliation{}(", "_warning");
+        let attach = format!(".add_extension{}", "(request.config)");
+
+        let asked = squeezed.find(&gate).expect(
+            "`/agent/add_extension` no longer asks the cross-affiliation gate. A user attaching \
+             another institution's connector to a chat bound to their own institution's model is \
+             the mismatch DR-26 exists to state, and this route is the surface it is stated on.",
+        );
+        let attached = squeezed
+            .find(&attach)
+            .expect("`/agent/add_extension` no longer attaches the extension it was given");
+        assert!(
+            asked < attached,
+            "the mismatch must be detected BEFORE the extension is attached, not after"
+        );
+
+        // Everything the route does between deciding and attaching. On a
+        // mismatch it must state the risk and carry on.
+        let between = &squeezed[asked..attached];
+        assert!(
+            between.contains("tracing::warn!"),
+            "the mismatch is detected and then dropped on the floor: {between}"
+        );
+        assert!(
+            !between.contains("returnErr"),
+            "DR-26 warns at the USER's enable path; it refuses only at the AGENT's \
+             (`check_enable_allowed`). Turning this into a refusal inverts the asymmetry and \
+             strands a legitimate cross-institutional user: {between}"
+        );
+    }
+
     /// The name-only form must not reappear anywhere in this file. It is not
     /// wrong in itself — it is the right call for a caller that genuinely holds
     /// only a name — but no route here is such a caller, and its presence is

@@ -24,15 +24,34 @@ fn an_entry_with_no_caller_identity_is_the_most_restrictive_pair() {
     assert_eq!(cap.tier(), ProviderTier::Public);
     assert!(cap.enforced());
     assert!(cap.restricts_private_data());
+    // Issue #56 Task 48 (DR-26). A public model's affiliation is the absence of
+    // one, and this constructor is the entry with no caller identity at all.
+    assert_eq!(cap.affiliation(), None);
 }
 
 #[tokio::test]
-async fn an_unbound_provider_samples_public() {
+async fn an_unbound_provider_samples_public_and_states_no_affiliation() {
     // `None` is the legitimate state before the first bind, not an error —
     // and it must resolve to the tier that grants the least reach.
     let provider: SharedProvider = std::sync::Arc::new(tokio::sync::Mutex::new(None));
-    assert_eq!(
-        CallCapability::sample(&provider).await.tier(),
-        ProviderTier::Public
-    );
+    let cap = CallCapability::sample(&provider).await;
+    assert_eq!(cap.tier(), ProviderTier::Public);
+    // Issue #56 Task 48 (DR-26), the other half of `sample`'s `unwrap_or`. It
+    // had no assertion at all, so the affiliation of an unbound provider could
+    // have been anything — including the `Some(Local)` that pairs with Private
+    // in the test constructors, which would hand a chat with no model bound the
+    // most permissive affiliation in the vocabulary.
+    //
+    // Public + `None` is also the only pair that is self-consistent here:
+    // `gate_cross_affiliation_warning`'s guards ask affiliation only of two
+    // Private endpoints, so a Public tier makes this field unreachable rather
+    // than merely unused.
+    //
+    // The BOUND path — that `sample` reads `p.affiliation()` off the same
+    // `as_ref()` as `p.tier()` — is driven end to end by
+    // `agents::agent::gate_c_dispatch_tests::
+    // binding_a_foreign_institutions_model_warns_and_still_binds`, which binds
+    // a real provider covered by another institution and reads the warning back
+    // out through `Agent::cross_affiliation_warnings`.
+    assert_eq!(cap.affiliation(), None);
 }
