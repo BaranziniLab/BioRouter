@@ -5189,7 +5189,10 @@ mod tests {
             .dispatch_tool_call(
                 &id,
                 call("residual-mystuff__tool"),
-                crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    true,
+                ),
                 CancellationToken::default(),
             )
             .await
@@ -5300,7 +5303,10 @@ mod tests {
             .dispatch_tool_call(
                 &id,
                 call("stampcheck__tool"),
-                crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    true,
+                ),
                 CancellationToken::default(),
             )
             .await
@@ -5327,7 +5333,10 @@ mod tests {
             em.dispatch_tool_call(
                 &id,
                 call("stampcheck__tool"),
-                crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    true
+                ),
                 CancellationToken::default(),
             )
             .await

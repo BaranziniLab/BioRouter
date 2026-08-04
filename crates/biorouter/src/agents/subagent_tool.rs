@@ -2932,7 +2932,10 @@ mod tests {
             vec!["developer".to_string()],
             "a public child inherited a private extension because it had been renamed"
         );
-        assert_eq!(child.dropped_private_extensions, vec!["mystuff".to_string()]);
+        assert_eq!(
+            child.dropped_private_extensions,
+            vec!["mystuff".to_string()]
+        );
     }
 
     /// The CALL SITE for the sentence above: the drop has to reach the parent's
