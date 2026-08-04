@@ -1425,9 +1425,12 @@ impl ExtensionManager {
     /// Sampling is also the only spelling that reads the provider's tier and the
     /// master opt-out at ONE instant; reading the provider mutex here and the
     /// toggle again below is the two-reads race
-    /// [`crate::privacy::CallCapability`] exists to close — and it is why Task
-    /// 10's census of the sampler grows by this entry rather than this function
-    /// reaching for either of them directly.
+    /// [`crate::privacy::CallCapability`] exists to close.
+    ///
+    /// The sample itself is one level down, in [`Self::extension_reach`], which
+    /// Task 48 extracted so the tier and the affiliation come off one capability
+    /// and one registry read. This function is a projection of that verdict, not
+    /// a construction site.
     async fn allowed_extension_keys(
         &self,
         admitted: Option<crate::privacy::CallCapability>,

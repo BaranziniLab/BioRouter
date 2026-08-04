@@ -7435,11 +7435,18 @@ impl Agent {
         // would also strand a chat — the model is bound, so the only exit would
         // be removing extensions the user cannot see the reason for.
         //
-        // The log is not the product. The user-facing statement is
-        // [`Self::cross_affiliation_warnings`], which the GUI and CLI ask AFTER
-        // a bind; this line exists so a support transcript records that the
-        // mismatch was detected at the bind rather than only at the first
-        // refused dispatch.
+        // The log is not the product, and — stated plainly rather than in the
+        // present tense — the product is NOT SHIPPED. DR-26's user-facing
+        // statement at a bind is [`Self::cross_affiliation_warnings`], which is
+        // the query a GUI or CLI is meant to ask after binding and render to
+        // the user. Nothing asks it today: its only non-test callers are the
+        // loop three lines below and nothing in `ui/desktop/`. Surfacing it is
+        // the task that follows this one.
+        //
+        // So what this line buys is narrow and worth being honest about: a
+        // support transcript records that the mismatch was detected at the bind
+        // rather than only at the first refused dispatch. A user watching the
+        // screen is told nothing until they try to use the connector.
         //
         // ⚠ On the RESTART path this can legitimately log nothing:
         // `restore_provider_from_session` is `tokio::join!`ed with

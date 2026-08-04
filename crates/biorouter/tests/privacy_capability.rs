@@ -1,14 +1,27 @@
 //! The two capability constructors, tested from OUTSIDE `crates/*/src/` on
 //! purpose (issue #56).
 //!
-//! Task 10's census greps `crates/*/src/` for `CallCapability::sample(` and
-//! `CallCapability::public_enforced(` and asserts the exact set of production
-//! entries — the check that catches a fifth entry nobody classified. A unit test
-//! beside the definition spells both constructors, and no filter grep can
-//! express separates a test hit from a production one: `grep -v "mod tests"`
-//! drops only lines that literally contain that string, which a call to either
-//! constructor does not. Excluding the whole definition file instead would
-//! blind the census in exactly the file where a fifth sampler is most plausible.
+//! ⚠ **The census this file was placed here for is NOT WRITTEN.** The sentences
+//! below describe the design it anticipates, and they were phrased in the
+//! present tense as though it existed; review looked for it and found nothing.
+//! `grep -rn '"CallCapability' crates/` returns no audit, and the only whole-tree
+//! censuses in the tree today are
+//! `privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification`
+//! and `declassify::tests::the_proof_of_user_is_constructed_in_exactly_two_places`.
+//! Task 51 is where it lands. Until then nothing stops a fifth `sample()` from
+//! joining the four in `crates/*/src/`, and no comment elsewhere should cite it
+//! as a constraint that already binds.
+//!
+//! The placement still earns its keep, because the reasoning is what makes the
+//! census writable at all: it will grep `crates/*/src/` for
+//! `CallCapability::sample(` and `CallCapability::public_enforced(` and assert
+//! the exact set of production entries — the check that catches an entry nobody
+//! classified. A unit test beside the definition spells both constructors, and
+//! no filter grep can express separates a test hit from a production one:
+//! `grep -v "mod tests"` drops only lines that literally contain that string,
+//! which a call to either constructor does not. Excluding the whole definition
+//! file instead would blind the census in exactly the file where a fifth sampler
+//! is most plausible.
 //!
 //! So the two tests that must name the real constructors live here, where the
 //! census does not walk, and the census needs no exception list at all. Every

@@ -106,6 +106,15 @@ impl CallCapability {
     /// all of them in [`Self::cross_affiliation_warning`]'s unstated-model arm,
     /// silently changing what they test. A test that means to exercise DR-26
     /// says so with [`Self::for_test_affiliated`].
+    ///
+    /// ⚠ Nothing *enforces* that, and it does not need to: `Local` is DR-26's
+    /// identity element, so a future test that meant to exercise a mismatch and
+    /// reached for this constructor gets a capability compatible with every
+    /// extension — and the `expect`/`expect_err` such a test is built around
+    /// fails loudly on the `None` it gets back. The default is chosen so the
+    /// wrong reach for it is noisy rather than green; the opposite default
+    /// (`None`) is the one that would pass silently, by warning where nothing
+    /// should.
     #[cfg(test)]
     pub(crate) const fn for_test(tier: ProviderTier, enforced: bool) -> Self {
         let affiliation = match tier {

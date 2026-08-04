@@ -406,6 +406,20 @@ pub fn privacy_refusal(
 /// directory.
 ///
 /// [`CallCapability::cross_affiliation_warning`]: super::CallCapability::cross_affiliation_warning
+/// ⚠ **The two exits it offers are not equally real in this build.** "Switch
+/// this chat to a model covered by the same institution's agreements" works
+/// today — it is a bind, and the bind surface warns rather than refusing. "Ask
+/// them to approve this specific flow" anticipates DR-26's cross-affiliation
+/// grant, scoped to (session, extension, model affiliation), which is a later
+/// task: no grant is recorded, no surface offers one, and nothing consults one.
+///
+/// Kept in the copy rather than removed, because the sentence's real work is to
+/// tell the model that the decision belongs to a HUMAN and that retrying is
+/// not a way to get it — which is true now and stays true after the grant
+/// lands. But until it does, a legitimate cross-institutional user under a real
+/// DUA has only the model switch, and that gap is sequencing rather than
+/// design: it is the "researchers route around it by turning the feature off"
+/// pressure DR-26 warns about, arriving through the order the tasks ship in.
 pub fn cross_affiliation_refusal(warning: &str) -> ErrorData {
     ErrorData::new(
         ErrorCode::INVALID_REQUEST,
