@@ -2105,6 +2105,60 @@ fn read_privacy_tier(row: &sqlx::sqlite::SqliteRow) -> SessionClassification {
         })
 }
 
+/// What the one-time backfill did, in the four buckets a support conversation
+/// needs. Returned as well as logged, so a test can assert the numbers without
+/// reading a process-global log stream — see `fn_body` in this file's tests for
+/// why that distinction had to be made.
+///
+/// The first three partition the `sessions` table. `empty` cuts across it: it
+/// counts the message-less rows, which is the whole of the gap between these
+/// figures and the ones the user can see, because History hides them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BackfillCounts {
+    /// Rows this run raised to Private, from a bound private-tier provider.
+    pub private: i64,
+    /// Rows left public with a provider name recorded — a read, not a guess.
+    pub public_named: i64,
+    /// Rows left public with NO provider recorded. Unknown provenance, failed
+    /// open (DR-10). Historically the largest of the three.
+    pub unknown_provider: i64,
+    /// Rows with no messages at all, whatever their tier.
+    pub empty: i64,
+}
+
+/// The numbers issue #56's day-one notice quotes (§15.5), over the population
+/// **History actually shows**.
+///
+/// That qualifier is the whole point of the type. The raw `sessions` table holds
+/// message-less rows — a chat opened and abandoned, a workspace shell — and
+/// `list_sessions_by_types` INNER JOINs `messages`, so those rows exist in the
+/// database and nowhere in the user's window. On the operator's machine the two
+/// populations differ by nearly 2×: 936 would-be-private rows, 498 of them
+/// visible. A notice quoting the raw number tells the user to go and act on
+/// hundreds of conversations they cannot see.
+///
+/// The first three fields partition [`Self::total_visible`]: private (whatever
+/// the migration or a later turn marked), then the public remainder split by
+/// whether the row records a provider at all. The unknown bucket is the one the
+/// backfill fails **open** on, and it is the largest of the three.
+/// `pub(crate)`, matching [`Self::privacy_notice_counts`], its only producer. A
+/// `pub` struct an external crate can name but never obtain is a wart; when the
+/// HTTP route that serves these numbers lands, both widen together.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PrivacyNoticeCounts {
+    /// Private to the fail-closed reader, and visible in History.
+    pub private_visible: i64,
+    /// Public, visible, and bound to a named provider — the migration read that
+    /// name and concluded public.
+    pub public_named_visible: i64,
+    /// Public, visible, and bound to NO provider. The migration could not tell,
+    /// and DR-10 says fail open. These are the conversations of genuinely
+    /// unknown provenance.
+    pub unknown_provider_visible: i64,
+    /// The denominator: user + scheduled sessions with at least one message.
+    pub total_visible: i64,
+}
+
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
@@ -3071,6 +3125,11 @@ impl SessionStorage {
                 // on a column another build already created is `duplicate
                 // column name`, which aborts startup.
                 Self::ensure_privacy_schema(pool).await?;
+                // ...and the backfill, HERE and nowhere else. See the function's
+                // own comment for why a startup-repeating home would be a silent
+                // one-way regression. The counts it returns are logged inside it;
+                // nothing on this path branches on them.
+                let _ = Self::backfill_privacy_from_bound_provider(pool).await?;
             }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
@@ -3200,6 +3259,178 @@ impl SessionStorage {
             .execute(&mut *connection)
             .await?;
         Ok(())
+    }
+
+    /// The providers whose bound sessions the one-time backfill privatises.
+    ///
+    /// A **literal**, not a lookup through `providers::providers()`, and the
+    /// reason is not convenience. A migration classifies rows written by other
+    /// builds: a database carrying `versa_bedrock` sessions can be opened by a
+    /// binary compiled without the `aws-providers` feature, where that provider
+    /// is absent from the live registry entirely and a registry-derived list
+    /// would silently leave those rows public. The migration must also run
+    /// before any provider is constructed, and must not depend on the user's
+    /// config being readable.
+    ///
+    /// `the_backfilled_provider_set_is_every_provider_that_claims_private` is
+    /// what stops the two drifting apart.
+    const BACKFILL_PRIVATE_PROVIDERS: [&'static str; 4] =
+        ["llamacpp", "ollama", "versa_azure", "versa_bedrock"];
+
+    /// Issue #56 §15 — the ONE-TIME classification backfill.
+    ///
+    /// ⚠ **This belongs to the numbered migration arm and to nothing else.**
+    /// [`Self::ensure_privacy_schema`] runs on **every** startup, and that is
+    /// the correct home for the columns and wrong home for this statement:
+    /// `declassify` deliberately leaves `provider_name` in place (a public chat
+    /// may run a private model — `bind_allowed` has always admitted that
+    /// direction), so a `WHERE provider_name IN (…)` re-run on the next launch
+    /// would re-privatise the row the user just declassified. That is a silent
+    /// reversal of the one irreversible action the design gives the user, and
+    /// `the_backfill_cannot_un_declassify` is the behavioural proof.
+    ///
+    /// Fails OPEN, by decision (DR-10). A fail-CLOSED backfill (NULL provider
+    /// plus at least one message ⇒ private) was rejected: a user who has only
+    /// ever used a commercial provider would find a large slice of their history
+    /// marked private on first launch, refused on the model they normally use,
+    /// with only an irreversible declassification as the exit, one chat at a
+    /// time.
+    ///
+    /// The residual, stated rather than buried: `provider_name` records the
+    /// LAST provider, not every provider. A session that ran on Versa and was
+    /// later switched backfills public even though its transcript contains
+    /// private-model work. There is no transcript scan and there will not be
+    /// one. `docs/security/privacy-tiers-migration.md` says this to the user in
+    /// one sentence.
+    ///
+    /// `AND privacy_tier = 'public'` is not redundant even on the arm's single
+    /// run: a database that reached this arm with the columns already present
+    /// (BR-71's number collision is exactly that case) can hold rows a running
+    /// build already raised, and the ratchet must never be walked backwards or
+    /// re-stamped with a weaker `backfill:` provenance.
+    async fn backfill_privacy_from_bound_provider(pool: &Pool<Sqlite>) -> Result<BackfillCounts> {
+        // Shape-guarded for the same reason `ensure_privacy_schema` is: this arm
+        // must not assume an earlier arm ran. `provider_name` arrives in
+        // migration 6, so every database that walked the ladder has it — but a
+        // database that reaches here without it records no provider for any row,
+        // which is precisely the "unknown, so fail open" case. Backfilling
+        // nothing is the correct answer; aborting startup with `no such column`
+        // is not. `experimental_loop_v11_through_v14_shapes_upgrade_without_loss`
+        // and `pr13_v12_database_reconciles_usage_and_adds_loop_schema` are the
+        // two shapes that reach this branch.
+        if !Self::table_has_column(pool, "sessions", "provider_name").await? {
+            warn!(
+                "issue #56: skipping the privacy backfill — this database's `sessions` \
+                 table has no `provider_name`, so no row's tier can be inferred"
+            );
+            return Ok(BackfillCounts::default());
+        }
+
+        let quoted: Vec<String> = Self::BACKFILL_PRIVATE_PROVIDERS
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect();
+        let private_list = quoted.join(",");
+
+        let private = sqlx::query(&format!(
+            "UPDATE sessions
+                SET privacy_tier = '{private}',
+                    privacy_reason = 'backfill:' || provider_name
+              WHERE provider_name IN ({private_list})
+                AND privacy_tier = '{public}'",
+            private = SessionClassification::PRIVATE_SQL,
+            public = SessionClassification::PUBLIC_SQL,
+        ))
+        .execute(pool)
+        .await?
+        .rows_affected() as i64;
+
+        // What the migration did, in the four buckets a support conversation
+        // actually needs. The first three partition the table; `backfilled_empty`
+        // cuts across it and is the gap between these numbers and the ones the
+        // user can see, since History hides message-less rows.
+        let public_named: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sessions \
+              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') <> ''",
+        )
+        .fetch_one(pool)
+        .await?;
+        let unknown_provider: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sessions \
+              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') = ''",
+        )
+        .fetch_one(pool)
+        .await?;
+        let empty: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM sessions s \
+              WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)",
+        )
+        .fetch_one(pool)
+        .await?;
+
+        let visible = Self::privacy_notice_counts(pool).await?;
+
+        info!(
+            backfilled_private = private,
+            backfilled_public_named = public_named,
+            backfilled_unknown_provider = unknown_provider,
+            backfilled_empty = empty,
+            notice_private_visible = visible.private_visible,
+            notice_public_named_visible = visible.public_named_visible,
+            notice_unknown_provider_visible = visible.unknown_provider_visible,
+            notice_total_visible = visible.total_visible,
+            "issue #56: one-time privacy backfill from each session's last bound provider"
+        );
+        Ok(BackfillCounts {
+            private,
+            public_named,
+            unknown_provider,
+            empty,
+        })
+    }
+
+    /// The day-one notice's numbers (§15.5), computed from the user's own
+    /// database — never hardcoded, because the measured figures moved by a
+    /// factor of three in four days while this was being designed.
+    ///
+    /// The population is History's: `session_type IN ('user','scheduled')` with
+    /// at least one message. `EXISTS` rather than
+    /// `list_sessions_by_types`' `INNER JOIN … GROUP BY`, which selects the same
+    /// rows but has to materialise every session to count them.
+    ///
+    /// `IFNULL(privacy_tier, '') <> 'public'` mirrors
+    /// [`SessionClassification::from_stored`]: anything that is not exactly
+    /// `public` reads Private, so the notice counts what the badges in History
+    /// will actually show rather than what a permissive parse would.
+    pub(crate) async fn privacy_notice_counts(pool: &Pool<Sqlite>) -> Result<PrivacyNoticeCounts> {
+        let (private_visible, public_named_visible, unknown_provider_visible, total_visible) =
+            sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                // COALESCE because SUM over zero rows is NULL, not 0 — a fresh
+                // install would otherwise fail to decode into `i64` and take
+                // the migration down with it.
+                "SELECT
+                    COALESCE(SUM(CASE WHEN IFNULL(s.privacy_tier, '') <> 'public'
+                                      THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN IFNULL(s.privacy_tier, '') = 'public'
+                                       AND IFNULL(s.provider_name, '') <> ''
+                                      THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN IFNULL(s.privacy_tier, '') = 'public'
+                                       AND IFNULL(s.provider_name, '') = ''
+                                      THEN 1 ELSE 0 END), 0),
+                    COUNT(*)
+                   FROM sessions s
+                  WHERE s.session_type IN ('user', 'scheduled')
+                    AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)",
+            )
+            .fetch_one(pool)
+            .await?;
+
+        Ok(PrivacyNoticeCounts {
+            private_visible,
+            public_named_visible,
+            unknown_provider_visible,
+            total_visible,
+        })
     }
 
     /// The append-only declassification ledger (§12.5).
@@ -12567,6 +12798,495 @@ mod tests {
                     "{f} still hand-rolls its carry-over"
                 );
             }
+        }
+    }
+
+    /// Issue #56 Task 38 — the ONE-TIME backfill, and the numbers the day-one
+    /// notice quotes.
+    ///
+    /// The hazard the first test exists for: the backfill's `WHERE provider_name
+    /// IN (…)` is correct exactly once. `declassify` deliberately leaves
+    /// `provider_name` untouched (a public chat may run a private model), so the
+    /// same statement re-run on a later startup would silently undo the one
+    /// irreversible action the design gives the user. That is why it lives in
+    /// the numbered arm and not in `ensure_privacy_schema`, which runs on every
+    /// launch.
+    mod migration_backfill {
+        use super::*;
+
+        /// One seed row for [`pre_privacy_database_with`]. Ids are assigned in
+        /// order: `s1`, `s2`, …
+        #[derive(Clone, Copy)]
+        struct Seed {
+            provider: Option<&'static str>,
+            messages: usize,
+        }
+
+        fn session_on(provider: &'static str) -> Seed {
+            Seed {
+                provider: Some(provider),
+                messages: 0,
+            }
+        }
+
+        fn session_on_with_messages(provider: &'static str) -> Seed {
+            Seed {
+                provider: Some(provider),
+                messages: 1,
+            }
+        }
+
+        fn session_with_null_provider() -> Seed {
+            Seed {
+                provider: None,
+                messages: 0,
+            }
+        }
+
+        fn null_provider_with_messages() -> Seed {
+            Seed {
+                provider: None,
+                messages: 1,
+            }
+        }
+
+        /// A database one migration BELOW the privacy arm, holding `seeds`.
+        ///
+        /// Named for what it is rather than for a version number: the plan calls
+        /// this `migrated_v16_db_with`, but BR-71 landed `17 =>`
+        /// (`parent_session_id`) first, so the privacy arm is 18 and "one below
+        /// the arm under test" is the only durable way to say this.
+        async fn pre_privacy_database_with(data_dir: &Path, seeds: &[Seed]) -> PathBuf {
+            let storage = SessionStorage::create(data_dir).await.unwrap();
+            storage.close().await;
+
+            let db = data_dir.join(SESSIONS_FOLDER).join(DB_NAME);
+            let pool = raw_pool(&db).await;
+            // `parent_session_id` is deliberately NOT dropped: it belongs to the
+            // arm below this one, which a database at 17 has already applied.
+            for column in ["privacy_tier", "privacy_reason"] {
+                sqlx::query(&format!("ALTER TABLE sessions DROP COLUMN {column}"))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query("DROP TABLE IF EXISTS classification_audit")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            for (index, seed) in seeds.iter().enumerate() {
+                let id = format!("s{}", index + 1);
+                sqlx::query(
+                    "INSERT INTO sessions (id, name, working_dir, session_type, provider_name) \
+                     VALUES (?1, ?2, '/tmp', 'user', ?3)",
+                )
+                .bind(&id)
+                .bind(format!("chat {id}"))
+                .bind(seed.provider)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+                for n in 0..seed.messages {
+                    sqlx::query(
+                        "INSERT INTO messages (session_id, role, content_json, created_timestamp) \
+                         VALUES (?1, 'user', '[]', ?2)",
+                    )
+                    .bind(&id)
+                    .bind(n as i64)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+            }
+            pool.close().await;
+
+            force_schema_version(&db, CURRENT_SCHEMA_VERSION - 1).await;
+            db
+        }
+
+        fn data_dir_of(db: &Path) -> PathBuf {
+            db.parent().unwrap().parent().unwrap().to_path_buf()
+        }
+
+        /// A full application open: constructs the manager and forces the lazy
+        /// pool, which is what actually runs the migration ladder.
+        async fn open(db: &Path) {
+            let manager = SessionManager::new(data_dir_of(db));
+            manager.list_sessions().await.unwrap();
+            manager.close().await;
+        }
+
+        async fn row(db: &Path, id: &str) -> Session {
+            let manager = SessionManager::new(data_dir_of(db));
+            let session = manager.get_session(id, false).await.unwrap();
+            manager.close().await;
+            session
+        }
+
+        /// The real §12.6 writer, reached through the test-only door in
+        /// `privacy::declassify`.
+        ///
+        /// It cannot be called directly from here. `declassify` takes a
+        /// proof-of-user token, and
+        /// `the_proof_of_user_is_constructed_in_exactly_two_places` fails the
+        /// build for any file outside `declassify.rs` and the two door files
+        /// that so much as *names* that type — this file must therefore not name
+        /// it, which is why the call is one indirection away. (That audit is
+        /// whole-file and does not skip comments, and it caught this comment's
+        /// first draft.) Hand-rolled SQL is the other alternative and is worse:
+        /// a sibling audit permits exactly one tier-lowering `UPDATE` in the
+        /// entire tree, so a test copy would have to be composed at runtime to
+        /// slip past a security check in order to compile at all.
+        async fn declassify_via_user(db: &Path, id: &str) {
+            let manager = SessionManager::new(data_dir_of(db));
+            let outcome = crate::privacy::declassify::declassify_for_test(&manager, id)
+                .await
+                .unwrap();
+            manager.close().await;
+            assert_eq!(
+                outcome,
+                crate::privacy::declassify::DeclassifyOutcome::Declassified
+            );
+        }
+
+        async fn count_matching(db: &Path, predicate: &str) -> i64 {
+            let pool = raw_pool(db).await;
+            let count: i64 =
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM sessions WHERE {predicate}"))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            pool.close().await;
+            count
+        }
+
+        async fn private_count(db: &Path) -> i64 {
+            count_matching(db, "IFNULL(privacy_tier, '') <> 'public'").await
+        }
+
+        async fn public_count(db: &Path) -> i64 {
+            count_matching(db, "IFNULL(privacy_tier, '') = 'public'").await
+        }
+
+        async fn notice_counts(db: &Path) -> PrivacyNoticeCounts {
+            let pool = raw_pool(db).await;
+            let counts = SessionStorage::privacy_notice_counts(&pool).await.unwrap();
+            pool.close().await;
+            counts
+        }
+
+        /// The source of one function in this file, brace-matched.
+        ///
+        /// ⚠ **Why the four log keys are asserted from the source rather than by
+        /// capturing the event, which is what the plan asked for.** A capture was
+        /// written first: a `tracing_subscriber` layer behind a thread-local
+        /// `set_default`, which is the textbook shape. It passed alone, passed
+        /// under `--test-threads=1`, and captured **nothing** from the migration
+        /// in the full parallel suite — while an `info!` emitted from the test
+        /// body two lines earlier was captured, on the same thread, at
+        /// `LevelFilter::TRACE`.
+        ///
+        /// The difference is that `Interest` is cached **per callsite,
+        /// process-globally**, and is computed the first time any thread reaches
+        /// that callsite. Every sibling test that opens a `SessionManager`
+        /// reaches the migration's `info!` with no subscriber installed, which
+        /// caches `Interest::never()`; from then on `event!` short-circuits
+        /// before it ever consults this thread's subscriber, and
+        /// `rebuild_interest_cache()` does not rescue it. A test built on that
+        /// reads a real, correctly-emitted log as absent, and its result depends
+        /// on which test won a race. Deterministically wrong is not an option
+        /// here, and neither is deleting the assertion — so the fact is split in
+        /// two and both halves are checked without touching global state:
+        /// [`the_backfill_reports_the_four_counts_it_logs`] pins the four
+        /// **values**, and the scan below pins that those four **names** are what
+        /// the function hands to `info!`.
+        fn fn_body(name: &str) -> String {
+            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            let start = src
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("no `fn {name}(` in the file"));
+            let from_signature = src.get(start..).expect("find returns a char boundary");
+            let open = from_signature
+                .find('{')
+                .unwrap_or_else(|| panic!("no body for fn {name}"));
+            let from_body = from_signature
+                .get(open..)
+                .expect("find returns a char boundary");
+            let mut depth = 0usize;
+            for (offset, ch) in from_body.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return from_body
+                                .get(..offset + ch.len_utf8())
+                                .expect("char_indices yields char boundaries")
+                                .to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unbalanced braces in fn {name}");
+        }
+
+        #[tokio::test]
+        async fn the_backfill_cannot_un_declassify() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(temp.path(), &[session_on("versa_azure")]).await;
+
+            open(&db).await; // the privacy migration runs, backfilling private
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Private
+            );
+
+            declassify_via_user(&db, "s1").await;
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Public
+            );
+            // Untouched, and that is exactly why the hazard exists.
+            assert_eq!(
+                row(&db, "s1").await.provider_name.as_deref(),
+                Some("versa_azure")
+            );
+
+            open(&db).await; // second launch
+
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Public,
+                "the backfill re-privatised a declassified session"
+            );
+            assert_eq!(
+                row(&db, "s1").await.privacy_reason.as_deref(),
+                Some("declassified_by_user")
+            );
+        }
+
+        /// The six-provider fixture both count assertions read.
+        fn one_of_each() -> [Seed; 6] {
+            [
+                session_on("versa_azure"),
+                session_on("versa_bedrock"),
+                session_on("llamacpp"),
+                session_on("ollama"),
+                session_on("anthropic"),
+                session_with_null_provider(),
+            ]
+        }
+
+        #[tokio::test]
+        async fn the_backfill_marks_what_the_data_proves_and_nothing_else() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(temp.path(), &one_of_each()).await;
+
+            open(&db).await;
+
+            assert_eq!(private_count(&db).await, 4);
+            // NULL provider backfills PUBLIC — fail-open, by decision (DR-10).
+            assert_eq!(public_count(&db).await, 2);
+
+            // ...and the four buckets are what `info!` is handed. See `fn_body`
+            // for why this is a scan and not a captured event.
+            let body = fn_body("backfill_privacy_from_bound_provider");
+            assert!(
+                body.contains("info!("),
+                "the backfill no longer logs anything"
+            );
+            for key in [
+                "backfilled_private",
+                "backfilled_public_named",
+                "backfilled_unknown_provider",
+                "backfilled_empty",
+            ] {
+                assert!(
+                    body.contains(&format!("{key} =")),
+                    "{key} not logged by the backfill"
+                );
+            }
+        }
+
+        /// The values behind those four names, on the same fixture.
+        ///
+        /// Driven through `ensure_privacy_schema` + the backfill directly rather
+        /// than through `open`, because the counts describe the state at the
+        /// moment the migration runs and the statement is deliberately not
+        /// re-runnable — a second call would report `private = 0`, having
+        /// nothing left to do.
+        #[tokio::test]
+        async fn the_backfill_reports_the_four_counts_it_logs() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(temp.path(), &one_of_each()).await;
+
+            let pool = raw_pool(&db).await;
+            SessionStorage::ensure_privacy_schema(&pool).await.unwrap();
+            let counts = SessionStorage::backfill_privacy_from_bound_provider(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            assert_eq!(counts.private, 4, "the four private-tier providers");
+            assert_eq!(counts.public_named, 1, "anthropic");
+            assert_eq!(counts.unknown_provider, 1, "the NULL-provider row");
+            assert_eq!(counts.empty, 6, "none of the fixture rows has a message");
+        }
+
+        #[tokio::test]
+        async fn the_notice_quotes_the_history_visible_count_not_the_raw_one() {
+            // `list_sessions_by_types` INNER JOINs messages, so empty sessions
+            // never appear. On the operator's machine that is 498 visible
+            // against 936 raw would-be-private rows.
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(
+                temp.path(),
+                &[
+                    session_on_with_messages("versa_azure"),
+                    session_on_with_messages("versa_azure"),
+                    session_on("llamacpp"), // empty: invisible in History
+                    session_on_with_messages("anthropic"),
+                    session_on_with_messages("anthropic"),
+                    session_on_with_messages("anthropic"),
+                    null_provider_with_messages(),
+                    null_provider_with_messages(),
+                ],
+            )
+            .await;
+
+            open(&db).await;
+
+            let counts = notice_counts(&db).await;
+            assert_eq!(
+                counts.private_visible, 2,
+                "quoted the raw row count instead of the visible one"
+            );
+            assert_eq!(counts.public_named_visible, 3);
+            assert_eq!(counts.unknown_provider_visible, 2);
+            assert_eq!(counts.total_visible, 7);
+        }
+
+        /// The plan's Step 5 gate, as a test rather than a shell command.
+        ///
+        /// It was written there as two `awk` ranges — "`UPDATE sessions` appears
+        /// once in the `17 =>` arm and zero times in `ensure_privacy_schema`" —
+        /// and it does not survive contact with this tree twice over. The arm is
+        /// **18**, because BR-71 landed `17 =>` (`parent_session_id`) first; and
+        /// the statement lives in a named function the arm calls, so a grep for
+        /// it inside the arm's range correctly reports zero. Both would have
+        /// been read as failures, and the second would have invited inlining a
+        /// forty-line statement into a match arm to satisfy a grep.
+        ///
+        /// So the property is asserted directly, and it is the property that
+        /// matters: the backfill has exactly one production call site, that site
+        /// is the numbered arm, and the helper that runs on **every** startup
+        /// neither performs it nor reaches it. Unlike the shell gate this runs on
+        /// every CI build, and it cannot pass vacuously — each range is asserted
+        /// non-empty first, which is the failure mode the plan's own gate text
+        /// warns about at length.
+        #[test]
+        fn the_backfill_is_reachable_only_from_the_numbered_migration_arm() {
+            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // Production only. This file's own tests call the backfill directly
+            // and would otherwise count as extra call sites.
+            //
+            // Cut at THIS module's header, not at the first `#[cfg(test)]` in
+            // the file: there are six of those and the first sits at line 627,
+            // which truncates the slice above every symbol this test is about
+            // and turns the `expect` below into the failure. (It did.)
+            let cut = src
+                .find("\n#[cfg(test)]\nmod tests {")
+                .expect("this file's main test module moved");
+            let production = src.get(..cut).expect("find returns a char boundary");
+
+            let arm_start = production
+                .find("            18 => {")
+                .expect("no `18 => {` arm at 12-space indentation, like arms 10..17");
+            let after_arm = production
+                .get(arm_start..)
+                .expect("find returns a char boundary");
+            let arm_len = after_arm
+                .find("\n            }")
+                .expect("the `18 =>` arm does not close");
+            let arm = after_arm.get(..arm_len).expect("find yields a boundary");
+            assert!(
+                arm.lines().count() > 1,
+                "the `18 =>` arm range is empty — every assertion below would pass vacuously"
+            );
+
+            // One definition, one call. Anything else is a second door.
+            assert_eq!(
+                production
+                    .matches("backfill_privacy_from_bound_provider(")
+                    .count(),
+                2,
+                "expected exactly one definition and one production call site of the backfill"
+            );
+            assert!(
+                arm.contains("Self::backfill_privacy_from_bound_provider("),
+                "the backfill's one call site is not the numbered migration arm"
+            );
+
+            // ...and the per-startup reconcile neither performs it nor reaches it.
+            let helper = fn_body("ensure_privacy_schema");
+            assert!(
+                helper.lines().count() > 1,
+                "the `ensure_privacy_schema` body is empty — the name changed, and the two \
+                 assertions below would pass vacuously"
+            );
+            assert!(
+                !helper.contains("UPDATE sessions"),
+                "a per-startup UPDATE appeared in the reconcile helper; it would re-privatise \
+                 every declassified session on the next launch"
+            );
+            assert!(
+                !helper.contains("backfill_privacy_from_bound_provider"),
+                "the reconcile helper now reaches the one-time backfill"
+            );
+        }
+
+        /// The backfill's provider list is a **literal** in SQL, because a
+        /// migration must classify rows written by builds other than the one
+        /// running it — including `versa_bedrock` rows on a build compiled
+        /// without the `aws-providers` feature, which is absent from the live
+        /// registry entirely. So it cannot be derived from
+        /// `providers::providers()`, and this is what stops it drifting: the set
+        /// of provider modules whose shipped metadata claims Private must be
+        /// exactly the set the migration privatises.
+        #[test]
+        fn the_backfilled_provider_set_is_every_provider_that_claims_private() {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/providers");
+            let mut declaring: Vec<String> = vec![];
+            let mut scanned = 0usize;
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                scanned += 1;
+                let src = std::fs::read_to_string(&path).unwrap();
+                if src.contains("with_tier(ProviderTier::Private)") {
+                    declaring.push(path.file_stem().unwrap().to_string_lossy().to_string());
+                }
+            }
+            assert!(
+                scanned >= 30,
+                "only {scanned} provider modules were scanned — a broken walk \
+                 reports the same empty set as a clean tree"
+            );
+            declaring.sort();
+            let mut backfilled: Vec<String> = SessionStorage::BACKFILL_PRIVATE_PROVIDERS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect();
+            backfilled.sort();
+            assert_eq!(
+                declaring, backfilled,
+                "a provider's shipped tier and the migration's provider list disagree"
+            );
         }
     }
 }

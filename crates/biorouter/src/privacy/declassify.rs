@@ -299,6 +299,40 @@ pub async fn declassify(
     Ok(DeclassifyOutcome::Declassified)
 }
 
+/// Declassify through the real writer, for tests that live in **other** modules.
+///
+/// It exists because the proof-of-user cannot travel. `UserConfirmation` may be
+/// *named* only in this file and the two door files —
+/// [`the_proof_of_user_is_constructed_in_exactly_two_places`] fails the build for
+/// any other file under `crates/` that so much as mentions it — so a test
+/// elsewhere in the tree cannot mint the proof for itself. Its only alternative
+/// is a hand-rolled `UPDATE`, which is worse twice over: it would duplicate the
+/// writer this module exists to keep singular, and because
+/// [`exactly_one_statement_in_the_tree_assigns_a_public_classification`] permits
+/// exactly one `SET privacy_tier = 'public'` in the whole tree, the copy would
+/// have to be composed at runtime to slip past a security audit in order to
+/// compile at all.
+///
+/// `#[cfg(test)]`, so it is absent from every shipped binary.
+///
+/// Used by `session_manager`'s Task 38 migration tests, which need a genuinely
+/// declassified row — tier lowered, `privacy_reason` rewritten, **and
+/// `provider_name` deliberately left in place** — to prove the one-time backfill
+/// cannot re-privatise it on the next launch.
+#[cfg(test)]
+pub(crate) async fn declassify_for_test(
+    sm: &SessionManager,
+    session_id: &str,
+) -> Result<DeclassifyOutcome> {
+    declassify(
+        sm,
+        session_id,
+        Some(&confirmation_phrase(session_id)),
+        UserConfirmation::for_test(),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
