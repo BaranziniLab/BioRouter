@@ -1332,6 +1332,18 @@ impl SessionManager {
     /// `json_each` errors on it and the statement fails, which surfaces as a
     /// refused turn (the caller `?`s) instead of silently erasing whatever was
     /// there.
+    ///
+    /// ⚠ **Known residual: "the extensions it touched" is the whole trigger.**
+    /// Content can enter a chat from elsewhere — a `kb_search` against an
+    /// institution's knowledge base, a `chatrecall` LOAD of that institution's
+    /// chat — and neither records anything here, so the reading chat holds the
+    /// content without carrying its owner. That is Step 3's literal scope, and
+    /// the **tier** axis has had exactly the same boundary since Task 10:
+    /// `raise_session_privacy` fires from the same one place, so reading a
+    /// private base does not privatise the reading chat either. Widening it is
+    /// one change to both axes. The symmetry is pinned by
+    /// `extension_manager::tests::the_two_chat_side_ratchets_share_one_production_call_site`,
+    /// which fails the build if the tier trigger widens and this one does not.
     pub async fn record_session_affiliation(
         &self,
         session_id: &str,

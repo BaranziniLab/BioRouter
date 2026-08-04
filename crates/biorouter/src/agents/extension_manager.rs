@@ -6988,6 +6988,119 @@ mod tests {
         assert_eq!(sm.session_affiliations(&id).await.unwrap().len(), 1);
     }
 
+    /// ⚠ **The chat-side ratchet fires on extension dispatch and nowhere else —
+    /// a known residual, recorded here so it cannot quietly become an asymmetric
+    /// one.**
+    ///
+    /// Review asked whether content entering a chat from somewhere *other* than
+    /// a connector launders the axis: a chat on a local model runs `kb_search`
+    /// against a UCSF-owned base (permitted — a local model transfers nothing),
+    /// or recalls a UCSF chat, and its transcript now holds UCSF content while
+    /// `session_affiliations` stays empty. It does, and it is deliberate scope:
+    /// Task 50 Step 3 is "a private chat carries the affiliation of the
+    /// **extensions it touched**", and the *tier* axis has had exactly the same
+    /// boundary since Task 10 — `raise_session_privacy` is called from the same
+    /// single place, so reading a private knowledge base does not privatise the
+    /// reading chat either. Widening it is one change to both axes, not a patch
+    /// to this one.
+    ///
+    /// What this pins is that symmetry. The two chat-side ratchets have one
+    /// production call site each and it is the same site, so widening the tier
+    /// trigger without widening the affiliation trigger — which WOULD be a new
+    /// hole, a chat carrying an institution's content and not its owner — fails
+    /// the build.
+    ///
+    /// A tripwire over one spelling, in the shape
+    /// `grant::tests::the_grant_is_recorded_in_exactly_one_place` and
+    /// `tier_user`'s two audits already use.
+    #[test]
+    fn the_two_chat_side_ratchets_share_one_production_call_site() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let crates = root.join("crates");
+        assert!(crates.is_dir(), "the audit walks {}", crates.display());
+
+        // Composed, so this file's own audit lines are not call sites.
+        let tier_ratchet = concat!(".raise_session_", "privacy(");
+        let affiliation_ratchet = concat!(".record_session_", "affiliation(");
+
+        let mut tier_sites: Vec<String> = vec![];
+        let mut affiliation_sites: Vec<String> = vec![];
+        let mut scanned = 0usize;
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("the audit must not silently skip an unreadable directory");
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            // The storage module DECLARES both halves and delegates one to the
+            // other; counting it would make every number below larger and
+            // indistinguishable from a real second trigger.
+            if rel == "crates/biorouter/src/session/session_manager.rs" {
+                continue;
+            }
+            scanned += 1;
+            let src = std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
+            // Production only. Every `mod tests` in this tree sits below an
+            // UNINDENTED `#[cfg(test)]`, and the recall / ingest gates are
+            // asserted by setting the column directly from their own tests —
+            // fixture setup, not a trigger.
+            //
+            // ⚠ The `\n` is load-bearing: an indented `#[cfg(test)]` on a
+            // test-only *method* appears far above the module in several files
+            // here (this one at line 783), and matching it truncated production
+            // to the first 800 lines and reported an empty set — a census that
+            // finds nothing and a clean tree look identical, which is why the
+            // assertion below names the expected site rather than counting.
+            let production = match src.find("\n#[cfg(test)]") {
+                Some(i) => &src[..i],
+                None => &src[..],
+            };
+            let names = |needle: &str| {
+                production
+                    .lines()
+                    .any(|l| !l.trim_start().starts_with("//") && l.contains(needle))
+            };
+            if names(tier_ratchet) {
+                tier_sites.push(rel.clone());
+            }
+            if names(affiliation_ratchet) {
+                affiliation_sites.push(rel.clone());
+            }
+        }
+        assert!(
+            scanned >= 400,
+            "only {scanned} .rs files were scanned. A broken walk reports the same \
+             empty set as a clean tree."
+        );
+        tier_sites.sort();
+        affiliation_sites.sort();
+        assert_eq!(
+            tier_sites,
+            vec!["crates/biorouter/src/agents/extension_manager.rs".to_string()],
+            "the session tier ratchet gained a trigger. Whatever it is, the \
+             affiliation ratchet needs the same one, or a chat can come to hold \
+             an institution's content without recording its owner."
+        );
+        assert_eq!(
+            affiliation_sites, tier_sites,
+            "the two chat-side ratchets no longer fire from the same place. They \
+             answer the same question about one turn — what did this chat just \
+             take in — and a chat that ratcheted one axis and not the other is \
+             recallable by a model no one decided may see it."
+        );
+    }
+
     /// **Surface 2 — Gate E, discovery.** Listed and MARKED, never hidden.
     ///
     /// ⚠ Gate E hides a private extension from a public model because the
