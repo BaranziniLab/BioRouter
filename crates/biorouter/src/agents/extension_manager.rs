@@ -3499,7 +3499,16 @@ mod tests {
         assert!(config.is_tool_available("allowed"));
         // Issue #56: the privacy tier rides the SAME snapshot, for the same
         // reason — Gate C must judge the record this call was routed to.
-        assert_eq!(tier, crate::privacy::classify_extension("guarded"));
+        //
+        // Resolved from the returned (name, config) PAIR, not from the literal
+        // "guarded" this test happens to know: Task 43 (DR-23) made the answer a
+        // function of the config as well as the key, and comparing against a
+        // name-only classification would pass on an implementation that had
+        // dropped the config half — which is exactly the rename bug.
+        assert_eq!(
+            tier,
+            crate::privacy::classify_extension_entry(&name, Some(&config))
+        );
 
         // And once it is gone, resolution itself fails — a removal can only
         // ever deny, never skip.
@@ -4389,19 +4398,40 @@ mod tests {
         );
     }
 
-    /// The tier that resolves for the entry stored under `key`, having first
-    /// asserted the entry is really there.
+    /// The tier the ENFORCEMENT surface resolves for the entry stored under
+    /// `key`, having first asserted the entry is really there.
     ///
-    /// Task 43 (DR-23) deleted the stamped `Extension.tier` this used to read,
-    /// so the presence check has to be explicit: without it every caller below
-    /// would pass against a manager that admitted nothing at all, since
-    /// `classify_extension` answers for any string.
+    /// Task 43 (DR-23) deleted the stamped `Extension.tier` this used to read.
+    /// The obvious replacement — `classify_extension(key)` — is a pure function
+    /// of its own argument, which makes every assertion below a tautology true
+    /// of any implementation, and review was right to call that a weakening.
+    ///
+    /// So it asks Gate E instead. `allowed_extension_keys` is what the tool list
+    /// and the system prompt are filtered by, and it resolves the ADMITTED
+    /// record — key and config together — rather than a string the test happens
+    /// to hold. A wrong admission key, a config admitted under a different
+    /// spelling, or a gate that stopped consulting the resolver all show up
+    /// here; none of them showed up in the classifier call.
+    ///
+    /// The presence check stays, because an empty manager also has an empty
+    /// allowed set and would read as "everything is private".
     async fn admitted_tier(em: &ExtensionManager, key: &str) -> crate::privacy::ProviderTier {
+        use crate::privacy::ProviderTier;
         assert!(
             em.extensions.lock().await.contains_key(key),
             "nothing was admitted under `{key}`"
         );
-        crate::privacy::classify_extension(key)
+        let allowed = em
+            .allowed_extension_keys(Some(crate::privacy::CallCapability::for_test(
+                ProviderTier::Public,
+                true,
+            )))
+            .await;
+        if allowed.iter().any(|k| k == key) {
+            ProviderTier::Public
+        } else {
+            ProviderTier::Private
+        }
     }
 
     async fn admit_via_add_extension(name: &str) -> crate::privacy::ProviderTier {
@@ -4454,11 +4484,18 @@ mod tests {
     ///
     /// ⚠ Task 43 (DR-23) deleted the stamped `Extension.tier` this test was
     /// written against, so what it now pins is the property that survived and
-    /// is still load-bearing: all three admit under the SAME key the resolver
-    /// is asked about later. `add_extension`'s key in particular is not always
-    /// its config's name — a config with no name takes it from the server's own
+    /// is still load-bearing: all three admit under the SAME key the gates are
+    /// filtered by later. `add_extension`'s key in particular is not always its
+    /// config's name — a config with no name takes it from the server's own
     /// info — and an admission that stored one spelling while the gates asked
     /// about another would classify every private extension public.
+    ///
+    /// ⚠ The tier comes from **Gate E**, not from `classify_extension(key)`.
+    /// The first replacement for the deleted stamp was the classifier, which is
+    /// a pure function of its own argument and made every assertion below true
+    /// of any implementation whatsoever. `allowed_extension_keys` resolves the
+    /// admitted record instead, so the assertions have content again: see
+    /// [`admitted_tier`].
     ///
     /// Two of the three admit an arbitrary NAME and are driven with a private
     /// one directly. `add_extension` cannot be: for every variant it can
