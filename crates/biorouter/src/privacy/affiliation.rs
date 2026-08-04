@@ -39,8 +39,26 @@ use std::sync::{LazyLock, Mutex, PoisonError};
 /// because that value threads into `async move` blocks owning no `&self`. An
 /// owned `String` or `BTreeSet` on the model side would break every gate
 /// signature downstream. So the slug is leaked once, on first sight, and the id
-/// is a `Copy` pointer to it. The set of institution slugs a process ever sees
-/// is bounded by the registry, so the leak is bounded with it.
+/// is a `Copy` pointer to it.
+///
+/// ⚠ **The leak is bounded by the caller, not by this type.** Every distinct
+/// normalised slug reaching [`Self::new`] is leaked for the life of the
+/// process, and nothing here caps their number or their length. That is safe
+/// *today* by construction, not by promise: the only institution strings in the
+/// tree are a provider's own gateway-host decision and the compiled snapshot
+/// beside `PRIVATE_EXTENSIONS`, whose header records that there is no network
+/// path to the registry from Rust at all — the only fetch is Electron's
+/// `registry:fetch`. Task 47 is where a registry-sourced value first arrives,
+/// and the cap belongs **there**, at the parse that admits it, where refusing
+/// is meaningful: an institution the registry does not publish is already
+/// specified to be a *mismatch*, which is the fail-closed answer.
+///
+/// It cannot be enforced in this constructor. Truncating an over-long slug or
+/// stripping a non-ASCII one rewrites two distinct institutions into one id,
+/// which grants a cross-institutional flow that should have warned — strictly
+/// worse than leaking the string. See
+/// `distinct_institution_names_never_collide`, which fails if anyone adds
+/// either.
 ///
 /// ⚠ **Equality compares the string CONTENTS, not the pointer.** That is
 /// deliberate belt-and-braces: were the interner ever to hand out two pointers
@@ -65,6 +83,16 @@ impl InstitutionId {
 
     /// The normalised slug. `'static` because it is interned, so this composes
     /// into a warning message without borrowing the id.
+    ///
+    /// ⚠ **Normalised is not sanitised, and this is the identity, not display
+    /// text.** [`name_to_key`](crate::config::extensions::name_to_key)
+    /// lowercases and strips whitespace; it does not remove control characters
+    /// or bidi overrides, and it must not — a lossy rewrite here would collide
+    /// two institutions (above). Task 47 specifies that an institution the
+    /// registry does not publish is surfaced **raw** in the warning, so the
+    /// composer of that warning is what escapes for its medium. DR-26 requires
+    /// the warning name both institutions specifically enough to act on, and a
+    /// slug that reorders the sentence around it fails that requirement.
     pub fn as_str(&self) -> &'static str {
         self.0
     }
@@ -465,6 +493,44 @@ mod tests {
         // ...and `Hash`, which must agree with `Eq` or any downstream
         // `HashSet<InstitutionId>` silently holds one institution twice.
         assert_eq!(hash_of(&interned), hash_of(&bypassed));
+    }
+
+    /// Two institutions that normalise **differently** must never collapse into
+    /// one id. This is the direction that fails open: a collision silently
+    /// grants a cross-institutional flow that should have warned, whereas a
+    /// spurious distinction only costs a warning the user can clear.
+    ///
+    /// It is pinned because the tempting answers to an unbounded interner —
+    /// truncate an over-long slug, strip a non-ASCII one — are precisely the
+    /// lossy transforms that collide, and review proposed them. Neither may be
+    /// added to `InstitutionId::new`: a malformed or hostile institution id has
+    /// to be **rejected at the parse that admits it** (Task 47, where an
+    /// institution the registry does not publish is already a mismatch), never
+    /// quietly rewritten into a well-formed one that means something else.
+    #[test]
+    fn distinct_institution_names_never_collide() {
+        let names = [
+            "ucsf",
+            "ucsfhealth",
+            "ucsf-health",
+            "ucsf_health",
+            "ücsf",
+            "stanford",
+            "",
+            "i",
+            "İ",
+        ];
+        for (i, a) in names.iter().enumerate() {
+            for b in &names[i + 1..] {
+                assert_ne!(inst(a), inst(b), "{a:?} and {b:?} became one institution");
+            }
+        }
+
+        // ...including a pair that differs only after a long common prefix,
+        // which is exactly what a length cap in the constructor would erase.
+        let long_a = format!("{}a", "u".repeat(4096));
+        let long_b = format!("{}b", "u".repeat(4096));
+        assert_ne!(inst(&long_a), inst(&long_b));
     }
 
     /// "Represent `Institution(x)` on the extension side as `Institutions({x})`;
