@@ -199,7 +199,21 @@ impl CallCapability {
         extension: &str,
         class: &ExtensionClassification,
     ) -> Option<String> {
-        super::affiliation::gate_cross_affiliation_warning(
+        self.cross_affiliation(extension, class).map(|f| f.warning)
+    }
+
+    /// The same decision as [`Self::cross_affiliation_warning`], carrying both
+    /// renderings — see [`CrossAffiliation`]. Gate E is the caller that needs
+    /// the budgeted one, because its output is a tool `description` rather than
+    /// a sentence a human reads.
+    ///
+    /// [`CrossAffiliation`]: super::affiliation::CrossAffiliation
+    pub fn cross_affiliation(
+        &self,
+        extension: &str,
+        class: &ExtensionClassification,
+    ) -> Option<super::affiliation::CrossAffiliation> {
+        super::affiliation::gate_cross_affiliation(
             self.enforced,
             self.tier,
             self.affiliation,

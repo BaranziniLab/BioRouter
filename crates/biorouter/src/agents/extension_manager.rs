@@ -187,10 +187,16 @@ struct ToolsSnapshot {
 struct ExtensionReach {
     /// Keys this model may see at all.
     allowed: Vec<String>,
-    /// `(key, warning)` for the members of `allowed` whose institution the bound
+    /// `(key, finding)` for the members of `allowed` whose institution the bound
     /// model's agreements do not cover. A **subset** of `allowed`: a mismatch is
     /// listed and marked, never hidden.
-    marked: Vec<(String, String)>,
+    ///
+    /// The whole [`crate::privacy::CrossAffiliation`] is carried rather than one
+    /// of its strings, because this one value feeds two audiences that need
+    /// different lengths of it — the bind and enablement surfaces take
+    /// `warning`, Gate E's tool descriptions take the budgeted `mark` — and
+    /// composing them separately is how a tool ends up marked but not refused.
+    marked: Vec<(String, crate::privacy::CrossAffiliation)>,
 }
 
 pub struct ExtensionManager {
@@ -1252,11 +1258,19 @@ impl ExtensionManager {
     /// server's prose from a model not entitled to it, while an affiliation
     /// mismatch is between two Private endpoints where the model *is* entitled
     /// to know the connector exists. The warning belongs where the model decides
-    /// to act — the tool descriptions Gate E marks — not repeated in prose it
-    /// reads once per turn. Repeating it there would put a compliance paragraph
-    /// in every system prompt of every affected chat, which is the prompt
-    /// fatigue DR-19 rejects, and would buy nothing: the dispatch is refused
-    /// either way.
+    /// to act — the tool descriptions Gate E marks — and one statement per
+    /// decision point is the whole of DR-19's economy. A second copy in prose
+    /// the model reads once per turn buys nothing: the dispatch is refused
+    /// either way, and the mark is already in front of it at the moment it
+    /// chooses the tool.
+    ///
+    /// ⚠ This is **not** an argument from prompt bytes, and an earlier version
+    /// of this comment that made one did not survive contact with the surface
+    /// next door: Gate E prepends its mark to *every* tool of the mismatched
+    /// extension, and those descriptions reach the same system prompt. Bytes
+    /// are why that mark is budgeted
+    /// ([`crate::privacy::affiliation::MARK_BUDGET`]); they are not why this
+    /// surface stays silent.
     pub async fn get_extensions_info(&self) -> Vec<ExtensionInfo> {
         let allowed = self.allowed_extension_keys(None).await;
         self.extensions
@@ -1455,8 +1469,8 @@ impl ExtensionManager {
             {
                 continue;
             }
-            if let Some(warning) = cap.cross_affiliation_warning(key, &class) {
-                reach.marked.push((key.clone(), warning));
+            if let Some(finding) = cap.cross_affiliation(key, &class) {
+                reach.marked.push((key.clone(), finding));
             }
             reach.allowed.push(key.clone());
         }
@@ -1484,7 +1498,13 @@ impl ExtensionManager {
         // across runs — `extensions` is a `HashMap` with per-process-randomised
         // iteration order.
         marked.sort_by(|a, b| a.0.cmp(&b.0));
+        // The FULL statement, not the tool-description mark: these two surfaces
+        // are read by a human deciding whether to proceed, and DR-26 requires
+        // that decision be put to them specifically enough to act on.
         marked
+            .into_iter()
+            .map(|(key, finding)| (key, finding.warning))
+            .collect()
     }
 
     /// Get all tools from all clients with proper prefixing
@@ -1619,12 +1639,23 @@ impl ExtensionManager {
                 // dispatch will be refused at the moment it considers calling.
                 // The description is the only channel the model sees before the
                 // call exists.
+                //
+                // ⚠ **The budgeted `mark`, never the full `warning`.** This
+                // prepends to EVERY tool of the mismatched extension, and a
+                // tool `description` is a bounded field on a real API — Azure
+                // OpenAI, which is what Versa Azure is, caps it at 1024
+                // characters. The paragraph is ~460 of them, so marking a
+                // handful of tools could make the request itself unsendable:
+                // "this tool will be refused" would have become "this chat can
+                // make no request at all". The full statement is what the
+                // refusal carries when the model tries anyway, and what the
+                // bind and enablement surfaces put to the user.
                 match reach.marked.iter().find(|(k, _)| k == tool_prefix) {
-                    Some((_, warning)) => Some(Tool {
+                    Some((_, finding)) => Some(Tool {
                         description: Some(
                             match tool.description.as_deref() {
-                                Some(existing) => format!("{warning}\n\n{existing}"),
-                                None => warning.clone(),
+                                Some(existing) => format!("{}\n\n{existing}", finding.mark),
+                                None => finding.mark.clone(),
                             }
                             .into(),
                         ),
@@ -6517,8 +6548,13 @@ mod tests {
     /// Asserted against the composer rather than restated, so the copy cannot
     /// drift between the surfaces that state it.
     fn expected_warning(extension: &str, institution: &str) -> String {
+        expected_finding(extension, institution).warning
+    }
+
+    /// The mark and the warning, from the one composer, for the shared fixture.
+    fn expected_finding(extension: &str, institution: &str) -> crate::privacy::CrossAffiliation {
         bound_to(institution)
-            .cross_affiliation_warning(
+            .cross_affiliation(
                 extension,
                 &crate::privacy::resolve_extension(extension, None),
             )
@@ -6630,9 +6666,27 @@ mod tests {
             .find(|t| t.name.as_ref() == "ucsfomopagent__tool")
             .and_then(|t| t.description.clone())
             .expect("the marked tool keeps a description");
+        let finding = expected_finding("ucsfomopagent", "stanford");
+        assert!(marked.contains(&finding.mark), "{marked}");
+        // DR-26's specificity survives the shortening: both institutions and
+        // the fact of the refusal are still in the only text the model reads
+        // before a call exists.
+        assert!(marked.contains("ucsf"), "{marked}");
+        assert!(marked.contains("stanford"), "{marked}");
+
+        // ⚠ **The budgeted mark, not the full paragraph.** A tool
+        // `description` is a bounded field on a real API (Azure OpenAI caps it
+        // at 1024 characters, and Versa Azure is one), and this mark is
+        // prepended to EVERY tool of the mismatched extension. Marking a tool
+        // must not be what makes the request unsendable.
         assert!(
-            marked.contains(&expected_warning("ucsfomopagent", "stanford")),
-            "{marked}"
+            !marked.contains(&finding.warning),
+            "the full compliance paragraph must not ride in a tool description: {marked}"
+        );
+        assert!(
+            marked.len() < 1024,
+            "a marked description reached {} bytes, past Azure OpenAI's cap: {marked}",
+            marked.len()
         );
 
         // The unaffiliated sibling is untouched, or the mark is decoration

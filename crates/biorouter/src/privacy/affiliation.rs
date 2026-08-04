@@ -298,6 +298,69 @@ fn owners_label(owners: &BTreeSet<InstitutionId>) -> String {
         .join(", ")
 }
 
+/// One mismatch, in the two renderings its two audiences need.
+///
+/// ⚠ **They are returned together because they must never disagree about
+/// whether there IS a mismatch.** Two composers, each deciding for itself,
+/// is the second implementation of DR-26's table this module exists to
+/// prevent — and the disagreement would be silent: a tool listed with no mark
+/// and then refused at dispatch, or marked and then dispatched.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CrossAffiliation {
+    /// The full statement, for a **human** deciding whether to proceed: the
+    /// bind prompt, the enablement refusal, Gate C's and Gate F's refusals.
+    /// DR-26 requires it be specific enough to act on, so it names every owning
+    /// institution and spells out why compliance does not transfer.
+    pub warning: String,
+    /// The bounded form Gate E prepends to a tool **description**.
+    ///
+    /// ⚠ **A tool description is a bounded field on a real API.** Versa Azure
+    /// carries a private tier here and is an Azure OpenAI deployment, whose
+    /// function `description` is capped at 1024 characters; the full
+    /// [`Self::warning`] is ~460 of them and Gate E prepends it to *every* tool
+    /// of the mismatched extension. Marking a tool must not be the thing that
+    /// makes the whole request unsendable — that is a worse failure than the one
+    /// being prevented, and it arrives as an opaque provider error.
+    ///
+    /// It is also the DR-19 answer to the objection that
+    /// `get_extensions_info` refuses to mark instructions to keep a compliance
+    /// paragraph out of every system prompt: N copies of the paragraph reach
+    /// that same prompt through the tool list. The short form is what makes
+    /// those two positions consistent.
+    pub mark: String,
+}
+
+/// The byte ceiling for [`CrossAffiliation::mark`].
+///
+/// Chosen against the smallest real cap the mark can meet — Azure OpenAI's
+/// 1024-character function `description` — with room left for the tool's own
+/// description, which is the text the mark must not crowd out. It is asserted
+/// on the composer rather than at the surface because the composer is what
+/// grows.
+pub const MARK_BUDGET: usize = 320;
+
+/// How many owning institutions the **mark** names before summarising.
+///
+/// The mark is the only rendering with a hard ceiling, and an allowlist is the
+/// only unbounded input to it. The complete list is never lost — it stays in
+/// [`CrossAffiliation::warning`], which is what the user reads and what the
+/// refusal carries.
+const MARK_OWNERS_SHOWN: usize = 2;
+
+/// Who an extension's allowlist says owns its data, capped for the mark.
+fn owners_label_capped(owners: &BTreeSet<InstitutionId>) -> String {
+    if owners.len() <= MARK_OWNERS_SHOWN {
+        return owners_label(owners);
+    }
+    let shown = owners
+        .iter()
+        .take(MARK_OWNERS_SHOWN)
+        .map(|id| label(*id))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!("{shown} and {} more", owners.len() - MARK_OWNERS_SHOWN)
+}
+
 /// The copy shown to a user before a cross-affiliation flow proceeds — `None`
 /// when there is nothing to warn about.
 ///
@@ -320,6 +383,17 @@ pub fn cross_affiliation_warning(
     extension: &str,
     ext: &ExtensionAffiliation,
 ) -> Option<String> {
+    cross_affiliation(model, extension, ext).map(|f| f.warning)
+}
+
+/// The same finding as [`cross_affiliation_warning`], carrying **both**
+/// renderings — see [`CrossAffiliation`]. Gate E is the caller that needs the
+/// short one.
+pub fn cross_affiliation(
+    model: ModelAffiliation,
+    extension: &str,
+    ext: &ExtensionAffiliation,
+) -> Option<CrossAffiliation> {
     if compatible(&model, ext) {
         return None;
     }
@@ -337,16 +411,27 @@ pub fn cross_affiliation_warning(
     };
 
     let held_by = owners_label(owners);
+    let covered_by = label(bound);
 
-    Some(format!(
-        "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
-         {held_by}, but this chat is bound to a model covered by {}'s agreements. Using it \
-         would send `{extension}`'s inputs and results across that boundary. Compliance does \
-         not transfer between institutions: a model approved at one has no permission over \
-         another's data unless a BAA, DUA or IRB approval covers this specific flow. Proceed \
-         only if you know one does.",
-        label(bound)
-    ))
+    Some(CrossAffiliation {
+        warning: format!(
+            "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
+             {held_by}, but this chat is bound to a model covered by {covered_by}'s agreements. \
+             Using it would send `{extension}`'s inputs and results across that boundary. \
+             Compliance does not transfer between institutions: a model approved at one has no \
+             permission over another's data unless a BAA, DUA or IRB approval covers this \
+             specific flow. Proceed only if you know one does."
+        ),
+        // The model's audience needs three facts and no paragraph: whose data
+        // this is, whose model it is on, and that calling it will not work.
+        // Everything else is in the refusal it gets if it tries anyway.
+        mark: format!(
+            "⚠ Cross-institutional: `{extension}` holds data belonging to {}, and this chat's \
+             model is covered by {covered_by}. A call to it will be refused — tell the user what \
+             you need it for and let them decide.",
+            owners_label_capped(owners)
+        ),
+    })
 }
 
 /// **The** gate decision on DR-26's third axis: `Some(warning)` is a mismatch.
@@ -374,12 +459,26 @@ pub fn gate_cross_affiliation_warning(
     extension: &str,
     class: &super::ExtensionClassification,
 ) -> Option<String> {
+    gate_cross_affiliation(enforced, model_tier, model, extension, class).map(|f| f.warning)
+}
+
+/// The same gate decision as [`gate_cross_affiliation_warning`], carrying both
+/// renderings — see [`CrossAffiliation`]. The three guards are identical
+/// because there is only one of them: the warning-only spelling above is this
+/// function with a field selected off it.
+pub fn gate_cross_affiliation(
+    enforced: bool,
+    model_tier: super::ProviderTier,
+    model: Option<ModelAffiliation>,
+    extension: &str,
+    class: &super::ExtensionClassification,
+) -> Option<CrossAffiliation> {
     if !enforced || !class.tier.is_private() || !model_tier.is_private() {
         return None;
     }
     match model {
-        Some(model) => cross_affiliation_warning(model, extension, &class.affiliation),
-        None => unstated_model_warning(extension, &class.affiliation),
+        Some(model) => cross_affiliation(model, extension, &class.affiliation),
+        None => unstated_model(extension, &class.affiliation),
     }
 }
 
@@ -406,6 +505,12 @@ pub fn gate_cross_affiliation_warning(
 /// act on: "we cannot tell whose agreements cover this model" is actionable
 /// (bind a model that says), where an invented institution is not.
 pub fn unstated_model_warning(extension: &str, ext: &ExtensionAffiliation) -> Option<String> {
+    unstated_model(extension, ext).map(|f| f.warning)
+}
+
+/// The same finding as [`unstated_model_warning`], carrying both renderings —
+/// see [`CrossAffiliation`].
+pub fn unstated_model(extension: &str, ext: &ExtensionAffiliation) -> Option<CrossAffiliation> {
     let ExtensionAffiliation::Institutions(owners) = ext else {
         // `Any` — no institution claims this extension's data, so there is no
         // boundary for an unstated model to cross.
@@ -414,15 +519,26 @@ pub fn unstated_model_warning(extension: &str, ext: &ExtensionAffiliation) -> Op
 
     let held_by = owners_label(owners);
 
-    Some(format!(
-        "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
-         {held_by}, and this chat is bound to a private model that does not state whose \
-         agreements cover it. Using it would send `{extension}`'s inputs and results to an \
-         endpoint no agreement in this build can vouch for. Compliance does not transfer \
-         between institutions: a model approved at one has no permission over another's data \
-         unless a BAA, DUA or IRB approval covers this specific flow. Bind a model whose \
-         institution is known, or proceed only if you know one does."
-    ))
+    Some(CrossAffiliation {
+        warning: format!(
+            "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
+             {held_by}, and this chat is bound to a private model that does not state whose \
+             agreements cover it. Using it would send `{extension}`'s inputs and results to an \
+             endpoint no agreement in this build can vouch for. Compliance does not transfer \
+             between institutions: a model approved at one has no permission over another's \
+             data unless a BAA, DUA or IRB approval covers this specific flow. Bind a model \
+             whose institution is known, or proceed only if you know one does."
+        ),
+        // No institution is named for the model side, here as in the warning:
+        // naming one would be a lie, and "we cannot tell" is the actionable
+        // statement.
+        mark: format!(
+            "⚠ Cross-institutional: `{extension}` holds data belonging to {}, and this chat's \
+             model does not state whose agreements cover it. A call to it will be refused — \
+             tell the user what you need it for and let them decide.",
+            owners_label_capped(owners)
+        ),
+    })
 }
 
 #[cfg(test)]
@@ -925,6 +1041,134 @@ mod tests {
             ),
             None
         );
+    }
+
+    // ------------------------------------------------- The mark (Gate E, DR-26)
+
+    /// ⚠ **The mark rides in a tool DESCRIPTION, which is a bounded field.**
+    /// Gate E prepends it to every tool of a mismatched extension, and the
+    /// providers that carry a private tier here include Versa Azure — an Azure
+    /// OpenAI deployment, whose function `description` is capped at 1024
+    /// characters. Prepending the full ~460-character compliance paragraph to a
+    /// tool that already describes itself in a few hundred characters turns
+    /// "mark this tool" into "this chat can make no request at all", which is
+    /// a strictly worse failure than the one DR-26 is preventing.
+    ///
+    /// So the mark is budgeted, and the budget is asserted here rather than at
+    /// the surface, because the composer is what can grow.
+    #[test]
+    fn the_mark_is_bounded_far_below_a_tool_descriptions_ceiling() {
+        let finding = cross_affiliation(bound("stanford"), "ucsfomopagent", &allowlist(&["ucsf"]))
+            .expect("a Stanford model reaching a UCSF connector is a mismatch");
+        assert!(
+            finding.mark.len() <= MARK_BUDGET,
+            "the mark is {} bytes, over its {MARK_BUDGET}-byte budget: {}",
+            finding.mark.len(),
+            finding.mark
+        );
+        // The full statement is NOT what goes in a description. If these ever
+        // become the same string this test still passes on length alone, so the
+        // relationship is asserted too.
+        assert!(
+            finding.mark.len() < finding.warning.len(),
+            "the mark must be the SHORT rendering: mark {} vs warning {}",
+            finding.mark.len(),
+            finding.warning.len()
+        );
+    }
+
+    /// The budget must survive an allowlist longer than anyone would write, or
+    /// it is not a bound — it is a bound on today's registry. The owners are
+    /// capped in the MARK only; the full list stays in the warning, which is
+    /// what the user and the refusal read.
+    #[test]
+    fn a_long_allowlist_cannot_blow_the_marks_budget() {
+        let many: Vec<String> = (0..64).map(|i| format!("institution-number-{i}")).collect();
+        let ext = ExtensionAffiliation::institutions(many.iter().map(|n| inst(n)));
+        let finding = cross_affiliation(bound("stanford"), "someagent", &ext)
+            .expect("stanford is not on a 64-institution allowlist that omits it");
+        assert!(
+            finding.mark.len() <= MARK_BUDGET,
+            "a 64-institution allowlist produced a {}-byte mark: {}",
+            finding.mark.len(),
+            finding.mark
+        );
+        // …and the warning is where the complete list still lives.
+        assert!(
+            finding.warning.contains("institution-number-63"),
+            "the full statement must not be truncated: {}",
+            finding.warning
+        );
+    }
+
+    /// DR-26 requires a warning specific enough to act on, and the mark is the
+    /// only form the MODEL reads before a call exists. Shortening it must not
+    /// cost the two institution names or the fact that the call will be refused.
+    #[test]
+    fn the_mark_still_names_both_endpoints_and_the_refusal() {
+        let finding = cross_affiliation(bound("stanford"), "ucsfomopagent", &allowlist(&["ucsf"]))
+            .expect("a mismatch");
+        assert!(finding.mark.contains("ucsfomopagent"), "{}", finding.mark);
+        assert!(finding.mark.contains("ucsf"), "{}", finding.mark);
+        assert!(finding.mark.contains("stanford"), "{}", finding.mark);
+        assert!(finding.mark.contains("refused"), "{}", finding.mark);
+
+        // The unstated-model arm has no institution to name for the model side,
+        // and must say so rather than invent one.
+        let unstated = unstated_model("ucsfomopagent", &allowlist(&["ucsf"]))
+            .expect("a private model that states nothing may not reach a claimed extension");
+        assert!(unstated.mark.contains("ucsfomopagent"), "{}", unstated.mark);
+        assert!(unstated.mark.contains("ucsf"), "{}", unstated.mark);
+        assert!(unstated.mark.contains("refused"), "{}", unstated.mark);
+        assert!(
+            unstated.mark.len() <= MARK_BUDGET,
+            "{} bytes: {}",
+            unstated.mark.len(),
+            unstated.mark
+        );
+    }
+
+    /// ⚠ **The two renderings must never disagree about whether there IS a
+    /// mismatch.** They are born from one decision for exactly this reason; the
+    /// test drives the whole table so a future arm cannot produce one without
+    /// the other.
+    #[test]
+    fn the_mark_and_the_warning_are_one_decision_in_two_renderings() {
+        let models = [
+            ModelAffiliation::Local,
+            bound("ucsf"),
+            bound("stanford"),
+            bound(""),
+        ];
+        let exts = [
+            ExtensionAffiliation::Any,
+            allowlist(&[]),
+            allowlist(&["ucsf"]),
+            allowlist(&["ucsf", "stanford"]),
+        ];
+        for model in &models {
+            for ext in &exts {
+                let finding = cross_affiliation(*model, "someagent", ext);
+                assert_eq!(
+                    finding.is_some(),
+                    !compatible(model, ext),
+                    "the pair disagreed with the decision for {model:?} × {ext:?}"
+                );
+                assert_eq!(
+                    finding.as_ref().map(|f| f.warning.clone()),
+                    cross_affiliation_warning(*model, "someagent", ext),
+                    "the warning-only spelling drifted from the pair for {model:?} × {ext:?}"
+                );
+                if let Some(f) = finding {
+                    assert!(!f.mark.is_empty(), "a mismatch with an empty mark");
+                    assert!(
+                        f.mark.len() <= MARK_BUDGET,
+                        "{model:?} × {ext:?} produced a {}-byte mark",
+                        f.mark.len()
+                    );
+                }
+            }
+        }
     }
 
     // ---------------------------------------------------------------- Fixtures
