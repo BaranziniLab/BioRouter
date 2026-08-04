@@ -211,6 +211,21 @@ fn identities(
 /// the tier: which join matches first is an accident of iteration order, and
 /// the losing order is the dangerous one.
 ///
+/// ⚠ **But the union does NOT fail closed here the way it does for the tier,
+/// and the two must not be argued for with one sentence.** Union raises a tier
+/// because Private is the restrictive end of that lattice. An
+/// [`ExtensionAffiliation::Institutions`] set is an *allowlist*, so unioning
+/// two of them makes the extension reachable from MORE institutions' models
+/// without a warning. An entry whose `args` name another affiliated
+/// extension's recorded install directory therefore acquires that extension's
+/// institutions — raising its tier and relaxing its affiliation in one step —
+/// and `config.yaml` is agent-writable. This is latent rather than live only
+/// because every affiliated extension in the compiled snapshot is `ucsf`, so
+/// every union that can be formed today is `{ucsf}`. The full statement, and
+/// the ruling it still needs before Tasks 48-51 consume this field, is in
+/// [`super::provenance`]'s header, where a reader goes looking for the reason a
+/// forged record is harmless.
+///
 /// ⚠ **"Declared nothing" and "declared an empty allowlist" are different, and
 /// the difference is the whole of Step 2.** An identity absent from the table
 /// contributes no row and no institution; if *no* identity has a row the answer

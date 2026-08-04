@@ -24,16 +24,48 @@
 //! `config.yaml`, so anything on it is agent-editable. That is the exact hole
 //! DR-23 exists to close, so provenance lives in its own file.
 //!
-//! # Why this file needs no gated writer
+//! # Why this file needs no gated writer — for the TIER
 //!
 //! Because the resolver **unions** rather than replaces. `classify_extension`
 //! returns Private when *either* the config name or the recorded registry id is
 //! in the compiled marketplace snapshot, so a record can only ever RAISE a
 //! tier. Forging one, corrupting the file, or deleting it outright cannot lower
-//! anything below what the name alone already said — which is precisely
+//! the tier below what the name alone already said — which is precisely
 //! DR-23's own argument that re-deriving *removes* the problem instead of
 //! guarding it. Sessions have exactly one gated writer because a session's tier
 //! is stored; an extension's is not, and this file stores identity, not tier.
+//!
+//! ⚠ **That argument is about the tier and does not extend to the AFFILIATION,
+//! which Task 47 added to the same resolution.** Read this paragraph before
+//! citing the one above as the reason a new consumer needs no writer gate.
+//!
+//! Union raises a tier because Private is the restrictive end of that lattice.
+//! On the third axis the direction inverts: an
+//! [`ExtensionAffiliation::Institutions`](super::affiliation::ExtensionAffiliation::Institutions)
+//! set is an **allowlist**, so unioning two of them produces a *more* permissive
+//! extension — reachable from more institutions' models without the
+//! cross-affiliation warning DR-26 requires. An extra identity therefore raises
+//! the tier and relaxes the affiliation in the same step.
+//!
+//! It is reachable the same way the tier's identities are: `config.yaml` is
+//! agent-writable (DR-17 descoped the filesystem barrier), and an entry whose
+//! `args` name another affiliated extension's recorded `install_dir` acquires
+//! that extension's institutions. Where the name alone answers `{ucsf}`, the
+//! unioned answer `{ucsf, stanford}` clears a Stanford-bound model's mismatch
+//! silently — and DR-26 is explicit that an agent may never clear a mismatch
+//! automatically.
+//!
+//! ⚠ **Latent, not live, and the distinction is the whole of the risk
+//! assessment.** Every affiliated extension this build ships is `ucsf`, so every
+//! union that can currently be formed is `{ucsf}` and no relaxation exists to
+//! reach. It goes live the day a second institution enters `INSTITUTIONS` — i.e.
+//! before Phase 6 is finished, not at some indefinite later date. The union is
+//! what Task 47 specifies ("a base matching several institutions carries all of
+//! them"), and *carrying* several institutions' data argues for the opposite
+//! compatibility rule from *permitting* several institutions' models, so this
+//! needs an explicit ruling rather than an implementer's guess. Recorded here
+//! because whoever builds Tasks 48-51 will arrive at this header looking for the
+//! reason forged records are harmless, and for the affiliation they are not.
 //!
 //! ⚠ **What a forged record CAN do is deny, and that is worth saying out loud.**
 //! Raise-only means no disclosure, not no harm: a record naming a private
