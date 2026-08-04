@@ -19,16 +19,20 @@
 
 use async_trait::async_trait;
 use rmcp::model::Tool;
+use std::sync::Arc;
 
 use super::base::{Provider, ProviderMetadata, ProviderUsage};
 use super::errors::ProviderError;
+use super::lead_worker::LeadWorkerProvider;
 use super::ollama::{OllamaProvider, OLLAMA_HOST};
 use super::versa_azure::VERSA_AZURE_ENDPOINT;
 use super::{self_hosted_affiliation, ucsf_gateway_affiliation};
 use crate::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
-use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+use crate::privacy::affiliation::{
+    compatible, ExtensionAffiliation, InstitutionId, ModelAffiliation,
+};
 use crate::privacy::ProviderTier;
 
 fn ucsf() -> ModelAffiliation {
@@ -289,4 +293,292 @@ impl Provider for ProviderThatSaysNothing {
 fn a_provider_that_says_nothing_has_no_affiliation() {
     assert_eq!(ProviderThatSaysNothing.affiliation(), None);
     assert_eq!(ProviderThatSaysNothing.tier(), ProviderTier::Public);
+}
+
+// ------------------------------------------------------------------- Composites
+
+/// One half of a lead/worker pair, stating the tier and affiliation the
+/// composite should see.
+///
+/// The `Local` and public halves below are **real** `OllamaProvider`s built by
+/// `self_hosted_at`; only the *institutional* halves are stated, because
+/// `VersaAzureProvider`'s `resolved_endpoint` is private to its own module and
+/// there is no other way to obtain an `Institution` half from outside it. The
+/// wiring these tests defend — that the composite reads *both* halves — is
+/// visible either way: every pair below is asymmetric.
+struct Half {
+    tier: ProviderTier,
+    affiliation: Option<ModelAffiliation>,
+}
+
+#[async_trait]
+impl Provider for Half {
+    fn metadata() -> ProviderMetadata {
+        ProviderMetadata::empty()
+    }
+
+    fn get_name(&self) -> &str {
+        "half"
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("nothing")
+    }
+
+    fn tier(&self) -> ProviderTier {
+        self.tier
+    }
+
+    fn affiliation(&self) -> Option<ModelAffiliation> {
+        self.affiliation
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        unreachable!("this provider exists to be asked its affiliation and nothing else")
+    }
+}
+
+fn half(tier: ProviderTier, affiliation: Option<ModelAffiliation>) -> Arc<dyn Provider> {
+    Arc::new(Half { tier, affiliation })
+}
+
+fn institution(name: &str) -> ModelAffiliation {
+    ModelAffiliation::Institution(InstitutionId::new(name))
+}
+
+fn composite(lead: Arc<dyn Provider>, worker: Arc<dyn Provider>) -> LeadWorkerProvider {
+    LeadWorkerProvider::new(lead, worker, None)
+}
+
+/// `LeadWorkerProvider` is the tree's only composite, and it is the exact shape
+/// DR-26's *"may hand back something other than what was asked for"* warning
+/// describes: `factory::create` returns one whenever `BIOROUTER_LEAD_MODEL` is
+/// set, and `get_name()` answers for the **lead alone**.
+///
+/// It already overrides `tier()` for that reason. Leaving `affiliation()` on the
+/// trait default produces the one combination DR-26's vocabulary says cannot
+/// exist — tier `Private` with affiliation `None` — and `None` is specified to
+/// mean *"a public model; the tier gates already hold, affiliation never
+/// applies"*. A gate that short-circuits on it would skip the cross-affiliation
+/// check for a private composite: fail-**open**, in the scenario DR-26 exists to
+/// catch.
+///
+/// ⚠ The census in `factory.rs` structurally cannot see this: `lead_worker` is
+/// never `register`ed, it is constructed directly.
+#[test]
+fn a_private_composite_always_states_an_affiliation() {
+    for (lead, worker) in [
+        (
+            half(ProviderTier::Private, Some(ModelAffiliation::Local)),
+            half(ProviderTier::Private, Some(ModelAffiliation::Local)),
+        ),
+        (
+            half(ProviderTier::Private, Some(institution("ucsf"))),
+            half(ProviderTier::Private, Some(institution("ucsf"))),
+        ),
+        (
+            half(ProviderTier::Private, Some(ModelAffiliation::Local)),
+            half(ProviderTier::Private, Some(institution("ucsf"))),
+        ),
+    ] {
+        let pair = composite(lead, worker);
+        assert_eq!(
+            pair.tier(),
+            ProviderTier::Private,
+            "fixture is only meaningful while both halves are private"
+        );
+        assert!(
+            pair.affiliation().is_some(),
+            "a Private composite with no affiliation reads as a public model to every gate"
+        );
+    }
+}
+
+/// The composite discloses the whole transcript to **both** endpoints, so its
+/// affiliation is what both halves agree on — not the lead's, which is what
+/// anything keyed on `get_name()` would return.
+///
+/// [`ModelAffiliation::Local`] is the identity of that fold, and it is the
+/// inversion DR-26 warns about arriving on a second axis: a local worker
+/// discloses nothing, so it neither dilutes nor widens the institution the lead
+/// is covered by. Every pair below is asymmetric and asserted in both orders, so
+/// an implementation that reads one half and ignores the other fails.
+#[test]
+fn a_composite_agrees_with_both_halves_and_local_is_the_identity() {
+    let local = || half(ProviderTier::Private, Some(ModelAffiliation::Local));
+    let ucsf_half = || half(ProviderTier::Private, Some(institution("ucsf")));
+
+    // Two halves on this machine disclose nothing at all.
+    assert_eq!(
+        composite(local(), local()).affiliation(),
+        Some(ModelAffiliation::Local)
+    );
+
+    // A local half beside an institutional one: the transfer that happens is
+    // the institutional one, so that is what covers the pair — in both orders.
+    assert_eq!(
+        composite(local(), ucsf_half()).affiliation(),
+        Some(institution("ucsf"))
+    );
+    assert_eq!(
+        composite(ucsf_half(), local()).affiliation(),
+        Some(institution("ucsf"))
+    );
+
+    // Both halves at the same institution.
+    assert_eq!(
+        composite(ucsf_half(), ucsf_half()).affiliation(),
+        Some(institution("ucsf"))
+    );
+}
+
+/// A public half makes the composite public — `tier()` already says so — and a
+/// public model's affiliation is the *absence* of one. This is the only arm
+/// where `None` is the right answer, and it is right for the reason DR-26 gives:
+/// the tier gates keep a public model away from private data, so affiliation
+/// never applies to it.
+///
+/// Asserted in both orders and with a **real** remote Ollama instance, which is
+/// how a public half actually arises in production.
+#[test]
+fn a_composite_with_a_public_half_is_public_and_unaffiliated() {
+    let elsewhere =
+        || -> Arc<dyn Provider> { Arc::new(self_hosted_at("https://api.example-saas.com")) };
+    let here = || -> Arc<dyn Provider> { Arc::new(self_hosted_at("http://localhost:11434")) };
+    let ucsf_half = || half(ProviderTier::Private, Some(institution("ucsf")));
+
+    for (lead, worker) in [
+        (here(), elsewhere()),
+        (elsewhere(), here()),
+        (ucsf_half(), elsewhere()),
+        (elsewhere(), ucsf_half()),
+        (
+            ucsf_half(),
+            Arc::new(ProviderThatSaysNothing) as Arc<dyn Provider>,
+        ),
+    ] {
+        let pair = composite(lead, worker);
+        assert_eq!(pair.tier(), ProviderTier::Public);
+        assert_eq!(
+            pair.affiliation(),
+            None,
+            "a public composite must not carry an institution its private half had"
+        );
+    }
+}
+
+/// The property the fold exists to hold, checked against the **one** comparison
+/// in `privacy::affiliation` rather than restated as a table.
+///
+/// A composite discloses to both endpoints, so it may reach an extension only
+/// where *both* halves may. The assertion is that direction of the implication —
+/// the composite is never more permissive than the conjunction — because that is
+/// the direction that leaks. Being stricter is a warning the user can clear;
+/// being looser is a cross-institutional transfer nobody was told about.
+///
+/// It is not a table of expected answers, so it cannot be satisfied by an
+/// implementation that agrees with a hand-written expectation and disagrees with
+/// the real gate. Equality is asserted separately, on the pairs where DR-26's
+/// vocabulary can express the conjunction exactly.
+#[test]
+fn a_composite_never_out_reaches_either_half() {
+    let halves = [
+        ModelAffiliation::Local,
+        institution("ucsf"),
+        institution("stanford"),
+        institution("broad"),
+    ];
+    let extensions = [
+        ExtensionAffiliation::Any,
+        ExtensionAffiliation::institution(InstitutionId::new("ucsf")),
+        ExtensionAffiliation::institution(InstitutionId::new("stanford")),
+        ExtensionAffiliation::institutions([
+            InstitutionId::new("ucsf"),
+            InstitutionId::new("stanford"),
+        ]),
+        ExtensionAffiliation::Institutions(Default::default()),
+    ];
+
+    for lead in halves {
+        for worker in halves {
+            let folded = super::composite_affiliation(Some(lead), Some(worker))
+                .expect("two private halves must yield an affiliation, never `None`");
+            for ext in &extensions {
+                let both = compatible(&lead, ext) && compatible(&worker, ext);
+                assert!(
+                    !compatible(&folded, ext) || both,
+                    "{lead:?} + {worker:?} folded to {folded:?}, which reaches {ext:?} \
+                     though a half may not"
+                );
+
+                // ...and where the conjunction *is* expressible — the halves
+                // agree, or one of them is `Local` and discloses nothing — the
+                // fold must be exactly it, not merely stricter. A fold that
+                // demoted every pair to a value reaching nothing would satisfy
+                // the implication above and destroy the feature.
+                if lead == worker
+                    || lead == ModelAffiliation::Local
+                    || worker == ModelAffiliation::Local
+                {
+                    assert_eq!(
+                        compatible(&folded, ext),
+                        both,
+                        "{lead:?} + {worker:?} vs {ext:?}"
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// The arm DR-26 has no value for, pinned so its behaviour is a decision rather
+/// than an accident.
+///
+/// ⚠ **It is unreachable in this build** — `factory::this_build_knows_exactly_
+/// one_institution` pins that `ucsf` is the tree's only institution, so no
+/// lead/worker pair can span two — and the placeholder is the *safe direction*,
+/// not the answer. The correct encoding is a set with subset-of-the-allowlist
+/// semantics, which `ModelAffiliation` cannot hold while it is `Copy`; that is
+/// an operator ruling on DR-26, and the census pin forces it before a second
+/// institution can arrive here.
+///
+/// What is asserted is only what makes the placeholder safe: it clears an
+/// extension with no institutional claim, and warns for **both** of the
+/// institutions involved — including the lead's, which is the one a fold written
+/// as "keep the lead" would silently clear.
+#[test]
+fn a_composite_spanning_two_institutions_clears_neither_of_them() {
+    let folded =
+        super::composite_affiliation(Some(institution("ucsf")), Some(institution("stanford")))
+            .expect("two private halves must yield an affiliation, never `None`");
+
+    assert!(
+        compatible(&folded, &ExtensionAffiliation::Any),
+        "an extension with no institutional claim is unaffected by which two the pair spans"
+    );
+    for named in ["ucsf", "stanford"] {
+        assert!(
+            !compatible(
+                &folded,
+                &ExtensionAffiliation::institution(InstitutionId::new(named))
+            ),
+            "{named}'s extension must warn: the pair also discloses to the other institution"
+        );
+    }
+    // Order cannot matter — the lead is not privileged on this axis.
+    assert_eq!(
+        folded,
+        super::composite_affiliation(Some(institution("stanford")), Some(institution("ucsf")))
+            .unwrap()
+    );
+    // ...and it is not either half, nor `Local`'s blanket permission.
+    assert_ne!(folded, institution("ucsf"));
+    assert_ne!(folded, institution("stanford"));
+    assert_ne!(folded, ModelAffiliation::Local);
 }

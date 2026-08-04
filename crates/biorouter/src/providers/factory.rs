@@ -389,6 +389,39 @@ mod tests {
         }
     }
 
+    /// The pin that keeps `providers::composite_affiliation`'s last arm
+    /// unreachable.
+    ///
+    /// A lead/worker composite discloses the whole transcript to both endpoints,
+    /// so a pair spanning two *different* institutions is covered by neither
+    /// alone — and DR-26's model side (`Local | Institution(id) | none`) has no
+    /// value that says so. The correct encoding is a set with subset-of-the-
+    /// allowlist semantics, which `ModelAffiliation` cannot hold while it is
+    /// `Copy` (Task 45 rests `CallCapability`'s `Copy` derive on that). Settling
+    /// it is an operator ruling, not an implementer's choice.
+    ///
+    /// It has not had to be settled because `UCSF_INSTITUTION` is the tree's only
+    /// institution, so the pair cannot be built. ⚠ That is a **fact about this
+    /// build, not a property of the design**, and the day a second institution is
+    /// added it stops being true silently — the composite would start resolving
+    /// to a documented-safe placeholder rather than to an answer, and nothing
+    /// would say so. This test is what says so: it fails here, next to the table
+    /// the second institution was added to, with the ruling that has to land
+    /// first.
+    #[test]
+    fn this_build_knows_exactly_one_institution() {
+        for (name, why) in affiliated_providers() {
+            assert!(
+                why.starts_with("Local:") || why.starts_with("Institution(ucsf):"),
+                "{name} is affiliated to something other than Local or ucsf ({why}).\n\
+                 A second institution makes a lead/worker pair spanning two of them \
+                 constructible, and `providers::composite_affiliation` has no representable \
+                 answer for that pair — DR-26 must first gain a set-valued model affiliation. \
+                 See `SPANS_INSTITUTIONS` in providers/mod.rs."
+            );
+        }
+    }
+
     #[test_case::test_case(None, None, None, DEFAULT_LEAD_TURNS, DEFAULT_FAILURE_THRESHOLD, DEFAULT_FALLBACK_TURNS ; "defaults")]
     #[test_case::test_case(Some("7"), Some("4"), Some("3"), 7, 4, 3 ; "custom")]
     #[tokio::test]

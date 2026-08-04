@@ -162,3 +162,77 @@ pub(crate) fn self_hosted_affiliation(base_url: &str) -> Option<ModelAffiliation
         ProviderTier::Public => None,
     }
 }
+
+/// A placeholder institution, and **not** a real one: what a composite spanning
+/// two *different* institutions resolves to.
+///
+/// ⚠ **It is unreachable in this build**, and that is pinned by
+/// `factory::this_build_knows_exactly_one_institution` rather than assumed —
+/// `UCSF_INSTITUTION` is the tree's only institution, so no lead/worker pair can
+/// span two. It exists because [`composite_affiliation`] must be total, and
+/// every *representable* alternative for that arm fails open: `None` is
+/// specified to mean "a public model, affiliation never applies";
+/// [`ModelAffiliation::Local`] reaches every private extension; and naming
+/// either half's institution silently clears the flow to the other one. This
+/// value clears only
+/// [`ExtensionAffiliation::Any`](crate::privacy::affiliation::ExtensionAffiliation::Any)
+/// — an extension with no institutional claim, which is genuinely unaffected —
+/// and warns for every named institution, which is the safe direction.
+///
+/// ⚠ **It is not the answer, only the safe direction.** DR-26's model side is
+/// `Local | Institution(id) | none`, with no value meaning "covered by two
+/// institutions at once"; the correct encoding is a *set* with subset-of-the-
+/// allowlist semantics, which `ModelAffiliation` cannot hold while it is `Copy`
+/// (Task 45 rests `CallCapability`'s `Copy` derive on that). Settling that is an
+/// operator ruling on DR-26, and the pin above forces it before a second
+/// institution can reach this arm.
+pub(crate) const SPANS_INSTITUTIONS: &str = "<spans-institutions>";
+
+/// The affiliation of a **composite** provider — DR-26's third axis for the
+/// tree's one lead/worker pair, and the sibling of [`ProviderTier::least`].
+///
+/// A composite discloses the whole transcript to *both* endpoints, so it may
+/// reach an extension only where both halves may: the answer is the **meet** of
+/// the two, never the lead's. Anything keyed on `get_name()` returns the lead's
+/// alone (`LeadWorkerProvider::get_name`), which is the same mistake `tier()`
+/// already had to override for.
+///
+/// ⚠ [`ModelAffiliation::Local`] is the **identity** of this fold, not an
+/// absorbing element. That is DR-26's inversion arriving on a second axis: a
+/// local half discloses nothing, so it neither dilutes the institution the other
+/// half is covered by (which would forge reach it never had) nor overrides it
+/// with `Local`'s blanket permission (which would grant the pair everything
+/// private). Both wrong answers pass a fold written as equality.
+///
+/// ⚠ `None` from a half means that half is **Public** — affiliation is `Some`
+/// exactly while a provider's tier is Private, which every affiliated provider
+/// decides with the one predicate that decides its tier
+/// (`ucsf_gateway_affiliation`, `self_hosted_affiliation`) and
+/// `a_versa_endpoint_is_ucsf_exactly_when_it_is_private` pins. So a `None` half
+/// has already made [`ProviderTier::least`] answer Public for the pair, and a
+/// public model's affiliation is the absence of one. Returning the other half's
+/// institution here would put a private-looking badge on a composite whose
+/// transcript is going to a public endpoint.
+pub(crate) fn composite_affiliation(
+    lead: Option<ModelAffiliation>,
+    worker: Option<ModelAffiliation>,
+) -> Option<ModelAffiliation> {
+    match (lead, worker) {
+        // A public half. `least` has already demoted the pair to Public.
+        (None, _) | (_, None) => None,
+        // `Local` is the identity: a half that discloses nothing contributes
+        // nothing to whose agreements cover the pair.
+        (Some(ModelAffiliation::Local), other) => other,
+        (other, Some(ModelAffiliation::Local)) => other,
+        (Some(ModelAffiliation::Institution(a)), Some(ModelAffiliation::Institution(b))) => {
+            if a == b {
+                Some(ModelAffiliation::Institution(a))
+            } else {
+                // Unreachable in this build — see `SPANS_INSTITUTIONS`.
+                Some(ModelAffiliation::Institution(InstitutionId::new(
+                    SPANS_INSTITUTIONS,
+                )))
+            }
+        }
+    }
+}
