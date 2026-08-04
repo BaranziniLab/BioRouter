@@ -1525,7 +1525,14 @@ pub async fn ingest_conversation(
     }
 
     // Load the requested sessions (with messages) from the global session store.
-    let session_manager = biorouter::session::session_manager::SessionManager::instance();
+    //
+    // Issue #56 DR-26 / Task 50 Step 3: ONE handle, shared with the macro below
+    // rather than a second `instance()`. Both resolve to the same static storage
+    // so the old pair was harmless — but the guard's whole claim is that it reads
+    // each selected chat's institutions *from the store those chats came from*,
+    // and one binding is what makes that visible instead of argued.
+    let session_manager =
+        std::sync::Arc::new(biorouter::session::session_manager::SessionManager::instance());
     let mut sessions = Vec::new();
     for sid in &body.session_ids {
         match session_manager.get_session(sid, true).await {
@@ -1554,9 +1561,9 @@ pub async fn ingest_conversation(
     let focus = body.focus.clone();
     let cancel_for_macro = cancel.clone();
     // Issue #56 DR-26 / Task 50 Step 3: the guard reads each selected chat's
-    // institutions itself — see `ConversationIngestArgs::session_manager`.
-    let session_manager_for_macro =
-        std::sync::Arc::new(biorouter::session::session_manager::SessionManager::instance());
+    // institutions itself — see `ConversationIngestArgs::session_manager`. The
+    // same handle the sessions above were loaded through.
+    let session_manager_for_macro = session_manager.clone();
     let macro_handle = tokio::spawn(async move {
         let args = biorouter::knowledge::conversation_ingest::ConversationIngestArgs {
             kb_id: id,

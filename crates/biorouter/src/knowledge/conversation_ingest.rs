@@ -400,14 +400,21 @@ mod tests {
     /// guard performs. These fixtures' sessions have no row in it, which reads
     /// as "no institution touched" — the Missing direction, and what every
     /// assertion here is about the TIER axis needs.
-    fn empty_session_manager() -> std::sync::Arc<crate::session::SessionManager> {
+    ///
+    /// Returns the `TempDir` alongside the manager, which holds a pool over a
+    /// file inside it: bind BOTH (`let (_dir, sm) = …`) or the store is unlinked
+    /// while the pool is open. It was `std::mem::forget(dir)` — correct in that
+    /// the directory outlived the manager, but it outlived the whole test binary
+    /// too, leaving one temp tree on disk per call.
+    fn empty_session_manager() -> (
+        tempfile::TempDir,
+        std::sync::Arc<crate::session::SessionManager>,
+    ) {
         let dir = tempfile::tempdir().expect("a temp dir");
         let sm = std::sync::Arc::new(crate::session::SessionManager::new(
             dir.path().to_path_buf(),
         ));
-        // The manager holds the pool; the directory must outlive it.
-        std::mem::forget(dir);
-        sm
+        (dir, sm)
     }
 
     fn base_session() -> Session {
@@ -538,13 +545,14 @@ mod tests {
             Message::assistant().with_text("Noted."),
         ]));
 
+        let (_sm_dir, sm) = empty_session_manager();
         let err = ingest_conversation(
             &svc,
             ConversationIngestArgs {
                 kb_id: "soul".into(),
                 caller_capability: crate::privacy::ProviderTier::Public,
                 caller_affiliation: None,
-                session_manager: empty_session_manager(),
+                session_manager: sm,
                 sessions: vec![session],
                 completer: Box::new(SilentCompleter),
                 focus: None,
@@ -686,13 +694,14 @@ mod tests {
         let private = session_with("other", SessionClassification::Private, "PHI cohort notes");
 
         let before = tree_snapshot(tmp.path());
+        let (_sm_dir, sm) = empty_session_manager();
         let err = ingest_conversation(
             &svc,
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
                 caller_affiliation: None,
-                session_manager: empty_session_manager(),
+                session_manager: sm,
                 sessions: vec![private],
                 completer: Box::new(WritingCompleter::new()),
                 focus: None,
@@ -733,13 +742,14 @@ mod tests {
             "fixture precondition"
         );
 
+        let (_sm_dir, sm) = empty_session_manager();
         let out = ingest_conversation(
             &svc,
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Private,
                 caller_affiliation: None,
-                session_manager: empty_session_manager(),
+                session_manager: sm,
                 sessions: vec![session_with(
                     "mine",
                     SessionClassification::Private,
@@ -770,13 +780,14 @@ mod tests {
         // The other half of "must not regress": the ratchet is `max`, not `set`,
         // so a public chat ingesting itself leaves a public base public.
         let (tmp, svc) = kb_service();
+        let (_sm_dir, sm) = empty_session_manager();
         let out = ingest_conversation(
             &svc,
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
                 caller_affiliation: None,
-                session_manager: empty_session_manager(),
+                session_manager: sm,
                 sessions: vec![session_with(
                     "mine",
                     SessionClassification::Public,
@@ -801,13 +812,14 @@ mod tests {
         // Per session, not once: `sessions` is a caller-supplied LIST, and a
         // single up-front check on the first element admits the rest.
         let (tmp, svc) = kb_service();
+        let (_sm_dir, sm) = empty_session_manager();
         let out = ingest_conversation(
             &svc,
             ConversationIngestArgs {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Public,
                 caller_affiliation: None,
-                session_manager: empty_session_manager(),
+                session_manager: sm,
                 sessions: vec![
                     session_with("pub", SessionClassification::Public, "PUBLIC-SENTINEL"),
                     session_with("priv", SessionClassification::Private, "PHI cohort notes"),
@@ -888,6 +900,9 @@ mod tests {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Private,
                 caller_affiliation: stanford,
+                // ⚠ The REAL manager built above, the one holding `ucsf` for
+                // this chat. An `empty_session_manager()` here reads "no
+                // institution touched" and the refusal below never fires.
                 session_manager: sm.clone(),
                 sessions: vec![ucsf_chat()],
                 completer: Box::new(WritingCompleter::new()),
@@ -921,6 +936,8 @@ mod tests {
                 kb_id: "default".into(),
                 caller_capability: ProviderTier::Private,
                 caller_affiliation: ucsf,
+                // The same real manager: the positive control is only a control
+                // if it is answered from the same store the refusal was.
                 session_manager: sm,
                 sessions: vec![ucsf_chat()],
                 completer: Box::new(WritingCompleter::new()),

@@ -2364,6 +2364,12 @@ impl SessionStorage {
         if !crate::privacy::privacy_tiers_enabled() {
             return Ok(());
         }
+        // The `ORDER BY` is cosmetic and nothing may come to depend on it:
+        // SQLite does not formally guarantee that an aggregate consumes an
+        // ordered subquery in that order. It is here so the stored JSON is
+        // stable for a human reading the row; every reader
+        // (`SessionStorage::session_affiliations`) collects into a `BTreeSet`,
+        // so the set is the value and the sequence is not.
         sqlx::query(
             r#"
             UPDATE sessions
