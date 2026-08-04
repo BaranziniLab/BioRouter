@@ -2868,6 +2868,73 @@ mod tests {
         assert!(dropped_extension_note(&kept.dropped_private_extensions).is_none());
     }
 
+    /// Task 43 (DR-23). The spawn partition is one of the three callers that
+    /// never had a stamped tier to read and re-classified from a bare name
+    /// instead, so a private extension renamed in `config.yaml` was inherited by
+    /// a public child — the same enforcement failure the gates in the extension
+    /// manager had, in a place no test looked.
+    ///
+    /// It was moved to the shared resolver with the rest of Step 1 and, review
+    /// noticed, with no assertion of its own. This is that assertion. The
+    /// fixture is a real rename: the entry's `name` is `mystuff`, nothing about
+    /// it resembles `cdwagent`, and the only surviving link to the install is
+    /// the `--directory` argument the marketplace wrote.
+    ///
+    /// `developer` rides along so a partition that dropped everything — or a
+    /// fixture that inherited nothing — fails instead of passing vacuously, and
+    /// the drop is asserted on `dropped_private_extensions` as well as on the
+    /// surviving list, because a silent drop is a capability the model keeps
+    /// planning around.
+    #[tokio::test]
+    async fn a_public_child_does_not_inherit_a_renamed_private_extension() {
+        let install_dir = "/home/researcher/.config/biorouter/extensions/SubagentRenamed";
+        crate::privacy::provenance::insert_test_record_at(
+            "subagent-renamed-as-installed",
+            "cdwagent",
+            Some(install_dir),
+        );
+        let renamed = crate::agents::ExtensionConfig::Stdio {
+            name: "mystuff".to_string(),
+            description: "renamed by hand in config.yaml".to_string(),
+            cmd: "uv".to_string(),
+            args: vec![
+                "run".to_string(),
+                "--directory".to_string(),
+                install_dir.to_string(),
+                "server.py".to_string(),
+            ],
+            envs: crate::agents::extension::Envs::default(),
+            env_keys: vec![],
+            timeout: Some(300),
+            bundled: None,
+            available_tools: vec![],
+        };
+        assert_eq!(
+            crate::privacy::classify_extension("mystuff"),
+            ProviderTier::Public,
+            "the fixture only discriminates if the NAME alone reads public"
+        );
+
+        let child = resolve_child(
+            ProviderTier::Public,
+            Ask::Inherit,
+            vec![renamed, builtin_extension("developer")],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            child
+                .extensions
+                .iter()
+                .map(crate::agents::ExtensionConfig::name)
+                .collect::<Vec<_>>(),
+            vec!["developer".to_string()],
+            "a public child inherited a private extension because it had been renamed"
+        );
+        assert_eq!(child.dropped_private_extensions, vec!["mystuff".to_string()]);
+    }
+
     /// The CALL SITE for the sentence above: the drop has to reach the parent's
     /// tool result, or the model silently loses a capability it will keep
     /// planning around. A pure test of the note passes against a note nothing

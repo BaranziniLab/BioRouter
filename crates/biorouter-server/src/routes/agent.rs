@@ -1651,6 +1651,91 @@ mod privacy_barrier_tests {
 }
 
 #[cfg(test)]
+mod add_extension_resolver_tests {
+    //! Issue #56 Task 43 (DR-23), route half — and a **structural** test, said
+    //! so plainly, because a behavioural one is not reachable from this crate.
+    //!
+    //! `/agent/add_extension` is one of the three callers that never had a
+    //! stamped tier to read and re-classified from a bare name, so a private
+    //! extension renamed in `config.yaml` could be attached to a public session
+    //! over HTTP. Step 1 moved it to `classify_extension_entry`, passing the
+    //! config as well as the name — the config is what carries the install
+    //! directory, and the install directory is the only link a rename does not
+    //! break.
+    //!
+    //! ⚠ **Why this is not a behavioural test.** Driving the real handler needs
+    //! an `AppState`, which opens the real user session database (the module
+    //! above says so for Gate A and takes the same way out), and the seam that
+    //! states an extension's provenance — `provenance::insert_test_record` — is
+    //! `#[cfg(test)] pub(crate)` in `biorouter`, so it does not exist for this
+    //! crate at all. Making it exist would mean shipping a test-record injector
+    //! in the release binary or adding a feature flag to a security module for
+    //! the sake of one assertion; neither is worth it for a call that can only
+    //! ever RAISE a tier.
+    //!
+    //! So this asserts the one thing that can silently regress: that the gate
+    //! still hands the resolver the config. `classify_extension` compiles just
+    //! as happily here and would take the refusal back to the name-only join
+    //! without any test noticing — which is exactly how this bug lived in three
+    //! places. The rename behaviour itself is covered where the seam exists, in
+    //! `biorouter`'s `privacy::extensions` and `agents::extension_manager`
+    //! tests.
+    //!
+    //! The `include_str!` pattern is `privacy::config_keys`'s, which scans
+    //! provider sources the same way and for the same reason.
+
+    const SOURCE: &str = include_str!("agent.rs");
+
+    /// Whitespace-insensitive, so rustfmt reflowing the call does not fail it.
+    fn squeezed() -> String {
+        SOURCE.chars().filter(|c| !c.is_whitespace()).collect()
+    }
+
+    /// ⚠ The needle is assembled at run time, and finding out why is what the
+    /// mutation check was for: written as one literal it appears in this very
+    /// file, so the scan found its own assertion and passed against a handler
+    /// mutated back to the name-only form. Split across the `format!`, neither
+    /// half is the needle and only the real call site can satisfy it.
+    #[test]
+    fn the_add_extension_gate_resolves_from_the_config_not_from_the_name() {
+        let needle = format!(
+            "{}(&extension_name,Some(&request.config))",
+            "classify_extension_entry"
+        );
+        assert!(
+            squeezed().contains(&needle),
+            "`/agent/add_extension` no longer hands the resolver the config it was given. \
+             A renamed private extension resolves Public from its name alone, so this route \
+             would attach a clinical connector to a public session — see DR-23."
+        );
+    }
+
+    /// The name-only form must not reappear anywhere in this file. It is not
+    /// wrong in itself — it is the right call for a caller that genuinely holds
+    /// only a name — but no route here is such a caller, and its presence is
+    /// what the regression would look like.
+    /// ⚠ The two needles are assembled at run time rather than written as
+    /// literals, because a literal `classify_extension` + `(` in this file would
+    /// be found by the scan and fail it against itself.
+    #[test]
+    fn no_route_in_this_file_classifies_from_a_bare_name() {
+        let bare = format!("classify_extension{}", '(');
+        let entry = format!("classify_extension_entry{}", '(');
+        for line in SOURCE.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            assert!(
+                !code.contains(&bare) || code.contains(&entry),
+                "a route classified an extension from its name alone, which a rename defeats: \
+                 {line}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
 mod gate_c_call_tool_tests {
     //! Issue #56 Gate C, route half. `POST /agent/call_tool` is one of the four
     //! production paths into `ExtensionManager::dispatch_tool_call`, and the
