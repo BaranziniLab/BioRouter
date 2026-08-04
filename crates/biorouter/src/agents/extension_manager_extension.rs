@@ -207,6 +207,16 @@ fn check_enable_allowed(
     // the session; a refusal at the first tool call is already too late. The
     // master opt-out reaches this through the capability, not through a second
     // read of the global.
+    //
+    // ⚠ **Task 49's grant is deliberately NOT consulted here.** A grant is the
+    // user's acceptance of a *data flow* through a connector this chat already
+    // has; it is not permission for the model to attach a connector the chat did
+    // not have. Reading it here would let an agent turn one accepted flow into
+    // the authority to open the very server that flow runs over — the enable is
+    // what pulls credentials and starts the process — which is the "an agent
+    // never clears a mismatch automatically" half of DR-26 undone by a lookup.
+    // The route out is unchanged and is a user's: enable it from Settings
+    // (`/agent/add_extension`, which warns and proceeds), then accept the flow.
     if let Some(warning) = cap.cross_affiliation_warning(extension_name, &class) {
         return Err(crate::privacy::refusal::cross_affiliation_refusal(&warning));
     }

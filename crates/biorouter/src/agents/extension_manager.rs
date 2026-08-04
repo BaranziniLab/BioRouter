@@ -1900,6 +1900,64 @@ impl ExtensionManager {
         ))
     }
 
+    /// Gate C on DR-26's THIRD axis: is this dispatch a cross-institutional data
+    /// flow the user has not accepted? `Some(err)` is the refusal.
+    ///
+    /// Both endpoints are Private and the tier gate already said yes; this asks
+    /// the different question — *under whose agreements?* — which no tier gate can
+    /// see. UCSF's Versa reaching the UCSF OMOP agent is the arrangement everyone
+    /// approved; the same model reaching another institution's connector is a
+    /// cross-institutional linkage nobody papered.
+    ///
+    /// Gate C **refuses**, where Gate E only marks: at discovery the user is
+    /// entitled to know the connector exists, but the dispatch is the disclosure,
+    /// and an agent can never clear a mismatch on its own. The refusal is where
+    /// the user meets the decision.
+    ///
+    /// It is asked ABOVE the classification ratchet, deliberately and for the
+    /// same reason the tier refusal is: a refused call reached no connector, so it
+    /// must not permanently classify the chat. DR-15's master opt-out is inside
+    /// [`crate::privacy::CallCapability::cross_affiliation_warning`], read off the
+    /// same sample every other gate on this path reads.
+    ///
+    /// ⚠ **Task 49: the refusal is not the end of the story.** DR-26's ruling is
+    /// that a mismatch WARNS — the user may accept a stated risk and proceed,
+    /// because a blocked-outright design is one researchers route around by
+    /// turning the feature off. So a mismatch is refused only while it is
+    /// UNGRANTED.
+    ///
+    /// ⚠ **The grant is consulted here and minted nowhere near here.**
+    /// `X-User-Action` is an HTTP header and has no channel on a tool-call path,
+    /// so this gate can read an acceptance and can never obtain one: dispatch
+    /// refuses → the refusal tells the model to ask the human → the user grants
+    /// over `POST /agent/cross_affiliation_grant` → the next call finds the row.
+    /// That asymmetry *is* DR-19, and it is why the lookup below is a read.
+    ///
+    /// ⚠ **The grant lookup is inside the mismatch arm, not beside it.** A
+    /// compatible pair must not touch the store at all: the common case is every
+    /// dispatch in every chat, and a query per tool call to answer a question with
+    /// no institution in it would be a cost paid for nothing.
+    async fn cross_affiliation_denial(
+        &self,
+        session_id: &str,
+        client_name: &str,
+        ext_class: &crate::privacy::ExtensionClassification,
+        cap: crate::privacy::CallCapability,
+    ) -> Option<ErrorData> {
+        let warning = cap.cross_affiliation_warning(client_name, ext_class)?;
+        if crate::privacy::grant::is_granted(
+            &self.context.session_manager,
+            session_id,
+            client_name,
+            cap.affiliation(),
+        )
+        .await
+        {
+            return None;
+        }
+        Some(crate::privacy::refusal::cross_affiliation_refusal(&warning))
+    }
+
     /// Record on the session row that this chat reached a private extension
     /// (issue #56, O5's second trigger).
     ///
@@ -1996,6 +2054,20 @@ impl ExtensionManager {
         // a tool call, so they refuse exactly as Gate C does — the connector
         // does not care which door the request came through, and three of them
         // fan out over EVERY installed extension.
+        //
+        // ⚠ **Task 49's grant is NOT consulted here, and the reason is a missing
+        // argument rather than a decision.** A grant is keyed on the triple
+        // (session, extension, model affiliation), and this function has no
+        // session: six of its eight callers are route handlers, the apps'
+        // UI-resource sweep and `Agent::list_extension_prompts`, none of which is
+        // a tool call and none of which carries a session id today. So a user who
+        // has accepted a connector's cross-institutional flow can call its tools
+        // and still be refused a resource read on it.
+        //
+        // That is fail-CLOSED — a refusal the user meets, never a disclosure they
+        // did not accept — which is why it ships this way rather than blocking
+        // Task 49. Closing it means threading the session through all eight
+        // entries, which is Task 50/51 territory, not a line to add here.
         match cap.cross_affiliation_warning(name, &class) {
             Some(warning) => Err(crate::privacy::refusal::cross_affiliation_refusal(&warning)),
             None => Ok(()),
@@ -2433,24 +2505,16 @@ impl ExtensionManager {
             }
         }
 
-        // Issue #56 Task 48, DR-26's THIRD axis. Both endpoints are Private and
-        // the tier gate above said yes; this asks the different question —
-        // *under whose agreements?* — which no tier gate can see. UCSF's Versa
-        // reaching the UCSF OMOP agent is the arrangement everyone approved; the
-        // same model reaching another institution's connector is a
-        // cross-institutional linkage nobody papered.
-        //
-        // Gate C **refuses**, where Gate E only marks: at discovery the user is
-        // entitled to know the connector exists, but the dispatch is the
-        // disclosure, and an agent can never clear a mismatch on its own. The
-        // refusal is where the user meets the decision.
-        //
-        // ABOVE the ratchet below, deliberately and for the same reason the tier
-        // refusal is: a refused call reached no connector, so it must not
-        // permanently classify the chat. The master opt-out is inside
-        // `cross_affiliation_warning`, read off this same sample.
-        if let Some(warning) = cap.cross_affiliation_warning(&client_name, &ext_class) {
-            return Err(crate::privacy::refusal::cross_affiliation_refusal(&warning).into());
+        // Issue #56 Tasks 48 and 49, DR-26's THIRD axis. See
+        // [`Self::cross_affiliation_denial`], which is where the whole rationale
+        // lives; it is a separate function only because the repo's
+        // `clippy::too_many_lines` baseline caps this one, and it is still called
+        // from ABOVE `let fut = async move`, so it decides at admission.
+        if let Some(err) = self
+            .cross_affiliation_denial(session_id, &client_name, &ext_class, cap)
+            .await
+        {
+            return Err(err.into());
         }
 
         // BR-23: the central secret-redaction boundary — see
@@ -6804,5 +6868,109 @@ mod tests {
             "the handed capability was ignored and the bound provider resampled: {warnings:?}"
         );
         assert_eq!(warnings[0].0, "ucsfomopagent");
+    }
+
+    /// Issue #56 Task 49, gate (1). A granted triple permits the dispatch the
+    /// mismatch refused a moment earlier — and the **same** extension after
+    /// re-binding to another institution's model does not, because the triple
+    /// the user accepted no longer exists.
+    ///
+    /// ⚠ The grant is minted here through the module's own test door, never by
+    /// anything reachable from a tool call: `X-User-Action` is an HTTP header
+    /// and has no channel on a dispatch path, which is precisely why the flow
+    /// is refuse → tell the user → grant over HTTP → retry.
+    #[tokio::test]
+    async fn a_granted_triple_permits_the_dispatch_and_re_binding_does_not_reuse_it() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        // Ungranted, the mismatch refuses. Without this the test could pass
+        // against a gate that stopped running altogether.
+        assert!(
+            em.dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                bound_to("stanford"),
+                CancellationToken::default(),
+            )
+            .await
+            .is_err(),
+            "an ungranted cross-institutional dispatch is refused"
+        );
+
+        crate::privacy::grant::record_for_test(
+            &sm,
+            &id,
+            "ucsfomopagent",
+            Some(ModelAffiliation::Institution(InstitutionId::new(
+                "stanford",
+            ))),
+        )
+        .await
+        .expect("the user's grant is recorded against the session");
+
+        let dispatched = em
+            .dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                bound_to("stanford"),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("the user accepted this exact flow, so the next call proceeds");
+        dispatched.result.await.expect("the mock client answers");
+
+        // Re-bound to a THIRD institution's model: same session, same
+        // extension, different third axis, so the grant does not reach it.
+        assert!(
+            em.dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                bound_to("mayo"),
+                CancellationToken::default(),
+            )
+            .await
+            .is_err(),
+            "re-binding to another institution's model invalidates the grant"
+        );
+    }
+
+    /// …and a grant is scoped to ONE extension. A user who accepted a specific
+    /// data flow accepted that flow, not a category of them.
+    #[tokio::test]
+    async fn a_grant_does_not_spread_to_another_extension_in_the_same_chat() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        em.add_mock_extension("cdwagent".to_string(), Arc::new(MockClient {}))
+            .await;
+
+        crate::privacy::grant::record_for_test(
+            &sm,
+            &id,
+            "ucsfomopagent",
+            Some(ModelAffiliation::Institution(InstitutionId::new(
+                "stanford",
+            ))),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            em.dispatch_tool_call(
+                &id,
+                call("cdwagent__tool"),
+                bound_to("stanford"),
+                CancellationToken::default(),
+            )
+            .await
+            .is_err(),
+            "the grant named the OMOP connector, not every UCSF connector"
+        );
     }
 }
