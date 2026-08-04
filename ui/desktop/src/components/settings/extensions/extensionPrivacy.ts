@@ -64,6 +64,19 @@ export const PRIVATE_EXTENSION_KEYS: readonly string[] = ['cdwagent', 'ucsfomopa
  * and it should not be discovered by someone puzzled that a Private-badged
  * extension answered a public model. Closing it means giving Rust a reader for
  * the last-good document, which is a one-line change at the `||` there.
+ *
+ * ⚠ **A third, narrower divergence, added by Task 43 (DR-23), and it
+ * under-marks.** Rust now resolves a tier from the union of the config name and
+ * the BAAM registry `id` the install recorded in
+ * `<config dir>/extension-provenance.json` — including, for an entry renamed
+ * after installation, by matching the recorded install directory against the
+ * entry's own arguments. This function has neither input: `GET
+ * /config/extensions` carries no provenance, deliberately (see above), and the
+ * renderer never reads that file. So a *renamed* private extension is badged
+ * Public here while every gate refuses it. Under-marking, i.e. the safe half —
+ * no warning, then a refusal — and Task 43's gate asserts on enforcement rather
+ * than on this badge for exactly that reason. Closing it needs a wire field or
+ * an IPC read, both of which are their own decision.
  */
 export function classifyExtension(name: string): ProviderTier {
   const key = nameToKey(name);

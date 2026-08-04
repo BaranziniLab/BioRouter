@@ -1345,7 +1345,7 @@ pub async fn apply_settings_overrides(
             !privacy_enforced
                 || crate::privacy::refusal::privacy_refusal(
                     &e.name(),
-                    crate::privacy::classify_extension(&e.name()),
+                    crate::privacy::classify_extension_entry(&e.name(), Some(e)),
                     child_tier,
                 )
                 .is_none()

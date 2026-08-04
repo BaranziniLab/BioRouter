@@ -665,7 +665,7 @@ mod tests {
     /// An in-process MCP server whose only distinguishing feature is the
     /// instruction text the manager hands the prompt builder. Injected through
     /// the real admission point, so the tier under test is the one
-    /// `classify_extension` stamps rather than one poked into the record.
+    /// `classify_extension` resolves rather than one poked into the record.
     struct InstructedServer;
 
     impl rmcp::ServerHandler for InstructedServer {

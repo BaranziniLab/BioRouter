@@ -408,10 +408,19 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
         (await headlessPost(headlessConfig.headlessBaseUrl, '/brxt/validate', {
           filePath,
         })) ?? { error: 'Could not validate bundle on the headless server' },
-      installBrxtBundle: async (filePath: string, extensionName: string) =>
+      installBrxtBundle: async (
+        filePath: string,
+        extensionName: string,
+        // Issue #56 Task 43: forwarded so a headless server that learns to
+        // record provenance receives it. Today's server ignores the field,
+        // which leaves the daemon on the config-name join — the pre-Task-43
+        // behaviour, never a downgrade below it.
+        registrySource?: { registryId: string; sourceUrl?: string }
+      ) =>
         (await headlessPost(headlessConfig.headlessBaseUrl, '/brxt/install', {
           filePath,
           extensionName,
+          registrySource,
         })) ?? { success: false, error: 'Could not install bundle on the headless server' },
       uninstallBrxtExtension: async (extensionName: string) =>
         (await headlessPost(headlessConfig.headlessBaseUrl, '/brxt/uninstall', {

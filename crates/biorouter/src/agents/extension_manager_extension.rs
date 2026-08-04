@@ -150,12 +150,15 @@ fn check_enable_allowed(
             ),
             None,
         )),
-        // Gate F1. Before the permit arm below, and stated on the NAME the
-        // model asked for rather than on the config record: nothing local may
-        // grant private (R11(i)), so the tier comes from the compiled-in
-        // marketplace baseline the same way it does at every admission point.
-        Some(_)
-            if crate::privacy::classify_extension(extension_name).is_private()
+        // Gate F1. Before the permit arm below. Nothing local may GRANT private
+        // (R11(i)), so the tier still comes from the compiled-in marketplace
+        // baseline — but the entry is passed alongside the name the model asked
+        // for, because Task 43 (DR-23) resolves a renamed entry through the
+        // install directory in its arguments, which the name no longer carries.
+        // Passing the config can only raise the answer, never lower it.
+        Some(ref entry)
+            if crate::privacy::classify_extension_entry(extension_name, Some(&entry.config))
+                .is_private()
                 && caller == ProviderTier::Public =>
         {
             Err(ErrorData::new(
@@ -786,5 +789,53 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.message.contains("operator"), "{}", err.message);
+    }
+
+    /// **Task 43 / DR-23's gate, Step 3.1 — the Gate F1 arm.**
+    ///
+    /// F1 fires BEFORE the extension is spawned, off the name the model asked
+    /// for. Enabling a private connector is not a call into it, it is the call
+    /// that SPAWNS it — pulling its credentials out of the keychain and opening
+    /// the session — so a rename that got past this gate would already have
+    /// disclosed something by the time Gate C looked.
+    ///
+    /// Both the name asked for and the entry's own `name` are the renamed one;
+    /// the `--directory` argument is the only surviving link to the install.
+    #[test]
+    fn a_renamed_private_extension_is_still_refused_by_gate_f1() {
+        let install_dir = "/home/researcher/.config/biorouter/extensions/UCSFOMOPAgent";
+        crate::privacy::provenance::insert_test_record_at(
+            "f1-omop-as-installed",
+            "ucsfomopagent",
+            Some(install_dir),
+        );
+        let renamed = ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::Stdio {
+                name: "f1-mystuff".to_string(),
+                description: "renamed by hand in config.yaml".to_string(),
+                cmd: "uv".to_string(),
+                args: vec![
+                    "run".to_string(),
+                    "--directory".to_string(),
+                    install_dir.to_string(),
+                    "server.py".to_string(),
+                ],
+                envs: crate::agents::extension::Envs::default(),
+                env_keys: vec![],
+                timeout: Some(300),
+                bundled: None,
+                available_tools: vec![],
+            },
+        };
+        assert_eq!(
+            crate::privacy::classify_extension("f1-mystuff"),
+            ProviderTier::Public,
+            "the fixture only discriminates if the NAME alone reads public"
+        );
+
+        let err = check_enable_allowed(Some(renamed), false, "f1-mystuff", public_enforcing())
+            .expect_err("renaming the config entry must not let a public model spawn it");
+        assert!(err.message.contains("private extension"), "{}", err.message);
     }
 }

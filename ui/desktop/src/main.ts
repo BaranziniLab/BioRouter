@@ -88,6 +88,7 @@ import {
   wrapArtifactForBrowser,
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
+import { recordExtensionProvenance } from './utils/extensionProvenance';
 import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
@@ -3094,7 +3095,25 @@ function cryptographyBuiltFromSource(detail: string): boolean {
 
 ipcMain.handle(
   'brxt:install',
-  async (_event, { filePath, extensionName }: { filePath: string; extensionName: string }) => {
+  async (
+    _event,
+    {
+      filePath,
+      extensionName,
+      registrySource,
+    }: {
+      filePath: string;
+      extensionName: string;
+      /**
+       * Issue #56 Task 43 (DR-23). Present only for a marketplace install —
+       * the BAAM registry `id` and the URL the bundle came from. A `.brxt`
+       * dropped in by hand has neither, and correctly records nothing: the
+       * daemon then falls back to the config-name join, which is the behaviour
+       * that shipped before this task.
+       */
+      registrySource?: { registryId: string; sourceUrl?: string };
+    }
+  ) => {
     try {
       const installDir = path.join(
         os.homedir(),
@@ -3137,6 +3156,30 @@ ipcMain.handle(
           `exited with status ${uvResult.status}`;
         const hint = uvSyncHint(detail);
         throw new Error(`uv sync failed: ${detail}${hint ? `\n\nHint: ${hint}` : ''}`);
+      }
+
+      // Issue #56 Task 43 (DR-23). AFTER the bundle is on disk and its venv
+      // built, because a record for an install that then failed would claim a
+      // provenance no config entry has. Never fatal: losing the record costs
+      // the rename protection, whereas failing here costs the user the
+      // extension they just installed.
+      if (registrySource?.registryId) {
+        const recorded = recordExtensionProvenance({
+          extensionName,
+          registryId: registrySource.registryId,
+          // The rename-proof half: `installDir` is what the stdio config's
+          // `--directory` argument will point at, and a later rename of the
+          // config entry cannot move it without breaking the extension.
+          installDir,
+          sourceUrl: registrySource.sourceUrl,
+          bundlePath: filePath,
+        });
+        if (!recorded) {
+          log.warn(
+            `[brxt] could not record provenance for ${extensionName}; its privacy tier will ` +
+              `fall back to the config-name join and a local rename would lose it`
+          );
+        }
       }
 
       return { success: true, installDir };

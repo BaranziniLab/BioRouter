@@ -25,6 +25,7 @@ pub mod disclosure;
 #[cfg(test)]
 mod disclosure_tests;
 pub mod extensions;
+pub mod provenance;
 pub mod refusal;
 mod registry_private;
 pub mod visibility;
@@ -32,7 +33,7 @@ pub mod visibility;
 pub use alt_provider::assert_alt_provider_allowed;
 pub use capability::CallCapability;
 pub use config_keys::is_capability_key;
-pub use extensions::{classify_extension, private_extension_ids};
+pub use extensions::{classify_extension, classify_extension_entry, private_extension_ids};
 pub use refusal::{raise_needs_user_action, PrivacyRefusal};
 
 /// The master privacy-tier switch (R7, DR-15). `true` — the default — means

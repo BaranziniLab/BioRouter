@@ -389,15 +389,41 @@ does not come back defaulted.
 
 ### 5.3 MCP extensions
 
-`tier: ProviderTier` on `struct Extension`, stamped once at admission in `add_extension` (`:532`),
-`add_client` (`:737`) and `add_inprocess_server` (`:759`).
+**Not stored anywhere — re-derived per read.** This was originally
+`tier: ProviderTier` on `struct Extension`, stamped once at admission in `add_extension`,
+`add_client` and `add_inprocess_server`.
+[DR-23](privacy-tiers-execution-plan.md#dr-23--an-extensions-tier-is-re-derived-from-the-registry-never-stored-locally)
+deleted that field: three call sites had no record to read and re-classified from a bare name
+anyway (Gate F1, `/agent/add_extension`, the sub-agent spawn partition), so a stamped copy was one
+source of truth among four. Every gate now calls `classify_extension` at the point of decision.
 
-On the **record**, not on `ExtensionConfig`, for four reasons each grounded in the tree: it is the
-record `get_client_for_tool` already resolves to (`:1033-1040`); `ExtensionConfig` round-trips
-through user-writable `config.yaml`, which would make classification locally forgeable and
-contradict R11(i); a new field there costs seven match arms plus an OpenAPI cycle; and `pool_key`
-carries no session id, so one `ucsfomopagent` child process is shared across sessions — the badge
-cannot live on the process.
+It was on the **record** rather than on `ExtensionConfig`, and those reasons now argue for having no
+stored copy at all: `ExtensionConfig` round-trips through user-writable `config.yaml`, which would
+make classification locally forgeable and contradict R11(i); and `pool_key` carries no session id,
+so one `ucsfomopagent` child process is shared across sessions — the badge could not live on the
+process either.
+
+**What the resolver keys on.** The union of the config entry's own name and the BAAM registry `id`
+the install recorded in `<config dir>/extension-provenance.json` (`privacy::provenance`). Union
+rather than precedence, so a record can only ever *raise* a tier — forging one, corrupting the store
+or deleting it leaves the answer at least as restrictive as the config-name join alone. That is why
+the store needs no gated writer, and it is the same "raises and never lowers" rule §10.2 states for
+registry freshness.
+
+**Finding the record, when the name is exactly what changed.** The store is keyed by the config
+entry's name at install time, which is a direct hit in the normal case — including the case where
+the registry `id` and the installed name already disagree (`spokeagent-0.4.1` does so today). It is
+*not* a hit after a later rename, because a rename rewrites both the map key and the entry's `name`.
+So each record also carries the `install_dir` the bundle was unpacked into, and a lookup that misses
+by key falls back to matching that directory against the config's own arguments, whole and exactly
+— never by parsing for a `--directory` flag. The install directory is the link a rename cannot
+break: repointing it means relocating the server's code, not editing a label.
+
+The honest limit: editing `args` to point at a copy of the directory evades this, and `config.yaml`
+is agent-writable because [DR-17](privacy-tiers-execution-plan.md) descoped the filesystem barrier.
+Evasion still only returns the answer the config-name join would have given, never anything lower.
+Callers that hold a config must therefore use `classify_extension_entry`; the name-only
+`classify_extension` cannot see the directory and is for callers that genuinely have only a name.
 
 ### 5.4 Knowledge bases
 
@@ -1464,8 +1490,14 @@ attribute present.
 
 **Two naming consequences, known rather than discovered:** a hand-installed extension *named*
 `ucsfomopagent` inherits the private badge (fail-closed, fine); and a genuinely private extension
-renamed locally becomes public — already the accepted direction under R11(ii), and unavoidable
-because the install records no provenance at all.
+renamed locally used to become public.
+
+The second is closed for marketplace installs by
+[DR-23](privacy-tiers-execution-plan.md#dr-23--an-extensions-tier-is-re-derived-from-the-registry-never-stored-locally):
+the install records the registry `id` and the install directory beside the config entry, and the
+resolver unions them with the name, so renaming the entry changes nothing. It remains open for the
+two cases that carry no registry id — an extension installed **before** that change, and a `.brxt`
+dropped in by hand from a local file — where the config-name join is still the only join available.
 
 **A mechanical scan of the 37-entry registry surfaces one candidate the ruling does not cover** and
 eight that hit a single signal: `ucsfhpcagent` (UCSF CHPC/SLURM job planning, account inspection,

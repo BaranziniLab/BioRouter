@@ -99,18 +99,22 @@ struct Extension {
     /// pool's `Weak` dies and the child process is reaped. `None` for unpooled and
     /// in-process servers, which own their client directly via `_temp_dir`/`client`.
     _pooled: Option<Arc<PooledEntry>>,
-    /// Issue #56. Stamped once at admission from `classify_extension`.
-    ///
-    /// On the RECORD, never on `ExtensionConfig`: the config round-trips
-    /// through user-writable `config.yaml`, which would make the badge locally
-    /// forgeable and contradict R11(i); a new config field costs seven match
-    /// arms plus an OpenAPI cycle; and `pool_key` carries no session id, so one
-    /// `ucsfomopagent` child process is shared across sessions and the badge
-    /// cannot live on the process.
-    ///
-    /// Read by Gate C, in `dispatch_tool_call`, out of the same snapshot as the
-    /// client and the config (`get_client_for_tool`).
-    tier: crate::privacy::ProviderTier,
+    //
+    // ⚠ **There is deliberately no `tier` field here** (issue #56, Task 43,
+    // DR-23). One was stamped at admission from `classify_extension` and read by
+    // Gate C; it is gone, and re-adding it would reintroduce the bug DR-23
+    // closed. The tier is now RE-DERIVED per read, so that a record admitted
+    // under one answer cannot outlive it — and, more to the point, so that the
+    // three call sites which never had a record to read (Gate F1, the
+    // `/agent/add_extension` route, and the sub-agent spawn partition) share the
+    // one resolver instead of re-classifying from a bare name.
+    //
+    // The reasons it was on the record rather than on `ExtensionConfig` still
+    // stand and now argue for having no stored copy at all: `ExtensionConfig`
+    // round-trips through user-writable `config.yaml`, so anything on it is
+    // locally forgeable (R11(i)), and `pool_key` carries no session id, so one
+    // `ucsfomopagent` child process is shared across sessions and nothing about
+    // a tier could live on the process either.
 }
 
 impl Extension {
@@ -1029,10 +1033,6 @@ impl ExtensionManager {
         if !Self::should_load_over(extensions.get(&final_name), origin) {
             return Ok(());
         }
-        // Issue #56: stamped on the key this entry is actually stored under,
-        // which is not always `sanitized_name` — a config with no name takes it
-        // from the server's own info.
-        let tier = crate::privacy::classify_extension(&final_name);
         extensions.insert(
             final_name,
             Extension {
@@ -1043,7 +1043,6 @@ impl ExtensionManager {
                 inprocess: false,
                 _pooled: Some(entry),
                 origin,
-                tier,
             },
         );
         drop(extensions);
@@ -1125,8 +1124,6 @@ impl ExtensionManager {
         info: Option<ServerInfo>,
         temp_dir: Option<TempDir>,
     ) {
-        // Issue #56: stamped on the key this entry is actually stored under.
-        let tier = crate::privacy::classify_extension(&name);
         self.extensions.lock().await.insert(
             name,
             Extension {
@@ -1137,7 +1134,6 @@ impl ExtensionManager {
                 inprocess: false,
                 _pooled: None,
                 origin: ExtensionOrigin::Explicit,
-                tier,
             },
         );
         self.invalidate_tools_cache_and_bump_version().await;
@@ -1207,8 +1203,6 @@ impl ExtensionManager {
                 // withheld from `get_extension_configs` by `inprocess`, on its
                 // own unrelated grounds.
                 origin: ExtensionOrigin::Explicit,
-                // Issue #56: stamped on the key this entry is stored under.
-                tier: crate::privacy::classify_extension(name),
             },
         );
         self.invalidate_tools_cache_and_bump_version().await;
@@ -1406,7 +1400,13 @@ impl ExtensionManager {
             .await
             .iter()
             .filter(|(k, e)| {
-                !enforce || crate::privacy::refusal::privacy_refusal(k, e.tier, caller).is_none()
+                !enforce
+                    || crate::privacy::refusal::privacy_refusal(
+                        k,
+                        crate::privacy::classify_extension_entry(k, Some(&e.config)),
+                        caller,
+                    )
+                    .is_none()
             })
             .map(|(k, _)| k.clone())
             .collect()
@@ -1699,6 +1699,13 @@ impl ExtensionManager {
     /// tier of the record this call was actually routed to, and a second
     /// `self.extensions.lock().await.get(&client_name)` would re-open the
     /// window this function was written to close.
+    ///
+    /// Task 43 (DR-23) stopped storing that tier and re-derives it here from
+    /// the RESOLVED key, still inside this one critical section. Nothing about
+    /// the window changes: the tier was already a pure function of the key —
+    /// `classify_extension` was what stamped it at all three admission points —
+    /// so deriving it beside the client is the same value the record carried,
+    /// minus a copy that a rename could make stale.
     async fn get_client_for_tool(
         &self,
         prefixed_name: &str,
@@ -1720,7 +1727,7 @@ impl ExtensionManager {
             name.to_string(),
             extension.get_client(),
             extension.config.clone(),
-            extension.tier,
+            crate::privacy::classify_extension_entry(name, Some(&extension.config)),
         ))
     }
 
@@ -1807,16 +1814,23 @@ impl ExtensionManager {
     /// `None` and the only value available is the one read at the decision,
     /// which is a single read rather than a second one.
     ///
-    /// The tier is looked up under its own lock rather than beside the client,
+    /// Presence is checked under its own lock rather than beside the client,
     /// which [`Self::get_client_for_tool`] deliberately refuses to do. That is
-    /// safe **here and only here** because `Extension::tier` is stamped as
-    /// `classify_extension(key)` at all three admission points, so it is a pure
-    /// function of the key both lookups use: an entry replaced in between cannot
-    /// carry a different tier.
+    /// safe **here and only here** because the tier is a pure function of the
+    /// key both lookups use (Task 43 made that literal — it is
+    /// `classify_extension(key)`, derived rather than stored), so an entry
+    /// replaced in between cannot carry a different one.
     ///
-    /// An unknown name reads Private — fail-closed, the opposite direction from
-    /// `classify_extension`'s fail-open ruling, because here the alternative is
-    /// to permit a reach at a name the manager could not resolve.
+    /// ⚠ **An unknown name reads Private — fail-CLOSED, and this is the one
+    /// place that direction is inverted.** `classify_extension` fails OPEN to
+    /// Public per operator ruling R11(ii), because an unknown *extension* is a
+    /// place data might come from. Here the alternative is to permit a reach at
+    /// a name the manager could not resolve at all, so the default flips. The
+    /// two must stay distinct: collapsing them onto one resolver with one
+    /// default silently breaks whichever half it does not implement, and the
+    /// broken half would be this one. Hence the explicit membership test below
+    /// rather than a `map(...).unwrap_or(...)` over a resolver that already has
+    /// an opinion about absent names.
     async fn assert_extension_reachable(
         &self,
         name: &str,
@@ -1831,8 +1845,9 @@ impl ExtensionManager {
             .lock()
             .await
             .get(name)
-            .map(|extension| extension.tier)
-            .unwrap_or(crate::privacy::ProviderTier::Private);
+            .map_or(crate::privacy::ProviderTier::Private, |extension| {
+                crate::privacy::classify_extension_entry(name, Some(&extension.config))
+            });
         match crate::privacy::refusal::privacy_refusal(name, tier, cap.tier()) {
             // DR-15's master opt-out, read through the capability so the tier
             // and the toggle can never be sampled at two different instants —
@@ -2683,9 +2698,9 @@ mod tests {
                 bundled: None,
                 available_tools,
             };
-            // Through the real admission point, so a mock is stamped by the same
-            // rule a real extension is (issue #56) instead of carrying a tier
-            // hardcoded here.
+            // Through the real admission point, so a mock is keyed by the same
+            // rule a real extension is (issue #56) and the gates resolve its
+            // tier the same way, instead of carrying one hardcoded here.
             self.add_client(sanitized_name, config, client, None, None)
                 .await;
         }
@@ -4374,14 +4389,19 @@ mod tests {
         );
     }
 
-    /// The tier the manager stamped on the entry stored under `key`.
-    async fn stamped_tier(em: &ExtensionManager, key: &str) -> crate::privacy::ProviderTier {
-        em.extensions
-            .lock()
-            .await
-            .get(key)
-            .unwrap_or_else(|| panic!("nothing was admitted under `{key}`"))
-            .tier
+    /// The tier that resolves for the entry stored under `key`, having first
+    /// asserted the entry is really there.
+    ///
+    /// Task 43 (DR-23) deleted the stamped `Extension.tier` this used to read,
+    /// so the presence check has to be explicit: without it every caller below
+    /// would pass against a manager that admitted nothing at all, since
+    /// `classify_extension` answers for any string.
+    async fn admitted_tier(em: &ExtensionManager, key: &str) -> crate::privacy::ProviderTier {
+        assert!(
+            em.extensions.lock().await.contains_key(key),
+            "nothing was admitted under `{key}`"
+        );
+        crate::privacy::classify_extension(key)
     }
 
     async fn admit_via_add_extension(name: &str) -> crate::privacy::ProviderTier {
@@ -4393,7 +4413,7 @@ mod tests {
         em.add_extension(target.into_config("privacy tier stamping".to_string()))
             .await
             .expect("admit the extension");
-        stamped_tier(&em, name).await
+        admitted_tier(&em, name).await
     }
 
     async fn admit_via_add_client(name: &str) -> crate::privacy::ProviderTier {
@@ -4415,7 +4435,7 @@ mod tests {
             None,
         )
         .await;
-        stamped_tier(&em, name).await
+        admitted_tier(&em, name).await
     }
 
     async fn admit_via_add_inprocess_server(name: &str) -> crate::privacy::ProviderTier {
@@ -4425,23 +4445,29 @@ mod tests {
         em.add_inprocess_server(name, DataSqlServer::new(std::collections::HashMap::new()))
             .await
             .expect("inject the per-app server");
-        stamped_tier(&em, name).await
+        admitted_tier(&em, name).await
     }
 
     /// Issue #56. `add_extension`, `add_client` and `add_inprocess_server` each
-    /// stamp `Extension.tier` at admission, because that field is what Gates C
-    /// and E read.
+    /// store the entry under a key the shared resolver answers for, because
+    /// that key is what Gates C and E consult.
+    ///
+    /// ⚠ Task 43 (DR-23) deleted the stamped `Extension.tier` this test was
+    /// written against, so what it now pins is the property that survived and
+    /// is still load-bearing: all three admit under the SAME key the resolver
+    /// is asked about later. `add_extension`'s key in particular is not always
+    /// its config's name — a config with no name takes it from the server's own
+    /// info — and an admission that stored one spelling while the gates asked
+    /// about another would classify every private extension public.
     ///
     /// Two of the three admit an arbitrary NAME and are driven with a private
     /// one directly. `add_extension` cannot be: for every variant it can
     /// actually spawn in a hermetic test the name is also the SPAWN key
     /// (`Builtin` looks it up in `BUILTIN_EXTENSIONS`, `Platform` in
     /// `PLATFORM_EXTENSIONS`), and no private name names a bundled server — so
-    /// only its public direction is reachable here. Its private direction is
-    /// held by the Step 5 gate, which requires exactly one call to
-    /// `classify_extension` inside that function.
+    /// only its public direction is reachable here.
     #[tokio::test]
-    async fn all_three_admission_points_stamp_the_tier() {
+    async fn all_three_admission_points_key_the_entry_the_resolver_will_be_asked_about() {
         use crate::privacy::ProviderTier;
 
         assert_eq!(
@@ -4846,6 +4872,231 @@ mod tests {
             .await
             .expect("the resolved record is public, so a public caller may call it");
         dispatched.result.await.expect("the mock client answers");
+    }
+
+    /// **Task 43 / DR-23's gate, Step 3.1.** Install a private extension,
+    /// rename it in `config.yaml`, and every enforcing gate must still refuse.
+    ///
+    /// This asserts on ENFORCEMENT, not on the badge the UI renders, because
+    /// enforcement is what the rename actually removed: `classify_extension`
+    /// keyed on the config name, and Gates C, E and F2 all read its answer, so
+    /// `name: mystuff` in the entry the marketplace wrote as `cdwagent` turned a
+    /// clinical connector into a public one for the model as well as for the
+    /// badge.
+    ///
+    /// ⚠ **The fixture is a real rename**, i.e. the map key and the config's own
+    /// `name` are BOTH `mystuff` and neither resembles the registry id. That is
+    /// what a user editing `config.yaml` produces, and it is what defeats a
+    /// resolver keyed on the name in any spelling. The only thing tying this
+    /// entry to its install is the `--directory` argument, which is where the
+    /// server's code actually lives.
+    ///
+    /// The three gates are asserted TOGETHER, in one test, on one fixture. They
+    /// are three different functions reading one resolver, and a version of this
+    /// split into three tests passes on an implementation where only the one
+    /// under test consults provenance — which is exactly the shape of the bug
+    /// (`Extension.tier` was stamped at admission and three other callers
+    /// re-classified from the name instead).
+    ///
+    /// `developer` rides along in every assertion so a fixture that admitted
+    /// nothing, or a filter that dropped everything, fails loudly instead of
+    /// passing vacuously.
+    #[tokio::test]
+    async fn a_renamed_private_extension_is_still_refused_by_gates_c_e_and_f2() {
+        let install_dir = "/home/researcher/.config/biorouter/extensions/CDWAgent";
+        crate::privacy::provenance::insert_test_record_at(
+            "cdwagent-as-installed",
+            "cdwagent",
+            Some(install_dir),
+        );
+        let (_dir, em, sm, id) = manager_with_a_session().await;
+        em.add_client(
+            "mystuff".to_string(),
+            ExtensionConfig::Stdio {
+                name: "mystuff".to_string(),
+                description: "renamed by hand in config.yaml".to_string(),
+                cmd: "uv".to_string(),
+                args: vec![
+                    "run".to_string(),
+                    "--directory".to_string(),
+                    install_dir.to_string(),
+                    "server.py".to_string(),
+                ],
+                envs: crate::agents::extension::Envs::default(),
+                env_keys: vec![],
+                timeout: Some(300),
+                bundled: None,
+                available_tools: vec![],
+            },
+            Arc::new(MockClient {}),
+            None,
+            None,
+        )
+        .await;
+        em.add_mock_extension("developer".to_string(), Arc::new(MockClient {}))
+            .await;
+        assert_eq!(
+            crate::privacy::classify_extension("mystuff"),
+            crate::privacy::ProviderTier::Public,
+            "the fixture only discriminates if the NAME alone reads public"
+        );
+
+        // Gate E — the tool list a public model is shown.
+        let tools = em.get_prefixed_tools(None).await.unwrap();
+        let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
+        assert!(
+            !names.iter().any(|n| n.starts_with("mystuff__")),
+            "the rename put a private server's tool schemas into a public model's prompt: {names:?}"
+        );
+        assert!(names.contains(&"developer__tool"), "{names:?}");
+
+        // Gate F2 — the server's own instructions in the system prompt.
+        let info = em.get_extensions_info().await;
+        let listed: Vec<&str> = info.iter().map(|i| i.name.as_str()).collect();
+        assert!(!listed.contains(&"mystuff"), "{listed:?}");
+        assert!(listed.contains(&"developer"), "{listed:?}");
+
+        // Gate C — dispatch.
+        let text = match em
+            .dispatch_tool_call(
+                &id,
+                call("mystuff__tool"),
+                crate::privacy::CallCapability::for_test(
+                    crate::privacy::ProviderTier::Public,
+                    true,
+                ),
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(_) => panic!("a public caller reached a renamed private extension"),
+            Err(e) => e.to_string(),
+        };
+        assert!(
+            text.contains(
+                &crate::privacy::refusal::privacy_refusal(
+                    "mystuff",
+                    crate::privacy::ProviderTier::Private,
+                    crate::privacy::ProviderTier::Public,
+                )
+                .expect("the pure refusal")
+                .message
+                .to_string()
+            ),
+            "{text}"
+        );
+        assert_eq!(
+            sm.get_session(&id, false).await.unwrap().privacy_tier,
+            crate::privacy::SessionClassification::Public,
+            "a refused call disclosed nothing"
+        );
+    }
+
+    /// **Step 3.2.** Take every optional input away and the private extension is
+    /// still private.
+    ///
+    /// ⚠ What "the registry" is on this side of the app, because the honest
+    /// answer decides whether this test means anything. There is no network
+    /// path to BAAM from Rust — the only fetch is the Electron `registry:fetch`
+    /// handler — so the resolver's registry IS the compiled-in
+    /// `PRIVATE_EXTENSIONS` snapshot, which is linked into the binary and cannot
+    /// go missing at runtime. Task 37's "raises and never lowers" therefore
+    /// holds here by construction rather than by a retention cache: an
+    /// unreachable network cannot subtract from a constant.
+    ///
+    /// What CAN go missing is the local provenance store, so that is what this
+    /// test removes — the store empty, and separately a record naming an id the
+    /// snapshot has never heard of. Neither may lower anything.
+    #[tokio::test]
+    async fn nothing_a_public_model_can_take_away_lowers_a_private_extension() {
+        use crate::privacy::ProviderTier::{Private, Public};
+
+        // No record at all: the compiled snapshot alone still classifies.
+        assert_eq!(crate::privacy::classify_extension("cdwagent"), Private);
+
+        // A record whose id the snapshot does not publish: retained, not
+        // defaulted to public.
+        crate::privacy::provenance::insert_test_record(
+            "gate32-clinical",
+            "an-id-this-build-has-never-seen",
+        );
+        assert_eq!(
+            crate::privacy::classify_extension("gate32-clinical"),
+            Public
+        );
+        crate::privacy::provenance::insert_test_record("ucsfomopagent", "an-id-nobody-publishes");
+        assert_eq!(crate::privacy::classify_extension("ucsfomopagent"), Private);
+
+        // And the gate that reads it is still closed.
+        let (_dir, em, _sm, id) = manager_with_a_session().await;
+        em.add_mock_extension("ucsfomopagent".to_string(), Arc::new(MockClient {}))
+            .await;
+        assert!(
+            em.dispatch_tool_call(
+                &id,
+                call("ucsfomopagent__tool"),
+                crate::privacy::CallCapability::for_test(Public, true),
+                CancellationToken::default(),
+            )
+            .await
+            .is_err(),
+            "with the provenance store carrying nothing useful, the compiled snapshot must \
+             still refuse"
+        );
+    }
+
+    /// **Step 3.3, structural.** No tier is persisted on the config entry, so a
+    /// future reader cannot resurrect the shadowing path DR-23 removed.
+    ///
+    /// Two halves, because they fail differently. A tier cannot be WRITTEN: no
+    /// variant of `ExtensionConfig` serialises one. And a tier cannot be READ:
+    /// a `tier:` line hand-added to `config.yaml` — by a user, or by the model
+    /// that has `developer__shell` — round-trips away instead of being carried
+    /// into the record, so an implementation that later grew such a field would
+    /// have to fail this test to exist.
+    #[test]
+    fn no_tier_is_persisted_on_the_config_entry() {
+        let stdio = ExtensionConfig::Stdio {
+            name: "cdwagent".to_string(),
+            description: "clinical".to_string(),
+            cmd: "uv".to_string(),
+            args: vec!["run".to_string()],
+            envs: crate::agents::extension::Envs::default(),
+            env_keys: vec![],
+            timeout: Some(300),
+            bundled: None,
+            available_tools: vec![],
+        };
+        let json = serde_json::to_value(&stdio).unwrap();
+        for forbidden in ["tier", "privacy", "privacy_tier"] {
+            assert!(
+                json.get(forbidden).is_none(),
+                "`{forbidden}` is serialised onto the config entry, which is exactly the \
+                 locally-forgeable value DR-23 removed: {json}"
+            );
+        }
+
+        let hand_edited: ExtensionConfig = serde_json::from_value(serde_json::json!({
+            "type": "stdio",
+            "name": "cdwagent",
+            "description": "clinical",
+            "cmd": "uv",
+            "args": ["run"],
+            "timeout": 300,
+            "tier": "public",
+            "privacy": "public",
+        }))
+        .expect("an unknown key is ignored, not an error");
+        assert_eq!(
+            serde_json::to_value(&hand_edited).unwrap().get("tier"),
+            None,
+            "a hand-written tier survived a round trip through the config entry"
+        );
+        assert_eq!(
+            crate::privacy::classify_extension(&hand_edited.name()),
+            crate::privacy::ProviderTier::Private,
+            "the hand-written tier changed the answer"
+        );
     }
 
     /// DR-15's master opt-out is read INSIDE the gate, through the capability
@@ -5525,46 +5776,26 @@ mod tests {
     }
 
     impl ExtensionManager {
-        /// Insert a mock extension with the tier stated here instead of the one
-        /// `classify_extension` would stamp.
+        /// Admit a mock extension that the resolver will call PRIVATE, under a
+        /// key the compiled marketplace snapshot does not itself publish.
         ///
-        /// Every other fixture in this file goes through the real admission
-        /// point on purpose, and this one does not, for a reason that cannot be
-        /// worked around: the hazard below needs a PRIVATE key containing `__`,
-        /// and `PRIVATE_EXTENSIONS` holds `cdwagent` and `ucsfomopagent`, so no
-        /// real admission can produce one today. It can tomorrow — the set is
-        /// hand-maintained, `name_to_key` preserves `_`, and a `.brxt`
-        /// hand-install records no provenance at all — and the resolver has to
-        /// be right before that day, not after it. The half that IS constructible
-        /// against the real registry is asserted separately by
+        /// The hazard below needs a private key containing `__`, and
+        /// `PRIVATE_EXTENSIONS` holds `cdwagent` and `ucsfomopagent`, so the
+        /// snapshot alone cannot produce one. Before Task 43 the only way to
+        /// build the fixture was to bypass admission and stamp
+        /// `Extension.tier` by hand; now there is a real one, and it is the
+        /// very mechanism DR-23 added — record the install's registry id and
+        /// let the resolver do its job. So this goes through the SAME admission
+        /// point as every other fixture in this file, and the divergence
+        /// between the config name and the registry id is the point rather than
+        /// an artefact of the fixture.
+        ///
+        /// The half that is constructible from the snapshot's own names is
+        /// asserted separately by
         /// `the_two_gates_agree_on_a_key_that_contains_the_separator`.
-        async fn add_mock_extension_at_tier(
-            &self,
-            name: String,
-            client: McpClientBox,
-            tier: crate::privacy::ProviderTier,
-        ) {
-            self.extensions.lock().await.insert(
-                name.clone(),
-                Extension {
-                    config: ExtensionConfig::Builtin {
-                        name,
-                        display_name: None,
-                        description: "built-in".to_string(),
-                        timeout: None,
-                        bundled: None,
-                        available_tools: vec![],
-                    },
-                    client,
-                    server_info: None,
-                    _temp_dir: None,
-                    inprocess: false,
-                    _pooled: None,
-                    origin: ExtensionOrigin::Explicit,
-                    tier,
-                },
-            );
-            self.invalidate_tools_cache_and_bump_version().await;
+        async fn add_mock_private_extension(&self, name: String, client: McpClientBox) {
+            crate::privacy::provenance::insert_test_record(&name, "cdwagent");
+            self.add_mock_extension(name, client).await;
         }
     }
 
@@ -5612,19 +5843,17 @@ mod tests {
     /// its FIRST separator and taking the leading segment, while
     /// the dispatcher resolved by `starts_with` over a `HashMap` with
     /// per-process-randomised iteration order. `name_to_key` preserves `_`, so
-    /// an extension whose `manifest.name` contains `__` keeps it in the map key —
-    /// reachable by hand-installing a `.brxt`, which records no provenance at all
-    /// (`BrxtInstallModal.tsx`). With keys `a` (public) and `a__b` (private), the
-    /// tool `a__b__t` computes prefix `a` and would be ALLOWED, putting the
-    /// private server's tool names, descriptions and JSON schemas into a public
-    /// model's system prompt.
+    /// an extension whose `manifest.name` contains `__` keeps it in the map key.
+    /// With keys `a` (public) and `a__b` (private), the tool `a__b__t` computes
+    /// prefix `a` and would be ALLOWED, putting the private server's tool names,
+    /// descriptions and JSON schemas into a public model's system prompt.
     #[tokio::test]
     async fn an_embedded_double_underscore_cannot_smuggle_a_private_tool_into_the_list() {
-        use crate::privacy::ProviderTier::{Private, Public};
+        use crate::privacy::ProviderTier::Public;
         let (_dir, em, _provider) = manager_bound_to(Public);
         em.add_mock_extension("a".to_string(), Arc::new(MockClient {}))
             .await;
-        em.add_mock_extension_at_tier("a__b".to_string(), Arc::new(MockClient {}), Private)
+        em.add_mock_private_extension("a__b".to_string(), Arc::new(MockClient {}))
             .await;
 
         let tools = em.get_prefixed_tools(None).await.unwrap();

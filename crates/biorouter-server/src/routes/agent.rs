@@ -939,7 +939,10 @@ async fn agent_add_extension(
     // `CallCapability`: `/agent/add_extension` is not a tool dispatch and has no
     // admitted capability to inherit.
     if biorouter::privacy::privacy_tiers_enabled()
-        && biorouter::privacy::classify_extension(&extension_name).is_private()
+        // Task 43 (DR-23): the config, not just its name — a renamed entry is
+        // resolved through the install directory in its arguments.
+        && biorouter::privacy::classify_extension_entry(&extension_name, Some(&request.config))
+            .is_private()
         && capability == ProviderTier::Public
     {
         return Err(ErrorResponse {

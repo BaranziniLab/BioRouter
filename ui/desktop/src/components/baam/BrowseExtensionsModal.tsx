@@ -29,6 +29,13 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
   const [search, setSearch] = useState('');
   const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [brxtPath, setBrxtPath] = useState<string | null>(null);
+  // Issue #56 Task 43 (DR-23): the registry entry the downloaded bundle came
+  // from. This modal is the only place the stable `id` exists, and the install
+  // that has to record it happens one component away.
+  const [brxtSource, setBrxtSource] = useState<{
+    registryId: string;
+    sourceUrl?: string;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -62,6 +69,7 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
         toastError({ title: ext.name, msg: dl.error });
         return;
       }
+      setBrxtSource({ registryId: ext.id, sourceUrl: ext.download });
       setBrxtPath(dl.path);
     } catch (error) {
       toastError({
@@ -79,9 +87,14 @@ export default function BrowseExtensionsModal({ onClose, onInstalled, installedN
     return (
       <BrxtInstallModal
         preloadedFilePath={brxtPath}
-        onClose={() => setBrxtPath(null)}
+        registrySource={brxtSource ?? undefined}
+        onClose={() => {
+          setBrxtPath(null);
+          setBrxtSource(null);
+        }}
         onInstalled={() => {
           setBrxtPath(null);
+          setBrxtSource(null);
           onInstalled();
           onClose();
         }}

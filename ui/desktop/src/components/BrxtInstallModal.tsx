@@ -27,9 +27,26 @@ interface Props {
   onClose: () => void;
   onInstalled: () => void;
   preloadedFilePath?: string;
+  /**
+   * Issue #56 Task 43 (DR-23). Where this bundle came from, when it came from
+   * the marketplace: `BrowseExtensionsModal` knows the registry `id` and the
+   * download URL, and this modal is where the install actually happens. The
+   * install records them beside the config entry so the daemon re-derives the
+   * privacy tier from the stable id rather than from the config name, which the
+   * user (or the model) can rename.
+   *
+   * Absent for the drop-a-file route, which has no registry id — that install
+   * records nothing and the daemon falls back to the config-name join.
+   */
+  registrySource?: { registryId: string; sourceUrl?: string };
 }
 
-export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Props) {
+export function BrxtInstallModal({
+  onClose,
+  onInstalled,
+  preloadedFilePath,
+  registrySource,
+}: Props) {
   const [step, setStep] = useState<Step>('drop');
   const [filePath, setFilePath] = useState<string | null>(null);
   const [manifest, setManifest] = useState<BrxtManifest | null>(null);
@@ -125,7 +142,11 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
     setError(null);
 
     try {
-      const result = await window.electron.installBrxtBundle(filePath, manifest.name);
+      const result = await window.electron.installBrxtBundle(
+        filePath,
+        manifest.name,
+        registrySource
+      );
 
       if ('error' in result) {
         setError(result.error);

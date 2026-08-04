@@ -353,9 +353,17 @@ type ElectronAPI = {
       }
     | { error: string }
   >;
+  /**
+   * Issue #56 Task 43 (DR-23). `registrySource` carries the BAAM registry `id`
+   * the bundle came from, so the install can record provenance beside the
+   * config entry and the daemon can re-derive the privacy tier from it instead
+   * of from the (locally renameable) config name. Omitted for a hand-dropped
+   * `.brxt`, which has no registry id to record.
+   */
   installBrxtBundle: (
     filePath: string,
-    extensionName: string
+    extensionName: string,
+    registrySource?: { registryId: string; sourceUrl?: string }
   ) => Promise<{ success: true; installDir: string } | { error: string }>;
   // BAAM registry (Browse Skills / Browse Extensions)
   /**
@@ -590,8 +598,11 @@ const electronAPI: ElectronAPI = {
   openBrxtFilePicker: () => ipcRenderer.invoke('brxt:open-file-dialog'),
   validateBrxtBundle: (filePath: string) =>
     ipcRenderer.invoke('brxt:validate-and-read', { filePath }),
-  installBrxtBundle: (filePath: string, extensionName: string) =>
-    ipcRenderer.invoke('brxt:install', { filePath, extensionName }),
+  installBrxtBundle: (
+    filePath: string,
+    extensionName: string,
+    registrySource?: { registryId: string; sourceUrl?: string }
+  ) => ipcRenderer.invoke('brxt:install', { filePath, extensionName, registrySource }),
   uninstallBrxtExtension: (extensionName: string) =>
     ipcRenderer.invoke('brxt:uninstall', { extensionName }),
   extractSkillZip: (filePath: string) => ipcRenderer.invoke('skills:extract-zip', { filePath }),

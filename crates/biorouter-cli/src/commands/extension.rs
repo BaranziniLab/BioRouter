@@ -225,6 +225,13 @@ pub async fn handle_install(
         bundled: None,
         available_tools: Vec::new(),
     };
+    // Issue #56 Task 43 (DR-23): no provenance is recorded here, deliberately.
+    // This subcommand installs a `.brxt` from a local path, which carries no
+    // BAAM registry id — the id exists only where a marketplace install happens,
+    // which today is the desktop's Browse Extensions flow. With nothing to key
+    // on, `classify_extension` falls back to the config-name join, i.e. exactly
+    // the behaviour that shipped before that task. `privacy::provenance::record`
+    // is the writer to call if this path ever learns an id.
     set_extension(ExtensionEntry {
         enabled: !no_enable,
         config: config_entry,
