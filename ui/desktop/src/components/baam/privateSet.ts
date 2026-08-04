@@ -33,12 +33,23 @@
  * Enable-all count, with no UI to undo it. Three things keep that a nuisance
  * rather than a lockout, and all three are load-bearing:
  *
- *   - the rows are still rendered and the extensions still enabled — this
- *     changes what the GUI *says*, never what it permits;
+ *   - the rows are still rendered, and Settings' own toggle still works: this
+ *     changes what the GUI *says*, never what the **daemon** permits;
  *   - the Rust gates are untouched, so nothing here can actually wall a tool;
  *   - the document is fetched over HTTPS from one pinned host, validated in the
  *     main process before it is believed, and the only field read is
  *     `privacy === 'private'`.
+ *
+ * ⚠ **"Never what it permits" was too strong, and review caught it.** In the
+ * *composer's* selector a refused pairing is rendered but `disabled`
+ * (`BottomMenuExtensionSelection.tsx` `:249`, `:426`) and is dropped from
+ * `toggleableExtensions`, which is the set "Enable all" acts on — so on a
+ * public-model chat a key a hostile document taught makes that extension
+ * untoggleable from the composer, including untoggleable *off*. The bound on
+ * that is `ExtensionItem`'s Switch, which the pairing notice does **not**
+ * disable (`isToggling` only), so the extension stays toggleable in Settings and
+ * the daemon is unaffected either way. A bounded nuisance with an escape hatch,
+ * which is the claim this paragraph is entitled to make — not "no effect".
  *
  * That is the accepted cost of "never lowers": a badge that a hostile document
  * can *add* is strictly better than one it can *remove*, and only the second is
