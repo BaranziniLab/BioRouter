@@ -1242,7 +1242,7 @@ async fn manager_with_a_private_extension() -> Arc<ExtensionManager> {
 /// A provider that answers nothing and only exists to carry a tier.
 ///
 /// `CallCapability::for_test` is `#[cfg(test)] pub(crate)`, deliberately: Task
-/// 10's census counts the two production constructors under `crates/*/src/` and
+/// 51's census counts the two production constructors under `crates/*/src/` and
 /// a test spelling either of them would be indistinguishable from an entry
 /// nobody classified. An integration test is outside that window but still
 /// cannot see `for_test`, so the private capability below is built the way

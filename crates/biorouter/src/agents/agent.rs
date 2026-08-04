@@ -11301,15 +11301,19 @@ mod gate_c_dispatch_tests {
 
     /// Path 2: `POST /agent/call_tool`. It arrives with no caller identity, so
     /// it hands the manager the most restrictive pair — the value the route's
-    /// own constructor returns — built here with the test constructor so Task
-    /// 10's census of the two production spellings keeps counting production
-    /// entries only (`tests/privacy_capability.rs` pins that the two agree).
+    /// own constructor returns — built here with the test constructor so the
+    /// census of the two production spellings keeps counting production entries
+    /// only (`tests/privacy_capability.rs` pins that the two agree).
     ///
-    /// ⚠ Do not spell that constructor here, not even inside a comment. The
-    /// census is a `grep` over `crates/*/src/` for its literal name followed by
-    /// `(`, and it asserts an exact count of THREE. A mention in prose is
-    /// indistinguishable from a fourth entry nobody classified, which is the
-    /// one thing that check exists to catch.
+    /// ⚠ Do not spell that constructor here **in code**. Task 51's census
+    /// (`the_sites_that_decide_how_far_a_caller_reaches_are_exactly_these`) greps
+    /// `crates/*/src/` for its literal name followed by `(` and asserts the exact
+    /// (file, count) set — one production entry, in the route itself. A test
+    /// spelling it would be indistinguishable from a second entry nobody
+    /// classified, which is the one thing that check exists to catch. Prose is
+    /// safe: the census skips `//` lines, for the reason `grant.rs`'s twin audit
+    /// records — an audit that reads comments goes red over a sentence, and
+    /// teaches the next person to relax it.
     async fn call_private_tool_as_the_http_route_does() -> String {
         let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
         // `ToolCallResult` is not `Debug`, so the outcome is matched rather
@@ -11500,5 +11504,152 @@ mod gate_c_dispatch_tests {
         fn get_model_config(&self) -> ModelConfig {
             ModelConfig::new_or_fail("covered-model")
         }
+    }
+
+    /// A provider covered by `institution`'s agreements, private tier.
+    fn covered_by(institution: &str) -> Arc<dyn Provider> {
+        Arc::new(ProviderCoveredBy {
+            tier: ProviderTier::Private,
+            affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new(institution),
+            )),
+        })
+    }
+
+    /// The private tool, called through the agent loop, expecting a refusal.
+    async fn refusal_for(agent: &Arc<Agent>, session: &Session, request_id: &str) -> String {
+        let (_id, result) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), request_id.to_string(), None, session)
+            .await;
+        match result
+            .expect("the agent loop wraps a dispatch refusal as a tool result")
+            .result
+            .await
+        {
+            Ok(ok) => panic!("a cross-institutional dispatch was permitted: {ok:?}"),
+            Err(e) => e.message.to_string(),
+        }
+    }
+
+    /// **Issue #56 Task 51, Step 3 — the operator's scenario, end to end, in one
+    /// test.** Five moves in one chat, through the real agent: the approved flow
+    /// runs, the cross-institutional one is refused with a warning naming both
+    /// institutions, the user accepts it, the same call then proceeds, and
+    /// re-binding to a third institution's model does not inherit that
+    /// acceptance.
+    ///
+    /// ⚠ **It is driven through `Agent::update_provider` and
+    /// `Agent::dispatch_tool_call`, not by handing gates a hand-built
+    /// capability.** The grant's own dispatch tests
+    /// (`extension_manager::…::a_granted_triple_permits_the_dispatch_and_re_binding_does_not_reuse_it`)
+    /// pass their capability in, so they cannot fail if `sample` stops reading
+    /// `p.affiliation()` at all; the bind test above binds for real but never
+    /// dispatches. Nothing joined the two until this. The chain it exercises is
+    /// bind → sample → Gate C → grant, every link of it live.
+    ///
+    /// ⚠ **The roles of the two institutions are mirrored from DR-26's wording,
+    /// because this build cannot express the other arrangement.** The ruling
+    /// describes a UCSF-covered Versa model refused at *another* institution's
+    /// connector; `ucsf` is the only institution the compiled registry snapshot
+    /// knows (pinned by `providers::factory::tests::
+    /// this_build_knows_exactly_one_institution`), so a Stanford-owned extension
+    /// is not constructible and the foreign endpoint has to be the model. The
+    /// mismatch is the same one — DR-26's table is symmetric in which side is
+    /// foreign — and move 1 keeps the half that matters most: the arrangement
+    /// everyone approved still runs.
+    ///
+    /// Without move 1 every assertion below is satisfied by a gate that refuses
+    /// everything, which is the design DR-26 explicitly rejects.
+    #[tokio::test]
+    async fn the_operators_cross_institutional_scenario_end_to_end() {
+        // 1. The UCSF-covered model reaching the UCSF OMOP agent: the
+        //    arrangement everyone approved. No warning, and the call runs.
+        let (_dir, agent, session) = agent_with_the_private_extension(covered_by("ucsf")).await;
+        assert!(
+            agent.cross_affiliation_warnings().await.is_empty(),
+            "a model covered by the connector's own institution crosses no boundary"
+        );
+        let (_id, approved) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), "req-ucsf".to_string(), None, &session)
+            .await;
+        approved
+            .expect("dispatch")
+            .result
+            .await
+            .expect("UCSF's model may reach UCSF's connector — this is the approved flow");
+
+        // 2. Re-bound to another institution's model. The bind WARNS and still
+        //    succeeds (DR-19 on the third axis), and the very same call is now
+        //    refused with a statement naming both institutions.
+        agent
+            .update_provider(covered_by("stanford"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let refused = refusal_for(&agent, &session, "req-stanford").await;
+        assert!(refused.contains(PRIVATE_EXTENSION), "{refused}");
+        assert!(
+            refused.contains("UCSF (ucsf)"),
+            "the institution that owns the connector's data: {refused}"
+        );
+        assert!(
+            refused.contains("stanford"),
+            "the institution whose agreements cover the bound model: {refused}"
+        );
+
+        // 3. The user accepts that stated risk, through the module's own test
+        //    door. Nothing on a dispatch path can reach the real one: the proof
+        //    of user is `X-User-Action`, an HTTP header with no channel here,
+        //    which is exactly why the flow is refuse → tell the user → grant over
+        //    HTTP → retry.
+        crate::privacy::grant::record_for_test(
+            &agent.config.session_manager,
+            &session.id,
+            PRIVATE_EXTENSION,
+            Some(crate::privacy::ModelAffiliation::Institution(
+                crate::privacy::affiliation::InstitutionId::new("stanford"),
+            )),
+        )
+        .await
+        .expect("the user's acceptance is recorded against this chat");
+
+        // 4. …and the identical call now proceeds. A grant that changed nothing
+        //    would leave DR-26 a blanket block.
+        let (_id, granted) = agent
+            .dispatch_tool_call(
+                call(PRIVATE_TOOL),
+                "req-granted".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        granted
+            .expect("dispatch")
+            .result
+            .await
+            .expect("the user accepted this exact flow, so the next call proceeds");
+
+        // 5. Re-bound to a THIRD institution's model: same chat, same connector,
+        //    different third axis. The triple the user accepted no longer exists,
+        //    so the grant does not reach this call — the axis an implementer is
+        //    most likely to drop, and dropping it turns a one-time acceptance
+        //    into a standing permission that survives a model switch nobody
+        //    reviewed.
+        agent
+            .update_provider(covered_by("mayo"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let refused_again = refusal_for(&agent, &session, "req-mayo").await;
+        assert!(
+            refused_again.contains("mayo"),
+            "the refusal names the newly bound institution: {refused_again}"
+        );
+        assert!(
+            refused_again.contains("UCSF (ucsf)"),
+            "…and still the one that owns the data: {refused_again}"
+        );
+        assert!(
+            !refused_again.contains("stanford"),
+            "the accepted flow was about the model that is no longer bound: {refused_again}"
+        );
     }
 }

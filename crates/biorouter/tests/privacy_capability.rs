@@ -1,35 +1,42 @@
-//! The two capability constructors, tested from OUTSIDE `crates/*/src/` on
-//! purpose (issue #56).
+//! The two capability constructors and the **Phase 6 audit** (issue #56 Task 51,
+//! DR-26), tested from OUTSIDE `crates/*/src/` on purpose.
 //!
-//! ⚠ **The census this file was placed here for is NOT WRITTEN.** The sentences
-//! below describe the design it anticipates, and they were phrased in the
-//! present tense as though it existed; review looked for it and found nothing.
-//! `grep -rn '"CallCapability' crates/` returns no audit, and the only whole-tree
-//! censuses in the tree today are
-//! `privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification`
-//! and `declassify::tests::the_proof_of_user_is_constructed_in_exactly_two_places`.
-//! Task 51 is where it lands. Until then nothing stops a fifth `sample()` from
-//! joining the four in `crates/*/src/`, and no comment elsewhere should cite it
-//! as a constraint that already binds.
+//! # Why this file is where the audit lives
 //!
-//! The placement still earns its keep, because the reasoning is what makes the
-//! census writable at all: it will grep `crates/*/src/` for
-//! `CallCapability::sample(` and `CallCapability::public_enforced(` and assert
-//! the exact set of production entries — the check that catches an entry nobody
-//! classified. A unit test beside the definition spells both constructors, and
-//! no filter grep can express separates a test hit from a production one:
-//! `grep -v "mod tests"` drops only lines that literally contain that string,
-//! which a call to either constructor does not. Excluding the whole definition
-//! file instead would blind the census in exactly the file where a fifth sampler
-//! is most plausible.
+//! The census below greps `crates/*/src/` for `CallCapability::sample(` and
+//! `CallCapability::public_enforced(` and asserts the exact set of production
+//! entries — the check that catches an entry nobody classified. No filter a grep
+//! can express separates a test hit from a production one: `grep -v "mod tests"`
+//! drops only lines that literally contain that string, which a call to either
+//! constructor does not, and excluding the whole definition file instead would
+//! blind the census in exactly the file where a fifth sampler is most plausible.
 //!
-//! So the two tests that must name the real constructors live here, where the
-//! census does not walk, and the census needs no exception list at all. Every
-//! other test builds its capability with `CallCapability::for_test*` and stays
-//! beside the code it exercises.
+//! So the two tests that must name the real constructors live **here**, where the
+//! census does not walk, and the census needs no exception list for them at all.
+//! Every other test in the tree builds its capability with
+//! `CallCapability::for_test*` and stays beside the code it exercises.
+//!
+//! # What the audit does NOT assert
+//!
+//! ⚠ **Not "every path goes through `CallCapability`" — that claim is false**, and
+//! a test asserting it would either fail immediately or be quietly weakened until
+//! it passed. `CallCapability` covers Gates C, E and F; four other paths decide
+//! reach without touching one, for reasons documented in the tree and which are
+//! not defects (an HTTP route with no admitted capability to inherit, a subagent
+//! spawn constructing a whole new agent, the `biorouter-mcp` crate boundary
+//! across which only a bare `bool` and a `_meta` string can travel, and the
+//! agent-drafter catalog's direct read of the process-global).
+//!
+//! The audit is therefore a **census**: it pins the complete set of sites, the
+//! sanctioned ones and the bypassing ones together, and fails when a new one
+//! appears. That is what makes DR-26's *"checked in all scenarios where this need
+//! to be checked"* mechanical instead of aspirational — a list of call sites is
+//! not the answer, because the next call site will not be on it.
 
 use biorouter::agents::types::SharedProvider;
 use biorouter::privacy::{CallCapability, ProviderTier};
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 #[test]
 fn an_entry_with_no_caller_identity_is_the_most_restrictive_pair() {
@@ -67,4 +74,423 @@ async fn an_unbound_provider_samples_public_and_states_no_affiliation() {
     // a real provider covered by another institution and reads the warning back
     // out through `Agent::cross_affiliation_warnings`.
     assert_eq!(cap.affiliation(), None);
+}
+
+// ---------------------------------------------------------------------------
+// Task 51 — the Phase 6 audit.
+// ---------------------------------------------------------------------------
+
+/// One production program point at which something decides how far a caller may
+/// reach.
+///
+/// The `what` field is not decoration. A census whose rows are bare paths is one
+/// a future engineer extends by pasting a line to make the build green; a census
+/// whose rows must be *described* asks them what the new site is first, which is
+/// the whole point of failing the build.
+struct Site {
+    /// The spelling the audit greps for, outside `//` comments.
+    needle: &'static str,
+    /// Repo-relative path, `/`-separated.
+    file: &'static str,
+    /// How many times `needle` occurs in `file`.
+    count: usize,
+    /// What this site is and why it is a decider.
+    what: &'static str,
+}
+
+/// Every site that decides how far a caller reaches, as measured against this
+/// tree on 2026-08-04.
+///
+/// Grouped by needle; each needle is one *way* of deciding, and each row is one
+/// file that decides that way.
+const EXPECTED: &[Site] = &[
+    // ---------------------------------------------------------------- the
+    // admitted capability. Gates C, E and F all read one of these; it is the ONE
+    // read of the provider mutex and the ONE read of the master toggle on a
+    // call's path.
+    Site {
+        needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/agents/agent.rs",
+        count: 3,
+        what: "`call_prefetch_tool` (which dispatches before the turn), the agent \
+               loop's own tool-call sample, and `cross_affiliation_grant_subject` \
+               (which composes the sentence the user is asked to accept)",
+    },
+    Site {
+        needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/agents/extension_manager.rs",
+        count: 2,
+        what: "`extension_reach` (Gate E's discovery filter and mark, which \
+               `cross_affiliation_warnings` also reads through) and \
+               `assert_extension_reachable` (Gate F's non-tool-call entry points) — \
+               each falling back to a sample only when handed no admitted capability",
+    },
+    Site {
+        needle: "CallCapability::public_enforced(",
+        file: "crates/biorouter-server/src/routes/agent.rs",
+        count: 1,
+        what: "`POST /agent/call_tool` — an entry with no caller identity, which \
+               therefore takes the most restrictive pair this type can express",
+    },
+    // ---------------------------------------------------------- DR-26's third
+    // axis, asked through the free function rather than off a capability. Its
+    // own doc records why it exists: for surfaces that hold an `Arc<dyn Provider>`
+    // directly and have no admitted capability to inherit.
+    Site {
+        needle: "affiliation::gate_cross_affiliation",
+        file: "crates/biorouter-server/src/routes/agent.rs",
+        count: 1,
+        what: "DR-26 bypassing path 1 — `POST /agent/add_extension`, an HTTP route \
+               and not a tool dispatch, so there is no admitted capability to inherit",
+    },
+    Site {
+        needle: "affiliation::gate_cross_affiliation",
+        file: "crates/biorouter/src/agents/subagent_tool.rs",
+        count: 1,
+        what: "DR-26 bypassing path 2 — the subagent spawn's extension filter, which \
+               is constructing a whole new agent and reads the child's own provider",
+    },
+    Site {
+        needle: "affiliation::gate_cross_affiliation",
+        file: "crates/biorouter/src/privacy/capability.rs",
+        count: 1,
+        what: "the sanctioned narrowing: `CallCapability::cross_affiliation`, which is \
+               this same gate with the three model axes taken off one sample",
+    },
+    Site {
+        needle: "affiliation::gate_cross_affiliation",
+        file: "crates/biorouter/src/privacy/grant.rs",
+        count: 1,
+        what: "NOT a production decider — `mod tests`' `statement()` helper, which \
+               composes the user-facing prompt through the real gate rather than \
+               re-deriving it. Counted because a line-wise grep cannot tell a \
+               `#[cfg(test)]` block from production, and a filter that tried would \
+               blind the census to production too",
+    },
+    // ------------------------------------------------ the `biorouter-mcp` crate
+    // boundary. That crate cannot depend on `biorouter`, so no `CallCapability`
+    // can cross: what crosses is a bare `bool` and a `_meta` string, and the
+    // master opt-out is read from the process-global directly.
+    Site {
+        needle: "crate::privacy_toggle::privacy_tiers_enabled()",
+        file: "crates/biorouter-mcp/src/agent_drafter/catalog.rs",
+        count: 1,
+        what: "DR-26 bypassing path 4 — the agent-drafter catalog's knowledge-base \
+               filter, which has no `assert_reachable` choke point to inherit the \
+               toggle from and so reads it itself",
+    },
+    Site {
+        needle: "crate::privacy_toggle::privacy_tiers_enabled()",
+        file: "crates/biorouter-mcp/src/knowledge/server.rs",
+        count: 1,
+        what: "`kb_export` forcing a private base's `.brkb` into the model-export \
+               directory — its own read, not one inherited from `assert_reachable`, \
+               because choosing the destination is a decision rather than a barrier",
+    },
+    Site {
+        needle: "crate::privacy_toggle::privacy_tiers_enabled()",
+        file: "crates/biorouter-mcp/src/knowledge/tier.rs",
+        count: 3,
+        what: "DR-26 bypassing path 3 — the knowledge-base gates: the affiliation \
+               ratchet (`add_owners_unlocked`), the barrier (`assert_reachable`) \
+               and the tier ratchet (`raise_unlocked`)",
+    },
+];
+
+/// `<workspace>` — `CARGO_MANIFEST_DIR` is `<workspace>/crates/biorouter`.
+fn workspace_root() -> PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+/// Every production `.rs` file under `crates/*/src/`, as `(repo-relative path,
+/// contents)`.
+///
+/// ⚠ **The window is `/src/` and not `crates/`**, which is what keeps this file's
+/// own `EXPECTED` table — which necessarily spells every needle — from being
+/// counted as a decider. Every crate in this workspace keeps its sources in
+/// `crates/<name>/src/` and nothing else in the tree contains that segment, so
+/// the filter is exact rather than heuristic.
+///
+/// Every way this walk can silently do no work is made loud instead: a wrong
+/// root, an unreadable directory, an unreadable file and an implausibly small
+/// scan all fail rather than reporting the same clean result as a clean tree.
+fn production_sources() -> Vec<(String, String)> {
+    let root = workspace_root();
+    let crates = root.join("crates");
+    assert!(
+        crates.is_dir(),
+        "the audit walks {} — if that path is wrong, every assertion below passes \
+         for the wrong reason",
+        crates.display()
+    );
+    let mut out = Vec::new();
+    for entry in walkdir::WalkDir::new(&crates) {
+        let entry = entry.expect("the audit must not silently skip an unreadable directory");
+        let p = entry.path();
+        if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+            continue;
+        }
+        let rel = p
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if !rel.contains("/src/") {
+            continue;
+        }
+        let src = std::fs::read_to_string(p)
+            .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
+        out.push((rel, src));
+    }
+    assert!(
+        out.len() >= 400,
+        "only {} production .rs files were scanned (556 at Task 51). The walk is no \
+         longer covering the tree, and a broken walk reports the same empty set as a \
+         clean one.",
+        out.len()
+    );
+    out
+}
+
+/// The audit that answers DR-26's *"checked in all scenarios where this need to
+/// be checked"* — structurally, by census rather than by enumeration.
+///
+/// ⚠ **Every row here is load-bearing, including the ones that are not defects.**
+/// The four bypassing paths are legitimately separate and the census does not ask
+/// them to change; what it asks is that a *fifth* cannot join them unnoticed. A
+/// new site fails this test, and the repair is to add a row that says what the
+/// site is — which is the conversation that would otherwise never happen.
+///
+/// The tree already does exactly this twice, and both caught real omissions:
+/// `declassify::tests::the_proof_of_user_is_constructed_in_exactly_two_places` and
+/// `privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification`.
+///
+/// ⚠ **Comment lines are skipped**, for the reason `grant.rs`'s twin audit
+/// records: prose cannot decide anything, and an audit that counted a `///` line
+/// goes red across a task boundary with nobody's code at fault — which teaches the
+/// next person to relax an assertion in order to make a comment compile.
+///
+/// ⚠ **What this cannot see, stated so it is not read as airtight.** The census
+/// counts four *spellings*. A decider that reaches for none of them — one that
+/// reads `Provider::tier()` off an `Arc` and compares it to a resolved
+/// extension's tier inline, never touching a capability, the free gate or the
+/// crate-boundary toggle — is invisible here. The affiliation half of such a
+/// decider is caught by the second audit below, which asks a different question
+/// and would see the type it has to name; the tier half is not covered by this
+/// file at all. What narrows it in practice is that
+/// `privacy::refusal::privacy_refusal` is the one predicate every tier gate asks,
+/// so a hand-rolled tier comparison is already a visible anomaly in review — but
+/// that is a habit, not a mechanism, and it should not be cited as one.
+#[test]
+fn the_sites_that_decide_how_far_a_caller_reaches_are_exactly_these() {
+    let needles: BTreeSet<&str> = EXPECTED.iter().map(|s| s.needle).collect();
+
+    let mut found: BTreeMap<(&str, String), usize> = BTreeMap::new();
+    for (rel, src) in production_sources() {
+        for line in src.lines() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            for needle in &needles {
+                // Occurrences, not lines: EXPECTED asserts exact COUNTS, so two
+                // decisions written on one line have to read as two.
+                let hits = code.matches(needle).count();
+                if hits > 0 {
+                    *found.entry((needle, rel.clone())).or_default() += hits;
+                }
+            }
+        }
+    }
+
+    let found: Vec<(&str, String, usize)> = found
+        .into_iter()
+        .map(|((needle, file), count)| (needle, file, count))
+        .collect();
+    let mut want: Vec<(&str, String, usize)> = EXPECTED
+        .iter()
+        .map(|s| (s.needle, s.file.to_string(), s.count))
+        .collect();
+    // `found` comes out of a BTreeMap and is therefore sorted; sort `want` too,
+    // so the next row added fails for the reason it is really wrong about rather
+    // than for its position in the list.
+    want.sort();
+
+    // The descriptions are rendered into the failure, so whoever trips this reads
+    // what the census already knows about before deciding what their new site is.
+    let described: String = EXPECTED
+        .iter()
+        .map(|s| {
+            format!(
+                "  {} x{}\n    {}\n    {}\n",
+                s.needle, s.count, s.file, s.what
+            )
+        })
+        .collect();
+
+    assert_eq!(
+        found, want,
+        "the set of sites that decide how far a caller reaches has changed.\n\n\
+         Adding one is a design change, not a refactor: DR-26 requires that the third \
+         axis be checked everywhere reach is decided, and the only thing making that \
+         mechanical is this census being complete. If the new site is legitimate, add \
+         a `Site` row saying what it is and why it decides; if it is a gate that \
+         should have inherited an admitted `CallCapability`, give it one instead.\n\n\
+         The sites this census already knows about:\n{described}"
+    );
+}
+
+/// The half a census cannot see on its own: a path that compares affiliations
+/// **by hand** instead of asking the one comparison.
+///
+/// A gate that hand-compares is a second implementation of DR-26's table, and the
+/// two will disagree on the row nobody thought about — silently, because a
+/// disagreement between a mark and a refusal shows up as a tool listed without a
+/// warning and then refused, or marked and then dispatched.
+///
+/// # What "compare" means here, stated exactly
+///
+/// A line that names an affiliation type (or reads one off a capability or a
+/// provider) **and** applies a comparison operator to it. Those are the operators
+/// a gate would reach for; a test's `assert_eq!` on an affiliation is not a reach
+/// decision and is deliberately not matched, because pinning it would have to
+/// exempt `privacy/capability.rs` — a real production file, and precisely the one
+/// where a hand-rolled comparison would be most at home.
+///
+/// # The two sanctioned comparisons, and why there are two
+///
+/// `privacy::affiliation::compatible` is **the** comparison. Its mirror
+/// `biorouter_mcp::knowledge::affiliation::reachable` exists only because
+/// `biorouter-mcp` cannot depend on `biorouter`, so the vocabulary has to be
+/// restated on the far side of the crate boundary; the two are driven against each
+/// other by the cross-crate agreement tests rather than trusted to agree.
+///
+/// # The residual, written down rather than left to be discovered
+///
+/// A comparison whose operands are bound to locals first would not match, because
+/// no affiliation token remains on the comparing line. What catches that class is
+/// the second half below: to compare a model against an extension you must obtain
+/// the extension side, and `ExtensionAffiliation` is the only door to it.
+///
+/// `providers::composite_affiliation` compares two `InstitutionId`s with `==` and
+/// is not matched (its line names no type). That is correct rather than a miss: it
+/// folds two *model* halves into the single value representing a lead/worker pair,
+/// which is a different question from reach and is pinned by
+/// `providers::affiliation_tests` in its own right.
+#[test]
+fn compatible_is_the_only_function_that_compares_two_affiliations() {
+    /// Reading one of these off anything is holding an affiliation.
+    const AFFILIATION: &[&str] = &[
+        "ModelAffiliation",
+        "ExtensionAffiliation",
+        "CallerAffiliation",
+        "KbAffiliation",
+        "InstitutionId",
+        ".affiliation()",
+        ".institution()",
+    ];
+    /// The operators a gate deciding reach would use.
+    const COMPARISON: &[&str] = &["==", "!=", "matches!(", ".contains("];
+
+    /// `privacy::affiliation::compatible` and its cross-crate mirror. These two
+    /// files ARE the comparison; everything else must call one of them.
+    const SANCTIONED: &[&str] = &[
+        "crates/biorouter/src/privacy/affiliation.rs",
+        "crates/biorouter-mcp/src/knowledge/affiliation.rs",
+    ];
+    /// A whole-file `#[cfg(test)]` module, exempt because it exercises the fold
+    /// above rather than deciding anything. The exemption's own precondition is
+    /// asserted below, so it cannot quietly become a production exemption.
+    const CFG_TEST_MODULE: &str = "crates/biorouter/src/providers/affiliation_tests.rs";
+
+    let sources = production_sources();
+
+    let providers_mod = sources
+        .iter()
+        .find(|(rel, _)| rel == "crates/biorouter/src/providers/mod.rs")
+        .map(|(_, src)| src.clone())
+        .expect("providers/mod.rs is where the exempt module is declared");
+    let lines: Vec<&str> = providers_mod.lines().map(|l| l.trim()).collect();
+    assert!(
+        lines
+            .windows(2)
+            .any(|w| w[0] == "#[cfg(test)]" && w[1] == "mod affiliation_tests;"),
+        "{CFG_TEST_MODULE} is exempted below on the grounds that it is compiled only \
+         under `cfg(test)`. It is not any more, so the exemption now hides a \
+         hand-rolled affiliation comparison from a shipped binary."
+    );
+
+    let mut hand_rolled: Vec<String> = Vec::new();
+    for (rel, src) in &sources {
+        if SANCTIONED.contains(&rel.as_str()) || rel == CFG_TEST_MODULE {
+            continue;
+        }
+        for (i, line) in src.lines().enumerate() {
+            let code = line.trim_start();
+            if code.starts_with("//") {
+                continue;
+            }
+            if AFFILIATION.iter().any(|t| code.contains(t))
+                && COMPARISON.iter().any(|c| code.contains(c))
+            {
+                hand_rolled.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+            }
+        }
+    }
+    assert!(
+        hand_rolled.is_empty(),
+        "an affiliation is compared outside `privacy::affiliation::compatible` (and its \
+         cross-crate mirror `knowledge::affiliation::reachable`). DR-26's table has one \
+         implementation on purpose — a second will disagree with the first on the row \
+         nobody thought about, and the disagreement is silent. Call `compatible`, \
+         `owners_compatible`, `CallCapability::cross_affiliation` or \
+         `affiliation::gate_cross_affiliation` instead:\n{hand_rolled:#?}"
+    );
+
+    // The other half: the extension side of the pair is reachable only through
+    // its type, so a comparison that bound its operands to locals first still has
+    // to name `ExtensionAffiliation` somewhere in the file that does it.
+    const NAMES_THE_EXTENSION_SIDE: &[&str] = &[
+        // The vocabulary itself, and the resolver that produces it.
+        "crates/biorouter/src/privacy/affiliation.rs",
+        "crates/biorouter/src/privacy/extensions.rs",
+        // The re-export, so `crate::privacy::ExtensionAffiliation` resolves.
+        "crates/biorouter/src/privacy/mod.rs",
+        // The narrowing every gate asks, plus its unit tests' fixtures.
+        "crates/biorouter/src/privacy/capability.rs",
+        // Task 49's grant: `mod tests` builds an extension affiliation to drive
+        // the real gate with.
+        "crates/biorouter/src/privacy/grant.rs",
+        // Gate C's classification ratchet destructures `Institutions(..)` to
+        // record the owners a chat has touched — a read, never a comparison.
+        "crates/biorouter/src/agents/extension_manager.rs",
+        // The `cfg(test)` module exempted above.
+        CFG_TEST_MODULE,
+    ];
+    let mut naming: Vec<&str> = sources
+        .iter()
+        .filter(|(_, src)| {
+            src.lines().any(|l| {
+                let code = l.trim_start();
+                !code.starts_with("//") && code.contains("ExtensionAffiliation")
+            })
+        })
+        .map(|(rel, _)| rel.as_str())
+        .collect();
+    naming.sort();
+    let mut want: Vec<&str> = NAMES_THE_EXTENSION_SIDE.to_vec();
+    want.sort();
+    assert_eq!(
+        naming, want,
+        "a new file names `ExtensionAffiliation`. That type is the extension side of \
+         DR-26's comparison, and obtaining it is the first move of any hand-rolled \
+         reach decision — including one that binds its operands to locals and so slips \
+         past the line-wise scan above. If the new file really only reads an \
+         affiliation rather than comparing one, add it with a comment saying which."
+    );
 }

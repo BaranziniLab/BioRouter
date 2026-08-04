@@ -5225,7 +5225,7 @@ mod tests {
 
     /// The capability `POST /agent/call_tool` hands the manager —
     /// `Public` + enforced, the most restrictive pair, spelled here with the
-    /// test constructor so Task 10's census of the two production spellings
+    /// test constructor so Task 51's census of the two production spellings
     /// keeps counting production entries only.
     ///
     /// Two assertions in one, because they fail differently: the call is

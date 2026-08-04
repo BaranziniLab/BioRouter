@@ -411,7 +411,7 @@ mod tests {
 
     // `public_enforced` and `sample` are covered by
     // `crates/biorouter/tests/privacy_capability.rs`. They are tested from
-    // there, not from here, so that Task 10's whole-tree census of those two
+    // there, not from here, so that Task 51's whole-tree census of those two
     // spellings under `crates/*/src/` counts production entries and nothing
     // else — see [`CallCapability::for_test`].
 }

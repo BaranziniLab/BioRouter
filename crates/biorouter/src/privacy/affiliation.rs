@@ -562,20 +562,19 @@ pub fn cross_affiliation(
 /// one object rather than the two program points `CallCapability` exists to
 /// collapse, so handing them a sampler would buy nothing.
 ///
-/// ⚠ **The census that argument also appealed to does not exist yet.** The
-/// header of `crates/biorouter/tests/privacy_capability.rs` describes Task 10's
-/// whole-tree grep for `CallCapability::sample(` / `::public_enforced(` in the
-/// present tense, and it was never written — `grep -rn '"CallCapability'` over
-/// `crates/` finds no such audit. The two censuses that DO exist are
-/// `privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification`
-/// and `declassify::tests::the_proof_of_user_is_constructed_in_exactly_two_places`.
-/// So the reason this spelling exists is the one above it, which stands on its
-/// own; "and it would add a census entry" is a cost that cannot be claimed until
-/// Task 51 makes it true.
+/// ⚠ **Every call to this spelling is a census row** (Task 51):
+/// `the_sites_that_decide_how_far_a_caller_reaches_are_exactly_these`, in
+/// `crates/biorouter/tests/privacy_capability.rs`, greps `crates/*/src/` for
+/// `affiliation::gate_cross_affiliation` and asserts the exact (file, count) set.
+/// So reaching for this instead of an admitted [`super::CallCapability`] is a
+/// visible, argued choice rather than a quiet one — which it was not until that
+/// audit was written, and until then this paragraph claimed a cost that could not
+/// be charged.
 ///
 /// There must be exactly one of these. A gate that hand-compares affiliations is
 /// a second implementation of DR-26's table, and the two will disagree on the
-/// row nobody thought about.
+/// row nobody thought about — pinned by that file's
+/// `compatible_is_the_only_function_that_compares_two_affiliations`.
 ///
 /// The three guards and why each is here are documented on
 /// [`super::CallCapability::cross_affiliation_warning`].
