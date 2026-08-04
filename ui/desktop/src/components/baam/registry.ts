@@ -89,11 +89,11 @@ export const FALLBACK_REGISTRY = fallback as BaamRegistry;
  * How long the renderer waits for the main process to answer `registry:fetch`.
  *
  * Deliberately just ABOVE the main process's own 10 s `AbortController` (see
- * `REGISTRY_FETCH_TIMEOUT_MS` in `main.ts`), so a healthy main process always
- * answers first and this budget only ever fires when the IPC channel itself is
- * the thing that is stuck — a wedged handler, a main process busy elsewhere, a
- * window reloaded mid-call. Without it a hung main process hangs the modal
- * forever, showing "Loading catalog…" with no way out.
+ * `REGISTRY_FETCH_TIMEOUT_MS` in `utils/registryCache`), so a healthy main
+ * process always answers first and this budget only ever fires when the IPC
+ * channel itself is the thing that is stuck — a wedged handler, a main process
+ * busy elsewhere, a window reloaded mid-call. Without it a hung main process
+ * hangs the modal forever, showing "Loading catalog…" with no way out.
  */
 export const REGISTRY_LOAD_BUDGET_MS = 11_000;
 

@@ -101,3 +101,95 @@ export async function readLastGoodRegistry(cachePath: string): Promise<CachedReg
     return null;
   }
 }
+
+/** Exactly what `registry:fetch` resolves with; the renderer's `loadRegistry` reads this shape. */
+export interface RegistryFetchResult {
+  registry?: unknown;
+  /** ISO-8601. Present whenever `registry` is. */
+  fetchedAt?: string;
+  /** `true` when `registry` is the cached copy rather than a fresh fetch. */
+  stale?: boolean;
+  /** Present only when there is no document to return at all. */
+  error?: string;
+}
+
+/**
+ * Issue #56 §10.2. The fetch had no timeout at all, so a registry host that
+ * accepted the connection and then said nothing left the Browse modal on
+ * "Loading catalog…" indefinitely — Node's `fetch` has no default timeout.
+ *
+ * The renderer's own `REGISTRY_LOAD_BUDGET_MS` (11 s) is deliberately just
+ * ABOVE this, so a healthy main process always answers first and the renderer's
+ * budget only fires when the IPC channel itself is stuck.
+ */
+export const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
+
+/**
+ * Fetch the catalogue, cache what succeeded, replay what last did.
+ *
+ * ⚠ **The whole handler lives here, not just its primitives.** Review found
+ * that `main.ts`'s `registry:fetch` composed these three functions and that
+ * nothing tested the composition — *"an implementation that imported
+ * `registryCache` and never called it would pass every test in this feature"* —
+ * and that the 10 s timeout was checked by `grep -c AbortController`, which
+ * passes on the word in a comment and on a controller whose `signal` never
+ * reaches `fetch`. `main.ts` imports Electron at the top level and cannot be
+ * unit-tested, so the fix is the one that already moved the cache out of it:
+ * move the composition too, and leave behind only what genuinely needs `app`
+ * (the path) and `log` (the warning).
+ *
+ * `fetchImpl`, `now` and the injected timeout exist for those tests and for
+ * nothing else; all three default to the real thing.
+ *
+ * Three orderings are load-bearing and each is asserted:
+ *   - validate BEFORE caching — a captive portal's login page is a 200 with a
+ *     body, and caching it poisons every subsequent offline launch;
+ *   - a write failure costs freshness later, never the fetch that just
+ *     succeeded, so it is reported and swallowed;
+ *   - any failure — network, non-2xx, unparseable, or not-a-catalogue — replays
+ *     the cache as `stale: true` rather than surfacing an error, because the
+ *     catalogue the machine last saw beats no catalogue at all.
+ */
+export async function fetchRegistryWithLastGood(options: {
+  url: string;
+  cachePath: string;
+  timeoutMs?: number;
+  fetchImpl?: typeof fetch;
+  now?: () => Date;
+  onWriteError?: (err: Error) => void;
+}): Promise<RegistryFetchResult> {
+  const {
+    url,
+    cachePath,
+    timeoutMs = REGISTRY_FETCH_TIMEOUT_MS,
+    fetchImpl = fetch,
+    now = () => new Date(),
+    onWriteError,
+  } = options;
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetchImpl(url, {
+      headers: { 'User-Agent': 'Biorouter', Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const json: unknown = await response.json();
+    // Validate BEFORE caching: a proxy's login page is a 200 with a body, and
+    // caching it would poison every subsequent offline launch.
+    if (!isRegistryDocument(json)) throw new Error('Response was not a marketplace catalog');
+    const fetchedAt = now().toISOString();
+    const writeError = await writeLastGoodRegistry(cachePath, json, fetchedAt);
+    if (writeError) onWriteError?.(writeError);
+    return { registry: json, fetchedAt, stale: false };
+  } catch (err) {
+    const cached = await readLastGoodRegistry(cachePath);
+    if (cached) {
+      return { registry: cached.registry, fetchedAt: cached.fetchedAt, stale: true };
+    }
+    return { error: (err as Error).message };
+  } finally {
+    clearTimeout(timer);
+  }
+}

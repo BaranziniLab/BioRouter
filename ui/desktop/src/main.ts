@@ -88,11 +88,7 @@ import {
   wrapArtifactForBrowser,
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
-import {
-  isRegistryDocument,
-  readLastGoodRegistry,
-  writeLastGoodRegistry,
-} from './utils/registryCache';
+import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
   diagnosticsArchiveBytes,
@@ -2908,13 +2904,6 @@ function isAllowedRegistryUrl(rawUrl: string): URL | null {
 }
 
 /**
- * Issue #56 §10.2. The fetch had no timeout at all, so a registry host that
- * accepted the connection and then said nothing left the Browse modal on
- * "Loading catalog…" indefinitely — Node's fetch has no default timeout.
- */
-const REGISTRY_FETCH_TIMEOUT_MS = 10_000;
-
-/**
  * The last document that both fetched and parsed. Written on every success and
  * read on every failure, so an offline launch still shows the catalogue the
  * machine last saw rather than the snapshot frozen at build time — which is what
@@ -2925,38 +2914,23 @@ function registryCachePath(): string {
   return path.join(app.getPath('userData'), 'registry-last-good.json');
 }
 
-// Validation, the atomic write and the dated read live in `utils/registryCache`
-// — Electron-free on purpose, because this file cannot be unit-tested and the
-// renderer's tests stop at the IPC boundary, so inline here an implementation
-// with no disk cache at all passed every test this feature has.
+// ⚠ The 10 s timeout, the validate-before-cache ordering and the stale replay
+// all live in `utils/registryCache` — Electron-free on purpose. This file
+// imports `electron` at the top level and therefore cannot be unit-tested, and
+// the renderer's tests stop at the IPC boundary; with the composition inline
+// here, an implementation that imported `registryCache` and never CALLED it
+// passed every test this feature has, and the timeout was checked only by
+// `grep -c AbortController`, which a comment satisfies. What is left below is
+// exactly the part that needs Electron: the path (`app`) and the warning
+// (`log`).
 
-ipcMain.handle('registry:fetch', async () => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REGISTRY_FETCH_TIMEOUT_MS);
-  try {
-    const response = await fetch(REGISTRY_URL, {
-      headers: { 'User-Agent': 'Biorouter', Accept: 'application/json' },
-      signal: controller.signal,
-    });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const json = await response.json();
-    // Validate BEFORE caching: a proxy's login page is a 200 with a body, and
-    // caching it would poison every subsequent offline launch.
-    if (!isRegistryDocument(json)) throw new Error('Response was not a marketplace catalog');
-    const fetchedAt = new Date().toISOString();
-    const writeError = await writeLastGoodRegistry(registryCachePath(), json, fetchedAt);
-    if (writeError) log.warn('Could not write the last-good registry cache:', writeError);
-    return { registry: json, fetchedAt, stale: false };
-  } catch (err) {
-    const cached = await readLastGoodRegistry(registryCachePath());
-    if (cached) {
-      return { registry: cached.registry, fetchedAt: cached.fetchedAt, stale: true };
-    }
-    return { error: (err as Error).message };
-  } finally {
-    clearTimeout(timer);
-  }
-});
+ipcMain.handle('registry:fetch', () =>
+  fetchRegistryWithLastGood({
+    url: REGISTRY_URL,
+    cachePath: registryCachePath(),
+    onWriteError: (err) => log.warn('Could not write the last-good registry cache:', err),
+  })
+);
 
 // Download a registry asset (.zip skill bundle or .brxt extension) to a temp
 // file and return its local path, for reuse by the existing install flows.
