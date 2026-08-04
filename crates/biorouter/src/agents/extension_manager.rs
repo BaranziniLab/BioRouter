@@ -1454,6 +1454,21 @@ impl ExtensionManager {
     /// connector exists (DR-26). Hiding it would also let the agent silently
     /// route around a tool it cannot see, with no one told why. So a mismatched
     /// extension is listed and marked here, and refused at dispatch.
+    ///
+    /// ⚠ **Task 49's grant is NOT consulted here, and a granted extension stays
+    /// marked.** Discovery has no session id — `get_prefixed_tools` is reached
+    /// from the tool-list build and from settings screens, none of which is a
+    /// dispatch — and a grant is keyed on the triple (session, extension, model
+    /// affiliation), so there is nothing to look one up with. The consequence is
+    /// cosmetic rather than a hole: marking is not gating, and Gate C is what
+    /// actually reads the grant. What it must NOT do is tell the model the call
+    /// cannot succeed, because the mark is the only thing the model sees before
+    /// a call exists and a model that believes a refusal is certain may never
+    /// retry — which would make the user's approval silently worthless. Hence
+    /// the conditional refusal clause in `affiliation`'s mark, pinned by
+    /// `the_mark_does_not_promise_a_refusal_a_grant_may_already_have_cleared`.
+    /// Marking a granted extension differently means threading the session into
+    /// discovery, which is Task 50/51 territory.
     async fn extension_reach(
         &self,
         admitted: Option<crate::privacy::CallCapability>,

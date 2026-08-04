@@ -423,12 +423,17 @@ pub fn cross_affiliation(
              specific flow. Proceed only if you know one does."
         ),
         // The model's audience needs three facts and no paragraph: whose data
-        // this is, whose model it is on, and that calling it will not work.
-        // Everything else is in the refusal it gets if it tries anyway.
+        // this is, whose model it is on, and that calling it will not work
+        // unless the user has already accepted this flow. Everything else is in
+        // the refusal it gets if it tries anyway.
+        //
+        // ⚠ The refusal clause is CONDITIONAL because this mark is composed
+        // without a session, so it cannot know whether Task 49's grant exists —
+        // see `the_mark_does_not_promise_a_refusal_a_grant_may_already_have_cleared`.
         mark: format!(
             "⚠ Cross-institutional: `{extension}` holds data belonging to {}, and this chat's \
-             model is covered by {covered_by}. A call to it will be refused — tell the user what \
-             you need it for and let them decide.",
+             model is covered by {covered_by}. A call is refused unless the user has approved \
+             this flow — tell them what you need it for and let them decide.",
             owners_label_capped(owners)
         ),
     })
@@ -541,11 +546,12 @@ pub fn unstated_model(extension: &str, ext: &ExtensionAffiliation) -> Option<Cro
         ),
         // No institution is named for the model side, here as in the warning:
         // naming one would be a lie, and "we cannot tell" is the actionable
-        // statement.
+        // statement. The refusal clause is conditional for the reason the stated
+        // arm's is.
         mark: format!(
             "⚠ Cross-institutional: `{extension}` holds data belonging to {}, and this chat's \
-             model does not state whose agreements cover it. A call to it will be refused — \
-             tell the user what you need it for and let them decide.",
+             model does not state whose agreements cover it. A call is refused unless the user \
+             has approved this flow — tell them what you need it for and let them decide.",
             owners_label_capped(owners)
         ),
     })
@@ -1136,6 +1142,47 @@ mod tests {
             unstated.mark.len(),
             unstated.mark
         );
+    }
+
+    /// ⚠ **The mark is read at DISCOVERY, where no session is in hand — so it
+    /// must be true both before and after the user accepts the flow.**
+    ///
+    /// It said *"A call to it will be refused"*, flatly. Task 49 made that false
+    /// for a granted triple: Gate C consults `privacy::grant::is_granted` and
+    /// lets the dispatch through, while `extension_reach` — which has no session
+    /// id to look a grant up with — keeps marking every tool of that extension
+    /// with a promise of refusal. The mark is the ONLY thing the model reads
+    /// before a call exists, so a model that believes the call cannot succeed may
+    /// never make it, and the user's approval silently accomplishes nothing.
+    /// That fails closed, which is why it is a product defect rather than a hole,
+    /// and DR-26's product IS the accepted flow.
+    ///
+    /// So the sentence is conditional. It still tells the model the two things
+    /// it needs — that this is refused by default, and that the human is the one
+    /// who clears it — and it stays true once they have.
+    #[test]
+    fn the_mark_does_not_promise_a_refusal_a_grant_may_already_have_cleared() {
+        for finding in [
+            cross_affiliation(bound("stanford"), "ucsfomopagent", &allowlist(&["ucsf"]))
+                .expect("a mismatch"),
+            unstated_model("ucsfomopagent", &allowlist(&["ucsf"])).expect("a mismatch"),
+        ] {
+            assert!(
+                finding.mark.contains("unless the user has approved"),
+                "the mark promises an unconditional refusal, which is false for a granted \
+                 triple: {}",
+                finding.mark
+            );
+            // …and it still says what happens by DEFAULT, which is the state
+            // every mismatch starts in.
+            assert!(finding.mark.contains("refused"), "{}", finding.mark);
+            assert!(
+                finding.mark.len() <= MARK_BUDGET,
+                "{} bytes: {}",
+                finding.mark.len(),
+                finding.mark
+            );
+        }
     }
 
     /// ⚠ **The two renderings must never disagree about whether there IS a
