@@ -22233,8 +22233,31 @@ assert with a test that a release build has no path to it.
 
 - [ ] **Step 4: The gate**
 
+⚠ **This gate was vacuous as first written and was corrected on 2026-08-04.** It ran the filter
+without `--features privacy-test-auth` — the one row in
+[Task 4b's inventory](#task-4b-the-test-filter-audit--every-filter-in-this-plan-resolves-or-is-owned)
+whose tests do not run under a bare `cargo test` — and piped the result to `grep "test result:"`.
+libtest prints a `test result:` line **even when the filter matches nothing**, so the original gate
+printed a green line against a module that did not exist, and would have scored an unimplemented
+task as done. A gate must assert a *count*, never the presence of a line.
+
 ```bash
-cargo test -p biorouter --lib privacy::system_auth 2>&1 | grep "test result:"
+# 1. The module's own tests, in the build that has the seam.
+cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth 2>&1 | tail -3
+# expect: a NON-ZERO passed count with 0 failed. "0 passed" here means the module
+# is absent, not that it is clean.
+
+# 2. The same filter in the build that does NOT have the seam. It must also be
+# green, and it must be SMALLER — the seam's own behavioural tests are compiled
+# out, and the compile-out audit is what has to pass without them.
+cargo test -p biorouter --lib privacy::system_auth 2>&1 | tail -3
+
+# 3. Step 3's guard, proven by a build that must FAIL. This is the assertion that
+# distinguishes a real implementation from one that left the bypass reachable.
+cargo build --release -p biorouter --features privacy-test-auth 2>&1 | tail -5
+# expect: FAILS with "privacy-test-auth is a TEST SEAM". A SUCCESS here is the defect.
+
+# 4. And the shipped binary still builds without it.
 cargo build --release -p biorouter-server 2>&1 | tail -3
 ```
 
