@@ -4,15 +4,31 @@
  *
  * The daemon cannot tell the two apart on its own — `check_token` compares one
  * machine-wide bearer and has no principal, so every authenticated request looks
- * identical whoever sent it (AR-11/AR-15). Three routes therefore require this
- * header before they will raise a chat's privacy capability:
- * `/agent/update_provider`, `/config/set_provider`, and `/config/upsert` for the
- * handful of keys that decide what capability new chats start at.
+ * identical whoever sent it (AR-11/AR-15). Routes that must tell them apart
+ * therefore require this header.
  *
- * ⚠ It is attached PER REQUEST, never through `client.setConfig`. A default
- * header rides on every call; this one rides on the three that need it, which is
- * what keeps the proof narrower than the daemon secret rather than a second copy
- * of it.
+ * ⚠ **Do not keep a count of them here.** This comment used to say "three
+ * routes" and name them — the raise channels. By the time issue #56 Task 58
+ * landed it was wrong in the number and in the kind, because reaching into a
+ * private chat at all now needs the proof too. A stale invariant in the doc of a
+ * security header is worse than no invariant, so the enumerations live where a
+ * test fails when they drift:
+ *
+ * - raising a chat's privacy capability (DR-16) —
+ *   `auth::tests::all_five_raise_channels_call_the_guard`;
+ * - copying a private chat (DR-19) — `COPY_OF_PRIVATE_REFUSAL_MARKER` and its
+ *   tests in `crates/biorouter-server/src/routes/session.rs`;
+ * - reaching into a private chat at all (Task 58 / #47) — the gated-list table
+ *   in `crates/biorouter-server/src/routes/session_reach.rs`.
+ *
+ * ⚠ It is attached PER REQUEST, never through `client.setConfig`.
+ *
+ * Not because it is rare: since Task 58 it rides on every `getSession` and every
+ * `reply`, which is the renderer's busiest path. It is per request because a
+ * default on the generated client rides on calls this module never sees — SSE
+ * reconnects, polling loops, whatever a future feature adds — and the proof only
+ * means anything while it is confined to calls a user gesture actually produced.
+ * A default header would make it a second copy of the daemon secret.
  *
  * The renderer is the user's surface, so every call it makes is a user act. The
  * model reaches these same routes over HTTP without going through here, and that
