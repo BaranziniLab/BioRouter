@@ -1805,7 +1805,15 @@ mod add_extension_resolver_tests {
 
         // Everything the route does between deciding and attaching. On a
         // mismatch it must state the risk and carry on.
-        let between = &squeezed[asked..attached];
+        //
+        // `get` rather than a slice: both indices come from `find`, so both are
+        // already char boundaries, but the fallible form says that rather than
+        // asserting it — and this file is not ASCII (the refusal copy carries
+        // en-dashes), so a future needle landing mid-character would panic the
+        // test with a UTF-8 error instead of the message it is here to give.
+        let between = squeezed
+            .get(asked..attached)
+            .expect("both indices come from `find`, so both are UTF-8 boundaries");
         assert!(
             between.contains("tracing::warn!"),
             "the mismatch is detected and then dropped on the floor: {between}"

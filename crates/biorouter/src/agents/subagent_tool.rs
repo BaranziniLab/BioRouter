@@ -777,6 +777,8 @@ async fn execute_subagent(
     let visibility_note = visibility.parent_note(&session.id);
     // Taken before `task_config` is moved into the run below.
     let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
+    let affiliation_note =
+        cross_affiliation_drop_note(&task_config.dropped_cross_affiliation_extensions);
 
     // The result envelope encodes success, an incomplete (tool-call-ending)
     // run, or a failure — all as structured content — so this always returns a
@@ -799,6 +801,13 @@ async fn execute_subagent(
     // silently — the model delegated on the strength of a tool list it believes
     // the child holds.
     if let Some(note) = privacy_note {
+        call_result.content.push(Content::text(note));
+    }
+    // Task 48 (DR-26): the affiliation drop is its own disclosure, for its own
+    // reason. Both can fire on one spawn — a public child losing a private
+    // extension AND a foreign-institution one losing another — and neither may
+    // swallow the other.
+    if let Some(note) = affiliation_note {
         call_result.content.push(Content::text(note));
     }
     Ok(call_result)
@@ -938,6 +947,47 @@ fn dropped_extension_note(dropped: &[String]) -> Option<String> {
     ))
 }
 
+/// Issue #56 Task 48 (DR-26): what the parent is told when its child was denied
+/// one of the parent's extensions on the **affiliation** axis.
+///
+/// A separate sentence from [`dropped_extension_note`] rather than a shared one
+/// with a substituted reason, because the two drops are not the same event.
+/// That one says "this subagent is running on a public model", which is false
+/// here — the child is Private, and what it may not cross is an institutional
+/// boundary. DR-26 requires a statement specific enough to act on, so each
+/// extension's own warning is quoted rather than a generic sentence composed
+/// from its name.
+///
+/// ⚠ **It does not tell the model to escalate to the user, and that is not an
+/// omission.** The parent is an agent; DR-26 says an agent never clears a
+/// cross-institutional warning automatically. Telling it to "ask the user to
+/// approve" here would invite exactly the escalation the ruling puts on the
+/// USER's own surfaces (the bind prompt, `/agent/add_extension`), reached
+/// through a model that has already been told the answer is no. What it is told
+/// is what changed and why, so it can report accurately and stop planning
+/// around a capability the child does not have.
+///
+/// `None` when nothing was dropped, so the call sites read as
+/// `if let Some(note) = …`.
+fn cross_affiliation_drop_note(dropped: &[(String, String)]) -> Option<String> {
+    if dropped.is_empty() {
+        return None;
+    }
+    let each = dropped
+        .iter()
+        .map(|(name, warning)| format!("- `{name}`: {warning}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!(
+        "Note: this subagent was NOT given these extensions of yours, because they hold another \
+         institution's data and the subagent's model is covered by a different institution's \
+         agreements:\n{each}\nDo not ask the subagent to use them, and do not re-spawn it to try \
+         again — the boundary is the same every time. Compliance does not transfer between \
+         institutions. If the task needs them, do it in this chat instead, or tell the user what \
+         you were trying to do and let them decide."
+    ))
+}
+
 async fn overridden_task_config(
     task_config: TaskConfig,
     params: &SubagentParams,
@@ -987,6 +1037,8 @@ fn spawn_background_subagent(
         announce_subagent_tab(&child_session_id, &task_config.parent_session_id, params);
     // Taken before `task_config` moves into the detached task below.
     let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
+    let affiliation_note =
+        cross_affiliation_drop_note(&task_config.dropped_cross_affiliation_extensions);
 
     let task_handle = handle.clone();
     tokio::spawn(async move {
@@ -1024,6 +1076,12 @@ fn spawn_background_subagent(
     // message, because the background path returns before any `SubagentResult`
     // exists.
     if let Some(note) = privacy_note {
+        text.push_str("\n\n");
+        text.push_str(&note);
+    }
+    // Task 48 (DR-26), same reasoning: the background path returns before any
+    // `SubagentResult` exists, so this message is the only carrier.
+    if let Some(note) = affiliation_note {
         text.push_str("\n\n");
         text.push_str(&note);
     }
@@ -1337,21 +1395,59 @@ pub async fn apply_settings_overrides(
     // predicate, which is also what Gate E uses, so all three agree by
     // construction rather than by three people reading the same paragraph.
     //
-    // ⚠ The classifier is named exactly ONCE in this function, and a gate greps
-    // for that: do not repeat its name in prose here.
-    let (kept, dropped): (Vec<_>, Vec<_>) = std::mem::take(&mut task_config.extensions)
-        .into_iter()
-        .partition(|e| {
-            !privacy_enforced
-                || crate::privacy::refusal::privacy_refusal(
-                    &e.name(),
-                    crate::privacy::classify_extension_entry(&e.name(), Some(e)),
-                    child_tier,
-                )
-                .is_none()
-        });
+    // ⚠ Issue #56 Task 48 (DR-26): the AFFILIATION filter runs in the same
+    // pass, off the SAME resolution. `resolve_extension` is named exactly ONCE
+    // in this function, and a gate greps for that: do not repeat its name in
+    // prose here. Two lookups would let the tier and the affiliation disagree
+    // about one entry, which is the failure that resolver exists to remove —
+    // and a partition is where it would be least visible, because a
+    // disagreement drops the wrong half rather than erroring.
+    //
+    // **A spawn is the AGENT's enablement path for a whole new chat**, so it
+    // takes the agent's rule and not the bind's. `check_enable_allowed` refuses
+    // rather than warns because enabling a clinical connector is the call that
+    // SPAWNS the server, pulls its credentials out of the keychain and opens
+    // the institutional session — a disclosure no later refusal takes back.
+    // `subagent_handler` does precisely that for every extension in this list.
+    // Without this arm a chat on UCSF's Versa could spawn a child on another
+    // institution's model holding the UCSF clinical connector, with no user in
+    // the loop at any point; DR-26's asymmetry is that an agent never clears a
+    // cross-institutional warning automatically.
+    //
+    // It DROPS rather than refusing the spawn, matching the tier filter: a
+    // refusal would kill a legitimate delegation that merely inherited an
+    // extension it never meant to use, and DR-26 is emphatic that a mismatch
+    // must not become a blanket block.
+    //
+    // DR-15's master opt-out arrives as `gate_cross_affiliation`'s `enforced`
+    // argument — the same single read the tier arm uses, not a second one.
+    let mut kept = Vec::new();
+    let mut dropped_private = Vec::new();
+    let mut dropped_cross_affiliation = Vec::new();
+    for extension in std::mem::take(&mut task_config.extensions) {
+        let name = extension.name();
+        let class = crate::privacy::resolve_extension(&name, Some(&extension));
+        if privacy_enforced
+            && crate::privacy::refusal::privacy_refusal(&name, class.tier, child_tier).is_some()
+        {
+            dropped_private.push(name);
+            continue;
+        }
+        if let Some(warning) = crate::privacy::affiliation::gate_cross_affiliation_warning(
+            privacy_enforced,
+            child_tier,
+            task_config.provider.affiliation(),
+            &name,
+            &class,
+        ) {
+            dropped_cross_affiliation.push((name, warning));
+            continue;
+        }
+        kept.push(extension);
+    }
     task_config.extensions = kept;
-    task_config.dropped_private_extensions = dropped.iter().map(|e| e.name()).collect();
+    task_config.dropped_private_extensions = dropped_private;
+    task_config.dropped_cross_affiliation_extensions = dropped_cross_affiliation;
 
     Ok(task_config)
 }
@@ -2195,6 +2291,29 @@ mod tests {
             self.tier
         }
 
+        /// ⚠ **A private double must state an affiliation, because every real
+        /// private provider does** — issue #56 DR-26, Task 48. The same
+        /// correction `privacy_toggle`'s `TieredProvider` and the three doubles
+        /// in `agent.rs` / `code_execution_integration.rs` already carry.
+        ///
+        /// Left on the trait default this is Private tier + affiliation `None`,
+        /// the one pairing DR-26's vocabulary says cannot exist, which the gate
+        /// treats as *unstated* rather than *unconstrained* — deliberately, as
+        /// the fail-closed direction. The spawn's affiliation filter then drops
+        /// every institution-claimed extension from every row in this module,
+        /// including the tier rows that are not about affiliation at all.
+        ///
+        /// `Local` because it is DR-26's identity element: the one model
+        /// affiliation compatible with every extension, so a tier row keeps
+        /// testing the tier. The rows that ARE about affiliation use
+        /// [`AffiliatedParent`], which states it explicitly.
+        fn affiliation(&self) -> Option<crate::privacy::ModelAffiliation> {
+            match self.tier {
+                ProviderTier::Private => Some(crate::privacy::ModelAffiliation::Local),
+                ProviderTier::Public => None,
+            }
+        }
+
         fn get_model_config(&self) -> crate::model::ModelConfig {
             crate::model::ModelConfig::new_or_fail("tiered-model")
         }
@@ -2305,6 +2424,79 @@ mod tests {
             apply_settings_overrides(task_config, &params),
         )
         .await
+    }
+
+    /// A provider stating both privacy axes — issue #56 Task 48, DR-26.
+    /// [`TieredParent`] cannot express the third one, and leaving it on the
+    /// trait default would put every affiliation row into the *unstated* arm
+    /// rather than the institution-versus-institution one they are about.
+    struct AffiliatedParent {
+        tier: ProviderTier,
+        affiliation: Option<crate::privacy::ModelAffiliation>,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::providers::base::Provider for AffiliatedParent {
+        fn metadata() -> crate::providers::base::ProviderMetadata {
+            crate::providers::base::ProviderMetadata::new(
+                "affiliated-parent",
+                "Affiliated parent",
+                "",
+                "affiliated-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "affiliated-parent"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        fn affiliation(&self) -> Option<crate::privacy::ModelAffiliation> {
+            self.affiliation
+        }
+
+        fn get_model_config(&self) -> crate::model::ModelConfig {
+            crate::model::ModelConfig::new_or_fail("affiliated-model")
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &crate::model::ModelConfig,
+            _system: &str,
+            _messages: &[crate::conversation::message::Message],
+            _tools: &[Tool],
+        ) -> std::result::Result<
+            (
+                crate::conversation::message::Message,
+                crate::providers::base::ProviderUsage,
+            ),
+            crate::providers::errors::ProviderError,
+        > {
+            Err(crate::providers::errors::ProviderError::Authentication(
+                "the affiliation rows never run a real turn".to_string(),
+            ))
+        }
+    }
+
+    /// An INHERITING spawn from a given parent instance — the child runs the
+    /// parent's own `Arc`, so the child's affiliation is the parent's. That is
+    /// the shape the DR-26 rows need: `Ask::Private` would rebuild through
+    /// `providers::create` and hand back an `ollama` whose affiliation is
+    /// `Local`, which is compatible with everything and would make every row
+    /// pass vacuously.
+    async fn resolve_child_for(
+        provider: std::sync::Arc<dyn crate::providers::base::Provider>,
+        extensions: Vec<crate::agents::ExtensionConfig>,
+    ) -> Result<TaskConfig> {
+        let task_config =
+            TaskConfig::new(provider, "parent-1", std::path::Path::new("."), extensions);
+        apply_settings_overrides(task_config, &ask_params(Ask::Inherit)).await
     }
 
     /// Design §8.2, row by row, as amended by DR-19.
@@ -2866,6 +3058,133 @@ mod tests {
         assert_eq!(kept.extensions.len(), 1);
         assert!(kept.dropped_private_extensions.is_empty());
         assert!(dropped_extension_note(&kept.dropped_private_extensions).is_none());
+    }
+
+    /// Issue #56 Task 48 (DR-26) at the **spawn**, which is the fourth of the
+    /// bypassing paths the ruling names and the one where the data to decide it
+    /// already exists.
+    ///
+    /// A spawn is the AGENT's enablement path for a whole new chat, so it takes
+    /// the agent's rule, not the bind's: `check_enable_allowed` refuses because
+    /// enabling a clinical connector is the call that spawns the server, pulls
+    /// its credentials out of the keychain and opens the institutional session
+    /// — "Gate C refusing the first tool call afterwards is already too late".
+    /// `subagent_handler` does exactly that for every extension in the child's
+    /// list. Without this, a chat on UCSF's Versa could spawn a child on
+    /// another institution's model and hand it the UCSF clinical connector,
+    /// with no user in the loop at any point.
+    ///
+    /// It DROPS rather than refusing the spawn, matching the tier filter beside
+    /// it: refusing would kill a legitimate delegation that merely inherited an
+    /// extension it never meant to use, and DR-26 is emphatic that a mismatch
+    /// must not become a blanket block.
+    ///
+    /// ⚠ The drop is asserted on the recorded list AND the surviving list AND
+    /// the note, because a silent drop is a capability the parent keeps
+    /// planning around — the same reason the tier filter records its own.
+    #[tokio::test]
+    async fn a_spawn_may_not_hand_a_child_another_institutions_extension() {
+        let child = resolve_child_for(
+            std::sync::Arc::new(AffiliatedParent {
+                tier: ProviderTier::Private,
+                affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+                    crate::privacy::affiliation::InstitutionId::new("stanford"),
+                )),
+            }),
+            vec![
+                builtin_extension("ucsfomopagent"),
+                builtin_extension("developer"),
+            ],
+        )
+        .await
+        .expect("a mismatch drops the extension; it must never refuse the spawn");
+
+        assert_eq!(
+            child
+                .extensions
+                .iter()
+                .map(crate::agents::ExtensionConfig::name)
+                .collect::<Vec<_>>(),
+            vec!["developer".to_string()],
+            "a Stanford-covered child inherited a UCSF clinical connector"
+        );
+        // The TIER filter must not be what caught it — both endpoints here are
+        // Private, so a test that passed through that arm would prove nothing
+        // about the third axis.
+        assert!(
+            child.dropped_private_extensions.is_empty(),
+            "the tier filter fired, so this fixture is not exercising affiliation: {:?}",
+            child.dropped_private_extensions
+        );
+
+        let dropped = &child.dropped_cross_affiliation_extensions;
+        assert_eq!(dropped.len(), 1, "{dropped:?}");
+        assert_eq!(dropped[0].0, "ucsfomopagent");
+        assert!(dropped[0].1.contains("ucsf"), "{}", dropped[0].1);
+        assert!(dropped[0].1.contains("stanford"), "{}", dropped[0].1);
+
+        let note = cross_affiliation_drop_note(dropped)
+            .expect("a drop that happened is a drop that is reported");
+        assert!(note.contains("ucsfomopagent"), "got: {note}");
+        assert!(note.contains("ucsf"), "got: {note}");
+        assert!(note.contains("stanford"), "got: {note}");
+    }
+
+    /// The passing row, and the inversion DR-26 warns about: `Local` is the
+    /// MOST permissive affiliation, so a local parent hands its child
+    /// everything private and is told nothing.
+    #[tokio::test]
+    async fn a_local_model_spawns_a_child_holding_every_private_extension() {
+        let child = resolve_child_for(
+            std::sync::Arc::new(AffiliatedParent {
+                tier: ProviderTier::Private,
+                affiliation: Some(crate::privacy::ModelAffiliation::Local),
+            }),
+            vec![
+                builtin_extension("ucsfomopagent"),
+                builtin_extension("developer"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(child.extensions.len(), 2);
+        assert!(child.dropped_private_extensions.is_empty());
+        assert!(child.dropped_cross_affiliation_extensions.is_empty());
+        assert!(cross_affiliation_drop_note(&child.dropped_cross_affiliation_extensions).is_none());
+    }
+
+    /// The same institution on both ends is the arrangement everyone approved.
+    /// Without this row the filter above could be an over-block and still pass.
+    ///
+    /// DR-15's master opt-out is deliberately NOT asserted here: it reaches this
+    /// filter as `gate_cross_affiliation`'s `enforced` argument, off the same
+    /// single `privacy_tiers_enabled()` read the tier arm uses, and its guard is
+    /// covered by `privacy::affiliation`'s
+    /// `the_gate_asks_affiliation_only_of_two_private_endpoints_with_the_feature_on`.
+    /// Flipping the process-global atomic from a lib test would disarm every
+    /// other privacy test sharing this binary — which is exactly why the
+    /// toggle's behavioural matrix lives in the separate `privacy_toggle`
+    /// process.
+    #[tokio::test]
+    async fn a_child_covered_by_the_same_institution_keeps_the_extension() {
+        let child = resolve_child_for(
+            std::sync::Arc::new(AffiliatedParent {
+                tier: ProviderTier::Private,
+                affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+                    crate::privacy::affiliation::InstitutionId::new("ucsf"),
+                )),
+            }),
+            vec![builtin_extension("ucsfomopagent")],
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            child.extensions.len(),
+            1,
+            "UCSF's own model reaching UCSF's own connector is the approved arrangement"
+        );
+        assert!(child.dropped_cross_affiliation_extensions.is_empty());
     }
 
     /// Task 43 (DR-23). The spawn partition is one of the three callers that

@@ -64,6 +64,16 @@ pub struct TaskConfig {
     /// result. A capability that vanishes silently is one the model will keep
     /// planning around.
     pub dropped_private_extensions: Vec<String>,
+    /// Issue #56 Task 48 (DR-26): extensions the AFFILIATION filter removed,
+    /// as `(name, the warning)`.
+    ///
+    /// ⚠ **A second list, not an addition to the one above, because the two
+    /// drops have different reasons and the parent is told which.** The tier
+    /// note says "this subagent is running on a public model" — which is a lie
+    /// about an affiliation drop, where the child is Private and the boundary
+    /// crossed is institutional. DR-26 requires a statement specific enough to
+    /// act on, so the warning is carried rather than recomposed from the name.
+    pub dropped_cross_affiliation_extensions: Vec<(String, String)>,
 }
 
 impl fmt::Debug for TaskConfig {
@@ -78,6 +88,10 @@ impl fmt::Debug for TaskConfig {
             .field(
                 "dropped_private_extensions",
                 &self.dropped_private_extensions,
+            )
+            .field(
+                "dropped_cross_affiliation_extensions",
+                &self.dropped_cross_affiliation_extensions,
             )
             .finish()
     }
@@ -109,6 +123,7 @@ impl TaskConfig {
             // at the single site that decides it.
             privacy_tier: SessionClassification::Public,
             dropped_private_extensions: Vec::new(),
+            dropped_cross_affiliation_extensions: Vec::new(),
         }
     }
 }
