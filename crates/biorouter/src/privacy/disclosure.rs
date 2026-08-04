@@ -165,9 +165,17 @@ pub fn record_acknowledgement_in(config_dir: &Path) -> std::io::Result<()> {
     };
     let body = serde_json::to_string_pretty(&record)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    // Named per process, so two Biorouter processes acknowledging at the same
-    // moment stage into different files and each rename is a complete record.
-    let staging = config_dir.join(format!("{ACK_FILE_NAME}.{}.tmp", std::process::id()));
+    // A fresh path per call. The process id keeps two Biorouter processes
+    // acknowledging at the same moment out of each other's staging file; the
+    // counter is what keeps two acknowledgements INSIDE one process apart, which
+    // is the case the paragraph above is about — two panes reach this handler
+    // concurrently, and a shared staging path has their `fs::write` calls
+    // interleave into one file, so the first rename can publish a torn record
+    // (read as *not acknowledged*, the false negative this staging exists to
+    // prevent) and the second fails `ENOENT`.
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staging = config_dir.join(format!("{ACK_FILE_NAME}.{}.{seq}.tmp", std::process::id()));
     std::fs::write(&staging, body)?;
     match std::fs::rename(&staging, ack_path_in(config_dir)) {
         Ok(()) => Ok(()),

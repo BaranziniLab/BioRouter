@@ -166,12 +166,23 @@ fn body(enabled: bool) -> std::io::Result<String> {
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
 }
 
-/// Where a write stages before it is published.
+/// Where a write stages before it is published. **A fresh path per call.**
 ///
-/// Named per process, so two Biorouter processes writing at the same moment
-/// stage into different files and each publish lands a complete record.
+/// The process id keeps two Biorouter processes writing at the same moment out
+/// of each other's staging file. ⚠ **That is not enough on its own**, and the
+/// counter is the rest of it: axum runs `/config/upsert` handlers concurrently,
+/// so two confirmed flips can be mid-write inside ONE process, and the migration
+/// stages through here too. Sharing a path there has their `fs::write` calls
+/// interleave into one file — the first publish can land a torn record, which
+/// reads as *nothing recorded* (ON) while its caller is told the write
+/// succeeded, and the second fails `ENOENT`.
 fn staging_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(format!("{SWITCH_FILE_NAME}.{}.tmp", std::process::id()))
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    config_dir.join(format!(
+        "{SWITCH_FILE_NAME}.{}.{seq}.tmp",
+        std::process::id()
+    ))
 }
 
 /// Record the answer **only if this install has none** — the migration's write.
@@ -374,7 +385,30 @@ mod tests {
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
             .filter(|name| name.ends_with(".tmp"))
             .collect();
-        assert!(leftovers.is_empty(), "staging files left behind: {leftovers:?}");
+        assert!(
+            leftovers.is_empty(),
+            "staging files left behind: {leftovers:?}"
+        );
+    }
+
+    /// Two writes in flight **inside one process** must not stage through the
+    /// same file.
+    ///
+    /// Axum runs `/config/upsert` handlers concurrently, so two confirmed flips
+    /// can be mid-write at once — and a staging path keyed only on the pid has
+    /// their `fs::write` calls interleave into one file: the first publish can
+    /// land a torn record, which reads as *nothing recorded* (ON) while its
+    /// caller is told the write succeeded, and the second fails `ENOENT`. The
+    /// migration's claim stages through the same helper, so on the one start-up
+    /// where both run the pair is reachable within a single process too.
+    #[test]
+    fn two_writes_in_one_process_do_not_stage_through_the_same_file() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_ne!(
+            staging_path(dir.path()),
+            staging_path(dir.path()),
+            "two writes in one process staged through the same file"
+        );
     }
 
     #[test]
