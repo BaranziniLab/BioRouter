@@ -122,9 +122,32 @@ aws-providers = [
     "dep:aws-sdk-bedrockruntime",
     "dep:aws-sdk-sagemakerruntime",
 ]
+# DR-20's test seam: compiles a stand-in for the declassification system prompt
+# so testing does not mean typing a password on every run.
+#
+# ⚠ NON-DEFAULT, and it must stay that way. It must never appear in any crate's
+# `[dependencies]` features list — only in `[dev-dependencies]`, where
+# resolver = "2" unifies it into a test build and not into `cargo build`. The
+# real boundary is the `cfg(all(debug_assertions, feature = "privacy-test-auth"))`
+# on `privacy/system_auth_seam.rs` plus the `compile_error!` in `src/lib.rs`;
+# this line only makes the feature nameable.
+privacy-test-auth = []
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["wincred"] }
+# DR-24's Windows prompter: Windows Hello via
+# `Windows.Security.Credentials.UI.UserConsentVerifier`
+# (privacy/system_auth_windows.rs). WinRT async (`IAsyncOperation::get`) comes
+# from `windows-future`, a non-optional dependency of this crate.
+windows = { version = "0.61", features = ["Security_Credentials_UI"] }
+
+# DR-24's macOS prompter: `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`
+# (privacy/system_auth_macos.rs). Raw runtime access rather than
+# `objc2-local-authentication`, so the whole framework binding is two crates the
+# workspace already resolves transitively; `block2` is the `reply:` callback.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
 
 # Managed-policy ownership verification (BR-65) reads the effective uid via
 # `geteuid` to trust a root- or current-user-owned policy file.

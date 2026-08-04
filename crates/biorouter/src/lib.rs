@@ -1,3 +1,20 @@
+// DR-20 requirement (2), and DR-24 Step 3. `privacy-test-auth` compiles a seam
+// (`privacy/system_auth_seam.rs`) that answers the declassification system
+// prompt without an operating system prompt. It exists for tests and for driving
+// the dev GUI. It may never be compiled with debug assertions off — which is
+// every profile this workspace ships: `release`, and `release-dist` and `quick`,
+// which both inherit it.
+//
+// This is a COMPILER error, not a script a release path could skip, which is
+// what makes it stronger than the `scripts/check-*.sh` convention the rest of
+// this repo uses for its invariants.
+#[cfg(all(feature = "privacy-test-auth", not(debug_assertions)))]
+compile_error!(
+    "privacy-test-auth is a TEST SEAM that bypasses the DR-20 declassification \
+     prompt and must never be compiled into a release profile. Drop the feature \
+     from this build; do not relax this guard."
+);
+
 pub mod action_required_manager;
 pub mod agents;
 pub mod biorouter_apps;

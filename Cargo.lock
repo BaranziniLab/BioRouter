@@ -965,6 +965,7 @@ dependencies = [
  "base64 0.21.7",
  "biorouter-mcp",
  "blake3",
+ "block2",
  "boa_engine",
  "chrono",
  "clap",
@@ -992,6 +993,7 @@ dependencies = [
  "minijinja",
  "mockall",
  "nanoid",
+ "objc2",
  "once_cell",
  "paste",
  "pdf-writer",
@@ -1031,6 +1033,7 @@ dependencies = [
  "webbrowser",
  "which 8.0.0",
  "winapi",
+ "windows 0.61.3",
  "wiremock",
  "zip 0.6.6",
 ]

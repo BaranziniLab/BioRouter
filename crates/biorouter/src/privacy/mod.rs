@@ -29,6 +29,14 @@ pub mod master_switch;
 pub mod provenance;
 pub mod refusal;
 mod registry_private;
+pub mod system_auth;
+// The three platform prompters and the test seam (DR-24). Each carries its own
+// file-level `cfg`, so these declarations are unconditional and the audit in
+// `system_auth.rs` can assert that exactly two files gate on the seam's cfg pair.
+pub mod system_auth_macos;
+pub mod system_auth_polkit;
+pub mod system_auth_seam;
+pub mod system_auth_windows;
 pub mod visibility;
 
 pub use alt_provider::assert_alt_provider_allowed;
