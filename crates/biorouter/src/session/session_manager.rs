@@ -71,6 +71,38 @@ CREATE TABLE IF NOT EXISTS classification_audit (
 )
 "#;
 
+/// The user's cross-affiliation grants (issue #56, DR-26 / Task 49): one row per
+/// accepted (session, extension, model affiliation) triple. See
+/// [`crate::privacy::grant`], which owns every read and the one write.
+///
+/// A constant for the same reason [`CLASSIFICATION_AUDIT_DDL`] is one — the two
+/// schema paths that create it run against different handles, `create_schema`
+/// against the pool and the reconcile against the connection holding its write
+/// transaction.
+///
+/// ⚠ **No numbered migration arm, deliberately.** This table is additive and
+/// version-independent, so it is created by `ensure_privacy_schema` on every
+/// startup rather than by a new `apply_migration` number. Issue #56's own O10
+/// hazard is a migration number consumed by testers: every developer's database —
+/// and the operator's — already stands at `CURRENT_SCHEMA_VERSION` and would
+/// never re-enter a newly written arm, so a table added there would not exist on
+/// any machine that has opened this branch. `CREATE TABLE IF NOT EXISTS` in the
+/// idempotent reconcile is the shape this tree already uses for the checkpoints
+/// and message-blob tables.
+///
+/// The composite primary key is the triple, which is what makes re-approval an
+/// upsert rather than a duplicate row.
+const CROSS_AFFILIATION_GRANTS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS cross_affiliation_grants (
+  session_id        TEXT NOT NULL,
+  extension         TEXT NOT NULL,
+  model_affiliation TEXT NOT NULL,
+  granted_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  app_version       TEXT NOT NULL,
+  PRIMARY KEY (session_id, extension, model_affiliation)
+)
+"#;
+
 /// True when `err` is the `UNIQUE(messages.session_id, messages.msg_uid)`
 /// violation (SQLite error 2067) from the message insert — the one failure
 /// [`SessionStorage::add_message`] recovers from by re-minting the uid (#41).
@@ -2507,6 +2539,13 @@ impl SessionStorage {
         // is the other half of the same migration's shape.
         Self::create_classification_audit_table(pool).await?;
 
+        // #56 Task 49 (DR-26): the user's cross-affiliation grants. Created here
+        // for a fresh database and by `ensure_privacy_schema` for every existing
+        // one; see the DDL's own comment for why it consumes no migration number.
+        sqlx::query(CROSS_AFFILIATION_GRANTS_DDL)
+            .execute(pool)
+            .await?;
+
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
             .await?;
@@ -3286,6 +3325,13 @@ impl SessionStorage {
         }
 
         sqlx::query(CLASSIFICATION_AUDIT_DDL)
+            .execute(&mut *connection)
+            .await?;
+        // Task 49's grant store, in the same idempotent, version-independent,
+        // BEGIN IMMEDIATE-serialised place as the ledger above. A database that
+        // already stands at `CURRENT_SCHEMA_VERSION` reaches this and no numbered
+        // arm, which is the whole reason the table lives here.
+        sqlx::query(CROSS_AFFILIATION_GRANTS_DDL)
             .execute(&mut *connection)
             .await?;
         Ok(())

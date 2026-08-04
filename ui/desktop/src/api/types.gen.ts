@@ -316,6 +316,37 @@ export type CredibilityResponse = {
 export type CredibilityTier = 'peer_reviewed' | 'preprint' | 'book' | 'gray_lit' | 'web' | 'personal';
 
 /**
+ * Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data
+ * flow.
+ *
+ * ⚠ **There is no `affiliation` field, and there must not be one.** The grant is
+ * keyed on the affiliation of the model bound *right now*, read by the daemon
+ * from the same sample that produced the warning. A client-supplied institution
+ * would let a caller record an acceptance for a triple the user was never shown
+ * — which is the one thing this control exists to prevent.
+ */
+export type CrossAffiliationGrantRequest = {
+    /**
+     * The extension whose cross-institutional flow the user accepted. Any
+     * spelling the UI holds; it is `name_to_key`-normalised on both sides.
+     */
+    extension: string;
+    session_id: string;
+};
+
+/**
+ * What was accepted, echoed back so the caller can record the exact sentence the
+ * user was shown rather than a paraphrase of it.
+ */
+export type CrossAffiliationGrantResponse = {
+    /**
+     * The full statement, including the scope of the approval
+     * (`privacy::grant::GRANT_SCOPE_COPY`).
+     */
+    accepted: string;
+};
+
+/**
  * Content Security Policy metadata for MCP Apps
  * Specifies allowed domains for network connections and resource loading
  */
@@ -2953,6 +2984,45 @@ export type CancelTurnResponses = {
 };
 
 export type CancelTurnResponse2 = CancelTurnResponses[keyof CancelTurnResponses];
+
+export type AgentCrossAffiliationGrantData = {
+    body: CrossAffiliationGrantRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/cross_affiliation_grant';
+};
+
+export type AgentCrossAffiliationGrantErrors = {
+    /**
+     * There is no cross-institutional mismatch to accept
+     */
+    400: unknown;
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow
+     */
+    403: unknown;
+    /**
+     * Agent not initialized
+     */
+    424: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type AgentCrossAffiliationGrantResponses = {
+    /**
+     * The user's acceptance was recorded
+     */
+    200: CrossAffiliationGrantResponse;
+};
+
+export type AgentCrossAffiliationGrantResponse = AgentCrossAffiliationGrantResponses[keyof AgentCrossAffiliationGrantResponses];
 
 export type ListAppsData = {
     body?: never;

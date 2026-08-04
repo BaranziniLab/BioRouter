@@ -481,6 +481,83 @@ mod tests {
         );
     }
 
+    /// Issue #56 DR-26 / Task 49. The cross-affiliation grant route is the third
+    /// channel needing a proof of a human, and it needs it for the reason the
+    /// other two do: `check_token` compares one machine-wide bearer that AR-11
+    /// measured to be recoverable from inside the daemon, so an authenticated
+    /// request is not evidence of a person.
+    ///
+    /// It also pins WHERE the proof is minted, the half `privacy::grant`'s own
+    /// audit cannot see: that test counts the constructor across the tree and
+    /// requires exactly one call in `routes/agent.rs`; this requires that call to
+    /// be inside the body of the handler that consults the guard. Neither alone is
+    /// enough — a count of one says nothing about which function holds it, and a
+    /// guarded handler says nothing about a second, unguarded one beside it.
+    #[test]
+    fn the_cross_affiliation_grant_route_consults_the_user_action_guard() {
+        let agent_rs = include_str!("routes/agent.rs");
+        let handler = body_of(agent_rs, "async fn agent_cross_affiliation_grant");
+        assert!(
+            handler.contains("user_action_proof("),
+            "the cross-affiliation grant route does not consult the user-action guard"
+        );
+        // Split across two literals so this file does not itself become a place
+        // that names the proof-of-user: `grant`'s audit asserts the set of files
+        // naming it is exactly {routes/agent.rs}, and a spelled-out needle here
+        // would break it.
+        let mint = concat!("User", "CrossAffiliationGrant::from_user_action(");
+        assert!(
+            handler.contains(mint),
+            "the proof-of-user is no longer minted inside the handler that checks the guard"
+        );
+        // Both refusal arms, so a handler that admits the keyless daemon — the
+        // easy mistake, because `Proven` is the only arm the happy path needs —
+        // fails here rather than in production.
+        assert!(
+            handler.contains("NoKeyInstalled"),
+            "the grant route does not distinguish a daemon with no user-action key"
+        );
+
+        // The negative control, so the scan is provably not vacuous: a handler in
+        // the same file that has neither must come back with neither, or
+        // `body_of` is over-reading past a function end.
+        let unguarded = body_of(agent_rs, "async fn agent_remove_extension");
+        assert!(
+            !unguarded.contains("user_action_proof("),
+            "the body scan is over-reading: a handler with no guard reported one"
+        );
+        assert!(
+            !unguarded.contains(mint),
+            "the body scan is over-reading: a handler that mints nothing reported the proof"
+        );
+    }
+
+    /// DR-26 / Task 49 again, from the other side: adding the grant route must
+    /// NOT have weakened the tier refusal beside it.
+    ///
+    /// `/agent/add_extension` refuses a private extension on a public session
+    /// **outright**, with no user-proof branch, because that is not a raise the
+    /// user can authorize either. The grant route's whole premise is the opposite
+    /// case — a Private↔Private flow the user explicitly may accept — and the
+    /// plausible wrong implementation is to conclude from it that the tier
+    /// refusal should also become user-authorizable.
+    #[test]
+    fn the_add_extension_route_still_refuses_a_public_session_outright() {
+        let handler = body_of(
+            include_str!("routes/agent.rs"),
+            "async fn agent_add_extension",
+        );
+        assert!(
+            handler.contains("PrivateExtensionOverHttp"),
+            "the outright tier refusal has left /agent/add_extension"
+        );
+        assert!(
+            !handler.contains("user_action_proof(") && !handler.contains("is_user_action("),
+            "attaching a private extension to a public chat is not a raise the user can \
+             authorize, so this handler must have no proof-of-user branch"
+        );
+    }
+
     #[test]
     fn the_workspace_socket_is_exempt_and_nothing_that_merely_starts_with_it_is() {
         assert!(is_unauthenticated_path("/ui/workspace"));

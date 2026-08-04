@@ -26,6 +26,7 @@ pub mod disclosure;
 #[cfg(test)]
 mod disclosure_tests;
 pub mod extensions;
+pub mod grant;
 pub mod master_switch;
 pub mod provenance;
 pub mod refusal;
@@ -48,6 +49,12 @@ pub use extensions::{
     classify_extension, classify_extension_entry, private_extension_ids, resolve_extension,
     ExtensionClassification,
 };
+// ⚠ **The cross-affiliation proof-of-user is deliberately NOT re-exported here.**
+// `grant::tests::the_proof_of_user_is_constructed_in_exactly_one_place` asserts
+// that the set of files naming it is exactly the one HTTP handler behind the
+// user-action header, and a convenience re-export would put this module in that
+// set for nothing — which is also how a `use` of it becomes one line shorter to
+// write from somewhere it must never be written at all.
 pub use refusal::{raise_needs_user_action, PrivacyRefusal};
 
 /// The master privacy-tier switch (R7, DR-15). `true` — the default — means

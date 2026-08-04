@@ -77,12 +77,17 @@ const COPY_OF_PRIVATE_NEEDS_USER: &str =
 /// `the_copy_refusal_carries_the_marker_the_renderer_keys_on`. The message above
 /// is model-facing prose and gets reworded; the marker is the contract.
 ///
-/// `#[cfg(test)]` because the only Rust reader is that test: production emits
-/// the whole message and the substring match happens in the renderer. The
-/// contract is no weaker for it — the test is what fails if a reword drops the
-/// marker, and it is the reword this guards against, not the const.
+/// `#[cfg(test)]` because the only Rust readers are tests: production emits the
+/// whole message and the substring match happens in the renderer. The contract is
+/// no weaker for it — the test is what fails if a reword drops the marker, and it
+/// is the reword this guards against, not the const.
+///
+/// `pub(super)` so a refusal in a SIBLING route can assert it does not carry this
+/// marker (issue #56 Task 49's grant route does). A second copy of the string for
+/// that purpose would be a second marker in every practical sense: the one that
+/// gets reworded and the one that does not.
 #[cfg(test)]
-const COPY_OF_PRIVATE_REFUSAL_MARKER: &str = "only the person at the keyboard may do it";
+pub(super) const COPY_OF_PRIVATE_REFUSAL_MARKER: &str = "only the person at the keyboard may do it";
 
 /// Issue #56 DR-19's **second** read: did the copy that just ran mint a
 /// private-capability session for a request that proved no human?

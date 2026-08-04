@@ -7478,6 +7478,38 @@ impl Agent {
             .await
     }
 
+    /// Task 49 (DR-26): everything the grant route needs about ONE extension,
+    /// from ONE sample — the warning the user is being asked to accept, and the
+    /// model affiliation the grant will be keyed on.
+    ///
+    /// `None` means there is nothing to accept: the extension is not enabled in
+    /// this chat, or the model bound right now is compatible with it. The route
+    /// turns that into a refusal rather than recording a grant, because DR-26's
+    /// whole premise is that a user accepts a risk **that was stated to them** —
+    /// a grant with no live mismatch behind it is a pre-authorisation for a flow
+    /// nobody has described yet.
+    ///
+    /// ⚠ **The two values come from one `CallCapability`, and that is the point
+    /// of the method existing at all.** `Agent::update_provider` reassigns the
+    /// provider mutex with no turn lock, so asking for the warning and then
+    /// asking for the affiliation is the read-then-read that type exists to
+    /// collapse: the user would be shown institution A's statement and the grant
+    /// would be recorded against institution B's model — an acceptance of a
+    /// sentence the user never read.
+    pub async fn cross_affiliation_grant_subject(
+        &self,
+        extension: &str,
+    ) -> Option<(Option<crate::privacy::ModelAffiliation>, String)> {
+        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+        let key = crate::config::extensions::name_to_key(extension);
+        self.extension_manager
+            .cross_affiliation_warnings(Some(cap))
+            .await
+            .into_iter()
+            .find(|(name, _)| crate::config::extensions::name_to_key(name) == key)
+            .map(|(_, warning)| (cap.affiliation(), warning))
+    }
+
     /// Restore the provider from session data or fall back to global config
     /// This is used when resuming a session to restore the provider state
     pub async fn restore_provider_from_session(&self, session: &Session) -> Result<()> {

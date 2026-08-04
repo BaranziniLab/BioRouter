@@ -43,7 +43,12 @@ use biorouter_mcp::knowledge::service::{KnowledgeService, PrimaryUpdate};
 // exactly ONE instance — the lib's. `crate::auth` does not exist in the binary
 // compilation, and a copy under `routes` would give the binary a second, empty
 // static that `commands::agent` never installs into.
-use biorouter_server::auth::is_user_action;
+// Task 49 takes the THREE-way form beside the boolean one: a daemon that holds no
+// user-action key must be reported differently from a caller that presented no
+// proof (Task 18A's open question 23), and only `user_action_proof` can tell them
+// apart. Both are defined in terms of the same one header, one key, one
+// comparison — a second mechanism is what DR-18 refused.
+use biorouter_server::auth::{is_user_action, user_action_proof, UserActionProof};
 use rmcp::model::{CallToolRequestParams, Content};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -289,6 +294,31 @@ pub struct ResumeAgentRequest {
 pub struct AddExtensionRequest {
     session_id: String,
     config: ExtensionConfig,
+}
+
+/// Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data
+/// flow.
+///
+/// ⚠ **There is no `affiliation` field, and there must not be one.** The grant is
+/// keyed on the affiliation of the model bound *right now*, read by the daemon
+/// from the same sample that produced the warning. A client-supplied institution
+/// would let a caller record an acceptance for a triple the user was never shown
+/// — which is the one thing this control exists to prevent.
+#[derive(Deserialize, utoipa::ToSchema)]
+pub struct CrossAffiliationGrantRequest {
+    session_id: String,
+    /// The extension whose cross-institutional flow the user accepted. Any
+    /// spelling the UI holds; it is `name_to_key`-normalised on both sides.
+    extension: String,
+}
+
+/// What was accepted, echoed back so the caller can record the exact sentence the
+/// user was shown rather than a paraphrase of it.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct CrossAffiliationGrantResponse {
+    /// The full statement, including the scope of the approval
+    /// (`privacy::grant::GRANT_SCOPE_COPY`).
+    accepted: String,
 }
 
 #[derive(Deserialize, utoipa::ToSchema)]
@@ -1010,6 +1040,153 @@ async fn agent_add_extension(
     Ok(StatusCode::OK)
 }
 
+/// What the grant route says to a caller that presented no proof of a human.
+///
+/// It is the model-facing half of DR-26's ruling and it says the two things a
+/// model needs: that this is not its decision, and what to do instead. It ends
+/// on the user's own action rather than on
+/// [`biorouter::privacy::refusal::ASK_THE_USER_TO_SWITCH`] — this chat is already
+/// on a private model, so "switch to a private model" is advice it has taken.
+///
+/// ⚠ **It carries NEITHER of the two markers the renderer keys on**, which is the
+/// same choice `DECLASSIFY_NEEDS_USER` makes and for the same reason.
+/// `USER_ACTION_REFUSAL_MARKER`'s toast says *switch this chat's model* and
+/// `COPY_OF_PRIVATE_REFUSAL_MARKER`'s says *branch it from the chat window*; both
+/// would send the user somewhere that cannot help, because the way out of this
+/// one is to approve the flow or to re-bind to the owning institution's model.
+/// The wording steps around both.
+const CROSS_AFFILIATION_GRANT_NEEDS_USER: &str =
+    "Accepting a cross-institutional data flow is a decision only the person at the keyboard can \
+     make, and this request carried no proof it came from them. Nothing was recorded. Do not \
+     retry — the same call will be refused again, and no setting, hook or permission mode \
+     changes it. Tell the user which extension you need and what for, and let them approve it.";
+
+/// …and when the daemon holds no user-action key at all.
+///
+/// A separate sentence, per Task 18A's open question 23: reporting "this daemon
+/// cannot verify a human" as "you are not a human" sends the person at the
+/// keyboard hunting for a permission they can never obtain. `just run-server`, a
+/// hand-run `biorouterd agent` and every headless deployment land here.
+const CROSS_AFFILIATION_GRANT_NO_KEY: &str =
+    "This daemon was started without a user-action key, so it cannot verify that a request came \
+     from the person at the keyboard — and accepting a cross-institutional data flow requires \
+     that proof. Nothing was recorded. This control is unavailable on this daemon; use the \
+     desktop app, or bind this chat to a model covered by the same institution's agreements.";
+
+/// …and when there is no live mismatch to accept.
+///
+/// ⚠ **Refusing here is the control, not a validation nicety.** DR-26's whole
+/// premise is that a user accepts a risk **that was stated to them**. A grant
+/// recorded with no mismatch behind it is a pre-authorisation for a flow nobody
+/// has described — it would sit in the store waiting for a future bind to make it
+/// meaningful, and the sentence the user agreed to would never have existed.
+const CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT: &str =
+    "There is no cross-institutional mismatch to accept for that extension in this chat: it is \
+     not enabled here, or the model bound right now is already covered by agreements that reach \
+     it. Nothing was recorded.";
+
+/// Record the user's acceptance of one cross-institutional data flow (issue #56,
+/// DR-26 / Task 49).
+///
+/// ⚠ **This route is a reversal of `/agent/add_extension`'s posture and the
+/// difference is the ruling, not an inconsistency.** That route refuses a private
+/// extension on a public session *outright*, with no user-proof branch, because
+/// attaching one is a raise the user cannot authorize either. A Private↔Private
+/// cross-institution flow is the opposite case: both endpoints are already
+/// private, the tier boundary is not being crossed, and DR-26 states explicitly
+/// that legitimate cross-institutional work under a real DUA exists and that the
+/// user may accept the stated risk. Blocking it outright is the design
+/// researchers route around by turning the feature off. So this route exists, and
+/// the tier refusal beside it is untouched.
+///
+/// The grant is keyed on the **triple** (session, extension, model affiliation),
+/// where the affiliation is read by the daemon from the same sample that produced
+/// the warning — never from the request. Re-binding to a different institution's
+/// model changes the triple, so the acceptance does not carry over.
+#[utoipa::path(
+    post,
+    path = "/agent/cross_affiliation_grant",
+    request_body = CrossAffiliationGrantRequest,
+    responses(
+        (status = 200, description = "The user's acceptance was recorded", body = CrossAffiliationGrantResponse),
+        (status = 400, description = "There is no cross-institutional mismatch to accept"),
+        (status = 401, description = "Unauthorized - invalid secret key"),
+        (status = 403, description = "Refused (issue #56, DR-26): only the user may accept a \
+                                      cross-institutional data flow"),
+        (status = 424, description = "Agent not initialized"),
+        (status = 500, description = "Internal server error")
+    )
+)]
+async fn agent_cross_affiliation_grant(
+    State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
+    Json(request): Json<CrossAffiliationGrantRequest>,
+) -> Result<Json<CrossAffiliationGrantResponse>, ErrorResponse> {
+    // FIRST, before the agent is fetched or the extension named in the request is
+    // resolved. An unproven caller learns nothing about which extensions this chat
+    // has, and cannot use the refusals to probe.
+    //
+    // The three-way form rather than `is_user_action`, so a daemon that was handed
+    // no key is told something different from a caller that presented no proof —
+    // Task 18A's open question 23.
+    match user_action_proof(&headers) {
+        UserActionProof::Proven => {}
+        UserActionProof::Unproven => {
+            return Err(ErrorResponse {
+                status: StatusCode::FORBIDDEN,
+                message: CROSS_AFFILIATION_GRANT_NEEDS_USER.to_string(),
+            })
+        }
+        UserActionProof::NoKeyInstalled => {
+            return Err(ErrorResponse {
+                status: StatusCode::FORBIDDEN,
+                message: CROSS_AFFILIATION_GRANT_NO_KEY.to_string(),
+            })
+        }
+    }
+
+    let agent = state.get_agent(request.session_id.clone()).await?;
+
+    // ONE sample: the warning the user is accepting and the affiliation the grant
+    // is keyed on come from the same read of the bound provider. Two reads would
+    // let `update_provider` slip between them and record an acceptance of a
+    // sentence the user never saw.
+    let Some((affiliation, warning)) = agent
+        .cross_affiliation_grant_subject(&request.extension)
+        .await
+    else {
+        return Err(ErrorResponse {
+            status: StatusCode::BAD_REQUEST,
+            message: CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT.to_string(),
+        });
+    };
+
+    // The single construction of the cross-affiliation proof-of-user in the tree,
+    // pinned by
+    // `privacy::grant::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
+    // It is minted here, inside the handler that checked the guard above, and
+    // nowhere a tool call can reach.
+    biorouter::privacy::grant::record(
+        state.session_manager(),
+        &request.session_id,
+        &request.extension,
+        affiliation,
+        &biorouter::privacy::grant::UserCrossAffiliationGrant::from_user_action(),
+    )
+    .await
+    .map_err(|e| {
+        error!("Failed to record cross-affiliation grant: {}", e);
+        ErrorResponse::internal(format!("Failed to record cross-affiliation grant: {}", e))
+    })?;
+
+    Ok(Json(CrossAffiliationGrantResponse {
+        // Composed by the module that owns the copy, never here: the dialog that
+        // asked and the response that confirms must not differ by a word.
+        accepted: biorouter::privacy::grant::accepted_statement(&warning),
+    }))
+}
+
 #[utoipa::path(
     post,
     path = "/agent/remove_extension",
@@ -1595,9 +1772,80 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/agent/update_provider", post(update_agent_provider))
         .route("/agent/update_from_session", post(update_from_session))
         .route("/agent/add_extension", post(agent_add_extension))
+        .route(
+            "/agent/cross_affiliation_grant",
+            post(agent_cross_affiliation_grant),
+        )
         .route("/agent/remove_extension", post(agent_remove_extension))
         .route("/agent/stop", post(stop_agent))
         .with_state(state)
+}
+
+#[cfg(test)]
+mod cross_affiliation_grant_copy_tests {
+    //! Issue #56 DR-26 / Task 49: what the grant route's three refusals may and
+    //! may not say.
+    //!
+    //! The behaviour these guard is not testable at the HTTP layer here —
+    //! `AppState::new()` opens the developer's REAL session database (see
+    //! `working_dir_lock_tests`) — so the copy is asserted directly, the way
+    //! `routes::session`'s `the_refusals_say_different_things` asserts the
+    //! declassification pair.
+
+    use super::{
+        CROSS_AFFILIATION_GRANT_NEEDS_USER, CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT,
+        CROSS_AFFILIATION_GRANT_NO_KEY,
+    };
+
+    /// A refusal that carries a renderer marker is claiming to be a different
+    /// refusal, and the toast it triggers sends the user somewhere that cannot
+    /// help: `USER_ACTION_REFUSAL_MARKER`'s says *switch this chat's model* (this
+    /// chat is already private), and `COPY_OF_PRIVATE_REFUSAL_MARKER`'s says
+    /// *branch it from the chat window* (nothing is being branched).
+    #[test]
+    fn no_grant_refusal_claims_another_refusals_marker() {
+        for message in [
+            CROSS_AFFILIATION_GRANT_NEEDS_USER,
+            CROSS_AFFILIATION_GRANT_NO_KEY,
+            CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT,
+        ] {
+            assert!(
+                !message.contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+                "this refusal is claiming to be the model picker's: {message}"
+            );
+            assert!(
+                !message.contains(super::super::session::COPY_OF_PRIVATE_REFUSAL_MARKER),
+                "this refusal is claiming to be a copy handler's: {message}"
+            );
+        }
+    }
+
+    /// The two proof refusals say different things, which is the whole reason
+    /// Task 49 takes the three-way `user_action_proof` over the boolean:
+    /// reporting "this daemon cannot verify a human" as "you are not a human"
+    /// sends the person at the keyboard hunting for a permission they can never
+    /// obtain (open question 23).
+    #[test]
+    fn a_keyless_daemon_is_told_something_a_caller_with_no_proof_is_not() {
+        assert_ne!(
+            CROSS_AFFILIATION_GRANT_NEEDS_USER,
+            CROSS_AFFILIATION_GRANT_NO_KEY
+        );
+        assert!(CROSS_AFFILIATION_GRANT_NO_KEY.contains("without a user-action key"));
+        // …and neither of them accuses the user of being the model.
+        assert!(CROSS_AFFILIATION_GRANT_NEEDS_USER.contains("person at the keyboard"));
+    }
+
+    /// Every refusal in this feature forecloses the retry, because a model that
+    /// reads one as transient loops on it — and this one also has to name the
+    /// human act, since the human act is the entire product of DR-26.
+    #[test]
+    fn the_proof_refusal_forecloses_the_retry_and_names_the_human_act() {
+        let m = CROSS_AFFILIATION_GRANT_NEEDS_USER;
+        assert!(m.contains("Do not"), "{m}");
+        assert!(m.contains("Nothing was recorded"), "{m}");
+        assert!(m.contains("let them approve it"), "{m}");
+    }
 }
 
 #[cfg(test)]
