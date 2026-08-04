@@ -57,13 +57,48 @@ describe('loadRegistry — freshness that raises and never lowers', () => {
     expect(effectivePrivacy(registry, 'ucsfomopagent')).toBe('private');
   });
 
+  /**
+   * ⚠ **"Persists" is asserted against storage and against a restarted module
+   * graph, not against a second call in the same one.**
+   *
+   * The two `loadRegistry` calls this test used to make shared one module
+   * instance, so a learned set held only in a module variable was
+   * indistinguishable from a durable one: measured, replacing `privateSet.ts`'s
+   * localStorage read AND write with an in-memory `Set` — learning lost on every
+   * window reload and every app restart — left all eight tests in this file
+   * green.
+   *
+   * `localStorage['biorouter.baam.privateExtensionKeys']` is the *only* durable
+   * carrier of a **learned** badge. The last-good document on disk
+   * (`utils/registryCache.ts`) is a different mechanism and cannot stand in for
+   * it: a cached document that no longer marks the key private would not
+   * re-teach it. So both halves are asserted here — the write reached storage,
+   * and a fresh module graph reads it back.
+   *
+   * `labarchivesagent` is deliberately NOT in the compiled baseline
+   * (`registry.fallback.json` publishes it as `privacy: public`), so nothing
+   * below can pass off the compiled half of the union.
+   */
   it('an upgrade takes effect on the next successful fetch and persists', async () => {
     mockFetch({ extensions: [{ extension_name: 'labarchivesagent', privacy: 'private' }] });
     await loadRegistry();
+
+    // The durable carrier itself, read directly. A module-variable-only store
+    // never gets here.
+    const stored: unknown = JSON.parse(
+      localStorage.getItem('biorouter.baam.privateExtensionKeys') ?? 'null'
+    );
+    expect(stored).toContain('labarchivesagent');
+
+    // …and a restarted window — a fresh module graph, so fresh module-level
+    // caches and a fresh in-memory `unpersisted` set — reads it back off
+    // storage with no successful fetch of its own to learn from.
+    vi.resetModules();
+    const restarted = await import('./registry');
     mockFetchFailure();
-    const { registry, live } = await loadRegistry();
+    const { registry, live } = await restarted.loadRegistry();
     expect(live).toBe(false);
-    expect(effectivePrivacy(registry, 'labarchivesagent')).toBe('private');
+    expect(restarted.effectivePrivacy(registry, 'labarchivesagent')).toBe('private');
   });
 
   /**
