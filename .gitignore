@@ -66,17 +66,18 @@ result
 
 # Local agent tooling config (not product source)
 .codex/
-# Playwright accessibility snapshot dump (runtime artifact)
-knowledge-state.yml
+
 dist/
+
+# Secrets — never commit. `*.env` covers every per-extension env file, so
+# individual ones do not need their own line.
 *.env
-cdwagent.env
 config.yaml.bak.*
 
-# Local scratch / work dirs and packaged extension artifacts (not product source)
-spoke-work/
-cdwagent-work/
+# Packaged extension artifacts (build output, not product source)
 *.brxt
+# The Agent Drafter stress test writes generated apps here; the run is
+# resumable, so this stays even while the directory is absent.
 biorouter-testing-apps/
 
 # Signing certificates — never commit (also covered by notarization/)
