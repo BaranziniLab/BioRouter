@@ -102,10 +102,19 @@ describe('mixingModeFromConfig', () => {
  * elicitation reply — would be DR-19's "the agent may ask, only the user may
  * answer" undone on the client.
  *
- * So: exactly one module outside `src/api/` may name the generated call, and it
- * is the one whose only caller is an `onClick`.
+ * So: exactly one module outside `src/api/` may name the generated call.
+ *
+ * ⚠ **And that is all it pins.** This block used to be called *"the grant call
+ * has exactly one caller in the renderer"*, which review correctly read as a
+ * stronger claim than the assertion below makes: a second component importing
+ * {@link acceptCrossAffiliationFlow} from the accept module would pass this
+ * untouched. The audit's subject is the module boundary, not the call count.
+ * Renamed rather than strengthened, because the boundary is the property worth
+ * holding — one place composes the request and attaches the proof — and a test
+ * whose name promises more than it checks is how a reviewer comes to believe a
+ * hole is covered.
  */
-describe('the grant call has exactly one caller in the renderer', () => {
+describe('the generated grant call is named by exactly one renderer module', () => {
   const srcRoot = join(__dirname, '..');
 
   /**

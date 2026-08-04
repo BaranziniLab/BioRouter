@@ -29,10 +29,13 @@ export interface CrossAffiliationAcceptCardProps {
  * same hard block with an extra step.
  *
  * ⚠ **The agent cannot press it.** DR-19: the model may ask, only the user may
- * answer. Three things hold that, and none of them is this component's good
- * intentions — the daemon requires `X-User-Action`, which no tool-call path can
- * carry; the grant call has exactly one caller in the renderer, audited by
- * `utils/crossAffiliation.test.ts`; and that caller is an `onClick`.
+ * answer. Two things hold that, and neither is this component's good intentions
+ * — the daemon requires `X-User-Action`, which no tool-call path can carry; and
+ * exactly one renderer module may name the grant call, audited by
+ * `utils/crossAffiliation.test.ts`. The third thing this comment used to claim —
+ * that the call has exactly one caller, and that it is an `onClick` — is true
+ * today but is **not** what that audit pins; see the note on
+ * {@link acceptCrossAffiliationFlow}'s module.
  *
  * ⚠ **What is deliberately NOT here: the risk statement.** The refusal directly
  * above this card already carries the warning verbatim, naming both

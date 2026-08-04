@@ -14,11 +14,19 @@
  * wearing a warning's clothes.
  *
  * ⚠ **The agent must not be able to press it.** DR-19 is unchanged: the model
- * may ask, only the user may answer. That is why the grant call lives here, with
- * exactly one caller (an `onClick`), pinned by
- * `the grant call has exactly one caller in the renderer` in the sibling test —
- * the renderer's half of the Rust audit that caps the proof-of-user at one
+ * may ask, only the user may answer. That is why the grant call lives here:
+ * `the generated grant call is named by exactly one renderer module` in the
+ * sibling test pins this file as the only place outside `src/api/` that may name
+ * it — the renderer's half of the Rust audit that caps the proof-of-user at one
  * construction site.
+ *
+ * ⚠ **What that audit does NOT pin**, said plainly because review read the
+ * earlier wording as promising it: how many callers
+ * {@link acceptCrossAffiliationFlow} has. A second component importing it from
+ * here would pass the audit untouched. Today there is exactly one importer and
+ * its only call is an `onClick` — a fact about the tree, not something a test
+ * holds — and a second one deserves the same scrutiny as the first, because
+ * what it posts is a person's acceptance of a data flow.
  *
  * ⚠ Its own module rather than `utils/userAction.ts`. That file is about the
  * *header* that proves a request came from the keyboard, and the two refusal
