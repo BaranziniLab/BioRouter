@@ -11,6 +11,16 @@ use super::ProviderTier;
 /// rows that decide the most — a private extension with **no** affiliation, and
 /// one naming an institution the registry does not publish — would otherwise
 /// have no test on the resolver at all, only on a rule extracted beside it.
+///
+/// ⚠ **It substitutes the two tables the RESOLVER reads, and nothing else.**
+/// The institution display-name map is not in here: [`super::affiliation`]
+/// reads `registry_private::INSTITUTIONS` directly, so a synthetic snapshot
+/// cannot make an institution unpublished. That is why
+/// `an_institution_the_registry_does_not_publish_is_a_mismatch_that_names_it`
+/// uses `atlantis` — a slug genuinely absent from the real map — rather than
+/// relying on this struct to withhold it. Widening the seam to the warning copy
+/// would let a test show the user words the shipped build never produces, so
+/// the narrower seam is the deliberate one.
 struct RegistrySnapshot {
     /// Keys whose extensions must never be admitted to a public session.
     private: &'static [&'static str],
@@ -668,9 +678,16 @@ mod tests {
 
         // (c) A recorded PUBLIC id against a name the snapshot knows as private.
         //     A public extension declares no affiliation, so a resolver that
-        //     took the last matching row — or that treated "some identity
-        //     declares nothing" as unconstrained — would answer `Any` here and
-        //     silently clear the flow. Same pairing rule as (b).
+        //     treated "some identity declares nothing" as unconstrained would
+        //     answer `Any` here and silently clear the flow. Same pairing rule
+        //     as (b).
+        //
+        //     ⚠ It does NOT also catch a last-match-wins resolver, which an
+        //     earlier version of this comment claimed: `playwrightagent`
+        //     contributes no row at all, so it is never a *matching* row and
+        //     taking the last one still yields `ucsf`. Iteration order is pinned
+        //     by `affiliation_unions_over_every_matched_identity`, where two
+        //     identities really do both have rows. One assertion, one mutation.
         super::super::provenance::insert_test_record("cdwagent", "playwrightagent");
         let resolved = resolve_extension("cdwagent", None);
         assert_eq!(resolved.tier, ProviderTier::Private);
@@ -709,11 +726,36 @@ mod tests {
 
     /// A public extension is unconstrained, because affiliation is a question
     /// about private data. This is the row that must NOT become a mismatch.
+    ///
+    /// The premise is asserted rather than assumed: without the first two
+    /// assertions this test says nothing about *public extensions* in
+    /// particular, since a name nobody has ever published (`"zzz"`) would pass
+    /// it identically. `playwrightagent` is a real BAAM extension the snapshot
+    /// classifies Public, which is the case that has to stay unconstrained — a
+    /// marketplace connector, installed and enabled, that no institution's
+    /// agreements cover.
     #[test]
     fn a_public_extension_declares_no_affiliation() {
+        assert!(
+            !private_extension_ids().any(|k| k == "playwrightagent"),
+            "this says something about a PUBLIC extension only while it is one"
+        );
+        assert!(
+            !super::super::registry_private::EXTENSION_AFFILIATIONS
+                .iter()
+                .any(|(key, _)| *key == "playwrightagent"),
+            "...and about an UNAFFILIATED one only while it has no row"
+        );
+
         let resolved = resolve_extension("playwrightagent", None);
         assert_eq!(resolved.tier, ProviderTier::Public);
         assert_eq!(resolved.affiliation, ExtensionAffiliation::Any);
+        // ...so an institution's model reaches it with no warning, which is the
+        // consequence that would actually be felt if this regressed.
+        assert!(compatible(
+            &ModelAffiliation::Institution(inst("ucsf")),
+            &resolved.affiliation
+        ));
     }
 
     // ---- The rows the real snapshot cannot exercise ------------------------
