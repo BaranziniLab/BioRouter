@@ -1,0 +1,185 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import ToolCallWithResponse from './ToolCallWithResponse';
+import type { ToolRequestMessageContent } from '../types/message';
+import { CROSS_AFFILIATION_ACCEPT_MARKER } from '../utils/crossAffiliation';
+
+/**
+ * Issue #56, DR-26 / Task 57 — the gate that matters.
+ *
+ * The mechanism has existed since Task 49: the route, the store, the triple, the
+ * proof-of-user, all tested. What was missing was that **nobody could reach it**
+ * — `agentCrossAffiliationGrant` had zero callers outside `src/api/`. So a test
+ * that mounts the card directly and presses its button would prove exactly what
+ * was already true and nothing that was broken.
+ *
+ * This one therefore starts where a user starts: the transcript, a tool call
+ * that failed, the daemon's refusal inside it. Nothing here reaches for the
+ * accept component by name — it renders `ToolCallWithResponse`, the component
+ * chat actually uses, and looks for a control by the role and name a person
+ * would.
+ */
+const mockReadConfig = vi.fn();
+const mockGrant = vi.fn();
+
+vi.mock('../api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api')>()),
+  readConfig: (...args: unknown[]) => mockReadConfig(...args),
+  agentCrossAffiliationGrant: (...args: unknown[]) => mockGrant(...args),
+}));
+
+/**
+ * The daemon's refusal for a mismatch Gate C would clear on a grant, assembled
+ * the way `privacy::refusal::cross_affiliation_refusal(warning, Some(ext))`
+ * assembles it. The frame is the MIRRORED constant, never a string typed here.
+ */
+const grantableRefusal = (extension: string) =>
+  'Cross-institutional data flow. The extension `' +
+  extension +
+  '` holds data belonging to UCSF, but this chat is bound to a model covered by Stanford’s ' +
+  'agreements. Using it would send `' +
+  extension +
+  '`’s inputs and results across that boundary. This call was not made. Only the user can ' +
+  'accept a cross-institutional risk, and only after it has been stated to them, so do not ' +
+  'retry. Tell the user what you were trying to do and ask them to approve this specific flow ' +
+  'or to switch this chat to a model covered by the same institution’s agreements. ' +
+  CROSS_AFFILIATION_ACCEPT_MARKER +
+  '`' +
+  extension +
+  "`, on this chat's current model.";
+
+/** The same refusal from a site that never consults the grant: no accept frame. */
+const bareRefusal =
+  'Cross-institutional data flow. The extension `ucsfomopagent` holds data belonging to UCSF, ' +
+  'but this chat is bound to a model covered by Stanford’s agreements. This call was not made.';
+
+const toolRequest: ToolRequestMessageContent = {
+  type: 'toolRequest',
+  id: 'tool-xaff',
+  toolCall: {
+    status: 'success',
+    value: { name: 'ucsfomopagent__cohort_lookup', arguments: { cohort_id: 42 } },
+  },
+};
+
+const renderTranscript = (error: string) =>
+  render(
+    <ToolCallWithResponse
+      sessionId="chat_7"
+      isCancelledMessage={false}
+      toolRequest={toolRequest}
+      toolResponse={{
+        type: 'toolResponse',
+        id: 'tool-xaff',
+        toolResult: { status: 'error', error },
+      }}
+    />
+  );
+
+const acceptControl = () => screen.queryByRole('button', { name: /approve this flow/i });
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // No mixing-policy key on this machine, which is every machine until the
+  // setting ships: `standard`.
+  mockReadConfig.mockResolvedValue({ data: undefined });
+  mockGrant.mockResolvedValue({ data: { accepted: 'Recorded for this chat only.' } });
+  // @ts-expect-error test shim
+  window.electron = { getUserActionKey: vi.fn().mockResolvedValue('ua-key-1') };
+});
+
+describe('the cross-institutional refusal in the transcript', () => {
+  it('carries an accept control the user can reach without expanding anything', async () => {
+    const user = userEvent.setup();
+    renderTranscript(grantableRefusal('ucsfomopagent'));
+
+    // ⚠ NO click first. A failed tool call is a collapsed line in the
+    // transcript, so a control only reachable behind that disclosure is one most
+    // people never find — and "there is a handler" was already true before this
+    // task. The refusal and its way out arrive together.
+    const button = await screen.findByRole('button', { name: /approve this flow/i });
+    expect(button).toBeVisible();
+    // The daemon's own words are on screen beside it, so the person is deciding
+    // on the stated risk rather than on a bare button.
+    expect(screen.getByText(/Cross-institutional data flow/)).toBeVisible();
+
+    await user.click(button);
+
+    await waitFor(() => expect(mockGrant).toHaveBeenCalledTimes(1));
+    const [options] = mockGrant.mock.calls[0] as [
+      { body: { session_id: string; extension: string }; headers: Record<string, string> },
+    ];
+    // The triple as refused: this chat, this connector. No affiliation — the
+    // daemon reads that off the model it samples, and a client-supplied one
+    // would record an acceptance of a flow the user was never shown.
+    expect(options.body).toEqual({ session_id: 'chat_7', extension: 'ucsfomopagent' });
+    // DR-16's proof, per request. Without it the daemon refuses with a 403.
+    expect(options.headers['X-User-Action']).toBe('ua-key-1');
+
+    expect(await screen.findByText('Recorded for this chat only.')).toBeInTheDocument();
+  });
+
+  it('reads the connector out of the refusal rather than off the tool name', async () => {
+    // `get_client_for_tool` resolves an extension by longest key, so an
+    // extension named `ucsf` and one named `ucsf__omop` both prefix
+    // `ucsf__omop__lookup`. Splitting the tool name here would key the grant on
+    // the wrong connector and record a row no lookup ever matches — a control
+    // that silently does nothing. The refusal names the key Gate C itself used.
+    const user = userEvent.setup();
+    render(
+      <ToolCallWithResponse
+        sessionId="chat_7"
+        isCancelledMessage={false}
+        toolRequest={{
+          type: 'toolRequest',
+          id: 'tool-xaff-2',
+          toolCall: { status: 'success', value: { name: 'ucsf__omop__lookup', arguments: {} } },
+        }}
+        toolResponse={{
+          type: 'toolResponse',
+          id: 'tool-xaff-2',
+          toolResult: { status: 'error', error: grantableRefusal('ucsf') },
+        }}
+      />
+    );
+
+    await user.click(await screen.findByRole('button', { name: /approve this flow/i }));
+    await waitFor(() => expect(mockGrant).toHaveBeenCalledTimes(1));
+    const [options] = mockGrant.mock.calls[0] as [{ body: { extension: string } }];
+    expect(options.body.extension).toBe('ucsf');
+  });
+
+  it('offers nothing when there is no mismatch to accept', async () => {
+    // The `open` mixing policy raises no mismatch at all, so what reaches the
+    // transcript is an ordinary tool failure — and an accept control on one
+    // would be an offer to approve a boundary nobody crossed.
+    renderTranscript('The command could not be started');
+    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    expect(acceptControl()).not.toBeInTheDocument();
+    expect(mockGrant).not.toHaveBeenCalled();
+  });
+
+  it('offers nothing on a refusal the grant is never consulted for', async () => {
+    // `assert_extension_reachable` and the agent's own enable path compose the
+    // same refusal without the accept frame, because neither reads a grant.
+    // Pressing a control there would record a real acceptance and leave the
+    // retry refused.
+    renderTranscript(bareRefusal);
+    await waitFor(() => expect(screen.getByText(/Problem with/)).toBeInTheDocument());
+    expect(acceptControl()).not.toBeInTheDocument();
+    expect(mockGrant).not.toHaveBeenCalled();
+  });
+
+  it('records nothing until a person presses it', async () => {
+    // DR-19's asymmetry, at the surface: producing the refusal is something the
+    // MODEL did — it made the tool call. Rendering one must therefore never be
+    // the acceptance. Only the click is.
+    renderTranscript(grantableRefusal('ucsfomopagent'));
+    await screen.findByRole('button', { name: /approve this flow/i });
+    // Settled: the policy was read and the control drawn, and still nothing was
+    // posted.
+    await waitFor(() => expect(mockReadConfig).toHaveBeenCalled());
+    expect(mockGrant).not.toHaveBeenCalled();
+  });
+});

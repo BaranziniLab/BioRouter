@@ -845,4 +845,49 @@ mod tests {
              proof-of-user this module exists to require."
         );
     }
+
+    /// Task 57. [`GRANT_SCOPE_COPY`]'s doc says this sentence belongs to "the
+    /// dialog the user clicks", and Task 57 built that dialog — so the renderer
+    /// now needs it BEFORE the press, where the daemon cannot supply it: the
+    /// daemon composes it into [`accepted_statement`] and returns it only once
+    /// the grant is recorded, which is one press too late for the person
+    /// deciding.
+    ///
+    /// So the renderer mirrors it, and this is the detector the doc's warning
+    /// about "four hand-written copies drift within one release" otherwise
+    /// lacked. It compares bytes against the real shipped file rather than a
+    /// copy, and a reword on either side turns the Rust build red — which is the
+    /// only direction that works, since the renderer's own tests cannot see this
+    /// constant.
+    #[test]
+    fn the_scope_copy_the_user_reads_is_the_one_the_daemon_records() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let mirror = root.join("ui/desktop/src/utils/crossAffiliation.ts");
+        let src = std::fs::read_to_string(&mirror).unwrap_or_else(|e| {
+            panic!(
+                "the accept control's module is missing at {} ({e}). Without it the user has no \
+                 way to accept a cross-institutional flow, which is the whole of Task 57.",
+                mirror.display()
+            )
+        });
+        assert!(
+            src.contains(GRANT_SCOPE_COPY),
+            "the renderer states a different scope from the one the daemon records. The dialog \
+             that asks and the audit row that answers must not differ by a word — re-mirror \
+             GRANT_SCOPE_COPY into {}.",
+            mirror.display()
+        );
+        // …and the marker the same file keys the whole control off. A refusal
+        // the renderer cannot recognise renders no button at all, silently.
+        assert!(
+            src.contains(super::super::refusal::CROSS_AFFILIATION_ACCEPT_MARKER),
+            "the renderer no longer recognises the accept frame, so the control it exists to \
+             render can never appear"
+        );
+    }
 }

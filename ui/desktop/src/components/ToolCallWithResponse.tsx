@@ -26,6 +26,8 @@ import { CallToolResponse, Content, EmbeddedResource } from '../api';
 import McpAppRenderer from './McpApps/McpAppRenderer';
 import type { ArtifactSource } from './artifacts/artifactTypes';
 import { NotificationContent, NotificationSurface } from './alerts/NotificationSurface';
+import { crossAffiliationOffer } from '../utils/crossAffiliation';
+import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
 
 /**
  * The tool card's own status vocabulary. `interrupted` extends the shared
@@ -393,6 +395,7 @@ function ToolCallWithResponseContent({
         <ToolCallView
           {...{
             isCancelledMessage,
+            sessionId,
             toolCall,
             toolResponse,
             notifications,
@@ -486,6 +489,12 @@ function ToolCallExpandable({
 
 interface ToolCallViewProps {
   isCancelledMessage: boolean;
+  /**
+   * Issue #56 DR-26 / Task 57: the chat a cross-institutional acceptance would
+   * be keyed on. Absent on read-only surfaces that render a transcript with no
+   * live session, where there is nothing to accept against.
+   */
+  sessionId?: string;
   toolCall: {
     name: string;
     arguments: Record<string, unknown>;
@@ -778,6 +787,7 @@ const getToolName = (toolCallName: string): string => {
 
 function ToolCallView({
   isCancelledMessage,
+  sessionId,
   toolCall,
   toolResponse,
   notifications,
@@ -805,6 +815,13 @@ function ToolCallView({
   const isToolDetails = toolCall?.arguments && Object.entries(toolCall.arguments).length > 0;
 
   const toolError = getToolResultError(toolResponse?.toolResult);
+
+  // Issue #56, DR-26 / Task 57. A cross-institutional refusal Gate C would clear
+  // on a grant — the ONE refusal in this feature whose way out is a thing the
+  // user does rather than a model they switch to. `null` for every other
+  // failure, including the two sites that compose the same refusal without
+  // consulting a grant.
+  const acceptOffer = crossAffiliationOffer(toolError);
 
   // Executed sub-call telemetry (#28): what a coordinated execute_code step
   // actually ran, with exact inputs and per-call status. Shown alongside the
@@ -924,7 +941,16 @@ function ToolCallView({
     </span>
   );
   return (
-    <ToolCallExpandable isStartExpanded={false} isForceExpand={false} label={toolLabel}>
+    // ⚠ A grantable cross-institutional refusal starts EXPANDED (issue #56, Task
+    // 57). A failed tool call is otherwise a collapsed line, and a way out that
+    // only exists behind a disclosure most people never open is the hard block
+    // this task exists to remove, one click further away. Every other failure
+    // keeps the quiet default.
+    <ToolCallExpandable
+      isStartExpanded={acceptOffer !== null}
+      isForceExpand={false}
+      label={toolLabel}
+    >
       {(() => {
         const toolName = toolCall.name.substring(toolCall.name.lastIndexOf('__') + 2);
         const toolGraph = normalizeToolGraph(toolCall.arguments?.tool_graph);
@@ -959,6 +985,16 @@ function ToolCallView({
       {toolError && (
         <div className="border-t border-border-subtle px-3 py-3">
           <NotificationContent status="error" title="Tool call failed" message={toolError} />
+          {/*
+            Issue #56, DR-26 / Task 57 — the accept control, on the surface the
+            refusal lands on and directly under the daemon's own words. DR-26
+            rules warn-then-allow-if-the-user-insists; without this the refusal
+            arrived, the model was told to ask, and the person at the keyboard
+            had nothing to press.
+          */}
+          {acceptOffer && (
+            <CrossAffiliationAcceptCard sessionId={sessionId} extension={acceptOffer.extension} />
+          )}
         </div>
       )}
 
