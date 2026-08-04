@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CrossAffiliationAcceptCard } from './CrossAffiliationAcceptCard';
+// The real constant, through the partial mock's `importOriginal` below — so the
+// scope test compares the card against the mirrored bytes rather than against a
+// second hand-typed copy, which would drift in exactly the direction the mirror
+// exists to catch.
+import { GRANT_SCOPE_COPY } from '../../utils/crossAffiliation';
 
 const mockReadMixingMode = vi.fn();
 const mockAccept = vi.fn();
@@ -106,11 +111,16 @@ describe('CrossAffiliationAcceptCard', () => {
   it('states the scope before the user presses, not only after', async () => {
     renderCard();
     await screen.findByRole('button', { name: /approve this flow/i });
-    // "How far does my yes reach" is part of what is being decided. The three
-    // narrowings, in the same words `grant::GRANT_SCOPE_COPY` uses.
-    const card = screen.getByTestId('cross-affiliation-accept');
-    expect(card).toHaveTextContent(/this chat/i);
-    expect(card).toHaveTextContent(/this extension/i);
-    expect(card).toHaveTextContent(/institution/i);
+    // "How far does my yes reach" is part of what is being decided.
+    //
+    // ⚠ The WHOLE sentence, byte for byte, and not three regexes for its three
+    // narrowings. Review found the seam: `privacy::grant::tests::
+    // the_scope_copy_the_user_reads_is_the_one_the_daemon_records` asserts the
+    // constant exists in the module FILE, and a loose match here asserts the
+    // card says something like it — so a card that kept the export and rendered
+    // a paraphrase satisfied both, and the byte-level mirror the Rust test
+    // exists to enforce stopped reaching the screen. This closes it: the two
+    // tests now pin the same bytes at both ends of the wire.
+    expect(screen.getByTestId('cross-affiliation-accept')).toHaveTextContent(GRANT_SCOPE_COPY);
   });
 });
