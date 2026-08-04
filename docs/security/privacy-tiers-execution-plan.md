@@ -20174,6 +20174,120 @@ Established by reconnaissance against the branch, not assumed. Each contradicts 
 
 ---
 
+## DR-27 — the user chooses the mixing policy, from three named modes
+
+> **Ruled 2026-08-04**, from the operator. [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions)
+> shipped exactly one policy: a cross-institution mismatch refuses, and the user clears it with one
+> in-app confirmation. That is the right **default** and the wrong **only option**. This adds
+> **Task 52**.
+
+### Why one fixed policy is wrong
+
+Three real deployments want three different answers, and none of them is unreasonable:
+
+- **A lab doing sanctioned multi-site work** under a Data Use Agreement already has the paperwork.
+  Every cross-institution prompt is friction that teaches them to click through, which is the prompt
+  fatigue [DR-19](#decisions-of-record) warns about — and a control people click through is not a
+  control.
+- **An ordinary researcher** wants today's behaviour: warn, let me decide, remember the answer.
+- **A clinical deployment** wants the barrier to cost something real, so that mixing is a deliberate
+  act rather than a reflex click.
+
+### The three modes
+
+| Mode | Public ↔ private | Institution mixing | Proof to mix |
+| --- | --- | --- | --- |
+| **`open`** | still enforced | allowed **silently** | none |
+| **`standard`** ← default | still enforced | allowed after a prompt | in-app `X-User-Action` |
+| **`strict`** | still enforced | allowed after a prompt | **system password** (DR-24's prompter) |
+
+⚠ **All three keep the public/private barrier.** This setting governs the **affiliation** axis only.
+The operator's phrase for `open` was *"all models and extensions become identical in terms of their
+privacy levels"* — that means identical **among private things**, not that a public model gains
+private reach. Turning off the tier system entirely is what the **master switch** does, it already
+exists, and Task 52 must not duplicate or weaken it.
+
+### Where the setting lives, and why it is not a preference like any other
+
+⚠ **It goes where [DR-22](#dr-22--the-master-switch-does-not-live-in-configyaml) put the master
+switch — NOT in `config.yaml`.** DR-17 left that file agent-writable, so a setting stored there is
+one a public model can set to `open`, erasing every affiliation check on the next launch. That is
+DR-14's sentence again: *a master switch a public model can edit is not a switch.* This setting is
+a security control wearing a preference's clothes, and it must be stored like one.
+
+### The asymmetry: loosening costs, tightening is free
+
+- **`strict` → `standard` → `open`** is a **downgrade**. It requires the **system password**,
+  exactly like declassification and the master switch, whatever mode you are currently in.
+- **`open` → `standard` → `strict`** is a **tightening**. It requires nothing.
+
+⚠ **Read the direction carefully.** Requiring the password to *leave* `strict` is the whole point of
+`strict`; requiring it to *enter* `strict` would be a control that punishes the careful user. The
+same ratchet governs classification and the KB tier — raising is free, lowering is gated.
+
+### What each mode does at the gate
+
+`open` must **not** be implemented by granting everything. It suppresses the *mismatch* — the
+compatibility check still runs, still resolves, and the result is still available to the UI for
+display. A mode that short-circuits the resolver would also blind the badges and the audit trail, and
+would make `open → standard` fail to re-tighten anything already in flight.
+
+⚠ **`open` is not the master switch and must not read like it.** The disclosure copy must say what it
+actually does: cross-institution reach becomes silent, and *nothing else changes*.
+
+### An agent may never change this setting
+
+[DR-19](#decisions-of-record) applies unchanged. The setting is user-only in every mode, and the
+existing single-writer discipline is how that is enforced — not a new mechanism.
+
+---
+
+### Task 52: The mixing-policy setting — DR-27
+
+Implements [DR-27](#dr-27--the-user-chooses-the-mixing-policy-from-three-named-modes). Depends on
+Tasks 42 (the protected store), 44 (the platform prompters) and 49 (the grant).
+
+- [ ] **Step 1: The mode, stored where the master switch is**
+
+A three-valued setting — `open` / `standard` / `strict` — in the DR-22 store, **not** `config.yaml`.
+Default `standard`, so no existing install changes behaviour on upgrade.
+
+- [ ] **Step 2: The direction-aware guard**
+
+Loosening requires DR-24's system prompt; tightening requires nothing. ⚠ The comparison is on the
+**ordering of the modes**, not on "is this a write" — a guard that prompts for every change makes
+tightening expensive and is wrong in the direction that matters.
+
+- [ ] **Step 3: Wire the three behaviours at ONE place**
+
+The mode is read where `compatible()`'s result is turned into a refusal — not at each call site. Three
+call sites reading a mode is three places to disagree.
+
+- `open` — the mismatch resolves and is still reported for display; it does not refuse.
+- `standard` — today's behaviour, unchanged.
+- `strict` — the grant route additionally requires the system prompt, on top of `X-User-Action`.
+
+- [ ] **Step 4: The gate, and it must fail a plausible wrong implementation**
+
+```bash
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+cargo test -p biorouter-server --lib routes::agent 2>&1 | grep "test result:"
+```
+
+1. **Per mode, the mismatch outcome** — `open` allows, `standard` refuses-then-grants on
+   `X-User-Action`, `strict` refuses and rejects a grant carrying only `X-User-Action`.
+2. **The direction asymmetry, both ways** — `strict → open` refused without the system prompt;
+   `open → strict` succeeds with no prompt at all. A test for only the first passes an
+   implementation that prompts on every change.
+3. **`open` does not become the master switch** — with mode `open`, a **public** model is still
+   refused a private extension. This is the test that fails the most likely wrong implementation,
+   which is to make `open` skip the whole privacy check rather than only the affiliation one.
+4. **`open` still resolves** — the compatibility result is still computed and still available, so
+   badges and the audit trail keep working.
+5. **An agent cannot change the mode** in any of the three modes.
+
+---
+
 ## Operator rulings DR-21 – DR-25 — the five open questions, answered
 
 > **Ruled 2026-08-03.** Open questions 25/26, 27, 28, 29 and 30 accumulated across Phases 3 and 4
