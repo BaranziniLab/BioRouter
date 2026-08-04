@@ -111,10 +111,21 @@ fn a_versa_module_repointed_elsewhere_loses_ucsf_with_its_tier() {
     }
 }
 
-/// Tier and affiliation are decided by **one** host check, so they cannot
-/// disagree for any endpoint at all — not merely for the ones someone thought to
-/// list above. Two independent implementations reading the same constant would
-/// pass every test in this file and still drift the day one of them is edited.
+/// The corpus guard on a claim `ucsf_gateway_affiliation` makes *structurally*:
+/// tier and affiliation are decided by **one** host check, so they cannot
+/// disagree.
+///
+/// ⚠ **The universality is the implementation's, not this test's** — the comment
+/// here used to claim it, which is a stronger promise than the assertion keeps.
+/// While affiliation is a `match` on the tier predicate, the equivalence below
+/// is a tautology and these ten endpoints establish nothing on their own.
+///
+/// What the corpus is for is the day someone "simplifies" affiliation into its
+/// own `host_of(..) == UCSF_GATEWAY_HOST` comparison. Two implementations
+/// reading the same constant look right, pass every other test in this file, and
+/// drift the first time one of them is edited. Every row below is an endpoint
+/// where a plausible second copy — a `contains`, a case-sensitive compare, a
+/// missing parse failure — answers differently from the first.
 #[test]
 fn a_versa_endpoint_is_ucsf_exactly_when_it_is_private() {
     for endpoint in [
