@@ -523,13 +523,22 @@ mod tests {
             handler.contains(mint),
             "the proof-of-user is no longer minted inside the handler that checks the guard"
         );
-        // Both refusal arms, so a handler that admits the keyless daemon — the
-        // easy mistake, because `Proven` is the only arm the happy path needs —
-        // fails here rather than in production.
-        assert!(
-            handler.contains("NoKeyInstalled"),
-            "the grant route does not distinguish a daemon with no user-action key"
-        );
+        // Both refusal arms, so an implementation that admits the keyless daemon
+        // — the easy mistake, because `Proven` is the only arm the happy path
+        // needs — fails here rather than in production. They live one function
+        // down, in the pure mapping
+        // `routes::agent::refuse_grant_unless_user`, precisely so a TEST can
+        // drive them (`only_a_proven_user_action_gets_past_the_grant_guard`);
+        // this asserts the shape that test cannot see, which is that all three
+        // verdicts are still distinguished somewhere.
+        let mapping = body_of(agent_rs, "fn refuse_grant_unless_user");
+        for arm in ["Proven", "Unproven", "NoKeyInstalled"] {
+            assert!(
+                mapping.contains(arm),
+                "the grant guard no longer distinguishes {arm}; a daemon with no user-action \
+                 key must not be told it is the model"
+            );
+        }
 
         // The negative control, so the scan is provably not vacuous: a handler in
         // the same file that has neither must come back with neither, or

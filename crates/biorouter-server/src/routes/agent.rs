@@ -1104,6 +1104,34 @@ const CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED: &str =
      therefore whose agreements cover it — cannot be read. Nothing was recorded. Open the chat \
      and approve the flow there.";
 
+/// A verdict from [`user_action_proof`] to the grant route's answer: `Ok(())`
+/// only for `Proven`.
+///
+/// ⚠ **Extracted so the claim "only the user may grant" is asserted rather than
+/// grepped for.** The handler it belongs to cannot be driven from a test —
+/// `AppState::new()` opens the developer's REAL session database — so every
+/// other fact about this route is a source scan, and a scan for
+/// `user_action_proof(` keeps passing against a match whose `Unproven` arm was
+/// refactored into `=> {}`. This mapping is pure, so
+/// `only_a_proven_user_action_gets_past_the_grant_guard` drives all three arms
+/// for real. The one thing it cannot see — that the guard runs before the chat
+/// is touched — stays a scan, and says so.
+fn refuse_grant_unless_user(proof: UserActionProof) -> Result<(), ErrorResponse> {
+    match proof {
+        UserActionProof::Proven => Ok(()),
+        UserActionProof::Unproven => Err(ErrorResponse {
+            status: StatusCode::FORBIDDEN,
+            message: CROSS_AFFILIATION_GRANT_NEEDS_USER.to_string(),
+        }),
+        // A separate sentence, per Task 18A's open question 23 — see the
+        // constant.
+        UserActionProof::NoKeyInstalled => Err(ErrorResponse {
+            status: StatusCode::FORBIDDEN,
+            message: CROSS_AFFILIATION_GRANT_NO_KEY.to_string(),
+        }),
+    }
+}
+
 /// Record the user's acceptance of one cross-institutional data flow (issue #56,
 /// DR-26 / Task 49).
 ///
@@ -1154,26 +1182,14 @@ async fn agent_cross_affiliation_grant(
 ) -> Result<Json<CrossAffiliationGrantResponse>, ErrorResponse> {
     // FIRST, before the agent is fetched or the extension named in the request is
     // resolved. An unproven caller learns nothing about which extensions this chat
-    // has, and cannot use the refusals to probe.
+    // has, and cannot use the refusals to probe — pinned by
+    // `the_guard_runs_before_the_chat_is_touched`.
     //
     // The three-way form rather than `is_user_action`, so a daemon that was handed
     // no key is told something different from a caller that presented no proof —
-    // Task 18A's open question 23.
-    match user_action_proof(&headers) {
-        UserActionProof::Proven => {}
-        UserActionProof::Unproven => {
-            return Err(ErrorResponse {
-                status: StatusCode::FORBIDDEN,
-                message: CROSS_AFFILIATION_GRANT_NEEDS_USER.to_string(),
-            })
-        }
-        UserActionProof::NoKeyInstalled => {
-            return Err(ErrorResponse {
-                status: StatusCode::FORBIDDEN,
-                message: CROSS_AFFILIATION_GRANT_NO_KEY.to_string(),
-            })
-        }
-    }
+    // Task 18A's open question 23. The mapping is one function down so it can be
+    // driven by a test; see `refuse_grant_unless_user`.
+    refuse_grant_unless_user(user_action_proof(&headers))?;
 
     // PEEK, never `get_agent`. This route inspects a chat; creating one to
     // inspect it reads the process default provider rather than the chat's
@@ -1836,6 +1852,7 @@ mod cross_affiliation_grant_route_tests {
         CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED, CROSS_AFFILIATION_GRANT_NEEDS_USER,
         CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT, CROSS_AFFILIATION_GRANT_NO_KEY,
     };
+    use axum::http::StatusCode;
 
     const SOURCE: &str = include_str!("agent.rs");
 
@@ -1896,6 +1913,56 @@ mod cross_affiliation_grant_route_tests {
                 "the body scan is over-reading: {name} reported the grant route's lookup"
             );
         }
+    }
+
+    /// ⚠ **The one piece of this route's behaviour that IS reachable from a
+    /// test, so it is asserted rather than grepped for.**
+    ///
+    /// Everything else here is a source scan, for the reason the module header
+    /// gives. That leaves the most important claim of all — *only the user may
+    /// grant* — resting on `handler.contains("user_action_proof(")`, which
+    /// survives a refactor that turns the `Unproven` arm into `=> {}`. The
+    /// mapping from a proof verdict to a refusal is pure, so it lives in
+    /// [`super::refuse_grant_unless_user`] and this drives all three arms.
+    #[test]
+    fn only_a_proven_user_action_gets_past_the_grant_guard() {
+        use crate::auth::UserActionProof;
+
+        super::refuse_grant_unless_user(UserActionProof::Proven)
+            .expect("a proven user action is the one verdict that proceeds");
+
+        let unproven = super::refuse_grant_unless_user(UserActionProof::Unproven)
+            .expect_err("a caller with no proof of a human may not accept a compliance risk");
+        assert_eq!(unproven.status, StatusCode::FORBIDDEN);
+        assert_eq!(unproven.message, CROSS_AFFILIATION_GRANT_NEEDS_USER);
+
+        let keyless = super::refuse_grant_unless_user(UserActionProof::NoKeyInstalled)
+            .expect_err("a daemon that cannot verify a human refuses everyone, including them");
+        assert_eq!(keyless.status, StatusCode::FORBIDDEN);
+        assert_eq!(keyless.message, CROSS_AFFILIATION_GRANT_NO_KEY);
+    }
+
+    /// …and the guard runs BEFORE the chat is looked up, so an unproven caller
+    /// cannot use the refusals to probe which extensions a chat has.
+    ///
+    /// The pure test above cannot see the order; only the source can.
+    #[test]
+    fn the_guard_runs_before_the_chat_is_touched() {
+        let handler = crate::auth::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
+        let guarded = handler
+            .find(concat!("refuse_grant_unless_user(", "user_action_proof("))
+            .expect(
+                "the grant handler no longer passes the real guard's verdict to the refusal \
+                 mapping",
+            );
+        let looked_up = handler
+            .find(concat!("peek", "_agent("))
+            .expect("the grant handler no longer looks the chat up");
+        assert!(
+            guarded < looked_up,
+            "the proof is checked AFTER the chat is inspected, so an unproven caller can \
+             distinguish a chat with the extension from one without"
+        );
     }
 
     /// …and the refusal that miss produces says what actually happened.
