@@ -3,7 +3,10 @@
 > **What this is.** The design for a privacy-tier system that keeps conversations touched by
 > private models or private data sources from ever reaching a model hosted outside the user's
 > institution. It classifies models, sessions, MCP extensions and knowledge bases, and enforces the
-> boundary at five choke points in the agent loop.
+> boundary at choke points in the agent loop — the **five** gates A–E designed in §9.1, plus **three**
+> more (F, G, H) that implementation found this design had not named, for **eight** in the system that
+> shipped. They are enumerated in
+> [What shipped, and what did not](#what-shipped-and-what-did-not).
 > **Status:** **Implemented for v1** on the `feat/privacy-tiers` branch — not merged to `main` as
 > of 2026-08-05 — and **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
 > anything else.** ⚠ **Every section below describes the design as it was written, not the running
