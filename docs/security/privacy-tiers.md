@@ -1780,6 +1780,26 @@ correct, because what gates the operation is the prompt rather than the caller
 cannot *complete* this" is enforced by Rust's module privacy plus the operating system, rather than
 by the route being undocumented.
 
+> ⚠ **What actually landed differs from the paragraph above in shape, not in property** (Task 55,
+> which wired DR-20's prompt to the two operations that had been ruled to need it and had no caller).
+> Task 29 shipped before DR-20 was ruled, so `UserConfirmation` **stayed** a ZST carrying the
+> user-action half. The newtype over the authorised id set exists beside it as
+> **`declassify::SystemAuthorization`** — private field, no public constructor, neither `Clone` nor
+> `Copy`, returned only by `declassify::authenticate_declassification` after an approved prompt, and
+> checked per chat with `covers(id)`. There is no `privacy::system_auth::authenticate`: the prompt
+> lives in `declassify.rs` so that `system_auth` never has to name the proof-of-user, which
+> `the_proof_of_user_is_constructed_in_exactly_two_places` would otherwise fail.
+>
+> **Two residuals, recorded rather than left to be discovered.**
+> (a) The **route is still per-id** (`POST /sessions/{id}/declassify`), so §12.1's `POST
+> /sessions/declassify` taking `session_ids[]` is still unbuilt. A batch costs one prompt *in the
+> mechanism* — one `SystemAuthorization` covers the set it named — but no HTTP surface or UI reaches
+> it yet, so today's product declassifies one chat at a time.
+> (b) The prompt is raised **by the daemon**, not by the Electron main process as §12.1 describes.
+> That is Task 44's mechanism and it is what makes the CLI door work at all; the cost is that on
+> macOS the dialog is presented by `biorouterd` rather than by the app, so its ownership and window
+> ordering have not been checked against a running GUI.
+
 It is also **the only writer in the tree permitted to lower `privacy_tier`.** Every other write
 goes through the session update builder, whose emission is the monotone `CASE WHEN` and physically
 cannot lower it; `declassify_session` bypasses the builder with its own `UPDATE`. A repo-grep test
