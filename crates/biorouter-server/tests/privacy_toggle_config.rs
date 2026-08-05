@@ -746,8 +746,11 @@ async fn the_retired_key_is_migrated_once_and_then_ignored() {
 const USER_ACTION_KEY: &str = "task-52-user-action-key";
 
 fn install_user_action_key_once() {
-    use sha2::Digest;
-    let digest: [u8; 32] = sha2::Sha256::digest(USER_ACTION_KEY.as_bytes()).into();
+    // Through the slice, exactly as `commands::agent::read_user_action_digest`
+    // does with the hex the launcher pipes in: the digest is what the daemon
+    // stores, and the raw key is what the header presents.
+    let digest = <sha2::Sha256 as sha2::Digest>::digest(USER_ACTION_KEY.as_bytes());
+    let digest = <[u8; 32]>::try_from(digest.as_slice()).expect("SHA-256 is 32 bytes");
     biorouter_server::auth::install_user_action_digest(Some(digest));
 }
 
