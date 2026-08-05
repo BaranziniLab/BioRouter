@@ -116,8 +116,11 @@ fn upsert(key: &str, value: &str, confirm: Option<&str>) -> UpsertConfigQuery {
 /// What this is and what it is not: a **UX guard against an accidental or
 /// model-composed config write**, not an authorization boundary. The phrase is a
 /// fixed string in the shipped source, so a caller holding the daemon secret
-/// replays it — accepted for the same reason AR-15 is, because `check_token` has
-/// no principal and such a caller can raise its own session's capability anyway.
+/// replays it. That is acceptable because `check_token` has no principal and
+/// because the authorization on this route is `X-User-Action`, not the phrase.
+/// ⚠ This used to read "accepted for the same reason AR-15 is … such a caller
+/// can raise its own session's capability anyway". **AR-15 was retired on
+/// 2026-08-02** (DR-16, commit `0757823f`) and that clause is withdrawn.
 /// ⚠ `#[serial]`, and the other test in this file carries it too. Moving these
 /// out of the lib stopped them disturbing ~550 unrelated tests; it did not stop
 /// them disturbing EACH OTHER. Both mutate the same process-global atomic and

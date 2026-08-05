@@ -2616,14 +2616,21 @@ export type UpsertConfigQuery = {
      * ⚠ **What this is and what it is not.** It is a **UX guard against an
      * accidental or model-composed config write**, not an authorization
      * boundary: the phrase is a fixed string in the shipped source, so a caller
-     * holding the daemon secret replays it. It is accepted for the same reason
-     * AR-15 is — `check_token` has no principal, so the daemon cannot tell
-     * Settings → Privacy from any other loopback caller, and a caller that
+     * holding the daemon secret replays it. That is acceptable because
+     * `check_token` has no principal — the daemon cannot tell Settings →
+     * Privacy from any other loopback caller — and because the *authorization*
+     * on this route is `X-User-Action`, not the phrase. What the phrase buys is
+     * that the flip cannot be a side effect of an ordinary `/config/upsert`,
+     * which is the reachable path: a model *can* compose one of those through a
+     * tool.
+     *
+     * ⚠ **This comment used to justify the phrase by adding *"and a caller that
      * already holds the secret can raise its own session to private capability
-     * anyway. What the guard actually buys is that the flip cannot be a side
-     * effect of an ordinary `/config/upsert`, which is the reachable path: a
-     * model *can* compose one of those through a tool and cannot compose the
-     * daemon secret out of thin air on macOS without a shell.
+     * anyway"*, citing AR-15. That is no longer true and is withdrawn** —
+     * AR-15 was retired on 2026-08-02 by DR-16 (commit `0757823f`), which made
+     * an upward provider bind require `X-User-Action`. Do not restore the
+     * argument: the guard does not need it, and a stale "we are already open
+     * here anyway" is how a weakened control gets waved through.
      */
     confirm?: string | null;
     is_secret: boolean;

@@ -1144,7 +1144,16 @@ handlers at `:1604`/`:1636`. Those are the GUI's own path and are user-driven ra
 model-driven, so scoping the *tool* ratchet to the seven MCP entry points is the right call — but
 §9.3 A1 establishes that the daemon secret is an ambient bearer credential — no longer sitting in a
 tool child's own environment, but still held in the daemon's, and equal to full authority for
-anything that can read it — and AR-15 that a secret-holder can raise its own session's capability.
+anything that can read it.
+⚠ **This paragraph used to end with a second clause, citing
+[AR-15](privacy-tiers-execution-plan.md#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+for the claim that holding the secret also lets a caller raise its own session's capability. That
+clause is **withdrawn**, because the risk it cited is closed.** AR-15 was **retired** on 2026-08-02
+(DR-16, commit `0757823f`): binding a session to a private provider
+over HTTP now needs a proof that a human acted (`X-User-Action`, minted per launch by the desktop
+app and held by the daemon only as a digest) on top of the secret, so the secret alone raises
+nothing. **What the secret still buys is unchanged and is the point of this paragraph** — it reads
+these KB routes directly, and that is what makes the seven-tool ratchet a partial control.
 ⚠ **Do not read that as "a tool cannot get it".** [AR-11](privacy-tiers-execution-plan.md#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
 measured a child recovering its parent's environment with `ps -Ewww -p $PPID` on macOS and
 `/proc/self/environ` in-process on Linux, so a shell-capable session can still reach a KB through

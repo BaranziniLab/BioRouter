@@ -23,9 +23,12 @@
 > requires and this tree has no API for — and none of them blocks Phase 0–3.
 > **One dependency is stated rather than closed:** #56's tool-channel barrier holds on
 > `POST /agent/call_tool` either way, but a caller holding the daemon secret can still run tools
-> inside another session (issue #47) and can raise its own session's capability with no credentials
-> ([AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials));
-> both need a caller identity in the daemon's auth model, which this plan does not add.
+> inside another session (issue #47), which needs a caller identity in the daemon's auth model that
+> this plan does not add. ✅ **The other half of that sentence is gone.** *"…and can raise its own
+> session's capability with no credentials"* was
+> [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials),
+> and DR-16 **retired** it on 2026-08-02 (commit `0757823f`): a raise now needs `X-User-Action` on top
+> of the secret. It did not need the general caller identity issue #47 is still waiting on.
 > **Audience:** the engineer or agent implementing issue #56, and the reviewer of its PRs.
 
 > ⚠ **Scope ruling, 2026-07-30 — read [Scope ruling — DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) before any task.**
@@ -317,8 +320,12 @@
 > and defined in none — is defined. (⚠ *Defined* was as far as that fix went; nothing emitted the
 > field until the tenth round below.) What is **not** closed and is now stated: a credential-free
 > `POST /agent/update_provider {provider:"llamacpp"}` raises any session to private capability
-> (AR-15), because the rule that would stop it forbids *"switch this chat to a private model"* —
+> ([AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)),
+> because the rule that would stop it forbids *"switch this chat to a private model"* —
 > step 1 of every refusal this feature ships.
+> ✅ **Superseded, 2026-08-02.** That last sentence is the last thing this round got wrong. DR-16 made
+> the refusal a *condition* — an upward bind without `X-User-Action` is a 409 — so the rule stops the
+> model without taking the user's model picker away, and AR-15 is **retired** (commit `0757823f`).
 
 > **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
 > re-derived the four choke points independently and could not break them on content: it read
@@ -1345,6 +1352,16 @@ is descoped — and amended **AR-8** and **AR-11**. The knowledge-base ruling [D
 resolved **AR-1**. None was deleted: each says in place what happened to it and why, because an
 accepted cost that simply disappears from a document is indistinguishable from one nobody noticed.
 
+⚠ **A seventh changed on 2026-08-02, and it is the only one a *task* changed rather than a ruling.**
+[Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+implemented [DR-16](#decisions-of-record) in commit `0757823f` and **retired
+[AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)**:
+a caller holding the daemon secret can no longer raise its own session's capability, because the
+upward provider bind now also requires `X-User-Action`. ⚠ **A retired risk is a claim this document
+must stop making.** An accepted risk that is quietly fixed and still described as open costs exactly
+what a missed one does — it spends the reader's trust in the entries that *are* accurate — so the
+retirement is stated here, on the section heading, and at every site in this plan that cited it.
+
 ### AR-1 — RESOLVED by DR-18 — A knowledge base that one private session touched becomes unreadable from every public chat, including the user's own ordinary work
 
 > ✅ **RESOLVED by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base), 2026-07-30.** The operator ruled that *"users can change the kb to be private
@@ -1857,7 +1874,29 @@ private session wrote into it are covered by the same sentence, and that is the 
 rule starts applying to what happens next. A user who wants an existing app protected immediately
 opens it once in a private chat.
 
-### AR-15 — A caller holding the daemon secret can raise its own session's capability with no credentials
+### AR-15 — RETIRED by DR-16 — A caller holding the daemon secret can raise its own session's capability with no credentials
+
+> ✅ **RETIRED by [DR-16](#decisions-of-record), 2026-08-02 — closed in commit `0757823f`
+> ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)), not accepted.**
+> The body below was written before that ruling had a task, and its verdict — that this cost was
+> accepted because no rule could close it — no longer holds. `POST /agent/update_provider` now refuses an upward bind
+> that carries no proof of a human: `privacy_tiers_enabled() && raise_needs_user_action(current,
+> new_provider.tier()) && !is_user_action(&headers)` → **409 `TierRaiseNeedsUser`**
+> (`routes/agent.rs:904-916`). The daemon secret alone raises nothing; the caller also needs
+> `X-User-Action`, whose raw key the Electron main process mints per launch and hands the daemon only
+> as a SHA-256 digest on stdin (`auth.rs:40-127`) — so a tool that reads the daemon's own heap
+> recovers a value it cannot present. Four other raise channels take the same proof and a fifth
+> (`POST /agent/add_extension`) is refused outright, pinned by
+> `auth::tests::all_five_raise_channels_call_the_guard`.
+>
+> **Three residuals survive, and none of them is this risk's claim.** (1) The raw key lives in the
+> Electron main process, so a caller who can read *that* process still holds it —
+> [Open question 20](#open-questions). (2) A daemon started with no key on stdin (`just run-server`, a
+> hand-run `biorouterd agent`, every headless deployment) refuses **every** raise, the human's
+> included — [Open question 23](#open-questions). (3) The **CLI** diverge mints an already-private
+> session without passing through this gate at all — [Open question 29](#open-questions). Each is
+> tracked where it is named; leaving AR-15 open would not have covered any of them, and would have
+> gone on claiming a hole the tree does not have.
 
 `POST /agent/update_provider` (`routes/agent.rs:686-731`) binds **any** provider to **any** session
 with only `X-Secret-Key`. `llamacpp` is in the private set and needs **no credentials at all** —
@@ -1867,12 +1906,21 @@ with only `X-Secret-Key`. `llamacpp` is in the private set and needs **no creden
 session; the **upward** bind is permitted by design. So one credential-free POST makes a session
 private-capability, and every gate in this plan then permits what it would otherwise refuse.
 
-**Why it is accepted rather than closed.** The rule that would close it — refuse the upward bind
-while tiers are enabled — forbids *"switch this chat to a private model"*, which is **step 1 of the
-two-ways-out message in every refusal this feature ships**. And the daemon cannot distinguish the
-user clicking the model chip from a tool call issuing the same POST, because `check_token`
-(`auth.rs:80-127`) is one machine-wide bearer secret with no principal, no per-session token and no
-origin binding.
+**Why it was accepted when this was written — and why that reasoning did not survive.** The rule
+that would close it — refuse the upward bind while tiers are enabled — forbids *"switch this chat to
+a private model"*, which is **step 1 of the two-ways-out message in every refusal this feature
+ships**. And the daemon cannot distinguish the user clicking the model chip from a tool call issuing
+the same POST, because `check_token` (`auth.rs:80-127`) is one machine-wide bearer secret with no
+principal, no per-session token and no origin binding.
+
+⚠ **Both of those facts are still true; the conclusion drawn from them was wrong, and the banner
+above is what actually shipped.** DR-16 kept the first by making the refusal a **condition** rather
+than a blanket one — sideways and downward binds are untouched for every caller, so the model picker,
+the CLI, `restore_provider_from_session` and every apps-runtime bind keep working, and only the
+upward bind asks for anything. It answered the second by **adding** a principal for this one decision
+instead of trying to read one out of `check_token`: a per-launch key the Electron main process mints
+and never puts in the daemon's environment. The move this section could not see was *build the
+proof*; it framed the choice as control-versus-remediation-path and accepted the loss.
 
 **Bounding it honestly.** This is a *credential* escalation, not a *model* escalation. Reaching it
 requires the daemon secret, and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
@@ -1889,8 +1937,12 @@ Layer B sandbox involved. Denying `/proc` is neither effective (`/proc/<pid>/env
 **Stated in the operator's terms:** privacy tiers stop a public **model** from reaching private
 material through the tools it is given. They do not make the daemon's own API secret a per-session
 credential, and anyone — or any model — that obtains that secret has full local access with or
-without this feature. Closing it needs a caller identity in the daemon's auth model, the same fix as
-[Open question 18](#open-questions) and [Open question 20](#open-questions).
+without this feature. ⚠ **The sentence that used to end this paragraph — *"closing it needs a caller
+identity in the daemon's auth model, the same fix as open questions 18 and 20"* — is withdrawn.** It
+was true of a *general* caller identity and false of this risk: DR-16 closed AR-15 with a
+**single-purpose** proof carried on one header for the raises that need it, leaving `check_token`
+untouched. Open questions 18 and 20 still want the general identity, and still do not have it — but
+this risk was never waiting on them.
 
 ---
 
@@ -13000,16 +13052,27 @@ So: recover the secret (AR-11), `POST /agent/update_provider {session_id: "<any>
 "llamacpp", model: "qwen3.5-4b"}`, and that agent's capability is Private. Credential-free, no race
 window, permanent until the next bind.
 
-**This plan does not close it, and the reason is not cost.** Refusing the upward bind while tiers are
+~~**This plan does not close it, and the reason is not cost.**~~ ✅ **The plan DID close it — DR-16
+and [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has),
+commit `0757823f`, 2026-08-02.** The paragraph below is kept because its reasoning is still the
+reason the fix has the shape it has, and struck through because its conclusion is not what shipped.
+~~Refusing the upward bind while tiers are
 enabled would forbid *"switch this chat to a private model"* — which is **step 1 of the two-ways-out
 message in every single refusal this feature ships** (Task 12's, Task 14B's, Gate D's). A control
 whose remediation path is itself refused is not a control. There is no version of this rule that
 distinguishes the user clicking the model chip from a tool call issuing the same POST, because — (1)
-above — the daemon cannot tell them apart.
+above — the daemon cannot tell them apart.~~
 
-**Recorded as [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials) and as a stated dependency**: closing it needs a caller
-identity in the daemon's auth model, which is the same fix as [Open question 18](#open-questions)
-and [Open question 20](#open-questions), and is out of scope here.
+**What was missed:** *"there is no version of this rule that distinguishes the user from a tool call"*
+is a statement about `check_token`, and it was read as a statement about the daemon. DR-16 left
+`check_token` exactly as it is and added a second, single-purpose proof beside it — `X-User-Action`,
+minted per launch by the Electron main process, held by the daemon only as a digest — required on
+the **upward** bind and on nothing else. The remediation path is untouched, because the user's click
+carries the header and the model's POST does not.
+
+**Recorded as [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials), and that risk is now RETIRED.** ⚠ It did **not** need the
+general caller identity in the daemon's auth model; [Open question 18](#open-questions) and
+[Open question 20](#open-questions) still want that, and still do not have it.
 
 ⚠ **And AR-11's own bound is weaker than it reads.** The secret is recoverable *in-process*, with no
 shell, by any tool that reads a caller-named path: `computercontroller__cache view
@@ -15481,7 +15544,9 @@ measured that bearer to be recoverable from inside the daemon. That is exactly w
 along with the model's, and the picker is what the entire refusal vocabulary points at. So this task
 has to build the proof-of-user the design has assumed twice (§12.1, and Task 29's
 `secret_key_and_capability_token()`) and defined neither time. It is recorded as
-[AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials).
+[AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+— ✅ **and this task is what retired that risk**, in commit `0757823f` on 2026-08-02. AR-15 is the one
+accepted risk in this plan that a *task*, rather than a scope ruling, took off the list.
 
 **The proof, in one sentence: whoever launches the daemon mints it, and it never touches the
 daemon's environment.** The Electron main process generates 32 random bytes per launch, keeps the
@@ -16835,9 +16900,12 @@ git commit -m "feat(privacy): the capability matrix as one predicate per verb (#
 >
 > **And the route has no principal.** `POST /sessions/{session_id}/diverge`
 > (`routes/session.rs:1029`, registered at the route table beside it) sits behind `check_token` and
-> nothing else, which [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+> nothing else, which [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
 > and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) between them
-> establish is not a proof of a human. So on the plan as written, a model that recovers the daemon
+> establish is not a proof of a human. (AR-15 is **retired** — the measurement cited here, that
+> `check_token` has no principal, is the part of it that stands; what DR-16 retired is the conclusion
+> that the raise therefore could not be gated. This route is exactly the case DR-16's gate does not
+> reach, which is why it needs its own.) So on the plan as written, a model that recovers the daemon
 > secret can hand itself a private-capability session by diverging one — no `X-User-Action`, no
 > confirmation, no gate — and every gate downstream then reads that session as legitimately private.
 >
@@ -16850,7 +16918,8 @@ git commit -m "feat(privacy): the capability matrix as one predicate per verb (#
 >   from `POST /sessions/{id}/edit_message` (`routes/session.rs:746`); and **`copy_session` has no
 >   production caller at all** (`grep -rn --include='*.rs' "copy_session(" crates/ | grep -v
 >   session_manager.rs` → 0 hits). ⚠ **"No tool exposes it" is not the same as "no model can reach
->   it"** — that is the AR-15 shape, and stating the initiator without stating the proof is exactly
+>   it"** — that is the [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+>   shape, and stating the initiator without stating the proof is exactly
 >   the assumption DR-19 says ships permissive.
 > - **What the copy of a private session requires: the same one proof, on the same header.** When
 >   the **source** session's tier is Private, the HTTP paths require `X-User-Action` — the mechanism
@@ -19474,7 +19543,7 @@ async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
 accidental or model-composed config write**, not an authorization boundary. The phrase is a fixed
 string in the shipped source, so a caller holding the daemon secret replays it — which round 3 said,
 and which is true. It is accepted for the same reason
-[AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+[AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
 is: `check_token` (`auth.rs:80-127`) has no principal, so the daemon cannot tell Settings → Privacy
 from any other loopback caller, and a caller that already holds the secret can raise its own session
 to private capability anyway. **What the guard actually buys** is that the flip cannot be a side
@@ -19496,6 +19565,12 @@ built it, and [Open question 24](#open-questions)'s answer already anticipated t
 as the phrase — see this task's amendment banner — and the phrase keeps the job this paragraph
 correctly describes: the accident, not the adversary. The residual that is genuinely still open is
 the **file** channel, not the HTTP one: [Open question 27](#open-questions).
+(3) ⚠ **And one clause in the middle of the paragraph, not just the last two sentences:** *"a caller
+that already holds the secret can raise its own session to private capability anyway"* was true when
+it was written and is **false now** — that was AR-15, and the same Task 18A key **retired** it
+(commit `0757823f`). The half of the citation that still stands is the one the sentence rests on:
+`check_token` has no principal. Do not read the retired half as still live; the argument for the
+confirmation phrase does not need it, because point (2) supplies the stronger guard.
 
 ```tsx
 it('the Privacy tab exists and its toggle is mounted', async () => {
