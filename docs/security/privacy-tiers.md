@@ -85,6 +85,17 @@ this section is the ledger.
   another institution's private connector passes every gate above, because both endpoints are
   Private — the affiliation axis is what refuses it, or warns and lets the user accept it. Do not
   reason about §9 as though tier were the only axis.
+- **The cross-institution mixing policy (DR-27) and its accept control, in all three modes.** The
+  setting is `open` / `standard` / `strict`, stored in its own record beside `config.yaml` for the
+  master switch's reason, and *loosening* it costs the operating system's authentication while
+  tightening it is free. The user-facing half is one control, on the refusal itself: under
+  `standard` a press records the acceptance on the in-app proof alone; under `strict` the same
+  press additionally makes `POST /agent/cross_affiliation_grant` raise the system authentication,
+  and the card says so before the press rather than springing an unannounced dialog. Under `open`
+  no mismatch is raised, so there is nothing to accept and no control appears. ⚠ **`strict` is a
+  higher price for a yes, never the absence of one** — a build that withheld the control there
+  would restore the hard block DR-26 exists to prevent, for exactly the deployments careful enough
+  to choose `strict`.
 
 ### Did not ship
 
@@ -103,11 +114,6 @@ this section is the ledger.
   is by definition the model, so it can never carry proof of a human); it needs §7's `may_read`
   wired to those two handlers. The reasoning is recorded in full in
   `crates/biorouter-server/src/routes/session_reach.rs`.
-- **The `strict` mixing policy's in-app accept control.** The daemon half landed — under `strict`,
-  `POST /agent/cross_affiliation_grant` raises the system authentication on top of the in-app proof.
-  The renderer's half did not: the accept card still shows an explanation rather than a control, so
-  on a `strict` machine a cross-institutional flow can be accepted only by calling that route
-  directly. Do not close this by letting `strict` fall back to `standard`.
 - **Every open question in §17.** They are open questions, not resolved ones, and several
   (5 — institutional versus hosted Ollama; 9 — skills carry no classification) describe live
   permissiveness in the shipped system.

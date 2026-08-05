@@ -44,15 +44,39 @@ export interface CrossAffiliationAcceptCardProps {
  * boundary. What this adds is the half the refusal cannot state — how far a yes
  * reaches — and that comes from {@link GRANT_SCOPE_COPY}, mirrored from the
  * daemon rather than written again.
+ *
+ * ⚠ **DR-27's three modes are a difference in what the press COSTS, never in
+ * whether there is one** (issue #56, DR-27). `standard` and `strict` render
+ * the same control, post the same body to the same route, and differ in one
+ * sentence of copy — because the extra proof `strict` demands is raised by the
+ * DAEMON, not here: `agent_cross_affiliation_grant` calls
+ * `strict_mode_authorization`, which reads `privacy::mixing::policy()` itself
+ * and puts the operating system's dialog between the resolution and the write.
+ * A renderer that branched further would be a second reader of the policy, and
+ * the two would eventually disagree about a control the user has just used.
+ *
+ * ⚠ **Do not restore the dead end this used to have.** Between Task 57 and Task
+ * 52 the strict branch rendered "this build cannot ask for a system password, so
+ * the flow cannot be approved" — correct when it was written, and left standing
+ * after DR-24's prompters and the daemon's strict layer landed. What it left
+ * behind was a mode in which a cross-institutional flow could not be accepted at
+ * all: the hard block DR-26 exists to prevent, restored for exactly the
+ * deployments careful enough to choose `strict`. If a future build genuinely
+ * cannot prompt, the honest refusal is the daemon's — `strict_mode_authorization`
+ * answers 403 for an `Unavailable` prompter, naming the platform — and it
+ * arrives through {@link approve}'s error path, after a press, rather than as a
+ * renderer's guess before one.
  */
 export function CrossAffiliationAcceptCard({
   sessionId,
   extension,
 }: CrossAffiliationAcceptCardProps) {
   // `null` while unknown. Rendering the control before the policy is read would
-  // flash an accept button on a machine whose policy is `open` or `strict`, and
-  // a control that appears and then withdraws is worse than one that arrives a
-  // beat late.
+  // draw it on a machine whose policy is `open` — where nothing was refused and
+  // there is nothing to approve — and a control that appears and then withdraws
+  // is worse than one that arrives a beat late. It would also, under `strict`,
+  // put the button on screen a frame before the sentence saying what pressing it
+  // costs, which is the one ordering that surface may not have.
   const [mode, setMode] = useState<MixingMode | null>(null);
   const [busy, setBusy] = useState(false);
   // ⚠ Component-local, so a remount (scrolling a long transcript, reopening the
@@ -84,8 +108,13 @@ export function CrossAffiliationAcceptCard({
     } catch (e) {
       // Under `throwOnError` the generated client throws the PARSED BODY, so a
       // refusal arrives as a plain string and says more than any fallback could.
-      // The realistic one is a daemon the app did not start, holding no
-      // user-action key (open question 23).
+      // Two realistic ones: a daemon the app did not start, holding no
+      // user-action key (open question 23); and — under `strict` — the 403 the
+      // daemon answers when the operating system did not confirm, which already
+      // says "Nothing was recorded" and, for an unavailable prompter, names the
+      // platform. ⚠ Printing it rather than paraphrasing is what keeps a denied
+      // password prompt distinguishable from a broken button: both leave the
+      // control pressable, and only the daemon's sentence says which happened.
       setError(e instanceof Error ? e.message : typeof e === 'string' && e.trim() ? e : null);
     } finally {
       setBusy(false);
@@ -130,50 +159,33 @@ export function CrossAffiliationAcceptCard({
   // because a control must not depend on an upstream gate staying silent.
   if (mode === null || mode === 'open') return null;
 
-  if (mode === 'strict') {
-    return (
-      <div
-        data-testid="cross-affiliation-strict"
-        className="mt-3 rounded-lg border border-border-subtle px-3 py-3 text-sm text-text-default space-y-2"
-      >
-        {/*
-          ⚠ **Fails closed, and that is the right default — but it IS unfinished,
-          and the two must not be confused.** Strict requires DR-20's system
-          password on top of the in-app proof, and no surface in this build can
-          raise one: the prompter exists (`crates/biorouter/src/privacy/
-          system_auth*.rs`) and has no production callers. Accepting on the
-          weaker proof would be the control quietly downgrading itself under
-          exactly the policy that asked for more, so it is not offered.
-
-          What that leaves is a policy under which a cross-institutional flow
-          cannot be accepted AT ALL — the hard block DR-26 exists to prevent,
-          restored for anyone who sets it. Unreachable today only because nothing
-          writes the mixing key. Recorded as **open question 32** in
-          `docs/security/privacy-tiers-execution-plan.md`, against the task that
-          wires DR-20's authentication to a caller; ⚠ do not close it by falling
-          back to `standard`.
-
-          The other way out — a model covered by the same institution's
-          agreements — is unchanged and is named below.
-        */}
-        <p className="min-w-0 [overflow-wrap:anywhere]">
-          This machine&rsquo;s privacy policy is set to <strong>strict</strong>, which requires a
-          system password before a cross-institutional flow can be accepted. This build cannot ask
-          for one here, so the flow cannot be approved from this chat.
-        </p>
-        <p className="min-w-0 [overflow-wrap:anywhere] text-text-muted">
-          Switch this chat to a model covered by the same institution&rsquo;s agreements, or ask
-          whoever set the policy to relax it.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div
       data-testid="cross-affiliation-accept"
       className="mt-3 rounded-lg border border-border-subtle px-3 py-3 text-sm text-text-default space-y-3"
     >
+      {/*
+        ⚠ **The one thing `strict` changes on this surface: the user is told the
+        press costs more, BEFORE they make it.** DR-20 point 4's premise is that
+        a system dialog says honestly what it authorises; a dialog that arrives
+        with no warning is one people dismiss as spurious — and dismissing it
+        leaves the flow refused with nothing recorded, which reads as a broken
+        button rather than as their own answer.
+
+        It is a sentence, not a branch: the proof itself is the daemon's to
+        demand (`strict_mode_authorization`), and this component never decides
+        whether the prompt is raised. Above the scope copy because it is the
+        first cost, and because it is the half a `standard` user does not have.
+      */}
+      {mode === 'strict' && (
+        <p
+          data-testid="cross-affiliation-strict-notice"
+          className="min-w-0 [overflow-wrap:anywhere]"
+        >
+          This machine&rsquo;s privacy policy is set to <strong>strict</strong>, so your operating
+          system will ask you to confirm it is you before this is recorded.
+        </p>
+      )}
       {/*
         The scope, BEFORE the press. "How far does my yes reach" is part of what
         is being decided: a user who believes they are approving one call behaves

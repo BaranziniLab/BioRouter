@@ -86,18 +86,63 @@ describe('CrossAffiliationAcceptCard', () => {
     expect(mockAccept).not.toHaveBeenCalled();
   });
 
-  it('offers no in-app acceptance under strict, and says why', async () => {
+  it('offers the same control under strict, and warns that the system will ask', async () => {
+    // Issue #56, DR-27. Its three modes differ in what the press COSTS, never
+    // in whether there is one — the extra proof is the daemon's to demand
+    // (`strict_mode_authorization` reads `mixing::policy()` and raises DR-20's
+    // dialog between the resolution and the write). A renderer that withheld the
+    // button under `strict` restores the hard block DR-26 exists to prevent, for
+    // exactly the deployments careful enough to choose it.
+    const user = userEvent.setup();
     mockReadMixingMode.mockResolvedValue('strict');
     renderCard();
 
-    // Strict requires DR-20's system-level prompt on top of the in-app proof,
-    // and nothing in this build can raise one. Accepting on the weaker proof
-    // would be the control quietly downgrading itself, so it fails closed.
-    expect(await screen.findByTestId('cross-affiliation-strict')).toHaveTextContent(
-      /system password/i
+    // Told BEFORE the press, not after: a system dialog nobody was warned about
+    // is one people dismiss as spurious, and dismissing it leaves the flow
+    // refused.
+    expect(await screen.findByTestId('cross-affiliation-strict-notice')).toHaveTextContent(
+      /operating system will ask you/i
     );
-    expect(screen.queryByRole('button', { name: /approve this flow/i })).not.toBeInTheDocument();
-    expect(mockAccept).not.toHaveBeenCalled();
+
+    // …and the control itself is the same one, posting the same triple.
+    await user.click(await screen.findByRole('button', { name: /approve this flow/i }));
+    expect(mockAccept).toHaveBeenCalledWith('chat_7', 'ucsfomopagent');
+    expect(await screen.findByText(ACCEPTED)).toBeInTheDocument();
+  });
+
+  it('does not warn about a system password under standard', async () => {
+    // The other half of the same claim: `standard` must be exactly today's
+    // behaviour — one in-app confirmation — so a card that showed the strict
+    // sentence unconditionally would be telling most users something false about
+    // the control they are about to use.
+    renderCard();
+    await screen.findByRole('button', { name: /approve this flow/i });
+    expect(screen.queryByTestId('cross-affiliation-strict-notice')).not.toBeInTheDocument();
+    expect(screen.getByTestId('cross-affiliation-accept')).not.toHaveTextContent(
+      /operating system/i
+    );
+  });
+
+  it('says the operating system refused and leaves the control pressable under strict', async () => {
+    // The daemon's 403 when the password prompt is denied or unavailable. It
+    // must read as the user's own answer (or their machine's incapacity) rather
+    // than as a broken button — which is why the daemon's sentence is printed
+    // verbatim and the way forward stays on screen.
+    const user = userEvent.setup();
+    mockReadMixingMode.mockResolvedValue('strict');
+    mockAccept.mockRejectedValue(
+      "This machine's cross-institution mixing policy is set to 'strict', so accepting a " +
+        'cross-institutional data flow needs your operating system to confirm it is you as well ' +
+        'as the in-app approval. That did not happen. Nothing was recorded.'
+    );
+    renderCard();
+
+    await user.click(await screen.findByRole('button', { name: /approve this flow/i }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Nothing was recorded/);
+    expect(screen.getByRole('button', { name: /approve this flow/i })).toBeInTheDocument();
+    // No acceptance was drawn on a grant that was never written.
+    expect(screen.queryByTestId('cross-affiliation-accepted')).not.toBeInTheDocument();
   });
 
   it('offers nothing when there is no chat to key the acceptance on', async () => {

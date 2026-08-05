@@ -201,6 +201,87 @@ describe('the cross-institutional refusal in the transcript', () => {
     expect(mockGrant).not.toHaveBeenCalled();
   });
 
+  /**
+   * Issue #56, DR-27 — **the accept control across the three mixing
+   * modes, reached the way a person reaches it.**
+   *
+   * The blocker this closes was not a missing handler: `strict`'s daemon half
+   * landed with Task 52, tested down to the ordering of the password prompt
+   * against the write. What was missing was that the renderer's strict branch
+   * still rendered the dead end it was given before that landed — "this build
+   * cannot ask for a system password, so the flow cannot be approved" — so on a
+   * machine set to `strict` there was **no accept control at all**, and DR-26's
+   * hard block came back for exactly the deployments careful enough to choose it.
+   *
+   * ⚠ So these drive the mode through the REAL read path: `mockReadConfig`
+   * answers what `/config/read` actually answers for the mixing key (a bare JSON
+   * string), and the assertion is on a control found by role and name in a
+   * rendered transcript. Mounting the card and mocking `readMixingMode` would
+   * skip both the key and the parser, which is two of the four places this can
+   * silently answer `standard`.
+   */
+  describe('under each mixing policy', () => {
+    it('offers the same control under strict, warning that the system will ask', async () => {
+      const user = userEvent.setup();
+      mockReadConfig.mockResolvedValue({ data: 'strict' });
+      renderTranscript(grantableRefusal('ucsfomopagent'));
+
+      // Reachable from the refusal itself, with no expansion — as in `standard`.
+      const button = await screen.findByRole('button', { name: /approve this flow/i });
+      expect(button).toBeVisible();
+      // …and the extra cost is stated BEFORE the press. The daemon raises the
+      // dialog (`strict_mode_authorization`); an unannounced one reads as
+      // spurious, and dismissing it leaves the flow refused.
+      expect(await screen.findByTestId('cross-affiliation-strict-notice')).toBeVisible();
+
+      await user.click(button);
+
+      // The same route, the same triple, the same proof-of-user. `strict` adds a
+      // demand the DAEMON makes; it does not change what the renderer posts.
+      await waitFor(() => expect(mockGrant).toHaveBeenCalledTimes(1));
+      const [options] = mockGrant.mock.calls[0] as [
+        { body: { session_id: string; extension: string }; headers: Record<string, string> },
+      ];
+      expect(options.body).toEqual({ session_id: 'chat_7', extension: 'ucsfomopagent' });
+      expect(options.headers['X-User-Action']).toBe('ua-key-1');
+    });
+
+    it('asks for no system confirmation under standard', async () => {
+      mockReadConfig.mockResolvedValue({ data: 'standard' });
+      renderTranscript(grantableRefusal('ucsfomopagent'));
+
+      await screen.findByRole('button', { name: /approve this flow/i });
+      // `standard` must be exactly today's behaviour: one in-app confirmation.
+      // A card that showed the strict sentence unconditionally would tell most
+      // users something false about the control they are about to use.
+      expect(screen.queryByTestId('cross-affiliation-strict-notice')).not.toBeInTheDocument();
+    });
+
+    it('offers nothing under open, where no mismatch is raised', async () => {
+      mockReadConfig.mockResolvedValue({ data: 'open' });
+      // ⚠ The refusal text is the grantable one, which on an `open` machine the
+      // daemon never composes — `refusing_mismatch` goes quiet. Feeding it
+      // anyway is the stronger test: the control must not appear even when the
+      // text says it may, because tool-result prose is written by the extension.
+      renderTranscript(grantableRefusal('ucsfomopagent'));
+
+      await waitFor(() => expect(mockReadConfig).toHaveBeenCalled());
+      // ⚠ `findBy…().rejects`, not `queryBy…()`. A control that has not been
+      // drawn YET and one that never will be are the same empty DOM, so a
+      // synchronous "not in the document" here passes before the policy read
+      // even resolves — it would pass the pre-fix build too, and pass a build
+      // that draws the button for `open`. This waits the full poll instead.
+      // The 2 s bound is generous rather than tight: with the policy read
+      // already settled above, a build that draws the button for `open` draws it
+      // within one commit — measured at 24 ms when this was broken on purpose.
+      await expect(
+        screen.findByRole('button', { name: /approve this flow/i }, { timeout: 2000 })
+      ).rejects.toBeTruthy();
+      expect(screen.queryByTestId('cross-affiliation-strict-notice')).not.toBeInTheDocument();
+      expect(mockGrant).not.toHaveBeenCalled();
+    });
+  });
+
   it('records nothing until a person presses it', async () => {
     // DR-19's asymmetry, at the surface: producing the refusal is something the
     // MODEL did — it made the tool call. Rendering one must therefore never be
