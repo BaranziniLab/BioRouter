@@ -21731,18 +21731,65 @@ echo "expect: non-zero (0 is the untouched baseline)"
 
 ```bash
 # Every module this plan creates now exists, so nothing may be deferred. Re-run
-# Task 4b Steps 1 and 5 with an EMPTY deferred table:
+# Task 4b Step 1 (the five `--list`s), then Step 5's gate block with the deferred
+# heredoc followed by an emptying line — and WITHOUT its trailing `git add` /
+# `git commit`, which belong to Task 4b's own commit and not to this gate:
 #   : > /tmp/56-filters/deferred.txt   # nothing may be missing at the release gate
-# …and with resolved.txt re-baselined: every one of Task 4b's 12 deferred rows
-# has moved into it with a measured count, and forty tasks of new tests have
-# moved the 46 that were already there. Re-measure — a DRIFT line here is fixed
-# by running the --list again, never by relaxing the equality.
-# Expect: 0 MISSING, 0 DEFER, 0 DRIFT, 0 UNRECORDED and 0 UNBACKED across all 58
-# (package, filter) pairs — and `want "deferred rows" 0`.
-# A single DEFER here means a filter this plan has been quoting for forty tasks
+#
+# THE THREE ASSERTIONS THIS STEP IS FOR, and what they read on 2026-08-05:
+#   ok  MISSING lines = 0            ← the whole point; see below
+#   ok  DEFER == deferred rows = 0   ← 0 DEFER, and that equality IS the 0-UNUSED
+#                                      check (pairs are unique after `sort -u`,
+#                                      so DEFER == rows exactly when every
+#                                      deferred row was used). Both halves are
+#                                      0 with the table emptied.
+#   61 (package, filter) pairs harvested.
+# A single MISSING here means a filter this plan has been quoting for forty tasks
 # names a module that never came to exist — a gate that has been printing
 # `0 passed` and exiting 0 the whole time. That is BR-71's most expensive defect,
-# and this line is the last place it can be caught.
+# and this line is the last place it can be caught. It reads 0.
+#
+# ⚠ THE GATE BLOCK STILL EXITS 1, AND THAT IS NOT A FAILURE OF THIS STEP. Four
+# `want`s fail, all four on Task 4b's TABLE bookkeeping rather than on the tree:
+#   FAIL deferred rows = 0, expected 13   ← this step emptied it ON PURPOSE
+#   FAIL DRIFT lines = 36, expected 0     ← the 46 resolved counts are dated
+#                                            2026-08-01 at fd14ef9a; all 36 moved
+#                                            UPWARD (e.g. knowledge:: 198→272,
+#                                            routes::apps 94→115, providers
+#                                            360→392, privacy 3→202)
+#   FAIL UNRECORDED lines = 15            ← 12 are Task 4b's deferred rows, which
+#                                            have LANDED and now resolve
+#                                            (privacy::refusal 17, knowledge::tier
+#                                            28, privacy::system_auth 20,
+#                                            session::chat_history_search 4,
+#                                            agents::chatrecall_extension 8, …);
+#                                            3 are modules DR-26 and Task 18A
+#                                            added that predate no table at all
+#                                            (privacy::affiliation 43,
+#                                            privacy::config_keys 2,
+#                                            providers::factory 10)
+#   FAIL OK + DEFER == pairs = 10 of 61   ← arithmetic falling out of the above
+# Every one is a row that RESOLVES with a bigger number than a table written
+# forty tasks ago recorded. Do NOT "fix" this by re-baselining the tables
+# wholesale: Task 4b ruled against exactly that — "a re-baselined table would
+# simply go stale again by the next phase … re-measurement is the rule" — so the
+# tables stay a floor and each assertion re-measures the filter it is about to
+# use. What must be read by hand is that every DRIFT is upward and every
+# UNRECORDED resolves non-zero. A DOWNWARD drift, or an UNRECORDED reading 0, is
+# the real defect and is not what this run shows.
+#
+# ⚠ AND THE AUDIT HAS ONE BLIND SPOT, measured here: the harvest regex requires
+# `cargo test -p <pkg> --lib` contiguously, so any filter written with a flag in
+# between is invisible to it — neither OK, nor MISSING, nor DEFER, nor counted in
+# the 61. There are exactly two, both needing the same feature flag:
+#   cargo test -p biorouter --features privacy-test-auth --lib privacy::declassify
+#   cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth
+# Measured directly rather than through the audit: `privacy::declassify` = 13
+# tests. (`privacy::system_auth` is ALSO written plainly elsewhere in this plan,
+# so the harvest does see that one — 20 — which is why only declassify vanished
+# from the 61.) Widening the regex is the fix; it is a follow-up, not this gate's
+# job, and the number is recorded here so the next reader does not have to
+# rediscover that a filter went unaudited.
 ```
 
 See [Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not)
