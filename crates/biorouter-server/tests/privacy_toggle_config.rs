@@ -720,3 +720,290 @@ async fn the_retired_key_is_migrated_once_and_then_ignored() {
         "the retired key was read a second time — 'once, at migration' means once"
     );
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Task 52 (DR-27): the cross-institution mixing policy's WRITE DOOR.
+//
+// ⚠ **These belong here and not beside the route, for the header's reason and
+// one more.** The mixing policy is a process-global atomic exactly as the master
+// switch is, so a test that moves it inside `biorouter-server`'s lib target would
+// be seen by the ~550 tests compiled into that target and into `biorouterd`.
+// Beyond that, this file is where the identically-shaped arm of the identical
+// handler is already driven against a redirected config root — and Task 52 landed
+// the mixing arm with no behavioural test at all, which review found and which
+// is what these close: the `X-User-Action` requirement, the closed vocabulary,
+// the secret-store refusal, the delete refusal, the direction guard as the HTTP
+// caller meets it, and both read paths.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// The user-action key this binary installs, so [`is_user_action`] has something
+/// to verify a header against.
+///
+/// ⚠ `USER_ACTION_DIGEST` is a `OnceLock` and installing is one-shot per process,
+/// which is why [`install_user_action_key_once`] exists and why no test may
+/// install a different one. Nothing else in this binary sends the header — the
+/// master switch's door is the `confirm` phrase — so there is nothing to disturb.
+const USER_ACTION_KEY: &str = "task-52-user-action-key";
+
+fn install_user_action_key_once() {
+    use sha2::Digest;
+    let digest: [u8; 32] = sha2::Sha256::digest(USER_ACTION_KEY.as_bytes()).into();
+    biorouter_server::auth::install_user_action_digest(Some(digest));
+}
+
+/// A request carrying the proof of a human, exactly as Settings > Privacy sends
+/// it.
+fn user_action_headers() -> HeaderMap {
+    let mut headers = HeaderMap::new();
+    headers.insert("X-User-Action", USER_ACTION_KEY.parse().unwrap());
+    headers
+}
+
+/// What the mixing policy's RECORD holds — deliberately not
+/// `biorouter::privacy::mixing::policy()`, which is the live value. Several
+/// assertions below need to tell "refused, and nothing reached the disk" from
+/// "refused, and the next launch comes up in the mode the user was refused".
+fn mixing_record() -> Option<biorouter::privacy::mixing::MixingPolicy> {
+    biorouter::privacy::mixing::read_in(&config_dir())
+}
+
+/// Return this install to "no mixing policy recorded", in both places.
+fn reset_mixing_storage() {
+    std::fs::remove_file(biorouter::privacy::mixing::path_in(&config_dir())).ok();
+    biorouter::privacy::load_mixing_policy_from_record();
+}
+
+fn mixing_upsert(value: &str, is_secret: bool) -> UpsertConfigQuery {
+    UpsertConfigQuery {
+        key: biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY.to_string(),
+        value: Value::String(value.to_string()),
+        is_secret,
+        confirm: None,
+    }
+}
+
+/// **Task 52 gate (5), at the door the user actually reaches.**
+///
+/// The repo walk in `privacy::mixing` proves the proof-of-user is minted in one
+/// file and once; it cannot see whether that mint sits BEHIND the header check.
+/// Moving `UserMixingPolicyChange::from_user_action()` above the
+/// `is_user_action` guard keeps that audit green and hands every agent the
+/// setting — so the guard is asserted here, behaviourally, along with the three
+/// other ways in that the handler has to refuse.
+#[tokio::test]
+#[serial_test::serial]
+async fn the_mixing_policy_is_user_only_and_takes_one_of_exactly_three_modes() {
+    use biorouter::privacy::mixing::MixingPolicy;
+
+    let _fixture = PrivacyToggleFixture::capture();
+    install_user_action_key_once();
+    reset_mixing_storage();
+
+    // NO PROOF OF A HUMAN. DR-19 applies in every mode, so this is refused
+    // whatever the machine is currently set to — and refused with a 409, the
+    // status DR-16's arm already uses for "the user decides this".
+    let (status, body) = upsert_config(HeaderMap::new(), Json(mixing_upsert("open", false)))
+        .await
+        .expect_err("an agent may never move the mixing policy");
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert!(
+        body.contains("Do not retry"),
+        "the refusal must foreclose the retry, or a model loops on it: {body}"
+    );
+    assert_eq!(mixing_record(), None, "a refused request must not have written");
+    assert_eq!(
+        biorouter::privacy::mixing::policy(),
+        MixingPolicy::Standard,
+        "a refused request must not have moved the live value either"
+    );
+
+    // A MODE THAT DOES NOT EXIST. Refused rather than resolved to a default:
+    // the two wrong guesses fail in opposite directions, so there is no safe
+    // one.
+    let (status, body) = upsert_config(
+        user_action_headers(),
+        Json(mixing_upsert("permissive", false)),
+    )
+    .await
+    .expect_err("the vocabulary is closed");
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert!(
+        body.contains("'open'") && body.contains("'standard'") && body.contains("'strict'"),
+        "a closed vocabulary can afford to state itself: {body}"
+    );
+    assert_eq!(mixing_record(), None);
+
+    // THE SECRET STORE. The daemon reads its own record, not the credential
+    // store, so a secret write would move this process's value and silently
+    // revert at the next launch — the master switch's reason, unchanged.
+    let (status, body) = upsert_config(user_action_headers(), Json(mixing_upsert("open", true)))
+        .await
+        .expect_err("the mixing policy is not a secret");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(body.contains("secret"), "{body}");
+    assert_eq!(mixing_record(), None);
+
+    // DELETE. One predicate, every verb: a delete is not the absence of a write,
+    // it is a way to ask for the default back without proving a human or facing
+    // the direction guard. Refused even WITH the header, because there is no
+    // legitimate caller.
+    let (status, body) = remove_config(
+        user_action_headers(),
+        Json(ConfigKeyQuery {
+            key: biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY.to_string(),
+            is_secret: false,
+        }),
+    )
+    .await
+    .expect_err("the mixing policy is set, never deleted");
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert!(
+        body.contains("Settings"),
+        "the refusal must name the way in: {body}"
+    );
+
+    // …and the proven caller, tightening, goes through — moving the RECORD and
+    // the LIVE value together. A handler that wrote only the file would leave
+    // every gate on the old mode until the next restart.
+    let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("strict", false)))
+        .await
+        .expect("the proven caller is the one this route serves");
+    assert_eq!(mixing_record(), Some(MixingPolicy::Strict));
+    assert_eq!(biorouter::privacy::mixing::policy(), MixingPolicy::Strict);
+
+    // The value is NOT left in `config.yaml`: a copy there would re-create the
+    // agent-writable channel DR-22 moved it out of.
+    assert_eq!(
+        Config::global()
+            .all_values()
+            .ok()
+            .and_then(|m| m.get(biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY).cloned()),
+        None,
+        "the mixing policy must not be written into config.yaml"
+    );
+
+    reset_mixing_storage();
+}
+
+/// **Task 52 gate (2), through the HTTP door rather than through the seam.**
+///
+/// `privacy::mixing`'s own table drives all nine cells against a private
+/// function with an injected prompter. This asserts the route really reaches
+/// that decision: relaxing costs the operating system's approval and tightening
+/// costs nothing, measured on a real handler with the real resolver.
+///
+/// ⚠ The tightening leg leaves the seam **unarmed** on purpose. An unarmed seam
+/// refuses, so an implementation that prompted in both directions fails here
+/// rather than passing quietly.
+#[tokio::test]
+#[serial_test::serial]
+async fn relaxing_the_mixing_policy_needs_the_operating_system_and_tightening_does_not() {
+    use biorouter::privacy::mixing::MixingPolicy;
+    use biorouter::privacy::system_auth::AuthOutcome;
+
+    let _env = env_lock::lock_env([("BIOROUTER_PRIVACY_TEST_AUTH", None::<&str>)]);
+    let _fixture = PrivacyToggleFixture::capture();
+    install_user_action_key_once();
+    reset_mixing_storage();
+
+    // Start in `strict`, which is a tightening from the default and therefore
+    // free. The seam is unarmed, so a prompt raised here refuses and fails.
+    biorouter::privacy::system_auth_seam::reset();
+    let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("strict", false)))
+        .await
+        .expect("entering `strict` must cost nothing — requiring a password to be \
+                 careful punishes the careful user");
+    assert_eq!(biorouter::privacy::mixing::policy(), MixingPolicy::Strict);
+
+    // Leaving it is the direction that costs. The user's "no" and a machine that
+    // cannot ask at all are both refusals, and neither may leave a record that
+    // relaxes the machine at the NEXT launch.
+    for outcome in [AuthOutcome::Denied, AuthOutcome::Unavailable] {
+        arm_the_system_prompt(outcome);
+        let (status, body) = upsert_config(user_action_headers(), Json(mixing_upsert("open", false)))
+            .await
+            .expect_err("a refused system authentication must not relax the policy");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{outcome:?}: {body}");
+        assert_eq!(
+            biorouter::privacy::mixing::policy(),
+            MixingPolicy::Strict,
+            "{outcome:?} relaxed the live policy anyway"
+        );
+        assert_eq!(
+            mixing_record(),
+            Some(MixingPolicy::Strict),
+            "{outcome:?} recorded a relaxation, so the next launch comes up in `open`"
+        );
+    }
+
+    // DR-20 point 4: the dialog says what it authorises, and names its own
+    // subject rather than one taken off the request.
+    let asked = biorouter::privacy::system_auth_seam::last_request()
+        .expect("the mixing policy reached the prompter");
+    assert!(
+        asked.reason.contains("open") && asked.reason.contains("strict"),
+        "the prompt did not say which change it authorises: {asked:?}"
+    );
+    assert_eq!(
+        asked.session_ids.len(),
+        1,
+        "this prompt names one subject, not a list of chats: {asked:?}"
+    );
+
+    // …and an approval is what leaving `strict` costs.
+    arm_the_system_prompt(AuthOutcome::Approved);
+    let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("open", false)))
+        .await
+        .expect("an approved system authentication is what relaxing costs");
+    assert_eq!(biorouter::privacy::mixing::policy(), MixingPolicy::Open);
+    assert_eq!(mixing_record(), Some(MixingPolicy::Open));
+
+    // Both config READ paths now report `open`, from the LIVE value. Without
+    // these arms `config.get` answers `NotFound` and the panel renders "no mode
+    // set" over a control the user has just used.
+    match read_config(Json(ConfigKeyQuery {
+        key: biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY.to_string(),
+        is_secret: false,
+    }))
+    .await
+    .expect("reading the mixing policy must not fail")
+    .0
+    {
+        ConfigValueResponse::Value(v) => assert_eq!(v, Value::String("open".to_string())),
+        ConfigValueResponse::MaskedValue(_) => {
+            panic!("the mixing policy is not a secret and must not be masked")
+        }
+    }
+    assert_eq!(
+        read_all_config()
+            .await
+            .expect("reading the config map must not fail")
+            .0
+            .config
+            .get(biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY),
+        Some(&Value::String("open".to_string())),
+        "a bulk read that skipped the key would report the setting absent on every \
+         machine"
+    );
+
+    // …and tightening back is free again, from the most permissive mode.
+    biorouter::privacy::system_auth_seam::reset();
+    let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("standard", false)))
+        .await
+        .expect("tightening must never raise a prompt");
+    assert_eq!(biorouter::privacy::mixing::policy(), MixingPolicy::Standard);
+
+    // THE RESTART: the user's own decision survives it.
+    let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("strict", false)))
+        .await
+        .expect("tightening is free");
+    biorouter::privacy::load_mixing_policy_from_record();
+    assert_eq!(
+        biorouter::privacy::mixing::policy(),
+        MixingPolicy::Strict,
+        "the start-up load did not restore the recorded mode, so a `strict` machine \
+         comes up as `standard`"
+    );
+
+    reset_mixing_storage();
+}
