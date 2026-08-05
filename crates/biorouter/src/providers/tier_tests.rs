@@ -44,12 +44,12 @@ async fn private_names_in_the_registry() -> Vec<String> {
     names
 }
 
-/// A **real** self-hosted-engine provider built the way a declarative JSON file
-/// builds one, named and pointed wherever the caller says. Registering by
-/// `config.name` after the built-ins is what lets one writable file shadow the
-/// real registry entry, so the name is a parameter here on purpose.
-fn self_hosted_named(name: &str, base_url: &str) -> OllamaProvider {
-    let config = DeclarativeProviderConfig {
+/// The contents of one writable `custom_providers/*.json` file: a self-hosted
+/// engine, named and pointed wherever the caller says. Registering by
+/// `config.name` after the built-ins is what lets one such file shadow the real
+/// registry entry, so the name is a parameter here on purpose.
+fn declarative_config(name: &str, base_url: &str) -> DeclarativeProviderConfig {
+    DeclarativeProviderConfig {
         name: name.to_string(),
         engine: ProviderEngine::Ollama,
         display_name: "Not Versa At All".to_string(),
@@ -60,9 +60,17 @@ fn self_hosted_named(name: &str, base_url: &str) -> OllamaProvider {
         headers: None,
         timeout_seconds: None,
         supports_streaming: None,
-    };
-    OllamaProvider::from_custom_config(ModelConfig::new_or_fail("qwen3"), config)
-        .expect("a declarative ollama provider must construct")
+    }
+}
+
+/// A **real** self-hosted-engine provider built the way a declarative JSON file
+/// builds one.
+fn self_hosted_named(name: &str, base_url: &str) -> OllamaProvider {
+    OllamaProvider::from_custom_config(
+        ModelConfig::new_or_fail("qwen3"),
+        declarative_config(name, base_url),
+    )
+    .expect("a declarative ollama provider must construct")
 }
 
 fn tier_for_self_hosted_base(base_url: &str) -> ProviderTier {
@@ -369,6 +377,11 @@ fn a_provider_that_declares_no_tier_is_public() {
     // can reach for. `with_tier` is the only way to leave Public, and a
     // constructor that forgot to initialise the field would not compile — but
     // one that initialised it to `Private` would, and would be invisible.
+    // ⚠ These are the *constructors*; one more site builds a `ProviderMetadata`
+    // literal without going through them —
+    // `ProviderRegistry::register_with_name`, the declarative path — and it is
+    // pinned separately by
+    // `a_declaratively_registered_provider_publishes_public_metadata` below.
     assert_eq!(ProviderMetadata::empty().tier, Public);
     assert_eq!(
         ProviderMetadata::new("p", "P", "d", "m", vec!["m"], "link", vec![]).tier,
@@ -396,4 +409,74 @@ fn a_provider_that_declares_no_tier_is_public() {
     let without_tier: ProviderMetadata =
         serde_json::from_value(json).expect("metadata without a tier still deserialises");
     assert_eq!(without_tier.tier, Public);
+}
+
+/// The fifth site the test above cannot reach. The declarative path —
+/// `ProviderRegistry::register_with_name` — builds its own `ProviderMetadata`
+/// literal, so it neither inherits the borrowed engine's shipped tier nor
+/// passes through any of the three constructors.
+///
+/// That distinction is load-bearing rather than incidental. `custom_providers/`
+/// is a directory of writable JSON files — §9.3 C1 concedes `SecretGuard`
+/// cannot stop `shell` writing one — and each file names an *engine* to borrow
+/// and a *name* to register under, built-in names included. Inheriting the
+/// engine's metadata would let one such file publish a Private badge for an
+/// endpoint of the author's choosing, which is the disclosure direction: a
+/// public provider tagged Private is handed PHI.
+///
+/// The instance is a separate question and stays honest either way — it
+/// computes its tier from the base URL it actually resolved, which is
+/// `a_self_hosted_provider_pointed_off_the_machine_is_not_private` above. This
+/// test is about the *published* claim, the one `GET /config/providers` serves
+/// to every UI surface, which is a claim about a name and must not be mintable
+/// from a file.
+#[test]
+fn a_declaratively_registered_provider_publishes_public_metadata() {
+    use super::base::ProviderType;
+    use super::provider_registry::ProviderRegistry;
+    use crate::config::declarative_providers::register_declarative_provider;
+    use crate::privacy::ProviderTier::{Private, Public};
+
+    // Guard the premise. The engine borrowed below ships Private, so inheriting
+    // `base_metadata.tier` would be *observable* here rather than a no-op — if
+    // ollama ever stops shipping Private this test silently stops discriminating
+    // and this assertion is what says so.
+    assert_eq!(OllamaProvider::metadata().tier, Private);
+
+    // Registered under a built-in's name, pointed off this machine: the shape
+    // the rule exists to refuse.
+    let mut registry = ProviderRegistry::new();
+    register_declarative_provider(
+        &mut registry,
+        declarative_config("versa_azure", "https://api.example-saas.com"),
+        ProviderType::Builtin,
+    );
+    let published = |registry: &ProviderRegistry| {
+        registry
+            .all_metadata_with_types()
+            .into_iter()
+            .find(|(metadata, _)| metadata.name == "versa_azure")
+            .expect("the declarative entry registers under the name its file gives")
+            .0
+            .tier
+    };
+    assert_eq!(published(&registry), Public);
+
+    // ...and still Public when the file points at loopback, where the *instance*
+    // legitimately resolves Private. The two are not the same claim: the
+    // instance's tier is computed from what it reached, the metadata's is
+    // asserted about a name, and only the first is checkable.
+    let mut loopback_registry = ProviderRegistry::new();
+    register_declarative_provider(
+        &mut loopback_registry,
+        declarative_config("versa_azure", "http://localhost:11434"),
+        ProviderType::Builtin,
+    );
+    assert_eq!(
+        self_hosted_named("versa_azure", "http://localhost:11434").tier(),
+        Private,
+        "the instance half of this test must actually resolve Private, or the \
+         assertion below is comparing Public against Public"
+    );
+    assert_eq!(published(&loopback_registry), Public);
 }
