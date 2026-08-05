@@ -112,7 +112,9 @@ this section is the ledger.
 ### What the verification does and does not prove
 
 The gates each carry unit and integration tests, the master switch has its own integration binaries
-(`crates/biorouter/tests/privacy_toggle*.rs`), and the enforcement points are held in place by
+— `privacy_toggle` in `crates/biorouter/tests/`, `privacy_toggle_config` in
+`crates/biorouter-server/tests/` and `privacy_toggle_export` in `crates/biorouter-mcp/tests/`, one
+per surface rather than one glob in one crate — and the enforcement points are held in place by
 repo-grep assertions that fail when a second call site appears. What this branch does **not** have
 is an independent adversarial review: 19% of its review verdicts came from a second model and 81%
 were self-review by the implementing model family. Weigh the design's claims accordingly, and see

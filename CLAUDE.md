@@ -223,12 +223,15 @@ what did not" section first**; the rest of that document is the design, not the 
   (`privacy/visibility.rs::may_read`) is **written but wired to nothing**: `workspace_read_conversation`
   checks only `session_type == Hidden`, so it still reads a private transcript that `chatrecall`
   would refuse.
-- **Tests:** `cargo test -p biorouter --lib privacy::`,
-  `cargo test -p biorouter --test privacy_toggle` (plus `privacy_toggle_config`,
-  `privacy_toggle_export`, `privacy_capability`, `privacy_disclosure_toggle`),
-  `cargo test -p biorouter-mcp --lib knowledge::tier`. Several enforcement points are held in place
-  by repo-grep assertions — if you add a second call site for `raise_privacy`, `floor` or
-  `.call_tool(`, a test will tell you, and the right fix is usually not to update the count.
+- **Tests:** `cargo test -p biorouter --lib privacy::` and
+  `cargo test -p biorouter-mcp --lib knowledge::tier`, plus five integration binaries that are
+  **spread across three crates** — `-p biorouter`: `--test privacy_toggle`,
+  `--test privacy_capability`, `--test privacy_disclosure_toggle`; `-p biorouter-server`:
+  `--test privacy_toggle_config`; `-p biorouter-mcp`: `--test privacy_toggle_export`. Naming any of
+  the last two under `-p biorouter` fails with "no test target named …", because the master switch
+  is exercised where each surface lives rather than from one crate. Several enforcement points are
+  held in place by repo-grep assertions — if you add a second call site for `raise_privacy`, `floor`
+  or `.call_tool(`, a test will tell you, and the right fix is usually not to update the count.
 
 ### Knowledge feature
 
