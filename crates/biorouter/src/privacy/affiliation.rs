@@ -605,11 +605,19 @@ pub fn gate_cross_affiliation_warning(
 ///
 /// ⚠ **One reader, not one per gate.** Three call sites reading a mode is three
 /// places to disagree, and the disagreement would be silent — a tool marked at
-/// discovery and then dispatched, or listed and then refused. Both spellings of
-/// "the warning a refusal is stated in" run through here: this module's
-/// [`gate_cross_affiliation_warning`] and
-/// [`super::CallCapability::cross_affiliation_warning`], which is the same gate
-/// with the three model axes taken off one sample.
+/// discovery and then dispatched, or listed and then refused. Every spelling of
+/// "the warning a refusal is stated in" runs through here: this module's
+/// [`gate_cross_affiliation_warning`],
+/// [`super::CallCapability::cross_affiliation_warning`] (the same gate with the
+/// three model axes taken off one sample), and — via [`refusing_mismatches`] —
+/// the agent's bind-time statement.
+///
+/// ⚠ **Generic over what is being refused, deliberately.** Not every caller
+/// holds a [`CrossAffiliation`] by the time it decides whether to speak: the bind
+/// surface holds a list of already-rendered warnings. Widening the type is what
+/// let that caller join this reader instead of asking
+/// [`super::mixing::mismatch_refuses`] itself, which would have been the second
+/// place to disagree.
 ///
 /// ⚠ **It takes the finding rather than the inputs, and that is what keeps
 /// `open` from becoming a short circuit.** The resolution has already happened
@@ -625,8 +633,25 @@ pub fn gate_cross_affiliation_warning(
 /// and touches no other: the tier refusal beside it
 /// ([`super::refusal::privacy_refusal`]) never consults the policy, so a public
 /// model is still refused a private extension in every mode.
-pub fn refusing_mismatch(finding: Option<CrossAffiliation>) -> Option<CrossAffiliation> {
+pub fn refusing_mismatch<T>(finding: Option<T>) -> Option<T> {
     finding.filter(|_| super::mixing::mismatch_refuses())
+}
+
+/// [`refusing_mismatch`] for a whole surface's worth of mismatches at once:
+/// everything a caller was about to refuse or warn over, or nothing at all.
+///
+/// Defined in terms of the single reader rather than beside it, so the count of
+/// places that ask the mixing policy stays at one.
+///
+/// Its caller is `Agent::cross_affiliation_warnings`, the bind-time statement.
+/// That is a *refusal* spelling in the sense that matters — it is the sentence a
+/// user is shown so they can decide whether to proceed — so DR-27's `open`, which
+/// is "allowed **silently**", must not produce it. The RESOLUTION behind it is
+/// untouched and stays mode-blind: `ExtensionManager::extension_reach` still
+/// marks, and `Agent::cross_affiliation_grant_subject` still finds its subject,
+/// in all three modes.
+pub fn refusing_mismatches<T>(found: Vec<T>) -> Vec<T> {
+    refusing_mismatch(Some(found)).unwrap_or_default()
 }
 
 /// The **resolution** on DR-26's third axis, carrying both renderings — see

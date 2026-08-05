@@ -167,6 +167,31 @@ const EXPECTED: &[Site] = &[
                `#[cfg(test)]` block from production, and a filter that tried would \
                blind the census to production too",
     },
+    // ------------------------------------------------------- DR-27's narrowing
+    // (Task 52). The mixing policy is read in exactly one function, and this is
+    // the census of who asks it. It decides whether a resolved mismatch is
+    // SPOKEN — so a new caller is a new place `open` could be silent or not, and
+    // the two disagreeing is precisely what the single reader exists to prevent.
+    // Both spellings of the reader (`refusing_mismatch`, and `refusing_mismatches`
+    // for a whole surface's worth) share this prefix on purpose.
+    Site {
+        needle: "affiliation::refusing_mismatch",
+        file: "crates/biorouter/src/privacy/capability.rs",
+        count: 1,
+        what: "`CallCapability::cross_affiliation_warning` — the REFUSAL spelling of \
+               the gate, which Gate C's dispatch denial, `assert_extension_reachable`'s \
+               eight entry points and `extensionmanager__manage_extensions` all read \
+               through, so none of them reads a mode of its own",
+    },
+    Site {
+        needle: "affiliation::refusing_mismatch",
+        file: "crates/biorouter/src/agents/agent.rs",
+        count: 1,
+        what: "`Agent::cross_affiliation_warnings` — the bind-time statement, which is \
+               the same sentence `/agent/add_extension` logs from the other end and so \
+               must go quiet in `open` with it. The RESOLUTION it is built on stays \
+               mode-blind",
+    },
     // ------------------------------------------------ the `biorouter-mcp` crate
     // boundary. That crate cannot depend on `biorouter`, so no `CallCapability`
     // can cross: what crosses is a bare `bool` and a `_meta` string, and the
@@ -276,7 +301,7 @@ fn production_sources() -> Vec<(String, String)> {
 /// next person to relax an assertion in order to make a comment compile.
 ///
 /// ⚠ **What this cannot see, stated so it is not read as airtight.** The census
-/// counts four *spellings*. A decider that reaches for none of them — one that
+/// counts five *spellings*. A decider that reaches for none of them — one that
 /// reads `Provider::tier()` off an `Arc` and compares it to a resolved
 /// extension's tier inline, never touching a capability, the free gate or the
 /// crate-boundary toggle — is invisible here. The affiliation half of such a

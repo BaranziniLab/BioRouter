@@ -7472,10 +7472,26 @@ impl Agent {
     /// those), for every local model (`Local` reaches everything private,
     /// because no transfer occurs at all), and for a model bound to the same
     /// institution as the extensions it can see.
+    ///
+    /// ⚠ **Empty in `open`, too** (issue #56 Task 52, DR-27), through
+    /// [`crate::privacy::affiliation::refusing_mismatches`] — the ONE place that
+    /// setting is read. This is the sentence a user is shown so they can decide
+    /// whether to proceed, and DR-27's `open` is *allowed silently*; the log line
+    /// at the bind and `/agent/add_extension`'s are the same statement from the
+    /// two ends, so they must not disagree about whether to speak.
+    ///
+    /// ⚠ **The RESOLUTION behind it is not narrowed and must not be.** DR-27
+    /// requires the compatibility result to stay computed and available, so
+    /// `ExtensionManager::extension_reach` still marks in `open`, and
+    /// [`Self::cross_affiliation_grant_subject`] — which reads the extension
+    /// manager's list directly rather than through this method — still finds its
+    /// subject in all three modes.
     pub async fn cross_affiliation_warnings(&self) -> Vec<(String, String)> {
-        self.extension_manager
-            .cross_affiliation_warnings(None)
-            .await
+        crate::privacy::affiliation::refusing_mismatches(
+            self.extension_manager
+                .cross_affiliation_warnings(None)
+                .await,
+        )
     }
 
     /// Task 49 (DR-26): everything the grant route needs about ONE extension,
@@ -11451,6 +11467,43 @@ mod gate_c_dispatch_tests {
         assert_eq!(warnings[0].0, PRIVATE_EXTENSION);
         assert!(warnings[0].1.contains("ucsf"), "{}", warnings[0].1);
         assert!(warnings[0].1.contains("stanford"), "{}", warnings[0].1);
+
+        // Issue #56 Task 52 (DR-27) — **the same bind, on a machine whose user
+        // asked for cross-institution reach to be silent**, driven end to end
+        // rather than at the pure gate.
+        //
+        // Two claims, and the second is the one that keeps `open` from becoming
+        // the master switch in miniature: the STATEMENT goes quiet, and the
+        // RESOLUTION does not. `/agent/add_extension` logs this same sentence
+        // from the other end and already goes quiet in `open`; a bind that went
+        // on speaking would be the second place to disagree that the
+        // single-reader design exists to prevent.
+        {
+            let _pin = crate::privacy::mixing::pin_for_test(
+                crate::privacy::mixing::MixingPolicy::Open,
+            );
+            assert!(
+                agent.cross_affiliation_warnings().await.is_empty(),
+                "`open` still stated a cross-institution warning at the bind, while the \
+                 enable path's identical statement goes quiet"
+            );
+            assert!(
+                agent
+                    .cross_affiliation_grant_subject(PRIVATE_EXTENSION)
+                    .await
+                    .is_some(),
+                "`open` short-circuited the resolver. Gate E's mark, the badges and the \
+                 grant route's subject all read through it, and `open -> standard` would \
+                 then have nothing to re-tighten"
+            );
+        }
+        // …and it comes straight back when the pin drops, which is that
+        // re-tightening.
+        assert_eq!(
+            agent.cross_affiliation_warnings().await.len(),
+            1,
+            "re-tightening did not restore the statement"
+        );
     }
 
     /// A provider at a stated tier and affiliation. [`PlainProvider`] derives

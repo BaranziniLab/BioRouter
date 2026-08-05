@@ -536,16 +536,40 @@ mod tests {
     /// Three separate things are asserted because a wrong implementation could
     /// reach any one of them: the tier refusal still fires, an enforced public
     /// capability still restricts, and the master toggle has not moved.
+    ///
+    /// ⚠ **The first assertion is what makes the rest of it mean anything**, and
+    /// it was added after review pointed out that this test passed identically
+    /// with the pin removed — a regression pin against a wrong implementation
+    /// nobody had written. It asserts, on the SAME fixture and inside the SAME
+    /// pin, that `open` really is in force: the affiliation warning goes quiet
+    /// here. Only then does "and the tier refusal did not" say something.
+    ///
+    /// The tier half is asked exactly the way Gate C asks it —
+    /// `privacy_refusal(name, class.tier, cap.tier())`, the composition at
+    /// `ExtensionManager::assert_extension_reachable` — rather than through a
+    /// re-derivation that could agree with itself.
     #[test]
     fn open_is_not_the_master_switch() {
         let before = crate::privacy::privacy_tiers_enabled();
         let _pin = mixing::pin_for_test(MixingPolicy::Open);
 
+        // The pin is in force: on the AFFILIATION axis, `open` is silent.
+        let stanford_private =
+            CallCapability::for_test_affiliated(ProviderTier::Private, true, Some(stanford()));
+        assert_eq!(
+            stanford_private.cross_affiliation_warning("ucsfomopagent", &ucsf_extension()),
+            None,
+            "the pin did not take, so nothing below distinguishes `open` from any \
+             other mode"
+        );
+
+        // …and on the TIER axis it changes nothing, asked as Gate C asks it.
+        let public = CallCapability::for_test(ProviderTier::Public, true);
         assert!(
             crate::privacy::refusal::privacy_refusal(
                 "ucsfomopagent",
-                ProviderTier::Private,
-                ProviderTier::Public,
+                ucsf_extension().tier,
+                public.tier(),
             )
             .is_some(),
             "`open` let a PUBLIC model reach a private extension. It governs the \
@@ -553,8 +577,15 @@ mod tests {
              switch does, and Task 52 must not duplicate it"
         );
         assert!(
-            CallCapability::for_test(ProviderTier::Public, true).restricts_private_data(),
+            public.restricts_private_data(),
             "`open` relaxed the public/private barrier on the capability itself"
+        );
+        // …and the capability whose affiliation refusal `open` just silenced is
+        // still, on the tier axis, exactly what it was: the two axes are decided
+        // by different code, and only one of them has a policy.
+        assert!(
+            !stanford_private.restricts_private_data(),
+            "a PRIVATE caller's tier reach changed when the mixing policy moved"
         );
         assert_eq!(
             crate::privacy::privacy_tiers_enabled(),
