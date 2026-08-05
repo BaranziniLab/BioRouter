@@ -32,7 +32,11 @@
 //
 //   node scripts/build-registry.mjs --input scripts/fixtures/happy.html \
 //                                   --out /tmp/happy-registry.json \
-//                                   --emit-rust /tmp/happy-private.rs
+//                                   --emit-rust /tmp/happy-private.rs \
+//                                   --assert-private-set
+//
+// `--assert-private-set` is the fixture opt-in for the closed-list assertion a
+// real run always applies — see EXPECTED_PRIVATE_EXTENSIONS below.
 
 import { closeSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -127,6 +131,22 @@ if (EMIT_RUST !== null && isPublished(EMIT_RUST)) {
   process.exit(1);
 }
 
+// `--assert-private-set` applies the closed-list assertion to a FIXTURE run. A
+// real run always applies it; the flag exists for exactly the reason
+// `--emit-rust` does. Without it the rule could only ever be exercised against
+// the real baam.html — which passes it — so a gate that had quietly stopped
+// firing would be indistinguishable from a gate that works. And every fixture
+// beside this one would have to name its private cards `cdwagent` and
+// `ucsfomopagent`, which would delete `suffixed-download`, `three-affiliations`
+// and `private-no-affiliation` as tests of anything.
+const ASSERT_PRIVATE_SET = argv.includes('--assert-private-set');
+if (ASSERT_PRIVATE_SET && IS_REAL_RUN) {
+  console.error(
+    'registry: --assert-private-set is for fixture runs; a real run always asserts the closed private set'
+  );
+  process.exit(1);
+}
+
 // `--check` regenerates in memory and compares, writing nothing. It is what
 // makes "these three files agree with baam.html" a fact CI can establish rather
 // than a claim the generated header used to make on its own behalf.
@@ -174,16 +194,44 @@ const INSTITUTIONS = {
   ucsf: 'UCSF',
 };
 
-// A card whose own description says it reads clinical data, and which declares
-// no tier at all, is a classification nobody made — see the check below.
-const CLINICAL_KEYWORDS = [
-  'patient',
-  'clinical record',
-  'ehr',
-  'phi',
-  'medical record',
-  'de-identified clinical',
+// ---- The private set is a CLOSED LIST -------------------------------------
+// Every private extension, and the affiliation each one's data is under.
+//
+// ⚠ **A card cannot make itself private.** Writing `data-privacy="private"` on
+// a new card is refused unless that extension is named here — and an entry named
+// here with no matching card is refused too. Both directions, plus the
+// affiliation, because all three are changes to what the daemon withholds from a
+// public session and none of them should happen as a side effect of editing a
+// marketing page.
+//
+// This is deliberately two edits (this list AND landing/baam.html), and that is
+// the feature: the second edit is what makes somebody review the first.
+//
+// What this REPLACED, and what that trades away. The generator used to refuse a
+// card whose *description* matched a keyword list ('patient', 'ehr', 'phi',
+// 'clinical record', 'medical record', 'de-identified clinical') while declaring
+// no tier — inferring a security property from marketing prose. It could only
+// produce false failures: SPOKE describes diseases, and an imaging or literature
+// tool can honestly say "patient" while touching nothing sensitive, so the rule
+// punished authors for writing accurately. Its one real use was a *future*
+// clinical extension whose author forgets to tag it, and the closed list does
+// NOT catch that case — the set simply stays at two. Operator ruling,
+// 2026-08-04: prose is not the place to catch it. If that case ever needs
+// covering, the answer is an explicit field on the card, not a return to
+// guessing from the description.
+const EXPECTED_PRIVATE_EXTENSIONS = [
+  ['cdwagent', ['ucsf']],
+  ['ucsfomopagent', ['ucsf']],
 ];
+
+// Every closed-list failure carries this. A gate that says only "unexpected"
+// teaches people to delete the gate; one that names the file and says why it is
+// two edits teaches them to make the decision.
+const CLOSED_SET_ADVICE =
+  'the private set is a closed list, not something a card grants itself — changing it means ' +
+  'editing EXPECTED_PRIVATE_EXTENSIONS in landing/scripts/build-registry.mjs as well as the ' +
+  'card in landing/baam.html, deliberately two edits so that adding, removing or re-affiliating ' +
+  'a private extension is a reviewed decision rather than a side effect of writing a card';
 
 // A declared extension name has to survive TWO reductions, in two different
 // crates, and land on the same key both times. Both are written out here so the
@@ -571,17 +619,9 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
         `extension disagree about which extension this is`
     );
   }
-  // Forces the medcp/msbaseagent revisit AT PUBLISH TIME rather than relying on
-  // someone remembering: the private badge is granted by publishing to BAAM.
-  if (!declaresPrivacy) {
-    // `.some(k => …)` would scope `k` to the callback, so the message could not
-    // name the keyword from outside it. `.find` binds the match where the
-    // message can see it.
-    const hit = CLINICAL_KEYWORDS.find((k) => description.toLowerCase().includes(k));
-    if (hit) {
-      fail(`${label}: description matches "${hit}" but the card declares no data-privacy`);
-    }
-  }
+  // Nothing here reads the description. What a card SAYS is prose; which
+  // extensions are private is EXPECTED_PRIVATE_EXTENSIONS, asserted below.
+
   // DR-26 — affiliation is a third axis. HIPAA compliance does not transfer
   // between institutions, so a private connector may name whose agreements
   // cover its data.
@@ -647,6 +687,64 @@ for (const e of extensions) {
     else seenId.set(e.id, true);
   }
 }
+
+/**
+ * The catalog's private set must be EXACTLY `EXPECTED_PRIVATE_EXTENSIONS` —
+ * same keys, same affiliations — or the run fails naming the difference.
+ *
+ * Three failures, because three different edits reach the same bad end:
+ *
+ *   * a card nobody listed declares itself private (the set grows by accident);
+ *   * a listed extension has no private card (the set SHRINKS by accident,
+ *     which is the dangerous direction — the extension keeps working and simply
+ *     stops being withheld from public sessions);
+ *   * a listed extension is re-affiliated (which flows count as
+ *     cross-institutional changes underneath the warning copy).
+ *
+ * A private card with no `data-extension-name` is skipped here: it has already
+ * failed a rule that names the real problem, and reporting it a second time as
+ * "not in the closed set" would point at the wrong file.
+ */
+function assertClosedPrivateSet(exts) {
+  const key = (insts) => [...insts].sort().join(', ');
+  const expected = new Map(EXPECTED_PRIVATE_EXTENSIONS.map(([k, insts]) => [k, key(insts)]));
+  const seen = new Set();
+
+  for (const e of exts) {
+    if (e.privacy !== 'private' || !e.extension_name) continue;
+    const label = e.id || e.name || e.extension_name;
+    seen.add(e.extension_name);
+    if (!expected.has(e.extension_name)) {
+      fail(
+        `${label}: declares data-privacy="private", but "${e.extension_name}" is not in the ` +
+          `closed private set {${[...expected.keys()].join(', ')}} — ${CLOSED_SET_ADVICE}`
+      );
+      continue;
+    }
+    // Absent affiliation means unconstrained, which is a different answer from
+    // ["ucsf"], not a milder one — so it is a mismatch, spelled out as such
+    // rather than rendered as an empty list a reader would misread.
+    const declared = Array.isArray(e.affiliation) ? `[${key(e.affiliation)}]` : '(absent)';
+    const want = `[${expected.get(e.extension_name)}]`;
+    if (declared !== want) {
+      fail(
+        `${label}: "${e.extension_name}" is private with affiliation ${declared}, but the ` +
+          `closed private set records ${want} — ${CLOSED_SET_ADVICE}`
+      );
+    }
+  }
+
+  for (const k of expected.keys()) {
+    if (!seen.has(k)) {
+      fail(
+        `the closed private set names "${k}", but no card in this catalog declares ` +
+          `data-privacy="private" with that data-extension-name — ${CLOSED_SET_ADVICE}`
+      );
+    }
+  }
+}
+
+if (IS_REAL_RUN || ASSERT_PRIVATE_SET) assertClosedPrivateSet(extensions);
 
 // ---- The compiled-in private set -----------------------------------------
 // Rendered as Rust source rather than JSON because there is no network path to

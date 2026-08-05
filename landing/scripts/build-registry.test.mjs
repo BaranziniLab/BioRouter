@@ -32,6 +32,9 @@ const LANDING = resolve(SCRIPTS, '..');
 const REPO = resolve(LANDING, '..');
 const GENERATOR = join(SCRIPTS, 'build-registry.mjs');
 const FIXTURES = join(SCRIPTS, 'fixtures');
+// The compiled-in security artifact, named up here because two tests read it
+// and one of them runs before the PROTECTED map below is evaluated.
+const PROTECTED_PRIVATE_SET = join(REPO, 'crates/biorouter/src/privacy/registry_private.rs');
 
 let tmpSeq = 0;
 const scratch = mkdtempSync(join(tmpdir(), 'registry-gen-'));
@@ -53,13 +56,20 @@ const outPath = () => join(scratch, `out-${tmpSeq++}.json`);
 const rustPath = () => join(scratch, `private-${tmpSeq++}.rs`);
 
 /**
- * A fixture the generator must refuse, and the rule whose message proves the
- * refusal came from that rule rather than from a crash.
+ * A fixture the generator must refuse, the rule whose message proves the
+ * refusal came from that rule rather than from a crash, and any extra flags the
+ * run needs.
+ *
+ * The flags matter for exactly one rule. The closed private set is asserted on
+ * every REAL run, but a fixture has to opt in with `--assert-private-set` —
+ * otherwise every fixture here would have to name its private cards `cdwagent`
+ * and `ucsfomopagent`, and the fixtures that exist to exercise *other* rules
+ * (`suffixed-download`, `three-affiliations`, `private-no-affiliation`) could
+ * not exist at all.
  */
 const REJECTED = [
   ['invalid-privacy', /^registry: .*data-privacy must be "private" or "public"/m],
   ['private-no-name', /^registry: .*must declare data-extension-name/m],
-  ['clinical-unannotated', /^registry: .*declares no data-privacy/m],
   ['unknown-institution', /^registry: .*data-affiliation names "atlantis"/m],
   ['public-with-affiliation', /^registry: .*data-affiliation is meaningless/m],
   ['empty-affiliation', /^registry: .*data-affiliation is present but empty/m],
@@ -88,12 +98,32 @@ const REJECTED = [
   ['blank-extension-name', /^registry: .*data-extension-name.*only whitespace/m],
   ['punctuated-extension-name', /^registry: .*data-extension-name.*private_agent/m],
   ['duplicate-extension-name', /^registry: .*both declare data-extension-name "twinagent"/m],
+
+  // The private set is a CLOSED LIST of two, both UCSF — not a property a card
+  // grants itself by writing data-privacy="private". Checked in both directions
+  // and on the affiliation, because all three changes are ones nobody should be
+  // able to make as a side effect of editing a card.
+  [
+    'private-set-third-entry',
+    /^registry: .*"thirdprivateagent" is not in the closed private set/m,
+    ['--assert-private-set'],
+  ],
+  [
+    'private-set-missing-entry',
+    /^registry: the closed private set names "ucsfomopagent", but no card/m,
+    ['--assert-private-set'],
+  ],
+  [
+    'private-set-foreign-affiliation',
+    /^registry: .*"cdwagent" is private with affiliation \[stanford\], but the closed private set records \[ucsf\]/m,
+    ['--assert-private-set'],
+  ],
 ];
 
-for (const [name, rule] of REJECTED) {
+for (const [name, rule, args = []] of REJECTED) {
   test(`${name} is refused, by its own rule, writing nothing`, () => {
     const out = outPath();
-    const r = run({ input: fixture(name), out });
+    const r = run({ input: fixture(name), out, args });
     assert.equal(r.code, 1, `expected exit 1, got ${r.code}\n${r.both}`);
     assert.match(r.stderr, rule);
     assert.equal(
@@ -147,6 +177,49 @@ test('a subject tag is not deleted for being spelled like the badge', () => {
   const reg = JSON.parse(readFileSync(out, 'utf8'));
   assert.deepEqual(reg.extensions[0].tags, ['MCP', 'Public Data', 'Public']);
   assert.equal(reg.extensions[0].privacy, 'public');
+});
+
+test('a public card is not refused for describing patients honestly', () => {
+  // The false failure the deleted description-keyword heuristic produced. It
+  // refused any un-annotated card whose description matched "patient", "ehr",
+  // "phi", "clinical record", "medical record" or "de-identified clinical" —
+  // inferring a security property from marketing prose. A public literature or
+  // imaging tool that says a true thing about patients is not a private
+  // extension, and refusing it teaches authors to write around a word list.
+  //
+  // Without this test, reinstating that heuristic breaks nothing.
+  const out = outPath();
+  const r = run({ input: fixture('public-description-mentions-patient'), out });
+  assert.equal(r.code, 0, r.both);
+  const reg = JSON.parse(readFileSync(out, 'utf8'));
+  assert.equal(reg.extensions.length, 1);
+  assert.equal(reg.extensions[0].privacy, 'public');
+  assert.match(reg.extensions[0].description, /patient population/);
+});
+
+test('the closed private set is exactly the two UCSF extensions the operator named', () => {
+  // The assertion inside the generator is checked against fixtures above; this
+  // is the other half — that the list it holds is still the right list, read
+  // off the committed security artifact rather than off the generator's own
+  // constant. A run that widened both together would pass every fixture here.
+  const rust = readFileSync(PROTECTED_PRIVATE_SET, 'utf8');
+  assert.match(rust, /PRIVATE_EXTENSIONS: &\[&str\] =\s*&\["cdwagent", "ucsfomopagent"\];/);
+  assert.match(
+    rust,
+    /EXTENSION_AFFILIATIONS: &\[\(&str, &\[&str\]\)\] =\s*&\[\("cdwagent", &\["ucsf"\]\), \("ucsfomopagent", &\["ucsf"\]\)\];/
+  );
+});
+
+test('--assert-private-set is refused on a real run, which always asserts it', () => {
+  // The flag is a fixture affordance, exactly like --emit-rust. Accepting it on
+  // a real run would suggest the real run needs asking. Wrapped in
+  // protectingArtifacts because a REGRESSION here is a real run: the guard is
+  // what stops this test from rewriting the three published files.
+  protectingArtifacts(() => {
+    const r = run({ args: ['--assert-private-set'] });
+    assert.equal(r.code, 1, r.both);
+    assert.match(r.stderr, /--assert-private-set is for fixture runs/);
+  });
 });
 
 test('attribute order does not decide whether a card exists', () => {
@@ -336,10 +409,7 @@ const PROTECTED = {
     REPO,
     'ui/desktop/src/components/baam/registry.fallback.json'
   ),
-  'the compiled-in private set': join(
-    REPO,
-    'crates/biorouter/src/privacy/registry_private.rs'
-  ),
+  'the compiled-in private set': PROTECTED_PRIVATE_SET,
 };
 
 /** Run `body`, and put every protected artifact back byte-for-byte afterwards. */

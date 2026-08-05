@@ -1,0 +1,53 @@
+<!--
+  Fixture: both private extensions are present, but one is affiliated somewhere
+  other than UCSF.
+
+  Expected: exit 1, naming "cdwagent", the affiliation it declares, and the one
+  the closed list records.
+
+  Affiliation is the third axis (DR-26): it is what a cross-institutional
+  warning names, and HIPAA compliance does not transfer between institutions.
+  So the closed list pins the affiliation too — a private extension silently
+  re-affiliated would move which flows the daemon considers covered.
+
+  This card also trips the institutions-map rule, because "stanford" has no
+  display name to warn with. Both failures are true and the test asserts the
+  closed-list one, which is the rule this fixture exists for.
+
+  Run with --assert-private-set.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="CDWAgent" data-affiliation="stanford">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>CDW Agent</h3>
+          <div class="ext-org">Fixtures · Stanford · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/cdw-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A private extension the closed list records as UCSF-affiliated, declaring a different institution.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/cdwagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="UCSFOMOPAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>UCSF OMOP Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/ucsf-omop-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The other extension the closed private set names, correctly affiliated.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/ucsfomopagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>
