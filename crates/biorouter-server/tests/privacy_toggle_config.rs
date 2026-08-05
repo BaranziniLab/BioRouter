@@ -298,11 +298,14 @@ fn the_value_parser_agrees_with_the_renderer_about_whitespace() {
 #[tokio::test]
 #[serial_test::serial]
 async fn the_startup_load_reads_the_switch_store_and_not_the_environment() {
-    // ⚠ The fixture's env guard FIRST — it is what redirects the config root,
-    // and taking a second `lock_env` while it is held would deadlock. This one
-    // adds the variable under test to the same process environment by a plain
-    // `set_var`, because `env_lock`'s guard is not reentrant and the fixture
-    // already owns it.
+    // ⚠ The fixture FIRST — its `set_var` is what redirects the config root, and
+    // `Config::global()` is a `OnceCell` that resolves its path on first access,
+    // so anything reading config before this line pins the developer's real one.
+    //
+    // A plain `set_var` for the variable under test, matching the fixture. It is
+    // NOT that `env_lock` would deadlock — the fixture holds no such guard, as
+    // its own doc says — but that every test in this binary is `#[serial]`, so
+    // there is nothing here to race with the one test that does take the lock.
     let _fixture = PrivacyToggleFixture::capture();
     struct EnvVar(&'static str);
     impl Drop for EnvVar {
@@ -358,11 +361,26 @@ async fn the_startup_load_reads_the_switch_store_and_not_the_environment() {
 /// The ON half is also the discriminating half. The seam is left UNARMED for it
 /// on purpose: an unarmed seam refuses by default, so if the re-enable path
 /// prompted, this test would fail there rather than pass quietly.
+///
+/// ⚠ **"An unarmed seam refuses" is only true with `BIOROUTER_PRIVACY_TEST_AUTH`
+/// unset**, so the guard below is what makes that sentence a property rather
+/// than an assumption about the developer's shell. `env_answer` is consulted
+/// whenever the one-shot arming is absent, so `BIOROUTER_PRIVACY_TEST_AUTH=approve`
+/// exported by anyone driving the dev GUI turns the unarmed seam into an
+/// approving one and a regression on the ON path would pass here. Measured on
+/// the sibling assertion in `biorouter-cli`, which had the identical hole:
+/// mutate the code to prompt where it should not, and the test fails with the
+/// variable unset and passes with it set.
+///
+/// The fixture does **not** hold an `env_lock` guard of its own — it redirects
+/// the config root with a plain `set_var`, as its own doc says — so taking one
+/// here cannot deadlock against it.
 #[tokio::test]
 #[serial_test::serial]
 async fn turning_the_tiers_off_needs_the_operating_system_and_turning_them_on_does_not() {
     use biorouter::privacy::system_auth::AuthOutcome;
 
+    let _env = env_lock::lock_env([("BIOROUTER_PRIVACY_TEST_AUTH", None::<&str>)]);
     let _fixture = PrivacyToggleFixture::capture();
     reset_switch_storage();
     biorouter::privacy::load_privacy_tiers_from_config();

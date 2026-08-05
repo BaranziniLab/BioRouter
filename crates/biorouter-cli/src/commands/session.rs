@@ -1118,6 +1118,15 @@ mod tests {
     /// control had gained a password prompt this test would fail on the
     /// `turn:*` chat rather than pass quietly.
     ///
+    /// ⚠ That last sentence is only true with `BIOROUTER_PRIVACY_TEST_AUTH`
+    /// **unset**, which is why the guard below is not decoration. `env_answer`
+    /// is consulted whenever the one-shot arming is absent, so a developer or a
+    /// CI runner with `BIOROUTER_PRIVACY_TEST_AUTH=approve` exported turns the
+    /// unarmed seam into an approving one. Measured: with
+    /// `requires_system_authentication` mutated to `true` — exactly the
+    /// regression this test names — the assertion below fails with the variable
+    /// unset and **passes** with it set to `approve`. The lock closes that.
+    ///
     /// ⚠ `#[serial]` on the seam's own key — see
     /// `declassify_works_by_id_regardless_of_session_type` for the measurement.
     /// Without it, that test's `Approved` arming answers the `Denied` prompt
@@ -1129,6 +1138,8 @@ mod tests {
         use biorouter::privacy::declassify::DeclassifyOutcome;
         use biorouter::privacy::system_auth::AuthOutcome;
         use biorouter::privacy::SessionClassification;
+
+        let _env = env_lock::lock_env([("BIOROUTER_PRIVACY_TEST_AUTH", None::<&str>)]);
 
         let dir = TempDir::new().unwrap();
         let sm = SessionManager::new(dir.path().to_path_buf());
