@@ -471,8 +471,51 @@ pub(crate) trait DeclassifyPrompt {
 
     /// §12.4's strong control: retype `phrase`. `None` means the user backed
     /// out.
-    fn ask_phrase(&mut self, session_id: &str, phrase: &str) -> Result<Option<String>>;
+    ///
+    /// `notice` is the already-rendered sentence saying WHY this chat is on the
+    /// strong control, printed verbatim. It is passed in rather than composed
+    /// here because [`TerminalPrompt`] is the one implementation a test cannot
+    /// drive, and the wording is the thing under test: see
+    /// [`render_declassify_prompt_notice`] and
+    /// [`DECLASSIFY_ESCALATION_NOTICE`], which are pure and are asserted per
+    /// provenance.
+    fn ask_phrase(
+        &mut self,
+        session_id: &str,
+        phrase: &str,
+        notice: &str,
+    ) -> Result<Option<String>>;
 }
+
+/// Why this chat is being asked for the typed phrase, as one sentence.
+///
+/// ⚠ **It does not say "reached a private data source" unless the chat did.**
+/// That sentence shipped for every provenance, and it is false for the two that
+/// dominate day one: the one-time migration marks a chat `backfill:<provider>`
+/// from the model it was last bound to, having observed nothing it reached, and
+/// an `imported` chat arrived already marked. The per-provenance clause lives in
+/// `biorouter::privacy::declassify::strong_confirmation_reason`, beside the
+/// grading it must agree with, and is shared with the daemon and the desktop
+/// dialog.
+pub(crate) fn render_declassify_prompt_notice(
+    session_id: &str,
+    privacy_reason: Option<&str>,
+) -> Option<String> {
+    biorouter::privacy::declassify::strong_confirmation_reason(privacy_reason)
+        .map(|why| format!("Session {session_id} {why}, so declassifying it needs confirmation."))
+}
+
+/// What the terminal says when the grade moved between the read and the write —
+/// the escalation arm of [`declassify_by_id`].
+///
+/// ⚠ **Deliberately not [`render_declassify_prompt_notice`]'s sentence.** The
+/// provenance this process read is by definition the stale one, so any clause
+/// derived from it is a claim about the conversation that the refusal did not
+/// establish. The desktop dialog steps around the same trap in its `escalated`
+/// branch; this is the terminal's copy of that reasoning.
+pub(crate) const DECLASSIFY_ESCALATION_NOTICE: &str =
+    "That request was refused: this chat's record has changed since it was read, so it now takes \
+     the typed confirmation.";
 
 /// The real one.
 struct TerminalPrompt;
@@ -486,11 +529,13 @@ impl DeclassifyPrompt for TerminalPrompt {
         .interact()?)
     }
 
-    fn ask_phrase(&mut self, session_id: &str, phrase: &str) -> Result<Option<String>> {
-        println!(
-            "Session {session_id} reached a private data source, so declassifying it needs \
-             confirmation."
-        );
+    fn ask_phrase(
+        &mut self,
+        _session_id: &str,
+        phrase: &str,
+        notice: &str,
+    ) -> Result<Option<String>> {
+        println!("{notice}");
         let typed: String = cliclack::input(format!(
             "Type the last six characters of the session id ({phrase}) to confirm, or leave \
              blank to cancel"
@@ -551,17 +596,23 @@ pub(crate) async fn declassify_by_id(
     }
 
     let phrase = confirmation_phrase(session_id);
-    let mut typed: Option<String> =
-        if requires_typed_confirmation(session.privacy_reason.as_deref()) {
-            match prompt.ask_phrase(session_id, &phrase)? {
-                Some(typed) => Some(typed),
-                None => return Ok(DeclassifyOutcome::ConfirmationRequired),
-            }
-        } else if prompt.confirm_single_click(session_id)? {
-            None
-        } else {
-            return Ok(DeclassifyOutcome::ConfirmationRequired);
-        };
+    // `Some` exactly when the strong control applies, by construction — the same
+    // predicate decides both — so this match cannot show the strong copy to a
+    // chat that is getting the single click.
+    let notice = render_declassify_prompt_notice(session_id, session.privacy_reason.as_deref());
+    let mut typed: Option<String> = if let Some(notice) = notice.as_deref() {
+        debug_assert!(requires_typed_confirmation(
+            session.privacy_reason.as_deref()
+        ));
+        match prompt.ask_phrase(session_id, &phrase, notice)? {
+            Some(typed) => Some(typed),
+            None => return Ok(DeclassifyOutcome::ConfirmationRequired),
+        }
+    } else if prompt.confirm_single_click(session_id)? {
+        None
+    } else {
+        return Ok(DeclassifyOutcome::ConfirmationRequired);
+    };
 
     let ok = UserConfirmation::from_typed_confirmation();
     let named = [session_id.to_string()];
@@ -581,7 +632,11 @@ pub(crate) async fn declassify_by_id(
             // second refusal is the user's answer, not a reason to ask again.
             DeclassifyOutcome::ConfirmationRequired if !escalated => {
                 escalated = true;
-                typed = prompt.ask_phrase(session_id, &phrase)?;
+                // NOT `notice`: the provenance this function read is the stale
+                // one — that is what "the grade moved" means — so a clause
+                // derived from it would be a claim about the conversation that
+                // nothing here established.
+                typed = prompt.ask_phrase(session_id, &phrase, DECLASSIFY_ESCALATION_NOTICE)?;
                 if typed.is_none() {
                     return Ok(outcome);
                 }
@@ -928,6 +983,10 @@ mod tests {
     struct AlwaysConfirms {
         single_clicks: usize,
         phrases_asked: usize,
+        /// Every sentence the user was shown before being asked to retype, in
+        /// order. Recorded so the WORDING is testable and not just the count —
+        /// the shipped string claimed a private data source for every chat.
+        notices: Vec<String>,
     }
 
     impl DeclassifyPrompt for AlwaysConfirms {
@@ -936,8 +995,14 @@ mod tests {
             Ok(true)
         }
 
-        fn ask_phrase(&mut self, _session_id: &str, phrase: &str) -> Result<Option<String>> {
+        fn ask_phrase(
+            &mut self,
+            _session_id: &str,
+            phrase: &str,
+            notice: &str,
+        ) -> Result<Option<String>> {
             self.phrases_asked += 1;
+            self.notices.push(notice.to_string());
             Ok(Some(phrase.to_string()))
         }
     }
@@ -950,7 +1015,12 @@ mod tests {
             Ok(false)
         }
 
-        fn ask_phrase(&mut self, _session_id: &str, _phrase: &str) -> Result<Option<String>> {
+        fn ask_phrase(
+            &mut self,
+            _session_id: &str,
+            _phrase: &str,
+            _notice: &str,
+        ) -> Result<Option<String>> {
             Ok(None)
         }
     }
@@ -1084,6 +1154,146 @@ mod tests {
         );
         assert_eq!(again.single_clicks, 0);
         assert_eq!(again.phrases_asked, 0);
+    }
+
+    /// The sentence the terminal prints above the phrase field, **asserted per
+    /// provenance**, because it shipped as one sentence — "reached a private
+    /// data source" — for all of them.
+    ///
+    /// That is false for `backfill:*` and `imported`, and those are not an edge
+    /// case: the one-time migration marks a chat by the model it was last bound
+    /// to, so on a machine with history `backfill:*` is most of the private rows
+    /// a user meets this control on. A single assertion on one provenance is
+    /// exactly what let it ship, so this walks the vocabulary.
+    #[test]
+    fn each_provenance_is_given_the_reason_that_is_true_of_it() {
+        let id = "20260101_120000";
+        let cases: [(Option<&str>, &str); 8] = [
+            (
+                Some("mcp:ucsfomopagent"),
+                "Session 20260101_120000 reached a private data source, so declassifying it needs \
+                 confirmation.",
+            ),
+            (
+                Some("inherited:20251231_090000"),
+                "Session 20260101_120000 was created inside a private chat, so declassifying it \
+                 needs confirmation.",
+            ),
+            (
+                Some("diverged:20251231_090000"),
+                "Session 20260101_120000 was branched out of a private chat, so declassifying it \
+                 needs confirmation.",
+            ),
+            (
+                Some("backfill:versa_azure"),
+                "Session 20260101_120000 was marked private by the one-time migration, from the \
+                 model it was last using rather than from anything it reached, so declassifying \
+                 it needs confirmation.",
+            ),
+            (
+                Some("imported"),
+                "Session 20260101_120000 was imported already marked private, so declassifying it \
+                 needs confirmation.",
+            ),
+            (
+                Some("something_new"),
+                "Session 20260101_120000 does not record an observed turn on a private model as \
+                 the reason it is private, so declassifying it needs confirmation.",
+            ),
+            (
+                Some(""),
+                "Session 20260101_120000 does not record an observed turn on a private model as \
+                 the reason it is private, so declassifying it needs confirmation.",
+            ),
+            (
+                None,
+                "Session 20260101_120000 does not record an observed turn on a private model as \
+                 the reason it is private, so declassifying it needs confirmation.",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(
+                render_declassify_prompt_notice(id, reason).as_deref(),
+                Some(expected),
+                "the sentence a {reason:?} chat is shown"
+            );
+        }
+
+        // A `turn:*` chat never sees this control at all, so it has no sentence
+        // to be given a wrong one.
+        assert_eq!(
+            render_declassify_prompt_notice(id, Some("turn:versa_azure")),
+            None
+        );
+
+        // And the escalation arm does not borrow any of them: the provenance it
+        // would derive from is the stale one by definition.
+        assert!(!DECLASSIFY_ESCALATION_NOTICE.contains("reached a private data source"));
+        assert!(DECLASSIFY_ESCALATION_NOTICE.contains("has changed"));
+    }
+
+    /// …and the sentence above is the one `declassify_by_id` actually hands the
+    /// prompt, for each provenance, through the real read of the stored row.
+    ///
+    /// The pure test cannot catch a call site that passes the wrong string (the
+    /// escalation notice, a hardcoded sentence, the id twice); this walks the
+    /// same vocabulary through the writer.
+    ///
+    /// ⚠ `#[serial]` on the seam's own key: the strong control now owes DR-20's
+    /// system authentication, whose arming is process-global.
+    #[tokio::test]
+    #[serial_test::serial(privacy_test_auth_seam)]
+    async fn the_reason_reaches_the_prompt_through_the_real_read() {
+        use biorouter::privacy::declassify::DeclassifyOutcome;
+
+        for (reason, must_say) in [
+            ("mcp:ucsfomopagent", "reached a private data source"),
+            (
+                "inherited:20251231_090000",
+                "was created inside a private chat",
+            ),
+            (
+                "diverged:20251231_090000",
+                "was branched out of a private chat",
+            ),
+            (
+                "backfill:versa_azure",
+                "was marked private by the one-time migration",
+            ),
+            ("imported", "was imported already marked private"),
+            (
+                "something_new",
+                "does not record an observed turn on a private model",
+            ),
+        ] {
+            let dir = TempDir::new().unwrap();
+            let sm = SessionManager::new(dir.path().to_path_buf());
+            let id = private_session_of_type(&sm, &dir, SessionType::User, reason).await;
+
+            approve_the_next_system_prompt();
+            let mut prompt = AlwaysConfirms::default();
+            assert_eq!(
+                declassify_by_id(&sm, &id, &mut prompt).await.unwrap(),
+                DeclassifyOutcome::Declassified,
+                "{reason}"
+            );
+            assert_eq!(prompt.notices.len(), 1, "{reason}");
+            let said = &prompt.notices[0];
+            assert!(
+                said.contains(must_say),
+                "a {reason} chat was told {said:?}, which does not say {must_say:?}"
+            );
+            assert!(
+                said.contains(&id),
+                "{reason}: {said:?} does not name the chat"
+            );
+            if reason != "mcp:ucsfomopagent" {
+                assert!(
+                    !said.contains("reached a private data source"),
+                    "a {reason} chat was told it reached a private data source: {said:?}"
+                );
+            }
+        }
     }
 
     /// A refusal at the prompt writes nothing. Both controls, because a "no"

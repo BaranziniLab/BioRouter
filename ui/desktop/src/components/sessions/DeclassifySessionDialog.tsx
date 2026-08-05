@@ -33,6 +33,40 @@ export function requiresTypedConfirmation(privacyReason?: string | null): boolea
 }
 
 /**
+ * **Why THIS chat is on the strong control**, mirrored clause-for-clause from
+ * `strong_confirmation_reason` in `crates/biorouter/src/privacy/declassify.rs`.
+ * `null` exactly when the single click applies.
+ *
+ * ⚠ This exists because the dialog used to say "This chat reached a private data
+ * source" for every chat on the strong control, and that is false for two of the
+ * provenances that reach it. The one-time migration marks a chat
+ * `backfill:<provider>` from the model it was last bound to, having observed
+ * nothing it reached, and an `imported` chat arrived already marked — so on day
+ * one, on a machine with history, most of the chats shown this dialog were being
+ * told a reason that did not happen.
+ *
+ * The clause completes both "This chat …" and "Session `<id>` …", which is what
+ * lets this, the daemon and the CLI share one wording. The Rust test
+ * `the_desktop_dialog_carries_the_same_clauses` reads this file and asserts every
+ * clause below appears in it verbatim, so a drift on either side turns the build
+ * red rather than shipping two different explanations of the same control.
+ */
+export function strongConfirmationReason(privacyReason?: string | null): string | null {
+  if (!requiresTypedConfirmation(privacyReason)) return null;
+  const reason = privacyReason ?? '';
+  if (reason.startsWith('mcp:')) return 'reached a private data source';
+  if (reason.startsWith('inherited:')) return 'was created inside a private chat';
+  if (reason.startsWith('diverged:')) return 'was branched out of a private chat';
+  if (reason.startsWith('backfill:'))
+    return 'was marked private by the one-time migration, from the model it was last using rather than from anything it reached';
+  if (reason === 'imported') return 'was imported already marked private';
+  // Everything the vocabulary does not name — an absent reason, a future entry.
+  // A statement about the RECORD, because nothing about the conversation is
+  // known here.
+  return 'does not record an observed turn on a private model as the reason it is private';
+}
+
+/**
  * The last six characters of the session id — what §12.4 asks the user to
  * retype, and what `confirmation_phrase` derives on the daemon.
  *
@@ -74,9 +108,12 @@ export interface DeclassifySessionDialogProps {
  *
  * Two controls, graded on provenance:
  *
- *  * A chat that reached a private **data source** (`mcp:*`, or anything whose
- *    provenance is not a plain turn) asks the user to retype the last six
- *    characters of its id, shown beside the field.
+ *  * Every other provenance — `mcp:*`, but also `inherited:*`, `diverged:*`,
+ *    `backfill:*`, `imported` and anything unrecognised — asks the user to
+ *    retype the last six characters of its id, shown beside the field, above a
+ *    sentence naming the reason that is actually true of that chat
+ *    (`strongConfirmationReason`). It is NOT one sentence about reaching a data
+ *    source: most of these chats did not.
  *  * A chat that merely ran turns against a private **model** gets a single
  *    click, with an undo window — and the request is HELD for that window
  *    rather than sent and reversed, because declassification is one-way at the
@@ -98,6 +135,10 @@ export function DeclassifySessionDialog({
   // is the one that decides. See the catch in `send`.
   const [escalated, setEscalated] = useState(false);
   const gradedStrong = requiresTypedConfirmation(session.privacy_reason);
+  // Non-null exactly when `gradedStrong` is true, by construction — one
+  // predicate decides both — so the strong copy cannot be shown to a chat
+  // getting the single click.
+  const strongReason = strongConfirmationReason(session.privacy_reason);
   const needsPhrase = gradedStrong || escalated;
   const phrase = confirmationPhrase(session.id);
   const undoSeconds = Math.max(1, Math.round(undoMs / 1000));
@@ -193,7 +234,7 @@ export function DeclassifySessionDialog({
       title="Make this chat public?"
       description={
         gradedStrong
-          ? 'This chat reached a private data source. Marking it public removes its private ' +
+          ? `This chat ${strongReason}. Marking it public removes its private ` +
             'marker and lets it be opened by a public model — its contents are unchanged, and ' +
             'this cannot be undone.'
           : escalated

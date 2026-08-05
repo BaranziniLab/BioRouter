@@ -85,6 +85,49 @@ pub fn requires_system_authentication(privacy_reason: Option<&str>) -> bool {
     requires_typed_confirmation(privacy_reason)
 }
 
+/// **Why this particular chat is on the strong control** — the clause every
+/// surface that asks for the typed phrase must say instead of guessing.
+///
+/// `None` exactly when [`requires_typed_confirmation`] is `false`, so the
+/// wording cannot be shown to a chat that is getting the single click and a
+/// caller cannot reach the strong copy by accident. Pinned by
+/// `a_reason_exists_for_exactly_the_chats_that_owe_the_phrase`.
+///
+/// ⚠ **This exists because the obvious sentence is false for most private chats
+/// on day one.** Every surface used to say "this chat reached a private data
+/// source", which is the rationale §12.4's table gives for the strong control —
+/// but the implemented grade is an exception on `turn:*`, not a match on `mcp:`,
+/// so the strong control also covers `backfill:*` and `imported`. A backfilled
+/// chat reached nothing: [`SessionManager`]'s one-time migration inferred its
+/// tier from the provider the row was last bound to. On a machine with history,
+/// `backfill:*` is the majority of the private rows, so the majority of users
+/// meeting this control were being told a reason that did not happen.
+///
+/// The clause is written to complete BOTH "Session `<id>` …" and "This chat …",
+/// which is what lets the CLI, the daemon and the renderer share one wording.
+///
+/// The catch-all is deliberately a statement about the RECORD rather than about
+/// the conversation: it is the only thing that is true of every value the
+/// vocabulary does not name — an absent reason (a projection bug), a future
+/// entry, and `declassified_by_user`, which cannot reach here while the row is
+/// private but must not be able to produce a false sentence if it ever does.
+pub fn strong_confirmation_reason(privacy_reason: Option<&str>) -> Option<&'static str> {
+    if !requires_typed_confirmation(privacy_reason) {
+        return None;
+    }
+    Some(match privacy_reason {
+        Some(r) if r.starts_with("mcp:") => "reached a private data source",
+        Some(r) if r.starts_with("inherited:") => "was created inside a private chat",
+        Some(r) if r.starts_with("diverged:") => "was branched out of a private chat",
+        Some(r) if r.starts_with("backfill:") => {
+            "was marked private by the one-time migration, from the model it was last using rather \
+             than from anything it reached"
+        }
+        Some("imported") => "was imported already marked private",
+        _ => "does not record an observed turn on a private model as the reason it is private",
+    })
+}
+
 /// The last six characters of `session_id`, which is what §12.4 asks the user to
 /// retype.
 ///
@@ -831,6 +874,157 @@ mod tests {
         assert!(requires_typed_confirmation(Some("something_new")));
         // Not a prefix match on a longer word: `turned:` is not `turn:`.
         assert!(requires_typed_confirmation(Some("turned_private")));
+    }
+
+    /// The whole §12.4 vocabulary, plus the values that are not in it. Every
+    /// case that owes the phrase is listed with the EXACT clause it is owed, so
+    /// a wording that regresses to one sentence for all of them — which is what
+    /// shipped, and what this fixes — fails here rather than in front of a user.
+    #[test]
+    fn every_provenance_on_the_strong_control_is_told_its_own_reason() {
+        let cases: [(Option<&str>, &str); 10] = [
+            (Some("mcp:ucsfomopagent"), "reached a private data source"),
+            (
+                Some("inherited:20260101_120000"),
+                "was created inside a private chat",
+            ),
+            (
+                Some("diverged:20260101_120000"),
+                "was branched out of a private chat",
+            ),
+            (
+                Some("backfill:versa_azure"),
+                "was marked private by the one-time migration, from the model it was last using \
+                 rather than from anything it reached",
+            ),
+            (Some("imported"), "was imported already marked private"),
+            // Not in the vocabulary, and the record is all that can be claimed.
+            (
+                Some("declassified_by_user"),
+                "does not record an observed turn on a private model as the reason it is private",
+            ),
+            (
+                Some("something_new"),
+                "does not record an observed turn on a private model as the reason it is private",
+            ),
+            (
+                Some(""),
+                "does not record an observed turn on a private model as the reason it is private",
+            ),
+            (
+                None,
+                "does not record an observed turn on a private model as the reason it is private",
+            ),
+            // `turned:` is not `turn:`, so this owes the phrase like any other
+            // unrecognised value — and must not be told it ran a turn.
+            (
+                Some("turned_private"),
+                "does not record an observed turn on a private model as the reason it is private",
+            ),
+        ];
+        for (reason, expected) in cases {
+            assert_eq!(
+                strong_confirmation_reason(reason),
+                Some(expected),
+                "the sentence shown for {reason:?}"
+            );
+        }
+
+        // The specific falsehood this exists to stop. `backfill:*` is the
+        // majority of the private rows on a machine with history, and it reached
+        // nothing: the migration read the provider the row was last bound to.
+        for reason in [
+            Some("backfill:versa_azure"),
+            Some("imported"),
+            Some("inherited:20260101_120000"),
+            Some("diverged:20260101_120000"),
+            Some("declassified_by_user"),
+            Some("something_new"),
+            Some(""),
+            None,
+        ] {
+            let said = strong_confirmation_reason(reason).unwrap();
+            assert!(
+                !said.contains("reached a private data source"),
+                "a {reason:?} chat is told it reached a private data source, which it did not: \
+                 {said}"
+            );
+        }
+
+        // …and the one that did keeps the sentence that is true of it.
+        assert_eq!(
+            strong_confirmation_reason(Some("mcp:ucsfomopagent")),
+            Some("reached a private data source")
+        );
+    }
+
+    /// The wording and the grade are one decision, so the strong copy is
+    /// unreachable for a chat that gets the single click. Without this a later
+    /// edit could hand the weak path a sentence about a data source — the same
+    /// class of bug from the other side.
+    #[test]
+    fn a_reason_exists_for_exactly_the_chats_that_owe_the_phrase() {
+        for reason in [
+            Some("turn:versa_azure"),
+            Some("turn:ollama"),
+            Some("mcp:ucsfomopagent"),
+            Some("diverged:20260101_120000"),
+            Some("inherited:20260101_120000"),
+            Some("imported"),
+            Some("backfill:versa_azure"),
+            Some("declassified_by_user"),
+            Some("turned_private"),
+            Some("something_new"),
+            Some(""),
+            None,
+        ] {
+            assert_eq!(
+                strong_confirmation_reason(reason).is_some(),
+                requires_typed_confirmation(reason),
+                "the wording and the grade disagree about {reason:?}"
+            );
+        }
+    }
+
+    /// The renderer says the same thing the daemon and the CLI do, and this is
+    /// the only mechanical check of that: the three live in different languages,
+    /// so nothing else makes a TypeScript edit that drifts from the Rust fail.
+    ///
+    /// It asserts every clause appears VERBATIM in the dialog's source. Prettier
+    /// does not split string literals, so a clause that survives formatting is
+    /// one contiguous match; a reworded Rust clause, or a renderer that goes back
+    /// to one sentence for every provenance, leaves a clause with no hit here.
+    #[test]
+    fn the_desktop_dialog_carries_the_same_clauses() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let dialog = root.join("ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx");
+        assert!(
+            dialog.is_file(),
+            "the audit reads {} — if that path is wrong the assertions below prove nothing",
+            dialog.display()
+        );
+        let src = std::fs::read_to_string(&dialog).unwrap();
+
+        for reason in [
+            Some("mcp:ucsfomopagent"),
+            Some("inherited:20260101_120000"),
+            Some("diverged:20260101_120000"),
+            Some("backfill:versa_azure"),
+            Some("imported"),
+            None,
+        ] {
+            let clause = strong_confirmation_reason(reason).unwrap();
+            assert!(
+                src.contains(clause),
+                "the desktop dialog does not say {clause:?} for a {reason:?} chat. The Rust and \
+                 the TypeScript wordings have drifted."
+            );
+        }
     }
 
     // ------------------------------------------------------------------

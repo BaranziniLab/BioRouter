@@ -1226,9 +1226,25 @@ const DECLASSIFY_CONFIRMATION_MISMATCH: &str =
 /// [`DECLASSIFY_NEEDS_USER`] does not: the model picker's toast says *switch
 /// this chat's model* and the copy handler's says *branch it from the chat
 /// window*, and neither marks a chat public.
+///
+/// ⚠ **It says what the RECORD says, not what the conversation did.** It used to
+/// open "This chat reached a private data source", which is §12.4's rationale
+/// for the strong control and is false for two of the provenances that reach it:
+/// a `backfill:*` chat was marked by the one-time migration from the model it
+/// was last bound to, and an `imported` chat arrived already marked. On day one
+/// `backfill:*` is most of the private rows on a machine with history.
+///
+/// This route deliberately does not read the row — grading here would be a
+/// check-then-act, and the comment in the handler says why — so it has no
+/// provenance to name and uses the catch-all clause from
+/// `biorouter::privacy::declassify::strong_confirmation_reason`, which is the
+/// one statement true of every chat that reaches this arm. The CLI and the
+/// desktop dialog, which do hold the provenance, say the specific one.
+/// `the_system_auth_refusal_claims_only_what_the_record_says` pins the link.
 const DECLASSIFY_SYSTEM_AUTH_REFUSED: &str =
-    "This chat reached a private data source, so marking it public needs your operating \
-     system to confirm it is you. That did not happen, and nothing was changed.";
+    "This chat does not record an observed turn on a private model as the reason it is private, \
+     so marking it public needs your operating system to confirm it is you. That did not happen, \
+     and nothing was changed.";
 
 #[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -3355,5 +3371,42 @@ mod declassify_tests {
         // The model-facing one forecloses the retry; the human-facing one has no
         // model audience and does not need to.
         assert!(DECLASSIFY_NEEDS_USER.contains("Do not retry"));
+    }
+
+    /// This route's refusal may not tell a chat why it is private, because it
+    /// deliberately never read the row.
+    ///
+    /// It shipped opening "This chat reached a private data source", which is
+    /// §12.4's rationale for the strong control and not a fact about every chat
+    /// that reaches this arm: `backfill:*` — most of the private rows on day one
+    /// — was marked from the bound provider, and `imported` arrived marked. The
+    /// only honest sentence here is the catch-all clause the grading module
+    /// hands an unrecognised provenance, and this is what stops the two from
+    /// drifting apart in different crates.
+    #[test]
+    fn the_system_auth_refusal_claims_only_what_the_record_says() {
+        let catch_all = biorouter::privacy::declassify::strong_confirmation_reason(None)
+            .expect("an absent provenance owes the strong control, so it has a clause");
+        assert!(
+            DECLASSIFY_SYSTEM_AUTH_REFUSED.contains(catch_all),
+            "this route's refusal ({DECLASSIFY_SYSTEM_AUTH_REFUSED}) no longer says what the \
+             grading module says about a chat whose provenance is unknown ({catch_all})"
+        );
+
+        // The specific claim it must not make, taken from the grading module
+        // rather than typed out here, so a reworded clause is still caught.
+        let only_true_of_mcp =
+            biorouter::privacy::declassify::strong_confirmation_reason(Some("mcp:ucsfomopagent"))
+                .expect("an `mcp:*` chat owes the strong control");
+        assert_ne!(
+            only_true_of_mcp, catch_all,
+            "the grading module has collapsed its clauses into one, so this route cannot tell \
+             the honest sentence from the false one"
+        );
+        assert!(
+            !DECLASSIFY_SYSTEM_AUTH_REFUSED.contains(only_true_of_mcp),
+            "this route never read the row, so it cannot say {only_true_of_mcp:?} — it is false \
+             for `backfill:*` and `imported`, which dominate day one"
+        );
     }
 }

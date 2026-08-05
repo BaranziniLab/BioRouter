@@ -102,6 +102,48 @@ describe('DeclassifySessionDialog', () => {
     }
   });
 
+  it('tells each provenance the reason that is actually true of it', () => {
+    // The dialog shipped saying "This chat reached a private data source" for
+    // every chat on the strong control. That is false for `backfill:*` and
+    // `imported`, and those are not an edge case: the one-time migration marks
+    // a chat by the model it was last bound to, so on day one `backfill:*` is
+    // most of the private rows. Asserted PER provenance, because a single
+    // assertion on the `mcp:*` case is exactly what let the wrong string ship.
+    const cases: Array<[string | undefined, string]> = [
+      ['mcp:ucsfomopagent', 'This chat reached a private data source.'],
+      ['inherited:20260101_120000', 'This chat was created inside a private chat.'],
+      ['diverged:20260101_120000', 'This chat was branched out of a private chat.'],
+      [
+        'backfill:versa_azure',
+        'This chat was marked private by the one-time migration, from the model it was last using rather than from anything it reached.',
+      ],
+      ['imported', 'This chat was imported already marked private.'],
+      [
+        'something_new',
+        'This chat does not record an observed turn on a private model as the reason it is private.',
+      ],
+      [
+        undefined,
+        'This chat does not record an observed turn on a private model as the reason it is private.',
+      ],
+    ];
+
+    for (const [reason, sentence] of cases) {
+      const view = render(
+        <DeclassifySessionDialog session={{ ...s, privacy_reason: reason }} onClose={vi.fn()} />
+      );
+      const description = screen.getByRole('dialog').textContent ?? '';
+      expect(description, `the copy shown for ${String(reason)}`).toContain(sentence);
+      if (reason !== 'mcp:ucsfomopagent') {
+        expect(
+          description,
+          `a ${String(reason)} chat was told it reached a data source`
+        ).not.toContain('reached a private data source');
+      }
+      view.unmount();
+    }
+  });
+
   it('sends the typed phrase and the proof-of-user, and reports the new tier', async () => {
     const user = userEvent.setup();
     const onDeclassified = vi.fn();
