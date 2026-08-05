@@ -986,7 +986,17 @@ mod tests {
     /// wrong one: on this machine that surfaces 511 hidden sessions into a
     /// user-facing list, a regression traded for an edge case. The CLI escape
     /// hatch works by **id**, which is exactly why it does not need one.
+    ///
+    /// ⚠ `#[serial]` on the seam's own key, because it arms DR-20's
+    /// **process-global** one-shot (`system_auth_seam::{NEXT, LAST}`) and so
+    /// does its sibling below. Measured, not predicted: run just these two on
+    /// two threads and 34 of 40 runs fail — this one seeing its arming consumed
+    /// by the sibling's `reset()`, and the sibling seeing THIS one's `Approved`
+    /// satisfy a prompt it had armed to `Denied`. The second direction is the
+    /// one that matters: it makes a discriminating assertion pass for a reason
+    /// that has nothing to do with the code under test.
     #[tokio::test]
+    #[serial_test::serial(privacy_test_auth_seam)]
     async fn declassify_works_by_id_regardless_of_session_type() {
         use biorouter::privacy::declassify::DeclassifyOutcome;
         use biorouter::privacy::SessionClassification;
@@ -1107,7 +1117,14 @@ mod tests {
     /// for the `mcp:*` chat; an unarmed seam refuses by default, so if the weak
     /// control had gained a password prompt this test would fail on the
     /// `turn:*` chat rather than pass quietly.
+    ///
+    /// ⚠ `#[serial]` on the seam's own key — see
+    /// `declassify_works_by_id_regardless_of_session_type` for the measurement.
+    /// Without it, that test's `Approved` arming answers the `Denied` prompt
+    /// this one raises, and the first assertion below passes reading
+    /// `Declassified` — the discriminating test losing its power to a race.
     #[tokio::test]
+    #[serial_test::serial(privacy_test_auth_seam)]
     async fn the_terminal_asks_the_operating_system_for_the_strong_control_only() {
         use biorouter::privacy::declassify::DeclassifyOutcome;
         use biorouter::privacy::system_auth::AuthOutcome;
