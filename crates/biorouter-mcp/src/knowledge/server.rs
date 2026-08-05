@@ -1171,7 +1171,7 @@ impl ServerHandler for KnowledgeServer {
     /// statements are exactly what the macro emitted.
     async fn call_tool(
         &self,
-        request: rmcp::model::CallToolRequestParams,
+        mut request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let caller_private = Self::caller_is_private(Some(&context));
@@ -1224,6 +1224,24 @@ impl ServerHandler for KnowledgeServer {
                     .raise_tier_and_affiliation(&kb_id, caller_private, &caller_affiliation)
                     .map_err(into_err)?;
             }
+            // Issue #56, review round 5. PIN what was checked. Without this the
+            // tool resolves the base a SECOND time on the far side of the
+            // `.await` below — from the same argument, and for the four
+            // `KB_PRIMARY_RESOLVING_TOOLS` from on-disk pointer state that any
+            // other session or the Knowledge view may have moved in between.
+            // Two resolutions with the barrier between them is a TOCTOU, and it
+            // also let the two disagree with no race at all: `gated_kb_id`
+            // normalises with `str::trim` and `kb_id_or_primary` does not.
+            //
+            // `kb_id_or_primary`'s "an explicit `kb_id` always wins" contract is
+            // unchanged — this makes CP1's answer the explicit one, so the tool
+            // takes its early return instead of asking the disk again. Tools
+            // whose id CP1 left unresolved (a KB-less `kb_search` fan-out, a
+            // write with no id at all) never reach here.
+            request
+                .arguments
+                .get_or_insert_with(Default::default)
+                .insert("kb_id".to_string(), serde_json::Value::String(kb_id));
         }
 
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
@@ -2928,6 +2946,70 @@ mod tests {
                 rendered(&out)
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_tool_operates_on_the_base_cp1_checked_rather_than_resolving_a_second_one() {
+        // Issue #56, review round 5. CP1 resolves the target (`gated_kb_id`),
+        // checks it against the barrier, ratchets it — and then handed the
+        // request on unchanged, so the TOOL resolved it a SECOND time from the
+        // same argument (and, for the four primary-resolving tools, from on-disk
+        // pointer state) on the far side of an `.await`. Two resolutions with
+        // the barrier between them is a TOCTOU: whatever moves in that window,
+        // the tool acts on a base CP1 never saw. `call_tool` now PINS its
+        // resolved id into the arguments, so there is exactly one resolution.
+        //
+        // ⚠ What this asserts and what it does not. The cross-session window —
+        // another chat or the Knowledge view moving the machine-wide
+        // `.active-kb` between the two reads — needs an interleave no test in
+        // this suite can schedule, and it is NOT what fails below. What fails
+        // below is the pin's one deterministic observable: `gated_kb_id`
+        // normalises with `str::trim` and the tools did not, so a padded id was
+        // checked as `alpha` and then acted on as `"  alpha  "` — a different
+        // base by every path this module builds. One fix closes both, because
+        // both are the same defect: the id the barrier vetted is not the id the
+        // tool used.
+        let (srv, _tmp, root) = migrated_server_with_bases(&["alpha"]);
+        seed_page(&root, "alpha", "knowledge/a.md", "PINNED");
+
+        // (1) the read path.
+        let out = call_tool_as(
+            &srv,
+            "kb_list_pages",
+            serde_json::json!({ "kb_id": "  alpha  " }),
+            Public,
+        )
+        .await;
+        let listed = rendered(&out);
+        assert!(
+            listed.contains("knowledge/a.md"),
+            "kb_list_pages read a base CP1 did not check, got: {listed}"
+        );
+
+        // (2) the write path, which also ratchets. CP1 raised the tier of
+        // `alpha`; a write that then lands anywhere else has put content into a
+        // base whose tier never moved.
+        let out = call_tool_as(
+            &srv,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "  alpha  ",
+                "path": "knowledge/b.md",
+                "content": "PINNED-WRITE",
+                "commit_message": "pin",
+            }),
+            Private,
+        )
+        .await;
+        assert!(out.is_ok(), "kb_write_page: {}", rendered(&out));
+        assert!(
+            root.join("alpha").join("knowledge/b.md").is_file(),
+            "the write landed outside the base CP1 checked and ratcheted"
+        );
+        assert!(
+            !root.join("  alpha  ").exists(),
+            "a look-alike base directory was created beside the one CP1 checked"
+        );
     }
 
     #[tokio::test]
