@@ -153,27 +153,28 @@ export const crossAffiliationOffer = (toolError: unknown): CrossAffiliationOffer
 export type MixingMode = 'open' | 'standard' | 'strict';
 
 /**
- * The config key that holds the mixing policy.
+ * The config key that holds the mixing policy — DR-27's setting, as addressed
+ * over `/config/upsert` and `/config/read`.
  *
- * ⚠ **Nothing writes it yet, and this SPELLING IS A GUESS.** The mixing-policy
- * setting is a later task's; measured, `BIOROUTER_PRIVACY_MIXING_POLICY` and
- * `MixingMode` appear nowhere under `crates/`. Until it lands the key is absent
- * on every machine and {@link mixingModeFromConfig} answers `standard` — which
- * is the mode the daemon has always enforced, so today's behaviour on a real
- * machine is exactly what it was. This is a live read of the daemon's config
- * rather than a placeholder, so wiring the setting is a matter of writing the
- * key; but if it lands under a different constant, this read answers `standard`
- * for ever and **nothing fails**.
+ * ⚠ **It is a name on the wire and never a place the value is STORED.** The
+ * daemon keeps the mode in its own record beside `config.yaml`, for DR-22's
+ * reason: DR-17 leaves `config.yaml` agent-writable, so a security control kept
+ * there is one a public model can set to `open` and have obeyed at the next
+ * launch. The two read arms of `/config` answer for this key out of the live
+ * value, which is why a plain read works at all.
  *
- * ⚠ **That obligation is recorded where the engineer implementing the setting
- * will actually look** — as open question 31 in
- * `docs/security/privacy-tiers-execution-plan.md`, which also carries the
- * detector this pairing is owed: a Rust test that reads THIS file and asserts
- * the daemon's constant is contained in it, in the same shape as
- * `privacy::grant::tests::the_scope_copy_the_user_reads_is_the_one_the_daemon_records`.
- * `PRIVACY_TIERS_KEY` is the precedent for the shared spelling
- * (`biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY`) and has no such detector
- * either, so that entry closes two gaps rather than one.
+ * ⚠ **This spelling is not free to change on either side.** It has to be the
+ * same string as `biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY`, and if
+ * the two ever drift, this read answers `standard` for ever and **nothing
+ * fails** — the panel would render the wrong mode over a control the user has
+ * just used, silently. What stops that is a detector rather than a habit:
+ * `privacy::mixing::tests::the_renderer_and_the_daemon_spell_this_setting_the_same_way`
+ * reads THIS file and asserts the daemon's constant and all three mode
+ * spellings are in it, in the shape
+ * `privacy::grant::tests::the_scope_copy_the_user_reads_is_the_one_the_daemon_records`
+ * established. (It covers `PRIVACY_TIERS_KEY` in
+ * `settings/privacy/privacyTiers.ts` too, which had the same gap — open
+ * question 31 asked for both.)
  */
 export const MIXING_POLICY_KEY = 'BIOROUTER_PRIVACY_MIXING_POLICY';
 

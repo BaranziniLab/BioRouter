@@ -882,6 +882,77 @@ mod tests {
         assert_eq!(read_in(dir.path()), Some(MixingPolicy::Strict));
     }
 
+    /// **The renderer and the daemon spell this setting the same way** — open
+    /// question 31's detector, which came due when Task 52 landed the constant.
+    ///
+    /// ⚠ **The failure it exists to catch is silent in both directions.** The
+    /// renderer reads the mode with a live `/config/read` of a key it spells
+    /// itself; if that string and [`MIXING_POLICY_CONFIG_KEY`] ever differ, the
+    /// read answers "absent", the parser resolves that to `standard`, and the
+    /// panel renders `standard` on a machine enforcing `strict`. Nothing throws,
+    /// nothing logs, and the user is told something false about the control they
+    /// just used. The mode SPELLINGS have the same property: a renderer that
+    /// wrote `"permissive"` would meet a 400 it has no arm for.
+    ///
+    /// It also closes the older half of the same gap — `PRIVACY_TIERS_KEY` — for
+    /// the reason open question 31 gives: the master switch's shared spelling has
+    /// never had a detector either, and it fails the same way.
+    ///
+    /// Same shape as
+    /// `privacy::grant::tests::the_scope_copy_the_user_reads_is_the_one_the_daemon_records`,
+    /// which is the precedent in this tree for a Rust test asserting a fact about
+    /// a TypeScript file.
+    #[test]
+    fn the_renderer_and_the_daemon_spell_this_setting_the_same_way() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        let mirror = root.join("ui/desktop/src/utils/crossAffiliation.ts");
+        let src = std::fs::read_to_string(&mirror).unwrap_or_else(|e| {
+            panic!(
+                "the renderer's cross-affiliation module is missing at {} ({e}). Without it \
+                 nothing in the app can read or write DR-27's setting.",
+                mirror.display()
+            )
+        });
+        assert!(
+            src.contains(MIXING_POLICY_CONFIG_KEY),
+            "the renderer addresses the mixing policy by a different key from the one the \
+             daemon answers for. That read resolves to `standard` for ever and NOTHING \
+             fails — re-mirror {MIXING_POLICY_CONFIG_KEY} into {}.",
+            mirror.display()
+        );
+        for mode in ALL {
+            assert!(
+                src.contains(&format!("'{}'", mode.as_str())),
+                "the renderer no longer names the `{mode}` mode, so it can neither render \
+                 nor write it: {}",
+                mirror.display()
+            );
+        }
+
+        // …and the older half of the same gap. The master switch's key is shared
+        // between the two sides in exactly the same way and has never had a
+        // detector; open question 31 asked for both.
+        let switch_mirror = root.join("ui/desktop/src/components/settings/privacy/privacyTiers.ts");
+        let switch_src = std::fs::read_to_string(&switch_mirror).unwrap_or_else(|e| {
+            panic!(
+                "Settings > Privacy's module is missing at {} ({e})",
+                switch_mirror.display()
+            )
+        });
+        assert!(
+            switch_src.contains(super::super::PRIVACY_TIERS_CONFIG_KEY),
+            "Settings > Privacy addresses the master switch by a different key from the one \
+             the daemon answers for — re-mirror it into {}.",
+            switch_mirror.display()
+        );
+    }
+
     /// `open` says what it does, and no more. DR-27: it is not the master switch
     /// and must not read like one.
     #[test]
