@@ -78,3 +78,14 @@ env-lock = { workspace = true }
 wiremock = { workspace = true }
 zip = "8.6.0"
 serial_test = { workspace = true }
+# Issue #56 DR-20 / Task 55. This crate's routes raise the OS authentication
+# prompt — `POST /sessions/{id}/declassify` and `/config/upsert`'s master-switch
+# arm — so its TESTS would type a real password on every run without a stand-in.
+#
+# ⚠ `[dev-dependencies]` and nowhere else. Under `resolver = "2"` that unifies
+# the feature into a test build and NOT into `cargo build`, which is the whole
+# reason the seam is reachable here and absent from the shipped daemon. Moving
+# this line into `[dependencies]` ships the bypass, and
+# `privacy::system_auth::tests::the_test_seam_cannot_be_compiled_into_a_shipped_profile`
+# is what turns that into a red build rather than a silent one.
+biorouter = { path = "../biorouter", features = ["privacy-test-auth"] }

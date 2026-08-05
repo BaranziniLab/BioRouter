@@ -514,19 +514,27 @@ impl DeclassifyPrompt for TerminalPrompt {
 /// private data source between the two, and the answer is to escalate to the
 /// strong control once, exactly as the desktop dialog does.
 ///
-/// ⚠ The proof-of-user is minted in **one** place inside this function, at the
-/// top of the loop. Two call sites (one per grade) would read more naturally and
-/// would break `the_proof_of_user_is_constructed_in_exactly_two_places`, whose
-/// per-file count is what stops a second, unguarded mint from hiding in a file
-/// that is already a permitted member of the set.
+/// ⚠ The proof-of-user is minted in **one** place inside this function, before
+/// the loop. Two call sites (one per grade) would read more naturally and would
+/// break `the_proof_of_user_is_constructed_in_exactly_two_places`, whose per-file
+/// count is what stops a second, unguarded mint from hiding in a file that is
+/// already a permitted member of the set.
+///
+/// ⚠ **DR-20's system authentication is raised here too, and it is the LAST
+/// thing before the write** (Task 55). The loop escalates at most twice — once
+/// to the typed phrase, once to the operating system — and each escalation is
+/// guarded by its own flag, so a user who says no is not asked again. A `turn:*`
+/// chat reaches neither escalation and keeps its single click.
 pub(crate) async fn declassify_by_id(
     session_manager: &SessionManager,
     session_id: &str,
     prompt: &mut dyn DeclassifyPrompt,
 ) -> Result<DeclassifyOutcome> {
     use biorouter::privacy::declassify::{
-        confirmation_phrase, declassify, requires_typed_confirmation, UserConfirmation,
+        authenticate_declassification, confirmation_phrase, declassify,
+        requires_typed_confirmation, SystemAuthorization, UserConfirmation,
     };
+    use biorouter::privacy::system_auth::AuthOutcome;
     use biorouter::privacy::SessionClassification;
 
     let session = session_manager
@@ -555,24 +563,49 @@ pub(crate) async fn declassify_by_id(
             return Ok(DeclassifyOutcome::ConfirmationRequired);
         };
 
+    let ok = UserConfirmation::from_typed_confirmation();
+    let named = [session_id.to_string()];
     let mut escalated = false;
+    let mut authorization: Option<SystemAuthorization> = None;
     loop {
         let outcome = declassify(
             session_manager,
             session_id,
             typed.as_deref(),
-            UserConfirmation::from_typed_confirmation(),
+            authorization.as_ref(),
+            &ok,
         )
         .await?;
-        if outcome != DeclassifyOutcome::ConfirmationRequired || escalated {
-            return Ok(outcome);
-        }
-        // The grade moved under us. Ask once for the control it moved to; a
-        // second refusal is the user's answer, not a reason to ask again.
-        escalated = true;
-        typed = prompt.ask_phrase(session_id, &phrase)?;
-        if typed.is_none() {
-            return Ok(outcome);
+        match outcome {
+            // The grade moved under us. Ask once for the control it moved to; a
+            // second refusal is the user's answer, not a reason to ask again.
+            DeclassifyOutcome::ConfirmationRequired if !escalated => {
+                escalated = true;
+                typed = prompt.ask_phrase(session_id, &phrase)?;
+                if typed.is_none() {
+                    return Ok(outcome);
+                }
+            }
+            // DR-20. Everything else has passed — the row is private, the grade
+            // demands the strong control, the phrase matched — so this is the
+            // moment to ask the operating system, and no earlier.
+            DeclassifyOutcome::SystemAuthenticationRequired if authorization.is_none() => {
+                match authenticate_declassification(&named).await {
+                    Ok(granted) => authorization = Some(granted),
+                    // "This machine cannot raise the prompt" is not the user's
+                    // answer, and reporting it as one would tell a Linux user
+                    // with no polkit that they declined something they were
+                    // never shown. It carries the platform's own advice, so it
+                    // surfaces as an error rather than as an outcome.
+                    Err(refusal) if refusal.outcome == AuthOutcome::Unavailable => {
+                        return Err(anyhow::anyhow!("{refusal}"));
+                    }
+                    // A refusal IS the user's answer, and it reads like every
+                    // other refusal at this terminal: nothing changed.
+                    Err(_) => return Ok(outcome),
+                }
+            }
+            _ => return Ok(outcome),
         }
     }
 }
@@ -591,6 +624,10 @@ pub(crate) fn render_declassify_outcome(session_id: &str, outcome: DeclassifyOut
         DeclassifyOutcome::ConfirmationRequired => format!(
             "Session {session_id} was NOT declassified: the confirmation was not given. The chat \
              is unchanged."
+        ),
+        DeclassifyOutcome::SystemAuthenticationRequired => format!(
+            "Session {session_id} was NOT declassified: the system authentication was not \
+             completed. The chat is unchanged."
         ),
         DeclassifyOutcome::SessionNotFound => {
             format!("Session {session_id} no longer exists. Nothing changed.")
@@ -866,6 +903,23 @@ mod tests {
         );
     }
 
+    /// Arm DR-20's system-authentication seam to approve the next prompt.
+    ///
+    /// ⚠ **This compiles only because `biorouter` is a `[dev-dependency]` of
+    /// this crate with `privacy-test-auth` on.** That is deliberate: if the
+    /// feature is ever moved to `[dependencies]` — which would ship the bypass —
+    /// nothing here changes, but
+    /// `privacy::system_auth::tests::the_test_seam_cannot_be_compiled_into_a_shipped_profile`
+    /// turns red. And if the dev-dependency is dropped, this line stops
+    /// compiling, which is a loud failure rather than a test suite that starts
+    /// asking the developer for their password.
+    fn approve_the_next_system_prompt() {
+        biorouter::privacy::system_auth_seam::reset();
+        biorouter::privacy::system_auth_seam::answer_next_prompt(
+            biorouter::privacy::system_auth::AuthOutcome::Approved,
+        );
+    }
+
     /// Issue #56 Task 31. A prompt that always gives the strongest answer the
     /// terminal could give: yes to the single click, and the phrase when one is
     /// asked for. It records what it was asked, so a test can tell the two
@@ -947,6 +1001,11 @@ mod tests {
             let sm = SessionManager::new(dir.path().to_path_buf());
             let id = private_session_of_type(&sm, &dir, kind, "mcp:ucsfomopagent").await;
 
+            // `mcp:*` grades onto the strong control, which since Task 55 also
+            // means DR-20's system authentication. One arming per chat, because
+            // the seam is one-shot for the same reason DR-20 admits no cached
+            // grant.
+            approve_the_next_system_prompt();
             let mut prompt = AlwaysConfirms::default();
             assert_eq!(
                 declassify_by_id(&sm, &id, &mut prompt).await.unwrap(),
@@ -1041,7 +1100,81 @@ mod tests {
         }
     }
 
-    /// The three non-writing outcomes must not read as success. A user who is
+    /// Issue #56 DR-20 / Task 55. The terminal door asks the operating system
+    /// too, and a refusal there leaves the chat exactly as it was.
+    ///
+    /// ⚠ **The `turn:*` half is the discriminating one.** The seam is armed only
+    /// for the `mcp:*` chat; an unarmed seam refuses by default, so if the weak
+    /// control had gained a password prompt this test would fail on the
+    /// `turn:*` chat rather than pass quietly.
+    #[tokio::test]
+    async fn the_terminal_asks_the_operating_system_for_the_strong_control_only() {
+        use biorouter::privacy::declassify::DeclassifyOutcome;
+        use biorouter::privacy::system_auth::AuthOutcome;
+        use biorouter::privacy::SessionClassification;
+
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+
+        // A denied prompt: the phrase was typed and matched, and the chat is
+        // still private with nothing written.
+        let strong = private_session_of_type(&sm, &dir, SessionType::User, "mcp:x").await;
+        biorouter::privacy::system_auth_seam::reset();
+        biorouter::privacy::system_auth_seam::answer_next_prompt(AuthOutcome::Denied);
+        let mut prompt = AlwaysConfirms::default();
+        assert_eq!(
+            declassify_by_id(&sm, &strong, &mut prompt).await.unwrap(),
+            DeclassifyOutcome::SystemAuthenticationRequired
+        );
+        assert_eq!(
+            prompt.phrases_asked, 1,
+            "the typed phrase must still be asked"
+        );
+        assert_eq!(
+            sm.get_session(&strong, false).await.unwrap().privacy_tier,
+            SessionClassification::Private,
+            "a refused system authentication declassified the chat anyway"
+        );
+
+        // A platform with no prompter is an ERROR carrying the platform's own
+        // advice, not the user's answer — telling a Linux user with no polkit
+        // that they declined something they were never shown would be a lie.
+        biorouter::privacy::system_auth_seam::reset();
+        biorouter::privacy::system_auth_seam::answer_next_prompt(AuthOutcome::Unavailable);
+        let err = declassify_by_id(&sm, &strong, &mut AlwaysConfirms::default())
+            .await
+            .expect_err("an unavailable prompter must not read as a refusal by the user");
+        assert!(!err.to_string().is_empty(), "{err}");
+        assert_eq!(
+            sm.get_session(&strong, false).await.unwrap().privacy_tier,
+            SessionClassification::Private
+        );
+
+        // Approved: both proofs given, and only then.
+        approve_the_next_system_prompt();
+        assert_eq!(
+            declassify_by_id(&sm, &strong, &mut AlwaysConfirms::default())
+                .await
+                .unwrap(),
+            DeclassifyOutcome::Declassified
+        );
+
+        // …and the weak control raises no prompt at all. The seam is left
+        // UNARMED here on purpose: it defaults to refusing, so a `turn:*` chat
+        // that asked for a password would come back
+        // `SystemAuthenticationRequired` instead of `Declassified`.
+        biorouter::privacy::system_auth_seam::reset();
+        let weak = private_session_of_type(&sm, &dir, SessionType::User, "turn:versa_azure").await;
+        assert_eq!(
+            declassify_by_id(&sm, &weak, &mut AlwaysConfirms::default())
+                .await
+                .unwrap(),
+            DeclassifyOutcome::Declassified,
+            "the single-click control gained a password prompt it never shows the user"
+        );
+    }
+
+    /// The four non-writing outcomes must not read as success. A user who is
     /// told "declassified" and finds the chat still refusing has been lied to by
     /// the one surface whose whole job is to be believed.
     #[test]
@@ -1053,6 +1186,7 @@ mod tests {
         for outcome in [
             DeclassifyOutcome::AlreadyPublic,
             DeclassifyOutcome::ConfirmationRequired,
+            DeclassifyOutcome::SystemAuthenticationRequired,
             DeclassifyOutcome::SessionNotFound,
         ] {
             let text = render_declassify_outcome("20260801_7", outcome);

@@ -9,25 +9,31 @@
 //! `LAContext.evaluatePolicy(.deviceOwnerAuthentication)`, Windows
 //! `UserConsentVerifier`, Linux polkit.
 //!
-//! ⚠ **Nothing calls [`prompter`] yet, and that is deliberate.** Task 44 is
-//! scoped to *"adds implementations behind [`AuthOutcome`] and changes no
-//! caller"*. The caller — an `authenticate()` that turns an [`AuthOutcome`] into
-//! the typed proof-of-user which [`crate::privacy::declassify::declassify`]
-//! consumes — belongs to Task 29, whose landed implementation predates DR-20 and
-//! still gates declassification on a **typed phrase**
-//! ([`crate::privacy::declassify::confirmation_matches`]). Until Task 29 is
-//! re-run against its DR-20 text, this module is a capability the product has
-//! and does not yet use. Do not read its presence as DR-24 being satisfied end
-//! to end.
+//! ⚠ **Who calls [`prompter`], and what that does NOT include.** Task 44 built
+//! this module with no consumer at all; Task 55 wired it to the two operations
+//! DR-20 names. There are exactly two callers today, and both raise the prompt
+//! as the **last** thing before their write, so a user is never asked for a
+//! password to be told afterwards that the request was malformed:
 //!
-//! ⚠ **Nothing here names that proof type, and the omission is enforced rather
-//! than stylistic.** `the_proof_of_user_is_constructed_in_exactly_two_places` in
-//! `declassify.rs` asserts by *exact equality* that the only files in the
+//! * [`crate::privacy::declassify::authenticate_declassification`] — the chats
+//!   §12.4 grades onto the typed phrase. The phrase **stays**: it proves *which*
+//!   chat, which a password cannot, and two proofs answering two different
+//!   questions is not redundancy. A `turn:*` chat keeps its single click and is
+//!   never prompted, because making the common case expensive is how you teach
+//!   people to stop privatising at all.
+//! * `/config/upsert`'s master-switch arm, when the write turns the tier system
+//!   **off**. Turning it back **on** is not prompted: that is the safe
+//!   direction, and an [`AuthOutcome::Unavailable`] there would strand a machine
+//!   with protection disabled.
+//!
+//! ⚠ **Nothing here names the §12.4 proof-of-user, and the omission is enforced
+//! rather than stylistic.** `the_proof_of_user_is_constructed_in_exactly_two_places`
+//! in `declassify.rs` asserts by *exact equality* that the only files in the
 //! workspace so much as mentioning it are the CLI command and the HTTP route —
-//! comments included. A prompter that reached for it today, or a doc comment
-//! that merely spelled it, turns that audit red. Task 29's re-run is what
-//! legitimately adds a third member to that set; until then the audit staying
-//! green is the evidence that no new door onto declassification was opened here.
+//! comments included. A prompter that reached for it, or a doc comment that
+//! merely spelled it, turns that audit red. The wiring above is deliberately
+//! shaped so it never has to: `declassify.rs` owns both the authentication and
+//! the proof, and this module knows about neither.
 //!
 //! # Why the decision logic is split from the platform call
 //!
@@ -84,6 +90,27 @@ impl AuthRequest {
             session_ids: ids,
         })
     }
+
+    /// A prompt about something that is **not** a set of chats.
+    ///
+    /// The master switch is the only one today: turning the whole tier system
+    /// off has no rows to name, and DR-20 point 4 still requires the dialog to
+    /// say what it authorises rather than *"BioRouter wants to make changes"*.
+    /// So `subject` takes the id slot and is what each platform renders where
+    /// the ids would go.
+    ///
+    /// ⚠ **`subject` is not an id and is never matched against one.** The master
+    /// switch's caller branches on the [`AuthOutcome`] inside the same function
+    /// that raises the prompt, so no proof is minted from this request and there
+    /// is nothing for a stray session id to be compared with. Infallible for the
+    /// same reason [`AuthRequest::new`] is not: there is exactly one subject, and
+    /// it is a constant in the caller's source.
+    pub fn about(reason: impl Into<String>, subject: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            session_ids: vec![subject.into()],
+        }
+    }
 }
 
 /// The three answers a prompter can give. There is no fourth, and in particular
@@ -133,6 +160,66 @@ pub trait SystemAuthenticator: Send + Sync {
              session on a machine whose operating system can raise one.",
             self.platform()
         )
+    }
+}
+
+/// Why a prompt did not approve, and the sentence that says so.
+///
+/// **One type for both callers** — declassification and the master switch — so
+/// the two cannot drift into describing the same refusal differently. It carries
+/// the [`AuthOutcome`] as well as the message because the surfaces answer the
+/// two differently: the CLI reports a [`AuthOutcome::Denied`] as "you did not
+/// confirm, nothing changed" and an [`AuthOutcome::Unavailable`] as an error
+/// with the platform's advice, which is the difference between the user's answer
+/// and the machine's incapability.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemAuthRefusal {
+    /// Never [`AuthOutcome::Approved`]: [`refusal_for`] is the only constructor
+    /// in the tree, and its `Approved` arm returns `None` rather than a refusal.
+    pub outcome: AuthOutcome,
+    /// What to show. For [`AuthOutcome::Unavailable`] this is the prompter's own
+    /// [`SystemAuthenticator::unavailable_reason`], so it names the platform and
+    /// says what would have to be true for the prompt to exist.
+    pub message: String,
+}
+
+impl std::fmt::Display for SystemAuthRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+/// What a user who cancelled, dismissed or failed the prompt is told.
+///
+/// It states the *consequence* rather than the cause, because a prompter cannot
+/// tell the three apart and guessing would be worse than saying less. It closes
+/// with what did not happen: a refusal a user reads as "it probably went through
+/// anyway" is the failure this whole surface exists to prevent.
+pub const DENIED_MESSAGE: &str =
+    "The system authentication was not completed, so nothing was changed.";
+
+/// Turn a prompter's answer into either *go ahead* (`None`) or the refusal.
+///
+/// The **decision half** of every caller, split from the platform call for the
+/// same reason [`outcome_for_macos`] and its siblings are: it is where "approve"
+/// is spoken, so it is compiled everywhere and unit-tested on whatever host runs
+/// `cargo test`. `Approved` is the only arm that returns `None`, which is what
+/// makes a caller's `if let Some(refusal) = …` fail closed for every future
+/// variant this enum could grow.
+pub fn refusal_for(
+    outcome: AuthOutcome,
+    prompter: &dyn SystemAuthenticator,
+) -> Option<SystemAuthRefusal> {
+    match outcome {
+        AuthOutcome::Approved => None,
+        AuthOutcome::Denied => Some(SystemAuthRefusal {
+            outcome,
+            message: DENIED_MESSAGE.to_string(),
+        }),
+        AuthOutcome::Unavailable => Some(SystemAuthRefusal {
+            outcome,
+            message: prompter.unavailable_reason(),
+        }),
     }
 }
 
@@ -596,6 +683,47 @@ mod tests {
         let req = AuthRequest::new("why", &["b".into(), "a".into(), "b".into()]).unwrap();
         assert_eq!(req.session_ids, vec!["a".to_string(), "b".to_string()]);
         assert!(AuthRequest::new("why", &[]).is_err());
+    }
+
+    #[test]
+    fn a_request_about_a_subject_still_names_what_it_authorises() {
+        // DR-20 point 4 holds for the master switch too: the dialog has to say
+        // what it is authorising, and "the whole install" is a thing to say.
+        let req = AuthRequest::about("Turn the tiers off.", "every private chat");
+        assert_eq!(req.session_ids, vec!["every private chat".to_string()]);
+        assert_eq!(req.reason, "Turn the tiers off.");
+    }
+
+    // --- Task 55: the decision every caller shares ---
+
+    /// The property that makes `if let Some(refusal) = refusal_for(..)` safe at
+    /// every call site: exactly one outcome is permission to proceed.
+    #[test]
+    fn only_an_approval_is_permission_to_proceed() {
+        assert_eq!(refusal_for(AuthOutcome::Approved, &NoPrompter), None);
+        for outcome in [AuthOutcome::Denied, AuthOutcome::Unavailable] {
+            let refusal = refusal_for(outcome, &NoPrompter)
+                .unwrap_or_else(|| panic!("{outcome:?} must be a refusal"));
+            assert_eq!(refusal.outcome, outcome);
+            assert!(!refusal.message.is_empty());
+        }
+    }
+
+    /// The two refusals say different things, and the one that means "this
+    /// machine cannot" carries the platform's own advice — telling a user to go
+    /// and find another machine when they simply pressed Cancel is wrong advice,
+    /// and so is the reverse.
+    #[test]
+    fn a_denial_and_an_unavailable_are_not_interchangeable() {
+        let denied = refusal_for(AuthOutcome::Denied, &NoPrompter).unwrap();
+        let unavailable = refusal_for(AuthOutcome::Unavailable, &NoPrompter).unwrap();
+        assert_ne!(denied.message, unavailable.message);
+        assert_eq!(denied.message, DENIED_MESSAGE);
+        assert_eq!(unavailable.message, NoPrompter.unavailable_reason());
+        assert!(unavailable.message.contains(NoPrompter.platform()));
+        // `Display` is what the CLI and the routes print; it must be the message
+        // and not a derived-`Debug` dump of the enum beside it.
+        assert_eq!(denied.to_string(), DENIED_MESSAGE);
     }
 
     // --- Resolution ---

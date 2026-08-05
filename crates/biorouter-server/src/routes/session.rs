@@ -14,7 +14,9 @@ use axum::{
 };
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
-use biorouter::privacy::declassify::{declassify, DeclassifyOutcome, UserConfirmation};
+use biorouter::privacy::declassify::{
+    authenticate_declassification, declassify, DeclassifyOutcome, UserConfirmation,
+};
 use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
@@ -1215,6 +1217,19 @@ const DECLASSIFY_CONFIRMATION_MISMATCH: &str =
     "The confirmation did not match the last six characters of this chat's id. Nothing was \
      changed.";
 
+/// Issue #56 DR-20, Task 55. What the route says when the system authentication
+/// did not happen. The prompter's own sentence is appended, because "you pressed
+/// Cancel" and "this machine has no way to raise the prompt" need different
+/// advice and only the prompter knows which it was.
+///
+/// ⚠ It carries neither renderer marker, for the same reason
+/// [`DECLASSIFY_NEEDS_USER`] does not: the model picker's toast says *switch
+/// this chat's model* and the copy handler's says *branch it from the chat
+/// window*, and neither marks a chat public.
+const DECLASSIFY_SYSTEM_AUTH_REFUSED: &str =
+    "This chat reached a private data source, so marking it public needs your operating \
+     system to confirm it is you. That did not happen, and nothing was changed.";
+
 #[derive(Debug, Default, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DeclassifySessionRequest {
@@ -1306,18 +1321,53 @@ async fn declassify_session(
     // `privacy::declassify::tests::the_proof_of_user_is_constructed_in_exactly_two_places`
     // — the other being `biorouter session declassify <id>` (issue #56 Task 31),
     // which is the only surface that can reach a private chat no listing shows.
-    match declassify(
-        state.session_manager(),
-        &session_id,
-        request.confirmation.as_deref(),
-        UserConfirmation::from_typed_confirmation(),
-    )
-    .await
-    {
+    // ONE construction for a request that may call the writer twice: the proof
+    // is borrowed, so the probe below and the write that follows it spend the
+    // same human action rather than minting a second one.
+    let ok = UserConfirmation::from_typed_confirmation();
+    let manager = state.session_manager();
+    let confirmation = request.confirmation.as_deref();
+
+    // Issue #56 DR-20, Task 55. The FIRST call is a probe and writes nothing:
+    // it finds the row, takes §12.4's grade from the provenance inside its own
+    // transaction, and checks the typed phrase. Only if all of that passes does
+    // it answer `SystemAuthenticationRequired`, and only then is the user asked
+    // for their password — so a mistyped phrase is answered by a form field
+    // rather than by an operating-system dialog the user had to satisfy first,
+    // and a `turn:*` chat (which never reaches this arm) keeps its single click
+    // with no prompt at all.
+    let mut outcome = declassify(manager, &session_id, confirmation, None, &ok).await;
+    if matches!(outcome, Ok(DeclassifyOutcome::SystemAuthenticationRequired)) {
+        match authenticate_declassification(std::slice::from_ref(&session_id)).await {
+            Ok(granted) => {
+                outcome = declassify(manager, &session_id, confirmation, Some(&granted), &ok).await;
+            }
+            Err(refusal) => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!("{DECLASSIFY_SYSTEM_AUTH_REFUSED} {refusal}"),
+                )
+                    .into_response());
+            }
+        }
+    }
+
+    match outcome {
         Ok(DeclassifyOutcome::SessionNotFound) => Err(StatusCode::NOT_FOUND.into_response()),
         Ok(DeclassifyOutcome::ConfirmationRequired) => {
             Err((StatusCode::BAD_REQUEST, DECLASSIFY_CONFIRMATION_MISMATCH).into_response())
         }
+        // Unreachable through the branch above, which either supplies an
+        // authorisation naming exactly this id or returns. Answered rather than
+        // collapsed into the 500 arm because the honest reading of it is "the
+        // authentication did not cover this chat", which is a refusal and not a
+        // daemon fault — and because an outcome that lowers nothing must never
+        // be reported as a success.
+        Ok(DeclassifyOutcome::SystemAuthenticationRequired) => Err((
+            StatusCode::FORBIDDEN,
+            DECLASSIFY_SYSTEM_AUTH_REFUSED.to_string(),
+        )
+            .into_response()),
         Ok(DeclassifyOutcome::Declassified) | Ok(DeclassifyOutcome::AlreadyPublic) => {
             Ok(Json(DeclassifySessionResponse {
                 session_id,
@@ -2982,6 +3032,20 @@ mod declassify_tests {
         (status, String::from_utf8_lossy(&bytes).into_owned())
     }
 
+    /// Arm DR-20's system-authentication seam for the next prompt.
+    ///
+    /// ⚠ **This compiles only because `biorouter` is a `[dev-dependency]` of
+    /// this crate with `privacy-test-auth` on.** Dropping that dev-dependency
+    /// stops this line compiling — a loud failure — rather than leaving a test
+    /// suite that asks the developer for their password on every run. Moving it
+    /// into `[dependencies]` would ship the bypass, which
+    /// `privacy::system_auth::tests::the_test_seam_cannot_be_compiled_into_a_shipped_profile`
+    /// turns red.
+    fn arm_the_system_prompt(outcome: biorouter::privacy::system_auth::AuthOutcome) {
+        biorouter::privacy::system_auth_seam::reset();
+        biorouter::privacy::system_auth_seam::answer_next_prompt(outcome);
+    }
+
     /// A private session with one message, `versa_azure` bound, and `reason` as
     /// its recorded provenance.
     async fn seed_private(
@@ -3118,6 +3182,92 @@ mod declassify_tests {
             SessionClassification::Private
         );
 
+        // Since Task 55 the strong control also needs DR-20's system
+        // authentication, so the phrase alone no longer writes.
+        arm_the_system_prompt(biorouter::privacy::system_auth::AuthOutcome::Approved);
+        let (status, body) = post_declassify(
+            state.clone(),
+            &id,
+            serde_json::json!({ "confirmation": phrase }),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "got {body}");
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().privacy_tier,
+            SessionClassification::Public
+        );
+
+        manager.delete_session(&id).await.unwrap();
+    }
+
+    /// Issue #56 DR-20 / Task 55. The route asks the operating system as well as
+    /// the two things it already asked for, and a refusal there leaves the chat
+    /// private with nothing in the ledger.
+    ///
+    /// ⚠ **The failure worth testing is a route that reports success because the
+    /// request was well-formed.** So every assertion below checks the *row*
+    /// after the answer, not only the status code.
+    ///
+    /// The "and writes no audit row" half of Task 55 Step 4 is asserted at the
+    /// writer — `privacy::declassify::tests::a_chat_that_reached_a_private_data_source_needs_the_password_as_well_as_the_phrase`
+    /// — because `SessionStorage::pool` is `pub(crate)` and this crate has no
+    /// SQL access at all. That is the right place for it: the writer is the only
+    /// statement in the tree that inserts into `classification_audit`, pinned by
+    /// `exactly_one_statement_in_the_tree_assigns_a_public_classification`, so a
+    /// route cannot write a ledger row without going through the function that
+    /// test covers.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_refused_system_authentication_leaves_the_chat_private_and_writes_no_audit_row() {
+        use biorouter::privacy::system_auth::AuthOutcome;
+
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        let id = seed_private(manager, "mcp:ucsfomopagent").await;
+        let phrase = confirmation_phrase(&id);
+
+        // Both the user's "no" and a platform with no prompter at all. The
+        // second is DR-24's stated posture and is the state of every Linux
+        // install until the packaging ships the polkit action, so it has to
+        // refuse rather than fall through.
+        for outcome in [AuthOutcome::Denied, AuthOutcome::Unavailable] {
+            arm_the_system_prompt(outcome);
+            let (status, body) = post_declassify(
+                state.clone(),
+                &id,
+                serde_json::json!({ "confirmation": phrase }),
+                Some(TEST_SECRET),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{outcome:?}: {body}");
+            let after = manager.get_session(&id, false).await.unwrap();
+            assert_eq!(
+                after.privacy_tier,
+                SessionClassification::Private,
+                "{outcome:?} declassified the chat anyway"
+            );
+            assert_eq!(
+                after.privacy_reason.as_deref(),
+                Some("mcp:ucsfomopagent"),
+                "{outcome:?} rewrote the provenance of a chat it did not declassify"
+            );
+        }
+
+        // The prompt names the chat it authorises (DR-20 point 4) — a dialog
+        // that said "BioRouter wants to make changes" would satisfy the letter
+        // of the ruling and defeat its purpose.
+        assert_eq!(
+            biorouter::privacy::system_auth_seam::last_request()
+                .expect("the prompter was reached")
+                .session_ids,
+            vec![id.clone()]
+        );
+
+        arm_the_system_prompt(AuthOutcome::Approved);
         let (status, body) = post_declassify(
             state.clone(),
             &id,
@@ -3182,8 +3332,17 @@ mod declassify_tests {
     /// says *branch it from the chat window*, and neither marks a chat public.
     #[test]
     fn the_refusals_say_different_things() {
-        assert_ne!(DECLASSIFY_NEEDS_USER, DECLASSIFY_CONFIRMATION_MISMATCH);
-        for message in [DECLASSIFY_NEEDS_USER, DECLASSIFY_CONFIRMATION_MISMATCH] {
+        let all = [
+            DECLASSIFY_NEEDS_USER,
+            DECLASSIFY_CONFIRMATION_MISMATCH,
+            DECLASSIFY_SYSTEM_AUTH_REFUSED,
+        ];
+        for (i, one) in all.iter().enumerate() {
+            for other in &all[i + 1..] {
+                assert_ne!(one, other, "two of this route's refusals are the same text");
+            }
+        }
+        for message in all {
             assert!(
                 !message.contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
                 "this refusal is claiming to be the model picker's: {message}"

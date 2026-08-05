@@ -8,7 +8,25 @@
 //! rests on, so the escape hatch is exactly one function, in its own module,
 //! with a type-level proof of user in its signature and a ledger row for every
 //! use.
+//!
+//! # The three proofs, and why there are three (DR-20, Task 55)
+//!
+//! A chat §12.4 grades onto the strong control needs all of:
+//!
+//! 1. **`X-User-Action`** (or a terminal), which says the request came from a
+//!    surface a human acts at rather than from a tool call.
+//! 2. **The typed phrase** ([`confirmation_matches`]), which says *which* chat
+//!    the human meant. A password cannot say that.
+//! 3. **The operating system's own authentication**
+//!    ([`authenticate_declassification`]), which says *who* the human is. The
+//!    phrase cannot say that: it is derived from an id the caller already had.
+//!
+//! Two proofs answering two different questions is not redundancy. A `turn:*`
+//! chat has only (1) and a single click — DR-20's cost is spent where the
+//! consequence is, and making the common case expensive is how you teach people
+//! to stop privatising at all.
 
+use crate::privacy::system_auth::{self, AuthRequest, SystemAuthRefusal, SystemAuthenticator};
 use crate::privacy::SessionClassification;
 use crate::session::session_manager::SessionManager;
 use anyhow::Result;
@@ -49,6 +67,22 @@ pub const DECLASSIFIED_BY_USER: &str = "declassified_by_user";
 /// a turn, so what the chat actually reached is unknown.
 pub fn requires_typed_confirmation(privacy_reason: Option<&str>) -> bool {
     !privacy_reason.is_some_and(|reason| reason.starts_with("turn:"))
+}
+
+/// Does this chat owe DR-20's operating-system authentication?
+///
+/// **Exactly where §12.4's typed phrase is owed** — one predicate, delegating
+/// rather than restating, so the two proofs cannot drift into disagreeing about
+/// which chats are protected. Task 55 Step 1 rules the split: the strong control
+/// gains the password, and a `turn:*` chat keeps its single click and gains
+/// nothing.
+///
+/// It exists as its own name because the two are separate *questions* — "which
+/// chat did you mean" and "who are you" — and a later ruling could grade them
+/// apart. `the_grade_that_demands_a_phrase_is_the_grade_that_demands_the_password`
+/// is what makes the delegation a checked claim rather than a comment.
+pub fn requires_system_authentication(privacy_reason: Option<&str>) -> bool {
+    requires_typed_confirmation(privacy_reason)
 }
 
 /// The last six characters of `session_id`, which is what §12.4 asks the user to
@@ -130,8 +164,134 @@ impl UserConfirmation {
     }
 }
 
+/// Proof that the **operating system** authenticated the user, for the chats it
+/// named (DR-20, DR-24).
+///
+/// ⚠ **Unforgeable, and by the language rather than by an audit.** The field is
+/// private and there is no public constructor: the only way to obtain one
+/// outside this module is [`authenticate_declassification`], which raises a real
+/// prompt and returns `Ok` for [`system_auth::AuthOutcome::Approved`] and
+/// nothing else. That is a stronger guarantee than [`UserConfirmation`]'s, whose
+/// constructor has to be `pub` because its callers live in other crates — this
+/// one does not, because the prompt is raised here.
+///
+/// ⚠ **Not `Clone` and not `Copy`, deliberately.** DR-20 point 2 admits no
+/// cached grant. A value that could be duplicated could be stashed in a static
+/// and spent again next week; this one lives on the stack of the operation the
+/// user authorised, and dies with it. What it *may* do is cover several chats —
+/// that is Task 55 Step 3, and it is why [`covers`](Self::covers) exists instead
+/// of the type being a bare ZST.
+#[derive(Debug)]
+pub struct SystemAuthorization {
+    /// Exactly the set the prompt named, in the canonical (sorted, deduplicated)
+    /// form [`AuthRequest`] put it in.
+    session_ids: Vec<String>,
+}
+
+impl SystemAuthorization {
+    /// Was `session_id` named by the prompt this authorisation came from?
+    ///
+    /// DR-20 point 4: one authentication may cover several chats, **but only the
+    /// ones it named**. A prompt that said "3 chats" and then declassified a
+    /// fourth would make the dialog a lie, which is the one thing an
+    /// authorisation dialog cannot be.
+    pub fn covers(&self, session_id: &str) -> bool {
+        self.session_ids.iter().any(|id| id == session_id)
+    }
+
+    /// The set the prompt named. For a caller that wants to report what a batch
+    /// covered; the spend check is [`covers`](Self::covers).
+    pub fn session_ids(&self) -> &[String] {
+        &self.session_ids
+    }
+
+    /// The same proof, for tests that exercise the writer rather than a prompt.
+    ///
+    /// `#[cfg(test)]` and private, so it is absent from every shipped binary and
+    /// unnameable outside this file even in a test build.
+    #[cfg(test)]
+    fn for_test(session_ids: &[String]) -> Self {
+        Self {
+            session_ids: session_ids.to_vec(),
+        }
+    }
+}
+
+/// Raise DR-20's system-authentication prompt **once** for `session_ids`.
+///
+/// The whole batch costs one prompt (Task 55 Step 3): DR-20 says a
+/// declassification may cover many chats, and one prompt per chat would turn a
+/// tidy-up of ten old conversations into ten password dialogs — which is not a
+/// stricter control, it is a control people stop using.
+///
+/// ⚠ **Call this LAST, immediately before the write.** Both doors probe with
+/// [`declassify`] first and only prompt when it answers
+/// [`DeclassifyOutcome::SystemAuthenticationRequired`] — i.e. when the row is
+/// really private, really graded onto the strong control, and the typed phrase
+/// has already matched. Prompting earlier would ask a user for their password
+/// and then tell them the phrase was wrong.
+pub async fn authenticate_declassification(
+    session_ids: &[String],
+) -> Result<SystemAuthorization, SystemAuthRefusal> {
+    authorize_with(system_auth::prompter(), session_ids).await
+}
+
+/// [`authenticate_declassification`] with the prompter given rather than
+/// resolved.
+///
+/// **Private**, and that is the security boundary: a caller that could choose
+/// the prompter could choose one that approves. Its only production caller is
+/// the function above, which passes [`system_auth::prompter`] — the one resolver
+/// in the tree that can reach the test seam, and only in a build where the seam
+/// compiles at all. What the split buys is that "one prompt for a batch",
+/// "denied refuses" and "unavailable refuses" are assertions about the real
+/// decision path, testable on any host, with no password typed.
+async fn authorize_with(
+    prompter: &dyn SystemAuthenticator,
+    session_ids: &[String],
+) -> Result<SystemAuthorization, SystemAuthRefusal> {
+    // Canonicalised BEFORE the sentence is composed: a caller that passes the
+    // same id twice must not be told the prompt covers two chats.
+    let mut named: Vec<String> = session_ids.to_vec();
+    named.sort();
+    named.dedup();
+    let Ok(request) = AuthRequest::new(declassification_reason(named.len()), &named) else {
+        // An empty set names nothing, so the prompt could not state what it
+        // authorises and the proof would be spendable on nothing — which reads
+        // at the call site as a successful authentication that does nothing.
+        // Refused rather than accepted-and-ignored.
+        return Err(SystemAuthRefusal {
+            outcome: system_auth::AuthOutcome::Denied,
+            message: "No chats were named, so there was nothing to authenticate for and \
+                      nothing was changed."
+                .to_string(),
+        });
+    };
+
+    let outcome = prompter.authenticate(&request).await;
+    match system_auth::refusal_for(outcome, prompter) {
+        None => Ok(SystemAuthorization {
+            session_ids: request.session_ids,
+        }),
+        Some(refusal) => Err(refusal),
+    }
+}
+
+/// The sentence the operating system shows above the password field.
+///
+/// DR-20 point 4 wants the prompt to state the operation; each platform appends
+/// the ids from [`AuthRequest::session_ids`], so this is the verb and the count
+/// and the ids are the subject.
+fn declassification_reason(count: usize) -> String {
+    if count == 1 {
+        "Make this private Biorouter chat public.".to_string()
+    } else {
+        format!("Make {count} private Biorouter chats public.")
+    }
+}
+
 /// What a declassification actually did. The route turns these into 200 / 200 /
-/// 400 / 404 — a "no such session" must not read as a successful
+/// 400 / 403 / 404 — a "no such session" must not read as a successful
 /// declassification, and an already-public row must not read as a failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeclassifyOutcome {
@@ -146,6 +306,18 @@ pub enum DeclassifyOutcome {
     /// typed confirmation, and the confirmation presented did not match. Nothing
     /// was written.
     ConfirmationRequired,
+    /// The provenance read inside the transaction grades this chat onto DR-20's
+    /// system authentication, and no [`SystemAuthorization`] covering this id
+    /// was presented. Nothing was written.
+    ///
+    /// ⚠ **It is a PROBE result as much as a refusal**, and both doors rely on
+    /// that. They call [`declassify`] with no authorisation first; this outcome
+    /// is what tells them the prompt is owed — after the row has been found, the
+    /// grade taken from the provenance inside the transaction, and the typed
+    /// phrase matched. A door that surfaces it to the user has already raised
+    /// the prompt and been refused, or has re-probed with an authorisation that
+    /// does not name this chat.
+    SystemAuthenticationRequired,
     /// No row with that id.
     SessionNotFound,
 }
@@ -177,14 +349,21 @@ pub enum DeclassifyOutcome {
 /// decided which confirmation was required is exactly the provenance the
 /// `UPDATE` overwrites.
 ///
-/// The three non-writing outcomes are ordered deliberately: **not found**, then
-/// **already public**, then **confirmation required**. An already-public row is
-/// a no-op, so there is nothing to confirm and demanding a phrase for it would
-/// refuse a second, harmless click of the same button — and after a successful
-/// call the provenance reads `declassified_by_user`, which
+/// The non-writing outcomes are ordered deliberately: **not found**, then
+/// **already public**, then **confirmation required**, then **system
+/// authentication required**. An already-public row is a no-op, so there is
+/// nothing to confirm and demanding a phrase for it would refuse a second,
+/// harmless click of the same button — and after a successful call the
+/// provenance reads `declassified_by_user`, which
 /// [`requires_typed_confirmation`] grades onto the strong control, so that
 /// second click would otherwise be refused over a phrase the single-click path
 /// never showed the user.
+///
+/// The password comes **after** the phrase for the same class of reason: a user
+/// who mistyped the phrase must learn that from a form field, not from an
+/// operating-system dialog they had to satisfy first. It also makes the probe
+/// call the doors make cheap and side-effect-free — see
+/// [`DeclassifyOutcome::SystemAuthenticationRequired`].
 ///
 /// ⚠ **Two of these racing on the same row do not both succeed, but not because
 /// of anything written here.** The pool is `max_connections(4)` over WAL, so
@@ -205,11 +384,18 @@ pub enum DeclassifyOutcome {
 /// honest and the direction is fail-safe — private is the protected state — but
 /// the user can watch their action undo itself. Preventing it would mean
 /// refusing to declassify a busy session, which §12.4 does not ask for.
+/// ⚠ **`_ok` is borrowed rather than consumed**, and that is what keeps the two
+/// doors at ONE construction site each. Both call this twice for a chat on the
+/// strong control — once to probe, once to write — and
+/// [`the_proof_of_user_is_constructed_in_exactly_two_places`] counts
+/// constructions per file, not calls. One human action, one proof, however many
+/// times the writer is asked.
 pub async fn declassify(
     sm: &SessionManager,
     session_id: &str,
     confirmation: Option<&str>,
-    _ok: UserConfirmation,
+    authorization: Option<&SystemAuthorization>,
+    _ok: &UserConfirmation,
 ) -> Result<DeclassifyOutcome> {
     let pool = sm.storage().pool().await?;
     let mut tx = pool.begin().await?;
@@ -246,6 +432,21 @@ pub async fn declassify(
         && !confirmation_matches(session_id, confirmation)
     {
         return Ok(DeclassifyOutcome::ConfirmationRequired);
+    }
+
+    // DR-20 / Task 55, on the SAME grade and from the SAME provenance. The two
+    // proofs answer different questions — the phrase says which chat, the
+    // password says who — so both are required and neither substitutes for the
+    // other. A `turn:*` chat reaches neither check and keeps its single click.
+    //
+    // ⚠ The authorisation is checked against the id this transaction is writing,
+    // not merely for existence: a batch prompt covers the chats it named and no
+    // others (DR-20 point 4), and `is_some_and` fails closed for a caller that
+    // presented none.
+    if requires_system_authentication(reason_before.as_deref())
+        && !authorization.is_some_and(|granted| granted.covers(session_id))
+    {
+        return Ok(DeclassifyOutcome::SystemAuthenticationRequired);
     }
 
     let message_count: i64 =
@@ -328,7 +529,8 @@ pub(crate) async fn declassify_for_test(
         sm,
         session_id,
         Some(&confirmation_phrase(session_id)),
-        UserConfirmation::for_test(),
+        Some(&SystemAuthorization::for_test(&[session_id.to_string()])),
+        &UserConfirmation::for_test(),
     )
     .await
 }
@@ -337,8 +539,10 @@ pub(crate) async fn declassify_for_test(
 mod tests {
     use super::*;
     use crate::model::ModelConfig;
+    use crate::privacy::system_auth::{AuthOutcome, AuthRequest, NoPrompter, SystemAuthenticator};
     use crate::privacy::SessionClassification;
     use crate::session::session_manager::{SessionManager, SessionType};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// One audit row, in the shape §12.5 stores it.
     #[derive(Debug, sqlx::FromRow)]
@@ -413,7 +617,8 @@ mod tests {
             &sm,
             &id,
             Some(&confirmation_phrase(&id)),
-            UserConfirmation::for_test(),
+            Some(&SystemAuthorization::for_test(&[id.clone()])),
+            &UserConfirmation::for_test(),
         )
         .await
         .unwrap();
@@ -458,27 +663,26 @@ mod tests {
         let sm = SessionManager::new(temp.path().to_path_buf());
         let id = private_session_with_reason(&sm, "turn:versa_azure").await;
 
+        let ok = UserConfirmation::for_test();
         assert_eq!(
-            declassify(&sm, &id, None, UserConfirmation::for_test())
-                .await
-                .unwrap(),
+            declassify(&sm, &id, None, None, &ok).await.unwrap(),
             DeclassifyOutcome::Declassified
         );
         // The second click carries no confirmation, exactly as the first did.
         // An already-public row is answered BEFORE the grade is consulted —
         // otherwise this arm is unreachable on the single-click path, because
         // the first call rewrote the provenance to `declassified_by_user`, which
-        // grades onto the strong control.
+        // grades onto the strong control (and, since Task 55, onto the system
+        // prompt as well — so a second click would otherwise raise a password
+        // dialog for a chat that is already public).
         assert_eq!(
-            declassify(&sm, &id, None, UserConfirmation::for_test())
-                .await
-                .unwrap(),
+            declassify(&sm, &id, None, None, &ok).await.unwrap(),
             DeclassifyOutcome::AlreadyPublic
         );
         assert_eq!(audit_rows(&sm, &id).await.len(), 1);
 
         assert_eq!(
-            declassify(&sm, "29990101_00000", None, UserConfirmation::for_test())
+            declassify(&sm, "29990101_00000", None, None, &ok)
                 .await
                 .unwrap(),
             DeclassifyOutcome::SessionNotFound
@@ -503,8 +707,10 @@ mod tests {
             .await
             .unwrap();
 
+        let ok = UserConfirmation::for_test();
+        let granted = SystemAuthorization::for_test(&[id.clone()]);
         assert_eq!(
-            declassify(&sm, &id, None, UserConfirmation::for_test())
+            declassify(&sm, &id, None, Some(&granted), &ok)
                 .await
                 .unwrap(),
             DeclassifyOutcome::ConfirmationRequired
@@ -522,7 +728,7 @@ mod tests {
         let wrong: String = phrase.chars().rev().collect();
         if wrong != phrase {
             assert_eq!(
-                declassify(&sm, &id, Some(&wrong), UserConfirmation::for_test())
+                declassify(&sm, &id, Some(&wrong), Some(&granted), &ok)
                     .await
                     .unwrap(),
                 DeclassifyOutcome::ConfirmationRequired
@@ -530,7 +736,7 @@ mod tests {
         }
 
         assert_eq!(
-            declassify(&sm, &id, Some(&phrase), UserConfirmation::for_test())
+            declassify(&sm, &id, Some(&phrase), Some(&granted), &ok)
                 .await
                 .unwrap(),
             DeclassifyOutcome::Declassified
@@ -590,7 +796,7 @@ mod tests {
         );
 
         assert_eq!(
-            declassify(&sm, &id, None, UserConfirmation::for_test())
+            declassify(&sm, &id, None, None, &UserConfirmation::for_test())
                 .await
                 .unwrap(),
             DeclassifyOutcome::Declassified
@@ -625,6 +831,229 @@ mod tests {
         assert!(requires_typed_confirmation(Some("something_new")));
         // Not a prefix match on a longer word: `turned:` is not `turn:`.
         assert!(requires_typed_confirmation(Some("turned_private")));
+    }
+
+    // ------------------------------------------------------------------
+    // Task 55 / DR-20: the operating system's own authentication
+    // ------------------------------------------------------------------
+
+    /// A prompter that approves and **counts**, so DR-20's "one prompt for the
+    /// batch" is an assertion rather than a hope.
+    #[derive(Default)]
+    struct CountingPrompter {
+        prompts: AtomicUsize,
+        named: std::sync::Mutex<Vec<String>>,
+    }
+
+    #[async_trait::async_trait]
+    impl SystemAuthenticator for CountingPrompter {
+        async fn authenticate(&self, req: &AuthRequest) -> AuthOutcome {
+            self.prompts.fetch_add(1, Ordering::Relaxed);
+            *self.named.lock().unwrap() = req.session_ids.clone();
+            AuthOutcome::Approved
+        }
+
+        fn platform(&self) -> &'static str {
+            "counting test prompter"
+        }
+    }
+
+    /// The user pressed Cancel.
+    struct AlwaysDenies;
+
+    #[async_trait::async_trait]
+    impl SystemAuthenticator for AlwaysDenies {
+        async fn authenticate(&self, _req: &AuthRequest) -> AuthOutcome {
+            AuthOutcome::Denied
+        }
+
+        fn platform(&self) -> &'static str {
+            "denying test prompter"
+        }
+    }
+
+    /// DR-20, Task 55 Step 1. The chats §12.4 grades onto the typed phrase now
+    /// need the operating system's authentication **as well**, and the two
+    /// proofs answer different questions: the phrase proves *which* chat, the
+    /// password proves *who*.
+    #[tokio::test]
+    async fn a_chat_that_reached_a_private_data_source_needs_the_password_as_well_as_the_phrase() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = private_session_with_reason(&sm, "mcp:ucsfomopagent").await;
+        let ok = UserConfirmation::for_test();
+
+        // The right phrase, and no system authentication: refused.
+        assert_eq!(
+            declassify(&sm, &id, Some(&confirmation_phrase(&id)), None, &ok)
+                .await
+                .unwrap(),
+            DeclassifyOutcome::SystemAuthenticationRequired,
+            "the typed phrase alone declassified a chat that reached a private data source"
+        );
+        // Refused means refused: nothing written, nothing claimed.
+        assert!(audit_rows(&sm, &id).await.is_empty());
+        let row = sm.get_session(&id, false).await.unwrap();
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+
+        // An authentication that named a DIFFERENT chat is not spendable here —
+        // DR-20 point 4: one prompt may cover several chats, but only the ones
+        // it named.
+        let elsewhere = SystemAuthorization::for_test(&["20990101_000000".to_string()]);
+        assert_eq!(
+            declassify(
+                &sm,
+                &id,
+                Some(&confirmation_phrase(&id)),
+                Some(&elsewhere),
+                &ok
+            )
+            .await
+            .unwrap(),
+            DeclassifyOutcome::SystemAuthenticationRequired
+        );
+        assert!(audit_rows(&sm, &id).await.is_empty());
+
+        // Both proofs, and only then.
+        let granted = SystemAuthorization::for_test(&[id.clone()]);
+        assert_eq!(
+            declassify(
+                &sm,
+                &id,
+                Some(&confirmation_phrase(&id)),
+                Some(&granted),
+                &ok
+            )
+            .await
+            .unwrap(),
+            DeclassifyOutcome::Declassified
+        );
+        assert_eq!(audit_rows(&sm, &id).await.len(), 1);
+    }
+
+    /// Task 55 Step 1's second half, and it is a rule about the COMMON case:
+    /// a chat that merely ran a turn against a private endpoint keeps its single
+    /// click and is never asked for a password. Making the common case expensive
+    /// is how you teach people to stop privatising at all.
+    #[tokio::test]
+    async fn a_turn_only_chat_keeps_its_single_click_and_is_never_asked_for_a_password() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let id = private_session_with_reason(&sm, "turn:versa_azure").await;
+
+        assert_eq!(
+            declassify(&sm, &id, None, None, &UserConfirmation::for_test())
+                .await
+                .unwrap(),
+            DeclassifyOutcome::Declassified,
+            "the weak control now demands a system authentication it never shows the user"
+        );
+    }
+
+    /// The two proofs are graded by ONE predicate, so they cannot drift into
+    /// disagreeing about which chats are protected.
+    #[test]
+    fn the_grade_that_demands_a_phrase_is_the_grade_that_demands_the_password() {
+        for reason in [
+            Some("turn:versa_azure"),
+            Some("mcp:ucsfomopagent"),
+            Some("diverged:20260101_120000"),
+            Some("inherited:20260101_120000"),
+            Some("imported"),
+            Some("backfill:versa_azure"),
+            Some("declassified_by_user"),
+            Some("something_new"),
+            Some(""),
+            None,
+        ] {
+            assert_eq!(
+                requires_system_authentication(reason),
+                requires_typed_confirmation(reason),
+                "the two §12.4 controls disagree about {reason:?}"
+            );
+        }
+    }
+
+    /// Task 55 Step 3. DR-20 says a declassification may cover many chats, and
+    /// that it costs **one** prompt — not one per chat.
+    #[tokio::test]
+    async fn one_prompt_covers_a_batch_and_covers_only_the_chats_it_named() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+        let mut ids = vec![];
+        for _ in 0..3 {
+            ids.push(private_session_with_reason(&sm, "mcp:ucsfomopagent").await);
+        }
+
+        let prompter = CountingPrompter::default();
+        // The same id twice, and out of order: the prompt names a canonical set,
+        // so the sentence cannot claim to cover four chats when it covers three.
+        let asked: Vec<String> = ids.iter().rev().cloned().chain([ids[0].clone()]).collect();
+        let granted = authorize_with(&prompter, &asked)
+            .await
+            .expect("an approving prompter yields the authorisation");
+        assert_eq!(
+            prompter.prompts.load(Ordering::Relaxed),
+            1,
+            "a batch of three chats raised more than one prompt"
+        );
+        let mut sorted = ids.clone();
+        sorted.sort();
+        assert_eq!(
+            *prompter.named.lock().unwrap(),
+            sorted,
+            "the prompt must name exactly the chats it authorises (DR-20 point 4)"
+        );
+
+        // …and the one authorisation is spendable on every chat it named.
+        let ok = UserConfirmation::for_test();
+        for id in &ids {
+            assert_eq!(
+                declassify(&sm, id, Some(&confirmation_phrase(id)), Some(&granted), &ok)
+                    .await
+                    .unwrap(),
+                DeclassifyOutcome::Declassified,
+                "{id} was not covered by the batch's single prompt"
+            );
+        }
+        // …and on nothing else.
+        assert!(!granted.covers("20990101_000000"));
+    }
+
+    /// Task 55 Step 4. A refusal from the prompter leaves the chat private and
+    /// writes no audit row — and `Unavailable`, the state of every platform with
+    /// no prompter, refuses rather than proceeding.
+    ///
+    /// [`NoPrompter`] is the real fallback this build ships for a target DR-24
+    /// does not name, so this exercises the shipped fail-closed path rather than
+    /// a mock of it.
+    #[tokio::test]
+    async fn a_refused_or_unavailable_prompt_never_yields_an_authorisation() {
+        let ids = ["20260804_120000".to_string()];
+
+        let denied = authorize_with(&AlwaysDenies, &ids)
+            .await
+            .expect_err("a denied prompt must not yield an authorisation");
+        assert_eq!(denied.outcome, AuthOutcome::Denied);
+        assert!(!denied.message.is_empty());
+
+        let unavailable = authorize_with(&NoPrompter, &ids)
+            .await
+            .expect_err("a platform with no prompter must refuse, not proceed");
+        assert_eq!(unavailable.outcome, AuthOutcome::Unavailable);
+        assert!(
+            unavailable.message.contains(NoPrompter.platform()),
+            "an Unavailable refusal must name the platform: {}",
+            unavailable.message
+        );
+
+        // An empty set names nothing, so the prompt could not say what it
+        // authorises and the proof would be spendable on nothing. Refused rather
+        // than accepted-and-ignored.
+        assert!(authorize_with(&CountingPrompter::default(), &[])
+            .await
+            .is_err());
     }
 
     /// The whole audit surface for "can the ratchet be reversed".
