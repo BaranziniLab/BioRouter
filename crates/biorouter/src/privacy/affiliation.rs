@@ -257,7 +257,7 @@ static SET_INTERNER: LazyLock<Mutex<HashSet<&'static BTreeSet<InstitutionId>>>> 
 fn intern_set(set: BTreeSet<InstitutionId>) -> &'static BTreeSet<InstitutionId> {
     let mut table = SET_INTERNER.lock().unwrap_or_else(PoisonError::into_inner);
     if let Some(existing) = table.get(&set) {
-        return *existing;
+        return existing;
     }
     let leaked: &'static BTreeSet<InstitutionId> = Box::leak(Box::new(set));
     table.insert(leaked);
