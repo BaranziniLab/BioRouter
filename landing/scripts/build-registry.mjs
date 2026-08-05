@@ -199,8 +199,9 @@ const fail = (msg) => violations.push(msg);
 // is an institution appearing by accident — a typo in one card's
 // `data-affiliation` that quietly becomes a real institution nobody approved,
 // or a row left behind after the last card naming it was deleted. Both are
-// caught by `assertInstitutionIntegrity` below, which is referential rather
-// than a count: "there should be N" is a gate people delete instead of update.
+// caught by `assertInstitutionRowsAreWellFormed` and
+// `assertInstitutionsAreNamedByACard` below, which are referential rather than a
+// count: "there should be N" is a gate people delete instead of update.
 //
 //   id             the normalised slug. `name_to_key` on the Rust side
 //                  lowercases and strips whitespace, so write it that way here.
@@ -797,11 +798,46 @@ function assertClosedPrivateSet(exts) {
  * still render after its card was pulled. Requiring a *reason* rather than a
  * boolean is what makes the row survivable review.
  *
- * ⚠ **Gated to a real run**, exactly like `assertClosedPrivateSet` beside it and
- * for the same reason: "used" is a property of the real catalog, and a fixture
- * page legitimately names no institution at all.
+ * ⚠ **Only the ORPHAN half is gated to a real run**, because only it asks a
+ * question about the catalog: "used" is a property of the real cards, and a
+ * fixture page legitimately names no institution at all. The row-shape half
+ * below asks nothing about the catalog — it is a property of the `INSTITUTIONS`
+ * literal alone — so gating it too meant a malformed row could not be caught by
+ * any fixture run, and the only coverage it had was CI noticing eventually.
  */
-function assertInstitutionIntegrity(exts) {
+function assertInstitutionsAreNamedByACard(exts) {
+  const used = new Set();
+  for (const e of exts) {
+    for (const inst of Array.isArray(e.affiliation) ? e.affiliation : []) used.add(inst);
+  }
+  for (const i of INSTITUTIONS) {
+    if (used.has(i.id)) continue;
+    if (typeof i.retainedUnused === 'string' && i.retainedUnused.length > 0) continue;
+    fail(
+      `institution "${i.id}" is declared but no card names it. Delete the row, or record why ` +
+        `it is kept with retainedUnused: '…' in INSTITUTIONS in ` +
+        `landing/scripts/build-registry.mjs — an institution nobody references is either a ` +
+        `leftover or the other half of a typo, and both render a display name for a flow ` +
+        `that no longer exists`
+    );
+  }
+}
+
+/**
+ * The shape of each declared row, which is a property of the literal and of
+ * nothing else — so it is checked on EVERY run, fixture included.
+ *
+ * Each rule is one of the three ways a hand-written row goes wrong silently:
+ *
+ *   * no display name — DR-26 requires the warning to NAME both institutions,
+ *     and a nameless row renders the raw slug at the user.
+ *   * an un-normalised id — the Rust side reduces an id with `name_to_key`, so
+ *     `UCSF` or `u csf` here is a row that can never be matched by anything.
+ *   * a duplicate id — the later row wins in `INSTITUTION_NAMES` while the
+ *     earlier one still reads as declared, so the published display name is
+ *     whichever was written last.
+ */
+function assertInstitutionRowsAreWellFormed() {
   const seen = new Set();
   for (const i of INSTITUTIONS) {
     if (typeof i.id !== 'string' || i.id.length === 0) {
@@ -823,27 +859,12 @@ function assertInstitutionIntegrity(exts) {
     if (seen.has(i.id)) fail(`institution "${i.id}" is declared twice`);
     seen.add(i.id);
   }
-
-  const used = new Set();
-  for (const e of exts) {
-    for (const inst of Array.isArray(e.affiliation) ? e.affiliation : []) used.add(inst);
-  }
-  for (const i of INSTITUTIONS) {
-    if (used.has(i.id)) continue;
-    if (typeof i.retainedUnused === 'string' && i.retainedUnused.length > 0) continue;
-    fail(
-      `institution "${i.id}" is declared but no card names it. Delete the row, or record why ` +
-        `it is kept with retainedUnused: '…' in INSTITUTIONS in ` +
-        `landing/scripts/build-registry.mjs — an institution nobody references is either a ` +
-        `leftover or the other half of a typo, and both render a display name for a flow ` +
-        `that no longer exists`
-    );
-  }
 }
 
+assertInstitutionRowsAreWellFormed();
 if (IS_REAL_RUN || ASSERT_PRIVATE_SET) {
   assertClosedPrivateSet(extensions);
-  assertInstitutionIntegrity(extensions);
+  assertInstitutionsAreNamedByACard(extensions);
 }
 
 // ---- The compiled-in private set -----------------------------------------

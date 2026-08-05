@@ -41,14 +41,56 @@ const scratch = mkdtempSync(join(tmpdir(), 'registry-gen-'));
 process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
 
 /** Run the generator the way a person would, from the repo root. */
-function run({ input, out, args = [], cwd = REPO }) {
-  const argv = [GENERATOR];
+function run({ input, out, args = [], cwd = REPO, script = GENERATOR }) {
+  const argv = [script];
   if (input !== undefined) argv.push('--input', input);
   if (out !== undefined) argv.push('--out', out);
   argv.push(...args);
   const r = spawnSync(process.execPath, argv, { cwd, encoding: 'utf8' });
   if (r.error) throw r.error;
   return { code: r.status, stdout: r.stdout, stderr: r.stderr, both: r.stdout + r.stderr };
+}
+
+/** Generator copies currently on disk, so a crash cannot leave one in the tree. */
+const copies = new Set();
+process.on('exit', () => {
+  for (const c of copies) rmSync(c, { force: true });
+});
+
+/**
+ * Run `body` against a copy of the generator whose `INSTITUTIONS` literal has
+ * been replaced by `literal`.
+ *
+ * ⚠ **A copy rather than a flag, deliberately.** `INSTITUTIONS` decides what the
+ * compiled-in Rust snapshot declares, so a `--institutions` override would be a
+ * command-line way to change a security artifact — the exact shape this
+ * generator's other guards exist to prevent. Rewriting the literal in a throwaway
+ * copy exercises the rules without adding a knob anybody could reach in
+ * production.
+ *
+ * ⚠ **The copy sits beside the original.** Every path the generator resolves —
+ * the fixtures, the three protected artifacts, the lock — hangs off
+ * `import.meta.url`, so a copy in /tmp would resolve none of them. Its output is
+ * byte-identical to the original's for identical input: nothing rendered embeds
+ * the running script's filename.
+ */
+function withInstitutions(literal, body) {
+  const src = readFileSync(GENERATOR, 'utf8');
+  const declaration = /^const INSTITUTIONS = .*$/m;
+  assert.match(
+    src,
+    declaration,
+    'the INSTITUTIONS literal must still be a single line for these tests to rewrite it'
+  );
+  const copy = join(SCRIPTS, `.build-registry.institutions-${tmpSeq++}.mjs`);
+  copies.add(copy);
+  try {
+    writeFileSync(copy, src.replace(declaration, () => `const INSTITUTIONS = ${literal};`));
+    return body(copy);
+  } finally {
+    rmSync(copy, { force: true });
+    copies.delete(copy);
+  }
 }
 
 const fixture = (name) => join(FIXTURES, `${name}.html`);
@@ -318,6 +360,103 @@ test('an institution nobody names is refused, and the refusal says how to keep i
 
   const clean = run({ args: ['--check'] });
   assert.equal(clean.code, 0, clean.both);
+});
+
+// ---- The other three institution rules ------------------------------------
+// The orphan rule above was the only one of the four with a test. The three
+// below are properties of the `INSTITUTIONS` literal alone — no catalog is
+// involved — so each one is a hand-written row going wrong in a way that
+// publishes something wrong rather than failing loudly:
+//
+//   * no display name  → the warning DR-26 requires to NAME an institution
+//                        renders the raw slug at the user.
+//   * un-normalised id → the Rust side reduces an id with name_to_key, so the
+//                        row can never be matched by anything.
+//   * duplicate id     → the later row silently wins in INSTITUTION_NAMES.
+//
+// They run on EVERY invocation, fixture included, which is what lets a fixture
+// run exercise them at all. Under the previous shape they sat behind the
+// real-run gate beside the orphan rule and no fixture could reach them.
+const MALFORMED_INSTITUTIONS = [
+  [
+    'an institution with no display name',
+    "[{ id: 'ucsf' }]",
+    /institution "ucsf" has no display name/,
+  ],
+  [
+    'an institution id the Rust side could never match',
+    "[{ id: 'UCSF', name: 'UCSF' }]",
+    /institution "UCSF" is not normalised/,
+  ],
+  [
+    'the same institution declared twice',
+    "[{ id: 'ucsf', name: 'UCSF' }, { id: 'ucsf', name: 'UC San Francisco' }]",
+    /institution "ucsf" is declared twice/,
+  ],
+];
+
+for (const [what, literal, rule] of MALFORMED_INSTITUTIONS) {
+  test(`${what} is refused, by its own rule, writing nothing`, () => {
+    const out = outPath();
+    const r = withInstitutions(literal, (script) =>
+      run({ input: fixture('happy'), out, script })
+    );
+    assert.equal(r.code, 1, `expected exit 1, got ${r.code}\n${r.both}`);
+    assert.match(r.stderr, rule);
+    assert.equal(
+      existsSync(out),
+      false,
+      'a rejected run must leave the file it was asked to write absent'
+    );
+  });
+}
+
+test('the rewritten generator is otherwise the generator, so the refusals above mean something', () => {
+  // Non-vacuity for the whole mechanism. A copy that failed for an unrelated
+  // reason — a botched rewrite, a path that no longer resolves — would make
+  // every test above pass while testing nothing. Rewriting the literal to what
+  // it already says must leave a run that is clean to the byte, which is also
+  // the strongest available statement that the copy renders identical output.
+  withInstitutions("[{ id: 'ucsf', name: 'UCSF' }]", (script) => {
+    const r = run({ args: ['--check'], script });
+    assert.equal(r.code, 0, r.both);
+    assert.match(r.stdout, /all three outputs are current/);
+  });
+});
+
+test('an institution kept with a retainedUnused reason is not an orphan', () => {
+  // The escape hatch, and the branch nothing exercised: no institution in the
+  // real map carries the field, so it was dead code that could stop working
+  // with nothing going red — leaving the orphan rule with no survivable answer
+  // and turning "delete the row" into its only repair, which is how the
+  // cardinality gate this replaced was going to end.
+  //
+  // Both runs exit 1, because an extra institution makes the regenerated
+  // catalog differ from the committed one. The exit status is therefore not the
+  // signal; the RULE is, and the rule must fire in the first run and stay
+  // silent in the second.
+  const orphanRule = /institution "stanford" is declared but no card names it/;
+  const declared = (extra) =>
+    `[{ id: 'ucsf', name: 'UCSF' }, { id: 'stanford', name: 'Stanford'${extra} }]`;
+
+  protectingArtifacts(() => {
+    const bare = withInstitutions(declared(''), (script) => run({ args: ['--check'], script }));
+    assert.equal(bare.code, 1, bare.both);
+    assert.match(bare.stderr, orphanRule);
+
+    const kept = withInstitutions(
+      declared(", retainedUnused: 'being onboarded; its cards land next release'"),
+      (script) => run({ args: ['--check'], script })
+    );
+    assert.doesNotMatch(
+      kept.stderr,
+      /is declared but no card names it/,
+      'a reason on the row is what makes an unused institution declarable rather than a failure'
+    );
+    // ...and it got past the violation drain to the comparison, so the silence
+    // above is the rule not firing rather than the run dying earlier.
+    assert.match(kept.stderr, /registry\.json/);
+  });
 });
 
 test('attribute order does not decide whether a card exists', () => {
