@@ -51,12 +51,20 @@
 //! still runs, still resolves, and the result is still available for display:
 //! [`super::affiliation::gate_cross_affiliation`] and
 //! [`super::CallCapability::cross_affiliation`] answer identically in all three
-//! modes. Only the spelling a **refusal** is stated in —
-//! [`super::CallCapability::cross_affiliation_warning`] and its free twin — goes
-//! quiet, through the single read in
+//! modes. Only the spellings a **refusal** is stated in —
+//! [`super::CallCapability::cross_affiliation_warning`], its free twin, and the
+//! agent's bind-time statement — go quiet, through the single GATE read in
 //! [`super::affiliation::refusing_mismatch`]. A mode that short-circuited the
 //! resolver would blind the badges and the audit trail, and would leave
 //! `open → standard` with nothing to re-tighten.
+//!
+//! ⚠ **"One read" means one read ON THE GATE'S PATH**, and the distinction is
+//! worth stating because two other things do ask [`policy`]: the grant route's
+//! `strict` layer (through [`grant_needs_system_authentication`]) and the two
+//! `/config` read arms that report the setting back to the panel. Neither decides
+//! whether a mismatch refuses, which is the question that must have exactly one
+//! answer — a second gate reading a mode is a tool marked at discovery and then
+//! dispatched.
 //!
 //! ⚠ **The residual, recorded here rather than left to be discovered.** The one
 //! read is on the *extension* axis — dispatch (Gate C), the eight non-tool-call
@@ -316,18 +324,25 @@ fn staging_path(config_dir: &Path) -> PathBuf {
 // The live value.
 // ---------------------------------------------------------------------------
 
-/// The sentinel for "this process has not resolved the record yet".
-const UNRESOLVED: u8 = u8::MAX;
-
-/// The authoritative value for this process, resolved from the record on first
-/// read and cached.
+/// The authoritative value for this process — installed at start-up by
+/// [`load_from_record`] and moved thereafter only by [`set_policy`].
 ///
-/// ⚠ **Cached because the read is on a dispatch path.** Every tool call asks
+/// ⚠ **In memory because the read is on a dispatch path.** Every tool call asks
 /// [`mismatch_refuses`], and a file read per call to answer a question whose
-/// answer changes at most once a session would be a cost paid for nothing. The
-/// only writer is [`set_policy`], which is the same single-writer discipline the
-/// master switch's atomic has.
-static CACHED: AtomicU8 = AtomicU8::new(UNRESOLVED);
+/// answer changes at most once a session would be a cost paid for nothing. This
+/// is the same shape, and for the same reason, as the master switch's
+/// `TIERS_ENABLED`.
+///
+/// ⚠ **It rests at the DEFAULT rather than at an "unresolved" sentinel, and that
+/// is not a simplification — it is what keeps the developer's home directory out
+/// of the test suite.** An earlier version resolved lazily on first read, which
+/// meant any unit or integration test that reached a cross-affiliation gate read
+/// `~/.config/biorouter/privacy-mixing-policy.json`: on a machine whose owner had
+/// chosen `open`, every unpinned Gate C test in this crate would change outcome,
+/// and whichever test got there first would freeze that value for the whole
+/// binary. Loading at start-up, as [`super::load_privacy_tiers_from_config`]
+/// already does, means a test binary never touches the file at all.
+static CACHED: AtomicU8 = AtomicU8::new(encode(MixingPolicy::Standard));
 
 const fn encode(policy: MixingPolicy) -> u8 {
     match policy {
@@ -348,20 +363,56 @@ const fn decode(value: u8) -> Option<MixingPolicy> {
 
 /// The mixing policy this process is enforcing.
 ///
-/// Lazy rather than loaded by each host at start-up, deliberately: a host that
-/// forgot the call would silently get the default, and "the default" here is the
-/// mode the user may have moved away from. Resolving on first use cannot be
-/// forgotten.
+/// A relaxed atomic load and nothing else, so it is free on a dispatch path.
+/// `unwrap_or_default` is unreachable — `encode` is the only thing that ever
+/// stores here — and is the safe direction anyway.
 pub fn policy() -> MixingPolicy {
     if let Some(pinned) = pinned_policy() {
         return pinned;
     }
-    if let Some(cached) = decode(CACHED.load(Ordering::Relaxed)) {
-        return cached;
-    }
-    let resolved = read_for(Config::global()).unwrap_or_default();
-    CACHED.store(encode(resolved), Ordering::Relaxed);
-    resolved
+    decode(CACHED.load(Ordering::Relaxed)).unwrap_or_default()
+}
+
+/// Move the live value. **Private**: the two callers are the start-up load and
+/// [`set_policy`], and a third would be a way past the proof-of-user.
+fn install(policy: MixingPolicy) {
+    CACHED.store(encode(policy), Ordering::Relaxed);
+}
+
+/// Install the recorded mode. Called ONCE per process, at start-up, by both
+/// hosts of this library — `biorouterd` (`commands/agent.rs`) and the `biorouter`
+/// CLI (its `main`) — through [`super::load_mixing_policy_from_record`], beside
+/// the master switch's load and pinned to the same call sites by
+/// `every_host_that_loads_the_master_switch_also_loads_the_mixing_policy`.
+///
+/// ⚠ **Not a second door onto the setting.** It cannot express a value the
+/// record does not already hold, and the record has exactly one writer
+/// ([`set_policy`], which takes [`UserMixingPolicyChange`] and raises DR-24's
+/// prompt to loosen). What it can do is make this process agree with the disk,
+/// which is the whole of its job.
+///
+/// A host that skips it enforces `standard`: safe, unchanged from before DR-27,
+/// and the same fail-safe direction the master switch's omission had — but a user
+/// who chose `strict` would silently be served `standard`, which is why the call
+/// sites are pinned rather than remembered.
+pub fn load_from_record(config: &Config) {
+    install(resolve_for(config));
+}
+
+/// What [`load_from_record`] would install, for an explicit [`Config`].
+///
+/// The seam exists so a test can exercise the real resolution against a scratch
+/// configuration directory rather than the developer's own, and — unlike the
+/// loader — without moving a process-global that the tests running beside it can
+/// see. It is the same split [`super::resolve_privacy_tiers`] has, for the same
+/// two reasons.
+///
+/// ⚠ **Not a second reader of the setting.** This is the DISK resolution; the
+/// authoritative value is the atomic, and gates read [`policy`]. Calling this
+/// from a gate would re-introduce exactly the per-gate file read that hardening
+/// measure (3) forbids.
+pub fn resolve_for(config: &Config) -> MixingPolicy {
+    read_for(config).unwrap_or_default()
 }
 
 /// Always `None` outside a `cfg(test)` build of this crate — see
@@ -372,12 +423,13 @@ const fn pinned_policy() -> Option<MixingPolicy> {
 }
 
 /// **The** question every cross-institution refusal asks — DR-27 Step 3, and the
-/// ONE read of this setting in the tree.
+/// one read of this setting on a gate's path.
 ///
 /// Its single caller is [`super::affiliation::refusing_mismatch`], which is what
-/// both spellings of "the warning a refusal is stated in" run through. Three call
-/// sites reading a mode is three places to disagree, and the disagreement would
-/// be silent: a tool marked and then dispatched, or listed and then refused.
+/// every spelling of "the warning a refusal is stated in" runs through. Three
+/// call sites reading a mode is three places to disagree, and the disagreement
+/// would be silent: a tool marked and then dispatched, or listed and then
+/// refused.
 pub fn mismatch_refuses() -> bool {
     policy() != MixingPolicy::Open
 }
@@ -494,13 +546,29 @@ pub async fn set_policy(
     to: MixingPolicy,
     _ok: &UserMixingPolicyChange,
 ) -> Result<(), SetPolicyError> {
+    let _serialised = WRITE_LOCK.lock().await;
     set_policy_with(system_auth::prompter(), &dir_of(config), to).await?;
     // Second, and only on success: the live value is what every gate reads, and
     // moving it for a write that failed is the divergence Task 30's measure (3)
     // exists to prevent.
-    CACHED.store(encode(to), Ordering::Relaxed);
+    install(to);
     Ok(())
 }
+
+/// Serialises the whole measure-decide-write-install sequence above.
+///
+/// ⚠ **Held across the system prompt's `await`, deliberately.** axum runs
+/// `/config/upsert` handlers concurrently, so two policy writes really can be in
+/// flight at once; without this they would both measure the direction from the
+/// same starting mode and then race on two independent stores — the record's and
+/// the process cache's — and the two can land in either order. A record saying
+/// `strict` while the daemon enforces `open` is Task 30's measure (3) seen from
+/// the writing end, and it is the one outcome of that race that fails unsafe.
+///
+/// Holding it across a human-scale prompt cannot strand anyone: the only caller
+/// that waits is a second write of the same setting, and the thing it is waiting
+/// on is a dialog the user is looking at.
+static WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// [`set_policy`] with the prompter and the directory given rather than resolved.
 ///
@@ -546,6 +614,17 @@ async fn set_policy_with(
 //
 // It shadows the cached value rather than replacing it, so nothing has to be
 // restored on the process global at all.
+//
+// ⚠ **A pin cannot cross a thread, and the consequence of that is now bounded
+// rather than arbitrary.** A future `#[tokio::test]` that pins and then awaits
+// work on a multi-thread runtime would read the unpinned value on the worker —
+// so the pin would silently not apply. Since the live value now rests at the
+// DEFAULT until a host loads the record (see `CACHED`), what such a test reads is
+// `standard`, which is a wrong answer a test can fail on rather than the
+// developer's own machine setting, which is a wrong answer that varies by
+// machine. `binding_a_foreign_institutions_model_warns_and_still_binds` is the
+// one place a pin spans an `await`; it runs on the default current-thread
+// runtime, where there is no other thread to lose it to.
 #[cfg(test)]
 thread_local! {
     static PINNED: std::cell::Cell<Option<MixingPolicy>> =
@@ -823,6 +902,125 @@ mod tests {
         }
     }
 
+    /// The start-up load installs exactly what the record holds — and the
+    /// **resting** value, which every test binary in this tree runs against, is
+    /// the default.
+    ///
+    /// ⚠ **The second assertion is the one that matters, and it is about the test
+    /// suite rather than about a user.** An earlier version of [`policy`]
+    /// resolved from `Config::global()` on first read, so any test that reached a
+    /// cross-affiliation gate read the DEVELOPER's own
+    /// `~/.config/biorouter/privacy-mixing-policy.json`. On a machine whose owner
+    /// had chosen `open`, unpinned Gate C tests across this crate would have
+    /// changed outcome — and passed or failed for a reason nowhere in their
+    /// source. Driven through [`resolve_for`] rather than [`load_from_record`] so
+    /// this test does not move a process-global its neighbours can see.
+    #[test]
+    fn the_start_up_load_reads_the_record_and_an_unloaded_process_rests_at_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        // Nothing recorded is the default, not the strictest and not the most
+        // permissive.
+        assert_eq!(read_in(dir.path()).unwrap_or_default(), MixingPolicy::Standard);
+        for mode in ALL {
+            write_in(dir.path(), mode).unwrap();
+            assert_eq!(
+                read_in(dir.path()).unwrap_or_default(),
+                mode,
+                "the start-up load must install what the record holds"
+            );
+        }
+        assert_eq!(
+            decode(CACHED.load(Ordering::Relaxed)),
+            Some(MixingPolicy::Standard),
+            "a process that never called the start-up load is enforcing something \
+             other than the default, so this test binary is reading a value from \
+             outside its own source"
+        );
+    }
+
+    /// Both start-up loads, from the same places.
+    ///
+    /// ⚠ **A host list would be the wrong test, because the next host will not be
+    /// on it.** What is asserted instead is a relation: the files that load the
+    /// master switch are exactly the files that load the mixing policy. The
+    /// master switch's set is already right — and its own doc records the CLI
+    /// omitting it for a whole round, in a direction safe enough to be invisible.
+    /// A `strict` machine quietly served `standard` is that same silence, so the
+    /// pair is pinned rather than remembered.
+    #[test]
+    fn every_host_that_loads_the_master_switch_also_loads_the_mixing_policy() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        let crates = root.join("crates");
+        assert!(crates.is_dir(), "the audit walks {}", crates.display());
+
+        // Composed, so this file is not itself a call site of either.
+        let switch = concat!("load_privacy_tiers", "_from_config()");
+        let mixing = concat!("load_mixing_policy", "_from_record()");
+
+        let mut loads_switch: Vec<String> = vec![];
+        let mut loads_mixing: Vec<String> = vec![];
+        let mut scanned = 0usize;
+        for entry in walkdir::WalkDir::new(&crates) {
+            let entry = entry.expect("the audit must not silently skip an unreadable directory");
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            // Production only: a test that loads one of them is not a host.
+            if !rel.contains("/src/") {
+                continue;
+            }
+            scanned += 1;
+            let src = std::fs::read_to_string(p)
+                .unwrap_or_else(|e| panic!("the audit could not read {rel}: {e}"));
+            let mut s = false;
+            let mut m = false;
+            for line in src.lines() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                s |= code.contains(switch);
+                m |= code.contains(mixing);
+            }
+            if s {
+                loads_switch.push(rel.clone());
+            }
+            if m {
+                loads_mixing.push(rel);
+            }
+        }
+        assert!(
+            scanned >= 400,
+            "only {scanned} production .rs files were scanned. A broken walk reports \
+             the same empty set as a clean tree."
+        );
+        loads_switch.sort();
+        loads_mixing.sort();
+        assert!(
+            loads_switch.len() >= 3,
+            "the master switch's start-up load was found in {loads_switch:?}, which is \
+             fewer files than its own definition plus two hosts — the scan is broken, \
+             not the tree"
+        );
+        assert_eq!(
+            loads_switch, loads_mixing,
+            "a host loads one privacy setting at start-up and not the other. The one \
+             that is missed enforces its default silently: `standard` for the mixing \
+             policy, which is not what a user who chose `strict` asked for."
+        );
+    }
+
     /// Task 52 gate (5). **An agent cannot change the mode, in any of the three
     /// modes**, and the mechanism is the existing single-writer discipline rather
     /// than a new one: [`UserMixingPolicyChange`] is unforgeable outside this
@@ -985,6 +1183,34 @@ mod tests {
             signature.iter().any(|line| line.contains(proof)),
             "the mixing policy's one writer no longer takes the proof-of-user, so an \
              agent-reachable caller could move it: {signature:#?}"
+        );
+
+        // …and the LIVE value has one writer too, which the scan above cannot
+        // see: it reads signatures, and a function that moved [`CACHED`] without
+        // "write" or "set_policy" in its name would pass it. `install` is
+        // private, it is the only thing that stores, and its two callers are the
+        // start-up load and `set_policy`. A third would move what every gate
+        // reads without touching the record the repo walk above pins.
+        let code: Vec<&str> = SOURCE
+            .lines()
+            .map(str::trim_start)
+            .filter(|line| !line.starts_with("//"))
+            .collect();
+        assert_eq!(
+            code.iter()
+                .filter(|l| l.contains(concat!("CACHED", ".store(")))
+                .count(),
+            1,
+            "the live mixing policy is stored from more than one place"
+        );
+        assert_eq!(
+            code.iter()
+                .filter(|l| l.contains(concat!("install", "(")))
+                .count(),
+            3,
+            "the private installer's definition plus its two sanctioned callers — the \
+             start-up load and `set_policy` — is three lines. A fourth is a third way \
+             to move what every gate reads."
         );
     }
 }

@@ -99,6 +99,12 @@ pub async fn run() -> Result<()> {
     // can be served against the fail-safe default when the user turned the
     // feature off, and none against `off` when they did not.
     biorouter::privacy::load_privacy_tiers_from_config();
+    // Issue #56 Task 52 (DR-27), and here for the same three reasons: it reads
+    // its own record beside `config.yaml` rather than the agent-writable file,
+    // it is never resolved through an environment variable, and it lands before
+    // any route is mounted so no request is served against `standard` on a
+    // machine whose user chose `strict`.
+    biorouter::privacy::load_mixing_policy_from_record();
 
     let secret_key = std::env::var("BIOROUTER_SERVER__SECRET_KEY").unwrap_or_else(|_| {
         let bytes: [u8; 16] = rand::random();

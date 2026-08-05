@@ -120,6 +120,20 @@ pub fn load_privacy_tiers_from_config() {
 /// authoritative value is the atomic, and gates read
 /// [`privacy_tiers_enabled`]. Calling this from a gate would re-introduce
 /// exactly the per-gate file read hardening measure (3) exists to forbid.
+/// Load DR-27's cross-institution mixing policy from disk. Called ONCE per
+/// process, at start-up, beside [`load_privacy_tiers_from_config`] and by the
+/// same two hosts — pinned to those call sites by
+/// `mixing::tests::every_host_that_loads_the_master_switch_also_loads_the_mixing_policy`,
+/// because a host that loads one and not the other is the omission that would go
+/// unnoticed.
+///
+/// A host that skips it enforces `standard`: the default, and exactly what this
+/// tree did before DR-27. See [`mixing::load_from_record`] for why the value is
+/// installed at start-up rather than resolved on first use.
+pub fn load_mixing_policy_from_record() {
+    mixing::load_from_record(crate::config::Config::global());
+}
+
 pub fn resolve_privacy_tiers(config: &crate::config::Config) -> bool {
     // Once, on the first start-up after the upgrade, and never again — the only
     // read of the retired `config.yaml` key in the tree.

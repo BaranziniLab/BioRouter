@@ -42,6 +42,13 @@ async fn main() -> ExitCode {
     // the user turned the feature off — and after logging, so a config failure
     // is reported rather than swallowed.
     biorouter::privacy::load_privacy_tiers_from_config();
+    // Issue #56 Task 52 (DR-27). Beside the master switch's load rather than
+    // anywhere else, because the omission this pair guards against is a host
+    // that loads ONE of them: the CLI already skipped the master switch for a
+    // whole round, and the direction it failed in was safe enough to be
+    // invisible. `strict` failing quietly back to `standard` would be the same
+    // kind of silence.
+    biorouter::privacy::load_mixing_policy_from_record();
 
     match cli().await {
         Ok(()) => ExitCode::from(abort_exit::OK),
