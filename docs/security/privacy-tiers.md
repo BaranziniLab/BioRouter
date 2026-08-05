@@ -1790,15 +1790,48 @@ by the route being undocumented.
 > lives in `declassify.rs` so that `system_auth` never has to name the proof-of-user, which
 > `the_proof_of_user_is_constructed_in_exactly_two_places` would otherwise fail.
 >
-> **Two residuals, recorded rather than left to be discovered.**
-> (a) The **route is still per-id** (`POST /sessions/{id}/declassify`), so §12.1's `POST
-> /sessions/declassify` taking `session_ids[]` is still unbuilt. A batch costs one prompt *in the
-> mechanism* — one `SystemAuthorization` covers the set it named — but no HTTP surface or UI reaches
-> it yet, so today's product declassifies one chat at a time.
-> (b) The prompt is raised **by the daemon**, not by the Electron main process as §12.1 describes.
+> **Three residuals, recorded rather than left to be discovered.**
+>
+> **(a) Step 3's batch has no consumer.** The **route is still per-id** (`POST
+> /sessions/{id}/declassify`), so §12.1's `POST /sessions/declassify` taking `session_ids[]` is still
+> unbuilt; both real doors pass a one-element slice. A batch costs one prompt *in the mechanism* —
+> one `SystemAuthorization` covers the set it named, pinned by
+> `one_prompt_covers_a_batch_and_covers_only_the_chats_it_named` — but no HTTP surface and no UI
+> reaches it, so **today's product still costs one prompt per chat**. Read plainly: Step 3 shipped a
+> mechanism with no caller, which is structurally the same defect Task 55 exists to fix, one level
+> down. It is the safe version of it — the property is tested and the missing piece is a route, not a
+> gate — but it should not be read as "batch declassification now costs one prompt" in the product.
+>
+> **(b) The prompt is raised by the daemon**, not by the Electron main process as §12.1 describes.
 > That is Task 44's mechanism and it is what makes the CLI door work at all; the cost is that on
-> macOS the dialog is presented by `biorouterd` rather than by the app, so its ownership and window
-> ordering have not been checked against a running GUI.
+> macOS the dialog is presented by `biorouterd` rather than by the app. ⚠ **Treat this as a shipping
+> risk, not a footnote.** If `LAContext.evaluatePolicy` cannot present a dialog from a background
+> helper — or presents one behind the app window — then every `mcp:*` chat becomes **undeclassifiable
+> from the desktop app**, and no test in the tree can see it, because tests reach the seam and never a
+> platform prompter. What *is* closed: the failure cannot read as success. `DeclassifySessionDialog`
+> calls the route with `throwOnError: true` and routes a rejection to `toastError`, covered by
+> `DeclassifySessionDialog.test.tsx`, and the 403's own sentence names the operating system as the
+> thing that did not confirm. What is **not** verified: whether the dialog appears at all on a
+> notarized macOS build, and whether that sentence survives the generated client into the toast body.
+> Both need a human at a real GUI.
+>
+> **(c) The master switch's prompt is agent-reachable.** `/config/upsert`'s privacy-tiers arm returns
+> before the `is_capability_key(&key) && !is_user_action(&headers)` gate below it, so disabling the
+> tiers takes the typed phrase and `is_secret == false` and **no `X-User-Action`**. (The task text's
+> premise that "the master switch demands `X-User-Action` alone" was never true of the code, before
+> this change or after it.) `PRIVACY_TIERS_DISABLE_PHRASE` is a public constant in shipped source, so
+> a tool call can compose the request. Net of Task 55 Step 2 this is strictly better — what used to
+> disable the tiers *silently* now needs an operating-system dialog that fails closed — but it does
+> introduce something that did not exist: **a hostile tool call can raise an OS authentication dialog
+> on demand**, which is a prompt-fatigue and social-engineering surface. Requiring the header looks
+> nearly free, because `ConfigContext.tsx` is the GUI's only path to `/config/upsert` and always
+> sends it; what stops it being free is `UserActionProof::NoKeyInstalled`. `just run-server`, a
+> hand-run `biorouterd` and every headless deployment hold no key and would be refused, and
+> `/config/upsert` is the **only** production writer of the switch record — so the requirement would
+> make the feature permanently un-disableable there, short of hand-writing `privacy-tiers.json` and
+> restarting. Refusing only `Unproven` while still allowing `NoKeyInstalled` is the shape that closes
+> it without that cost. Left for a ruling rather than taken inside a fixup, because it is a change to
+> an authorization boundary and not to Task 55's four steps.
 
 It is also **the only writer in the tree permitted to lower `privacy_tier`.** Every other write
 goes through the session update builder, whose emission is the monotone `CASE WHEN` and physically
