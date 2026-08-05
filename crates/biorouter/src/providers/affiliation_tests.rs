@@ -548,21 +548,21 @@ fn a_composite_never_out_reaches_either_half() {
     }
 }
 
-/// The arm DR-26 has no value for, pinned so its behaviour is a decision rather
-/// than an accident.
+/// A composite spanning two institutions clears **neither** of them.
 ///
-/// ⚠ **It is unreachable in this build** — `factory::this_build_knows_exactly_
-/// one_institution` pins that `ucsf` is the tree's only institution, so no
-/// lead/worker pair can span two — and the placeholder is the *safe direction*,
-/// not the answer. The correct encoding is a set with subset-of-the-allowlist
-/// semantics, which `ModelAffiliation` cannot hold while it is `Copy`; that is
-/// an operator ruling on DR-26, and the census pin forces it before a second
-/// institution can arrive here.
+/// ⚠ **This arm is reachable now, and that is what Task 56 changed.** It used to
+/// have no representable answer: `composite_affiliation` returned a fake
+/// institution id standing in for a missing variant — safe only while nobody
+/// registered an institution spelled that way — and a cardinality pin on the
+/// factory kept a second institution out of the tree so no lead/worker pair
+/// could reach it. `ModelAffiliation::Institutions` represents the pair,
+/// `compatible`'s subset rule answers it, and the type is still `Copy`.
 ///
-/// What is asserted is only what makes the placeholder safe: it clears an
-/// extension with no institutional claim, and warns for **both** of the
-/// institutions involved — including the lead's, which is the one a fold written
-/// as "keep the lead" would silently clear.
+/// What is asserted here is the refusal direction: the pair clears an extension
+/// with no institutional claim, and warns for **both** of the institutions
+/// involved — including the lead's, which is the one a fold written as "keep the
+/// lead" would silently clear. The half a placeholder could never have had — the
+/// pair DOES reach a connector whose allowlist names both — is the test below.
 #[test]
 fn a_composite_spanning_two_institutions_clears_neither_of_them() {
     let folded =
