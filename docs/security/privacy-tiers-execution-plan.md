@@ -20569,6 +20569,19 @@ comments that mention the component while explaining something else (`ConfigCont
 `settings/providers/providerOrdering.ts:83` — the last of which exists precisely to say a badge does
 **not** belong on that field). Counting mentions rewards writing the name in a comment.
 
+⚠ **Superseded in part by Task 38, on the extension surfaces only** (commit `8eb752d5`, *"finish
+§13.5 — a badge on every extension card, and on the Add form"*). Four files gained a
+`<PrivacyBadge>` after this step was written — `BrxtInstallModal.tsx`,
+`baam/BrowseExtensionsModal.tsx`, `settings/extensions/modal/ExtensionModal.tsx` and
+`settings/extensions/subcomponents/ExtensionItem.tsx` — so the workspace-wide total is **13
+non-test mount files** at the release gate, and it is [Task 40](#task-40-final-release-gate) Step 3
+that enumerates all thirteen. `ExtensionItem.tsx` is named in the paragraph above as a file that
+should *not* carry a badge, on the argument that a pill on a disabled row that already explains
+itself is noise. §13.5 wanted the tier legible on **every** extension card, present or absent, and
+not only on the refused ones — that is a wider requirement than this step was measuring, and it
+won. The three chat/model/knowledge groups this step pins are unchanged; only the count moved, and
+only because a later task added surfaces on purpose.
+
 - [ ] **Step 4: Adversarial review of the phase diff; every finding addressed.**
 
 ---
@@ -21737,30 +21750,73 @@ and [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-doc
 
 - [ ] **Step 3: The twelve invariants, as commands**
 
+⚠ **Read this before running it — it is why most of the numbers below moved once, on
+2026-08-05, and are pinned to a *production* count now.** This repo puts `mod tests` in the same
+file as the code it tests, so a bare `grep -c` counts production sites and test sites together.
+When #56 landed ~1,100 tests, **eight** of these lines began printing a number that contradicted
+their own `expect:` while the invariant behind them was untouched, and **three more** had become
+incapable of failing at all. A gate that hands its reader a wall of mismatches to adjudicate by
+hand is a gate that gets waved through — which is the failure this campaign has already paid for
+three times. So every line below is now one of three shapes: **(a)** restricted to the production
+half, **(b)** replaced by the compiled audit test that pins the same invariant with no spelling to
+drift, or **(c)** left as a PRINT whose expectation names *paths* rather than a total. If you
+change one, keep it in one of those three shapes.
+
 ```bash
 cd /Users/wgu/Desktop/BioRouter-privacy
-# O5 — the ratchet fires in exactly two places, neither of them the bind. PRINT,
-# do not `wc -l`: a bare 2 is also produced by two calls in agent.rs and none in
-# extension_manager.rs, which is Gate C's ratchet silently missing. (Task 20
-# Step 3 prints; this copy counted. Same invariant, two strengths.)
+# `prod <file> <substring>` counts matches in a file's PRODUCTION half — above
+# its first UNINDENTED `#[cfg(test)]`, which is where every `mod tests` in this
+# tree begins. Substring, not regex, so no call site needs escaping.
+#
+# ⚠ It is WRONG for `agents/agent.rs`, which has an unindented `#[cfg(test)] mod
+# seams` at ~:1370 and ~9,000 production lines after it. Never point `prod` at
+# that file — pointing it there reports Gate B missing, which is exactly the
+# false red that teaches a reader to ignore this gate. agent.rs is covered by
+# the two compiled censuses instead.
+prod() { awk -v pat="$2" '/^#\[cfg\(test\)\]/{exit} index($0,pat){c++} END{print c+0}' "$1"; }
+
+# O5 — the ratchet fires at Gate B (the first turn) and Gate C (a permitted
+# private dispatch), never at the bind. PRINT, do not `wc -l`: the total is
+# dominated by test-module calls and a bare number cannot tell "Gate C is
+# present" from "Gate C is gone and someone added two tests".
 grep -rn "raise_privacy(" --include='*.rs' crates/ | grep -v session_manager.rs
-echo "expect: exactly 2 lines — one in agents/agent.rs (Gate B) and one in"
-echo "        agents/extension_manager.rs (Gate C). Read the paths, not the count."
-# O7 — one production path into an MCP client (see Task 20 Step 3 for the full
-# hit list and why a `grep -vc "cfg(test)"` cannot express this).
-grep -c "\.call_tool(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 1 (1 today)"
-grep -rn "\.call_tool(" --include='*.rs' crates/ | wc -l
-echo "expect: 10 — the SAME 10 as at 9558c346, so this is a no-growth tripwire"
-echo "        rather than a measurement of #56. Any increase is a new bypass."
+echo "expect: 19 lines, of which exactly THREE are production. Read the PATHS:"
+echo "  agents/agent.rs             Gate B, the first turn"
+echo "  agents/extension_manager.rs Gate C's ratchet (inside raise_session_privacy)"
+echo "  agents/subagent_tool.rs     the spawn STAMP — a new child row born at its"
+echo "                              parent's tier, which DR-15 says is propagation"
+echo "                              of a column and not a classification decision"
+echo "The other 16 are test-module calls, in 10 files. The two censuses below pin"
+echo "all three sites by walking the tree, so a wrong count here is a prompt to"
+echo "re-read, not a verdict."
+# ...and the two compiled forms of that same invariant, which DO fail on a
+# fourth site. Gate C + its affiliation twin:
+cargo test -p biorouter --lib \
+  agents::extension_manager::tests::the_two_chat_side_ratchets_share_one_production_call_site \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# O7 — one production path into an MCP client. The workspace-wide count was 10
+# at 9558c346 and is 41 today; 40 of the 41 are test-module calls, so the total
+# stopped being a tripwire the moment #56 added tests. The census below is the
+# tripwire: it prints one line per file that reaches a client OUTSIDE its tests.
+for f in $(grep -rl ".call_tool(" --include='*.rs' crates/*/src/ | sort); do
+  n=$(prod "$f" ".call_tool(")
+  if [ "$n" != "0" ]; then echo "$n  $f"; fi
+done
+echo "expect: exactly one line — '1  crates/biorouter/src/agents/extension_manager.rs'."
+echo "        A second file, or a second hit in that file, is a new bypass of Gate C."
 # O6 — nothing above filter_tools consults a tier.
 awk '/async fn get_all_tools_cached/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
   | grep -c "cap\.tier()\|allowed_extension_keys" ; echo "expect: 0"
 # The ratchet is irreversible except through one statement.
 grep -c "privacy_tier = CASE WHEN" crates/biorouter/src/session/session_manager.rs ; echo "expect: 1"
-grep -rn --include='*.rs' "privacy_tier *= *'public'" crates/ | grep -v "DEFAULT 'public'" | wc -l ; echo "expect: 1"
+# ⚠ `privacy_tier *= *'public'` matches 9 lines — doc comments and read-side
+# `WHERE`/`AND` clauses, which are Gate D doing its job. Only a `SET` writes the
+# column back down, and only a non-comment `SET` is code.
+grep -rn --include='*.rs' "SET privacy_tier *= *'public'" crates/ \
+  | grep -v ":[[:space:]]*///" ; echo "expect: exactly 1 — privacy/declassify.rs, the user-only path"
 # Gate D is in both builders; Gate C has all nine entry points.
 grep -c "s.privacy_tier = 'public'" crates/biorouter/src/session/chat_history_search.rs ; echo "expect: 2"
-grep -c "assert_extension_reachable(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 9"
+prod crates/biorouter/src/agents/extension_manager.rs "assert_extension_reachable(" ; echo "expect: 9 (1 definition + 8 call sites; a bare grep -c reads 13, the extra 4 being test calls)"
 # O12 — the knowledge-base barrier at its five choke points, and its ratchet.
 grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 2 (CP1)"
 grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
@@ -21769,47 +21825,87 @@ grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/knowledge/macros/inge
 grep -c "tier::assert_reachable(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1 (CP3)"
 grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/agent_drafter/mod.rs ; echo "expect: 1 (CP4)"
 grep -c "pub fn discover(" crates/biorouter-mcp/src/agent_drafter/catalog.rs ; echo "expect: 1 (CP5)"
-grep -rn "Catalog::discover(true)" --include='*.rs' crates/*/src/ ; echo "expect: no output (CP5)"
-grep -c "tool_handler" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 0 — CP1 is hand-written"
-grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
-grep -c "raise_tier(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
+# CP5: a bare grep prints 2 (both in test modules, both legitimate fixtures).
+for f in $(grep -rl "Catalog::discover(true)" --include='*.rs' crates/*/src/ | sort); do
+  n=$(prod "$f" "Catalog::discover(true)")
+  if [ "$n" != "0" ]; then echo "$n  $f"; fi
+done
+echo "expect: no output (CP5) — no PRODUCTION caller asks the catalog for private apps"
+# ⚠ `grep -c "tool_handler"` reads 3 and always will: CP1's doc comment says it
+# is what `#[tool_handler]` generated. Re-adding the real macro would print 4 —
+# a number nobody would notice. The ATTRIBUTE is the checkable form.
+grep -c '^[[:space:]]*#\[tool_handler\]' crates/biorouter-mcp/src/knowledge/server.rs
+echo "expect: 0 — CP1 is hand-written, and re-adding the macro would delete the gate"
+# ⚠ `raise_tier(` reads 0 in both files: Task 50 renamed it to
+# `raise_tier_and_affiliation` so the two axes move under one lock. Same ratchet,
+# current spelling.
+grep -c "raise_tier_and_affiliation(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
+grep -c "raise_tier_and_affiliation(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
 cargo test -p biorouter-mcp --lib \
   knowledge::server::tests::every_kb_tool_is_gated_or_exempt_for_a_pinned_reason \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 cargo test -p biorouter-mcp --lib \
   knowledge::server::tests::no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
-grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
-echo "expect: tier.rs and service.rs::ensure_tiers_migrated only"
+for f in $(grep -rl "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v paths.rs | sort); do
+  n=$(prod "$f" "kb_tiers_path")
+  if [ "$n" != "0" ]; then echo "$n  $f"; fi
+done
+echo "expect: exactly two files — tier.rs (4: the store's own reader/writer) and"
+echo "        service.rs (2: ensure_tiers_migrated, plus export_brkb naming the"
+echo "        path in a refusal message). A third file is a second reader of the"
+echo "        tier store, which is the thing tier.rs exists to be the only one of."
 grep -rn "store::\(list_pages\|read_page\|write_page\|search\|search_with_scope\)(" \
-  --include='*.rs' crates/ | grep -v "src/knowledge/" | wc -l
-echo "expect: 4 — a FIFTH is a new CONTENT surface; see Task 10C Step 5"
+  --include='*.rs' crates/ | grep -v "src/knowledge/"
+echo "expect: 5 — four in routes/knowledge.rs and ONE in routes/apps.rs (the app"
+echo "        runtime's kb_search, gated by CP3's assert_reachable above the"
+echo "        match). A SIXTH is a new CONTENT surface; see Task 10C Step 5."
 # ...and the METADATA tripwire, which the two content detectors cannot express.
-# BOTH sweeps, at 9558c346: a growth in either is a new way to hand a model a
-# base id or name. One sweep with `grep -v src/knowledge/` is what let the
-# pointer tools through a whole review round.
-grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
-  | grep -v "src/knowledge/" | wc -l
-echo "expect: 27 — 18 production / 9 test-module; see Task 10D Step 5 sweep (1)"
-grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
-  | grep "src/knowledge/" | wc -l
-echo "expect: 22 — 5 production / 17 test-module; see Task 10D Step 5 sweep (2)"
+# BOTH sweeps: a growth in either is a new way to hand a model a base id or name.
+# One sweep with `grep -v src/knowledge/` is what let the pointer tools through a
+# whole review round. Production only — the raw totals are 29 and 23, and they
+# move whenever anyone adds a test.
+echo "-- metadata sweep (1), outside src/knowledge --"
+for f in $(grep -rl ".list_bases()\|.session_kb_ids(\|.selection(" --include='*.rs' crates/*/src/ | grep -v "src/knowledge/" | sort); do
+  t=$(( $(prod "$f" ".list_bases()") + $(prod "$f" ".session_kb_ids(") + $(prod "$f" ".selection(") ))
+  if [ "$t" != "0" ]; then echo "$t  $f"; fi
+done
+echo "expect: 19 production hits over 9 files; see Task 10D Step 5 sweep (1)"
+echo "-- metadata sweep (2), inside src/knowledge --"
+for f in $(grep -rl ".list_bases()\|.session_kb_ids(\|.selection(" --include='*.rs' crates/*/src/ | grep "src/knowledge/" | sort); do
+  t=$(( $(prod "$f" ".list_bases()") + $(prod "$f" ".session_kb_ids(") + $(prod "$f" ".selection(") ))
+  if [ "$t" != "0" ]; then echo "$t  $f"; fi
+done
+echo "expect: 6 production hits over 3 files; see Task 10D Step 5 sweep (2)"
 # The two id-list error messages omit rather than enumerate (Tasks 10C, 11).
+# ⚠ `tier::is_private` reads 0 inside `kb_id_or_primary`: the predicate moved
+# into `kb_is_out_of_reach`, the ONE filter every omission in this file shares,
+# so "omit" and "refuse" cannot disagree. That is the invariant; grep for it.
 awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
-  | grep -c "tier::is_private" ; echo "expect: 1"
+  | grep -c "kb_is_out_of_reach" ; echo "expect: 1"
 awk '/fn resolve_target_kb\(/,/^}/' crates/biorouter/src/agents/knowledge_tool.rs \
   | grep -c "is_private" ; echo "expect: 1"
 # Gate G is one guard in the shared function, covering all three of its callers.
-# PRINT: `| wc -l` cannot tell "three callers pass it" from "one caller passes it
-# and two tests construct the struct", and this repo's tests live in the same
-# files as the code they test.
-grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs
+# ⚠ `grep -rn "caller_capability:"` matched NONE of those three callers and
+# certified nothing: all three use Rust field-init shorthand, so the text on the
+# line is `caller_capability,`. The four lines it did print are the two HTTP
+# helper signatures and the struct's own field. PRINT the shorthand instead —
+# `| wc -l` cannot tell "three callers pass it" from "one caller passes it and
+# two tests construct the struct", and this repo's tests live beside the code.
+grep -rn "^ *caller_capability,$" --include='*.rs' crates/ | grep -v conversation_ingest.rs
 echo "expect: 3 lines, one each in agents/knowledge_tool.rs (the platform tool),"
 echo "        biorouter-server/src/routes/knowledge.rs (the HTTP route) and"
 echo "        biorouter-cli/src/commands/knowledge.rs (the CLI). Read the paths."
-grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ ; echo "expect: no output"
+echo "        The field is a required, non-Option ProviderTier, so a fourth caller"
+echo "        that forgets it is a COMPILE error, not a missing line here."
+grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ \
+  | grep -v conversation_ingest.rs ; echo "expect: no output"
+echo "  (the exclusion is not optional: conversation_ingest.rs's own test module"
+echo "   hard-codes Private three times as a fixture, and the line above it in"
+echo "   this gate has always excluded that file for the same reason.)"
 # floor() is crossed at exactly its two intended callers, and the audit test
 # names them rather than counting — see Task 7 for why a count could not work.
+# This is also the compiled form of Gate B's and the spawn stamp's O5 sites.
 cargo test -p biorouter --lib \
   privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed (never just 'PASS' — 0 passed exits 0)"
@@ -21818,19 +21914,50 @@ just check-privacy-registry
 # No privacy control is an inspector. ⚠ NOT `grep -rn "PrivacyInspector"`: 0
 # today, 0 under every wrong implementation, green both ways. The trait's impl
 # set is the checkable form.
+#
+# ⚠ NINE files, not the seven this list held until 2026-08-05. The two additions
+# are NOT #56's — this branch also carries BR-71 slice 1 and issue #63 — and
+# neither is a privacy control: `workspace_inspector.rs` is BR-71 §5's
+# always-confirm case and `global_memory.rs` is issue #63's consent gate, and
+# `grep -c "privacy\|ProviderTier"` reads 0 in both. They are pinned here rather
+# than filtered out, because the whole point of this check is that a NEW impl
+# has to be argued for by whoever adds it.
 diff <(grep -rl "impl ToolInspector for" --include='*.rs' crates/ | sort) <(cat <<'EOF'
+crates/biorouter/src/agents/workspace_inspector.rs
 crates/biorouter/src/hooks/inspector.rs
 crates/biorouter/src/permission/managed_inspector.rs
 crates/biorouter/src/permission/permission_inspector.rs
+crates/biorouter/src/security/global_memory.rs
 crates/biorouter/src/security/security_inspector.rs
 crates/biorouter/src/security/sensitive_ops.rs
 crates/biorouter/src/tool_monitor.rs
 crates/biorouter/tests/tool_inspection_manager_tests.rs
 EOF
-) && echo "OK: the impl set is exactly what it was at 9558c346"
-# The badges are mounted — the same 13-file enumeration as Task 32 Step 3.
-cd ui/desktop && grep -rl "PrivacyBadge" src/components | sort
-echo "expect: the 13 files listed in Task 32 Step 3, no more and no fewer"
+) && echo "OK: the impl set is the 9558c346 seven plus BR-71's and #63's, and no privacy control"
+# The badges are MOUNTED. ⚠ Three different numbers were in play here and none
+# of them was this one, which is why the line is written out in full below.
+# `grep -rl "PrivacyBadge"` reads 25 — it counts imports, tests and doc comments
+# that merely name the component, which rewards writing the name in prose.
+# `<PrivacyBadge` reads 14, the fourteenth being PrivacyBadge.test.tsx rendering
+# it. MOUNTED means a JSX element in a non-test file: 13.
+#
+# ⚠ And 13 is NOT "the Task 32 Step 3 enumeration", which is 10 and was correct
+# when it was written. Task 38 (`8eb752d5`, "a badge on every extension card, and
+# on the Add form") added four extension surfaces afterwards, one of them
+# `ExtensionItem.tsx` — the file Task 32's own ⚠ note argues should NOT carry a
+# badge. Task 38 superseded that argument deliberately; see the note appended to
+# Task 32 Step 3.
+cd ui/desktop && grep -rl "<PrivacyBadge" src/components | grep -v '\.test\.' | sort
+echo "expect: exactly these 13, no more and no fewer —"
+echo "  Task 27 chat surfaces (6): sessions/SessionListView.tsx, sessions/SessionItem.tsx,"
+echo "        sessions/SessionHistoryView.tsx, SessionNamePill.tsx,"
+echo "        BioRouterSidebar/RecentChats.tsx, chatGroups/ChatTabStrip.tsx"
+echo "  Task 28 model surface (1): settings/models/bottom_bar/ModelsBottomBar.tsx"
+echo "  Task 29A knowledge surfaces (2): knowledge/KBSelector/KBSelectorPalette.tsx,"
+echo "        knowledge/KbTierControl.tsx"
+echo "  Task 38 extension surfaces (4): BrxtInstallModal.tsx, baam/BrowseExtensionsModal.tsx,"
+echo "        settings/extensions/modal/ExtensionModal.tsx,"
+echo "        settings/extensions/subcomponents/ExtensionItem.tsx"
 ```
 
 - [ ] **Step 4: Live GUI verification, in a sandbox, with evidence**
