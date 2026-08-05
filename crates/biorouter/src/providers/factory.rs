@@ -592,11 +592,32 @@ pub(crate) mod tests {
     ///
     /// The other half of the integrity — an institution in the map that nothing
     /// references — is checked where "referenced" is defined, in
-    /// `landing/scripts/build-registry.mjs`'s `assertInstitutionIntegrity`, which
-    /// can see the catalog's cards. Here we can see the providers.
+    /// `landing/scripts/build-registry.mjs`'s
+    /// `assertInstitutionsAreNamedByACard`, which can see the catalog's cards.
+    /// Here we can see the providers.
+    ///
+    /// ⚠ **What this does NOT check, said plainly.** The rows are prose written
+    /// beside each provider, so this holds the TABLE to the registry, not the
+    /// provider's `affiliation()` to its row: a provider whose row says
+    /// `Institution(ucsf)` while its implementation returns something else
+    /// passes here. That tie is per provider and lives with the provider —
+    /// `versa_azure::tests::affiliation_follows_the_endpoint_this_instance_resolved`
+    /// and its `versa_bedrock` twin assert the real function against the real
+    /// resolved endpoint — while the sibling census above keeps the table and
+    /// the built-in provider list covering each other.
     #[test]
     fn every_institution_a_provider_claims_is_published_by_the_registry() {
-        for (name, why) in affiliated_providers() {
+        // Both floors, because this test's whole shape is "for each row" and a
+        // table with no institutional row satisfies it while checking nothing.
+        // A cardinality gate is what it replaced; a vacuous one would be worse.
+        let rows = affiliated_providers();
+        assert!(
+            !rows.is_empty(),
+            "the affiliation table is empty, so this test resolves no institution at all"
+        );
+        let mut resolved = 0usize;
+
+        for (name, why) in rows {
             let Some(rest) = why.strip_prefix("Institution(") else {
                 assert!(
                     why.starts_with("Local:"),
@@ -620,7 +641,16 @@ pub(crate) mod tests {
                  landing/scripts/build-registry.mjs, which is the one place an institution is \
                  declared."
             );
+            resolved += 1;
         }
+
+        assert!(
+            resolved > 0,
+            "no row named an institution, so every assertion above was skipped and this test \
+             proved nothing about the registry. If the build genuinely ships no institutional \
+             provider, that is a change to what DR-26's third axis governs and belongs in the \
+             table's own doc — not in a silently green test."
+        );
     }
 
     #[test_case::test_case(None, None, None, DEFAULT_LEAD_TURNS, DEFAULT_FAILURE_THRESHOLD, DEFAULT_FALLBACK_TURNS ; "defaults")]
