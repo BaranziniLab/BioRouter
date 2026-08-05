@@ -767,9 +767,24 @@ mod tests {
     /// with the bypass still reachable."*
     ///
     /// It asserts the four independent things that together make the seam
-    /// unreachable from a shipped binary, and it runs under a **bare** `cargo
-    /// test` — i.e. in exactly the build where the seam is absent and every
-    /// behavioural test of it is filtered out.
+    /// unreachable from a shipped binary. All four are read out of the **source
+    /// tree**, not out of this build's own `cfg`, so it holds identically
+    /// whether or not the seam was compiled into the binary running it — which
+    /// matters, because since Task 55 that varies by invocation:
+    ///
+    /// * `cargo test -p biorouter` — the seam is **absent**. Measured: the
+    ///   `privacy::system_auth_seam::tests` module lists 0 tests, because
+    ///   nothing in that graph turns the feature on.
+    /// * `cargo test` at the workspace root, or any invocation that pulls in
+    ///   `biorouter-cli` or `biorouter-server` — the seam is **present** and its
+    ///   6 tests run, because `resolver = "2"` unifies the feature in from those
+    ///   two crates' `[dev-dependencies]`.
+    ///
+    /// ⚠ The second case did not exist before Task 55: those two dev-dependency
+    /// lines are what the DR-20 wiring added, and until then *no* crate armed
+    /// the feature, so the seam's own behavioural tests never ran anywhere. That
+    /// is a gain, and it is also the reason this audit must not be allowed to
+    /// depend on the feature state of the build it runs in.
     #[test]
     fn the_test_seam_cannot_be_compiled_into_a_shipped_profile() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
