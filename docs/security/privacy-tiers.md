@@ -1509,11 +1509,33 @@ are: **the badge is a statement about provenance, not about the data behind the 
 **Publishing to BAAM is what grants a private badge.** `medcp` and `msbaseagent` both reach
 institutional data and are public *solely because they are unpublished*. Where and by whom that is
 revisited: **in the pull request that adds the card to `landing/baam.html`, by the Baranzini Lab
-reviewer** — and it is forced rather than remembered, because the `--check` gate makes it
-impossible to publish a card without the generated Rust const changing in the same commit, and the
-generator hard-fails when a card's description matches a clinical keyword list (`patient`,
-`clinical record`, `EHR`, `PHI`, `medical record`, `de-identified clinical`) with no `data-privacy`
-attribute present.
+reviewer.** Two mechanisms make that a build failure rather than a thing someone remembers, and one
+mechanism that used to be claimed here no longer exists.
+
+1. **The `--check` gate** (`node landing/scripts/build-registry.mjs --check`, run by CI and by
+   `just check-everything`) fails unless the three generated outputs are exactly what `baam.html`
+   generates — so a card cannot be published without `landing/registry.json` and the desktop
+   fallback changing in the same commit, and a *private* card cannot be published without
+   `crates/biorouter/src/privacy/registry_private.rs` changing too.
+2. **The private set is a closed list** (`EXPECTED_PRIVATE_EXTENSIONS` in
+   `landing/scripts/build-registry.mjs`, Task 54). The generator hard-fails unless the catalog's
+   private set is exactly `{cdwagent, ucsfomopagent}` with exactly the affiliation each is recorded
+   under — checked in all three directions, so an extra private card, a missing one, and a
+   re-affiliated one are each a named failure. A card therefore **cannot make itself private**:
+   doing so takes two edits, the list and the page, and the second is what makes somebody review the
+   first.
+
+⚠ **What neither mechanism covers, and what was given up to get here.** This section previously
+asserted a third: that the generator hard-fails when a card's description matches a clinical keyword
+list (`patient`, `clinical record`, `EHR`, `PHI`, `medical record`, `de-identified clinical`) with no
+`data-privacy` attribute. **That rule was deleted in Task 54** (operator ruling, 2026-08-04: *"the
+description don't matter"*). It inferred a security property from marketing prose and could only
+produce false failures — SPOKE describes diseases, and an imaging or literature tool can honestly say
+"patient" while touching nothing sensitive. Its one real use was the case this section is about: a
+future clinical extension whose author forgets to tag it. **The closed list does not catch that** —
+the set simply stays at two, and an untagged clinical card publishes as public. That case now rests
+entirely on the Baranzini Lab reviewer named above. If it needs mechanical cover later, the answer is
+an explicit field on the card, not a return to guessing from the description.
 
 **Two naming consequences, known rather than discovered:** a hand-installed extension *named*
 `ucsfomopagent` inherits the private badge (fail-closed, fine); and a genuinely private extension
@@ -1984,10 +2006,16 @@ const extension_name = slugFromUrl(download).replace(/-v?\d+(\.\d+)*$/, '');
 ```
 
 plus both keys in the emitted object, plus **hard build failures** (the generator currently never
-fails): if `privacy` is neither value; if `privacy === 'private'` and `extension_name` is empty; and
-if a card's description matches the clinical keyword list with **no** `data-privacy` attribute
-present at all. That last one is the mechanism that forces the medcp/msbaseagent revisit at publish
-time rather than relying on someone remembering.
+fails): if `privacy` is neither value; and if `privacy === 'private'` and `extension_name` is empty.
+
+> **Amended 2026-08-04 (Task 54).** This section originally listed a third failure — a card whose
+> description matches a clinical keyword list with **no** `data-privacy` attribute — and called it
+> the mechanism that forces the medcp/msbaseagent revisit at publish time. **That rule was never
+> going to work and is not in the shipped generator.** It is replaced by a closed list,
+> `EXPECTED_PRIVATE_EXTENSIONS`, which fails the build unless the catalog's private set is exactly
+> `{cdwagent, ucsfomopagent}` with the affiliation each is recorded under. The closed list does *not*
+> cover the untagged-clinical-card case; see the ⚠ in [§10.4](#104-accepted-risks-stated-plainly)
+> for what that trades away and who now carries it.
 
 **The default matters more than the extraction.** Defaulting to `'public'` means an un-annotated
 card is public by construction, so R11(ii)'s fail-open direction is enforced by the tool rather
