@@ -454,6 +454,66 @@ mod tests {
         );
     }
 
+    /// Task 56: a model covered by **two** institutions is a different flow from
+    /// either half, and its grant key says so.
+    ///
+    /// ⚠ **A grant is the user's acceptance of ONE disclosure.** "Covered by
+    /// ucsf" and "covered by ucsf and stanford" are not the same disclosure —
+    /// the second also sends the extension's inputs and results to Stanford — so
+    /// a spanning model inheriting a singleton's approval would clear a flow
+    /// nobody was shown. The prefix (`institutions:` with a JSON array, beside
+    /// the untouched `institution:<id>`) is what prevents it, and it was
+    /// argued in a doc comment and asserted nowhere.
+    ///
+    /// The last pair is what the JSON array buys over a joined string: an
+    /// institution id is only `name_to_key`-normalised (lowercase, whitespace
+    /// stripped), so it may contain any separator character, and `{"a+b"}`
+    /// would collide with `{"a", "b"}` under `+`.
+    #[tokio::test]
+    async fn a_model_covered_by_two_institutions_does_not_inherit_either_halfs_grant() {
+        let (_dir, sm, id) = session_manager_with_a_chat().await;
+        let spanning = |names: &[&str]| {
+            Some(
+                ModelAffiliation::institutions(names.iter().map(|n| InstitutionId::new(n)))
+                    .expect("a fixture names at least one institution"),
+            )
+        };
+
+        record_for_test(&sm, &id, "ucsfomopagent", bound_to("ucsf"))
+            .await
+            .unwrap();
+        assert!(
+            is_granted(&sm, &id, "ucsfomopagent", bound_to("ucsf")).await,
+            "the singleton key must be unchanged, or every grant already in a user's \
+             database stops matching"
+        );
+        assert!(
+            !is_granted(&sm, &id, "ucsfomopagent", spanning(&["ucsf", "stanford"])).await,
+            "a pair spanning two institutions must not inherit one half's approval — it \
+             discloses to an endpoint the user was never shown"
+        );
+
+        // ...and the other direction: approving the pair does not approve a half.
+        record_for_test(&sm, &id, "cdwagent", spanning(&["ucsf", "stanford"]))
+            .await
+            .unwrap();
+        assert!(is_granted(&sm, &id, "cdwagent", spanning(&["ucsf", "stanford"])).await);
+        assert!(
+            !is_granted(&sm, &id, "cdwagent", bound_to("ucsf")).await,
+            "a grant for the pair is not a grant for either institution alone"
+        );
+        assert!(
+            !is_granted(
+                &sm,
+                &id,
+                "cdwagent",
+                spanning(&["ucsf", "stanford", "broad"])
+            )
+            .await,
+            "two spanning models that differ in membership are different flows"
+        );
+    }
+
     /// The extension half is normalised on both sides, so the spelling the user's
     /// UI sends (`UCSFOMOPAgent`) finds the grant the dispatch looks up under the
     /// resolved client name (`ucsfomopagent`). Two normalisers would produce a
