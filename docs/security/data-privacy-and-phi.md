@@ -83,12 +83,14 @@ What that means in practice:
   ratchet: it only ever goes up on its own.
 - **A private chat cannot be switched to a commercial model.** The model picker, the CLI, the HTTP
   API and another chat steering this one all reach the same check and are refused the same way: the
-  chat is left unchanged, the refusal names the model it declined, and retrying does not help.
-  Starting a *new* chat on the commercial model is always available and is the intended way through
-  — the boundary is the transcript, not the model.
-- **A public chat cannot reach private material.** It cannot call the private data extensions, read
-  a private chat's transcript through chat recall, read a knowledge base marked private, or spawn a
-  subagent on a private model to fetch any of it on its behalf.
+  chat is left unchanged, the refusal names the **provider** it declined, and retrying does not
+  help. Starting a *new* chat on the commercial model is always available and is the intended way
+  through — the boundary is the transcript, not the model.
+- **A public chat cannot reach private material through the tools it has by default.** It cannot
+  call the private data extensions, read a private chat's transcript through chat recall, read a
+  knowledge base marked private, or spawn a subagent on a private model to fetch any of it on its
+  behalf. ⚠ **Two paths are exceptions and are listed under *What it does not do* below** — read
+  them before relying on this bullet.
 - **Knowledge bases carry the same mark.** A base takes the tier of the most sensitive chat that has
   written into it, and a public chat may not read a private base. You can publicize or privatize a
   base deliberately; a publicize tells you how many pages and sources it is about to release.
@@ -97,13 +99,21 @@ What that means in practice:
   flow and does not transfer. A flow that crosses institutions is warned about, and accepting it is
   a deliberate act that is recorded.
 
-**Undoing it is a deliberate, recorded act, and how deliberate depends on what the chat touched.** A
-chat that merely *ran a turn* on a private model is declassified with a single confirmation. A chat
-that reached a private **data source** — a private extension, a private knowledge base, or a private
-parent it was spawned from — needs two proofs, because they answer different questions: you type the
-last six characters of the session id (*which* chat), and you clear your operating-system password
-prompt (*who* you are) — the same prompt macOS, Windows or Linux raises for any privileged action.
-Either way the change is written to a ledger. From the terminal:
+**Undoing it is a deliberate, recorded act, and how deliberate depends on why the chat was marked.**
+The single-confirmation path is narrow: it applies only to a chat Biorouter watched *run a turn* on
+a private model. Everything else gets the stronger control — a chat that reached a private **data
+source** (a private extension, a private knowledge base, or a private parent it was spawned from),
+a chat that was imported, and, importantly, **every chat the one-time migration marked private**.
+Those carry a "we inferred this from the model you last used" provenance rather than an observed
+turn, so they take the strong path even though all they ever did was run turns; on day one that is
+likely to be most of your private chats.
+[What happens to your existing chats](privacy-tiers-migration.md#fixing-a-chat-the-migration-got-wrong)
+explains why.
+
+The stronger control asks for two proofs, because they answer different questions: you type the last
+six characters of the session id (*which* chat), and you clear your operating-system password prompt
+(*who* you are) — the same prompt macOS, Windows or Linux raises for any privileged action. Either
+way the change is written to a ledger. From the terminal:
 `biorouter session declassify <session-id>`.
 
 **Turning it off is one switch, and it is not subtle.** Settings → Privacy disables every guardrail
@@ -112,11 +122,28 @@ and re-enabling it does not go back and classify the gap. The disclosure above i
 not* the feature is enabled, because turning it off removes the enforcement and not the exposure.
 
 ⚠ **What it does not do.** Privacy tiers govern what the *agent* can reach through Biorouter's own
-storage and tools. They do not encrypt anything at rest, and they do not stop a commercial model
-from reading ordinary files on this computer through the shell — including a file an earlier private
-chat wrote somewhere else on disk. That is why the guidance below still matters: **de-identify
-first, and pick the right provider first.** The enforcement is a backstop for a chat that drifts
-into sensitive territory, not a licence to start one there.
+storage and tools, and they do not encrypt anything at rest. Three gaps are known and deliberate
+enough to name, because each one is a way a commercial model still reaches material you would call
+private:
+
+- **The shell reads ordinary files.** Nothing stops a public chat from reading files on this
+  computer through the shell — including a file an earlier private chat wrote somewhere on disk.
+  This is the one the guardrails were explicitly not extended to cover, and it is why the
+  [what a non-private model can reach](#what-a-non-private-model-can-reach) disclosure is shown
+  whether or not privacy tiers are enabled.
+- **Workspace Control reads private transcripts.** If you have turned on the **Workspace Control**
+  extension (it is off by default, and you get the whole tool set when you enable it), a public chat
+  can read *any* other chat's transcript with `workspace_read_conversation` — including a private
+  one. That tool checks only whether a chat is hidden, not its privacy tier, so the door chat recall
+  closes is left open beside it. **"Chat recall refused it" does not mean the content is
+  unreachable.** If you use Workspace Control and you keep PHI in chats, treat every chat on the
+  machine as reachable by whichever model is driving.
+- **The chat list is not filtered.** Anything that can talk to the local Biorouter daemon can list
+  every chat on the machine — name, working directory and privacy mark, though not the contents.
+
+That is why the guidance below still matters: **de-identify first, and pick the right provider
+first.** The enforcement is a backstop for a chat that drifts into sensitive territory, not a licence
+to start one there.
 
 For the mechanics — what the migration did to chats you already have, and how each guardrail works —
 see [what happens to your existing chats](privacy-tiers-migration.md) and
