@@ -222,6 +222,63 @@ test('--assert-private-set is refused on a real run, which always asserts it', (
   });
 });
 
+test('a REAL run applies the closed private set, not only a run that asks for it', () => {
+  // The half the flag cannot cover, and the half that matters.
+  //
+  // `assertClosedPrivateSet` runs under `IS_REAL_RUN || ASSERT_PRIVATE_SET`.
+  // Delete the `IS_REAL_RUN ||` and every other gate in this file stays green:
+  // the three closed-set fixtures pass the flag explicitly, `--check` on a
+  // conforming page has nothing to report, and the test above asserts only that
+  // the flag is REFUSED on a real run — never that the real run does the work.
+  // Yet the real run is the only one that writes registry_private.rs, and
+  // `--check` is the only invocation CI and `just check-everything` make. So the
+  // one path that decides what the daemon withholds would have had no coverage
+  // at all, and the gate could stop firing without a single test going red.
+  //
+  // Mutating the real catalog is the only way to exercise it, because "real run"
+  // is defined as reading the real baam.html. `--check` is the safe mode for
+  // that: it writes nothing, and here it exits before even the comparison
+  // because the violation drain precedes it. The page is restored in a `finally`
+  // regardless, and asserted restored afterwards — a test that leaves the
+  // published catalog mutated is worse than no test.
+  //
+  // The mutation renames one private card's join key, which trips BOTH loops at
+  // once: the renamed key is not in the closed list, and the listed key now has
+  // no private card. The second is the dangerous direction — an extension that
+  // keeps working and quietly stops being withheld from public sessions.
+  const page = join(LANDING, 'baam.html');
+  const original = readFileSync(page, 'utf8');
+  protectingArtifacts(() => {
+    try {
+      const mutated = original.replace(
+        'data-extension-name="CDWAgent"',
+        'data-extension-name="NotListedAgent"'
+      );
+      assert.notEqual(mutated, original, 'the mutation must actually apply, or this proves nothing');
+      writeFileSync(page, mutated);
+
+      const r = run({ args: ['--check'] });
+      assert.equal(r.code, 1, `a real run must refuse the widened set\n${r.both}`);
+      assert.match(r.stderr, /"notlistedagent" is not in the closed private set/);
+      assert.match(
+        r.stderr,
+        /the closed private set names "cdwagent", but no card in this catalog declares/
+      );
+      // The advice is part of the rule, not decoration: a gate that says only
+      // "unexpected" is one people delete.
+      assert.match(r.stderr, /EXPECTED_PRIVATE_EXTENSIONS in landing\/scripts\/build-registry\.mjs/);
+    } finally {
+      writeFileSync(page, original);
+    }
+  });
+  assert.equal(readFileSync(page, 'utf8'), original, 'the real catalog must be restored');
+
+  // And the restored page still passes, so the failure above was the mutation
+  // and not something this test left behind.
+  const clean = run({ args: ['--check'] });
+  assert.equal(clean.code, 0, clean.both);
+});
+
 test('attribute order does not decide whether a card exists', () => {
   // A card that reads perfectly in a browser must not be invisible to the
   // generator: an invisible private card is an empty compiled-in private set.
