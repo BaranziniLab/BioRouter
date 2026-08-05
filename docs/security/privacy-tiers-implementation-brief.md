@@ -6,10 +6,13 @@
 > [`privacy-tiers.md`](privacy-tiers.md) (the design) or
 > [`privacy-tiers-execution-plan.md`](privacy-tiers-execution-plan.md) (the fifty-one task units) —
 > it tells you how to use them and where they are known to be wrong.
-> **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)).**
-> The plan it fronts has failed four independent adversarial review rounds and is expected to change
-> again during implementation. Read [the brief is subject to change](#the-brief-is-subject-to-change)
-> before anything else.
+> **Status:** **Executed** — the work this brief fronts is implemented for v1 on the
+> `feat/privacy-tiers` branch, not merged to `main` as of 2026-08-05. It is retained as the record of
+> which enforcement approaches are dead and why. **Narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)).**
+> The plan it fronts had failed four independent adversarial review rounds before implementation
+> began, and did change during it. Read [the brief is subject to change](#the-brief-is-subject-to-change)
+> before anything else, and see the design's
+> [What shipped, and what did not](privacy-tiers.md#what-shipped-and-what-did-not) for the outcome.
 >
 > ⚠ **Stage 3 is descoped.** The general filesystem barrier — the stage that failed review three times —
 > is out of scope for v1; its tasks are marked `DEFERRED` in the plan and kept intact. Two new task

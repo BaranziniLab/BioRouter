@@ -10,7 +10,11 @@
 > the user-controllable knowledge-base tier and the non-private-model disclosure the operator ruled on
 > 2026-07-30 — each with a Files table, a failing test, complete
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
-> **Status:** Proposed — ready to execute. The design's rulings are settled (see
+> **Status:** **Executed** — every task unit below was run on the `feat/privacy-tiers` branch, not
+> merged to `main` as of 2026-08-05; this is now the record of *how*, including the
+> [review provenance](#review-provenance--what-evidence-this-branch-actually-has) the branch actually
+> has (19% independent, 81% self-review) and the questions implementation left open. The design's
+> rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
 > [Accepted risks](#accepted-risks); **twenty** questions remain open (see
 > [Open questions](#open-questions)) — the design's eleven minus the one the fifth-round ruling
