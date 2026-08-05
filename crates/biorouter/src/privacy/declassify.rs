@@ -617,7 +617,7 @@ mod tests {
             &sm,
             &id,
             Some(&confirmation_phrase(&id)),
-            Some(&SystemAuthorization::for_test(&[id.clone()])),
+            Some(&SystemAuthorization::for_test(std::slice::from_ref(&id))),
             &UserConfirmation::for_test(),
         )
         .await
@@ -708,7 +708,7 @@ mod tests {
             .unwrap();
 
         let ok = UserConfirmation::for_test();
-        let granted = SystemAuthorization::for_test(&[id.clone()]);
+        let granted = SystemAuthorization::for_test(std::slice::from_ref(&id));
         assert_eq!(
             declassify(&sm, &id, None, Some(&granted), &ok)
                 .await
@@ -916,7 +916,7 @@ mod tests {
         assert!(audit_rows(&sm, &id).await.is_empty());
 
         // Both proofs, and only then.
-        let granted = SystemAuthorization::for_test(&[id.clone()]);
+        let granted = SystemAuthorization::for_test(std::slice::from_ref(&id));
         assert_eq!(
             declassify(
                 &sm,
