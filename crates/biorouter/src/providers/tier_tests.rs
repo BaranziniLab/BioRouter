@@ -114,23 +114,51 @@ fn versa_tier_for_endpoint(endpoint: &str) -> ProviderTier {
     super::ucsf_gateway_tier(endpoint)
 }
 
+/// **The private set is a table of reviewed decisions, not a count** (issue #56,
+/// Task 56 Step 4).
+///
+/// This was `the_private_set_is_the_four_the_operator_named`, and it closed the
+/// dangerous direction by *cardinality*: the registry's private names had to
+/// equal a hardcoded list of four. That works exactly once. A fifth private
+/// provider — and the operator ruling of 2026-08-04 says there will be more,
+/// possibly under other institutions — arrives as an arithmetic failure with
+/// nothing to write down, so the repair is to edit a number rather than to
+/// record a decision. A gate whose repair teaches nothing is a gate people
+/// delete.
+///
+/// The shape Task 53 already uses for the tier census replaces it: every
+/// provider appears in a table **with a reason**, and completeness is what is
+/// asserted. Adding a fifth private provider is then a reviewed row next to four
+/// others that each say why, which is the conversation the count was trying to
+/// force and could not have.
+///
+/// ⚠ **This still closes the direction that leaks.** A provider that starts
+/// claiming Private with no row fails here — the loop below is over the LIVE
+/// registry, so it cannot be satisfied by editing this file alone. What changed
+/// is only that the fix is a sentence rather than an increment.
+///
+/// ⚠ **It reads `factory`'s table rather than keeping its own.** Two lists of
+/// which providers are Private is one to forget, and the forgotten one is the
+/// guard.
 #[tokio::test]
-async fn the_private_set_is_the_four_the_operator_named() {
+async fn the_private_set_is_a_table_of_reviewed_decisions() {
     use crate::privacy::ProviderTier::{Private, Public};
 
-    let mut expected: Vec<&str> = vec!["llamacpp", "ollama", "versa_azure"];
-    // Without the feature the provider is not compiled in, so it is not in the
-    // registry and there is nothing to assert about it.
-    #[cfg(feature = "aws-providers")]
-    expected.push("versa_bedrock");
-    expected.sort();
+    let decided = super::factory::tests::private_tier_providers();
+    assert!(
+        !decided.is_empty(),
+        "the tier table is empty, so every assertion below is vacuous"
+    );
 
-    for name in &expected {
+    for (name, why) in &decided {
         assert_eq!(
             tier_for_name_at_default_config(name).await,
             Private,
-            "{name}"
+            "{name} is filed as private but does not ship Private"
         );
+        // A row with no reason records nothing, which is the whole content of
+        // this shape.
+        assert!(!why.is_empty(), "{name} is private for no stated reason");
     }
     // Everything hosted by an AI company or a large cloud is public — including
     // the ones whose names look institutional. azure.rs ships the UCSF gateway
@@ -154,9 +182,20 @@ async fn the_private_set_is_the_four_the_operator_named() {
             "{name}"
         );
     }
-    // ...and the set is closed: naming a *fifth* provider Private anywhere in
-    // the tree fails here, which the loop above cannot do on its own.
-    assert_eq!(private_names_in_the_registry().await, expected);
+    // ...and the set is CLOSED BY COMPLETENESS: a provider that claims Private
+    // anywhere in the tree and has no row fails here, which the loop above
+    // cannot do on its own. The failure names the provider and asks for the
+    // decision, rather than reporting that a number is off by one.
+    for name in private_names_in_the_registry().await {
+        assert!(
+            decided.iter().any(|(n, _why)| *n == name),
+            "{name} ships ProviderTier::Private and is in no tier table. Declaring a provider \
+             private is a decision about what a private session may be bound to, so it needs a \
+             row saying why, in `private_tier_providers` in providers/factory.rs — beside the \
+             ones already there, which each name the predicate or endpoint their tier is decided \
+             from."
+        );
+    }
 
     // The registry above is the type-level claim every UI surface reads. Cross
     // -check it against a real instance at the shipped default host, where the
@@ -347,9 +386,9 @@ impl Provider for ProviderThatDeclaresNoTier {
 /// symmetric. A genuinely private provider tagged Public is over-restricted —
 /// a usability loss. A genuinely public provider tagged Private is handed PHI
 /// — a disclosure. Only the second is dangerous, and
-/// `the_private_set_is_the_four_the_operator_named` above is what closes it:
-/// declaring a *new* provider Private fails there until the operator's list is
-/// updated.
+/// `the_private_set_is_a_table_of_reviewed_decisions` above is what closes it:
+/// declaring a *new* provider Private fails there until someone adds a row
+/// saying why it may be.
 ///
 /// So this test exists to stop the default from being "helpfully" inverted —
 /// by a future refactor that infers Private from a local-looking base URL, a
@@ -358,7 +397,7 @@ impl Provider for ProviderThatDeclaresNoTier {
 /// different code and can be changed independently:
 ///
 /// * [`ProviderMetadata::tier`] is what `GET /config/providers` serves to
-///   every UI surface, and what `the_private_set_is_the_four_the_operator_named`
+///   every UI surface, and what `the_private_set_is_a_table_of_reviewed_decisions`
 ///   enumerates.
 /// * [`Provider::tier`] is what the enforcement path reads.
 #[test]

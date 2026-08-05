@@ -890,7 +890,7 @@ mod tests {
             s.id = row.id.clone();
             s
         };
-        let stanford = Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+        let stanford = Some(crate::privacy::affiliation::ModelAffiliation::institution(
             crate::privacy::affiliation::InstitutionId::new("stanford"),
         ));
 
@@ -927,7 +927,7 @@ mod tests {
         );
 
         // UCSF's own model digests it — or the gate is just "refuse everyone".
-        let ucsf = Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+        let ucsf = Some(crate::privacy::affiliation::ModelAffiliation::institution(
             crate::privacy::affiliation::InstitutionId::new("ucsf"),
         ));
         let out = ingest_conversation(

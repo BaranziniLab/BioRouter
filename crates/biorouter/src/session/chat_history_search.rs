@@ -168,13 +168,32 @@ impl<'a> ChatHistorySearch<'a> {
             return None;
         }
         const TOUCHED: &str = "json_each(COALESCE(NULLIF(s.session_affiliations, ''), '[]'))";
+        let unclaimed_only = || {
+            Some((
+                format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED})"),
+                None::<String>,
+            ))
+        };
         match self.caller_affiliation {
             Some(ModelAffiliation::Local) => None,
-            Some(ModelAffiliation::Institution(id)) => Some((
-                format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED} WHERE value <> ?)"),
-                Some(id.as_str().to_string()),
-            )),
-            None => Some((format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED})"), None)),
+            // A model covered by exactly one institution.
+            other => match other.and_then(|m| m.sole_institution()) {
+                Some(id) => Some((
+                    format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED} WHERE value <> ?)"),
+                    Some(id.as_str().to_string()),
+                )),
+                // Unstated, or covered by two or more. ⚠ The two land on one
+                // clause because the union rule makes them the same answer, not
+                // because a spanning model is treated as unknown: a chat is
+                // reachable only if EVERY institution it touched covers the
+                // reader, and a reader covered by two institutions is covered by
+                // neither alone — so no claimed chat qualifies, and only the
+                // unclaimed ones do. That is exactly `owners_compatible`'s
+                // verdict for both, and this module's
+                // `the_affiliation_clause_is_owners_compatible_in_sql` drives
+                // them against it rather than trusting this comment.
+                None => unclaimed_only(),
+            },
         }
     }
 
@@ -622,6 +641,95 @@ mod tests {
     /// `Iterator`, so the concatenation is a free function.
     fn chain(a: Vec<Chat>, b: Vec<Chat>) -> Vec<Chat> {
         a.into_iter().chain(b).collect()
+    }
+
+    /// What the clause this builder chose actually admits, decoded from its
+    /// three shapes. Not a policy — a reader for the assertion below.
+    fn clause_admits(
+        clause: &Option<(String, Option<String>)>,
+        touched: &std::collections::BTreeSet<crate::privacy::affiliation::InstitutionId>,
+    ) -> bool {
+        match clause {
+            // No clause at all: every chat qualifies.
+            None => true,
+            // `NOT EXISTS (… WHERE value <> ?)` — every institution the chat
+            // touched must be the bound one.
+            Some((_, Some(bound))) => touched.iter().all(|o| o.as_str() == bound),
+            // `NOT EXISTS (…)` — the chat touched no institution at all.
+            Some((_, None)) => touched.is_empty(),
+        }
+    }
+
+    /// Task 56: **the SQL clause is `affiliation::owners_compatible` in SQLite**,
+    /// held to it rather than described as agreeing with it.
+    ///
+    /// The clause has three shapes and the model used to have three shapes, so
+    /// the mapping was one-to-one and a comment was nearly enough. It is not any
+    /// more: a model covered by TWO institutions takes the *same* clause as an
+    /// unstated one. That is a genuine coincidence of the union rule — a reader
+    /// covered by two institutions is covered by neither alone, so no claimed
+    /// chat qualifies for it, which is exactly the unstated row — and a
+    /// coincidence is the kind of thing a later edit breaks in silence. So it is
+    /// asserted against the one comparison, over every model shape this
+    /// vocabulary can produce.
+    #[tokio::test]
+    async fn the_affiliation_clause_is_owners_compatible_in_sql() {
+        use crate::privacy::affiliation::{owners_compatible, InstitutionId, ModelAffiliation};
+        use std::collections::BTreeSet;
+
+        assert!(
+            crate::privacy::privacy_tiers_enabled(),
+            "the clause is only built with the feature on, so this test would be vacuous"
+        );
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new())
+            .await
+            .unwrap();
+
+        let inst = InstitutionId::new;
+        let models = [
+            None,
+            Some(ModelAffiliation::Local),
+            Some(ModelAffiliation::institution(inst("ucsf"))),
+            Some(ModelAffiliation::institution(inst("stanford"))),
+            Some(
+                ModelAffiliation::institutions([inst("ucsf"), inst("stanford")])
+                    .expect("a two-element set is not empty"),
+            ),
+        ];
+        let touched_sets: [&[&str]; 5] = [
+            &[],
+            &["ucsf"],
+            &["stanford"],
+            &["ucsf", "stanford"],
+            &["ucsf", "stanford", "broad"],
+        ];
+
+        for model in models {
+            let search = ChatHistorySearch::new(
+                &pool,
+                "anything",
+                None,
+                None,
+                None,
+                None,
+                SearchReach {
+                    tier: ProviderTier::Private,
+                    affiliation: model,
+                },
+            );
+            let clause = search.affiliation_clause();
+            for touched in touched_sets {
+                let owners: BTreeSet<InstitutionId> = touched.iter().map(|o| inst(o)).collect();
+                assert_eq!(
+                    clause_admits(&clause, &owners),
+                    owners_compatible(model, &owners),
+                    "the SQL clause disagrees with the union rule for {model:?} over {touched:?}"
+                );
+            }
+        }
     }
 
     struct Db {

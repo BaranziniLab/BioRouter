@@ -81,7 +81,7 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
 /// The files whose `get_param` reads the scan covers: every provider file Task
 /// 5's Files table marks Modify to define `tier()`, plus the factory intercept
 /// it marks Reference. A new provider whose tier depends on config must be added
-/// here — and Task 5's `the_private_set_is_the_four_the_operator_named` is what
+/// here — and Task 5's `the_private_set_is_a_table_of_reviewed_decisions` is what
 /// fails if a new private provider is added without being classified at all.
 ///
 /// ⚠ `#[cfg(test)]`, along with the two scans below: these `include_str!`s pull

@@ -379,7 +379,7 @@ mod tests {
         let shipped = test_provider();
         assert_eq!(
             shipped.affiliation(),
-            Some(ModelAffiliation::Institution(InstitutionId::new("ucsf")))
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf")))
         );
 
         let mut elsewhere = test_provider();

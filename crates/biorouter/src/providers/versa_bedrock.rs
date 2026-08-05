@@ -481,7 +481,7 @@ mod tests {
         let shipped = provider_at(VERSA_BEDROCK_DEFAULT_ENDPOINT).await;
         assert_eq!(
             shipped.affiliation(),
-            Some(ModelAffiliation::Institution(InstitutionId::new("ucsf")))
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf")))
         );
 
         let elsewhere = provider_at("https://bedrock-runtime.us-west-2.amazonaws.com").await;

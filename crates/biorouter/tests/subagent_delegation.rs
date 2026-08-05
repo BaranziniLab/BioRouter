@@ -380,7 +380,7 @@ async fn a_subagent_is_linked_to_its_parent_and_gains_no_grant_by_being_spawned(
     // Nobody granted anything, so nothing is granted — at the parent, at the
     // child, and for every shape of model affiliation the triple can take. A
     // spawn is not a way to acquire authority.
-    let institution = biorouter::privacy::affiliation::ModelAffiliation::Institution(
+    let institution = biorouter::privacy::affiliation::ModelAffiliation::institution(
         biorouter::privacy::affiliation::InstitutionId::new("ucsf"),
     );
     for model in [

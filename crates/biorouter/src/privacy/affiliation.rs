@@ -146,6 +146,124 @@ fn intern(slug: String) -> &'static str {
     leaked
 }
 
+/// A **set** of institutions, interned so that the whole set stays [`Copy`].
+///
+/// # Why the model side is a set at all
+///
+/// DR-26's model side used to be one institution, and a lead/worker composite
+/// spanning two of them had no representable answer:
+/// [`crate::providers::composite_affiliation`] returned a fake institution id
+/// whose only virtue was that no real extension was tagged with it. That is a
+/// sentinel doing the work of a missing variant, and it is wrong in a specific,
+/// silent way — it is safe only while nobody registers an institution with that
+/// id, which is a property of *a string nobody has chosen yet* rather than of
+/// the design. It also made the one legitimate cross-institutional flow
+/// impossible to express: a connector whose allowlist names **both**
+/// institutions is exactly what a DUA papers, and a pair covered by both is
+/// exactly who may use it — yet the sentinel was in no allowlist, so that flow
+/// was refused along with the ones that should be.
+///
+/// # Why it is interned rather than a plain `BTreeSet`
+///
+/// The same reason [`InstitutionId`] is. [`ModelAffiliation`] must stay [`Copy`]
+/// because it rides on [`super::capability::CallCapability`], whose `Copy`
+/// derive is load-bearing — that value threads into `async move` blocks owning
+/// no `&self`. A `BTreeSet` there would break the derive and cascade into every
+/// gate signature downstream. So the set is leaked once, on first sight, and
+/// this is a `Copy` pointer to it.
+///
+/// ⚠ **The leak is bounded by the caller, not by this type** — as for
+/// [`InstitutionId`], and one step more sharply, because the number of *sets* is
+/// combinatorial in the number of ids. It is safe today by construction: the
+/// only sets this build creates are one singleton per affiliated provider and
+/// one union per distinct lead/worker pair, over ids that come from a provider's
+/// own gateway-host decision and the compiled registry snapshot. The cap belongs
+/// at the parse that admits a registry-sourced institution, for the reason
+/// [`InstitutionId::new`] records.
+///
+/// ⚠ **Equality compares the set CONTENTS, not the pointer.** The derives on a
+/// `&'static T` delegate to `T`, so `PartialEq`, `Ord` and `Hash` all read
+/// through to the `BTreeSet`. That is the belt-and-braces [`InstitutionId`]
+/// keeps for the same reason: were the interner ever to hand out two pointers
+/// for one set, pointer identity would make a set mismatch *itself*, which fails
+/// open by training users to click through the warning.
+///
+/// ⚠ **It is never empty**, and that is enforced by the constructors rather than
+/// hoped for. [`compatible`] asks whether the model's set is a *subset* of the
+/// extension's allowlist, and the empty set is a subset of everything — so an
+/// empty model affiliation would reach every private extension in the build,
+/// which is `Local`'s blanket permission granted to a model that is not local.
+/// [`Self::new`] answers `None` instead, which forces the caller to say what it
+/// means.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InstitutionSet(&'static BTreeSet<InstitutionId>);
+
+impl InstitutionSet {
+    /// The one-institution case, which is every provider this build ships.
+    pub fn of(id: InstitutionId) -> Self {
+        Self(intern_set(BTreeSet::from([id])))
+    }
+
+    /// A set from anything iterable — `None` for an empty one, which is not a
+    /// representable model affiliation (see the type's own doc).
+    pub fn new(ids: impl IntoIterator<Item = InstitutionId>) -> Option<Self> {
+        let set: BTreeSet<InstitutionId> = ids.into_iter().collect();
+        if set.is_empty() {
+            return None;
+        }
+        Some(Self(intern_set(set)))
+    }
+
+    /// The institutions, ascending. `'static` because the set is interned, so
+    /// this composes into a warning without borrowing the handle.
+    pub fn iter(&self) -> impl Iterator<Item = InstitutionId> + 'static {
+        self.0.iter().copied()
+    }
+
+    /// The underlying set, for the one comparison that needs it.
+    pub fn as_set(&self) -> &'static BTreeSet<InstitutionId> {
+        self.0
+    }
+
+    /// The single institution covering this model, or `None` when more than one
+    /// does.
+    ///
+    /// ⚠ **`None` here means "not exactly one", and every caller must treat the
+    /// two-or-more case explicitly** rather than folding it onto the
+    /// single-institution path. That is why this returns an `Option` instead of
+    /// a "first" institution: a spanning pair has no representative, and
+    /// silently picking one clears the flow to the other.
+    pub fn sole(&self) -> Option<InstitutionId> {
+        let mut ids = self.0.iter();
+        match (ids.next(), ids.next()) {
+            (Some(only), None) => Some(*only),
+            _ => None,
+        }
+    }
+
+    /// Both sets' institutions — the fold a composite provider needs.
+    pub fn union(self, other: Self) -> Self {
+        Self(intern_set(self.0.union(other.0).copied().collect()))
+    }
+}
+
+/// Interned sets, on exactly the terms [`INTERNER`] holds ids: an allocation
+/// cache whose poisoning is recovered from rather than propagated, because a
+/// panic elsewhere says nothing about its contents and a gate that panicked here
+/// would fail a call that should merely have warned.
+static SET_INTERNER: LazyLock<Mutex<HashSet<&'static BTreeSet<InstitutionId>>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn intern_set(set: BTreeSet<InstitutionId>) -> &'static BTreeSet<InstitutionId> {
+    let mut table = SET_INTERNER.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(existing) = table.get(&set) {
+        return *existing;
+    }
+    let leaked: &'static BTreeSet<InstitutionId> = Box::leak(Box::new(set));
+    table.insert(leaked);
+    leaked
+}
+
 /// Whose compliance regime covers the model bound right now. Orthogonal to
 /// [`super::ProviderTier`] — see DR-26.
 ///
@@ -157,19 +275,59 @@ fn intern(slug: String) -> &'static str {
 pub enum ModelAffiliation {
     /// Runs on this machine; the data never leaves it.
     Local,
-    /// Covered by that institution's agreements — `ucsf` for both Versa
-    /// providers, derived from the same gateway-host check that decides their
-    /// tier, so a Versa module repointed elsewhere loses Private *and* `ucsf`
-    /// together.
-    Institution(InstitutionId),
+    /// Covered by **every** named institution's agreements — `{ucsf}` for both
+    /// Versa providers, derived from the same gateway-host check that decides
+    /// their tier, so a Versa module repointed elsewhere loses Private *and*
+    /// `ucsf` together.
+    ///
+    /// A set rather than one institution, mirroring [`ExtensionAffiliation`],
+    /// because a lead/worker composite discloses the whole transcript to both
+    /// endpoints and is therefore covered by both institutions at once. The two
+    /// sets are read in **opposite** directions, which is the whole of
+    /// [`compatible`]: this one is what the model *carries*, and the extension's
+    /// is what it *admits*.
+    ///
+    /// ⚠ **Never empty** — see [`InstitutionSet`]. `Institutions(∅)` would be a
+    /// subset of every allowlist and so reach every private extension, which is
+    /// `Local`'s blanket permission handed to a model that is not local.
+    Institutions(InstitutionSet),
 }
 
 impl ModelAffiliation {
-    /// The bound institution, or `None` for [`Self::Local`].
-    pub fn institution(&self) -> Option<InstitutionId> {
+    /// The one-institution case — `Institutions({id})`. The spelling every
+    /// provider in this build uses, and the mirror of
+    /// [`ExtensionAffiliation::institution`].
+    pub fn institution(id: InstitutionId) -> Self {
+        Self::Institutions(InstitutionSet::of(id))
+    }
+
+    /// Covered by all of these — `None` for an empty iterator, which is not a
+    /// representable affiliation.
+    pub fn institutions(ids: impl IntoIterator<Item = InstitutionId>) -> Option<Self> {
+        InstitutionSet::new(ids).map(Self::Institutions)
+    }
+
+    /// The institutions covering this model, or `None` for [`Self::Local`].
+    pub fn institution_set(&self) -> Option<InstitutionSet> {
         match self {
             Self::Local => None,
-            Self::Institution(id) => Some(*id),
+            Self::Institutions(set) => Some(*set),
+        }
+    }
+
+    /// The bound institution when there is exactly one, and `None` for
+    /// [`Self::Local`] **or** for a model covered by two or more.
+    ///
+    /// ⚠ **Named `sole_` rather than `institution` because the two-or-more case
+    /// must not be silently answered.** A model spanning two institutions has no
+    /// representative: picking either one clears the flow to the other, which is
+    /// the disclosure DR-26 exists to prevent. Every caller here treats `None`
+    /// as "not covered by any single institution" and takes the restrictive
+    /// path.
+    pub fn sole_institution(&self) -> Option<InstitutionId> {
+        match self {
+            Self::Local => None,
+            Self::Institutions(set) => set.sole(),
         }
     }
 }
@@ -221,11 +379,20 @@ impl ExtensionAffiliation {
 /// | model | ext | |
 /// |---|---|---|
 /// | `Local` | anything | compatible |
-/// | `Institution(X)` | `Any` | compatible |
-/// | `Institution(X)` | `Institutions([… X …])` | compatible |
-/// | `Institution(X)` | `Institutions([…])` without X | **mismatch** |
+/// | `Institutions(M)` | `Any` | compatible |
+/// | `Institutions(M)` | `Institutions(A)` with `M ⊆ A` | compatible |
+/// | `Institutions(M)` | `Institutions(A)` otherwise | **mismatch** |
+///
+/// ⚠ **SUBSET, and the direction is the whole rule.** A model covered by
+/// `{ucsf, stanford}` reaching a `{ucsf}` connector must be **refused**: the
+/// Stanford half is in the pipeline, so UCSF's data reaches Stanford. Membership
+/// — "the allowlist names one of the model's institutions", which is the obvious
+/// reading and what a one-institution model made indistinguishable — allows
+/// exactly that flow. For a single-institution model the subset test reduces to
+/// the old `contains`, so nothing this build ships changes behaviour; the
+/// difference appears only on the pair the previous encoding could not express.
 pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool {
-    let ModelAffiliation::Institution(bound) = model else {
+    let ModelAffiliation::Institutions(bound) = model else {
         // `Local` is the MOST permissive affiliation, not a peer of the
         // institutions, and it returns here BEFORE any comparison happens.
         //
@@ -241,7 +408,10 @@ pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool 
 
     match ext {
         ExtensionAffiliation::Any => true,
-        ExtensionAffiliation::Institutions(allowed) => allowed.contains(bound),
+        // Every institution the model is covered by must be one the extension
+        // admits. `allowed.contains(any_of(bound))` would clear a pair that also
+        // discloses to an institution the allowlist never named.
+        ExtensionAffiliation::Institutions(allowed) => bound.as_set().is_subset(allowed),
     }
 }
 
@@ -308,7 +478,13 @@ pub fn cross_affiliation_owners(
         let unmatched: BTreeSet<InstitutionId> = owners
             .iter()
             .copied()
-            .filter(|o| model.map(|m| m.institution() != Some(*o)).unwrap_or(true))
+            // A model covered by two institutions has no sole one, so every
+            // owner stays "unmatched" — which is right: it matches none of them.
+            .filter(|o| {
+                model
+                    .map(|m| m.sole_institution() != Some(*o))
+                    .unwrap_or(true)
+            })
             .collect();
         let ext = ExtensionAffiliation::Institutions(unmatched);
         match model {
@@ -344,15 +520,43 @@ pub fn caller_affiliation_meta_value(model: Option<ModelAffiliation>) -> Option<
 /// Split out from [`caller_affiliation_meta_value`] so the cross-crate agreement
 /// tests can drive the two tables against each other without going through the
 /// wire.
+///
+/// ⚠ **A model covered by two or more institutions crosses as
+/// [`CallerAffiliation::Unstated`], and that is exact rather than a
+/// simplification.** The wire word is `institution:<id>`, singular, and the far
+/// side's rule is the union-of-owners one: a base owned by `S` is reachable iff
+/// the caller clears every owner in `S`. For a model covered by `M` with
+/// `|M| ≥ 2` that is `∀o ∈ S: M ⊆ {o}`, which is false for every non-empty `S`
+/// and true for the empty one — precisely `Unstated`'s row
+/// (`owners.is_empty()`). So no reachability answer is lost.
+///
+/// ⚠ **The alternative is worse, which is why this is not a stopgap.** Joining
+/// the ids into one wire value (`institution:stanford+ucsf`) would be read by
+/// any reader as a *real institution* with that name — and this tree ships a
+/// separately-installed PATH CLI that routinely lags the app, so old readers are
+/// the normal case, not the edge. Such a reader would then hand that fake id to
+/// `contributed_owners` and stamp it onto a knowledge base as an owner **no
+/// model can ever match**, leaving the base permanently unreachable with no
+/// declassification path — the failure that crate's own docs name. Omitting the
+/// key says "this side cannot tell you", which is true and which every reader
+/// already handles restrictively.
+///
+/// ⚠ **What it does cost, stated rather than buried:** `contributed_owners`
+/// gives `Unstated` no owners, so a spanning model writing into a knowledge base
+/// ratchets nothing. The precise answer would be "add both", and carrying it
+/// needs a set-valued value on the wire — a protocol change on a boundary whose
+/// readers lag. That is the follow-up; contributing nothing is what an older
+/// daemon already does and is not a new hole.
 pub fn caller_affiliation(
     model: Option<ModelAffiliation>,
 ) -> biorouter_mcp::knowledge::affiliation::CallerAffiliation {
     use biorouter_mcp::knowledge::affiliation::CallerAffiliation;
     match model {
         Some(ModelAffiliation::Local) => CallerAffiliation::Local,
-        Some(ModelAffiliation::Institution(id)) => {
-            CallerAffiliation::Institution(id.as_str().to_string())
-        }
+        Some(ModelAffiliation::Institutions(set)) => match set.sole() {
+            Some(id) => CallerAffiliation::Institution(id.as_str().to_string()),
+            None => CallerAffiliation::Unstated,
+        },
         None => CallerAffiliation::Unstated,
     }
 }
@@ -459,6 +663,49 @@ pub const MARK_BUDGET: usize = 320;
 /// refusal carries.
 const MARK_OWNERS_SHOWN: usize = 2;
 
+/// `"A"`, `"A and B"`, `"A, B and C"` — a list a person reads, not a `join`.
+fn join_and(mut parts: Vec<String>) -> String {
+    match parts.len() {
+        0 => String::new(),
+        1 => parts.remove(0),
+        _ => {
+            let last = parts.pop().expect("a list of two or more has a last");
+            format!("{} and {last}", parts.join(", "))
+        }
+    }
+}
+
+/// Whose agreements cover the bound MODEL, as warning prose.
+///
+/// ⚠ **The possessive is per institution, not on the joined phrase.** "UCSF and
+/// Stanford's agreements" reads as one joint arrangement; a lead/worker pair
+/// spanning two institutions is covered by two *separate* sets of agreements,
+/// and the sentence has to say so — that separateness is the entire reason the
+/// pair is a mismatch for either institution's connector alone.
+///
+/// For one institution this renders exactly [`label`] plus `'s`, so every
+/// sentence this build ships today is unchanged to the byte.
+fn covering_agreements(bound: InstitutionSet) -> String {
+    join_and(bound.iter().map(|id| format!("{}'s", label(id))).collect())
+}
+
+/// The same institutions for the MARK, which has a byte budget: capped at
+/// [`MARK_OWNERS_SHOWN`] exactly as the extension side is, and without the
+/// possessive because the mark's sentence does not take one.
+///
+/// The model side needs the cap for the reason the extension side does — a
+/// composite can in principle span more institutions than the mark can name —
+/// and the complete list is never lost, because it stays in
+/// [`CrossAffiliation::warning`].
+fn covered_by_capped(bound: InstitutionSet) -> String {
+    let all: Vec<String> = bound.iter().map(label).collect();
+    if all.len() <= MARK_OWNERS_SHOWN {
+        return join_and(all);
+    }
+    let shown = all[..MARK_OWNERS_SHOWN].join(", ");
+    format!("{shown} and {} more", all.len() - MARK_OWNERS_SHOWN)
+}
+
 /// Who an extension's allowlist says owns its data, capped for the mark.
 fn owners_label_capped(owners: &BTreeSet<InstitutionId>) -> String {
     if owners.len() <= MARK_OWNERS_SHOWN {
@@ -515,7 +762,7 @@ pub fn cross_affiliation(
     // early returns rather than `unreachable!()` because a warning composer is
     // reached from a refusal path, and a panic there converts a control into an
     // outage.
-    let ModelAffiliation::Institution(bound) = model else {
+    let ModelAffiliation::Institutions(bound) = model else {
         return None;
     };
     let ExtensionAffiliation::Institutions(owners) = ext else {
@@ -523,12 +770,12 @@ pub fn cross_affiliation(
     };
 
     let held_by = owners_label(owners);
-    let covered_by = label(bound);
+    let covered_by = covering_agreements(bound);
 
     Some(CrossAffiliation {
         warning: format!(
             "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
-             {held_by}, but this chat is bound to a model covered by {covered_by}'s agreements. \
+             {held_by}, but this chat is bound to a model covered by {covered_by} agreements. \
              Using it would send `{extension}`'s inputs and results across that boundary. \
              Compliance does not transfer between institutions: a model approved at one has no \
              permission over another's data unless a BAA, DUA or IRB approval covers this \
@@ -544,9 +791,10 @@ pub fn cross_affiliation(
         // see `the_mark_does_not_promise_a_refusal_a_grant_may_already_have_cleared`.
         mark: format!(
             "⚠ Cross-institutional: `{extension}` holds data belonging to {}, and this chat's \
-             model is covered by {covered_by}. A call is refused unless the user has approved \
+             model is covered by {}. A call is refused unless the user has approved \
              this flow — tell them what you need it for and let them decide.",
-            owners_label_capped(owners)
+            owners_label_capped(owners),
+            covered_by_capped(bound)
         ),
     })
 }
@@ -693,11 +941,17 @@ pub fn gate_cross_affiliation(
 /// that reads `None` as "affiliation never applies" fails **open** in precisely
 /// the case DR-26 exists to catch.
 ///
-/// The safe direction is the one [`crate::providers::SPANS_INSTITUTIONS`]
-/// already takes for the composite that spans two institutions: clear an
-/// extension with no institutional claim — genuinely unaffected either way —
-/// and warn for every named one. It is not *the answer*; the answer is for the
-/// provider to state its affiliation.
+/// The safe direction is to clear an extension with no institutional claim —
+/// genuinely unaffected either way — and warn for every named one. It is not
+/// *the answer*; the answer is for the provider to state its affiliation.
+///
+/// ⚠ **This is not the arm a composite spanning two institutions takes**, and
+/// the distinction is load-bearing. That composite used to resolve to a sentinel
+/// institution that behaved like this arm, which conflated "covered by two
+/// institutions" with "covered by nobody we can name" — and cost the pair the
+/// one flow it is genuinely entitled to, a connector whose allowlist names both.
+/// [`ModelAffiliation::Institutions`] now represents it, and [`compatible`]'s
+/// subset rule answers it. What remains here is only the real unknown.
 ///
 /// The copy deliberately does **not** name an institution for the model side.
 /// Naming one would be a lie, and DR-26 requires a warning specific enough to
@@ -751,7 +1005,14 @@ mod tests {
     }
 
     fn bound(s: &str) -> ModelAffiliation {
-        ModelAffiliation::Institution(inst(s))
+        ModelAffiliation::institution(inst(s))
+    }
+
+    /// A model covered by several institutions at once — what a lead/worker pair
+    /// spanning them folds to.
+    fn spanning(names: &[&str]) -> ModelAffiliation {
+        ModelAffiliation::institutions(names.iter().map(|n| inst(n)))
+            .expect("a spanning fixture names at least one institution")
     }
 
     fn allowlist(names: &[&str]) -> ExtensionAffiliation {
@@ -847,6 +1108,83 @@ mod tests {
         ));
     }
 
+    /// ⚠ **Task 56 Step 2, and the row a one-institution build could not state.**
+    /// The model side is a SUBSET of the allowlist, not a member of it, and the
+    /// direction is the whole rule.
+    ///
+    /// A pair covered by `{ucsf, stanford}` reaching a `{ucsf}` connector must be
+    /// **refused**: the Stanford half is in the pipeline, so UCSF's data reaches
+    /// Stanford. `allowlist.contains(any_of(model))` — the obvious reading, and
+    /// the one a set-valued model makes newly expressible — allows exactly that
+    /// flow, and passes every other row in this table.
+    ///
+    /// The converse is the flow that must still work: a `{ucsf}` model reaching a
+    /// connector whose allowlist names ucsf *and* stanford is a single-institution
+    /// disclosure to a connector already cleared for it.
+    #[test]
+    fn the_model_side_is_a_subset_of_the_allowlist_not_a_member_of_it() {
+        let spans = spanning(&["ucsf", "stanford"]);
+
+        // Refused: half the pair is not covered by ucsf's agreements.
+        assert!(
+            !compatible(&spans, &allowlist(&["ucsf"])),
+            "a pair spanning ucsf and stanford discloses to stanford, which ucsf's \
+             connector never admitted"
+        );
+        assert!(!compatible(&spans, &allowlist(&["stanford"])));
+        // ...including against an allowlist that names one of them plus a third.
+        assert!(!compatible(&spans, &allowlist(&["ucsf", "broad"])));
+
+        // Allowed: the allowlist admits both halves.
+        assert!(compatible(&spans, &allowlist(&["ucsf", "stanford"])));
+        assert!(compatible(
+            &spans,
+            &allowlist(&["ucsf", "stanford", "broad"])
+        ));
+        assert!(compatible(&spans, &ExtensionAffiliation::Any));
+
+        // ...and the other direction, which is what the subset rule must not
+        // break: one institution against an allowlist naming several.
+        assert!(compatible(
+            &bound("ucsf"),
+            &allowlist(&["ucsf", "stanford"])
+        ));
+    }
+
+    /// The empty model set is unrepresentable, and that is a safety property
+    /// rather than tidiness.
+    ///
+    /// [`compatible`] asks `model ⊆ allowlist`, and ∅ is a subset of everything —
+    /// so `Institutions(∅)` would reach **every** private extension in the build:
+    /// `Local`'s blanket permission handed to a model that is not local, arriving
+    /// through a constructor rather than through a decision. The constructor
+    /// answers `None` so the caller has to say what it meant.
+    #[test]
+    fn a_model_covered_by_no_institution_cannot_be_built() {
+        assert_eq!(ModelAffiliation::institutions([]), None);
+        assert_eq!(InstitutionSet::new([]), None);
+        // ...and a non-empty one is built, so the guard is not simply refusing
+        // everything.
+        assert!(ModelAffiliation::institutions([inst("ucsf")]).is_some());
+    }
+
+    /// A model covered by two institutions is covered by neither *alone*, so it
+    /// has no sole institution — and every caller that asks for one must get
+    /// `None` rather than an arbitrary half.
+    ///
+    /// Picking either half is the fail-open: it silently clears the flow to the
+    /// other institution, which is the disclosure DR-26 exists to prevent.
+    #[test]
+    fn a_spanning_model_has_no_sole_institution() {
+        assert_eq!(
+            bound("ucsf").sole_institution(),
+            Some(inst("ucsf")),
+            "one institution still answers"
+        );
+        assert_eq!(spanning(&["ucsf", "stanford"]).sole_institution(), None);
+        assert_eq!(ModelAffiliation::Local.sole_institution(), None);
+    }
+
     // ------------------------------------------------- The four that catch the
     // real mistakes (Task 45, Step 3).
 
@@ -912,7 +1250,15 @@ mod tests {
             let model = if rng.next().is_multiple_of(5) {
                 ModelAffiliation::Local
             } else {
-                ModelAffiliation::Institution(inst(rng.pick(&corpus)))
+                // 1..=3 institutions, so the generator reaches the spanning
+                // shapes the sentinel encoding could not express. A generator
+                // that only ever produced singletons would leave `compatible`'s
+                // subset rule indistinguishable from membership over 4000 draws.
+                let n = 1 + (rng.next() % 3) as usize;
+                ModelAffiliation::institutions(
+                    (0..n).map(|_| inst(rng.pick(&corpus))).collect::<Vec<_>>(),
+                )
+                .expect("n is at least 1, so the set is never empty")
             };
             let ext = if rng.next().is_multiple_of(4) {
                 ExtensionAffiliation::Any
@@ -931,12 +1277,16 @@ mod tests {
             assert_eq!(answer, compatible(&model, &ext), "{model:?} vs {ext:?}");
 
             // ...and the answer is DR-26's table, restated independently.
+            // Spelled as "every institution the model carries is admitted"
+            // rather than as `is_subset`, so this stays a second statement of
+            // the rule instead of a copy of the implementation.
             let expected = match (&model, &ext) {
                 (ModelAffiliation::Local, _) => true,
                 (_, ExtensionAffiliation::Any) => true,
-                (ModelAffiliation::Institution(id), ExtensionAffiliation::Institutions(set)) => {
-                    set.contains(id)
-                }
+                (
+                    ModelAffiliation::Institutions(bound),
+                    ExtensionAffiliation::Institutions(set),
+                ) => bound.iter().all(|id| set.contains(&id)),
             };
             assert_eq!(answer, expected, "{model:?} vs {ext:?}");
         }
@@ -954,7 +1304,42 @@ mod tests {
     fn the_model_side_is_copy() {
         fn assert_copy<T: Copy>() {}
         assert_copy::<InstitutionId>();
+        // ⚠ Task 56 made the model side set-valued, which is exactly the change
+        // that would have broken this had the set not been interned. A
+        // `BTreeSet` here is the natural encoding and is not `Copy`.
+        assert_copy::<InstitutionSet>();
         assert_copy::<ModelAffiliation>();
+    }
+
+    /// [`InstitutionSet`]'s doc claims equality reads the set **contents**, not
+    /// the pointer, and rests the interned design's safety on it — the same claim
+    /// [`InstitutionId`] makes one level down, and defended here for the same
+    /// reason: pointer identity is the obvious "optimisation" for an interner and
+    /// would make a set mismatch *itself*, which fails open by training users to
+    /// click through the warning.
+    #[test]
+    fn sets_with_equal_contents_but_distinct_pointers_are_equal() {
+        let interned = InstitutionSet::new([inst("ucsf"), inst("stanford")]).expect("non-empty");
+        // Bypass the set interner. The interned copy is leaked and still live, so
+        // a second allocation of the same contents cannot share its address.
+        let bypassed = InstitutionSet(Box::leak(Box::new(
+            [inst("stanford"), inst("ucsf")].into_iter().collect(),
+        )));
+        assert!(
+            !std::ptr::eq(interned.0, bypassed.0),
+            "fixture is only meaningful if the two pointers really differ"
+        );
+
+        assert_eq!(interned, bypassed);
+        assert_eq!(
+            ModelAffiliation::Institutions(interned),
+            ModelAffiliation::Institutions(bypassed)
+        );
+        // ...and the gate agrees, which is the property that actually matters.
+        assert!(compatible(
+            &ModelAffiliation::Institutions(bypassed),
+            &allowlist(&["ucsf", "stanford"])
+        ));
     }
 
     /// `InstitutionId`'s own doc comment claims equality compares the string
@@ -988,7 +1373,7 @@ mod tests {
         // ...`Ord`, which is what `BTreeSet::contains` uses inside
         // `compatible`, so this is the property an actual gate depends on...
         assert!(compatible(
-            &ModelAffiliation::Institution(interned),
+            &ModelAffiliation::institution(interned),
             &ExtensionAffiliation::institution(bypassed)
         ));
 
@@ -1137,6 +1522,71 @@ mod tests {
         .expect("a mismatch must warn");
         assert!(warning.contains("broad"), "{warning}");
         assert!(warning.contains("stanford"), "{warning}");
+    }
+
+    /// A model covered by two institutions must have BOTH named — in the warning
+    /// and in the mark — or the user is asked to accept a flow that was described
+    /// to them as half of itself.
+    ///
+    /// ⚠ **And each institution keeps its own possessive.** "UCSF and Stanford's
+    /// agreements" reads as one joint arrangement; the pair is covered by two
+    /// separate ones, and that separateness is exactly why it is a mismatch for
+    /// either institution's connector alone.
+    #[test]
+    fn a_model_covered_by_two_institutions_names_both_of_them() {
+        let finding = cross_affiliation(
+            spanning(&["ucsf", "stanford"]),
+            "AtlantisAgent",
+            &allowlist(&["atlantis"]),
+        )
+        .expect("a pair covered by ucsf and stanford may not reach atlantis's connector");
+
+        assert!(
+            finding.warning.contains("UCSF (ucsf)"),
+            "{}",
+            finding.warning
+        );
+        assert!(finding.warning.contains("stanford"), "{}", finding.warning);
+        assert!(finding.warning.contains("atlantis"), "{}", finding.warning);
+        assert!(
+            finding.warning.contains("'s and "),
+            "each institution keeps its own possessive: {}",
+            finding.warning
+        );
+
+        // The mark names both too, and still fits the budget it rides in.
+        assert!(finding.mark.contains("ucsf"), "{}", finding.mark);
+        assert!(finding.mark.contains("stanford"), "{}", finding.mark);
+        assert!(
+            finding.mark.len() <= MARK_BUDGET,
+            "{} bytes: {}",
+            finding.mark.len(),
+            finding.mark
+        );
+    }
+
+    /// The model side of the mark is capped exactly as the extension side is, so
+    /// a composite spanning more institutions than anyone would build still
+    /// cannot make a tool description unsendable. The full list stays in the
+    /// warning, which is what the user reads.
+    #[test]
+    fn a_model_spanning_many_institutions_cannot_blow_the_marks_budget() {
+        let many: Vec<String> = (0..64).map(|i| format!("institution-number-{i}")).collect();
+        let model = ModelAffiliation::institutions(many.iter().map(|n| inst(n)))
+            .expect("64 institutions is not empty");
+        let finding = cross_affiliation(model, "someagent", &allowlist(&["atlantis"]))
+            .expect("none of the 64 is atlantis");
+        assert!(
+            finding.mark.len() <= MARK_BUDGET,
+            "a 64-institution model produced a {}-byte mark: {}",
+            finding.mark.len(),
+            finding.mark
+        );
+        assert!(
+            finding.warning.contains("institution-number-63"),
+            "the full statement must not be truncated: {}",
+            finding.warning
+        );
     }
 
     /// An empty allowlist permits nothing, and says so in words rather than
@@ -1455,6 +1905,11 @@ mod tests {
             Some(ModelAffiliation::Local),
             Some(bound("ucsf")),
             Some(bound("stanford")),
+            // ⚠ The shape the wire cannot spell. It crosses as `Unstated`, and
+            // this is what proves that costs no reachability answer: the
+            // conjoined table below is computed from the REAL model, so any
+            // divergence between it and what the far side concludes fails here.
+            Some(spanning(&["ucsf", "stanford"])),
         ];
         let owner_sets: [&[&str]; 5] = [
             &[],
@@ -1563,7 +2018,12 @@ mod tests {
             caller_affiliation as parse, CallerAffiliation,
         };
 
-        for model in [None, Some(ModelAffiliation::Local), Some(bound("ucsf"))] {
+        for model in [
+            None,
+            Some(ModelAffiliation::Local),
+            Some(bound("ucsf")),
+            Some(spanning(&["ucsf", "stanford"])),
+        ] {
             let mut meta = rmcp::model::Meta::default();
             if let Some(wire) = caller_affiliation_meta_value(model) {
                 meta.0.insert(
@@ -1582,6 +2042,26 @@ mod tests {
         // restrictive value rather than as a permit.
         assert_eq!(caller_affiliation_meta_value(None), None);
         assert_eq!(caller_affiliation(None), CallerAffiliation::Unstated);
+
+        // ⚠ The spanning model's encoding, asserted rather than implied. It
+        // must be the key's ABSENCE — not a joined id like
+        // `institution:stanford+ucsf`, which every reader would take for a real
+        // institution and stamp onto a knowledge base as an owner no model can
+        // ever match, leaving that base permanently unreachable.
+        assert_eq!(
+            caller_affiliation_meta_value(Some(spanning(&["ucsf", "stanford"]))),
+            None
+        );
+        assert_eq!(
+            caller_affiliation(Some(spanning(&["ucsf", "stanford"]))),
+            CallerAffiliation::Unstated
+        );
+        // ...and a ONE-institution model still crosses as itself, so the arm
+        // above narrowed only what it had to.
+        assert_eq!(
+            caller_affiliation_meta_value(Some(bound("ucsf"))),
+            Some("institution:ucsf".to_string())
+        );
     }
 
     // ---------------------------------------------------------------- Fixtures

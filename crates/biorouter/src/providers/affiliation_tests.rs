@@ -36,7 +36,7 @@ use crate::privacy::affiliation::{
 use crate::privacy::ProviderTier;
 
 fn ucsf() -> ModelAffiliation {
-    ModelAffiliation::Institution(InstitutionId::new("ucsf"))
+    ModelAffiliation::institution(InstitutionId::new("ucsf"))
 }
 
 /// A **real** self-hosted-engine provider built the way a declarative JSON file
@@ -360,7 +360,7 @@ fn half(tier: ProviderTier, affiliation: Option<ModelAffiliation>) -> Arc<dyn Pr
 }
 
 fn institution(name: &str) -> ModelAffiliation {
-    ModelAffiliation::Institution(InstitutionId::new(name))
+    ModelAffiliation::institution(InstitutionId::new(name))
 }
 
 fn composite(lead: Arc<dyn Provider>, worker: Arc<dyn Provider>) -> LeadWorkerProvider {
@@ -592,4 +592,172 @@ fn a_composite_spanning_two_institutions_clears_neither_of_them() {
     assert_ne!(folded, institution("ucsf"));
     assert_ne!(folded, institution("stanford"));
     assert_ne!(folded, ModelAffiliation::Local);
+}
+
+/// Task 56 Step 5 gate (1): **a two-institution build works end to end.** The
+/// half of the spanning composite the sentinel could not express.
+///
+/// The sentinel made the pair *safe* — it matched no real allowlist, so every
+/// named institution warned — at the price of making it useless: a connector
+/// whose registry entry names **both** institutions is exactly the
+/// cross-institutional arrangement a DUA papers, and a pair covered by both is
+/// exactly who may use it. `Institution(<spans-institutions>)` is not in that
+/// allowlist either, so the one legitimate cross-institutional flow was refused
+/// along with the illegitimate ones and no grant could distinguish them.
+///
+/// Set-valued with SUBSET semantics answers it: `{ucsf, stanford} ⊆
+/// {ucsf, stanford}`. This is the assertion that cannot be made to pass by
+/// widening the sentinel, only by representing the pair.
+#[test]
+fn a_composite_spanning_two_institutions_reaches_an_extension_that_allows_both() {
+    let folded =
+        super::composite_affiliation(Some(institution("ucsf")), Some(institution("stanford")))
+            .expect("two private halves must yield an affiliation, never `None`");
+
+    let allows_both = ExtensionAffiliation::institutions([
+        InstitutionId::new("ucsf"),
+        InstitutionId::new("stanford"),
+    ]);
+    assert!(
+        compatible(&folded, &allows_both),
+        "a pair covered by ucsf AND stanford must reach a connector whose allowlist \
+         names both — it is the flow both institutions' agreements already cover. \
+         {folded:?} did not, which means the fold is still encoding the pair as \
+         something other than the two institutions it spans"
+    );
+
+    // ...and the refusal direction is unchanged, so this is not the whole
+    // allowlist being cleared: a third institution's connector still warns.
+    assert!(
+        !compatible(
+            &folded,
+            &ExtensionAffiliation::institution(InstitutionId::new("broad"))
+        ),
+        "the pair is covered by neither of broad's agreements"
+    );
+}
+
+/// Task 56 Step 5 gate (1), end to end: a **real** `LeadWorkerProvider` whose
+/// two halves are covered by two different institutions, asked the question a
+/// gate asks.
+///
+/// ⚠ **Through the provider, not through the fold.** `composite_affiliation` is
+/// tested directly above; this is the path production takes —
+/// `LeadWorkerProvider::affiliation()`, the override that exists because
+/// `get_name()` answers for the lead alone — so a pair that folds correctly and
+/// is then read wrongly still fails.
+#[test]
+fn a_real_two_institution_pair_reaches_any_and_is_refused_by_one_institution() {
+    let pair = composite(
+        half(ProviderTier::Private, Some(institution("ucsf"))),
+        half(ProviderTier::Private, Some(institution("stanford"))),
+    );
+    assert_eq!(
+        pair.tier(),
+        ProviderTier::Private,
+        "fixture is only meaningful while both halves are private"
+    );
+    let bound = pair
+        .affiliation()
+        .expect("two private halves must yield an affiliation, never `None`");
+
+    // An extension with no institutional claim is unaffected by which two
+    // institutions the pair spans.
+    assert!(compatible(&bound, &ExtensionAffiliation::Any));
+
+    // A single-institution connector refuses it — including the LEAD's own,
+    // which a fold written as "keep the lead" would have cleared.
+    for named in ["ucsf", "stanford"] {
+        assert!(
+            !compatible(
+                &bound,
+                &ExtensionAffiliation::institution(InstitutionId::new(named))
+            ),
+            "{named}'s connector must refuse a pair that also discloses to the other institution"
+        );
+    }
+
+    // ...and the connector both institutions cleared admits it. This is the flow
+    // the sentinel encoding made unreachable.
+    assert!(compatible(
+        &bound,
+        &ExtensionAffiliation::institutions([
+            InstitutionId::new("ucsf"),
+            InstitutionId::new("stanford"),
+        ])
+    ));
+}
+
+/// Task 56 Step 5 gate (4): **the sentinel is gone**, so it cannot be
+/// reintroduced as a shortcut.
+///
+/// ⚠ **A fake institution id doing the work of a missing variant is wrong in a
+/// specific, silent way**: it is only safe while no real institution is called
+/// `<spans-institutions>`, which is a property of a *string nobody has chosen
+/// yet* rather than of the design. The day one is registered — by a registry
+/// entry, a hand-edited snapshot, or a provider deciding its own institution —
+/// the composite spanning two institutions silently becomes *compatible* with
+/// that one's connector.
+///
+/// A type check cannot state this: the repair deletes the symbol, so any test
+/// naming it stops compiling and would be deleted with it. So the assertion is
+/// over the source text, which is what a reintroduction would have to add back.
+#[test]
+fn the_spans_institutions_sentinel_is_gone() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("crates/biorouter sits two levels below the workspace root")
+        .join("crates");
+    assert!(
+        root.is_dir(),
+        "the scan walks {} — if that path is wrong, this test passes for the wrong reason",
+        root.display()
+    );
+
+    let mut scanned = 0usize;
+    let mut offenders: Vec<String> = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the scan must not skip an unreadable dir") {
+            let path = entry.expect("unreadable directory entry").path();
+            if path.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .to_string();
+            // This file names the sentinel in order to forbid it.
+            if rel
+                .replace('\\', "/")
+                .ends_with("providers/affiliation_tests.rs")
+            {
+                continue;
+            }
+            scanned += 1;
+            let src = std::fs::read_to_string(&path).expect("unreadable source file");
+            for (i, line) in src.lines().enumerate() {
+                if line.contains("SPANS_INSTITUTIONS") || line.contains("<spans-institutions>") {
+                    offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
+                }
+            }
+        }
+    }
+    assert!(
+        scanned >= 400,
+        "only {scanned} .rs files were scanned, so an empty result proves nothing"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the spanning-institutions sentinel is back. A fake institution id is not a \
+         representation — it is correct only until someone registers an institution \
+         with that id, and then a pair spanning two institutions silently clears one \
+         of them. `ModelAffiliation::Institutions` represents the pair; use it:\n{offenders:#?}"
+    );
 }

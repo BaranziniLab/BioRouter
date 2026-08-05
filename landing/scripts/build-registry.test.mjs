@@ -279,6 +279,47 @@ test('a REAL run applies the closed private set, not only a run that asks for it
   assert.equal(clean.code, 0, clean.both);
 });
 
+test('an institution nobody names is refused, and the refusal says how to keep it', () => {
+  // Task 56 Step 3. `INSTITUTIONS` used to be pinned by cardinality on the Rust
+  // side — "this build knows exactly one institution". That guard says nothing
+  // about whether the one institution is the RIGHT one, and its only possible
+  // repair is deletion: the day a second institution is genuinely added, the
+  // assertion is simply wrong and the person adding it deletes it. Referential
+  // integrity scales instead, and catches the error actually made — an orphan,
+  // which is either a leftover from a deleted connector or the other half of a
+  // typo in a card.
+  //
+  // Driven by mutating the real catalog, for the reason the closed-private-set
+  // test beside it is: "used" is defined against the real cards, so a fixture
+  // cannot exercise the real run. `--check` writes nothing, the page is restored
+  // in a `finally`, and the restoration is asserted afterwards.
+  const page = join(LANDING, 'baam.html');
+  const original = readFileSync(page, 'utf8');
+  protectingArtifacts(() => {
+    try {
+      // Strip the affiliation off every private card, which leaves `ucsf`
+      // declared in INSTITUTIONS and named by nothing.
+      const mutated = original.replaceAll(' data-affiliation="ucsf"', '');
+      assert.notEqual(mutated, original, 'the mutation must actually apply, or this proves nothing');
+      writeFileSync(page, mutated);
+
+      const r = run({ args: ['--check'] });
+      assert.equal(r.code, 1, `an orphaned institution must be refused\n${r.both}`);
+      assert.match(r.stderr, /institution "ucsf" is declared but no card names it/);
+      // The repair is part of the rule. A gate that says only "unexpected" is
+      // one people delete rather than update — which is exactly how the count
+      // this replaced would have ended.
+      assert.match(r.stderr, /retainedUnused/);
+    } finally {
+      writeFileSync(page, original);
+    }
+  });
+  assert.equal(readFileSync(page, 'utf8'), original, 'the real catalog must be restored');
+
+  const clean = run({ args: ['--check'] });
+  assert.equal(clean.code, 0, clean.both);
+});
+
 test('attribute order does not decide whether a card exists', () => {
   // A card that reads perfectly in a browser must not be invisible to the
   // generator: an invisible private card is an empty compiled-in private set.

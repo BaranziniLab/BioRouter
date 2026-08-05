@@ -135,27 +135,26 @@ pub(crate) fn self_hosted_tier(base_url: &str) -> ProviderTier {
 /// config edit away.
 pub(crate) fn ucsf_gateway_affiliation(endpoint: &str) -> Option<ModelAffiliation> {
     match ucsf_gateway_tier(endpoint) {
-        ProviderTier::Private => Some(ModelAffiliation::Institution(*UCSF_ID)),
+        ProviderTier::Private => Some(*UCSF_AFFILIATION),
         ProviderTier::Public => None,
     }
 }
 
-/// The two ids this module can produce, interned once each.
+/// The one affiliation this module can produce, built once.
 ///
 /// [`InstitutionId::new`] normalises and then takes the **process-wide** interner
-/// mutex (`privacy::affiliation::INTERNER`). That is fine for a cold constructor
-/// and wrong for a decider: Task 48 samples affiliation once per call, so under a
-/// parallel tool batch every provider in the process would queue on one lock to
-/// re-derive a constant. The value is identical either way — `InstitutionId`
-/// compares by string contents, not by pointer, which
-/// `ids_with_equal_contents_but_distinct_pointers_are_equal` pins — so this is a
-/// lock removed, not a semantic change, and the existing assertions against
+/// mutex (`privacy::affiliation::INTERNER`), and building the set around it takes
+/// a second one. That is fine for a cold constructor and wrong for a decider:
+/// Task 48 samples affiliation once per call, so under a parallel tool batch
+/// every provider in the process would queue on those locks to re-derive a
+/// constant. The value is identical either way — both `InstitutionId` and
+/// `InstitutionSet` compare by contents rather than by pointer, which
+/// `ids_with_equal_contents_but_distinct_pointers_are_equal` and
+/// `sets_with_equal_contents_but_distinct_pointers_are_equal` pin — so this is
+/// two locks removed, not a semantic change, and the existing assertions against
 /// `InstitutionId::new("ucsf")` are what would catch a wrong one.
-static UCSF_ID: LazyLock<InstitutionId> = LazyLock::new(|| InstitutionId::new(UCSF_INSTITUTION));
-
-/// See [`UCSF_ID`]. Interned on the same terms, for the same reason.
-static SPANS_INSTITUTIONS_ID: LazyLock<InstitutionId> =
-    LazyLock::new(|| InstitutionId::new(SPANS_INSTITUTIONS));
+static UCSF_AFFILIATION: LazyLock<ModelAffiliation> =
+    LazyLock::new(|| ModelAffiliation::institution(InstitutionId::new(UCSF_INSTITUTION)));
 
 /// The affiliation of a provider whose inference is supposed to run on this
 /// machine. [`ModelAffiliation::Local`] exactly while [`self_hosted_tier`] says
@@ -179,31 +178,6 @@ pub(crate) fn self_hosted_affiliation(base_url: &str) -> Option<ModelAffiliation
         ProviderTier::Public => None,
     }
 }
-
-/// A placeholder institution, and **not** a real one: what a composite spanning
-/// two *different* institutions resolves to.
-///
-/// ⚠ **It is unreachable in this build**, and that is pinned by
-/// `factory::this_build_knows_exactly_one_institution` rather than assumed —
-/// `UCSF_INSTITUTION` is the tree's only institution, so no lead/worker pair can
-/// span two. It exists because [`composite_affiliation`] must be total, and
-/// every *representable* alternative for that arm fails open: `None` is
-/// specified to mean "a public model, affiliation never applies";
-/// [`ModelAffiliation::Local`] reaches every private extension; and naming
-/// either half's institution silently clears the flow to the other one. This
-/// value clears only
-/// [`ExtensionAffiliation::Any`](crate::privacy::affiliation::ExtensionAffiliation::Any)
-/// — an extension with no institutional claim, which is genuinely unaffected —
-/// and warns for every named institution, which is the safe direction.
-///
-/// ⚠ **It is not the answer, only the safe direction.** DR-26's model side is
-/// `Local | Institution(id) | none`, with no value meaning "covered by two
-/// institutions at once"; the correct encoding is a *set* with subset-of-the-
-/// allowlist semantics, which `ModelAffiliation` cannot hold while it is `Copy`
-/// (Task 45 rests `CallCapability`'s `Copy` derive on that). Settling that is an
-/// operator ruling on DR-26, and the pin above forces it before a second
-/// institution can reach this arm.
-pub(crate) const SPANS_INSTITUTIONS: &str = "<spans-institutions>";
 
 /// The affiliation of a **composite** provider — DR-26's third axis for the
 /// tree's one lead/worker pair, and the sibling of [`ProviderTier::least`].
@@ -230,6 +204,21 @@ pub(crate) const SPANS_INSTITUTIONS: &str = "<spans-institutions>";
 /// public model's affiliation is the absence of one. Returning the other half's
 /// institution here would put a private-looking badge on a composite whose
 /// transcript is going to a public endpoint.
+///
+/// ⚠ **Two institutional halves fold to their UNION, and the union is the meet
+/// of their reach** rather than a widening of it. That reads backwards until the
+/// direction is fixed: the model's set is what the pair *is covered by*, and
+/// [`compatible`](crate::privacy::affiliation::compatible) asks whether it is a
+/// **subset** of the extension's allowlist — so adding an institution to the
+/// model side can only ever *narrow* what it reaches. `{ucsf} ∪ {stanford}`
+/// clears exactly the connectors that admit both, which is the conjunction the
+/// fold owes, and warns for either institution's own connector, which is the
+/// disclosure it must not hide.
+///
+/// This arm used to have no representable answer and returned a fake institution
+/// id. That was safe only while nobody registered an institution with that id,
+/// and it refused the one flow the pair is genuinely entitled to — a connector
+/// whose allowlist names both institutions, which is exactly what a DUA papers.
 pub(crate) fn composite_affiliation(
     lead: Option<ModelAffiliation>,
     worker: Option<ModelAffiliation>,
@@ -241,13 +230,16 @@ pub(crate) fn composite_affiliation(
         // nothing to whose agreements cover the pair.
         (Some(ModelAffiliation::Local), other) => other,
         (other, Some(ModelAffiliation::Local)) => other,
-        (Some(ModelAffiliation::Institution(a)), Some(ModelAffiliation::Institution(b))) => {
+        (Some(ModelAffiliation::Institutions(a)), Some(ModelAffiliation::Institutions(b))) => {
+            // The overwhelmingly common composite has both halves at one
+            // institution, where the union is the identity — and `union` would
+            // still take the set interner's mutex to rediscover that. This is a
+            // lock removed on the hot path, not a second rule: the two branches
+            // produce the same interned handle for equal sets.
             if a == b {
-                Some(ModelAffiliation::Institution(a))
-            } else {
-                // Unreachable in this build — see `SPANS_INSTITUTIONS`.
-                Some(ModelAffiliation::Institution(*SPANS_INSTITUTIONS_ID))
+                return Some(ModelAffiliation::Institutions(a));
             }
+            Some(ModelAffiliation::Institutions(a.union(b)))
         }
     }
 }

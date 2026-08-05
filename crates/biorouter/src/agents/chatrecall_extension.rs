@@ -884,7 +884,7 @@ mod tests {
         CallCapability::for_test_affiliated(
             ProviderTier::Private,
             true,
-            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+            Some(crate::privacy::affiliation::ModelAffiliation::institution(
                 crate::privacy::affiliation::InstitutionId::new(name),
             )),
         )

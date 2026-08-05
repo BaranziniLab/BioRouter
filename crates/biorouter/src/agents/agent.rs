@@ -11449,7 +11449,7 @@ mod gate_c_dispatch_tests {
 
         let elsewhere: Arc<dyn Provider> = Arc::new(ProviderCoveredBy {
             tier: ProviderTier::Private,
-            affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+            affiliation: Some(crate::privacy::ModelAffiliation::institution(
                 crate::privacy::affiliation::InstitutionId::new("stanford"),
             )),
         });
@@ -11562,7 +11562,7 @@ mod gate_c_dispatch_tests {
     fn covered_by(institution: &str) -> Arc<dyn Provider> {
         Arc::new(ProviderCoveredBy {
             tier: ProviderTier::Private,
-            affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+            affiliation: Some(crate::privacy::ModelAffiliation::institution(
                 crate::privacy::affiliation::InstitutionId::new(institution),
             )),
         })
@@ -11603,9 +11603,12 @@ mod gate_c_dispatch_tests {
     /// because this build cannot express the other arrangement.** The ruling
     /// describes a UCSF-covered Versa model refused at *another* institution's
     /// connector; `ucsf` is the only institution the compiled registry snapshot
-    /// knows (pinned by `providers::factory::tests::
-    /// this_build_knows_exactly_one_institution`), so a Stanford-owned extension
-    /// is not constructible and the foreign endpoint has to be the model. The
+    /// publishes (`privacy::registry_private::INSTITUTIONS`, and
+    /// `providers::factory::tests::
+    /// every_institution_a_provider_claims_is_published_by_the_registry` is what
+    /// keeps a provider from claiming one that is not there), so a Stanford-owned
+    /// extension is not constructible and the foreign endpoint has to be the
+    /// model. The
     /// mismatch is the same one — DR-26's table is symmetric in which side is
     /// foreign — and move 1 keeps the half that matters most: the arrangement
     /// everyone approved still runs.
@@ -11657,7 +11660,7 @@ mod gate_c_dispatch_tests {
             &agent.config.session_manager,
             &session.id,
             PRIVATE_EXTENSION,
-            Some(crate::privacy::ModelAffiliation::Institution(
+            Some(crate::privacy::ModelAffiliation::institution(
                 crate::privacy::affiliation::InstitutionId::new("stanford"),
             )),
         )

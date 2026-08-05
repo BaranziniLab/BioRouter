@@ -187,12 +187,37 @@ function withGenerationLock(body) {
 const violations = [];
 const fail = (msg) => violations.push(msg);
 
+// ---- Institutions are DECLARED, one row each ------------------------------
 // Institution id → display name. The warning copy for a cross-institutional
 // flow renders from this, so an affiliation naming an id that is absent here
 // has no name to render with and is a build failure rather than a silent pass.
-const INSTITUTIONS = {
-  ucsf: 'UCSF',
-};
+//
+// ⚠ **A list of rows, not an object literal, because adding an institution is a
+// reviewed decision.** DR-26's third axis is not a UCSF feature: a future
+// private provider or connector may be covered by another institution's
+// agreements, and the code has to be able to say so. What must NOT be possible
+// is an institution appearing by accident — a typo in one card's
+// `data-affiliation` that quietly becomes a real institution nobody approved,
+// or a row left behind after the last card naming it was deleted. Both are
+// caught by `assertInstitutionIntegrity` below, which is referential rather
+// than a count: "there should be N" is a gate people delete instead of update.
+//
+//   id             the normalised slug. `name_to_key` on the Rust side
+//                  lowercases and strips whitespace, so write it that way here.
+//   name           the display name DR-26 requires the warning to NAME. "This
+//                  may be a compliance risk" is a shrug; "UCSF (ucsf)" is
+//                  something a user can act on.
+//   retainedUnused optional prose. Present ONLY for an institution deliberately
+//                  kept in the map while no card names it — a connector being
+//                  onboarded, or one just removed whose grants should still
+//                  render. Absent means "some card must name this", which is
+//                  what catches an orphan.
+const INSTITUTIONS = [{ id: 'ucsf', name: 'UCSF' }];
+
+// The published `id -> name` map, derived so there is exactly one place an
+// institution is declared. `registry.json` and the compiled Rust snapshot both
+// render from this, and the app reads the display name out of it.
+const INSTITUTION_NAMES = Object.fromEntries(INSTITUTIONS.map((i) => [i.id, i.name]));
 
 // ---- The private set is a CLOSED LIST -------------------------------------
 // Every private extension, and the affiliation each one's data is under.
@@ -639,7 +664,7 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
       );
     }
     for (const inst of affiliation) {
-      if (!Object.prototype.hasOwnProperty.call(INSTITUTIONS, inst)) {
+      if (!Object.prototype.hasOwnProperty.call(INSTITUTION_NAMES, inst)) {
         fail(`${label}: data-affiliation names "${inst}", which is not in the institutions map`);
       }
     }
@@ -744,7 +769,82 @@ function assertClosedPrivateSet(exts) {
   }
 }
 
-if (IS_REAL_RUN || ASSERT_PRIVATE_SET) assertClosedPrivateSet(extensions);
+/**
+ * Referential integrity for the institution map — the check that replaces a
+ * count (issue #56, Task 56 Step 3).
+ *
+ * The map used to be pinned by *cardinality*: the Rust side asserted this build
+ * knew exactly one institution. That is the wrong shape of guard twice over. It
+ * says nothing about whether the one institution is the RIGHT one, and it is a
+ * gate whose only possible repair is deletion — the day a second institution is
+ * genuinely added, "there should be one" is simply wrong, and the person adding
+ * it deletes the assertion rather than learning anything from it.
+ *
+ * Referential integrity scales instead, and catches the two errors that are
+ * actually made:
+ *
+ *   * an ORPHAN — a declared institution no card names, which is either a
+ *     leftover from a deleted connector or a typo whose sibling typo is in the
+ *     card. Silence here means the map slowly fills with ids that mean nothing,
+ *     and a warning renders a display name for an institution that no longer
+ *     exists.
+ *   * the reverse — a card naming an institution the map does not declare — is
+ *     caught per card above, where the label points at the card.
+ *
+ * ⚠ **An orphan is legitimate sometimes, so it is declarable rather than
+ * forbidden.** `retainedUnused` is the escape hatch, and it is prose: an
+ * institution kept for a connector being onboarded, or one whose grants should
+ * still render after its card was pulled. Requiring a *reason* rather than a
+ * boolean is what makes the row survivable review.
+ *
+ * ⚠ **Gated to a real run**, exactly like `assertClosedPrivateSet` beside it and
+ * for the same reason: "used" is a property of the real catalog, and a fixture
+ * page legitimately names no institution at all.
+ */
+function assertInstitutionIntegrity(exts) {
+  const seen = new Set();
+  for (const i of INSTITUTIONS) {
+    if (typeof i.id !== 'string' || i.id.length === 0) {
+      fail(`an institution row has no id: ${JSON.stringify(i)}`);
+      continue;
+    }
+    if (typeof i.name !== 'string' || i.name.length === 0) {
+      fail(
+        `institution "${i.id}" has no display name — DR-26 requires a cross-institutional ` +
+          `warning to NAME both institutions, and a nameless row renders as a raw slug`
+      );
+    }
+    if (i.id !== i.id.toLowerCase() || /\s/.test(i.id)) {
+      fail(
+        `institution "${i.id}" is not normalised — the Rust side reduces an institution id ` +
+          `with name_to_key (lowercase, whitespace stripped), so this row can never be matched`
+      );
+    }
+    if (seen.has(i.id)) fail(`institution "${i.id}" is declared twice`);
+    seen.add(i.id);
+  }
+
+  const used = new Set();
+  for (const e of exts) {
+    for (const inst of Array.isArray(e.affiliation) ? e.affiliation : []) used.add(inst);
+  }
+  for (const i of INSTITUTIONS) {
+    if (used.has(i.id)) continue;
+    if (typeof i.retainedUnused === 'string' && i.retainedUnused.length > 0) continue;
+    fail(
+      `institution "${i.id}" is declared but no card names it. Delete the row, or record why ` +
+        `it is kept with retainedUnused: '…' in INSTITUTIONS in ` +
+        `landing/scripts/build-registry.mjs — an institution nobody references is either a ` +
+        `leftover or the other half of a typo, and both render a display name for a flow ` +
+        `that no longer exists`
+    );
+  }
+}
+
+if (IS_REAL_RUN || ASSERT_PRIVATE_SET) {
+  assertClosedPrivateSet(extensions);
+  assertInstitutionIntegrity(extensions);
+}
 
 // ---- The compiled-in private set -----------------------------------------
 // Rendered as Rust source rather than JSON because there is no network path to
@@ -848,9 +948,9 @@ function renderPrivateSet(exts) {
 
   const institutions = renderSliceConst(
     'pub const INSTITUTIONS: &[(&str, &str)]',
-    Object.entries(INSTITUTIONS)
-      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([id, name]) => `("${id}", "${name}")`)
+    [...INSTITUTIONS]
+      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map(({ id, name }) => `("${id}", "${name}")`)
   );
 
   return (
@@ -969,7 +1069,7 @@ const skills = [
 const registry = {
   version: 2,
   source: 'https://biorouter.ucsf.edu/baam',
-  institutions: INSTITUTIONS,
+  institutions: INSTITUTION_NAMES,
   extensions,
   skills,
 };

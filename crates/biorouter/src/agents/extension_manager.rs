@@ -4988,7 +4988,7 @@ mod tests {
         let ucsf = crate::privacy::CallCapability::for_test_affiliated(
             crate::privacy::ProviderTier::Private,
             true,
-            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+            Some(crate::privacy::affiliation::ModelAffiliation::institution(
                 crate::privacy::affiliation::InstitutionId::new("ucsf"),
             )),
         );
@@ -6767,7 +6767,7 @@ mod tests {
     fn covered_by(name: &str) -> Arc<dyn crate::providers::base::Provider> {
         Arc::new(ProviderCoveredBy {
             tier: crate::privacy::ProviderTier::Private,
-            affiliation: Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+            affiliation: Some(crate::privacy::affiliation::ModelAffiliation::institution(
                 crate::privacy::affiliation::InstitutionId::new(name),
             )),
         })
@@ -6785,7 +6785,7 @@ mod tests {
         crate::privacy::CallCapability::for_test_affiliated(
             crate::privacy::ProviderTier::Private,
             true,
-            Some(crate::privacy::affiliation::ModelAffiliation::Institution(
+            Some(crate::privacy::affiliation::ModelAffiliation::institution(
                 crate::privacy::affiliation::InstitutionId::new(institution),
             )),
         )
@@ -7309,7 +7309,7 @@ mod tests {
             &sm,
             &id,
             "ucsfomopagent",
-            Some(ModelAffiliation::Institution(InstitutionId::new(
+            Some(ModelAffiliation::institution(InstitutionId::new(
                 "stanford",
             ))),
         )
@@ -7353,7 +7353,7 @@ mod tests {
             &sm,
             &id,
             "ucsfomopagent",
-            Some(ModelAffiliation::Institution(InstitutionId::new(
+            Some(ModelAffiliation::institution(InstitutionId::new(
                 "stanford",
             ))),
         )

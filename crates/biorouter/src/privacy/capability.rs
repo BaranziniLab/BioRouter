@@ -259,7 +259,7 @@ mod tests {
     use crate::privacy::ExtensionClassification;
 
     fn stanford() -> ModelAffiliation {
-        ModelAffiliation::Institution(InstitutionId::new("stanford"))
+        ModelAffiliation::institution(InstitutionId::new("stanford"))
     }
 
     fn ucsf_extension() -> ExtensionClassification {
@@ -317,7 +317,7 @@ mod tests {
         let cap = CallCapability::for_test_affiliated(
             ProviderTier::Private,
             true,
-            Some(ModelAffiliation::Institution(InstitutionId::new("ucsf"))),
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf"))),
         );
         assert_eq!(
             cap.cross_affiliation_warning("ucsfomopagent", &ucsf_extension()),
@@ -369,9 +369,8 @@ mod tests {
     ///
     /// `LeadWorkerProvider` reached exactly that state before `f212cd48`, and a
     /// gate that treats `None` as "affiliation never applies" fails **open** in
-    /// the one case DR-26 exists to catch. The safe direction is the one
-    /// `SPANS_INSTITUTIONS` already takes: clear an extension with no
-    /// institutional claim, warn for every named one.
+    /// the one case DR-26 exists to catch. The safe direction is to clear an
+    /// extension with no institutional claim and warn for every named one.
     #[test]
     fn a_private_model_that_states_no_affiliation_clears_only_an_unconstrained_extension() {
         let cap = CallCapability::for_test_affiliated(ProviderTier::Private, true, None);

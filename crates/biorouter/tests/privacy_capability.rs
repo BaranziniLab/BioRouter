@@ -416,8 +416,15 @@ fn compatible_is_the_only_function_that_compares_two_affiliations() {
         "CallerAffiliation",
         "KbAffiliation",
         "InstitutionId",
+        // Task 56 made the model side set-valued, so the set is a second way to
+        // be holding an affiliation and belongs in this list beside the id.
+        "InstitutionSet",
         ".affiliation()",
-        ".institution()",
+        // ⚠ Renamed from `.institution()` with the accessor it names. A model may
+        // now be covered by several institutions, so the accessor answers `None`
+        // rather than picking one — and a needle that no longer matches anything
+        // is a census that has quietly stopped looking.
+        ".sole_institution()",
     ];
     /// The operators a gate deciding reach would use.
     const COMPARISON: &[&str] = &["==", "!=", "matches!(", ".contains("];

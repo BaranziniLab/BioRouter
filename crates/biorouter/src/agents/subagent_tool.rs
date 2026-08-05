@@ -3087,7 +3087,7 @@ mod tests {
         let child = resolve_child_for(
             std::sync::Arc::new(AffiliatedParent {
                 tier: ProviderTier::Private,
-                affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+                affiliation: Some(crate::privacy::ModelAffiliation::institution(
                     crate::privacy::affiliation::InstitutionId::new("stanford"),
                 )),
             }),
@@ -3171,7 +3171,7 @@ mod tests {
         let child = resolve_child_for(
             std::sync::Arc::new(AffiliatedParent {
                 tier: ProviderTier::Private,
-                affiliation: Some(crate::privacy::ModelAffiliation::Institution(
+                affiliation: Some(crate::privacy::ModelAffiliation::institution(
                     crate::privacy::affiliation::InstitutionId::new("ucsf"),
                 )),
             }),

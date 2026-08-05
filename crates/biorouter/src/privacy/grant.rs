@@ -161,10 +161,30 @@ pub fn accepted_statement(warning: &str) -> String {
 /// therefore be able to answer. Folding it onto `local` would make a grant given
 /// for an unknown endpoint silently cover a local model, which is backwards: it
 /// is the *less* trusted of the two.
+///
+/// ⚠ **A model covered by two or more institutions gets its own prefix, and the
+/// single-institution key is untouched.** A grant is approval of *one* flow, so
+/// the key must distinguish "covered by ucsf" from "covered by ucsf and
+/// stanford" — those are different disclosures, and the second must not inherit
+/// the first's approval. `institutions:` with a JSON array is used rather than a
+/// joined string because an institution id is only `name_to_key`-normalised
+/// (lowercase, whitespace stripped) and may therefore contain any separator
+/// character: `{"a+b"}` and `{"a", "b"}` would collide under `+`, which would
+/// make one user's approval silently cover a flow they never saw. Keeping
+/// `institution:<id>` byte-identical for the singleton is what stops every grant
+/// already in a user's database from ceasing to match.
 fn model_key(model: Option<ModelAffiliation>) -> String {
     match model {
         Some(ModelAffiliation::Local) => "local".to_string(),
-        Some(ModelAffiliation::Institution(id)) => format!("institution:{id}"),
+        Some(ModelAffiliation::Institutions(set)) => match set.sole() {
+            Some(id) => format!("institution:{id}"),
+            None => {
+                let ids: Vec<&str> = set.iter().map(|id| id.as_str()).collect();
+                let encoded = serde_json::to_string(&ids)
+                    .expect("a Vec<&str> always serialises to JSON, so this cannot fail");
+                format!("institutions:{encoded}")
+            }
+        },
         None => "unstated".to_string(),
     }
 }
@@ -348,7 +368,7 @@ mod tests {
     }
 
     fn bound_to(name: &str) -> Option<ModelAffiliation> {
-        Some(ModelAffiliation::Institution(InstitutionId::new(name)))
+        Some(ModelAffiliation::institution(InstitutionId::new(name)))
     }
 
     /// The statement a user decides on, assembled the way **production**
@@ -610,7 +630,7 @@ mod tests {
             // a composer that names only the extension's owner satisfies half of
             // DR-26 and reads as a complete warning.
             let model_side = statement(
-                Some(ModelAffiliation::Institution(institution)),
+                Some(ModelAffiliation::institution(institution)),
                 "someone-elses-connector",
                 &ExtensionAffiliation::institution(InstitutionId::new(
                     "an-unpublished-institution",

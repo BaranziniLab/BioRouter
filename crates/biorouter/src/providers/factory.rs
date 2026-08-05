@@ -245,7 +245,7 @@ fn create_worker_model_config(default_model: &ModelConfig) -> Result<ModelConfig
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// Every built-in provider whose **instances** can carry an affiliation
@@ -321,8 +321,14 @@ mod tests {
     /// the one-line reason. Like the affiliation table above, nothing here is a
     /// name-keyed assignment — the reason names the predicate or the endpoint the
     /// provider's own module states its tier from.
+    ///
+    /// ⚠ **`pub(crate)` so `tier_tests` reads THIS table rather than keeping a
+    /// second one** (Task 56 Step 4). Two lists of which providers are Private is
+    /// two things to update and one to forget, and the forgotten one is the guard
+    /// — it would go on passing while naming a provider that no longer exists, or
+    /// silently stop covering one that does.
     #[allow(unused_mut)]
-    fn private_tier_providers() -> Vec<(&'static str, &'static str)> {
+    pub(crate) fn private_tier_providers() -> Vec<(&'static str, &'static str)> {
         let mut rows = vec![
             (
                 "llamacpp",
@@ -401,7 +407,7 @@ mod tests {
     /// so the fail-safe default silently absorbed every provider nobody thought
     /// about. That is a **bookkeeping** gap rather than a security hole — the
     /// default is Public, which is least-permission, and
-    /// `tier_tests::the_private_set_is_the_four_the_operator_named` is what stops
+    /// `tier_tests::the_private_set_is_a_table_of_reviewed_decisions` is what stops
     /// a new provider from claiming Private. This test closes the other half:
     /// adding a `registry.register::<…>` line above now fails until someone
     /// writes down which tier that provider ships at and why.
@@ -441,7 +447,7 @@ mod tests {
                 *shipped, recorded,
                 "{name} ships {shipped:?} but is filed under {recorded:?} — \
                  fix the table, not the provider (changing a tier is Task 5's \
-                 `the_private_set_is_the_four_the_operator_named`, which needs \
+                 `the_private_set_is_a_table_of_reviewed_decisions`, which needs \
                  an operator ruling)"
             );
         }
@@ -563,35 +569,56 @@ mod tests {
         }
     }
 
-    /// The pin that keeps `providers::composite_affiliation`'s last arm
-    /// unreachable.
+    /// Task 56 Step 3 — **referential integrity, which is what replaced a
+    /// count.**
     ///
-    /// A lead/worker composite discloses the whole transcript to both endpoints,
-    /// so a pair spanning two *different* institutions is covered by neither
-    /// alone — and DR-26's model side (`Local | Institution(id) | none`) has no
-    /// value that says so. The correct encoding is a set with subset-of-the-
-    /// allowlist semantics, which `ModelAffiliation` cannot hold while it is
-    /// `Copy` (Task 45 rests `CallCapability`'s `Copy` derive on that). Settling
-    /// it is an operator ruling, not an implementer's choice.
+    /// This slot used to hold `this_build_knows_exactly_one_institution`: every
+    /// affiliated provider had to be `Local` or `Institution(ucsf)`, because
+    /// `composite_affiliation` had no representable answer for a lead/worker pair
+    /// spanning two institutions and fell back to a sentinel id. The set-valued
+    /// model affiliation removed that constraint, so the pin has nothing left to
+    /// force.
     ///
-    /// It has not had to be settled because `UCSF_INSTITUTION` is the tree's only
-    /// institution, so the pair cannot be built. ⚠ That is a **fact about this
-    /// build, not a property of the design**, and the day a second institution is
-    /// added it stops being true silently — the composite would start resolving
-    /// to a documented-safe placeholder rather than to an answer, and nothing
-    /// would say so. This test is what says so: it fails here, next to the table
-    /// the second institution was added to, with the ruling that has to land
-    /// first.
+    /// ⚠ **A count was the wrong shape of guard anyway, and it is worth saying
+    /// why rather than just deleting it.** "There should be one institution" says
+    /// nothing about whether the one is the *right* one, and its only possible
+    /// repair is deletion — the day a second institution is genuinely added the
+    /// assertion is simply wrong, so the person adding it removes the gate and
+    /// learns nothing. What replaces it scales to any number of institutions and
+    /// catches the error people actually make: a typo'd or invented institution
+    /// id, which produces a real, silent constraint — an id in no allowlist
+    /// mismatches every connector, and one that collides with a published id
+    /// clears flows nobody approved.
+    ///
+    /// The other half of the integrity — an institution in the map that nothing
+    /// references — is checked where "referenced" is defined, in
+    /// `landing/scripts/build-registry.mjs`'s `assertInstitutionIntegrity`, which
+    /// can see the catalog's cards. Here we can see the providers.
     #[test]
-    fn this_build_knows_exactly_one_institution() {
+    fn every_institution_a_provider_claims_is_published_by_the_registry() {
         for (name, why) in affiliated_providers() {
+            let Some(rest) = why.strip_prefix("Institution(") else {
+                assert!(
+                    why.starts_with("Local:"),
+                    "{name}'s affiliation row must begin `Local:` or `Institution(<id>):` so the \
+                     institution it claims can be checked against the registry — got {why:?}"
+                );
+                continue;
+            };
+            let (id, _) = rest.split_once("):").unwrap_or_else(|| {
+                panic!("{name}'s affiliation row opens `Institution(` and never closes it: {why:?}")
+            });
             assert!(
-                why.starts_with("Local:") || why.starts_with("Institution(ucsf):"),
-                "{name} is affiliated to something other than Local or ucsf ({why}).\n\
-                 A second institution makes a lead/worker pair spanning two of them \
-                 constructible, and `providers::composite_affiliation` has no representable \
-                 answer for that pair — DR-26 must first gain a set-valued model affiliation. \
-                 See `SPANS_INSTITUTIONS` in providers/mod.rs."
+                crate::privacy::affiliation::institution_display_name(
+                    crate::privacy::affiliation::InstitutionId::new(id)
+                )
+                .is_some(),
+                "{name} claims institution {id:?}, which the registry snapshot does not publish \
+                 (privacy::registry_private::INSTITUTIONS). Either it is a typo — in which case \
+                 it silently mismatches every connector, because an unpublished id is in no \
+                 allowlist — or the institution is real and belongs in INSTITUTIONS in \
+                 landing/scripts/build-registry.mjs, which is the one place an institution is \
+                 declared."
             );
         }
     }

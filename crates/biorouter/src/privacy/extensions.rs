@@ -753,7 +753,7 @@ mod tests {
         // ...so an institution's model reaches it with no warning, which is the
         // consequence that would actually be felt if this regressed.
         assert!(compatible(
-            &ModelAffiliation::Institution(inst("ucsf")),
+            &ModelAffiliation::institution(inst("ucsf")),
             &resolved.affiliation
         ));
     }
@@ -779,7 +779,7 @@ mod tests {
         assert_eq!(resolved.affiliation, ExtensionAffiliation::Any);
         // ...and therefore reachable from an institution's model without a warning.
         assert!(compatible(
-            &ModelAffiliation::Institution(inst("ucsf")),
+            &ModelAffiliation::institution(inst("ucsf")),
             &resolved.affiliation
         ));
     }
@@ -801,7 +801,7 @@ mod tests {
         assert_eq!(resolved.tier, ProviderTier::Private);
         assert_eq!(resolved.affiliation, owned_by(&["atlantis"]));
 
-        let bound = ModelAffiliation::Institution(inst("ucsf"));
+        let bound = ModelAffiliation::institution(inst("ucsf"));
         assert!(
             !compatible(&bound, &resolved.affiliation),
             "an institution the registry cannot name must not be silently cleared"
@@ -834,7 +834,7 @@ mod tests {
         let resolved = resolve_in(&SNAPSHOT, "EmptyAllowlistAgent", None);
         assert_ne!(resolved.affiliation, ExtensionAffiliation::Any);
         assert!(!compatible(
-            &ModelAffiliation::Institution(inst("ucsf")),
+            &ModelAffiliation::institution(inst("ucsf")),
             &resolved.affiliation
         ));
     }
