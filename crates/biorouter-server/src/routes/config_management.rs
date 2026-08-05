@@ -357,54 +357,7 @@ pub async fn upsert_config(
     // next launch. Its home is its own record beside `config.yaml`, and this
     // route is the only thing in the tree that writes it.
     if biorouter::privacy::mixing::is_mixing_policy_key(&query.key) {
-        // Never into the SECRET store, for the master switch's reason: the
-        // credential store is not what the resolver reads, so a secret write
-        // would move this process's cached value and silently revert at the next
-        // launch.
-        if query.is_secret {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!(
-                    "'{}' is the cross-institution mixing policy and cannot be stored as a \
-                     secret: the daemon reads it from its own record in the configuration \
-                     directory and would not see a value written to the credential store.",
-                    query.key
-                ),
-            ));
-        }
-        // DR-19 / DR-27: user-only, in every mode, and NOT conditioned on the
-        // master switch being on. Gating this guard on another control's state
-        // is the coupling that lets one disabled control disable a second.
-        if !is_user_action(&headers) {
-            return Err((StatusCode::CONFLICT, MIXING_POLICY_NEEDS_USER.to_string()));
-        }
-        // An unrecognised mode is refused, never resolved to a default: the two
-        // wrong answers fail in opposite directions, so there is no safe guess.
-        let Some(policy) = biorouter::privacy::mixing::mixing_policy_value(&query.value) else {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                MIXING_POLICY_UNKNOWN_MODE.to_string(),
-            ));
-        };
-        // The direction guard lives inside `set_policy`: loosening raises DR-24's
-        // system prompt, tightening raises nothing. Deciding it here would put a
-        // second reading of DR-27's ratchet in a route handler.
-        return match biorouter::privacy::mixing::set_policy(
-            config,
-            policy,
-            &biorouter::privacy::mixing::UserMixingPolicyChange::from_user_action(),
-        )
-        .await
-        {
-            Ok(()) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
-            // Nothing was written on this arm, so the machine is left in the mode
-            // it was already in — which is the stricter of the two.
-            Err(refused @ biorouter::privacy::mixing::SetPolicyError::Refused(_)) => Err((
-                StatusCode::FORBIDDEN,
-                format!("{MIXING_POLICY_AUTH_REFUSED} {refused}"),
-            )),
-            Err(failed) => Err((StatusCode::INTERNAL_SERVER_ERROR, failed.to_string())),
-        };
+        return upsert_mixing_policy(config, &query, &headers).await;
     }
 
     let result = config.set(&query.key, &query.value, query.is_secret);
@@ -415,6 +368,65 @@ pub async fn upsert_config(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("Failed to upsert key {}", query.key),
         )),
+    }
+}
+
+/// The mixing-policy arm of [`upsert_config`], split out so that handler stays
+/// under `clippy::too_many_lines` (issue #56, review round 5). No behaviour
+/// change: the guards below run in the order they were written in, and the
+/// caller reaches this only for `BIOROUTER_PRIVACY_MIXING_POLICY`.
+async fn upsert_mixing_policy(
+    config: &'static Config,
+    query: &UpsertConfigQuery,
+    headers: &http::HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // Never into the SECRET store, for the master switch's reason: the
+    // credential store is not what the resolver reads, so a secret write
+    // would move this process's cached value and silently revert at the next
+    // launch.
+    if query.is_secret {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "'{}' is the cross-institution mixing policy and cannot be stored as a \
+                 secret: the daemon reads it from its own record in the configuration \
+                 directory and would not see a value written to the credential store.",
+                query.key
+            ),
+        ));
+    }
+    // DR-19 / DR-27: user-only, in every mode, and NOT conditioned on the
+    // master switch being on. Gating this guard on another control's state
+    // is the coupling that lets one disabled control disable a second.
+    if !is_user_action(headers) {
+        return Err((StatusCode::CONFLICT, MIXING_POLICY_NEEDS_USER.to_string()));
+    }
+    // An unrecognised mode is refused, never resolved to a default: the two
+    // wrong answers fail in opposite directions, so there is no safe guess.
+    let Some(policy) = biorouter::privacy::mixing::mixing_policy_value(&query.value) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            MIXING_POLICY_UNKNOWN_MODE.to_string(),
+        ));
+    };
+    // The direction guard lives inside `set_policy`: loosening raises DR-24's
+    // system prompt, tightening raises nothing. Deciding it here would put a
+    // second reading of DR-27's ratchet in a route handler.
+    match biorouter::privacy::mixing::set_policy(
+        config,
+        policy,
+        &biorouter::privacy::mixing::UserMixingPolicyChange::from_user_action(),
+    )
+    .await
+    {
+        Ok(()) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
+        // Nothing was written on this arm, so the machine is left in the mode
+        // it was already in — which is the stricter of the two.
+        Err(refused @ biorouter::privacy::mixing::SetPolicyError::Refused(_)) => Err((
+            StatusCode::FORBIDDEN,
+            format!("{MIXING_POLICY_AUTH_REFUSED} {refused}"),
+        )),
+        Err(failed) => Err((StatusCode::INTERNAL_SERVER_ERROR, failed.to_string())),
     }
 }
 

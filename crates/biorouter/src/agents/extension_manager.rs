@@ -2561,65 +2561,14 @@ impl ExtensionManager {
             return Err(err.into());
         }
 
-        // Issue #56, O5's second trigger. At PERMIT time, not on the tool's
-        // result, and that is forced by the shape of this function rather than
-        // chosen: it returns its `ToolCallResult` BEFORE the tool has run, and
-        // the `async move` below captures owned values only — it cannot hold
-        // `&self`, so there is no `self` at the point the call succeeds.
-        //
-        // Permit-time is also the right direction. "The model was allowed to
-        // ask a private extension a question" is the disclosure; whether the
-        // extension answered is not the user's protection. Ratcheting on
-        // success would leave a failed OMOP query — which still carried the
-        // session's cohort definition to the connector — unrecorded.
-        //
-        // It is the LAST of the admission checks, below BR-23's scan rather
-        // than above it, because the classification is a permanent ratchet and
-        // that same rationale runs the other way for a call that never left the
-        // process: a SecretGuard denial carried nothing to the connector, so it
-        // has nothing to record.
-        //
-        // The `?` is deliberate and follows Gate B, which also fails its turn
-        // when the ratchet cannot be written: a disclosure this process cannot
-        // record is one it must not perform. A session id with no row is a
-        // silent no-op at the storage layer (0 rows updated), not an error, so
-        // this refuses only on a real store failure.
-        //
-        // `cap.enforced()` gates the ratchet as well as the refusal, and that
-        // is AR-7 rather than symmetry for its own sake. The master opt-out's
-        // contract is that with it off *nothing is impacted*, and a ratchet
-        // that keeps firing is an impact — a deferred, permanent one, since
-        // `privacy_tier` is monotone and re-enabling never revisits a row. The
-        // alternative ("a session that queried OMOP is still a session that
-        // queried OMOP") was considered by the design and rejected: it would
-        // silently privatise chats a user believes are unprotected, and the
-        // first they would learn of it is a refusal weeks later. The cost is
-        // named and accepted in AR-7 — a disclosure made while the feature was
-        // off is never reclassified.
+        // Issue #56, O5's second trigger. See [`Self::ratchet_for_private_extension`],
+        // where the whole rationale lives; it is a separate function for
+        // `cross_affiliation_denial`'s reason verbatim — the repo's
+        // `clippy::too_many_lines` baseline caps this one — and it is still called
+        // from ABOVE `let fut = async move`, so it fires at admission.
         if cap.enforced() && ext_class.tier.is_private() {
-            self.raise_session_privacy(session_id, &format!("mcp:{client_name}"))
+            self.ratchet_for_private_extension(session_id, &client_name, &ext_class)
                 .await?;
-            // Issue #56 DR-26 / Task 50 Step 3: "a private chat carries the
-            // affiliation of the extensions it touched". BESIDE the tier ratchet
-            // and under the same guard, at the same permit-time instant and off
-            // the same `ext_class` — a second read of the classification here
-            // could disagree with the one the gates above decided on.
-            //
-            // ⚠ Only `Institutions` contributes. `Any` is a private extension
-            // with no institutional constraint, so touching it puts no
-            // institution's data in this chat and recording one would warn on a
-            // recall nobody needs warned about — the prompt fatigue DR-19
-            // rejects.
-            if let crate::privacy::ExtensionAffiliation::Institutions(owners) =
-                &ext_class.affiliation
-            {
-                for owner in owners {
-                    self.context
-                        .session_manager
-                        .record_session_affiliation(session_id, *owner)
-                        .await?;
-                }
-            }
         }
 
         let arguments = tool_call.arguments.clone();
@@ -2672,6 +2621,80 @@ impl ExtensionManager {
             result: Box::new(fut.boxed()),
             notification_stream: Some(Box::new(ReceiverStream::new(notifications_receiver))),
         })
+    }
+
+    /// Gate C's ratchet: a permitted dispatch into a PRIVATE extension classifies
+    /// the session, permanently (issue #56, O5's second trigger).
+    ///
+    /// Split out of [`Self::dispatch_tool_call`] so that function stays under
+    /// `clippy::too_many_lines`, exactly as [`Self::cross_affiliation_denial`] and
+    /// [`Self::secret_guard_denial`] were; the caller keeps the `cap.enforced() &&
+    /// ext_class.tier.is_private()` condition so the guard stays visible at the
+    /// dispatch seam.
+    ///
+    /// At PERMIT time, not on the tool's result, and that is forced by the shape
+    /// of the caller rather than chosen: it returns its `ToolCallResult` BEFORE
+    /// the tool has run, and the `async move` there captures owned values only —
+    /// it cannot hold `&self`, so there is no `self` at the point the call
+    /// succeeds.
+    ///
+    /// Permit-time is also the right direction. "The model was allowed to ask a
+    /// private extension a question" is the disclosure; whether the extension
+    /// answered is not the user's protection. Ratcheting on success would leave
+    /// a failed OMOP query — which still carried the session's cohort definition
+    /// to the connector — unrecorded.
+    ///
+    /// It is the LAST of the admission checks, below BR-23's scan rather than
+    /// above it, because the classification is a permanent ratchet and that same
+    /// rationale runs the other way for a call that never left the process: a
+    /// SecretGuard denial carried nothing to the connector, so it has nothing to
+    /// record.
+    ///
+    /// The `?` is deliberate and follows Gate B, which also fails its turn when
+    /// the ratchet cannot be written: a disclosure this process cannot record is
+    /// one it must not perform. A session id with no row is a silent no-op at
+    /// the storage layer (0 rows updated), not an error, so this refuses only on
+    /// a real store failure.
+    ///
+    /// `cap.enforced()` — the caller's half of the guard — gates the ratchet as
+    /// well as the refusal, and that is AR-7 rather than symmetry for its own
+    /// sake. The master opt-out's contract is that with it off *nothing is
+    /// impacted*, and a ratchet that keeps firing is an impact — a deferred,
+    /// permanent one, since `privacy_tier` is monotone and re-enabling never
+    /// revisits a row. The alternative ("a session that queried OMOP is still a
+    /// session that queried OMOP") was considered by the design and rejected: it
+    /// would silently privatise chats a user believes are unprotected, and the
+    /// first they would learn of it is a refusal weeks later. The cost is named
+    /// and accepted in AR-7 — a disclosure made while the feature was off is
+    /// never reclassified.
+    async fn ratchet_for_private_extension(
+        &self,
+        session_id: &str,
+        client_name: &str,
+        ext_class: &crate::privacy::ExtensionClassification,
+    ) -> Result<()> {
+        self.raise_session_privacy(session_id, &format!("mcp:{client_name}"))
+            .await?;
+        // Issue #56 DR-26 / Task 50 Step 3: "a private chat carries the
+        // affiliation of the extensions it touched". BESIDE the tier ratchet
+        // and under the same guard, at the same permit-time instant and off
+        // the same `ext_class` — a second read of the classification here
+        // could disagree with the one the gates above decided on.
+        //
+        // ⚠ Only `Institutions` contributes. `Any` is a private extension
+        // with no institutional constraint, so touching it puts no
+        // institution's data in this chat and recording one would warn on a
+        // recall nobody needs warned about — the prompt fatigue DR-19
+        // rejects.
+        if let crate::privacy::ExtensionAffiliation::Institutions(owners) = &ext_class.affiliation {
+            for owner in owners {
+                self.context
+                    .session_manager
+                    .record_session_affiliation(session_id, *owner)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn list_prompts_from_extension(

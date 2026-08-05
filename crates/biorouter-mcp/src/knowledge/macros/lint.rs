@@ -4,14 +4,14 @@
 //! Part B: `lint(svc, args)` — calls `scan`, optionally runs a sub-agent to fix issues.
 
 use crate::knowledge::{
-    git::GitRepo,
+    git::{GitRepo, Txn},
     paths, raw,
     service::KnowledgeService,
     store::{logical_path, split_frontmatter},
     subagent::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
-        loop_::{Completer, SubAgent, SubAgentBounds},
+        loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::LINT_PROCEDURE,
     },
     types::ChangeKind,
@@ -296,6 +296,20 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         .run(&user, &dispatch, cancel_ref, args.event_sink.as_ref())
         .await;
 
+    settle_autofix(svc, &args.kb_id, &repo, &txn, report, agent_result)
+}
+
+/// The autofix transaction's three endings — commit, abort-and-report,
+/// abort-and-fail — split out of [`lint`] so that function stays under
+/// `clippy::too_many_lines` (issue #56, review round 5). No behaviour change.
+fn settle_autofix(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    repo: &GitRepo,
+    txn: &Txn,
+    report: LintReport,
+    agent_result: Result<SubAgentResult>,
+) -> Result<LintResult> {
     match agent_result {
         Ok(r)
             if matches!(
@@ -318,23 +332,23 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
             // the Knowledge change-log drawer as work that never happened, and
             // a `commit_sha` callers read as proof of it. Same false success as
             // issue #71, one macro over.
-            let fixed = match repo.txn_wrote_knowledge_pages(&txn) {
+            let fixed = match repo.txn_wrote_knowledge_pages(txn) {
                 Ok(fixed) => fixed,
                 Err(e) => {
-                    let _ = repo.abort_txn(&txn);
+                    let _ = repo.abort_txn(txn);
                     return Err(e.context("checking whether the lint fixed anything"));
                 }
             };
             if !fixed {
-                let _ = repo.abort_txn(&txn);
+                let _ = repo.abort_txn(txn);
                 return Ok(LintResult {
                     report,
                     commit_sha: None,
                     fixes_applied,
                 });
             }
-            let sha = repo.commit_txn(&txn, ChangeKind::Lint, "lint autofix", None)?;
-            svc.rebuild_graph_cache(&args.kb_id)?;
+            let sha = repo.commit_txn(txn, ChangeKind::Lint, "lint autofix", None)?;
+            svc.rebuild_graph_cache(kb_id)?;
             Ok(LintResult {
                 report,
                 commit_sha: Some(sha),
@@ -342,7 +356,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
             })
         }
         Ok(r) => {
-            let _ = repo.abort_txn(&txn);
+            let _ = repo.abort_txn(txn);
             anyhow::bail!(
                 "lint sub-agent aborted: reason={:?}, final={}",
                 r.reason,
@@ -350,7 +364,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
             )
         }
         Err(e) => {
-            let _ = repo.abort_txn(&txn);
+            let _ = repo.abort_txn(txn);
             Err(e)
         }
     }

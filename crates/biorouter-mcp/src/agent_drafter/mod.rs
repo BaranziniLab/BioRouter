@@ -1547,6 +1547,44 @@ fn build_export_json(
     })
 }
 
+/// The assistant-facing summary `export_app` returns, split out of
+/// `export_app_inner` so that function stays under `clippy::too_many_lines`
+/// (issue #56, review round 5). No behaviour change.
+fn export_summary(
+    id: &str,
+    mode: &str,
+    target: &Path,
+    scaffold_files: usize,
+    staged: &StagedPayload,
+    wrote_manifest: bool,
+    notes: &[String],
+) -> String {
+    let mut msg = format!(
+        "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
+         To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
+         That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
+         no npm install, no build step.",
+        id,
+        target.display(),
+        scaffold_files
+    );
+    if mode == "full" {
+        msg.push_str(&format!(
+            "\nPayload: {} knowledge base(s), {} skill(s), {} external extension reference(s).",
+            staged.knowledge_bases.len(),
+            staged.skills.len(),
+            staged.extensions.len()
+        ));
+    }
+    if wrote_manifest {
+        msg.push_str(" Wrote export.json (audit manifest).");
+    }
+    for n in notes {
+        msg.push_str(&format!("\n- {n}"));
+    }
+    msg
+}
+
 /// Stage the current-platform `biorouterd` under `payload/bin/` for a fat
 /// export. Returns the `export.json` record on success (or `None` → thin), plus
 /// a note either way.
@@ -3000,32 +3038,17 @@ impl AgentDrafterServer {
             false
         };
 
-        // ── Result summary ─────────────────────────────────────────────────
-        let mut msg = format!(
-            "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
-             To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
-             That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
-             no npm install, no build step.",
-            p.id,
-            target.display(),
-            scaffold.len()
-        );
-        if mode == "full" {
-            msg.push_str(&format!(
-                "\nPayload: {} knowledge base(s), {} skill(s), {} external extension reference(s).",
-                staged.knowledge_bases.len(),
-                staged.skills.len(),
-                staged.extensions.len()
-            ));
-        }
-        if wrote_manifest {
-            msg.push_str(" Wrote export.json (audit manifest).");
-        }
-        for n in &notes {
-            msg.push_str(&format!("\n- {n}"));
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        Ok(CallToolResult::success(vec![Content::text(
+            export_summary(
+                &p.id,
+                mode,
+                &target,
+                scaffold.len(),
+                &staged,
+                wrote_manifest,
+                &notes,
+            ),
+        )]))
     }
 
     #[tool(
