@@ -643,25 +643,66 @@ mod tests {
         a.into_iter().chain(b).collect()
     }
 
-    /// What the clause this builder chose actually admits, decoded from its
-    /// three shapes. Not a policy — a reader for the assertion below.
-    fn clause_admits(
+    /// Does the clause this builder chose admit a chat whose stored
+    /// `session_affiliations` column holds `stored`? **Answered by SQLite**,
+    /// against a real row.
+    ///
+    /// ⚠ **The clause is a string this module hands to a database, so a Rust
+    /// reader of it can only check the intent.** `json_each`, `COALESCE`,
+    /// `NULLIF` and `<>` are SQLite's semantics, not ours, and the interesting
+    /// failures live there: a legacy row holding `''` rather than `'[]'` makes
+    /// `json_each` RAISE, which no decode of the clause's three shapes could
+    /// ever notice and which would break recall for every reader rather than
+    /// returning a wrong set.
+    async fn clause_admits_stored(
+        pool: &Pool<Sqlite>,
         clause: &Option<(String, Option<String>)>,
-        touched: &std::collections::BTreeSet<crate::privacy::affiliation::InstitutionId>,
+        stored: &str,
     ) -> bool {
-        match clause {
-            // No clause at all: every chat qualifies.
-            None => true,
-            // `NOT EXISTS (… WHERE value <> ?)` — every institution the chat
-            // touched must be the bound one.
-            Some((_, Some(bound))) => touched.iter().all(|o| o.as_str() == bound),
-            // `NOT EXISTS (…)` — the chat touched no institution at all.
-            Some((_, None)) => touched.is_empty(),
+        sqlx::query("DELETE FROM sessions")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, session_affiliations) VALUES ('s', ?)")
+            .bind(stored)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // `1 = 1` so the clause appends exactly as it does in both real
+        // builders, which is where its leading ` AND ` comes from.
+        let (sql, bound) = match clause {
+            None => ("SELECT COUNT(*) FROM sessions s".to_string(), None),
+            Some((clause, bound)) => (
+                format!("SELECT COUNT(*) FROM sessions s WHERE 1 = 1{clause}"),
+                bound.clone(),
+            ),
+        };
+        let mut query = sqlx::query_scalar::<_, i64>(&sql);
+        if let Some(value) = bound.as_deref() {
+            query = query.bind(value);
         }
+        query
+            .fetch_one(pool)
+            .await
+            .expect("the affiliation clause must be valid SQL over a real sessions row")
+            > 0
+    }
+
+    /// [`clause_admits_stored`] for the ordinary case: a chat that touched these
+    /// institutions, encoded the way the store encodes them.
+    async fn clause_admits(
+        pool: &Pool<Sqlite>,
+        clause: &Option<(String, Option<String>)>,
+        touched: &[&str],
+    ) -> bool {
+        let stored = serde_json::to_string(touched).unwrap();
+        clause_admits_stored(pool, clause, &stored).await
     }
 
     /// Task 56: **the SQL clause is `affiliation::owners_compatible` in SQLite**,
-    /// held to it rather than described as agreeing with it.
+    /// held to it rather than described as agreeing with it — and *run* there
+    /// rather than read back in Rust.
     ///
     /// The clause has three shapes and the model used to have three shapes, so
     /// the mapping was one-to-one and a comment was nearly enough. It is not any
@@ -687,6 +728,15 @@ mod tests {
             .connect_with(SqliteConnectOptions::new())
             .await
             .unwrap();
+        // Only the column the clause reads. The point is what SQLite does with
+        // the clause, not what the real schema looks like around it.
+        sqlx::query(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, \
+             session_affiliations TEXT NOT NULL DEFAULT '')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         let inst = InstitutionId::new;
         let models = [
@@ -724,11 +774,23 @@ mod tests {
             for touched in touched_sets {
                 let owners: BTreeSet<InstitutionId> = touched.iter().map(|o| inst(o)).collect();
                 assert_eq!(
-                    clause_admits(&clause, &owners),
+                    clause_admits(&pool, &clause, touched).await,
                     owners_compatible(model, &owners),
                     "the SQL clause disagrees with the union rule for {model:?} over {touched:?}"
                 );
             }
+
+            // The row `COALESCE(NULLIF(…, ''), '[]')` exists for: a session
+            // persisted before this column held JSON stores `''`, and
+            // `json_each('')` RAISES. Without the guard the clause is not
+            // merely wrong for that row, it errors — and every recall by a
+            // private reader fails. Only running the SQL can see this.
+            assert_eq!(
+                clause_admits_stored(&pool, &clause, "").await,
+                owners_compatible(model, &BTreeSet::new()),
+                "a legacy row with no JSON must read as a chat that touched no institution, \
+                 for {model:?}"
+            );
         }
     }
 
