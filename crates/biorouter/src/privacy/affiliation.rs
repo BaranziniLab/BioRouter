@@ -429,69 +429,96 @@ pub fn compatible(model: &ModelAffiliation, ext: &ExtensionAffiliation) -> bool 
 /// row and fails exactly there.
 ///
 /// It is nevertheless not a second *ruling*: it is [`compatible`] asked once per
-/// owner and conjoined, which is why it is written that way rather than as its
-/// own match. An empty set is therefore compatible with everything (`all` over
-/// nothing), which is correct here and the opposite of an empty allowlist.
+/// owner (through [`owner_compatible`]) and conjoined, which is why it is
+/// written that way rather than as its own match. An empty set is therefore
+/// compatible with everything (`all` over nothing), which is correct here and
+/// the opposite of an empty allowlist.
 pub fn owners_compatible(
     model: Option<ModelAffiliation>,
     owners: &BTreeSet<InstitutionId>,
 ) -> bool {
-    owners.iter().all(|owner| {
-        let ext = ExtensionAffiliation::institution(*owner);
-        match model {
-            Some(model) => compatible(&model, &ext),
-            // A private model that states nothing mismatches every claimed
-            // owner — `unstated_model`'s arm, not a short circuit to compatible.
-            None => unstated_model("", &ext).is_none(),
-        }
-    })
+    owners.iter().all(|owner| owner_compatible(model, *owner))
+}
+
+/// One owner of the union, asked of this model: [`compatible`]'s table against
+/// the single-institution allowlist an owner is.
+///
+/// ⚠ **Named and extracted so the decision and its words cannot ask it
+/// differently** — which they did. [`owners_compatible`] conjoined this
+/// predicate while [`cross_affiliation_owners`] re-asked the *allowlist*
+/// question over the whole owner set, and for a model covered by exactly the
+/// institutions a subject is owned by those two are not the same question:
+/// `M ⊆ O` is true while `M ⊆ {o}` is false for every `o` in `O`. So the rule
+/// refused and the composer said there was nothing to warn about, and at chat
+/// recall the composer IS the decision.
+fn owner_compatible(model: Option<ModelAffiliation>, owner: InstitutionId) -> bool {
+    let ext = ExtensionAffiliation::institution(owner);
+    match model {
+        Some(model) => compatible(&model, &ext),
+        // A private model that states nothing mismatches every claimed
+        // owner — `unstated_model`'s arm, not a short circuit to compatible.
+        None => unstated_model("", &ext).is_none(),
+    }
 }
 
 /// The words a union-of-owners mismatch is stated in, or `None` when there is
 /// none.
 ///
-/// The decision is [`owners_compatible`]; the copy comes from the same two
-/// composers every other surface uses, so a chat-recall refusal and a dispatch
-/// refusal cannot describe one institutional boundary differently. `subject` is
-/// what is being reached — "this chat", "this knowledge base" — and never an id,
-/// because §14.4 forbids naming content in a refusal.
+/// The copy comes from the same two composers every other surface uses, so a
+/// chat-recall refusal and a dispatch refusal cannot describe one institutional
+/// boundary differently. `subject` is what is being reached — "this chat", "this
+/// knowledge base" — and never an id, because §14.4 forbids naming content in a
+/// refusal.
+///
+/// ⚠ **`None` here is not "no sentence available", it is *allowed*.**
+/// `chatrecall_extension` refuses exactly when this returns `Some`, so this
+/// function is [`owners_compatible`] at that surface rather than a rendering of
+/// it. The two must therefore agree on every input, which is why they share
+/// [`owner_compatible`] instead of each forming a view — and why the composers
+/// below are reached directly rather than through [`cross_affiliation`], which
+/// would re-ask a different question about the same sets. Pinned over the whole
+/// cross product by
+/// `tests::the_words_for_a_union_mismatch_exist_exactly_when_the_rule_finds_one`.
 pub fn cross_affiliation_owners(
     model: Option<ModelAffiliation>,
     subject: &str,
     owners: &BTreeSet<InstitutionId>,
 ) -> Option<CrossAffiliation> {
-    if owners_compatible(model, owners) {
+    // The owners this model is NOT covered by — [`owners_compatible`]'s own
+    // conjunct negated, so this set is non-empty exactly when that function
+    // says mismatch. "Every mismatch the rule finds has copy" is then a
+    // structural property of one predicate rather than something two
+    // implementations happen to agree on.
+    //
+    // It is also what the user needs told: which institutions the subject holds
+    // that their model is not covered by, rather than the whole owner list.
+    let unmatched: BTreeSet<InstitutionId> = owners
+        .iter()
+        .copied()
+        .filter(|owner| !owner_compatible(model, *owner))
+        .collect();
+    if unmatched.is_empty() {
         return None;
     }
-    let ext = ExtensionAffiliation::Institutions(owners.clone());
+
+    // ⚠ **Composed, not re-decided.** [`cross_affiliation`] would ask
+    // [`compatible`] again — the ALLOWLIST question — about a set the union rule
+    // has already ruled on, and answer `None` for any model that is a subset of
+    // it. That is how a model spanning exactly a chat's owners came to be
+    // refused by the ingest gate and cleared by the recall gate; going through
+    // the composers directly makes the disagreement unrepresentable.
     match model {
-        Some(model) => cross_affiliation(model, subject, &ext),
-        None => unstated_model(subject, &ext),
-    }
-    // ⚠ Both composers decide with ALLOWLIST semantics, so for a model that
-    // matches one of several owners they return `None` — compatible — while
-    // `owners_compatible` above has already ruled it a mismatch. That case must
-    // still produce copy, so it falls back to the same sentence with the
-    // matching owner removed: what the user needs told is which institutions the
-    // subject holds that their model is NOT covered by.
-    .or_else(|| {
-        let unmatched: BTreeSet<InstitutionId> = owners
-            .iter()
-            .copied()
-            // A model covered by two institutions has no sole one, so every
-            // owner stays "unmatched" — which is right: it matches none of them.
-            .filter(|o| {
-                model
-                    .map(|m| m.sole_institution() != Some(*o))
-                    .unwrap_or(true)
-            })
-            .collect();
-        let ext = ExtensionAffiliation::Institutions(unmatched);
-        match model {
-            Some(model) => cross_affiliation(model, subject, &ext),
-            None => unstated_model(subject, &ext),
+        Some(ModelAffiliation::Institutions(bound)) => {
+            Some(compose_mismatch(bound, subject, &unmatched))
         }
-    })
+        // `Local` cannot reach here: `owner_compatible` clears it against every
+        // owner, so `unmatched` is empty and the guard above returned. Written
+        // out rather than folded into a catch-all, so a model variant added
+        // later has to be answered here instead of inheriting a `None` that
+        // would read as "no mismatch".
+        Some(ModelAffiliation::Local) => None,
+        None => Some(compose_unstated(subject, &unmatched)),
+    }
 }
 
 /// This model affiliation as the crate boundary carries it (DR-26 / Task 50
@@ -768,11 +795,29 @@ pub fn cross_affiliation(
     let ExtensionAffiliation::Institutions(owners) = ext else {
         return None;
     };
+    Some(compose_mismatch(bound, extension, owners))
+}
 
+/// The words for a mismatch that has **already been decided**, with no second
+/// opinion about whether there is one.
+///
+/// ⚠ **Composing and deciding are separate functions for one reason.**
+/// [`compatible`] answers the allowlist question, and the union rule
+/// ([`owners_compatible`]) is a different question over the same vocabulary. A
+/// composer that re-asks the allowlist question can therefore answer "nothing to
+/// warn about" for a flow the union rule refused — which it did, for a model
+/// covered by exactly the institutions a chat is owned by. Because
+/// [`cross_affiliation_owners`] is the decision at chat recall, that silence was
+/// a permitted disclosure rather than a missing sentence.
+fn compose_mismatch(
+    bound: InstitutionSet,
+    extension: &str,
+    owners: &BTreeSet<InstitutionId>,
+) -> CrossAffiliation {
     let held_by = owners_label(owners);
     let covered_by = covering_agreements(bound);
 
-    Some(CrossAffiliation {
+    CrossAffiliation {
         warning: format!(
             "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
              {held_by}, but this chat is bound to a model covered by {covered_by} agreements. \
@@ -796,7 +841,7 @@ pub fn cross_affiliation(
             owners_label_capped(owners),
             covered_by_capped(bound)
         ),
-    })
+    }
 }
 
 /// **The** gate decision on DR-26's third axis: `Some(warning)` is a mismatch.
@@ -969,10 +1014,17 @@ pub fn unstated_model(extension: &str, ext: &ExtensionAffiliation) -> Option<Cro
         // boundary for an unstated model to cross.
         return None;
     };
+    Some(compose_unstated(extension, owners))
+}
 
+/// [`compose_mismatch`]'s unstated-model twin, and it is a separate function for
+/// the same reason: [`cross_affiliation_owners`] needs the words for a mismatch
+/// the union rule already found, without a composer forming its own view of
+/// whether there is one.
+fn compose_unstated(extension: &str, owners: &BTreeSet<InstitutionId>) -> CrossAffiliation {
     let held_by = owners_label(owners);
 
-    Some(CrossAffiliation {
+    CrossAffiliation {
         warning: format!(
             "Cross-institutional data flow. The extension `{extension}` holds data belonging to \
              {held_by}, and this chat is bound to a private model that does not state whose \
@@ -992,7 +1044,7 @@ pub fn unstated_model(extension: &str, ext: &ExtensionAffiliation) -> Option<Cro
              has approved this flow — tell them what you need it for and let them decide.",
             owners_label_capped(owners)
         ),
-    })
+    }
 }
 
 #[cfg(test)]
@@ -1978,6 +2030,11 @@ mod tests {
     /// allowlist composers call compatible — a model matching one of two owners.
     /// A mismatch with no words is a refusal the user cannot act on, and DR-26
     /// makes the warning the product.
+    ///
+    /// Hand-picked rows, so a failure reads as the row it is. The exhaustive
+    /// statement of the same invariant is
+    /// [`the_words_for_a_union_mismatch_exist_exactly_when_the_rule_finds_one`]
+    /// below; these rows are the ones worth naming.
     #[test]
     fn every_union_mismatch_names_the_institutions_the_model_is_not_covered_by() {
         let both: BTreeSet<InstitutionId> = [inst("ucsf"), inst("stanford")].into_iter().collect();
@@ -2008,6 +2065,123 @@ mod tests {
             None
         );
         assert!(cross_affiliation_owners(None, "this chat", &both).is_some());
+    }
+
+    /// The row where the rule and its words used to disagree, named so a
+    /// regression reads as itself rather than as one line of a cross product.
+    ///
+    /// A lead/worker pair covered by `{ucsf, stanford}`, asked for a chat whose
+    /// transcript holds **both** institutions' data. [`owners_compatible`]
+    /// refuses it — the chat is owned by ucsf, and `{ucsf, stanford} ⊄ {ucsf}` —
+    /// and that refusal is right: recalling it would put UCSF's transcript
+    /// through the Stanford endpoint and Stanford's through the UCSF one.
+    ///
+    /// ⚠ **The composer answered `None`, and at chat recall `None` is
+    /// "proceed".** It re-asked the ALLOWLIST question over the whole owner set
+    /// (`{ucsf, stanford} ⊆ {ucsf, stanford}`, true), which is a different
+    /// question from the one the rule conjoins. So the ingest gate refused the
+    /// write, the search clause hid the chat, and the recall gate handed it
+    /// over.
+    #[test]
+    fn a_model_spanning_a_chats_owners_is_refused_in_words_not_in_silence() {
+        let both: BTreeSet<InstitutionId> = [inst("ucsf"), inst("stanford")].into_iter().collect();
+        let model = Some(spanning(&["ucsf", "stanford"]));
+
+        assert!(
+            !owners_compatible(model, &both),
+            "fixture is only meaningful while the union rule refuses this pair"
+        );
+
+        let finding = cross_affiliation_owners(model, "this chat history", &both).expect(
+            "a mismatch the union rule found must have copy — at chat recall `None` is not \
+             a missing sentence, it is the recall proceeding",
+        );
+        for named in ["ucsf", "stanford"] {
+            assert!(
+                finding.warning.contains(named),
+                "the warning must name every institution the chat holds data for: {}",
+                finding.warning
+            );
+        }
+        assert!(
+            finding.mark.len() <= MARK_BUDGET,
+            "{} bytes",
+            finding.mark.len()
+        );
+    }
+
+    /// The union rule and the words for it are the **same question**, over every
+    /// shape this vocabulary can produce.
+    ///
+    /// ⚠ **At chat recall the copy IS the decision**, so this is not a coverage
+    /// nicety. `chatrecall_extension` refuses exactly when
+    /// [`cross_affiliation_owners`] returns `Some`, while the ingest gate reads
+    /// [`owners_compatible`] and the search clause is a third spelling of the
+    /// same rule — three surfaces, one answer required. A row where the two
+    /// disagree is a chat one gate withholds and another hands over, and nothing
+    /// but a cross product finds the row nobody thought about.
+    #[test]
+    fn the_words_for_a_union_mismatch_exist_exactly_when_the_rule_finds_one() {
+        let models = [
+            None,
+            Some(ModelAffiliation::Local),
+            Some(bound("ucsf")),
+            Some(bound("stanford")),
+            Some(bound("mayo")),
+            Some(spanning(&["ucsf", "stanford"])),
+            Some(spanning(&["ucsf", "stanford", "broad"])),
+        ];
+        let owner_sets: [&[&str]; 6] = [
+            &[],
+            &["ucsf"],
+            &["stanford"],
+            &["mayo"],
+            &["ucsf", "stanford"],
+            &["ucsf", "stanford", "broad"],
+        ];
+
+        for model in models {
+            for names in owner_sets {
+                let owners: BTreeSet<InstitutionId> = names.iter().map(|n| inst(n)).collect();
+                let found = cross_affiliation_owners(model, "this chat history", &owners);
+                assert_eq!(
+                    found.is_none(),
+                    owners_compatible(model, &owners),
+                    "the copy and the rule disagree for model {model:?} over owners {names:?}"
+                );
+
+                let Some(finding) = found else { continue };
+                assert!(
+                    finding.warning.contains("this chat history"),
+                    "{}",
+                    finding.warning
+                );
+                assert!(
+                    finding.mark.len() <= MARK_BUDGET,
+                    "{} bytes for {model:?} over {names:?}",
+                    finding.mark.len()
+                );
+                // Every owner this model is NOT covered by is named, so the
+                // sentence is one a user can act on rather than a bare refusal.
+                // Only that direction is asserted: the model half of the same
+                // sentence legitimately names the institutions that DO cover it.
+                for owner in &owners {
+                    let covered = match model {
+                        Some(m) => compatible(&m, &ExtensionAffiliation::institution(*owner)),
+                        None => false,
+                    };
+                    if covered {
+                        continue;
+                    }
+                    assert!(
+                        finding.warning.contains(owner.as_str()),
+                        "the warning omits {owner}, which {model:?} is not covered by, over \
+                         owners {names:?}: {}",
+                        finding.warning
+                    );
+                }
+            }
+        }
     }
 
     /// The wire is the only channel, so every value this side can produce must
