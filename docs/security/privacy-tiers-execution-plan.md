@@ -21986,6 +21986,40 @@ private session touched is unreadable from every public chat, with no declassifi
 is ungated). They are rulings, not omissions, but an issue that closes without stating them leaves
 the next reader to rediscover them as bugs. See [Accepted risks](#accepted-risks).
 
+⚠ **Departure, recorded rather than absorbed: the `Status:` line does not say `Current —
+implemented` and should not, while that sentence is false.** It reads *"**Implemented for v1** on
+the `feat/privacy-tiers` branch — not merged to `main` as of 2026-08-05"*. `Current` in
+[`docs/contributing/documentation-style.md`](../contributing/documentation-style.md) is a claim
+about the shipping product, and this feature is one branch and one merge away from being that.
+**Change it to `Current — implemented` at the merge, not before** — a status that runs ahead of the
+merge is how a reader comes to trust a document that describes something no build contains.
+
+⚠ **This branch is NOT only #56, and the closing summary must not claim its diff.** It also carries
+**BR-71 slice 1** (`agents/workspace_extension.rs`, `agents/workspace_inspector.rs`,
+`workspace/services.rs`) and **issue #63** (the global-memory consent gate,
+`security/global_memory.rs`). Between them those account for two of the nine `ToolInspector` impls
+Step 3 pins, most of the growth in the `.call_tool(` tripwire, and one of the metadata-sweep
+entries. A summary that reports the whole 455-file diff as privacy work overstates #56 and, worse,
+silently buries two features that need their own review and their own release note.
+
+Follow-up issues to open, **beyond** the [Open questions](#open-questions) table:
+
+- **The affiliation interners are unbounded and the cap they point at does not exist.**
+  `privacy/affiliation.rs`'s `intern` and `intern_set` both `Box::leak` and never evict, and the
+  module says so — it locates the mitigation elsewhere, at *"the parse that admits a
+  registry-sourced institution"* (Task 47), and **that parse does not cap**. Measured on
+  2026-08-05, the residual is a future one and not a live defect: every production path into
+  `InstitutionId::new` reads `&'static` data — `RegistrySnapshot`'s two fields are both
+  `&'static [&'static str]` from the build-generated `registry_private`, and the two Versa modules
+  pass the literal `"ucsf"` — so the interner's input set is closed at compile time and the leak is
+  bounded by the registry snapshot's size. It stops being bounded the moment any runtime string
+  (a `.brxt` manifest, a fetched registry, a config key) reaches that constructor, and set
+  interning is combinatorial in the id count. File it against Task 47's parse, where refusing is
+  meaningful, and **not** against the constructor: truncating or stripping a slug there rewrites
+  two distinct institutions into one id, which grants a cross-institutional flow that should have
+  warned — strictly worse than leaking the string, and already pinned by
+  `distinct_institution_names_never_collide`.
+
 ---
 
 ## Decisions of record
