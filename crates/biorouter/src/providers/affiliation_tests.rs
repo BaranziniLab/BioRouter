@@ -601,9 +601,9 @@ fn a_composite_spanning_two_institutions_clears_neither_of_them() {
 /// named institution warned — at the price of making it useless: a connector
 /// whose registry entry names **both** institutions is exactly the
 /// cross-institutional arrangement a DUA papers, and a pair covered by both is
-/// exactly who may use it. `Institution(<spans-institutions>)` is not in that
-/// allowlist either, so the one legitimate cross-institutional flow was refused
-/// along with the illegitimate ones and no grant could distinguish them.
+/// exactly who may use it. A fake institution is not in that allowlist either,
+/// so the one legitimate cross-institutional flow was refused along with the
+/// illegitimate ones and no grant could distinguish them.
 ///
 /// Set-valued with SUBSET semantics answers it: `{ucsf, stanford} ⊆
 /// {ucsf, stanford}`. This is the assertion that cannot be made to pass by
@@ -692,8 +692,8 @@ fn a_real_two_institution_pair_reaches_any_and_is_refused_by_one_institution() {
 /// reintroduced as a shortcut.
 ///
 /// ⚠ **A fake institution id doing the work of a missing variant is wrong in a
-/// specific, silent way**: it is only safe while no real institution is called
-/// `<spans-institutions>`, which is a property of a *string nobody has chosen
+/// specific, silent way**: it is only safe while no real institution is spelled
+/// the way the sentinel was, which is a property of a *string nobody has chosen
 /// yet* rather than of the design. The day one is registered — by a registry
 /// entry, a hand-edited snapshot, or a provider deciding its own institution —
 /// the composite spanning two institutions silently becomes *compatible* with
@@ -702,6 +702,13 @@ fn a_real_two_institution_pair_reaches_any_and_is_refused_by_one_institution() {
 /// A type check cannot state this: the repair deletes the symbol, so any test
 /// naming it stops compiling and would be deleted with it. So the assertion is
 /// over the source text, which is what a reintroduction would have to add back.
+///
+/// ⚠ **The needles are assembled from fragments, and no file is exempt.** They
+/// used to be written out, which forced the scan to skip this file by name —
+/// the one file in the tree that a shortcut is most likely to be written in,
+/// and the one this task edits. Splitting each needle across a `format!` means
+/// the source of the scan does not contain what the scan looks for, so the
+/// exemption can go and the walk covers every `.rs` file under `crates/`.
 #[test]
 fn the_spans_institutions_sentinel_is_gone() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -714,6 +721,18 @@ fn the_spans_institutions_sentinel_is_gone() {
         "the scan walks {} — if that path is wrong, this test passes for the wrong reason",
         root.display()
     );
+
+    // Split so this file does not contain either string — see the doc above.
+    let needles = [
+        format!("SPANS_{}", "INSTITUTIONS"),
+        format!("<spans-{}>", "institutions"),
+    ];
+    for needle in &needles {
+        assert!(
+            !needle.is_empty(),
+            "a needle assembled to nothing would make the scan trivially clean"
+        );
+    }
 
     let mut scanned = 0usize;
     let mut offenders: Vec<String> = Vec::new();
@@ -733,17 +752,10 @@ fn the_spans_institutions_sentinel_is_gone() {
                 .unwrap()
                 .to_string_lossy()
                 .to_string();
-            // This file names the sentinel in order to forbid it.
-            if rel
-                .replace('\\', "/")
-                .ends_with("providers/affiliation_tests.rs")
-            {
-                continue;
-            }
             scanned += 1;
             let src = std::fs::read_to_string(&path).expect("unreadable source file");
             for (i, line) in src.lines().enumerate() {
-                if line.contains("SPANS_INSTITUTIONS") || line.contains("<spans-institutions>") {
+                if needles.iter().any(|needle| line.contains(needle.as_str())) {
                     offenders.push(format!("{rel}:{}: {}", i + 1, line.trim()));
                 }
             }
