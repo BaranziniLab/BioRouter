@@ -11479,9 +11479,8 @@ mod gate_c_dispatch_tests {
         // on speaking would be the second place to disagree that the
         // single-reader design exists to prevent.
         {
-            let _pin = crate::privacy::mixing::pin_for_test(
-                crate::privacy::mixing::MixingPolicy::Open,
-            );
+            let _pin =
+                crate::privacy::mixing::pin_for_test(crate::privacy::mixing::MixingPolicy::Open);
             assert!(
                 agent.cross_affiliation_warnings().await.is_empty(),
                 "`open` still stated a cross-institution warning at the bind, while the \

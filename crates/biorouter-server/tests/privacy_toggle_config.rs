@@ -810,7 +810,11 @@ async fn the_mixing_policy_is_user_only_and_takes_one_of_exactly_three_modes() {
         body.contains("Do not retry"),
         "the refusal must foreclose the retry, or a model loops on it: {body}"
     );
-    assert_eq!(mixing_record(), None, "a refused request must not have written");
+    assert_eq!(
+        mixing_record(),
+        None,
+        "a refused request must not have written"
+    );
     assert_eq!(
         biorouter::privacy::mixing::policy(),
         MixingPolicy::Standard,
@@ -874,10 +878,9 @@ async fn the_mixing_policy_is_user_only_and_takes_one_of_exactly_three_modes() {
     // The value is NOT left in `config.yaml`: a copy there would re-create the
     // agent-writable channel DR-22 moved it out of.
     assert_eq!(
-        Config::global()
-            .all_values()
-            .ok()
-            .and_then(|m| m.get(biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY).cloned()),
+        Config::global().all_values().ok().and_then(|m| m
+            .get(biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY)
+            .cloned()),
         None,
         "the mixing policy must not be written into config.yaml"
     );
@@ -911,8 +914,10 @@ async fn relaxing_the_mixing_policy_needs_the_operating_system_and_tightening_do
     biorouter::privacy::system_auth_seam::reset();
     let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("strict", false)))
         .await
-        .expect("entering `strict` must cost nothing — requiring a password to be \
-                 careful punishes the careful user");
+        .expect(
+            "entering `strict` must cost nothing — requiring a password to be \
+                 careful punishes the careful user",
+        );
     assert_eq!(biorouter::privacy::mixing::policy(), MixingPolicy::Strict);
 
     // Leaving it is the direction that costs. The user's "no" and a machine that
@@ -920,9 +925,10 @@ async fn relaxing_the_mixing_policy_needs_the_operating_system_and_tightening_do
     // relaxes the machine at the NEXT launch.
     for outcome in [AuthOutcome::Denied, AuthOutcome::Unavailable] {
         arm_the_system_prompt(outcome);
-        let (status, body) = upsert_config(user_action_headers(), Json(mixing_upsert("open", false)))
-            .await
-            .expect_err("a refused system authentication must not relax the policy");
+        let (status, body) =
+            upsert_config(user_action_headers(), Json(mixing_upsert("open", false)))
+                .await
+                .expect_err("a refused system authentication must not relax the policy");
         assert_eq!(status, StatusCode::FORBIDDEN, "{outcome:?}: {body}");
         assert_eq!(
             biorouter::privacy::mixing::policy(),
@@ -988,9 +994,12 @@ async fn relaxing_the_mixing_policy_needs_the_operating_system_and_tightening_do
 
     // …and tightening back is free again, from the most permissive mode.
     biorouter::privacy::system_auth_seam::reset();
-    let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("standard", false)))
-        .await
-        .expect("tightening must never raise a prompt");
+    let _ok = upsert_config(
+        user_action_headers(),
+        Json(mixing_upsert("standard", false)),
+    )
+    .await
+    .expect("tightening must never raise a prompt");
     assert_eq!(biorouter::privacy::mixing::policy(), MixingPolicy::Standard);
 
     // THE RESTART: the user's own decision survives it.

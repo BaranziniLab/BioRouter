@@ -991,7 +991,10 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         // Nothing recorded is the default, not the strictest and not the most
         // permissive.
-        assert_eq!(read_in(dir.path()).unwrap_or_default(), MixingPolicy::Standard);
+        assert_eq!(
+            read_in(dir.path()).unwrap_or_default(),
+            MixingPolicy::Standard
+        );
         for mode in ALL {
             write_in(dir.path(), mode).unwrap();
             assert_eq!(

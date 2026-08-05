@@ -610,7 +610,11 @@ mod tests {
 
         // Ordinary names pass through untouched, or the sanitiser has bought
         // safety by saying nothing.
-        for plain in ["ucsfomopagent", "UCSF OMOP Agent", "Institut Pasteur — génomique"] {
+        for plain in [
+            "ucsfomopagent",
+            "UCSF OMOP Agent",
+            "Institut Pasteur — génomique",
+        ] {
             assert_eq!(dialog_safe(plain), plain);
         }
     }
