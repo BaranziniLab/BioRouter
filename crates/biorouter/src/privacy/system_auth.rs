@@ -785,6 +785,20 @@ mod tests {
     /// the feature, so the seam's own behavioural tests never ran anywhere. That
     /// is a gain, and it is also the reason this audit must not be allowed to
     /// depend on the feature state of the build it runs in.
+    ///
+    /// ⚠ **The same unification makes `--release --all-targets` a build error,
+    /// and that is the guard working rather than a defect.** Measured: `cargo
+    /// check --release -p biorouter-cli --all-targets` now stops at the
+    /// `compile_error!` in `lib.rs`, because `--all-targets` pulls the test
+    /// targets, the test targets pull the dev-dependency, and `--release` turns
+    /// `debug_assertions` off — which is exactly the combination requirement (2)
+    /// exists to reject. It is newly reachable since Task 55 and it is loud, not
+    /// silent. Nothing in the tree runs it: CI's `--all-targets` checks and
+    /// `scripts/clippy-lint.sh` are all debug, and the only release-plus-features
+    /// recipe is the Windows convenience `just win-bld-rls-all`, which has asked
+    /// for `--all-features --release` since Task 44 defined the feature. Do not
+    /// "fix" it by narrowing the `cfg`: a release profile that typechecks the
+    /// seam is a release profile that could ship it.
     #[test]
     fn the_test_seam_cannot_be_compiled_into_a_shipped_profile() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
