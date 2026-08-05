@@ -87,6 +87,17 @@ impl Drop for PrivacyToggleFixture {
     }
 }
 
+/// Arm DR-20's system-authentication seam for the next prompt.
+///
+/// ⚠ **This compiles only because `biorouter` is a `[dev-dependency]` of this
+/// crate with `privacy-test-auth` on.** Dropping that dev-dependency stops this
+/// line compiling — a loud failure — rather than leaving a test suite that asks
+/// the developer for their password on every run.
+fn arm_the_system_prompt(outcome: biorouter::privacy::system_auth::AuthOutcome) {
+    biorouter::privacy::system_auth_seam::reset();
+    biorouter::privacy::system_auth_seam::answer_next_prompt(outcome);
+}
+
 fn upsert(key: &str, value: &str, confirm: Option<&str>) -> UpsertConfigQuery {
     UpsertConfigQuery {
         key: key.to_string(),
@@ -158,6 +169,13 @@ async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
     // only the file: the authoritative copy is in daemon memory, so a handler
     // that wrote config.yaml and stopped would leave every gate enforcing until
     // the next restart.
+    //
+    // Since Task 55 a disable also raises DR-20's system prompt, which the test
+    // seam answers here. `turning_the_tiers_off_needs_the_operating_system_and_turning_them_on_does_not`
+    // is what asserts the prompt is really consulted; this arming only keeps the
+    // assertion above about the CONFIRMATION FIELD from failing for a second,
+    // unrelated reason.
+    arm_the_system_prompt(biorouter::privacy::system_auth::AuthOutcome::Approved);
     let _ok = upsert_config(
         headers,
         Json(upsert(
@@ -325,6 +343,100 @@ async fn the_startup_load_reads_the_switch_store_and_not_the_environment() {
     );
 }
 
+/// Issue #56 DR-20 / Task 55 Step 2. Disabling the whole tier system is at least
+/// as consequential as declassifying one chat, so it takes the same
+/// operating-system authentication.
+///
+/// ⚠ **Only the OFF direction, and that is a ruling rather than an oversight.**
+/// Turning protection back ON is the safe direction, and gating it would mean an
+/// [`AuthOutcome::Unavailable`] — the state of every headless host, and of every
+/// Linux install until the packaging ships the polkit action — strands a machine
+/// with the feature disabled and no way to re-enable it. The same asymmetry
+/// Task 55 Step 1 applies to a `turn:*` chat: spend the cost where the
+/// consequence is.
+///
+/// The ON half is also the discriminating half. The seam is left UNARMED for it
+/// on purpose: an unarmed seam refuses by default, so if the re-enable path
+/// prompted, this test would fail there rather than pass quietly.
+#[tokio::test]
+#[serial_test::serial]
+async fn turning_the_tiers_off_needs_the_operating_system_and_turning_them_on_does_not() {
+    use biorouter::privacy::system_auth::AuthOutcome;
+
+    let _fixture = PrivacyToggleFixture::capture();
+    reset_switch_storage();
+    biorouter::privacy::load_privacy_tiers_from_config();
+    assert!(biorouter::privacy::privacy_tiers_enabled());
+
+    // The user's "no", and a machine that cannot ask at all. Neither may
+    // disable the feature, and neither may leave a record on disk that disables
+    // it at the NEXT launch — a switch that flips on restart is the divergence
+    // Task 30's measure (3) exists to prevent, and the user would be told it
+    // was refused.
+    for outcome in [AuthOutcome::Denied, AuthOutcome::Unavailable] {
+        arm_the_system_prompt(outcome);
+        let (status, body) = upsert_config(
+            HeaderMap::new(),
+            Json(upsert(
+                biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+                "off",
+                Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE),
+            )),
+        )
+        .await
+        .expect_err("a refused system authentication must not disable the tiers");
+        assert_eq!(status, StatusCode::FORBIDDEN, "{outcome:?}: {body}");
+        assert!(
+            biorouter::privacy::privacy_tiers_enabled(),
+            "{outcome:?} disabled the tiers anyway"
+        );
+        biorouter::privacy::load_privacy_tiers_from_config();
+        assert!(
+            biorouter::privacy::privacy_tiers_enabled(),
+            "{outcome:?} recorded a disable on disk, so the next launch comes up unprotected"
+        );
+    }
+
+    // DR-20 point 4: the dialog says what it authorises. A prompt reading
+    // "BioRouter wants to make changes" satisfies the letter of the ruling and
+    // defeats its purpose.
+    let asked = biorouter::privacy::system_auth_seam::last_request()
+        .expect("the master switch reached the prompter");
+    assert!(!asked.reason.is_empty(), "the prompt stated no reason");
+    assert_eq!(
+        asked.session_ids.len(),
+        1,
+        "the master switch names one subject, not a list of chats: {asked:?}"
+    );
+
+    arm_the_system_prompt(AuthOutcome::Approved);
+    let _ok = upsert_config(
+        HeaderMap::new(),
+        Json(upsert(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            "off",
+            Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE),
+        )),
+    )
+    .await
+    .expect("an approved authentication is the one that writes");
+    assert!(!biorouter::privacy::privacy_tiers_enabled());
+
+    // …and turning protection back on asks for nothing.
+    biorouter::privacy::system_auth_seam::reset();
+    let _ok = upsert_config(
+        HeaderMap::new(),
+        Json(upsert(
+            biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY,
+            "on",
+            Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE),
+        )),
+    )
+    .await
+    .expect("re-enabling protection must not need a password");
+    assert!(biorouter::privacy::privacy_tiers_enabled());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Task 42 (DR-22): the master switch's storage is not `config.yaml`.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -422,6 +534,10 @@ async fn disabling_through_the_authenticated_path_survives_a_restart() {
     biorouter::privacy::load_privacy_tiers_from_config();
     assert!(biorouter::privacy::privacy_tiers_enabled());
 
+    // Task 55: a disable also raises DR-20's system prompt, answered here by the
+    // test seam. What this test is about is what SURVIVES A RESTART, so the
+    // authentication is a precondition of reaching that, not its subject.
+    arm_the_system_prompt(biorouter::privacy::system_auth::AuthOutcome::Approved);
     let _ok = upsert_config(
         HeaderMap::new(),
         Json(upsert(

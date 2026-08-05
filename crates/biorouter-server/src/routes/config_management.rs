@@ -288,6 +288,38 @@ pub async fn upsert_config(
         // daemon and the next start-up can never disagree about what was asked
         // for.
         let on = biorouter::privacy::privacy_tiers_value_is_on(&query.value).unwrap_or(true);
+
+        // Issue #56 DR-20 / Task 55 Step 2. Turning the whole tier system off is
+        // at least as consequential as declassifying one chat, so it takes the
+        // same operating-system authentication — raised HERE, immediately before
+        // the write, so every other refusal this handler can make is already
+        // past and the user is not asked for a password to be told afterwards
+        // that the request was malformed.
+        //
+        // ⚠ **Only the OFF direction.** Re-enabling protection is the safe
+        // direction, and gating it would mean an `Unavailable` prompter — every
+        // headless host, and every Linux install until the packaging ships the
+        // polkit action — strands a machine with the feature disabled and no way
+        // to turn it back on. That is the same asymmetry Task 55 Step 1 applies
+        // to a `turn:*` chat: spend the cost where the consequence is.
+        if !on {
+            let prompter = biorouter::privacy::system_auth::prompter();
+            let request = biorouter::privacy::system_auth::AuthRequest::about(
+                MASTER_SWITCH_AUTH_REASON,
+                MASTER_SWITCH_AUTH_SUBJECT,
+            );
+            let outcome = prompter.authenticate(&request).await;
+            if let Some(refusal) = biorouter::privacy::system_auth::refusal_for(outcome, prompter) {
+                // Nothing has been written at this point — not the record, not
+                // the live atomic — so the feature is left exactly as it was, in
+                // the enforcing direction.
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!("{MASTER_SWITCH_AUTH_REFUSED} {refusal}"),
+                ));
+            }
+        }
+
         return match biorouter::privacy::master_switch::write_for(config, on) {
             Ok(()) => {
                 // Hardening measure (3): the authoritative value lives in daemon
@@ -321,6 +353,33 @@ pub async fn upsert_config(
         )),
     }
 }
+
+/// What the operating system shows above the password field when the user turns
+/// the tier system off (issue #56 DR-20 point 4, Task 55 Step 2).
+///
+/// It states the CONSEQUENCE, not the setting's name. "Change BIOROUTER_PRIVACY_TIERS"
+/// is a sentence only the person who wrote the code can act on; a user
+/// authorising a system-level change is owed the sentence that tells them what
+/// stops happening.
+const MASTER_SWITCH_AUTH_REASON: &str =
+    "Turn off Biorouter's privacy tiers, so private chats stop being protected.";
+
+/// What the prompt names where a declassification would name its chats.
+///
+/// ⚠ **Not a session id, and never compared with one.** The master switch has no
+/// rows to name and mints no authorisation — the outcome is consumed in the same
+/// function that raises the prompt — so there is nothing for a stray id to be
+/// matched against. It exists because DR-20 point 4 requires the dialog to say
+/// what it authorises, and "the whole install" is a thing to say.
+const MASTER_SWITCH_AUTH_SUBJECT: &str = "every private chat on this machine";
+
+/// What `/config/upsert` says when the system authentication for a disable did
+/// not happen. The prompter's own sentence is appended, because "you pressed
+/// Cancel" and "this machine has no way to raise the prompt" need different
+/// advice and only the prompter knows which it was.
+const MASTER_SWITCH_AUTH_REFUSED: &str =
+    "Turning off Biorouter's privacy tiers needs your operating system to confirm it is you. \
+     That did not happen, and the setting was not changed.";
 
 /// The one sentence both verbs refuse the master switch with. One copy, so the
 /// two channels cannot drift into saying different things about the same rule.
