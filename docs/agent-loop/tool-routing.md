@@ -132,6 +132,39 @@ the agent sees them prefixed with the extension — `workspace__workspace_list`,
   view (`summary` before `transcript`, `tool_calls` when the question is "what did
   it *do*") and only what the task needs.
 
+#### The two sides of this split are not equally guarded
+
+The `chatrecall` side is enforced. [Privacy tiers](../security/privacy-tiers.md) put **Gate D**
+inside it, in both modes: SEARCH carries the caller's tier into the SQL, so a chat running on a
+public model never matches a row belonging to a private conversation; LOAD checks the named
+session's tier *before* the header string is built, so neither the session's name nor its working
+directory escapes with the refusal. A refusal is returned as text the model reads, not as an error,
+and the wording lives in one place (`crates/biorouter/src/privacy/refusal.rs`) so it cannot drift.
+The refusal carries **no** content from the session it refused.
+
+The `workspace_*` side is **not** enforced today, and that asymmetry is the reason this subsection
+exists. `workspace_read_conversation` loads any session it is given by id and checks only whether
+that session is `Hidden` — it does not consult `privacy_tier`. The predicate that would close it
+exists (`crates/biorouter/src/privacy/visibility.rs`, design §7's `may_read`) and no handler calls
+it. So a model can reach through the workspace tools for a transcript that chat recall would have
+refused it.
+
+Two consequences for routing, until that lands:
+
+- **Do not treat "chat recall refused it" as "that content is unreachable."** It means chat recall
+  refused it. Reaching for the same content through `workspace_read_conversation` is routing around
+  a privacy control, and the "read the narrowest view" rule above is what stands in for the missing
+  gate.
+- **If you are adding a tool that reads another conversation**, it inherits this gap by default.
+  Call `privacy::visibility::may_read` with the caller's capability and the target's stored
+  classification; do not re-derive the rule.
+
+One write is covered, and it is worth knowing which: `workspace_set_tools { provider, model }` calls
+the same `Agent::update_provider` the model picker does, so **Gate A** applies to it and steering
+another chat onto a public model cannot launder a private one. Design §7's *other* write rules —
+the lineage conditions on `workspace_send_prompt` and on the rest of `workspace_set_tools` — are
+unwired along with the read side.
+
 The same guidance is mirrored in the extension's own `INSTRUCTIONS` block
 (`crates/biorouter/src/agents/workspace_extension.rs`), which a unit test holds to
 ≤2,500 characters and to naming only tools `get_tools()` actually registers.
@@ -245,5 +278,6 @@ complements the pre-existing `TOOL_EXEC_START`/`TOOL_EXEC_END` **`debug`** marke
 - [The agent loop](README.md) — the loop that dispatches every tool call routed by this page.
 - [Extensions and skills](../extensions/extensions-and-skills-guide.md) — how the extensions providing these tools are installed, enabled and described.
 - [Built-in extensions](../extensions/built-in/README.md) — the reference page for each shipped extension named in the tier table.
+- [Privacy tiers](../security/privacy-tiers.md) — Gate D inside the `chatrecall` route above, Gate C at the dispatch choke point every tool on this page passes through, and the §7 matrix the workspace tools do not yet call.
 - [Streaming tool-call UI campaign](../history/streaming-tool-call-ui-2026-07/README.md) — the July 2026 campaign that wrote this guidance and the tool-result logging described above.
 - [Tool-errors audit](../history/streaming-tool-call-ui-2026-07/tool-errors-audit.md) — the log sweep that motivated the always-on `tool_result` line.

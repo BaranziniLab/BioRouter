@@ -150,6 +150,7 @@ The detailed manual steps and the reasoning behind each invariant follow.
 - **`workflow/`** — Workflow definition (YAML/JSON), Jinja-style templating (minijinja), and execution
 - **`context_mgmt/`** — Token counting (tiktoken-rs) and context window pruning
 - **`security/`** — Permission modes, `.biorouterignore` handling
+- **`privacy/`** — Privacy tiers (issue #56): the capability/classification lattices, the eight enforcement gates, declassification, the master switch, and institutional affiliation. See the section below.
 - **`scheduler.rs`** — Cron-based job scheduling (tokio-cron-scheduler)
 - **`knowledge/`** — Personal knowledge base: storage, git history, file
   conversion (HTML/PDF/DOCX/CSV), credibility classification
@@ -180,6 +181,54 @@ The detailed manual steps and the reasoning behind each invariant follow.
   palette, ingest panel (dropzone / paste text with URL extraction / staged
   list), and live SSE-streamed digestion progress via `useIngestStream`.
   Graph view + change-log drawer come in Plan 5.
+
+### Privacy tiers (issue #56)
+
+A conversation that has touched a **private** model or a **private** data source may never reach a
+model hosted outside the user's institution. Design + status:
+[`docs/security/privacy-tiers.md`](docs/security/privacy-tiers.md) — **read its "What shipped, and
+what did not" section first**; the rest of that document is the design, not the running system.
+
+- **Two lattices, one crossing.** `ProviderTier` is CAPABILITY (what a session may *do*; a pure
+  function of the provider bound right now, reduced with `least` over lead/worker, never stored).
+  `SessionClassification` is CLASSIFICATION (how sensitive the contents are; reduced with `max` over
+  time, stored in `sessions.privacy_tier`, a **permanent ratchet**). They do not interconvert —
+  `privacy::floor` is the only crossing and a repo-grep test asserts its caller count. Invariant:
+  `capability(S) >= classification(S)`.
+- **Eight gates.** A — bind (`Agent::update_provider`). B — turn (top of `Agent::reply`;
+  repair-first, and where the ratchet fires). C — dispatch
+  (`ExtensionManager::dispatch_tool_call`, the one choke point every tool call passes through, plus
+  its resource/prompt siblings). D — `chatrecall` SEARCH (a SQL predicate in both builders) and
+  LOAD. E — discovery (`filter_tools`). F — the two extension channels that are not tool calls.
+  G — cross-session conversation ingest. H — the alternate-provider construction sites.
+- **`CallCapability` is sampled once per call and threaded.** A gate on a tool-call path must ask
+  `cap.enforced()` / `cap.tier()`, **never** re-read `privacy_tiers_enabled()` — a second read is
+  the race the type exists to close. Gates that are not on a tool-call path (bind, turn, spawn,
+  search, route) read the flag directly.
+- **A spawn never changes the tier** (`subagent_tool.rs`): public parent → private child is refused,
+  private parent → public child is refused, and a public child silently *drops* private or
+  cross-institution extensions with a note back to the parent rather than failing the spawn.
+- **Knowledge bases ratchet too.** A base takes the tier of the most sensitive session that wrote to
+  it (four write choke points), is refused to a public caller at the read choke points, and a
+  refusal names what it refused. `biorouter-mcp/src/knowledge/tier*.rs`.
+- **Affiliation is a third axis** (DR-26, plan Phase 6): tier asks *how sensitive*, affiliation asks
+  *whose*. HIPAA compliance does not transfer between institutions, so a UCSF model reaching another
+  institution's private connector is warned/refused even though both endpoints are Private.
+- **The master switch** lives in its own record beside `config.yaml`, **not in it** and **not in an
+  env var** — the agent has `developer__shell`, so a switch it can edit is not a switch. Loaded once
+  per process; a load error resolves to ON.
+- **Known gaps, do not assume otherwise.** The general filesystem read-deny (§9.5, DR-14) is
+  DEFERRED — a public chat with a shell still reads ordinary files, which is why the
+  non-private-model disclosure ships. And §7's cross-session matrix
+  (`privacy/visibility.rs::may_read`) is **written but wired to nothing**: `workspace_read_conversation`
+  checks only `session_type == Hidden`, so it still reads a private transcript that `chatrecall`
+  would refuse.
+- **Tests:** `cargo test -p biorouter --lib privacy::`,
+  `cargo test -p biorouter --test privacy_toggle` (plus `privacy_toggle_config`,
+  `privacy_toggle_export`, `privacy_capability`, `privacy_disclosure_toggle`),
+  `cargo test -p biorouter-mcp --lib knowledge::tier`. Several enforcement points are held in place
+  by repo-grep assertions — if you add a second call site for `raise_privacy`, `floor` or
+  `.call_tool(`, a test will tell you, and the right fix is usually not to update the count.
 
 ### Knowledge feature
 

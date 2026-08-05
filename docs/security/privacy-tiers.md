@@ -4,8 +4,13 @@
 > private models or private data sources from ever reaching a model hosted outside the user's
 > institution. It classifies models, sessions, MCP extensions and knowledge bases, and enforces the
 > boundary at five choke points in the agent loop.
-> **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
-> anything else.** The general filesystem read-deny of §9.5 is **descoped for v1** and this document
+> **Status:** **Implemented for v1** on the `feat/privacy-tiers` branch — not merged to `main` as
+> of 2026-08-05 — and **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
+> anything else.** ⚠ **Every section below describes the design as it was written, not the running
+> system.** [What shipped, and what did not](#what-shipped-and-what-did-not) — immediately after
+> this header — is the only place in this document that says which is which, and it names three
+> things a reader would otherwise assume from §7 and §9. Read it first. The general filesystem
+> read-deny of §9.5 is **descoped for v1** and this document
 > no longer claims it. §17 still needs rulings. **§3's R17 (added 2026-08-02) governs the shape of
 > every control here** — warn the user and let them proceed, never let an agent proceed at all —
 > and **R18 (added the same day) refines it for declassification**: an operating-system
@@ -32,6 +37,88 @@
 > **ruled** by the operator: *ratchet*. See the execution plan's
 > [Accepted risks](privacy-tiers-execution-plan.md#accepted-risks) for the costs that ruling
 > accepts, and its Tasks 10A–10C for the implementation.
+
+---
+
+## What shipped, and what did not
+
+Written at the close of implementation, 2026-08-05. Everything after this section is the design;
+this section is the ledger.
+
+### Shipped
+
+- **The two-lattice model (§4).** `ProviderTier` is capability, `SessionClassification` is
+  classification, and [`floor`](../../crates/biorouter/src/privacy/mod.rs) is the single crossing
+  between them. `crates/biorouter/src/privacy/`.
+- **The enforcement gates (§9), eight of them.** A — the bind, in `Agent::update_provider`. B — the
+  turn, at the top of `Agent::reply`, repair-first, and the site of the classification ratchet. C —
+  the dispatch, in `ExtensionManager::dispatch_tool_call`, plus its resource- and prompt-reading
+  siblings. D — `chatrecall`, as a SQL predicate in SEARCH and an explicit check in LOAD. E —
+  discovery, in `filter_tools`. F — the two extension channels that are not tool calls. G —
+  cross-session conversation ingest. H — the alternate-provider construction sites.
+- **The knowledge-base tier (DR-18).** A base takes the tier of the most sensitive session that has
+  written to it, the ratchet fires at four write choke points, the barrier refuses at the read ones,
+  and a refusal names what it refused rather than returning a silently short answer. The user can
+  publicize or privatize a base themselves, graded and audited.
+- **Declassification (§12), graded** — a `turn:*` chat keeps its single click; every other
+  provenance owes both the typed phrase and R18 / DR-20's operating-system authentication, and one
+  predicate decides both so they cannot drift apart. In the desktop app, and as
+  `biorouter session declassify <id>` in the CLI, which is the only surface that reaches a private
+  chat no listing shows.
+- **The master switch** (R7 / DR-15 / DR-22) in Settings → Privacy: one control that disables every
+  gate and the ratchet, behind a typed confirmation, stored in its own record beside `config.yaml`
+  rather than in it — because a switch an agent can edit with `text_editor` is not a switch.
+- **The badges** (§14) on every session, model and extension surface, and the **registry and
+  marketplace tiers** (§13).
+- **The migration and the day-one notice** (§15) — see
+  [what happens to your existing chats](privacy-tiers-migration.md).
+- **The non-private-model disclosure** — see
+  [data privacy and patient data](data-privacy-and-phi.md#what-a-non-private-model-can-reach). It is
+  the shipped mitigation for the first item under *Did not ship*, and it is shown whether or not
+  privacy tiers are enabled.
+- **An axis this document does not describe: institutional affiliation.** Ruled after this design was
+  written ([DR-26](privacy-tiers-execution-plan.md#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions),
+  plan Phase 6). Tier asks *how sensitive*; affiliation asks *whose*. A UCSF-hosted model reaching
+  another institution's private connector passes every gate above, because both endpoints are
+  Private — the affiliation axis is what refuses it, or warns and lets the user accept it. Do not
+  reason about §9 as though tier were the only axis.
+
+### Did not ship
+
+- **§9.5's general filesystem read-deny — both of DR-14's layers.** Descoped by
+  [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store);
+  plan Tasks 14A–14F are `DEFERRED`, not deleted. A public-capability chat with a shell can still
+  read ordinary files on this machine, including files an earlier private chat wrote outside
+  Biorouter's own storage. This is disclosed to the user rather than mechanised.
+- **§7's cross-session capability matrix is written but not wired.**
+  `crates/biorouter/src/privacy/visibility.rs` implements VIS / READ / WRITE / BIND as pure
+  functions and **no production handler calls them.** `workspace_list` and
+  `workspace_read_conversation` do not consult `privacy_tier`: the latter loads any named session
+  *with messages* and checks only `session_type == Hidden`. So a public chat with Workspace Control
+  enabled reads a private transcript through a tool call — the door Gate D closes for `chatrecall`
+  and this leaves open for BR-71. It is not fixable with the daemon's user-action proof (a tool call
+  is by definition the model, so it can never carry proof of a human); it needs §7's `may_read`
+  wired to those two handlers. The reasoning is recorded in full in
+  `crates/biorouter-server/src/routes/session_reach.rs`.
+- **The `strict` mixing policy's in-app accept control.** The daemon half landed — under `strict`,
+  `POST /agent/cross_affiliation_grant` raises the system authentication on top of the in-app proof.
+  The renderer's half did not: the accept card still shows an explanation rather than a control, so
+  on a `strict` machine a cross-institutional flow can be accepted only by calling that route
+  directly. Do not close this by letting `strict` fall back to `standard`.
+- **Every open question in §17.** They are open questions, not resolved ones, and several
+  (5 — institutional versus hosted Ollama; 9 — skills carry no classification) describe live
+  permissiveness in the shipped system.
+
+### What the verification does and does not prove
+
+The gates each carry unit and integration tests, the master switch has its own integration binaries
+(`crates/biorouter/tests/privacy_toggle*.rs`), and the enforcement points are held in place by
+repo-grep assertions that fail when a second call site appears. What this branch does **not** have
+is an independent adversarial review: 19% of its review verdicts came from a second model and 81%
+were self-review by the implementing model family. Weigh the design's claims accordingly, and see
+the execution plan's
+[Review provenance](privacy-tiers-execution-plan.md#review-provenance--what-evidence-this-branch-actually-has)
+for the measurement.
 
 ---
 

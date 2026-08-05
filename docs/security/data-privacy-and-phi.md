@@ -70,6 +70,58 @@ The one-line form, which appears on the model chip and in `biorouter configure`:
 > renderer, for the same reason: four hand-written copies drift within one release, and the
 > drifted one is always the one somebody reads.
 
+## The provider guidance on this page is now enforced
+
+Everything below used to be advice you could follow or ignore. Since **privacy tiers** shipped, the
+central rule — *a conversation that has touched a private model or a private data source never
+reaches a model hosted outside your institution* — is enforced by the app rather than left to you.
+
+What that means in practice:
+
+- **A chat remembers where it has been.** Run one turn on a local model or on UCSF Versa, or call a
+  private data extension (UCSF OMOP, CDW), and the chat is marked **private**, permanently. It is a
+  ratchet: it only ever goes up on its own.
+- **A private chat cannot be switched to a commercial model.** The model picker, the CLI, the HTTP
+  API and another chat steering this one all reach the same check and are refused the same way: the
+  chat is left unchanged, the refusal names the model it declined, and retrying does not help.
+  Starting a *new* chat on the commercial model is always available and is the intended way through
+  — the boundary is the transcript, not the model.
+- **A public chat cannot reach private material.** It cannot call the private data extensions, read
+  a private chat's transcript through chat recall, read a knowledge base marked private, or spawn a
+  subagent on a private model to fetch any of it on its behalf.
+- **Knowledge bases carry the same mark.** A base takes the tier of the most sensitive chat that has
+  written into it, and a public chat may not read a private base. You can publicize or privatize a
+  base deliberately; a publicize tells you how many pages and sources it is about to release.
+- **Institution matters, not just sensitivity.** A model your institution hosts has no blanket
+  permission over *another* institution's regulated data — HIPAA compliance is established per data
+  flow and does not transfer. A flow that crosses institutions is warned about, and accepting it is
+  a deliberate act that is recorded.
+
+**Undoing it is a deliberate, recorded act, and how deliberate depends on what the chat touched.** A
+chat that merely *ran a turn* on a private model is declassified with a single confirmation. A chat
+that reached a private **data source** — a private extension, a private knowledge base, or a private
+parent it was spawned from — needs two proofs, because they answer different questions: you type the
+last six characters of the session id (*which* chat), and you clear your operating-system password
+prompt (*who* you are) — the same prompt macOS, Windows or Linux raises for any privileged action.
+Either way the change is written to a ledger. From the terminal:
+`biorouter session declassify <session-id>`.
+
+**Turning it off is one switch, and it is not subtle.** Settings → Privacy disables every guardrail
+on this machine, for every chat, behind a typed confirmation. Nothing is classified while it is off,
+and re-enabling it does not go back and classify the gap. The disclosure above is shown *whether or
+not* the feature is enabled, because turning it off removes the enforcement and not the exposure.
+
+⚠ **What it does not do.** Privacy tiers govern what the *agent* can reach through Biorouter's own
+storage and tools. They do not encrypt anything at rest, and they do not stop a commercial model
+from reading ordinary files on this computer through the shell — including a file an earlier private
+chat wrote somewhere else on disk. That is why the guidance below still matters: **de-identify
+first, and pick the right provider first.** The enforcement is a backstop for a chat that drifts
+into sensitive territory, not a licence to start one there.
+
+For the mechanics — what the migration did to chats you already have, and how each guardrail works —
+see [what happens to your existing chats](privacy-tiers-migration.md) and
+[privacy tiers](privacy-tiers.md).
+
 ## Patient data and sensitive research data
 
 > **Warning.** If you need to work with patient data, PHI, clinical records, genomic data
@@ -170,6 +222,10 @@ Information Commons.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the full
   provider inventory, including the institutional `versa_azure` / `versa_bedrock` providers and
   the bundled Llama Server.
+- [Privacy tiers](privacy-tiers.md) — the design behind the enforcement described above: how models,
+  chats, extensions and knowledge bases acquire a tier, and where each guardrail sits.
+- [Privacy tiers — what happens to your existing chats](privacy-tiers-migration.md) — which of the
+  chats you already have were marked private, and how to fix one the guess got wrong.
 - [Permission modes](permission-modes.md) — limiting what the agent may do with the data once
   it is in a session.
 - [Managed enterprise policy](managed-policy.md) — how an administrator enforces tool
