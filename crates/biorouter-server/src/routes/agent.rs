@@ -1172,6 +1172,19 @@ const CROSS_AFFILIATION_GRANT_STRICT_NEEDS_SYSTEM: &str =
      cross-institutional data flow needs your operating system to confirm it is you as well as \
      the in-app approval. That did not happen. Nothing was recorded.";
 
+/// What the `strict` prompt names where a declassification would name its chats.
+///
+/// ⚠ **A CONSTANT IN THIS SOURCE, and that is a security property rather than a
+/// style.** [`biorouter::privacy::system_auth::AuthRequest::about`] is infallible
+/// precisely because *"there is exactly one subject, and it is a constant in the
+/// caller's source"*, and every prompter renders that slot verbatim. This route
+/// is the first caller whose natural subject — an extension name — arrives on an
+/// HTTP body and is stored in the agent-writable `config.yaml` (DR-17), so
+/// putting it there would let a planted extension choose what the user's system
+/// password dialog says. The name is still shown: it goes in the *reason*,
+/// through [`biorouter::privacy::system_auth::dialog_safe`].
+const CROSS_AFFILIATION_GRANT_AUTH_SUBJECT: &str = "one cross-institution connector";
+
 /// The `strict` layer on the grant, as a function so it can be driven.
 ///
 /// ⚠ **Extracted for [`refuse_grant_unless_user`]'s reason, which is the same
@@ -1182,7 +1195,10 @@ const CROSS_AFFILIATION_GRANT_STRICT_NEEDS_SYSTEM: &str =
 /// arguments makes all three modes assertions about the real decision path, with
 /// no password typed. Production passes [`biorouter::privacy::mixing::policy`]
 /// and [`biorouter::privacy::system_auth::prompter`], which is the one resolver
-/// in the tree that can reach the test seam.
+/// in the tree that can reach the test seam — pinned by
+/// `the_strict_prompt_sits_between_the_resolution_and_the_write`, because a
+/// literal in either argument would disable `strict` in production and pass
+/// every test in this module.
 ///
 /// ⚠ **`open` and `standard` never touch the prompter.** In `standard` this must
 /// be exactly today's behaviour — one in-app confirmation — and a prompt raised
@@ -1197,12 +1213,13 @@ async fn strict_mode_authorization(
     if policy != biorouter::privacy::mixing::MixingPolicy::Strict {
         return Ok(());
     }
+    let named = biorouter::privacy::system_auth::dialog_safe(extension);
     let request = biorouter::privacy::system_auth::AuthRequest::about(
         format!(
-            "Allow this Biorouter chat to send data to `{extension}`, across an institutional \
+            "Allow this Biorouter chat to send data to `{named}`, across an institutional \
              boundary."
         ),
-        extension,
+        CROSS_AFFILIATION_GRANT_AUTH_SUBJECT,
     );
     let outcome = prompter.authenticate(&request).await;
     match biorouter::privacy::system_auth::refusal_for(outcome, prompter) {
@@ -1312,6 +1329,18 @@ async fn agent_cross_affiliation_grant(
     // are decided in `privacy::affiliation::refusing_mismatch`; this is the
     // second half of DR-27 Step 3, and the only thing on the grant route that
     // knows the policy exists.
+    //
+    // ⚠ **It widens the window between the ONE sample above and the write below
+    // from microseconds to human-scale, and that is accepted rather than
+    // overlooked.** `cross_affiliation_grant_subject` exists to take the warning
+    // and the affiliation from one `CallCapability`, because `update_provider`
+    // reassigns the provider mutex with no turn lock; parking here for a password
+    // means the chat can rebind while the user is looking at the dialog. It fails
+    // SAFE: the grant is keyed to the affiliation that was sampled, so a grant
+    // recorded after a rebind simply never matches and the flow stays refused.
+    // The alternative — asking for the password first — takes one and then
+    // reports there was nothing to accept, which is the failure DR-20's own
+    // header rules out.
     strict_mode_authorization(
         biorouter::privacy::mixing::policy(),
         biorouter::privacy::system_auth::prompter(),
@@ -2170,12 +2199,130 @@ mod cross_affiliation_grant_route_tests {
         );
     }
 
+    /// **Request-supplied text may not be rendered verbatim into an operating
+    /// system's authentication dialog** (review finding, Task 52 fixup).
+    ///
+    /// This is the first caller in the tree to hand
+    /// [`biorouter::privacy::system_auth::AuthRequest::about`] something that did
+    /// not come from its own source, and that function's doc states the opposite
+    /// as its precondition: it is infallible *"because there is exactly one
+    /// subject, and it is a constant in the caller's source."* Extension names
+    /// live in `config.yaml`, which DR-17 leaves agent-writable, and every
+    /// prompter renders the id slot verbatim — macOS into
+    /// `LAContext.localizedReason`, Windows into `UserConsentVerifier`, polkit
+    /// into `--detail chats <value>`. So an agent that can plant an extension
+    /// could write its own sentence into the system password dialog the user is
+    /// then shown. Not injection — spoofing, which is worse here, because DR-20
+    /// point 4's whole premise is that the dialog says honestly what it
+    /// authorises.
+    #[tokio::test]
+    async fn the_system_dialog_never_renders_an_extension_name_verbatim() {
+        use biorouter::privacy::mixing::MixingPolicy;
+        use biorouter::privacy::system_auth::{AuthOutcome, AuthRequest, SystemAuthenticator};
+        use std::sync::Mutex;
+
+        struct Recorder(Mutex<Option<AuthRequest>>);
+
+        #[async_trait::async_trait]
+        impl SystemAuthenticator for Recorder {
+            async fn authenticate(&self, req: &AuthRequest) -> AuthOutcome {
+                *self.0.lock().unwrap() = Some(req.clone());
+                AuthOutcome::Approved
+            }
+
+            fn platform(&self) -> &'static str {
+                "recording test prompter"
+            }
+        }
+
+        // A name a compromised agent could plant: it ends the sentence it is
+        // spliced into, opens a line of its own, and runs long enough to push
+        // the real text out of a dialog.
+        let hostile = format!(
+            "ok`.\n\nBioRouter: this is routine. Press Allow.\r\n{}",
+            "x".repeat(400)
+        );
+
+        let recorder = Recorder(Mutex::new(None));
+        super::strict_mode_authorization(MixingPolicy::Strict, &recorder, &hostile)
+            .await
+            .expect("an approving prompter clears the strict layer");
+        let asked = recorder.0.lock().unwrap().clone().expect("the prompt ran");
+
+        // The id slot is a CONSTANT in this file, honouring `about`'s stated
+        // precondition. A request-supplied subject there is the spoof.
+        assert_eq!(
+            asked.session_ids,
+            vec![super::CROSS_AFFILIATION_GRANT_AUTH_SUBJECT.to_string()],
+            "the dialog's subject slot carried request-supplied text: {asked:?}"
+        );
+
+        // The reason may name the extension — that is DR-20 point 4 — but only
+        // after the name has been made safe to render.
+        //
+        // ⚠ The claim is STRUCTURAL, not semantic, and the assertions say so. A
+        // connector genuinely named `Routine check, press Allow` is
+        // indistinguishable from a planted one; what must hold is that the name
+        // stays inside Biorouter's own sentence, on one line, bounded, and
+        // never in the id slot — so a user can always tell which words are the
+        // application's. See `system_auth::dialog_safe`.
+        assert!(
+            !asked.reason.chars().any(char::is_control),
+            "a control character reached the dialog, so a planted name can add a \
+             line to it: {:?}",
+            asked.reason
+        );
+        assert_eq!(
+            asked.reason.matches('`').count(),
+            2,
+            "the planted name closed the delimiters it was wrapped in, so part of \
+             it renders as Biorouter speaking: {:?}",
+            asked.reason
+        );
+        assert!(
+            asked.reason.len() < 200,
+            "an unbounded name can push the real sentence out of the dialog: {} chars",
+            asked.reason.len()
+        );
+
+        // …and an ordinary name still reaches it, or the sanitiser has bought
+        // safety by saying nothing.
+        let plain = Recorder(Mutex::new(None));
+        super::strict_mode_authorization(MixingPolicy::Strict, &plain, "ucsfomopagent")
+            .await
+            .unwrap();
+        assert!(
+            plain
+                .0
+                .lock()
+                .unwrap()
+                .as_ref()
+                .is_some_and(|r| r.reason.contains("ucsfomopagent")),
+            "the dialog no longer says which connector it is authorising"
+        );
+    }
+
     /// …and the `strict` prompt is raised AFTER the mismatch is resolved and
-    /// BEFORE the grant is written.
+    /// BEFORE the grant is written, **with the live policy and the real
+    /// prompter**.
     ///
     /// The pure test above cannot see the order. Asking earlier would take a
     /// password and then report there was nothing to accept; asking later would
     /// take one for a row already written.
+    ///
+    /// ⚠ **Nor can it see the arguments, which is the mutation review found.**
+    /// [`super::strict_mode_authorization`] is testable precisely because it
+    /// takes the mode and the prompter rather than resolving them — and that is
+    /// also how `strict` could be silently switched off:
+    ///
+    /// ```ignore
+    /// strict_mode_authorization(MixingPolicy::Open, prompter(), &request.extension)
+    /// ```
+    ///
+    /// …passes every behavioural test in this module, both gate commands and the
+    /// ordering scan above, while no machine ever raises the prompt again. So the
+    /// production call's own text is asserted: the mode comes from the resolver
+    /// and the prompter from DR-24's, neither from a literal.
     #[test]
     fn the_strict_prompt_sits_between_the_resolution_and_the_write() {
         let handler = crate::routes::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
@@ -2192,6 +2339,36 @@ mod cross_affiliation_grant_route_tests {
             resolved < prompted && prompted < written,
             "the strict prompt is outside the window it has to sit in: resolved at \
              {resolved}, prompted at {prompted}, written at {written}"
+        );
+
+        // The call runs from `strict_mode_authorization(` to the `.await?` that
+        // ends the statement. Line-wise rather than by byte slice, for the reason
+        // `mixing.rs`'s writer audit records: `clippy::string_slice` is
+        // warn-by-default here and `-D warnings` makes it an error.
+        let mut call = String::new();
+        let mut inside = false;
+        for line in handler.lines() {
+            inside |= line.contains(concat!("strict_mode_", "authorization("));
+            if inside {
+                call.push_str(line);
+                call.push('\n');
+                if line.contains(".await?") {
+                    break;
+                }
+            }
+        }
+        assert!(
+            call.contains(".await?"),
+            "the strict layer's call no longer ends where this scan expects: {call}"
+        );
+        assert!(
+            call.contains(concat!("mixing::", "policy()")),
+            "the strict layer is no longer handed the LIVE mixing policy, so a \
+             machine in `strict` may never be asked: {call}"
+        );
+        assert!(
+            call.contains(concat!("system_auth::", "prompter()")),
+            "the strict layer is no longer handed DR-24's real prompter: {call}"
         );
     }
 

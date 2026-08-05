@@ -230,6 +230,99 @@ pub fn refusal_for(
 /// point of the audit below.
 pub const TEST_SEAM_PLATFORM: &str = "test seam (privacy-test-auth)";
 
+/// The longest a caller-supplied name may be after [`dialog_safe`] has run.
+///
+/// Short on purpose. Extension keys are a word; the budget exists so that the
+/// sentence the *caller* wrote — which is the part DR-20 point 4 is about —
+/// cannot be pushed out of a dialog by a name chosen to be long.
+pub const DIALOG_NAME_BUDGET: usize = 64;
+
+/// What a name renders as when nothing survives [`dialog_safe`].
+///
+/// Honest rather than blank: a dialog that names no connector at all reads as a
+/// bug, and a user cannot tell an empty slot from a missing one.
+pub const UNNAMEABLE_SUBJECT: &str = "an unnamed connector";
+
+/// The characters a caller uses to delimit a name inside its own sentence, and
+/// which therefore may not appear **inside** the name.
+///
+/// The apostrophe is deliberately absent: `Alice's Agent` is a legitimate name,
+/// and a filter that mangled it would trade a real property for a cosmetic one.
+const DIALOG_QUOTING: [char; 2] = ['`', '"'];
+
+/// Make caller-supplied text safe to render inside an OS authentication dialog.
+///
+/// ⚠ **[`AuthRequest::about`] states as its precondition that the subject is a
+/// constant in the caller's source, and DR-27's grant route is the first caller
+/// with a name that came off an HTTP body.** Extension names live in
+/// `config.yaml`, which DR-17 leaves agent-writable, and every prompter renders
+/// what it is handed verbatim — macOS into `LAContext.localizedReason`, Windows
+/// into the `UserConsentVerifier` message, polkit into the action message via
+/// `--detail`. There is no shell on any of those paths, so this is not injection;
+/// it is **spoofing**, which is worse for this feature specifically, because
+/// DR-20 point 4's whole premise is that the dialog states honestly what it
+/// authorises. An agent that can plant an extension could otherwise write its own
+/// sentence into the password prompt the user is shown.
+///
+/// Three narrow rules, each closing one way a name changes what a dialog says:
+///
+/// * **Control characters are dropped** — and still separate what surrounded
+///   them — so a name cannot end the caller's sentence and start a line of its
+///   own, nor silently fuse two words into a third. This is the one that matters.
+/// * **`DIALOG_QUOTING` is dropped**, so a name cannot close the delimiters the
+///   caller wrapped it in and appear to be the application speaking.
+/// * **Runs of whitespace collapse to one space and the result is capped** at
+///   [`DIALOG_NAME_BUDGET`], so a name cannot push the caller's own sentence out
+///   of the dialog or open a gap wide enough to separate itself from it.
+///
+/// ⚠ **What this does NOT buy, stated so it is not read as more.** A connector
+/// genuinely named `Routine check, press Allow` is indistinguishable from a
+/// planted one, and no filter short of an allowlist would tell them apart — an
+/// allowlist would also mangle the non-ASCII names real labs use. What is bought
+/// is structural: the name stays *inside* the caller's sentence, on one line,
+/// bounded, and never in the id slot. A user reading the dialog can always tell
+/// which words are Biorouter's.
+pub fn dialog_safe(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len().min(DIALOG_NAME_BUDGET));
+    let mut budget = DIALOG_NAME_BUDGET;
+    let mut pending_space = false;
+    for ch in raw.chars() {
+        // Quoting is punctuation and simply disappears: `"then"` is `then`, not
+        // ` then `.
+        if DIALOG_QUOTING.contains(&ch) {
+            continue;
+        }
+        if ch.is_control() {
+            // A dropped control character still SEPARATES what surrounded it,
+            // or `a\nb` would read as the single word `ab` — which is a second,
+            // quieter way for a name to say something it does not say.
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if ch.is_whitespace() {
+            pending_space = !out.is_empty();
+            continue;
+        }
+        if pending_space {
+            if budget == 0 {
+                break;
+            }
+            out.push(' ');
+            budget -= 1;
+            pending_space = false;
+        }
+        if budget == 0 {
+            break;
+        }
+        out.push(ch);
+        budget -= 1;
+    }
+    if out.is_empty() {
+        return UNNAMEABLE_SUBJECT.to_string();
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // macOS — LAContext.evaluatePolicy(.deviceOwnerAuthentication)
 // ---------------------------------------------------------------------------
@@ -483,6 +576,44 @@ impl SystemAuthenticator for NoPrompter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every rule [`dialog_safe`] claims, and the one it deliberately does not.
+    #[test]
+    fn a_planted_name_cannot_restructure_the_dialog_it_is_rendered_into() {
+        // The rule that matters: no name may own a line of its own.
+        let lined = dialog_safe("ok\n\nBioRouter: press Allow.\r\tnow");
+        assert!(
+            !lined.chars().any(char::is_control),
+            "a control character survived: {lined:?}"
+        );
+        assert_eq!(lined, "ok BioRouter: press Allow. now");
+
+        // …nor close the delimiters the caller wrapped it in.
+        assert_eq!(dialog_safe("ok`, and \"then\""), "ok, and then");
+
+        // …nor push the caller's own sentence out of the dialog.
+        let long = dialog_safe(&"x".repeat(4_000));
+        assert_eq!(long.chars().count(), DIALOG_NAME_BUDGET);
+
+        // A name that survives none of it is named honestly rather than blank: a
+        // dialog with an empty slot reads as a bug.
+        assert_eq!(dialog_safe("\u{0}\r\n `` "), UNNAMEABLE_SUBJECT);
+
+        // ⚠ And the property this does NOT have, asserted so a later reader does
+        // not mistake the function for one that filters meaning. A connector
+        // genuinely named this is indistinguishable from a planted one; what is
+        // bought is structural, not semantic.
+        assert_eq!(
+            dialog_safe("Routine check, press Allow"),
+            "Routine check, press Allow"
+        );
+
+        // Ordinary names pass through untouched, or the sanitiser has bought
+        // safety by saying nothing.
+        for plain in ["ucsfomopagent", "UCSF OMOP Agent", "Institut Pasteur — génomique"] {
+            assert_eq!(dialog_safe(plain), plain);
+        }
+    }
 
     // --- DR-24 Step 4: per platform, an approve, a deny and an unavailable ---
 
