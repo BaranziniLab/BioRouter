@@ -20388,6 +20388,160 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+## DR-28 — capability governs reach, and exporting is a declassifying act
+
+> **Ruled 2026-08-05**, from the operator, in three parts. This corrects
+> [Task 58](#task-58-session-addressing-routes-bypass-the-tier-barrier-entirely-47) as shipped and
+> adds Tasks 59–61.
+
+**(a) Capability governs reach, not proof-of-human.** *"If the CLI is using a private model (with the
+tagging right with respect to the privacy policy), then it should have all the access to opening new
+chats in the background and injecting prompts in it — all the capabilities of the GUI, just not shown
+as another window, same idea under the hood."*
+
+⚠ **Task 58 shipped the opposite test and must be inverted.** It gates session reach on the
+`X-User-Action` proof, so a CLI running Versa is refused while a GUI running Versa is allowed. That is
+backwards: the two-lattice model asks *what may this model reach*, and a private-capability caller may
+reach private data wherever it runs. Proof-of-human is the right instrument for **raising a tier**
+(DR-16) and for **lowering one** (DR-20); it is the wrong instrument for *reach*.
+
+**(b) Export is gated on capability AND is an act of declassification.** *"The export command should
+only work if the privacy setting and the private model inference setup is aligned to make the user
+qualified to export it. And exporting is one of the actions of declassifying, since all of its
+contents will be on the machine and reachable by other agents."*
+
+**(c) The chat stays private; the act is recorded.** Ruled explicitly: export does **not** move the
+ratchet. The original remains protected, and silently flipping a chat to public would surprise someone
+who exported once for a colleague. The *act* is audited.
+
+**(d) One implementation, both surfaces.** The operator asked for this in the daemon. ⚠ **It goes in
+the shared `biorouter` library instead**, which both the CLI and the daemon link. Daemon-only would
+force the CLI to require a running daemon for export, which it does not today — the CLI opens the
+store in-process, and that is what makes headless work. Same intent, correct placement.
+
+### The tension this ruling accepts, stated so it is not discovered later
+
+⚠ **Over HTTP, capability can be asserted but not verified.** The daemon has no principal (issue #47's
+root), so a caller claiming private capability cannot be checked. This is acceptable **only because**
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descoped the filesystem barrier —
+the same caller can read `sessions.db` directly, so gating the API buys friction rather than security.
+**If the filesystem barrier ever returns to scope, this becomes the weak point and must be revisited.**
+
+---
+
+### Task 59: Nothing protects the session store from a plain file read
+
+Measured 2026-08-05. `crates/biorouter/src/security/` contains exactly **one** filesystem inspector —
+`global_memory.rs`, which protects `~/.config/biorouter/memory`. **Nothing protects
+`~/.config/biorouter/sessions/sessions.db`** (`session_manager.rs:32`, `DB_NAME`).
+
+⚠ **This is the hole underneath every other gate in this plan.** Gates A–H enforce reach through
+Biorouter's own APIs — chatrecall, the workspace tools, the session store. A `cat`, a `sqlite3`, or a
+`text_editor` read of that file walks around all of them, and it does so for a **public** model just
+as easily as a private one.
+
+⚠ **This is NOT the general filesystem barrier DR-17 descoped.** It is one specific path, with a
+working template beside it: `GlobalMemoryInspector` (`security/global_memory.rs:741`, registered at
+`agents/agent.rs:1969`) already does exactly this job for the memory store.
+
+- [ ] **Step 1: Mirror the memory inspector for the session store**
+
+A `ToolInspector` refusing tool reads of the session database and its journal/WAL siblings.
+
+⚠ **Copy the distinction the memory inspector already makes**, which is the hard part and is already
+solved there: *reading* the store is refused, while *talking about the path* — a doc that mentions it,
+a commit message, a test fixture naming it — is not. `global_memory.rs:395-396` carries both cases as
+worked examples. Getting this wrong makes the inspector fire constantly and someone will disable it.
+
+- [ ] **Step 2: Cover the sibling paths, not just the one filename**
+
+SQLite writes `sessions.db-wal` and `sessions.db-shm`. A barrier on the exact filename leaves the WAL
+readable, and a WAL holds recent transactions — i.e. the newest private turns.
+
+- [ ] **Step 3: The gate**
+
+1. A tool read of `sessions.db` is refused; so are the `-wal` and `-shm` siblings.
+2. **Anti-vacuity:** a doc or commit message *mentioning* the path is NOT refused. Without this the
+   inspector is unshippable.
+3. A shell command reading it (`cat`, `sqlite3`, `strings`) is refused, not just `text_editor`.
+4. ⚠ Assert the refusal fires for a **private-capability** caller too. This inspector is about the
+   channel, not the tier: even a private model should use the APIs, so that reach stays observable in
+   the audit trail rather than happening invisibly through the filesystem.
+
+### Task 60: Export is gated on capability and audited, in the shared library
+
+Implements [DR-28](#dr-28--capability-governs-reach-and-exporting-is-a-declassifying-act) (b), (c), (d).
+
+- [ ] **Step 1: One implementation both surfaces call**
+
+In `crates/biorouter`, not in the CLI and not in the daemon. `handle_session_export`
+(`biorouter-cli/src/commands/session.rs:340`) and the GUI's export path both route through it.
+⚠ Measured: the CLI's export has **zero** privacy checks today, and the GUI reaches the same store.
+
+- [ ] **Step 2: Refuse a public-capability caller outright**
+
+Exporting a private chat requires private capability. This is the capability test from DR-28(a), not a
+user-proof.
+
+- [ ] **Step 3: A private export carries declassification's authorization**
+
+The system prompt from [Task 55](#task-55-wire-dr-20s-system-password-to-something--it-currently-has-no-callers),
+plus an audit row in the same ledger. ⚠ **The chat's tier does NOT change** — DR-28(c), ruled
+explicitly. The ledger records an *export*, distinct from a declassification, so the two are never
+conflated when reading the trail.
+
+- [ ] **Step 4: Say what the file is**
+
+Copy stating plainly that the exported file is **not protected** and can be read by anything on the
+machine, including a public-model agent. One constant, like the disclosure's.
+
+- [ ] **Step 5: The gate**
+
+```bash
+cargo test -p biorouter --lib session::export 2>&1 | grep "test result:"
+cargo test -p biorouter-cli --lib 2>&1 | grep "test result:"
+cd ui/desktop && npm run test:run 2>&1 | tail -3
+```
+
+1. Public capability + private chat → refused, both surfaces.
+2. Private capability + private chat → prompts, then exports, and writes **one** ledger row.
+3. **The chat is still private afterwards.** This is the ruling's explicit half and the one a
+   well-meaning implementer is most likely to "improve".
+4. A public chat exports with no prompt and no row — the common case stays free.
+5. ⚠ **Parity, asserted rather than assumed:** the same fixture drives both surfaces and both give the
+   same answer. Two implementations that agree today diverge on the first fix applied to one of them.
+
+### Task 61: Invert Task 58's gate from proof-of-human to capability
+
+Implements [DR-28](#dr-28--capability-governs-reach-and-exporting-is-a-declassifying-act) (a).
+⚠ This **changes shipped behaviour from Task 58** — read that task first, then this.
+
+- [ ] **Step 1: Give the CLI a capability at all**
+
+Measured: the CLI resolves **no** privacy tier for its own session. It loads a provider and runs. The
+GUI's sessions carry `privacy_tier`; the CLI's do not. Nothing downstream is implementable until this
+exists, so it is Step 1 rather than a detail.
+
+- [ ] **Step 2: Replace the predicate on the five gated routes**
+
+From "carries `X-User-Action`" to "caller capability ≥ target session tier". A private-capability CLI
+regains `watch`, `send`, `attach` and `cancel`, and can open background chats and inject prompts —
+the GUI's behaviour without a window, which is the ruling.
+
+⚠ **Do not remove the user-action requirement from the raise and lower paths.** DR-16 (raising a
+session's tier) and DR-20 (declassifying) still need proof-of-human. Only *reach* moves to capability.
+Conflating the three is how this gets undone.
+
+- [ ] **Step 3: The gate**
+
+1. Private-capability caller + private session → allowed, on each of the five routes.
+2. Public-capability caller + private session → refused.
+3. **Regression:** DR-16's raise and DR-20's declassification still demand the user-action proof, and
+   still refuse without it. This is the test that catches an over-broad inversion.
+4. The refusal still does not leak existence — Task 58's ordering requirement survives unchanged.
+
+---
+
 ### Task 58: Session-addressing routes bypass the tier barrier entirely (#47)
 
 > **Operator ruling, 2026-08-04:** fix it in this release rather than after.
