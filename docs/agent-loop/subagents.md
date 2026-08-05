@@ -399,8 +399,12 @@ Two consequences worth knowing before you write a prompt that delegates:
 If a spawn is refused, the fix is not to retry: switch the chat you are delegating *from*, or start
 a new chat on the model you want the work done on.
 
-All of the above is off when privacy tiers are off (Settings → Privacy), in which case a spawn
-carries no tier check at all.
+Every *check* above is off when privacy tiers are off (Settings → Privacy): no spawn is refused for
+a tier reason and no extension is dropped for one. **The tier itself still propagates, though** — a
+child born to a private parent is still stamped private, permanently, because that stamp is column
+propagation rather than a check. It is deliberately outside the switch: a spawn that laundered a
+private parent's mark to public while the feature was off would write that permanently, and
+re-enabling the feature never revisits an existing row.
 
 ## Related documentation
 
