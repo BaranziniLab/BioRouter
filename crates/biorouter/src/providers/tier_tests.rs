@@ -5,13 +5,17 @@
 //! `include!`, or the filter `providers::tier_tests` resolves to nothing and
 //! prints `0 passed`.
 
+use async_trait::async_trait;
+use rmcp::model::Tool;
 use std::sync::Arc;
 
-use super::base::Provider;
+use super::base::{Provider, ProviderMetadata, ProviderUsage};
+use super::errors::ProviderError;
 use super::lead_worker::LeadWorkerProvider;
 use super::ollama::{OllamaProvider, OLLAMA_HOST};
 use super::versa_azure::VERSA_AZURE_ENDPOINT;
 use crate::config::declarative_providers::{DeclarativeProviderConfig, ProviderEngine};
+use crate::conversation::message::Message;
 use crate::model::ModelConfig;
 use crate::privacy::ProviderTier;
 
@@ -283,4 +287,113 @@ fn versa_demotes_when_its_endpoint_is_not_the_ucsf_gateway() {
     // Anything `url::Url` cannot parse has no host to vouch for. Public.
     assert_eq!(versa_tier_for_endpoint("unified-api.ucsf.edu"), Public);
     assert_eq!(versa_tier_for_endpoint(""), Public);
+}
+
+// ------------------------------------------------ The fail-safe default itself
+
+/// A provider that declares no tier at all. Not a mock of any real provider —
+/// it exists so the **default** can be asserted directly, which is the claim
+/// every public provider in the registry rests on: they are Public because they
+/// never say otherwise, not because someone wrote `with_tier(Public)` once per
+/// module. `factory::every_registered_provider_is_classified_for_tier` is the
+/// census that makes each of those silences a recorded decision.
+///
+/// `affiliation_tests.rs` has a near-identical `ProviderThatSaysNothing`, and
+/// the duplication is deliberate: making that one reachable from here would
+/// mean widening a test type's visibility across two modules so that a
+/// *different* axis could borrow it, and the tier default would then be pinned
+/// in a file whose subject is affiliation.
+struct ProviderThatDeclaresNoTier;
+
+#[async_trait]
+impl Provider for ProviderThatDeclaresNoTier {
+    fn metadata() -> ProviderMetadata {
+        ProviderMetadata::empty()
+    }
+
+    fn get_name(&self) -> &str {
+        "declares_no_tier"
+    }
+
+    fn get_model_config(&self) -> ModelConfig {
+        ModelConfig::new_or_fail("nothing")
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &ModelConfig,
+        _system: &str,
+        _messages: &[Message],
+        _tools: &[Tool],
+    ) -> Result<(Message, ProviderUsage), ProviderError> {
+        unreachable!("this provider exists to be asked its tier and nothing else")
+    }
+}
+
+/// Task 53 Step 1 — the operator's rule, made mechanical: *"if a provider
+/// cannot be verified, then it is public (always assume the least
+/// permission)."*
+///
+/// Public is the **least-permission** answer, not the unsafe one: a model
+/// tagged Public is *refused* private data. The two mistakes are not
+/// symmetric. A genuinely private provider tagged Public is over-restricted —
+/// a usability loss. A genuinely public provider tagged Private is handed PHI
+/// — a disclosure. Only the second is dangerous, and
+/// `the_private_set_is_the_four_the_operator_named` above is what closes it:
+/// declaring a *new* provider Private fails there until the operator's list is
+/// updated.
+///
+/// So this test exists to stop the default from being "helpfully" inverted —
+/// by a future refactor that infers Private from a local-looking base URL, a
+/// familiar hostname, or a `runs_locally` flag. Both levels are pinned,
+/// because the type-level claim and the instance-level one are read by
+/// different code and can be changed independently:
+///
+/// * [`ProviderMetadata::tier`] is what `GET /config/providers` serves to
+///   every UI surface, and what `the_private_set_is_the_four_the_operator_named`
+///   enumerates.
+/// * [`Provider::tier`] is what the enforcement path reads.
+#[test]
+fn a_provider_that_declares_no_tier_is_public() {
+    use crate::privacy::ProviderTier::Public;
+
+    // (a) The enum's own default, which both levels below are spelled in terms
+    // of. Everything else here is downstream of this one line.
+    assert_eq!(ProviderTier::default(), Public);
+
+    // (b) The trait default — the value the enforcement path reads for a
+    // provider module that never overrides `tier()`.
+    assert_eq!(ProviderThatDeclaresNoTier.tier(), Public);
+
+    // (c) The metadata default, through every constructor a provider module
+    // can reach for. `with_tier` is the only way to leave Public, and a
+    // constructor that forgot to initialise the field would not compile — but
+    // one that initialised it to `Private` would, and would be invisible.
+    assert_eq!(ProviderMetadata::empty().tier, Public);
+    assert_eq!(
+        ProviderMetadata::new("p", "P", "d", "m", vec!["m"], "link", vec![]).tier,
+        Public
+    );
+    assert_eq!(
+        ProviderMetadata::with_models("p", "P", "d", "m", vec![], "link", vec![]).tier,
+        Public
+    );
+
+    // (d) The *deserialisation* default. `tier` is `#[serde(default)]`, so
+    // metadata arriving without the field — an older daemon's response, a
+    // hand-written declarative fixture — must land on Public rather than
+    // failing open. Built by round-tripping a real value with the key removed,
+    // so adding a field to the struct cannot silently turn this into a
+    // different test.
+    let mut json = serde_json::to_value(ProviderMetadata::empty()).expect("metadata serialises");
+    assert!(
+        json.as_object_mut()
+            .expect("metadata is a JSON object")
+            .remove("tier")
+            .is_some(),
+        "the field this test is about must be present before it is removed"
+    );
+    let without_tier: ProviderMetadata =
+        serde_json::from_value(json).expect("metadata without a tier still deserialises");
+    assert_eq!(without_tier.tier, Public);
 }

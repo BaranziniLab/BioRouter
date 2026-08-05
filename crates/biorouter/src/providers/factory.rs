@@ -317,6 +317,162 @@ mod tests {
         rows
     }
 
+    /// Every built-in provider that ships `ProviderTier::Private` (Task 5), with
+    /// the one-line reason. Like the affiliation table above, nothing here is a
+    /// name-keyed assignment — the reason names the predicate or the endpoint the
+    /// provider's own module states its tier from.
+    #[allow(unused_mut)]
+    fn private_tier_providers() -> Vec<(&'static str, &'static str)> {
+        let mut rows = vec![
+            (
+                "llamacpp",
+                "private: the bundled sidecar runs on this machine; a LLAMACPP_EXTERNAL_HOST off it demotes the instance",
+            ),
+            (
+                "ollama",
+                "private: a self-hosted server on this machine; an OLLAMA_HOST off it demotes the instance",
+            ),
+            (
+                "versa_azure",
+                "private: the UCSF Versa gateway, under a signed agreement; an endpoint off the gateway demotes the instance",
+            ),
+        ];
+        #[cfg(feature = "aws-providers")]
+        rows.push((
+            "versa_bedrock",
+            "private: the UCSF Versa gateway's bedrock route; an endpoint off the gateway demotes the instance",
+        ));
+        rows
+    }
+
+    /// Every other built-in provider, each with the one-line reason it is Public.
+    ///
+    /// These are not Public by omission — the default *is* Public, pinned at all
+    /// four levels by `tier_tests::a_provider_that_declares_no_tier_is_public`,
+    /// so a provider that says nothing gets less reach rather than more. ⚠ This
+    /// table therefore **records** a decision; it does not make one. A row here
+    /// changes nothing about how the provider behaves, which is exactly why it is
+    /// worth writing: without it, "nobody ever decided" and "we decided Public"
+    /// are indistinguishable.
+    #[allow(unused_mut)]
+    fn public_tier_providers() -> Vec<(&'static str, &'static str)> {
+        let mut rows = vec![
+            ("anthropic", "public: general commercial endpoint"),
+            (
+                "azure_openai",
+                "public: a large cloud. ⚠ azure.rs ships the UCSF gateway as \
+                 AZURE_OPENAI_ENDPOINT's default, so this one *looks* institutional \
+                 and is not — only versa_azure carries the agreement",
+            ),
+            ("databricks", "public: general commercial endpoint"),
+            ("gcp_vertex_ai", "public: general commercial endpoint"),
+            ("github_copilot", "public: general commercial endpoint"),
+            ("google", "public: general commercial endpoint"),
+            (
+                "litellm",
+                "public: an arbitrary proxy, and it makes no loopback claim",
+            ),
+            ("openai", "public: general commercial endpoint"),
+            (
+                "openrouter",
+                "public: a model marketplace, upstream unknown",
+            ),
+            ("snowflake", "public: general commercial endpoint"),
+            ("tetrate", "public: a hosted gateway"),
+            ("venice", "public: a hosted inference service"),
+            ("xai", "public: general commercial endpoint"),
+            ("xiaomi_mimo", "public: general commercial endpoint"),
+            ("zai", "public: general commercial endpoint"),
+        ];
+        #[cfg(feature = "aws-providers")]
+        {
+            rows.push(("aws_bedrock", "public: a large cloud"));
+            rows.push((
+                "sagemaker_tgi",
+                "public: an AWS-hosted endpoint, not this machine",
+            ));
+        }
+        rows
+    }
+
+    /// Task 53 Step 2: a new provider's tier cannot be left undecided.
+    ///
+    /// Affiliation has had a completeness census since Task 46; tier had none,
+    /// so the fail-safe default silently absorbed every provider nobody thought
+    /// about. That is a **bookkeeping** gap rather than a security hole — the
+    /// default is Public, which is least-permission, and
+    /// `tier_tests::the_private_set_is_the_four_the_operator_named` is what stops
+    /// a new provider from claiming Private. This test closes the other half:
+    /// adding a `registry.register::<…>` line above now fails until someone
+    /// writes down which tier that provider ships at and why.
+    ///
+    /// ⚠ Same `aws-providers` caveat as the affiliation census: the feature is
+    /// default-on, and `--no-default-features` legitimately registers three
+    /// fewer providers, which is why both tables are `cfg`-gated in step with the
+    /// registrations.
+    #[test]
+    fn every_registered_provider_is_classified_for_tier() {
+        use crate::privacy::ProviderTier;
+
+        let registered = registered_builtin_tiers();
+        let private = private_tier_providers();
+        let public = public_tier_providers();
+
+        for (name, shipped) in &registered {
+            let in_private = private.iter().any(|(n, _why)| n == name);
+            let in_public = public.iter().any(|(n, _why)| n == name);
+            assert!(
+                in_private ^ in_public,
+                "{name} is in neither tier table, or in both — decide it \
+                 (may a private session be bound to this provider's models?). \
+                 A row reading `public: general commercial endpoint` is a \
+                 complete and correct answer."
+            );
+
+            // The table records the decision; `P::metadata()` *is* the decision.
+            // Without this, a row could claim Public for a provider shipping
+            // Private and the census would still be "complete".
+            let recorded = if in_private {
+                ProviderTier::Private
+            } else {
+                ProviderTier::Public
+            };
+            assert_eq!(
+                *shipped, recorded,
+                "{name} ships {shipped:?} but is filed under {recorded:?} — \
+                 fix the table, not the provider (changing a tier is Task 5's \
+                 `the_private_set_is_the_four_the_operator_named`, which needs \
+                 an operator ruling)"
+            );
+        }
+
+        // ...and the tables name nothing that is not registered, so a provider
+        // deleted from the factory does not leave a stale classification behind
+        // to make the count look right.
+        for (name, _why) in private.iter().chain(public.iter()) {
+            assert!(
+                registered.iter().any(|(r, _)| r == name),
+                "{name} is classified but not registered"
+            );
+        }
+
+        // The count closes the loop: without it, adding a provider to BOTH the
+        // registry and one table while deleting another table's row still passes
+        // the loops above.
+        let names: Vec<&String> = registered.iter().map(|(n, _)| n).collect();
+        assert_eq!(
+            registered.len(),
+            private.len() + public.len(),
+            "registered: {names:?}"
+        );
+
+        // Every reason is a real reason. An empty string would satisfy the
+        // tables while recording nothing.
+        for (name, why) in private.iter().chain(public.iter()) {
+            assert!(!why.is_empty(), "{name} has no stated reason");
+        }
+    }
+
     /// The names `register_builtin_providers` actually registers, in this build's
     /// feature configuration.
     ///
@@ -330,6 +486,24 @@ mod tests {
         let mut names: Vec<String> = registry.entries.keys().cloned().collect();
         names.sort();
         names
+    }
+
+    /// The same fresh-registry set, carrying the tier each provider's own
+    /// `metadata()` shipped — the value `GET /config/providers` serves and the
+    /// tier census checks its table against.
+    fn registered_builtin_tiers() -> Vec<(String, crate::privacy::ProviderTier)> {
+        let mut registry = ProviderRegistry::new();
+        register_builtin_providers(&mut registry);
+        let mut rows: Vec<(String, crate::privacy::ProviderTier)> = registry
+            .all_metadata_with_types()
+            .into_iter()
+            .map(|(metadata, _)| (metadata.name, metadata.tier))
+            .collect();
+        // By name only. `ProviderTier` is deliberately not `Ord` — ordering it
+        // would make `max` spellable, and `max` over a capability is always a
+        // bug (see `privacy::ProviderTier`) — so the tuple is not `Ord` either.
+        rows.sort_by(|a, b| a.0.cmp(&b.0));
+        rows
     }
 
     /// Task 46 Step 3: a new provider cannot be forgotten.
