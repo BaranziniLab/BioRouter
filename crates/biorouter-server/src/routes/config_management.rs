@@ -196,12 +196,19 @@ pub struct DetectableProvidersResponse {
     request_body = UpsertConfigQuery,
     responses(
         (status = 200, description = "Configuration value upserted successfully", body = String),
+        (status = 400, description = "Refused (issue #56, DR-27): \
+                                      `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', \
+                                      'standard' or 'strict'"),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
                                       switch and may only be written from Settings > Privacy, \
-                                      with its typed confirmation"),
+                                      with its typed confirmation — or (issue #56, DR-27) \
+                                      relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system \
+                                      authentication that did not happen"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
                                       decides what privacy capability new chats start at, so \
-                                      writing it requires proof the request came from the user"),
+                                      writing it requires proof the request came from the user. \
+                                      Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is \
+                                      user-only in every mode"),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -343,6 +350,63 @@ pub async fn upsert_config(
         };
     }
 
+    // Issue #56 Task 52, DR-27. The cross-institution mixing policy — the second
+    // setting that does NOT go through `config.set`, and for DR-22's reason
+    // verbatim: DR-17 left `config.yaml` agent-writable, so a security control
+    // stored there is one a public model can set to `open` and have obeyed at the
+    // next launch. Its home is its own record beside `config.yaml`, and this
+    // route is the only thing in the tree that writes it.
+    if biorouter::privacy::mixing::is_mixing_policy_key(&query.key) {
+        // Never into the SECRET store, for the master switch's reason: the
+        // credential store is not what the resolver reads, so a secret write
+        // would move this process's cached value and silently revert at the next
+        // launch.
+        if query.is_secret {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "'{}' is the cross-institution mixing policy and cannot be stored as a \
+                     secret: the daemon reads it from its own record in the configuration \
+                     directory and would not see a value written to the credential store.",
+                    query.key
+                ),
+            ));
+        }
+        // DR-19 / DR-27: user-only, in every mode, and NOT conditioned on the
+        // master switch being on. Gating this guard on another control's state
+        // is the coupling that lets one disabled control disable a second.
+        if !is_user_action(&headers) {
+            return Err((StatusCode::CONFLICT, MIXING_POLICY_NEEDS_USER.to_string()));
+        }
+        // An unrecognised mode is refused, never resolved to a default: the two
+        // wrong answers fail in opposite directions, so there is no safe guess.
+        let Some(policy) = biorouter::privacy::mixing::mixing_policy_value(&query.value) else {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                MIXING_POLICY_UNKNOWN_MODE.to_string(),
+            ));
+        };
+        // The direction guard lives inside `set_policy`: loosening raises DR-24's
+        // system prompt, tightening raises nothing. Deciding it here would put a
+        // second reading of DR-27's ratchet in a route handler.
+        return match biorouter::privacy::mixing::set_policy(
+            config,
+            policy,
+            &biorouter::privacy::mixing::UserMixingPolicyChange::from_user_action(),
+        )
+        .await
+        {
+            Ok(()) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
+            // Nothing was written on this arm, so the machine is left in the mode
+            // it was already in — which is the stricter of the two.
+            Err(refused @ biorouter::privacy::mixing::SetPolicyError::Refused(_)) => Err((
+                StatusCode::FORBIDDEN,
+                format!("{MIXING_POLICY_AUTH_REFUSED} {refused}"),
+            )),
+            Err(failed) => Err((StatusCode::INTERNAL_SERVER_ERROR, failed.to_string())),
+        };
+    }
+
     let result = config.set(&query.key, &query.value, query.is_secret);
 
     match result {
@@ -381,6 +445,37 @@ const MASTER_SWITCH_AUTH_REFUSED: &str =
     "Turning off Biorouter's privacy tiers needs your operating system to confirm it is you. \
      That did not happen, and the setting was not changed.";
 
+/// What the mixing policy says to a caller that presented no proof of a human
+/// (issue #56 Task 52, DR-27 / DR-19).
+///
+/// It is the model-facing half of the ruling and says the two things a model
+/// needs: that this is not its decision, and what to do instead. It forecloses
+/// the retry, because a model that reads a refusal as transient loops on it.
+const MIXING_POLICY_NEEDS_USER: &str =
+    "Biorouter's cross-institution mixing policy is a setting only the person at the keyboard may \
+     change, and this request carried no proof it came from them. Nothing was changed. Do not \
+     retry — the same call will be refused again, and no setting, hook or permission mode changes \
+     it. Tell the user what you need and let them decide.";
+
+/// …and when the value is not one of the three modes.
+///
+/// Naming all three, because the caller cannot act on "invalid value" and a
+/// setting with a closed vocabulary can afford to state it.
+const MIXING_POLICY_UNKNOWN_MODE: &str =
+    "The cross-institution mixing policy is one of 'open', 'standard' or 'strict'. Nothing was \
+     changed.";
+
+/// …and when the system authentication a LOOSENING needs did not happen.
+///
+/// The prompter's own sentence is appended, because "you pressed Cancel" and
+/// "this machine has no way to raise the prompt" need different advice and only
+/// the prompter knows which it was — the same shape
+/// [`MASTER_SWITCH_AUTH_REFUSED`] has.
+const MIXING_POLICY_AUTH_REFUSED: &str =
+    "Relaxing Biorouter's cross-institution mixing policy needs your operating system to confirm \
+     it is you. That did not happen, and the setting was not changed. Tightening it needs no \
+     confirmation at all.";
+
 /// The one sentence both verbs refuse the master switch with. One copy, so the
 /// two channels cannot drift into saying different things about the same rule.
 fn master_switch_refusal(key: &str) -> String {
@@ -399,7 +494,8 @@ fn master_switch_refusal(key: &str) -> String {
         (status = 200, description = "Configuration value removed successfully", body = String),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
                                       switch and may only be changed from Settings > Privacy, \
-                                      never removed"),
+                                      never removed — and (issue #56, DR-27) \
+                                      `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"),
         (status = 404, description = "Configuration key not found"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
                                       decides what privacy capability new chats start at, and a \
@@ -426,6 +522,25 @@ pub async fn remove_config(
     // exactly one way for the value to change and one place to look for it.
     if biorouter::privacy::is_privacy_tiers_key(&query.key) {
         return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
+    }
+    // Issue #56 Task 52, DR-27 — "one predicate, every verb", the argument
+    // `is_privacy_tiers_key` already makes. A rule that holds for `/config/upsert`
+    // and not for `/config/remove` is a door with one lock, and a delete of this
+    // key is not the absence of a write: it is a way to ask for the default back
+    // without proving a human or facing the direction guard. It is refused
+    // outright rather than gated, because there is no legitimate caller — the
+    // panel writes one of the three modes and never deletes.
+    if biorouter::privacy::mixing::is_mixing_policy_key(&query.key) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "'{}' is the cross-institution mixing policy and cannot be removed as an \
+                 ordinary configuration value: set it to 'open', 'standard' or 'strict' from \
+                 Settings > Privacy, which is the one door that proves a human and asks the \
+                 operating system before it relaxes anything.",
+                query.key
+            ),
+        ));
     }
     // Issue #56 DR-16. The FIFTH channel to the capability keys, and the one the
     // task's own four-channel enumeration missed.
@@ -516,6 +631,16 @@ pub async fn read_config(
     // Issue #56 Task 42, DR-22.
     if biorouter::privacy::is_privacy_tiers_key(&query.key) {
         return Ok(Json(ConfigValueResponse::Value(privacy_tiers_wire_value())));
+    }
+
+    // Issue #56 Task 52, DR-27 — and this arm is not optional. The value is not
+    // in `config.yaml`, so without it `config.get` answers `NotFound` → `null`,
+    // and a panel that just wrote 'strict' would render "no mode set". Telling
+    // the user something false about the control they have just used is the
+    // failure `privacy_tiers_value_is_on`'s doc names, and it costs one branch to
+    // avoid.
+    if biorouter::privacy::mixing::is_mixing_policy_key(&query.key) {
+        return Ok(Json(ConfigValueResponse::Value(mixing_policy_wire_value())));
     }
 
     let config = Config::global();
@@ -620,8 +745,29 @@ pub async fn read_all_config() -> Result<Json<ConfigResponse>, StatusCode> {
         biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY.to_string(),
         privacy_tiers_wire_value(),
     );
+    // Issue #56 Task 52, DR-27 — both read paths, for the reason the single-key
+    // one gives: the value is not in `config.yaml`, so a bulk read that skipped
+    // it would report the setting as absent on every machine.
+    values.insert(
+        biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY.to_string(),
+        mixing_policy_wire_value(),
+    );
 
     Ok(Json(ConfigResponse { config: values }))
+}
+
+/// The mixing policy as the two config READ paths report it (issue #56, DR-27).
+///
+/// ⚠ **The LIVE value, the same one every gate reads — never a second read of
+/// the record.** A panel showing the file while the daemon enforces its cached
+/// value is Task 30's hardening measure (3) seen from the reading end: the user
+/// is told what will apply after the next restart rather than what is applying
+/// now, and only one of those is the control they just used.
+///
+/// A string, because that is what the panel writes back and what
+/// [`biorouter::privacy::mixing::MixingPolicy::parse`] round-trips.
+fn mixing_policy_wire_value() -> Value {
+    Value::String(biorouter::privacy::mixing::policy().as_str().to_string())
 }
 
 /// The master switch as the two config READ paths report it (issue #56, DR-22).

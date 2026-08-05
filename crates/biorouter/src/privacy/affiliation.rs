@@ -578,6 +578,15 @@ pub fn cross_affiliation(
 ///
 /// The three guards and why each is here are documented on
 /// [`super::CallCapability::cross_affiliation_warning`].
+///
+/// ⚠ **Task 52 (DR-27): this is the REFUSAL spelling, so it is narrowed by the
+/// mixing policy** — through [`refusing_mismatch`], which is the one place that
+/// setting is read. In `open` it answers `None` while
+/// [`gate_cross_affiliation`] below goes on resolving. Its two callers are both
+/// refusal-shaped in the sense that matters: the subagent spawn DROPS a
+/// mismatched extension from the child, and `/agent/add_extension` logs the
+/// warning it would otherwise have shown, and neither should happen on a machine
+/// whose user asked for cross-institution reach to be silent.
 pub fn gate_cross_affiliation_warning(
     enforced: bool,
     model_tier: super::ProviderTier,
@@ -585,13 +594,52 @@ pub fn gate_cross_affiliation_warning(
     extension: &str,
     class: &super::ExtensionClassification,
 ) -> Option<String> {
-    gate_cross_affiliation(enforced, model_tier, model, extension, class).map(|f| f.warning)
+    refusing_mismatch(gate_cross_affiliation(
+        enforced, model_tier, model, extension, class,
+    ))
+    .map(|f| f.warning)
 }
 
-/// The same gate decision as [`gate_cross_affiliation_warning`], carrying both
-/// renderings — see [`CrossAffiliation`]. The three guards are identical
-/// because there is only one of them: the warning-only spelling above is this
-/// function with a field selected off it.
+/// **The** place DR-27's mixing policy is read: a resolved mismatch, filtered
+/// down to the ones that actually REFUSE (issue #56, Task 52 Step 3).
+///
+/// ⚠ **One reader, not one per gate.** Three call sites reading a mode is three
+/// places to disagree, and the disagreement would be silent — a tool marked at
+/// discovery and then dispatched, or listed and then refused. Both spellings of
+/// "the warning a refusal is stated in" run through here: this module's
+/// [`gate_cross_affiliation_warning`] and
+/// [`super::CallCapability::cross_affiliation_warning`], which is the same gate
+/// with the three model axes taken off one sample.
+///
+/// ⚠ **It takes the finding rather than the inputs, and that is what keeps
+/// `open` from becoming a short circuit.** The resolution has already happened
+/// by the time this is called, and [`gate_cross_affiliation`] still returns it —
+/// so Gate E's mark, the bind surface and the grant route's subject all keep
+/// seeing the mismatch in `open`, which is what DR-27 requires: *the
+/// compatibility check still runs, still resolves, and the result is still
+/// available to the UI for display.* A mode that returned early from the gate
+/// would blind those, and would leave `open → standard` with nothing to
+/// re-tighten.
+///
+/// ⚠ **`open` is not the master switch.** This narrows the *affiliation* axis
+/// and touches no other: the tier refusal beside it
+/// ([`super::refusal::privacy_refusal`]) never consults the policy, so a public
+/// model is still refused a private extension in every mode.
+pub fn refusing_mismatch(finding: Option<CrossAffiliation>) -> Option<CrossAffiliation> {
+    finding.filter(|_| super::mixing::mismatch_refuses())
+}
+
+/// The **resolution** on DR-26's third axis, carrying both renderings — see
+/// [`CrossAffiliation`]. The three guards live here, and
+/// [`gate_cross_affiliation_warning`] is this function plus DR-27's filter with
+/// a field selected off it.
+///
+/// ⚠ **Mode-blind on purpose** (Task 52). This says whether the flow crosses an
+/// institutional boundary, which is a fact about the two endpoints rather than
+/// about what the user asked Biorouter to do about it — so Gate E's mark, the
+/// bind surface and the grant route's subject keep working in `open`. A caller
+/// that DISPLAYS a mismatch reads this; a caller that REFUSES one reads the
+/// spelling above.
 pub fn gate_cross_affiliation(
     enforced: bool,
     model_tier: super::ProviderTier,

@@ -3006,7 +3006,7 @@ export type AgentCrossAffiliationGrantErrors = {
      */
     401: unknown;
     /**
-     * Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow
+     * Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow — or (DR-27) this machine's mixing policy is 'strict' and the operating system did not confirm the user
      */
     403: unknown;
     /**
@@ -3842,7 +3842,7 @@ export type RemoveConfigData = {
 
 export type RemoveConfigErrors = {
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed — and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
      */
     403: unknown;
     /**
@@ -3918,11 +3918,15 @@ export type UpsertConfigData = {
 
 export type UpsertConfigErrors = {
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation
+     * Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'
+     */
+    400: unknown;
+    /**
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation — or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
      */
     403: unknown;
     /**
-     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user
+     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode
      */
     409: unknown;
     /**

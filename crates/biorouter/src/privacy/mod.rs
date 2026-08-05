@@ -28,6 +28,7 @@ mod disclosure_tests;
 pub mod extensions;
 pub mod grant;
 pub mod master_switch;
+pub mod mixing;
 pub mod provenance;
 pub mod refusal;
 mod registry_private;

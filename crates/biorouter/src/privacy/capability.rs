@@ -201,20 +201,40 @@ impl CallCapability {
     /// [`affiliation::unstated_model_warning`]; short-circuiting there fails
     /// open in the one case DR-26 exists to catch.
     ///
+    /// ⚠ **Task 52 (DR-27): this spelling is where a mismatch becomes a
+    /// REFUSAL, so it is filtered by the mixing policy — through
+    /// [`affiliation::refusing_mismatch`], which is the one place that setting
+    /// is read.** In `open` this answers `None` while
+    /// [`Self::cross_affiliation`] below goes on resolving, so the badges, the
+    /// marks and the grant route's subject keep working and `open → standard`
+    /// re-tightens what is already in flight. The three refusal sites — Gate C's
+    /// dispatch denial, `assert_extension_reachable`'s eight entry points and
+    /// `extensionmanager__manage_extensions` — therefore read no mode of their
+    /// own.
+    ///
     /// [`affiliation::compatible`]: super::affiliation::compatible
     /// [`affiliation::unstated_model_warning`]: super::affiliation::unstated_model_warning
+    /// [`affiliation::refusing_mismatch`]: super::affiliation::refusing_mismatch
     pub fn cross_affiliation_warning(
         &self,
         extension: &str,
         class: &ExtensionClassification,
     ) -> Option<String> {
-        self.cross_affiliation(extension, class).map(|f| f.warning)
+        super::affiliation::refusing_mismatch(self.cross_affiliation(extension, class))
+            .map(|f| f.warning)
     }
 
-    /// The same decision as [`Self::cross_affiliation_warning`], carrying both
-    /// renderings — see [`CrossAffiliation`]. Gate E is the caller that needs
-    /// the budgeted one, because its output is a tool `description` rather than
-    /// a sentence a human reads.
+    /// The **resolution**, carrying both renderings — see [`CrossAffiliation`].
+    /// Gate E is the caller that needs the budgeted one, because its output is a
+    /// tool `description` rather than a sentence a human reads.
+    ///
+    /// ⚠ **Not the same answer as [`Self::cross_affiliation_warning`] any more,
+    /// and the difference is DR-27.** This one is mode-blind on purpose: it says
+    /// whether the flow crosses an institutional boundary, which is a fact about
+    /// the two endpoints and not about what the user asked Biorouter to do about
+    /// it. The mixing policy narrows only the refusal spelling above. So a
+    /// caller that DISPLAYS a mismatch reads this, and a caller that REFUSES one
+    /// reads that.
     ///
     /// [`CrossAffiliation`]: super::affiliation::CrossAffiliation
     pub fn cross_affiliation(
@@ -414,4 +434,133 @@ mod tests {
     // there, not from here, so that Task 51's whole-tree census of those two
     // spellings under `crates/*/src/` counts production entries and nothing
     // else — see [`CallCapability::for_test`].
+
+    // -----------------------------------------------------------------------
+    // Task 52 (DR-27) — the mixing policy, asked at the one gate that reads it.
+    //
+    // These live beside the gate rather than in `privacy::mixing` because the
+    // claim is about what the GATE does per mode, and because this file is
+    // already sanctioned to name `ExtensionAffiliation` by
+    // `crates/biorouter/tests/privacy_capability.rs`'s
+    // `compatible_is_the_only_function_that_compares_two_affiliations`.
+    // -----------------------------------------------------------------------
+
+    // `mixing::pin_for_test` is per THREAD, so none of the three tests below can
+    // be seen by the Gate C dispatch tests running beside them and none of them
+    // needs `serial_test`. See the pin's own doc.
+    use crate::privacy::mixing::{self, MixingPolicy};
+
+    /// Task 52 gate (1) and (4), in one drive because they are the same
+    /// sentence read from two ends: `open` does not refuse, and it still
+    /// resolves.
+    ///
+    /// ⚠ **The resolution must survive.** DR-27: *a mode that short-circuits
+    /// the resolver would also blind the badges and the audit trail, and would
+    /// make `open → standard` fail to re-tighten anything already in flight.*
+    /// So [`CallCapability::cross_affiliation`] — the finding, which Gate E's
+    /// mark and the bind surface read — answers identically in all three modes,
+    /// and only [`CallCapability::cross_affiliation_warning`] — the spelling a
+    /// refusal is stated in — goes quiet.
+    #[test]
+    fn open_suppresses_the_refusal_and_still_resolves_the_mismatch() {
+        let cap =
+            CallCapability::for_test_affiliated(ProviderTier::Private, true, Some(stanford()));
+
+        let resolved = {
+            let _pin = mixing::pin_for_test(MixingPolicy::Standard);
+            let finding = cap
+                .cross_affiliation("ucsfomopagent", &ucsf_extension())
+                .expect("a Stanford model reaching a UCSF connector is a mismatch");
+            assert!(
+                cap.cross_affiliation_warning("ucsfomopagent", &ucsf_extension())
+                    .is_some(),
+                "standard is today's behaviour and must be unchanged"
+            );
+            finding
+        };
+
+        let _pin = mixing::pin_for_test(MixingPolicy::Open);
+        assert_eq!(
+            cap.cross_affiliation_warning("ucsfomopagent", &ucsf_extension()),
+            None,
+            "`open` still refused a cross-institutional flow"
+        );
+        let still_resolved = cap
+            .cross_affiliation("ucsfomopagent", &ucsf_extension())
+            .expect(
+                "`open` short-circuited the resolver: the badges and the audit trail read \
+                 through this, and re-tightening to `standard` would then have nothing to \
+                 re-tighten",
+            );
+        assert_eq!(still_resolved.warning, resolved.warning);
+        assert_eq!(still_resolved.mark, resolved.mark);
+    }
+
+    /// Task 52 gate (1), the other two modes. `strict` refuses exactly as
+    /// `standard` does at the gate — what it adds is a second proof at the
+    /// grant route, which is `routes::agent`'s to assert.
+    #[test]
+    fn standard_and_strict_both_refuse_and_only_strict_demands_the_password() {
+        let cap =
+            CallCapability::for_test_affiliated(ProviderTier::Private, true, Some(stanford()));
+
+        {
+            let _pin = mixing::pin_for_test(MixingPolicy::Standard);
+            assert!(cap
+                .cross_affiliation_warning("ucsfomopagent", &ucsf_extension())
+                .is_some());
+            assert!(
+                !mixing::grant_needs_system_authentication(),
+                "`standard` is today's behaviour: one in-app confirmation clears the flow"
+            );
+        }
+
+        let _pin = mixing::pin_for_test(MixingPolicy::Strict);
+        assert!(cap
+            .cross_affiliation_warning("ucsfomopagent", &ucsf_extension())
+            .is_some());
+        assert!(
+            mixing::grant_needs_system_authentication(),
+            "`strict` must cost something real, on top of the in-app confirmation"
+        );
+    }
+
+    /// Task 52 gate (3) — **the test that fails the most likely wrong
+    /// implementation.**
+    ///
+    /// The tempting shortcut is to make `open` mean "skip the privacy check",
+    /// which is the master switch wearing DR-27's clothes. DR-27 forbids it in
+    /// as many words: *all three keep the public/private barrier; this setting
+    /// governs the affiliation axis only.*
+    ///
+    /// Three separate things are asserted because a wrong implementation could
+    /// reach any one of them: the tier refusal still fires, an enforced public
+    /// capability still restricts, and the master toggle has not moved.
+    #[test]
+    fn open_is_not_the_master_switch() {
+        let before = crate::privacy::privacy_tiers_enabled();
+        let _pin = mixing::pin_for_test(MixingPolicy::Open);
+
+        assert!(
+            crate::privacy::refusal::privacy_refusal(
+                "ucsfomopagent",
+                ProviderTier::Private,
+                ProviderTier::Public,
+            )
+            .is_some(),
+            "`open` let a PUBLIC model reach a private extension. It governs the \
+             affiliation axis only — turning the tier system off is what the master \
+             switch does, and Task 52 must not duplicate it"
+        );
+        assert!(
+            CallCapability::for_test(ProviderTier::Public, true).restricts_private_data(),
+            "`open` relaxed the public/private barrier on the capability itself"
+        );
+        assert_eq!(
+            crate::privacy::privacy_tiers_enabled(),
+            before,
+            "moving the mixing policy moved the MASTER SWITCH — that is a different \
+             control, with a different disclosure and a different write"
+        );
+    }
 }

@@ -1158,6 +1158,64 @@ fn refuse_grant_unless_user(proof: UserActionProof) -> Result<(), ErrorResponse>
     }
 }
 
+/// …and when the machine is in `strict` and the operating system did not
+/// confirm (issue #56 Task 52, DR-27).
+///
+/// It says which of the three modes is in force, because that is the fact the
+/// user needs and the one they can change: a person who does not know their
+/// machine is in `strict` reads a bare "authentication failed" as a bug. It does
+/// **not** tell a model how to leave `strict` — that is a user-only setting
+/// behind its own system prompt, and advice to change it is advice to attack the
+/// control.
+const CROSS_AFFILIATION_GRANT_STRICT_NEEDS_SYSTEM: &str =
+    "This machine's cross-institution mixing policy is set to 'strict', so accepting a \
+     cross-institutional data flow needs your operating system to confirm it is you as well as \
+     the in-app approval. That did not happen. Nothing was recorded.";
+
+/// The `strict` layer on the grant, as a function so it can be driven.
+///
+/// ⚠ **Extracted for [`refuse_grant_unless_user`]'s reason, which is the same
+/// reason.** This handler cannot be driven from a test — `AppState::new()` opens
+/// the developer's REAL session database — so every other fact about the route
+/// is a source scan, and a scan cannot tell "prompts in strict" from "prompts in
+/// every mode" or from "prompts in none". Taking the policy and the prompter as
+/// arguments makes all three modes assertions about the real decision path, with
+/// no password typed. Production passes [`biorouter::privacy::mixing::policy`]
+/// and [`biorouter::privacy::system_auth::prompter`], which is the one resolver
+/// in the tree that can reach the test seam.
+///
+/// ⚠ **`open` and `standard` never touch the prompter.** In `standard` this must
+/// be exactly today's behaviour — one in-app confirmation — and a prompt raised
+/// there would be the DR-19 prompt fatigue this feature keeps arguing against. In
+/// `open` a grant is recordable but pointless (the gate no longer refuses), and
+/// charging a password for a no-op is worse than pointless.
+async fn strict_mode_authorization(
+    policy: biorouter::privacy::mixing::MixingPolicy,
+    prompter: &dyn biorouter::privacy::system_auth::SystemAuthenticator,
+    extension: &str,
+) -> Result<(), ErrorResponse> {
+    if policy != biorouter::privacy::mixing::MixingPolicy::Strict {
+        return Ok(());
+    }
+    let request = biorouter::privacy::system_auth::AuthRequest::about(
+        format!(
+            "Allow this Biorouter chat to send data to `{extension}`, across an institutional \
+             boundary."
+        ),
+        extension,
+    );
+    let outcome = prompter.authenticate(&request).await;
+    match biorouter::privacy::system_auth::refusal_for(outcome, prompter) {
+        None => Ok(()),
+        // Nothing has been written at this point — the grant row is the next
+        // statement — so the flow stays refused, which is the safe direction.
+        Some(refusal) => Err(ErrorResponse {
+            status: StatusCode::FORBIDDEN,
+            message: format!("{CROSS_AFFILIATION_GRANT_STRICT_NEEDS_SYSTEM} {refusal}"),
+        }),
+    }
+}
+
 /// Record the user's acceptance of one cross-institutional data flow (issue #56,
 /// DR-26 / Task 49).
 ///
@@ -1193,7 +1251,9 @@ fn refuse_grant_unless_user(proof: UserActionProof) -> Result<(), ErrorResponse>
         (status = 400, description = "There is no cross-institutional mismatch to accept"),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused (issue #56, DR-26): only the user may accept a \
-                                      cross-institutional data flow"),
+                                      cross-institutional data flow — or (DR-27) this machine's \
+                                      mixing policy is 'strict' and the operating system did not \
+                                      confirm the user"),
         (status = 424, description = "That chat is not loaded in this daemon, so the model it is \
                                       bound to cannot be read"),
         (status = 500, description = "Internal server error")
@@ -1241,6 +1301,23 @@ async fn agent_cross_affiliation_grant(
             message: CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT.to_string(),
         });
     };
+
+    // Issue #56 Task 52, DR-27. In `strict` the in-app confirmation is not enough
+    // on its own: the operating system has to say it is you as well. Raised HERE,
+    // immediately before the write, so every other refusal this handler can make
+    // is already past and the user is not asked for a password to be told
+    // afterwards that there was nothing to accept.
+    //
+    // ⚠ **The mode is read once, at this one site.** The gate's own three modes
+    // are decided in `privacy::affiliation::refusing_mismatch`; this is the
+    // second half of DR-27 Step 3, and the only thing on the grant route that
+    // knows the policy exists.
+    strict_mode_authorization(
+        biorouter::privacy::mixing::policy(),
+        biorouter::privacy::system_auth::prompter(),
+        &request.extension,
+    )
+    .await?;
 
     // The single construction of the cross-affiliation proof-of-user in the tree,
     // pinned by
@@ -1994,6 +2071,130 @@ mod cross_affiliation_grant_route_tests {
         assert_eq!(keyless.message, CROSS_AFFILIATION_GRANT_NO_KEY);
     }
 
+    /// Task 52 gate (1), the half that lives on this route: **`strict` rejects a
+    /// grant carrying only `X-User-Action`**, and the other two modes accept
+    /// one.
+    ///
+    /// The prompter counts, because the two ways to get this wrong are opposite
+    /// and a test that only checked the `strict` outcome would miss the other:
+    /// prompting in `standard` is the DR-19 prompt fatigue this feature keeps
+    /// arguing against, and prompting in none is `strict` not existing.
+    #[tokio::test]
+    async fn strict_demands_the_operating_system_on_top_of_the_header() {
+        use biorouter::privacy::mixing::MixingPolicy;
+        use biorouter::privacy::system_auth::{AuthOutcome, AuthRequest, SystemAuthenticator};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct Prompter {
+            answer: AuthOutcome,
+            prompts: AtomicUsize,
+        }
+
+        #[async_trait::async_trait]
+        impl SystemAuthenticator for Prompter {
+            async fn authenticate(&self, _req: &AuthRequest) -> AuthOutcome {
+                self.prompts.fetch_add(1, Ordering::Relaxed);
+                self.answer
+            }
+
+            fn platform(&self) -> &'static str {
+                "counting test prompter"
+            }
+        }
+
+        // `open` and `standard` are today's behaviour: the in-app confirmation
+        // this handler already checked is the whole of it, and a prompter that
+        // would refuse is never consulted.
+        for mode in [MixingPolicy::Open, MixingPolicy::Standard] {
+            let prompter = Prompter {
+                answer: AuthOutcome::Denied,
+                prompts: AtomicUsize::new(0),
+            };
+            super::strict_mode_authorization(mode, &prompter, "ucsfomopagent")
+                .await
+                .unwrap_or_else(|e| panic!("{mode} must not need a password: {}", e.message));
+            assert_eq!(
+                prompter.prompts.load(Ordering::Relaxed),
+                0,
+                "{mode} raised a system prompt. Only `strict` costs something real; making \
+                 the common case expensive is how you teach people to stop using the control"
+            );
+        }
+
+        // `strict`: the same request, with the same header, is refused.
+        let denied = Prompter {
+            answer: AuthOutcome::Denied,
+            prompts: AtomicUsize::new(0),
+        };
+        let refusal =
+            super::strict_mode_authorization(MixingPolicy::Strict, &denied, "ucsfomopagent")
+                .await
+                .expect_err("in `strict` the in-app confirmation is not enough on its own");
+        assert_eq!(refusal.status, StatusCode::FORBIDDEN);
+        assert_eq!(denied.prompts.load(Ordering::Relaxed), 1);
+        assert!(
+            refusal.message.contains("strict"),
+            "the refusal must name the mode in force, or the user reads it as a bug: {}",
+            refusal.message
+        );
+        assert!(
+            refusal.message.contains("Nothing was recorded"),
+            "{}",
+            refusal.message
+        );
+
+        // …and clears once the operating system approves.
+        let approved = Prompter {
+            answer: AuthOutcome::Approved,
+            prompts: AtomicUsize::new(0),
+        };
+        super::strict_mode_authorization(MixingPolicy::Strict, &approved, "ucsfomopagent")
+            .await
+            .expect("an approved system authentication is what `strict` costs");
+        assert_eq!(approved.prompts.load(Ordering::Relaxed), 1);
+
+        // A machine that cannot raise a prompt at all refuses rather than
+        // approving — DR-24's asymmetry, unchanged.
+        let unavailable = Prompter {
+            answer: AuthOutcome::Unavailable,
+            prompts: AtomicUsize::new(0),
+        };
+        let error =
+            super::strict_mode_authorization(MixingPolicy::Strict, &unavailable, "ucsfomopagent")
+                .await
+                .expect_err("an unavailable prompter must not approve a compliance risk");
+        assert!(
+            error.message.contains("counting test prompter"),
+            "an unavailable prompt must name the platform: {}",
+            error.message
+        );
+    }
+
+    /// …and the `strict` prompt is raised AFTER the mismatch is resolved and
+    /// BEFORE the grant is written.
+    ///
+    /// The pure test above cannot see the order. Asking earlier would take a
+    /// password and then report there was nothing to accept; asking later would
+    /// take one for a row already written.
+    #[test]
+    fn the_strict_prompt_sits_between_the_resolution_and_the_write() {
+        let handler = crate::routes::body_of(SOURCE, "async fn agent_cross_affiliation_grant");
+        let resolved = handler
+            .find("cross_affiliation_grant_subject(")
+            .expect("the grant handler no longer resolves the mismatch it is accepting");
+        let prompted = handler
+            .find(concat!("strict_mode_", "authorization("))
+            .expect("the grant handler no longer applies DR-27's strict layer");
+        let written = handler
+            .find(concat!("grant::", "record("))
+            .expect("the grant handler no longer writes the grant");
+        assert!(
+            resolved < prompted && prompted < written,
+            "the strict prompt is outside the window it has to sit in: resolved at \
+             {resolved}, prompted at {prompted}, written at {written}"
+        );
+    }
+
     /// …and the guard runs BEFORE the chat is looked up, so an unproven caller
     /// cannot use the refusals to probe which extensions a chat has.
     ///
@@ -2046,6 +2247,10 @@ mod cross_affiliation_grant_route_tests {
             CROSS_AFFILIATION_GRANT_NEEDS_USER,
             CROSS_AFFILIATION_GRANT_NO_KEY,
             CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT,
+            // Task 52's fifth refusal, enrolled here rather than left to be
+            // remembered: it is the newest and therefore the likeliest to have
+            // been written by copying one of the others.
+            super::CROSS_AFFILIATION_GRANT_STRICT_NEEDS_SYSTEM,
         ] {
             assert!(
                 !message.contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
