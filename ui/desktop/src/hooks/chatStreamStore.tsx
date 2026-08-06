@@ -34,6 +34,7 @@ import {
 } from '../types/message';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
+import { forgetActiveTurn, readActiveTurn, rememberActiveTurn } from '../utils/activeTurnRegistry';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
 import type { PendingSteer } from '../utils/trailingActivity';
@@ -53,6 +54,122 @@ function newTurnId(): string {
   }
   return `turn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
+
+/**
+ * The `/reply` body that ATTACHES to a turn already in flight rather than
+ * starting one (contract §2).
+ *
+ * Every deviation from an ordinary reply body is deliberate and each one is a
+ * thing the server lane has to agree to:
+ *
+ *  - **`turn_id` names an existing turn.** That is the whole request. The
+ *    server's `try_begin_turn_idempotent` already recognises it as a duplicate;
+ *    the contract changes the answer from a JSON 409 to 200 + the stream.
+ *
+ *  - **`from_seq` goes in the BODY, not the query string.** The contract offers
+ *    `?from_seq=N` as an option; the body is the form this client can actually
+ *    send. `/reply` is generated as `query?: never` (`api/types.gen.ts`
+ *    `ReplyData`), so a query parameter can only be smuggled past the typed
+ *    client, while a new optional body field appears on `ChatRequest` the next
+ *    time the spec is regenerated. It means "I hold frames 0..N-1, send me the
+ *    rest" — an optimisation only: the sequence gate drops a full replay
+ *    correctly if the server ignores it, which is exactly what makes it safe to
+ *    ship the client before the server honours it.
+ *
+ *  - **`user_message` is a formality here and MUST be ignored by the server.**
+ *    The schema requires it, but a client attaching to someone else's turn does
+ *    not know what started it. We send the transcript's trailing user message
+ *    when there is one — for a live turn that IS the message that started it,
+ *    since the driver appended it before POSTing and the server persisted it —
+ *    and an empty one otherwise. If the server were ever to honour this field
+ *    on a duplicate `turn_id`, an attach would inject a phantom prompt into a
+ *    running turn, which is why it is called out here rather than left implicit.
+ *    Making the field optional when `turn_id` names an in-flight turn removes
+ *    the hazard entirely and is the requested schema change.
+ */
+function buildAttachRequest(
+  sessionId: string,
+  turnId: string,
+  fromSeq: number,
+  messages: Message[]
+): Parameters<typeof reply>[0]['body'] {
+  const trailingUser = [...messages].reverse().find((m) => m.role === 'user');
+  const placeholder: Message = {
+    role: 'user',
+    created: Math.floor(Date.now() / 1000),
+    content: [],
+    metadata: { userVisible: false, agentVisible: false },
+  };
+  return {
+    session_id: sessionId,
+    turn_id: turnId,
+    user_message: trailingUser ?? placeholder,
+    // Not on the generated `ChatRequest` yet; see the note above.
+    from_seq: fromSeq,
+  } as Parameters<typeof reply>[0]['body'];
+}
+
+/**
+ * The fields the live-turn stream contract adds to every `/reply` frame, on top
+ * of the generated `MessageEvent` union.
+ *
+ * They are read structurally rather than through `api/types.gen.ts` because
+ * that file is generated from the OpenAPI spec and must not be hand-edited; it
+ * regains these the moment the server lane regenerates. Reading them
+ * defensively is not just a build convenience — an OBSERVER stream
+ * (`/sessions/{id}/events`) carries no sequence at all, and so must keep
+ * working with every field absent.
+ *
+ *  - `seq` — monotonic per-TURN frame number from 0 (contract §1). The whole
+ *    basis of idempotent replay.
+ *  - `turn_id` — which turn `seq` counts within. Requested in addition to the
+ *    contract's §1 because `seq` RESTARTS at 0 each turn: without a turn
+ *    identity on the frame, the first frame of turn N+1 (`seq: 0`) is
+ *    indistinguishable from a replayed frame of turn N and would be dropped as
+ *    a duplicate. See `applySequenceGate`.
+ *  - `replay` — true on frames served from the backlog, absent/false on the
+ *    live tail (contract §R2, "the client must be able to tell replay from
+ *    live"). It is what lets the backlog land as ONE commit.
+ */
+type StreamFrameEnvelope = {
+  seq?: number | null;
+  turn_id?: string | null;
+  replay?: boolean | null;
+};
+
+/** The per-turn sequence number of a frame, when the producer stamps one. */
+export function frameSeq(event: MessageEvent): number | undefined {
+  const seq = (event as MessageEvent & StreamFrameEnvelope).seq;
+  return typeof seq === 'number' ? seq : undefined;
+}
+
+/** Which turn a frame's `seq` counts within, when the producer names it. */
+export function frameTurnId(event: MessageEvent): string | undefined {
+  const turnId = (event as MessageEvent & StreamFrameEnvelope).turn_id;
+  return typeof turnId === 'string' && turnId ? turnId : undefined;
+}
+
+/** Was this frame served from the replay backlog rather than the live tail? */
+export function isReplayFrame(event: MessageEvent): boolean {
+  return (event as MessageEvent & StreamFrameEnvelope).replay === true;
+}
+
+/**
+ * Ceiling on how long the transcript may be held back while a replay backlog
+ * drains (see `beginReplayHold`).
+ *
+ * Holding notifications is what turns a backlog into a single commit instead of
+ * a visible re-typing of the turn. But it means the user sees NOTHING new until
+ * the hold ends, so a producer that streams a huge backlog slowly — or one that
+ * stamps `replay` and never clears it — must not be able to freeze the
+ * transcript indefinitely. When this fires the hold is released and rendering
+ * simply continues progressively: degraded, never stuck.
+ *
+ * Half a second is far longer than a buffered backlog takes to arrive over
+ * loopback (it is one or two reads of an already-materialised buffer) and short
+ * enough that a user cannot mistake the pause for a hang.
+ */
+export const REPLAY_MAX_HOLD_MS = 500;
 
 const SESSION_LIST_CACHE_TTL_MS = 5000;
 let sessionListInflight: Promise<{ id: string; name?: string | null }[]> | null = null;
@@ -369,6 +486,27 @@ class ChatStreamController {
   private observerGeneration = 0;
   private abortController: AbortController | null = null;
   private activeStreamId = 0;
+  /**
+   * The turn this controller is currently rendering — the id it POSTed, or the
+   * id it attached to. Held so a re-attach can re-POST the SAME turn (rather
+   * than starting a second one) and so the sequence gate below knows which
+   * turn its numbering belongs to.
+   */
+  private activeTurnId: string | null = null;
+  /**
+   * Highest per-turn `seq` already applied to the snapshot, for `seqTurnId`.
+   * `-1` means "nothing from this turn has been rendered yet", which is the
+   * only value at which frame 0 is accepted.
+   */
+  private lastAppliedSeq = -1;
+  /**
+   * Which turn `lastAppliedSeq` counts within. Kept separate from
+   * `activeTurnId` because it is set by what ARRIVES, not by what we asked
+   * for: a frame naming a turn we have not seen resets the gate, which is what
+   * makes a new turn's `seq: 0` an accepted frame instead of a duplicate of the
+   * previous turn's.
+   */
+  private seqTurnId: string | null = null;
   private lastInteractionTime = Date.now();
   private loadPromise: Promise<void> | null = null;
   /**
@@ -492,7 +630,140 @@ class ChatStreamController {
    * when nothing is scheduled — which is also what makes a double fire
    * (both race arms landing) deliver exactly one notification.
    */
+  /**
+   * Replay batching (contract §R2). While this is > 0 the snapshot keeps being
+   * written SYNCHRONOUSLY — `getSnapshot()` is always current, and everything
+   * inside the controller that reads it keeps working — but React is not told.
+   * On release, one notification carries the whole backlog.
+   *
+   * This is a suspension of the NOTIFICATION layer, not a buffer of frames, and
+   * that distinction is the reason it is safe. The frames still run through the
+   * ordinary pipeline in the ordinary order — no reordering, no per-variant
+   * skipping, no `Promise.all` — so the producer-side ordering invariants that
+   * `observeSession` documents survive untouched. The only thing that changes
+   * is how many times React re-renders while they land: once.
+   *
+   * Why a hold is needed at all when `scheduleNotify` already batches per
+   * animation frame: rAF coalescing only merges frames that arrive within one
+   * frame. A backlog delivered over several network reads is several macrotasks,
+   * so it would paint in several steps — a visible re-typing of a message the
+   * user may have already read. The contract calls that out as worse than the
+   * bug being fixed.
+   */
+  private notifySuspendDepth = 0;
+  /** A snapshot write happened while suspended, so release must notify. */
+  private suspendedDirty = false;
+  private replayHoldTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private suspendNotifications(): void {
+    this.notifySuspendDepth += 1;
+  }
+
+  private resumeNotifications(): void {
+    if (this.notifySuspendDepth === 0) return;
+    this.notifySuspendDepth -= 1;
+    if (this.notifySuspendDepth > 0) return;
+    if (!this.suspendedDirty) return;
+    this.suspendedDirty = false;
+    if (this.snapshot.session) {
+      cacheSet(this.sessionId, {
+        session: this.snapshot.session,
+        messages: this.snapshot.messages,
+      });
+    }
+    // Deliberately `notify()` and not `scheduleNotify()`: the backlog is
+    // already complete, and deferring it another frame would be pure latency.
+    this.notify();
+  }
+
+  /**
+   * Enter (or stay in) the replay hold. Idempotent — a backlog is many frames
+   * and only the first opens the hold, so the depth can never run away.
+   */
+  private beginReplayHold(): void {
+    if (this.replayHoldTimer !== null) return;
+    this.suspendNotifications();
+    this.replayHoldTimer = setTimeout(() => {
+      // Safety valve, not the normal exit: see REPLAY_MAX_HOLD_MS.
+      this.replayHoldTimer = null;
+      this.resumeNotifications();
+    }, REPLAY_MAX_HOLD_MS);
+  }
+
+  /**
+   * Leave the replay hold and commit the backlog as one render. The normal exit
+   * — called on the first live frame, on a terminal frame, and unconditionally
+   * when the stream loop unwinds, so no path can leave the transcript frozen.
+   */
+  private endReplayHold(): void {
+    if (this.replayHoldTimer === null) return;
+    clearTimeout(this.replayHoldTimer);
+    this.replayHoldTimer = null;
+    this.resumeNotifications();
+  }
+
+  /**
+   * The idempotence gate (contract §1/§R2). Returns false when this frame has
+   * already been applied and must be dropped.
+   *
+   * A frame is a duplicate when it names a `seq` at or below the highest one
+   * already applied FOR THE SAME TURN. The turn scoping is what makes it safe:
+   * `seq` restarts at 0 every turn, so an unscoped gate would swallow the first
+   * frames of the next turn. When the producer stamps no `turn_id`, the gate is
+   * limited to the turn this controller believes it is on — set at submit and
+   * at attach, cleared at every turn boundary — which is exactly true for a
+   * `/reply` stream this controller drives, and is why an observer feed (no
+   * `seq` at all) simply never reaches the gate.
+   */
+  private applySequenceGate(event: MessageEvent): boolean {
+    const seq = frameSeq(event);
+    if (seq === undefined) return true;
+
+    const turnId = frameTurnId(event);
+    if (turnId && turnId !== this.seqTurnId) {
+      // A different turn's numbering: start it from scratch rather than
+      // measuring it against the previous turn's high-water mark.
+      this.seqTurnId = turnId;
+      this.lastAppliedSeq = -1;
+    } else if (!turnId && this.seqTurnId === null) {
+      this.seqTurnId = this.activeTurnId;
+    }
+
+    if (seq <= this.lastAppliedSeq) return false;
+    this.lastAppliedSeq = seq;
+    return true;
+  }
+
+  /**
+   * The turn this controller was rendering is over (or has been given up on):
+   * stop offering it as something to attach to.
+   *
+   * It deliberately does NOT forget `seqTurnId`/`lastAppliedSeq`. Those record
+   * WHAT HAS ALREADY BEEN PAINTED of a specific turn, and that remains true
+   * whatever happened to the connection — including the case this exists for,
+   * where the client gave up on a dropped stream and something later attaches
+   * to the same turn again. Clearing the high-water mark there would replay a
+   * half-rendered turn from its start, on top of the half already on screen,
+   * which is the duplicated-paragraph bug arriving from the one direction the
+   * sequence gate is supposed to cover.
+   *
+   * Nothing leaks into the NEXT turn either: a new turn resets the mark
+   * explicitly (`submitPreparedMessage`, `attachToTurn`), and a frame naming an
+   * unfamiliar turn resets it on arrival (`applySequenceGate`).
+   */
+  private retireActiveTurn(): void {
+    if (this.activeTurnId) forgetActiveTurn(this.sessionId, this.activeTurnId);
+    this.activeTurnId = null;
+    this.reattachesThisTurn = 0;
+  }
+
   private flushNotify(): void {
+    // A turn boundary reached mid-backlog must not force a partial paint: the
+    // release below delivers it, in the same commit as the rest of the replay.
+    if (this.notifySuspendDepth > 0) {
+      this.suspendedDirty = true;
+      return;
+    }
     if (!this.notifyScheduled) return;
     if (this.notifyTimeoutHandle !== null) {
       clearTimeout(this.notifyTimeoutHandle);
@@ -514,6 +785,13 @@ class ChatStreamController {
     // wake every subscriber (#22).
     if (next === this.snapshot) return;
     this.snapshot = next;
+    // Replay hold: the write has landed (getSnapshot is current), React just
+    // isn't told yet. The LRU write is deferred with it — it would otherwise
+    // re-serialise the whole transcript once per replayed frame.
+    if (this.notifySuspendDepth > 0) {
+      this.suspendedDirty = true;
+      return;
+    }
     if (this.snapshot.session) {
       cacheSet(this.sessionId, {
         session: this.snapshot.session,
@@ -739,6 +1017,7 @@ class ChatStreamController {
       // Session already painted, but the agent may still be missing entirely on
       // the controller-reuse path. Idempotent.
       void this.ensureAgentLoaded();
+      void this.resumeActiveTurn();
       onSessionLoaded?.();
       return;
     }
@@ -769,6 +1048,10 @@ class ChatStreamController {
       // extensions. Kick the load off here; `whenAgentReady` is what makes the
       // submit safe.
       void this.ensureAgentLoaded();
+      // …and rejoin whatever turn is still running on the daemon. Not awaited:
+      // the transcript is already painted and an attach must never be something
+      // the user waits behind.
+      void this.resumeActiveTurn();
       onSessionLoaded?.();
       return;
     }
@@ -833,6 +1116,14 @@ class ChatStreamController {
           // awaited: `loadSession` resolves as soon as the transcript is up.
           void this.ensureAgentLoaded();
 
+          // PHASE 2b — rejoin a turn that is still running. This is the reload
+          // case the whole feature exists for: the transcript above is what the
+          // store had persisted, which for a live turn stops at the user's
+          // message, and the attach fills in everything the agent has produced
+          // since. Ordered after the paint and not awaited, so a session with no
+          // live turn pays nothing for it.
+          void this.resumeActiveTurn();
+
           listApps({
             throwOnError: true,
             query: { session_id: this.sessionId },
@@ -882,6 +1173,11 @@ class ChatStreamController {
     // (cancel, provider abort, a dropped block) must not linger.
     this.clearPendingToolCalls();
     this.abortController = null;
+    // Retire the turn's attach handle and its sequence numbering together. Both
+    // outliving the turn is the same bug in two shapes: a stale handle sends a
+    // reopened tab attaching to a turn that is over, and a stale high-water mark
+    // makes the NEXT turn's `seq: 0` look like a duplicate and swallows it.
+    this.retireActiveTurn();
 
     const timeSinceLastInteraction = Date.now() - this.lastInteractionTime;
     if (!error && timeSinceLastInteraction > 60000) {
@@ -980,6 +1276,31 @@ class ChatStreamController {
     try {
       for await (const event of stream) {
         if (this.activeStreamId !== streamId) return;
+
+        // Contract §1 — drop what this client has already rendered. This is the
+        // ONLY thing standing between a re-attach and a duplicated paragraph:
+        // the server replays a turn from its start, and a client that was
+        // watching for the first half of it must apply only the second.
+        if (!this.applySequenceGate(event)) continue;
+
+        // Contract §R2 — replay lands as one commit, the live tail frame by
+        // frame. The transition is the first frame that is not marked `replay`,
+        // and it releases the hold BEFORE that frame is applied, so the backlog
+        // and the live tail are never merged into a state the server never had.
+        // An UNSEQUENCED frame decides nothing either way. The producer emits
+        // those for things that carry no ordering — the `Ping` heartbeat, and
+        // the whole-conversation resync that precedes a backlog whose oldest
+        // frames were evicted (`turn_stream.rs`, "Wire format"). Treating one as
+        // the live tail would end the hold in the middle of a backlog and paint
+        // the replay in two halves; treating it as replay would be just as
+        // wrong on an idle live stream, where a heartbeat would open a hold that
+        // nothing closes until the safety valve.
+        if (isReplayFrame(event)) {
+          this.beginReplayHold();
+        } else if (frameSeq(event) !== undefined) {
+          this.endReplayHold();
+        }
+
         switch (event.type) {
           case 'ToolCallPending': {
             // Advisory skeleton for a tool whose args are still streaming. Upsert
@@ -1002,6 +1323,10 @@ class ChatStreamController {
             break;
           }
           case 'Error':
+            // The turn is over — release before the terminal transition so the
+            // whole turn-boundary battery (finish listeners, notification, name
+            // poll) observes a settled, fully-painted store.
+            this.endReplayHold();
             await this.finishCurrentStream({
               message: event.error,
               technicalDetails: event.error,
@@ -1012,6 +1337,7 @@ class ChatStreamController {
             });
             return;
           case 'Finish':
+            this.endReplayHold();
             this.updateTokenState(event.token_state);
             await this.finishCurrentStream();
             return;
@@ -1055,6 +1381,14 @@ class ChatStreamController {
         this.activeStreamId === streamId &&
         !this.abortController?.signal.aborted
       ) {
+        // …but under the live-turn stream contract "this socket ended" is no
+        // longer the same event as "the turn died": the server keeps the turn
+        // running with zero observers and holds its backlog (§3, §5). So try to
+        // pick it back up before declaring a failure the user would have to
+        // retry by hand — this is the ordinary mid-turn network blip, and
+        // re-attaching loses nothing where the error card loses the rest of the
+        // turn. Only if the turn really is gone does the card below stand.
+        if (await this.reattachAfterDrop(streamId)) return;
         await this.finishCurrentStream({
           message: 'The connection closed before Biorouter received a completion status.',
           code: 'stream_interrupted',
@@ -1066,6 +1400,69 @@ class ChatStreamController {
       if (this.activeStreamId !== streamId) return;
       if (error instanceof Error && error.name === 'AbortError') return;
       await this.finishCurrentStream(clientTurnError(error, 'stream_error', 'transport'));
+    } finally {
+      // No exit from this loop — clean end, terminal frame, abort, transport
+      // error, a `return` from a stale stream id — may leave the transcript
+      // held back. `endReplayHold` is a no-op when no hold is open.
+      this.endReplayHold();
+    }
+  }
+
+  /**
+   * How many times one turn may re-open its stream after a drop before the
+   * client accepts that the turn is gone.
+   *
+   * Small and un-delayed on purpose. Re-attaching is cheap (the server already
+   * holds the backlog) and the failure it recovers from is a momentary one, so
+   * a few immediate attempts catch the blip; anything longer is better spent
+   * telling the user the truth than spinning. A daemon that is genuinely down
+   * fails all of them in milliseconds and the error card appears as it always
+   * did.
+   */
+  private static readonly MAX_REATTACHES_PER_TURN = 3;
+  private reattachesThisTurn = 0;
+
+  /**
+   * A driving stream ended without a terminal frame. Re-open it against the
+   * same turn and keep rendering.
+   *
+   * Returns true when a replacement stream was opened and pumped to its own
+   * conclusion — the caller must then do nothing at all, because the turn's
+   * outcome has already been dealt with by the recursive drain. False means the
+   * turn could not be rejoined and the caller's failure path stands.
+   *
+   * `from_seq` comes out of the sequence gate, so the replacement stream picks
+   * up where this one stopped even if the server chooses to replay from 0 —
+   * one of these two is redundant, and which one depends on the server, so the
+   * client relies on neither alone.
+   */
+  private async reattachAfterDrop(streamId: number): Promise<boolean> {
+    const turnId = this.activeTurnId;
+    if (!turnId) return false;
+    if (this.reattachesThisTurn >= ChatStreamController.MAX_REATTACHES_PER_TURN) return false;
+    if (this.activeStreamId !== streamId) return false;
+    this.reattachesThisTurn += 1;
+
+    this.abortController = new AbortController();
+    const nextStreamId = streamId + 1;
+    this.activeStreamId = nextStreamId;
+
+    try {
+      const { stream } = await reply({
+        body: buildAttachRequest(this.sessionId, turnId, this.lastAppliedSeq + 1, this.messagesRef),
+        throwOnError: true,
+        signal: this.abortController.signal,
+        sseMaxRetryAttempts: 1,
+      });
+      await this.streamFromResponse(stream, this.messagesRef, nextStreamId);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return true;
+      console.warn(`Could not re-attach to dropped turn ${turnId}:`, error);
+      // Hand the stream id back so the caller's own guard still holds and its
+      // error lands on the turn it was written for.
+      if (this.activeStreamId === nextStreamId) this.activeStreamId = streamId;
+      return false;
     }
   }
 
@@ -1201,6 +1598,119 @@ class ChatStreamController {
     this.abortController?.abort();
   }
 
+  /**
+   * Join a turn this controller did not start, and render it from its
+   * beginning (contract §2, §R1).
+   *
+   * The mechanics are a re-POST of the turn's own id: the server recognises the
+   * duplicate and answers 200 + SSE with the replay backlog followed by the
+   * live tail, instead of the old 409-and-no-stream. Everything after that is
+   * the ordinary `/reply` pipeline — this is a DRIVER connection, not an
+   * observer one, because it is a turn with an end, and a stream that ends
+   * without a `Finish` means the same thing here as it does for the client that
+   * started it.
+   *
+   * Seamlessness is not a property of this method alone; it is the three things
+   * it sets up and then gets out of the way of:
+   *   - `from_seq`/the sequence gate, so the half of the turn this client has
+   *     already painted is not painted again;
+   *   - the replay hold, so the half it has not lands in one commit rather than
+   *     re-typing itself;
+   *   - leaving `messages` alone. Nothing here clears the transcript, resets
+   *     `chatState` to `LoadingConversation`, or replaces the controller, so
+   *     the transcript component is never unmounted and the reader's scroll
+   *     position is never touched. A visible attach would fail the requirement
+   *     just as surely as a lost one.
+   *
+   * Resolves `true` when the stream was joined. A refusal — the turn is over,
+   * the server does not know the id, the daemon is unreachable — resolves
+   * `false` QUIETLY: an attach is a repair the user did not ask for, and
+   * painting a red card because a turn had already finished would be inventing
+   * a failure out of a non-event.
+   */
+  attachToTurn = async (turnId: string): Promise<boolean> => {
+    if (!this.sessionId || !turnId) return false;
+    // Never displace a turn this controller is already driving — including the
+    // case where that turn IS this one, whose stream is live and whose frames
+    // would then arrive twice over two sockets.
+    if (this.hasLiveTurn()) return false;
+
+    // An attach converts an observer tab into a driver, exactly as a submit
+    // does, and for the same reason: the observer holds this controller's
+    // `abortController`, and the attach is about to replace the field without
+    // aborting what was there.
+    this.stopObserving();
+
+    // Re-attaching to the SAME turn keeps its high-water mark — that is the
+    // whole point of the gate. Attaching to a different one starts from zero.
+    this.activeTurnId = turnId;
+    // Keyed on `seqTurnId`, not on `activeTurnId`: a turn given up on has had
+    // its `activeTurnId` cleared but is still the turn whose frames are on
+    // screen, and rejoining it must resume from what was painted rather than
+    // from its start. A genuinely different turn starts from nothing.
+    if (this.seqTurnId !== turnId) {
+      this.seqTurnId = turnId;
+      this.lastAppliedSeq = -1;
+    }
+    this.reattachesThisTurn = 0;
+    const fromSeq = this.lastAppliedSeq + 1;
+
+    this.updateSnapshot((prev) => ({
+      ...prev,
+      // A live turn is running: say so. `turnStartedAt` is only invented when
+      // we have nothing better — a re-attach keeps the original origin so the
+      // elapsed timer does not restart at zero in front of the user.
+      chatState: ChatState.Streaming,
+      turnStartedAt: prev.turnStartedAt ?? Date.now(),
+      turnError: undefined,
+    }));
+
+    this.abortController = new AbortController();
+    const streamId = this.activeStreamId + 1;
+    this.activeStreamId = streamId;
+
+    try {
+      const { stream } = await reply({
+        body: buildAttachRequest(this.sessionId, turnId, fromSeq, this.messagesRef),
+        throwOnError: true,
+        signal: this.abortController.signal,
+        sseMaxRetryAttempts: 1,
+      });
+      await this.streamFromResponse(stream, this.messagesRef, streamId);
+      return true;
+    } catch (error) {
+      if (error instanceof Error && error.name === 'AbortError') return false;
+      console.warn(`Could not attach to turn ${turnId}:`, error);
+      // Settle back to Idle without a turnError — see the doc comment. The
+      // transcript stays exactly as the session load left it.
+      if (this.activeStreamId === streamId) {
+        this.abortController = null;
+        this.retireActiveTurn();
+        this.updateSnapshot((prev) => ({ ...prev, chatState: ChatState.Idle }));
+      }
+      return false;
+    } finally {
+      if (this.activeStreamId === streamId && this.abortController?.signal.aborted) {
+        this.abortController = null;
+      }
+    }
+  };
+
+  /**
+   * Rejoin whatever turn this session had in flight, if any. The reload path:
+   * a window that dies mid-turn comes back, reads the transcript, finds the
+   * turn still running on the daemon, and picks it up where it left off.
+   *
+   * Safe to call on every load — it is a no-op when there is no remembered
+   * turn, when one is already live here, or when the id has expired.
+   */
+  resumeActiveTurn = async (): Promise<boolean> => {
+    if (!this.sessionId || this.hasLiveTurn()) return false;
+    const turnId = readActiveTurn(this.sessionId);
+    if (!turnId) return false;
+    return this.attachToTurn(turnId);
+  };
+
   private submitPreparedMessage = async (
     newMessage: Message,
     currentMessages: Message[],
@@ -1252,6 +1762,17 @@ class ChatStreamController {
     // BR-62b: one idempotency key per turn, sent in the body so an SSE
     // reconnect re-POST carries the same key and the server dedupes it.
     const turnId = newTurnId();
+    // The live-turn stream contract promotes that key into the ATTACH handle:
+    // re-POSTing it is how any client — this window after a reload, another
+    // window after a tab handoff — joins this turn instead of starting a new
+    // one. Publish it before the POST goes out, so a crash in the next
+    // millisecond still leaves something to attach to, and start this turn's
+    // sequence numbering from nothing.
+    this.activeTurnId = turnId;
+    this.seqTurnId = turnId;
+    this.lastAppliedSeq = -1;
+    this.reattachesThisTurn = 0;
+    rememberActiveTurn(this.sessionId, turnId);
 
     try {
       // The transcript paints before the agent's model + extensions are up, so
@@ -1518,6 +2039,12 @@ class ChatStreamController {
   stopStreaming = (): void => {
     this.activeStreamId += 1;
     this.abortController?.abort();
+    // Stop ENDS the turn (the `cancelTurn` below is what makes that true on the
+    // server, not merely on this socket), so nothing may attach to it
+    // afterwards. Clearing here and not only in `finishCurrentStream` matters
+    // because this path does not go through it.
+    this.endReplayHold();
+    this.retireActiveTurn();
     this.updateSnapshot((prev) => ({
       ...prev,
       chatState: ChatState.Idle,
