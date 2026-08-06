@@ -38,12 +38,24 @@
 //! * the scope — which of the two directories it is in — and that directory's
 //!   absolute path,
 //! * the entry's tags, when the model supplied any,
+//! * one bit of *capability* provenance, as the reserved tag
+//!   [`super::PRIVATE_ORIGIN_TAG`] on entries a private-capability chat wrote
+//!   (issue #56, finding 6),
 //! * the category file's size and modification time.
 //!
 //! That is the whole list. Nothing records **when an individual memory was
-//! written, which conversation wrote it, or which model**, so the inventory
-//! reports a modification time per *category* and says so, rather than
-//! inventing a per-entry timestamp the file cannot support.
+//! written, or which conversation wrote it**, so the inventory reports a
+//! modification time per *category* and says so, rather than inventing a
+//! per-entry timestamp the file cannot support. The capability bit above is not
+//! an exception to that: it says which *class* of model the write was admitted
+//! on, not which model, and it exists because the prompt composer has to filter
+//! on something.
+//!
+//! ⚠ The inventory surfaces that mark as an ordinary tag, deliberately. Lifting
+//! it into a typed field on [`MemoryEntry`] would change the OpenAPI schema and
+//! the generated TypeScript client, and a management view that *hid* it would
+//! leave the user unable to see why a note is missing from their chats. A user
+//! reading their own store is the one audience the mark is not being kept from.
 
 use std::fs;
 use std::io;
@@ -464,7 +476,7 @@ impl MemoryServer {
 
 #[cfg(test)]
 mod tests {
-    use super::super::GlobalMemoryConsent;
+    use super::super::{CallerCapability, GlobalMemoryConsent};
     use super::*;
     use rmcp::handler::server::router::tool::ToolRouter;
     use tempfile::tempdir;
@@ -707,7 +719,10 @@ mod tests {
             )
             .unwrap();
 
-        let retrieved = server.retrieve("personal", true).unwrap();
+        let retrieved = server
+            .retrieve("personal", true, CallerCapability::Private)
+            .unwrap()
+            .memories;
         assert_eq!(
             retrieved.get("city").map(Vec::as_slice),
             Some(["San Francisco".to_string()].as_slice()),
@@ -876,7 +891,13 @@ mod tests {
 
         // A conversation saves a memory while the user reads the list.
         server
-            .remember("context", "clinical", "arrived afterwards", &[], true)
+            .remember(
+                CallerCapability::Public,
+                "clinical",
+                "arrived afterwards",
+                &[],
+                true,
+            )
             .unwrap();
 
         let outcome = server
@@ -933,7 +954,13 @@ mod tests {
         let listed = listing(&server, "clinical", MemoryScope::Global);
 
         server
-            .remember("context", "clinical", "arrived afterwards", &[], true)
+            .remember(
+                CallerCapability::Public,
+                "clinical",
+                "arrived afterwards",
+                &[],
+                true,
+            )
             .unwrap();
 
         assert_eq!(
