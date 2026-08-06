@@ -125,13 +125,28 @@ Always install the newest version for the latest features and fixes.
 
 ## Working with Sensitive Data
 
-Biorouter routes your inputs to an LLM provider. For patient data, PHI, or other sensitive research data:
+Biorouter routes your inputs to an LLM provider, so the privacy of a chat depends on which model that chat is using. This used to be advice. Biorouter now **enforces** a version of it — and the limits below matter as much as the rules, because it is a guardrail against mistakes, not a wall against a determined attacker.
 
-- **Use institution-managed services** — the **Versa API Azure** and **Versa API Bedrock** cards under **Institutional Models** — or **fully local models** (bundled Llama Server or Ollama).
-- **Do not** use personal commercial API keys with patient data. In particular, the generic **Azure OpenAI** and **Amazon Bedrock** cards are the commercial providers, not the UCSF institutional ones.
-- **Always verify** with your institution's compliance office before processing sensitive data.
+Throughout, a **private model** means one your institution hosts (**Versa API Azure**, **Versa API Bedrock**) or one that runs on your own machine (the bundled **Llama Server**, or **Ollama**). Everything else — Anthropic, OpenAI, Google, generic Azure OpenAI, generic Amazon Bedrock — is public.
 
-See the [Data Privacy Guide](docs/security/data-privacy-and-phi.md) for full details.
+**A chat remembers where it has been.** Run a turn on a private model, or touch a private data source (the UCSF OMOP or CDW connector, a knowledge base marked private), and the chat is marked **private** from then on. The mark is a one-way ratchet: it goes up on its own and never comes down on its own, and a private chat cannot afterwards be switched to a public model. Starting a *new* chat on the public model is always available and is the intended way through — the boundary is the transcript, not the model. Undoing the mark on an existing chat is a deliberate, recorded act (Settings, or `biorouter session declassify <id>`), and for anything but a chat Biorouter watched run a private turn it also asks for your operating-system password.
+
+**Which institution, not just how sensitive.** HIPAA compliance is established per data flow and does **not** transfer between institutions, so "both ends are private" is not enough. UCSF's Versa reaching UCSF's OMOP or CDW connector is the approved arrangement and passes quietly. The same model reaching *another* site's private connector is a mismatch: Biorouter flags it, and depending on your setting you can accept it deliberately (recorded) or have it refused outright. A **local** model is the exception that reaches everything private — nothing is disclosed to anyone, so there is no agreement to be outside of.
+
+**What a public model is mechanically stopped from doing.** It cannot obtain another chat's private content — not through chat recall, not by ingesting another conversation, not through the Workspace Control tools, and not by reading a knowledge base marked private; a refusal says so instead of quietly returning less. It cannot **see, call or attach** the clinical connectors: they are filtered out of its tool list, a call is refused rather than prompted, and attaching one to a public chat is declined with no "approve anyway" — not even for you at the keyboard. And it cannot promote itself into private capability: it cannot spawn a subagent on a private model to fetch private material on its behalf, and raising a chat's tier is a user action rather than something the agent does for itself.
+
+⚠ **What is not stopped.** **There is no general filesystem barrier in v1.** A public model that you have given shell access can read ordinary files on this computer — including files an earlier private chat wrote outside Biorouter's own storage, and the session database at `~/.config/biorouter/sessions/sessions.db`, which is not encrypted. And a connector's private mark is not tamper-proof: **two file edits** (renaming its entry in `config.yaml` and deleting `extension-provenance.json`) untag it, after which a public model can query it like any other tool. Nothing rebuilds, nothing reinstalls. That last one is a difference in kind, not degree — it is live access to clinical data from a public model, the one thing this system is otherwise good at refusing. Treat all of this as protection against forgetting which model you are on, not against an agent following instructions hidden in a document it was asked to read. These are the gaps you are most likely to meet, not the complete list; [the full accounting](docs/security/data-privacy-and-phi.md#the-provider-guidance-on-this-page-is-now-enforced) names the rest, including the Workspace Control write paths.
+
+**You are told before, not after.** The first time a chat binds a model that is not private, Biorouter shows you what that model can reach, and keeps a short form of it on the model chip afterwards. **The disclosure appears whether or not privacy tiers are enabled** — turning the feature off in Settings removes the enforcement, not the exposure.
+
+**Your existing chats.** Upgrading runs a one-time backfill that marks each old chat by **the model it was last using** — it reads no message bodies, so a chat that ran on Versa and later moved to a commercial model stays public, and a chat that ran one Ollama turn becomes private. Biorouter shows you the real counts from your own database once, before enforcement starts biting. See [what happens to your existing chats](docs/security/privacy-tiers-migration.md).
+
+**And two things the app cannot do for you:**
+
+- **Do not** use personal commercial API keys with patient data. In particular, the generic **Azure OpenAI** and **Amazon Bedrock** cards are the commercial providers, not the UCSF institutional ones — Biorouter can refuse a *chat* the wrong model, but it cannot make a commercial account an approved place for PHI.
+- **Always verify** with your institution's compliance office before processing sensitive data. Biorouter is a tool you run against approved services; it is not itself a HIPAA-compliant service, and none of the above makes it one.
+
+See the [Data Privacy Guide](docs/security/data-privacy-and-phi.md) for full details, and [Privacy tiers](docs/security/privacy-tiers.md) for how the enforcement is built.
 
 ## Documentation
 
