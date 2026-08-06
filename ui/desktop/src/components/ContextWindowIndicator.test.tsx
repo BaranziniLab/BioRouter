@@ -63,7 +63,10 @@ describe('ContextWindowGauge compaction control', () => {
     expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveClass(
       'bg-background-inverse',
       'text-text-inverse',
-      'rounded-sm'
+      // `rounded-inner`, not the `rounded-sm` this asserted before: both render
+      // 4px (sm is now a deprecated alias of inner), so the tooltip is
+      // pixel-identical — only the name it goes by changed.
+      'rounded-inner'
     );
     expect(document.querySelector('[data-slot="tooltip-content"] svg')).toBeNull();
   });
