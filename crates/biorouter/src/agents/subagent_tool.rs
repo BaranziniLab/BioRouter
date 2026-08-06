@@ -1307,15 +1307,21 @@ fn build_adhoc_workflow(params: &SubagentParams) -> Result<Workflow> {
 /// Resolve the child's provider, classification and extension set from the
 /// parent's `TaskConfig` and what the spawning model asked for.
 ///
-/// **The whole of issue #56's spawn matrix (§8.2, R4, DR-19) is decided here**,
-/// before a child session row exists, and all three of its decisions hang off
-/// one read of DR-15's master toggle. `pub` for that reason and no other: the
+/// **The whole of issue #56's spawn matrix (§8.2, R4, DR-19, DR-31) is decided
+/// here**, before a child session row exists, and every one of its decisions
+/// hangs off one read of DR-15's master toggle. `pub` for that reason and no other: the
 /// toggle's behavioural gate
 /// (`crates/biorouter/tests/privacy_toggle.rs`) is an integration binary — a
 /// separate process, so that flipping a process-global atomic cannot disarm the
 /// crate's own privacy tests — and an integration binary can only see what is
-/// public. Left private, the three decisions this function makes had no
+/// public. Left private, the decisions this function makes had no
 /// both-directions assertion anywhere in the tree.
+///
+/// ⚠ **DR-31 narrows `settings.provider`, and callers should know the price.**
+/// A child may be moved to any model with the SAME affiliation as the parent —
+/// a UCSF chat can swap `versa_azure` for `versa_bedrock` — but not to one with
+/// a different affiliation, so a UCSF chat can no longer spawn onto `llamacpp`.
+/// The route there is a new chat on that model, started by the user.
 pub async fn apply_settings_overrides(
     mut task_config: TaskConfig,
     params: &SubagentParams,
@@ -1337,10 +1343,26 @@ pub async fn apply_settings_overrides(
     // prompt was composed under, which is the worse of the two.
     let parent_cap = task_config.provider.tier();
 
+    // DR-31: the PARENT's affiliation, read here for the same reason and at the
+    // same instant as its tier — before any override below can replace the
+    // instance both are properties of.
+    //
+    // ⚠ **The fold, not the lead.** `Provider::affiliation` on a lead/worker
+    // pair is `providers::composite_affiliation(lead, worker)`, which is the
+    // MEET of the two halves and is exactly what a composite is covered by: the
+    // transcript goes to both endpoints, so both institutions' agreements are in
+    // play, and `Local` is the fold's IDENTITY rather than an absorbing element.
+    // Reading `get_name()` — or either half — would answer for the lead alone,
+    // which is the same mistake `tier()` already had to override for. A
+    // `Local`-lead / `ucsf`-worker pair is covered by `ucsf`, and a check that
+    // read the lead would refuse the `ucsf` child it is entitled to.
+    let parent_affiliation = task_config.provider.affiliation();
+
     // DR-15's master opt-out. ONE read for this whole function, taken beside the
-    // parent capability it qualifies, and used by all three decisions below —
-    // R4's refusal, DR-19's refusal and the private-extension filter — so a
-    // spawn cannot be refused on one rule while another silently keeps applying.
+    // parent capability it qualifies, and used by every decision below — R4's
+    // refusal, DR-19's refusal, DR-31's affiliation refusal and the
+    // private-extension filter — so a spawn cannot be refused on one rule while
+    // another silently keeps applying.
     //
     // A direct read, not a `CallCapability`: `apply_settings_overrides` runs on
     // the spawn path, which builds a whole new agent rather than dispatching a
@@ -1390,6 +1412,14 @@ pub async fn apply_settings_overrides(
     // instance and never of a model id.
     let child_tier = task_config.provider.tier();
 
+    // DR-31: and the CHILD's affiliation, off that same constructed instance,
+    // for word-for-word the reason above. A provider NAME is not a tier and it
+    // is not an affiliation either — the `BIOROUTER_LEAD_MODEL` intercept can
+    // hand back a lead/worker pair under the name of a single provider, and a
+    // model-only or temperature-only override keeps the parent's name while
+    // rebuilding the instance.
+    let child_affiliation = task_config.provider.affiliation();
+
     // R4, refused: a public-capability session may never gain private reach,
     // not even through a child. Refusing (rather than silently downgrading the
     // child) is the point — a subagent is an extension of the chat that started
@@ -1437,6 +1467,48 @@ pub async fn apply_settings_overrides(
     // is; what is NOT acceptable is a comment that says it cannot happen.
     if privacy_enforced && !child_tier.is_private() && parent_cap.is_private() {
         return Err(crate::privacy::PrivacyRefusal::spawn_downgrade(child_tier).into());
+    }
+    // DR-31, refused: the third axis, beside the two tier arms and off the same
+    // single `privacy_enforced` read, so a spawn cannot be refused on one rule
+    // while another silently keeps applying.
+    //
+    // ⚠ **EQUALITY, in both directions — deliberately not DR-26's subset rule.**
+    // The `settings` object lets the spawning model name any `provider`, and the
+    // gate above it only ever compared tiers, so a UCSF-affiliated chat could
+    // spawn a `Local`-affiliated child. That is not a lateral move: `Local` is
+    // the TOP of this lattice — a local model reaches every private extension,
+    // because no transfer occurs at all — so `Institution(x) → Local` is an
+    // ELEVATION of exactly the shape R4 already refuses, on an axis this path
+    // never learned to look at. And the mirror, `Local → Institution(x)`, is a
+    // DISCLOSURE: the parent's text was never leaving the machine. The subset
+    // rule DR-26 uses for model-versus-extension would permit that second one,
+    // which is why it is not used here; it answers a different question.
+    // `Institution(a) → Institution(b)` fails on both readings at once —
+    // compliance does not transfer between institutions.
+    //
+    // ⚠ **REFUSED, not escalated**, for the reason DR-19's arm above spells out
+    // at length: a spawn is a tool call, no shipped surface lets a human spawn
+    // one and pick its provider, and no request on this path can carry a proof
+    // of user. An approval an agent can author the approver for is not an
+    // approval. The refusal says what the user can do instead.
+    //
+    // ⚠ **What it costs, so the narrowing is stated rather than discovered.**
+    // `settings.provider` still moves a child between any two models with the
+    // SAME affiliation — a UCSF chat may swap `versa_azure` for `versa_bedrock`,
+    // both `ucsf` — but no longer to `llamacpp`, which is `Local`. The refusal
+    // text says so, because a user who meets this should learn why rather than
+    // conclude the override is broken.
+    //
+    // ⚠ An INHERITING spawn is free, and needs no extra term to say so: the
+    // child is handed the parent's SAME `Arc<dyn Provider>`, so the two
+    // affiliations are read off one instance and cannot differ. That is the
+    // same fact R5 and the tier arms ride on.
+    if privacy_enforced && child_affiliation != parent_affiliation {
+        return Err(crate::privacy::PrivacyRefusal::spawn_affiliation(
+            parent_affiliation,
+            child_affiliation,
+        )
+        .into());
     }
     // The ONE crossing this task adds: the child's CAPABILITY establishes the
     // CLASSIFICATION its row is born with.
@@ -3391,6 +3463,319 @@ mod tests {
             "UCSF's own model reaching UCSF's own connector is the approved arrangement"
         );
         assert!(child.dropped_cross_affiliation_extensions.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // DR-31: the spawn gate's THIRD axis.
+    //
+    // Everything above this line about affiliation is the extension FILTER: it
+    // asks whether the child may keep an inherited connector, and drops the ones
+    // it may not. The rows below are about the CHILD'S OWN MODEL — the axis the
+    // gate compared for tier in both directions and never compared at all for
+    // affiliation, so `settings: { "provider": "llamacpp" }` moved a UCSF chat's
+    // work onto a model at the TOP of the affiliation lattice.
+    //
+    // Equality, both directions, mirroring the tier pair rather than DR-26's
+    // subset rule. A subset rule would permit `Local → Institution(x)`, which is
+    // the disclosure half.
+    // -----------------------------------------------------------------------
+
+    /// A parent covered by exactly one institution.
+    fn institution_parent(slug: &str) -> std::sync::Arc<dyn crate::providers::base::Provider> {
+        std::sync::Arc::new(AffiliatedParent {
+            tier: ProviderTier::Private,
+            affiliation: Some(crate::privacy::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new(slug),
+            )),
+        })
+    }
+
+    /// A parent at the TOP of the affiliation lattice.
+    fn local_parent() -> std::sync::Arc<dyn crate::providers::base::Provider> {
+        std::sync::Arc::new(AffiliatedParent {
+            tier: ProviderTier::Private,
+            affiliation: Some(crate::privacy::ModelAffiliation::Local),
+        })
+    }
+
+    /// A public parent, whose affiliation is the absence of one — the shape the
+    /// inheritance row needs so that "cannot differ" is checked for `None` too.
+    fn public_parent() -> std::sync::Arc<dyn crate::providers::base::Provider> {
+        std::sync::Arc::new(TieredParent {
+            tier: ProviderTier::Public,
+        })
+    }
+
+    /// The overrides that make `providers::create("versa_azure", …)` construct a
+    /// real UCSF-affiliated instance with no network and no keychain: the
+    /// gateway endpoint its affiliation is read off, pinned rather than left to
+    /// the default so a developer's `config.yaml` cannot repoint it and quietly
+    /// turn this row's child into an unaffiliated one, plus a placeholder key so
+    /// `AzureAuth` takes the `ApiKey` branch instead of the Azure credential
+    /// chain. Nothing here is ever sent anywhere — no row below runs a turn.
+    fn ucsf_child_overrides() -> HashMap<String, String> {
+        HashMap::from([
+            (
+                "VERSA_AZURE_API_KEY".to_string(),
+                "not-a-real-key".to_string(),
+            ),
+            (
+                "AZURE_OPENAI_ENDPOINT".to_string(),
+                crate::providers::versa_azure::VERSA_AZURE_ENDPOINT.to_string(),
+            ),
+        ])
+    }
+
+    /// The same, for a `Local` child: loopback `ollama`, the one registry entry
+    /// that constructs with no credential and no network and reads both its tier
+    /// and its affiliation off the resolved base URL.
+    fn local_child_overrides() -> HashMap<String, String> {
+        HashMap::from([(
+            "OLLAMA_HOST".to_string(),
+            "http://localhost:11434".to_string(),
+        )])
+    }
+
+    /// One DR-31 row through the real resolver: a spawn whose `settings` names
+    /// `provider`, which is the override the ruling is about.
+    async fn spawn_child_on(
+        parent: std::sync::Arc<dyn crate::providers::base::Provider>,
+        provider: &str,
+        overrides: HashMap<String, String>,
+    ) -> Result<TaskConfig> {
+        let params: SubagentParams = serde_json::from_value(json!({
+            "instructions": "do the thing",
+            "settings": { "provider": provider }
+        }))
+        .unwrap();
+        let task_config = TaskConfig::new(parent, "parent-1", std::path::Path::new("."), vec![]);
+        crate::config::with_config_overrides(
+            overrides,
+            apply_settings_overrides(task_config, &params),
+        )
+        .await
+    }
+
+    fn affiliation_refusal(err: &anyhow::Error) -> &PrivacyRefusal {
+        let refusal = err
+            .downcast_ref::<PrivacyRefusal>()
+            .unwrap_or_else(|| panic!("expected DR-31's typed refusal, got: {err}"));
+        assert!(
+            matches!(refusal, PrivacyRefusal::SpawnCrossesAffiliation { .. }),
+            "a TIER arm fired, so this row is not exercising affiliation: {refusal}"
+        );
+        refusal
+    }
+
+    /// DR-31's headline row: **elevation**.
+    ///
+    /// `Local` is the TOP of the affiliation lattice, not a peer of the
+    /// institutions — a local model reaches every private extension, because no
+    /// transfer occurs at all. So a UCSF chat naming `llamacpp`/`ollama` in
+    /// `settings.provider` is not moving sideways, it is handing its child reach
+    /// it does not itself have. Exactly the shape R4 refuses on the tier axis,
+    /// on the axis this gate never looked at.
+    ///
+    /// Both endpoints are Private, so neither tier arm can be what caught it —
+    /// which is what [`affiliation_refusal`] asserts.
+    #[tokio::test]
+    async fn a_ucsf_chat_may_not_spawn_a_local_child() {
+        let err = spawn_child_on(
+            institution_parent("ucsf"),
+            "ollama",
+            local_child_overrides(),
+        )
+        .await
+        .expect_err("UCSF → Local is an elevation, not a lateral move");
+        let msg = affiliation_refusal(&err).to_string();
+
+        // Both affiliations, named. A refusal that says only "affiliation
+        // mismatch" leaves the model with nothing to tell the user.
+        assert!(msg.contains("ucsf"), "got: {msg}");
+        assert!(msg.contains("local model"), "got: {msg}");
+        // ...and named in the RIGHT SLOTS. Both labels appear either way, so
+        // `contains` alone passes against a constructor whose two arguments are
+        // swapped — which would tell the user their local chat is refusing to
+        // reach UCSF, the exact inverse of what happened.
+        assert!(
+            msg.find("ucsf") < msg.find("local model"),
+            "parent and child are the wrong way round: {msg}"
+        );
+        // The remedy, and the cost — a user who meets this must not conclude
+        // that `settings.provider` is broken.
+        assert!(msg.contains("start a new chat"), "got: {msg}");
+        assert!(msg.contains("versa_azure"), "got: {msg}");
+        assert!(msg.contains("versa_bedrock"), "got: {msg}");
+        assert!(msg.contains("llamacpp"), "got: {msg}");
+        assert!(msg.contains("Do not retry"), "got: {msg}");
+    }
+
+    /// Two institutions: the child gains reach the parent lacks, and compliance
+    /// does not transfer between them.
+    ///
+    /// ⚠ **The Stanford end is the PARENT, and it is the double, because no
+    /// provider in this tree constructs a Stanford affiliation.** The row is
+    /// about a mismatch between two named institutions, which this fixture is;
+    /// putting the double on the child instead would test nothing, because a
+    /// child is only ever built by `providers::create`.
+    #[tokio::test]
+    async fn a_chat_at_one_institution_may_not_spawn_a_child_at_another() {
+        let err = spawn_child_on(
+            institution_parent("stanford"),
+            "versa_azure",
+            ucsf_child_overrides(),
+        )
+        .await
+        .expect_err("compliance does not transfer between institutions");
+        let msg = affiliation_refusal(&err).to_string();
+        assert!(msg.contains("stanford"), "got: {msg}");
+        assert!(msg.contains("ucsf"), "got: {msg}");
+    }
+
+    /// The mirror, and the half a **subset** rule would have permitted:
+    /// **disclosure**.
+    ///
+    /// The parent's data was never leaving this machine. `Local ⊆ anything` is
+    /// the reading that makes this look harmless, and it is why DR-31 is
+    /// equality rather than DR-26's model↔extension subset test — a different
+    /// question, asked of the same vocabulary.
+    #[tokio::test]
+    async fn a_local_chat_may_not_spawn_an_institutional_child() {
+        let err = spawn_child_on(local_parent(), "versa_azure", ucsf_child_overrides())
+            .await
+            .expect_err("the parent's text was never leaving the machine");
+        let msg = affiliation_refusal(&err).to_string();
+        assert!(msg.contains("local model"), "got: {msg}");
+        assert!(msg.contains("ucsf"), "got: {msg}");
+        // The mirror of the ordering assertion in the elevation row: here the
+        // LOCAL side is the parent, so it must come first.
+        assert!(
+            msg.find("local model") < msg.find("ucsf"),
+            "parent and child are the wrong way round: {msg}"
+        );
+    }
+
+    /// The permitted row, and the one that keeps the three above from being an
+    /// over-block: same affiliation on both ends.
+    ///
+    /// This is also the narrowing's stated bound, exercised rather than merely
+    /// promised — a UCSF chat may still move its child between UCSF models.
+    #[tokio::test]
+    async fn a_child_covered_by_the_same_institution_is_permitted() {
+        let child = spawn_child_on(
+            institution_parent("ucsf"),
+            "versa_azure",
+            ucsf_child_overrides(),
+        )
+        .await
+        .expect("UCSF → UCSF is the arrangement everyone approved");
+        assert_eq!(
+            child.provider.affiliation(),
+            Some(crate::privacy::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new("ucsf")
+            )),
+            "the fixture must actually resolve a UCSF child or this row proves nothing"
+        );
+        assert_eq!(child.privacy_tier, SessionClassification::Private);
+    }
+
+    /// ⚠ **The default path — no `settings` at all — inherits and is
+    /// PERMITTED.**
+    ///
+    /// Without this row an implementation that refuses *every* spawn passes all
+    /// four rows of the matrix above, because all four of those are refusals or
+    /// a same-affiliation override. This is the one that fails against a check
+    /// written in the wrong direction, and it is the overwhelmingly common
+    /// spawn: the child is handed the parent's SAME `Arc`, so the two
+    /// affiliations are read off one instance and cannot differ.
+    ///
+    /// All three parent shapes, because "cannot differ" has to hold for the
+    /// unaffiliated public parent too — where both sides are `None`, and an
+    /// implementation that treated absence as a mismatch would refuse every
+    /// public spawn in the product.
+    #[tokio::test]
+    async fn an_inheriting_spawn_carries_its_parents_affiliation_and_is_permitted() {
+        for (label, parent) in [
+            ("ucsf", institution_parent("ucsf")),
+            ("local", local_parent()),
+            ("public/unaffiliated", public_parent()),
+        ] {
+            let expected = parent.affiliation();
+            let child = resolve_child_for(parent, vec![])
+                .await
+                .unwrap_or_else(|e| panic!("an inheriting spawn from a {label} parent: {e}"));
+            assert_eq!(
+                child.provider.affiliation(),
+                expected,
+                "an inheriting {label} child must run the parent's own instance"
+            );
+        }
+    }
+
+    /// ⚠ **A composite parent is compared as the FOLD of both halves, never as
+    /// its lead.**
+    ///
+    /// The tier check needed its own reasoning for exactly this shape
+    /// (`a_temperature_only_spawn_is_not_inert_on_a_composite_parent`), because
+    /// `LeadWorkerProvider::get_name` answers for the lead alone while `tier()`
+    /// is `least(lead, worker)`. Affiliation has the same split, with a twist
+    /// that inverts the obvious guess: `providers::composite_affiliation` folds
+    /// with `Local` as the **identity**, not as an absorbing element, so a
+    /// `Local`-lead / `ucsf`-worker pair is covered by `ucsf`.
+    ///
+    /// So this row is the discriminating one, and it is a PERMIT: an
+    /// implementation that read the lead's affiliation (`Local`) would refuse
+    /// the UCSF child this pair is entitled to. Both other readings —
+    /// absorbing-`Local`, or the worker alone — are also caught, the first by
+    /// refusing and the second only by luck, which is why the fold is asserted
+    /// directly beside the spawn.
+    #[tokio::test]
+    async fn a_composite_parent_is_compared_as_the_fold_of_both_halves() {
+        use crate::providers::lead_worker::LeadWorkerProvider;
+
+        let mut overrides = ucsf_child_overrides();
+        overrides.extend(local_child_overrides());
+
+        let child = crate::config::with_config_overrides(overrides.clone(), async move {
+            let lead = crate::providers::create(
+                "ollama",
+                crate::model::ModelConfig::new_or_fail("llama3"),
+            )
+            .await
+            .expect("ollama constructs with no credential and no network");
+            assert_eq!(
+                lead.affiliation(),
+                Some(crate::privacy::ModelAffiliation::Local),
+                "a loopback ollama is the Local half this row needs"
+            );
+
+            let parent: std::sync::Arc<dyn crate::providers::base::Provider> = std::sync::Arc::new(
+                LeadWorkerProvider::new(lead, institution_parent("ucsf"), None),
+            );
+            assert_eq!(
+                parent.get_name(),
+                "ollama",
+                "get_name answers for the LEAD alone — this is the whole mechanism"
+            );
+            assert_eq!(
+                parent.affiliation(),
+                Some(crate::privacy::ModelAffiliation::institution(
+                    crate::privacy::affiliation::InstitutionId::new("ucsf")
+                )),
+                "Local is the fold's IDENTITY: the pair is covered by ucsf, not by Local"
+            );
+
+            spawn_child_on(parent, "versa_azure", overrides).await
+        })
+        .await
+        .expect("the fold is ucsf and the child is ucsf, so this spawn is permitted");
+
+        assert_eq!(
+            child.provider.affiliation(),
+            Some(crate::privacy::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new("ucsf")
+            ))
+        );
     }
 
     /// Task 43 (DR-23). The spawn partition is one of the three callers that

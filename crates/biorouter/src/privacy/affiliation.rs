@@ -716,6 +716,39 @@ fn covering_agreements(bound: InstitutionSet) -> String {
     join_and(bound.iter().map(|id| format!("{}'s", label(id))).collect())
 }
 
+/// A MODEL's whole affiliation as prose, including the two shapes
+/// [`covering_agreements`] cannot express — [`ModelAffiliation::Local`] and the
+/// absence of a stated affiliation (issue #56, DR-31).
+///
+/// ⚠ **The model side, never the extension side.** [`owners_label`] renders an
+/// allowlist — *whose data this holds* — and this renders what a model is
+/// *covered by*. [`compatible`] reads the two in opposite directions, so one
+/// renderer for both would invite a sentence that swapped them.
+///
+/// It exists because DR-31's spawn refusal names an affiliation on **both**
+/// sides of a comparison between two models, where the extension-versus-model
+/// warnings only ever needed the bound-institution half. The institution
+/// rendering itself is [`label`], reused rather than re-derived, so an
+/// institution reads the same here as in every cross-affiliation warning —
+/// `UCSF (ucsf)` where the registry publishes a display name, the raw slug where
+/// it does not (Task 47: an unpublished institution is a *mismatch* surfaced
+/// raw, never silently dropped).
+///
+/// ⚠ **`None` renders as a stated absence, not as an empty phrase.** A private
+/// provider with no affiliation is the one pairing this vocabulary says cannot
+/// exist, and every gate treats it as *unstated* rather than *unconstrained*. A
+/// refusal that rendered it as "" would read as though one side had no opinion,
+/// which is the opposite of what the gate just decided.
+pub fn model_affiliation_label(model: Option<ModelAffiliation>) -> String {
+    match model {
+        Some(ModelAffiliation::Local) => "this machine — a local model, covered by no \
+             institution's agreements because nothing leaves the machine"
+            .to_string(),
+        Some(ModelAffiliation::Institutions(bound)) => join_and(bound.iter().map(label).collect()),
+        None => "no stated institution".to_string(),
+    }
+}
+
 /// The same institutions for the MARK, which has a byte budget: capped at
 /// [`MARK_OWNERS_SHOWN`] exactly as the extension side is, and without the
 /// possessive because the mark's sentence does not take one.
