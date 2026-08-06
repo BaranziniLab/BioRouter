@@ -109,7 +109,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-container border px-4 py-5 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted hover:bg-background-medium'}`}
+        className={`relative cursor-pointer rounded-container border px-4 py-5 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
       >
         <input
           data-testid="knowledge-ingest-file-input"
@@ -178,7 +178,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 inputRef.current?.click();
               }}
-              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors hover:bg-background-default"
+              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
             >
               <FileStack className="h-5 w-5 text-text-muted" />
               <div className="mt-3 text-label">Choose files</div>
@@ -194,7 +194,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 void onPathPickRequested();
               }}
-              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors hover:bg-background-default"
+              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
             >
               <FolderTree className="h-5 w-5 text-text-muted" />
               <div className="mt-3 text-label">Choose folder or archive</div>

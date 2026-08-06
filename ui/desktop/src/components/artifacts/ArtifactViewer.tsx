@@ -1253,7 +1253,7 @@ function DirectoryTreePreview({
                   // A row in a list, not a card: selection is a fill, never a lift.
                   // `font-medium` on the selected row deliberately overrides
                   // text-supporting's 400 — it is state emphasis, not a size.
-                  'group flex h-7 w-full min-w-0 items-center gap-1 rounded-element px-1.5 text-left text-supporting transition-colors',
+                  'group flex h-7 w-full min-w-0 items-center gap-1 rounded-element px-1.5 text-left text-secondary transition-colors',
                   selected ? 'bg-overlay-selected font-medium' : 'hover:bg-overlay-hover'
                 )}
                 style={{ paddingLeft: `${6 + depth * 13}px` }}
@@ -1425,10 +1425,11 @@ function CopyButton({ text }: { text: string }) {
           // Clipboard unavailable (denied permission); leave the label alone.
         }
       }}
-      // A control inside the status strip, so it takes the bottom rung of the
-      // radius ladder and the strip's own metadata size — `text-label` (14px)
-      // does not fit a 34px strip beside 12px metadata.
-      className="rounded-inner px-2 py-0.5 text-supporting text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
+      // A control inside the status strip: bottom rung of the radius ladder,
+      // and the sanctioned dense-control size. `text-label` (14px) does not fit
+      // a 34px strip, but `text-supporting` (12px) would render it at metadata
+      // size and it would stop looking pressable — so `text-secondary`.
+      className="rounded-inner px-2 py-0.5 text-secondary text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
     >
       {copied ? 'Copied' : 'Copy'}
     </button>
@@ -1501,9 +1502,8 @@ function TextFilePreview({
                   onClick={() => setShowRaw(option.raw)}
                   aria-pressed={showRaw === option.raw}
                   className={cn(
-                    // Same strip-density exception as CopyButton above: the
-                    // metadata size, not text-label's 14px.
-                    'px-2 py-0.5 text-supporting transition-colors',
+                    // Same sanctioned dense-control size as CopyButton above.
+                    'px-2 py-0.5 text-secondary transition-colors',
                     showRaw === option.raw
                       ? 'bg-overlay-selected text-text-default'
                       : 'text-text-muted hover:text-text-default'

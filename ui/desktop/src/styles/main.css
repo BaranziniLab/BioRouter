@@ -94,7 +94,19 @@
   --text-label--line-height: 20px;
   --text-label--font-weight: 500;
 
-  --text-secondary: 13px; /* tab labels, menu rows, dense descriptions */
+  /* `--text-secondary` is also THE DENSE-CONTROL ANSWER, and saying so here is
+     the point: two sections independently hit "every control is text-label, but
+     14px does not fit a 34px strip beside 12px metadata" and each invented its
+     own way out. One exception, written once, beats a new role per section.
+
+     The rule: a control's text is `text-label`. The single exception is a
+     control inside a dense strip (<=36px) whose neighbours are metadata — it
+     takes `text-secondary`. It does NOT drop to `text-supporting`; a control
+     that renders at metadata size stops looking like something you can press.
+     Do not add a `text-control-dense`: Astryx's own rule is that font size does
+     not change with control height, and this one exception is the whole
+     concession to a surface that genuinely runs denser. */
+  --text-secondary: 13px; /* tab labels, menu rows, dense descriptions, dense controls */
   --text-secondary--line-height: 18px;
   --text-secondary--font-weight: 400;
 
@@ -242,6 +254,13 @@
   --overlay-hover: color-mix(in oklab, var(--text-default) 5%, transparent);
   --overlay-pressed: color-mix(in oklab, var(--text-default) 10%, transparent);
   --overlay-selected: color-mix(in oklab, var(--text-default) 14%, transparent);
+  /* A selected row still has to answer the pointer. Selected sits at 14% and
+     pressed at 10%, so there was no tint that darkens PAST selected — a
+     migration hit this and had to drop the hover step on selected rows rather
+     than invert the gesture. This is the fourth rung, and it exists only for the
+     selected+interactive combination below; a static wash (inline code, a
+     selected chip that is not a target) must never react to a passing pointer. */
+  --overlay-selected-hover: color-mix(in oklab, var(--text-default) 19%, transparent);
   /* Accent at a low alpha: inset focus rings and selected accents. Reaching for
      the solid accent at 8% opacity instead would tint toward the ground it sits
      on; mixing to transparent keeps the hue and lets it composite. */
@@ -2434,6 +2453,32 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
 
 @utility tint-selected {
   background-image: linear-gradient(var(--overlay-selected), var(--overlay-selected));
+}
+
+/*
+ * Selected AND interactive — the combination, not a third utility.
+ *
+ * A selected row still has to answer the pointer, and neither single utility
+ * can do it: `tint-interactive`'s hover (5%) is LIGHTER than the selected wash
+ * (14%) it would replace, so hovering a selected row visibly un-selects it.
+ * A migration hit this and correctly chose to drop the hover step rather than
+ * ship the inversion.
+ *
+ * Written as a plain two-class rule rather than a `tint-selected-interactive`
+ * utility, because the composition IS the meaning: a call site says what the
+ * row is (selected) and what it does (responds), and gets the right answer
+ * without knowing there was a conflict. Specificity (0,2,1) beats both
+ * single-class rules regardless of source order, and a static wash that is not
+ * also interactive keeps ignoring the pointer — which is what inline code and a
+ * non-target selected chip require.
+ */
+@layer utilities {
+  .tint-selected.tint-interactive:hover {
+    background-image: linear-gradient(
+      var(--overlay-selected-hover),
+      var(--overlay-selected-hover)
+    );
+  }
 }
 
 /*
