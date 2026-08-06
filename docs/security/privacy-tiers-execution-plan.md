@@ -20388,6 +20388,70 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+## DR-31 — a subagent inherits its parent's affiliation, and cannot change it
+
+> **Ruled 2026-08-06**, in the operator's words: *"the subagents should also inherit the affiliations
+> as well and its access should not be elevated (possible to be elevated either). So a UCSF session
+> should not be able to spin up local subagents without the user's permission."* Task 78.
+
+**Measured gap.** The spawn path checks **only the tier axis**. `child_tier = task_config.provider.tier()`
+is compared against `parent_cap` in both directions (`spawn_upgrade`, `spawn_downgrade`), and
+**nothing compares affiliation**. The `settings` object on the `subagent` tool — *"Override
+model/provider settings"* — lets the spawning model name any `provider`, so a UCSF-affiliated chat
+can spawn a `Local`-affiliated child today.
+
+⚠ **`Local` is the TOP of the affiliation lattice, so UCSF → Local is an ELEVATION**, not a lateral
+move. A local model reaches everything private. This is the same shape as the tier upgrade the spawn
+path already refuses, on an axis it never learned to look at.
+
+### The rule: equality, in both directions
+
+A child's affiliation must **equal** its parent's. Any change is refused.
+
+| Parent | Child | | Why |
+| --- | --- | --- | --- |
+| `Institution(ucsf)` | `Local` | ❌ | **Elevation.** Local reaches everything; the child would out-reach the chat that spawned it. |
+| `Institution(ucsf)` | `Institution(stanford)` | ❌ | The child gains reach the parent lacks. |
+| `Local` | `Institution(ucsf)` | ❌ | **Disclosure.** The parent's data was never leaving the machine; the child would send it to a gateway. |
+| same | same | ✅ | Inherit — the default when `settings` is absent. |
+
+⚠ **Both directions, deliberately, and this mirrors the tier rule rather than inventing a new shape.**
+The tier rule already refuses *both* the upgrade (escalation) and the downgrade (private text reaching
+a public model). Affiliation has exactly those two failure modes: gaining reach, and sending data
+somewhere the parent was not sending it. A subset rule would permit `Local → Institution(x)`, which is
+the second one.
+
+### Refused, not escalated to the user
+
+⚠ **The operator's phrase "without the user's permission" resolves to a refusal here**, and the reason
+is already written into this file at `spawn_upgrade`: a spawn is a **tool call**, there is no surface
+on which a human spawns one and picks its provider, and there is no request on that path to carry a
+proof of user. An approval an agent can author the approver for is not an approval.
+
+So the refusal says what the user can do instead — start a chat on that model themselves — which is
+the same remedy `spawn_downgrade` offers.
+
+### Task 78
+
+- [ ] **Step 1** Compare the child's affiliation against the parent's, beside the two existing tier
+      checks, reading it off the **constructed instance** exactly as `child_tier` is — a provider
+      name is not a tier and it is not an affiliation either.
+- [ ] **Step 2** Refuse on any difference, with a refusal naming both affiliations and the remedy.
+      ⚠ Reuse `PrivacyRefusal`'s existing shape; do not add a fourth spelling of "refused because of
+      who you are".
+- [ ] **Step 3** ⚠ **Say what this costs, in the refusal and in the docs.** A UCSF chat may still
+      switch its child between `versa_azure` and `versa_bedrock` — both `ucsf`. It may **not** switch
+      to `llamacpp`. That is a real narrowing of `settings.provider`, and a user who meets it should
+      learn why rather than think the override is broken.
+- [ ] **Step 4: The gate.** All four rows of the table above, each as its own named test. Plus:
+      - the default path (no `settings`) inherits and is permitted — ⚠ without this, an
+        implementation that refuses every spawn passes every other case;
+      - a composite lead/worker parent, whose affiliation is the fold of both halves, is compared as
+        the fold and not as the lead alone — this is where the tier check needed its own reasoning
+        and the affiliation check will too.
+
+---
+
 ## DR-30 — the remaining eleven audit findings are all in scope
 
 > **Ruled 2026-08-06.** After [DR-29](#dr-29--the-five-audit-rulings) took the top five, the operator
