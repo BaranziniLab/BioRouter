@@ -2397,6 +2397,46 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
 }
 
 /*
+ * The interaction tints, as something that COMPOSITES.
+ *
+ * `bg-overlay-hover` sets a background-COLOR, which replaces whatever ground an
+ * element already had. That is correct on a transparent row and wrong on every
+ * opaque one: a control sitting on `bg-background-muted` does not darken on
+ * hover, it swaps its fill for a 5% ink wash over the PARENT's ground — so the
+ * element gets LIGHTER on hover, inverting the gesture. Found by the Knowledge
+ * migration on three real sites, which is the only way this surfaces; both
+ * spellings look identical in a token table.
+ *
+ * The fix is the one Astryx uses and the design of record specified in words
+ * ("composited over whatever surface the control sits on via a background-image
+ * gradient") and which the first cut of these tokens did not implement: paint
+ * the tint as a background-IMAGE. background-image paints above background-color
+ * on the same element, so one class works on an opaque control, a transparent
+ * row, a card, a popover, in every family and both modes, with no knowledge of
+ * what is underneath.
+ *
+ * `tint-interactive` carries the whole state stack, because hover and press are
+ * one behaviour and splitting them is how call sites end up with a hover and no
+ * press. `tint-selected` is separate: selection is a state the app sets, not a
+ * pseudo-class the pointer produces.
+ *
+ * The `bg-overlay-*` colour utilities remain for the case that genuinely wants a
+ * fill rather than a wash. Prefer these.
+ */
+@utility tint-interactive {
+  &:hover {
+    background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+  }
+  &:active {
+    background-image: linear-gradient(var(--overlay-pressed), var(--overlay-pressed));
+  }
+}
+
+@utility tint-selected {
+  background-image: linear-gradient(var(--overlay-selected), var(--overlay-selected));
+}
+
+/*
  * `text-caps` carries the transform, not just the metrics.
  *
  * Tailwind's `--text-*` namespace can express a size, a line-height, a weight
