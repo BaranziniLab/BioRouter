@@ -34,6 +34,15 @@ Updating is not uniform across platforms, so an old install can stay old indefin
 - A model producing a wrong, misleading, or unsafe answer. Model output quality is not a Biorouter vulnerability; raise it with the model provider, and see [ACCEPTABLE_USAGE.md](ACCEPTABLE_USAGE.md) for what Biorouter may not be used for.
 - Vulnerabilities in third-party MCP extensions or models, which should go to their own maintainers.
 
+## Known limits: safety, not a security boundary
+
+**Biorouter's in-app controls — permission modes, tool permissions, `.biorouterignore` — are safety measures against mistakes, not security boundaries against a determined or injected path.** They act inside Biorouter, above the operating system. A control failing to constrain the agent *as documented* is a vulnerability and is in scope above. The limits below are not defects; they are the shape of the product, and a deployment handling regulated data has to plan around them.
+
+- **The agent runs with your privileges.** `shell` and `text_editor` can run any command and read or modify any file your user account can reach. `.biorouterignore` and permission modes filter what the agent is offered and when it must ask; they are not an OS sandbox, and an approved command is not confined by them. See [the Developer extension's access controls](docs/extensions/built-in/developer.md).
+- **Session history is not encrypted.** Conversations are kept in a local SQLite database at `~/.config/biorouter/sessions/sessions.db`. Whatever a session contained — including regulated data — stays readable on disk by anything running as your user account. See [managing sessions](docs/getting-started/managing-sessions.md).
+
+These two limits are also what makes prompt injection consequential rather than merely annoying; read the autonomy caution below with them in mind. The practical consequence for patient data is that the boundary which matters is chosen **before** the session starts — the provider you pick and the machine you run on — not a setting applied afterwards.
+
 ## Suspected exposure of patient data
 
 **A suspected exposure of PHI or other patient data is an institutional privacy incident, not a GitHub security advisory.** Report it first to your institution's privacy office and information security team and follow their instructions — at UCSF, the UCSF Privacy Office and UCSF IT Security. Do not file an issue or an advisory, and do not include patient data in any report.
