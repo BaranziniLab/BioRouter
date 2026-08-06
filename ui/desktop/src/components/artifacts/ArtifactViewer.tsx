@@ -99,9 +99,11 @@ const CODE_FONT = CODE_FONT_FAMILY;
 
 // Geometry mirrored from BaseChat's HEADER_ACTION_BUTTON_CLASS so the panel's
 // expand/close read as the same control as the chat header's actions. That file
-// is owned elsewhere; these values are kept in sync by hand.
+// is owned elsewhere; these values are kept in sync by hand. The radius is the
+// same 8px under its semantic name (`rounded-element`); the hover is now the
+// shared ink tint, which BaseChat's copy takes when it migrates.
 const HEADER_ACTION_BUTTON_CLASS =
-  'no-drag flex h-8 w-8 items-center justify-center rounded-md p-0 text-text-default/70 transition-colors hover:bg-background-medium hover:text-text-default';
+  'no-drag flex h-8 w-8 items-center justify-center rounded-element p-0 text-text-default/70 transition-colors hover:bg-overlay-hover hover:text-text-default';
 
 interface ArtifactViewerProps {
   artifact: ArtifactSource | null;
@@ -652,9 +654,11 @@ export default function ArtifactViewer({
         'no-drag relative isolate flex h-full min-h-0 w-full flex-col overflow-hidden border-l border-border-subtle bg-background-muted',
         // Animate only transform + opacity — width tracks instantly (drag is
         // transition-none; window-resize should snap, not lag the edge by 180ms).
-        // Exit is a tier faster than entrance (--motion-fast vs --motion-base).
-        isResizing ? 'transition-none' : 'transition-[opacity,transform] ease-[var(--ease-out)]',
-        !isResizing && (isOpen ? 'duration-[var(--motion-base)]' : 'duration-[var(--motion-fast)]'),
+        // Exit is a tier faster than entrance: entrance names --motion-base, exit
+        // rides the app-wide default duration (--dur-fast), so it carries no
+        // annotation of its own. The curve is the default too (--ease-out).
+        isResizing ? 'transition-none' : 'transition-[opacity,transform]',
+        !isResizing && isOpen && 'duration-[var(--motion-base)]',
         isOpen ? 'translate-x-0 opacity-100' : 'translate-x-3 opacity-0',
         className
       )}
@@ -733,7 +737,7 @@ export default function ArtifactViewer({
                   aria-label={`Close ${tab.artifact.title}`}
                   title={`Close ${tab.artifact.title}`}
                   className={cn(
-                    'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-text-subtle transition-[background-color,color,opacity] hover:bg-background-medium hover:text-text-default',
+                    'inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-inner text-text-subtle transition-[background-color,color,opacity] hover:bg-overlay-hover hover:text-text-default',
                     isActive
                       ? 'opacity-100'
                       : 'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100'
@@ -848,9 +852,11 @@ function ArtifactErrorState({
     <div data-testid="artifact-error-state" className="flex h-full items-center justify-center p-6">
       <div className="w-full max-w-sm text-center">
         <Icon className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
-        <div className="text-sm font-medium text-text-default">File not available</div>
-        <p className="mt-1 text-sm leading-relaxed text-text-muted">{message}</p>
-        {path && <div className="mt-2 break-all text-xs text-text-muted/70">{path}</div>}
+        <div className="text-label text-text-default">File not available</div>
+        {/* `leading-relaxed` deliberately overrides text-body's 20px: this is a
+            wrapped explanatory paragraph, not a single-line row. */}
+        <p className="mt-1 text-body leading-relaxed text-text-muted">{message}</p>
+        {path && <div className="mt-2 break-all text-supporting text-text-muted/70">{path}</div>}
       </div>
     </div>
   );
@@ -873,7 +879,9 @@ function ArtifactPreviewBody({
 }) {
   if (preview.kind === 'loading') {
     return (
-      <div className="flex h-full items-center justify-center text-sm text-text-muted">Loading</div>
+      <div className="flex h-full items-center justify-center text-body text-text-muted">
+        Loading
+      </div>
     );
   }
 
@@ -902,14 +910,16 @@ function ArtifactPreviewBody({
   if (preview.kind === 'externalUrl') {
     return (
       <div className="flex h-full items-center justify-center bg-background-medium p-6">
-        <div className="w-full max-w-lg rounded-xl border border-border-subtle bg-background-default p-5 text-center shadow-popover">
+        <div className="w-full max-w-lg rounded-container border border-border-subtle bg-background-default p-5 text-center shadow-popover">
           <Globe className="mx-auto mb-3 h-6 w-6 text-text-muted" aria-hidden="true" />
-          <div className="text-sm font-medium text-text-default">External preview</div>
-          <div className="mt-1 break-all text-xs text-text-muted">{preview.url}</div>
+          <div className="text-label text-text-default">External preview</div>
+          <div className="mt-1 break-all text-supporting text-text-muted">{preview.url}</div>
+          {/* A button inside the card: one step down the ladder from its
+              `rounded-container` host. */}
           <button
             type="button"
             onClick={() => void window.electron.openExternal(preview.url)}
-            className="mt-4 inline-flex h-8 items-center gap-2 rounded-lg border border-border-subtle bg-background-default px-3 text-xs font-medium text-text-default transition-colors hover:bg-background-medium"
+            className="mt-4 inline-flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-3 text-label text-text-default transition-colors hover:bg-overlay-hover"
           >
             <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
             Open in default browser
@@ -976,19 +986,21 @@ function ArtifactPreviewBody({
     // genuinely binary (or the file is too large), so there is nothing to show —
     // tell the user plainly and offer to open it in its default app.
     return (
-      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-sm text-text-muted">
+      <div className="flex h-full flex-col items-center justify-center gap-3 p-6 text-center text-body text-text-muted">
         <File className="h-8 w-8" aria-hidden="true" />
-        <div className="font-medium text-text-default">{basenameFromPath(file.path)}</div>
+        <div className="text-label text-text-default">{basenameFromPath(file.path)}</div>
         <div>
           {file.mimeType} · {formatBytes(file.size)}
         </div>
+        {/* `leading-relaxed` deliberately overrides the inherited text-body
+            line-height for this wrapped paragraph. */}
         <p className="max-w-xs leading-relaxed">
           This file can’t be previewed here. Open it in the app your system uses for this file type.
         </p>
         <button
           type="button"
           onClick={() => window.electron.openDirectoryInExplorer(file.path)}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border-strong bg-transparent px-3 py-1.5 text-text-default transition-[background-color,color,transform,scale] duration-[var(--motion-fast)] active:scale-[0.97] hover:bg-background-medium"
+          className="inline-flex items-center gap-1.5 rounded-element border border-border-strong bg-transparent px-3 py-1.5 text-label text-text-default transition-[background-color,color,transform,scale] active:scale-[0.97] hover:bg-overlay-hover"
         >
           <ExternalLink className="h-3.5 w-3.5" aria-hidden="true" />
           Open the file
@@ -1168,16 +1180,21 @@ function DirectoryTreePreview({
             ) : (
               <Folder className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
             )}
-            <span className="min-w-0 flex-1 truncate text-xs font-semibold text-text-default">
+            {/* `font-semibold` deliberately overrides text-supporting's 400: the
+                rail's title outranks the rows beneath it, which share its size. */}
+            <span className="min-w-0 flex-1 truncate text-supporting font-semibold text-text-default">
               {directory.title}
             </span>
             {directory.kind === 'gitDirectory' && (
-              <span className={cn(STRIP_IDENT_CLASS, 'max-w-24 truncate rounded-sm px-1.5 py-0.5')}>
+              // A chip inside the rail header: the bottom rung of the ladder.
+              <span
+                className={cn(STRIP_IDENT_CLASS, 'max-w-24 truncate rounded-inner px-1.5 py-0.5')}
+              >
                 {directory.branch}
               </span>
             )}
           </div>
-          <label className="flex h-8 items-center gap-2 rounded-md border border-border-subtle bg-background-default px-2 focus-within:border-border-focus">
+          <label className="flex h-8 items-center gap-2 rounded-element border border-border-subtle bg-background-default px-2 focus-within:border-border-focus">
             <Search className="h-3.5 w-3.5 shrink-0 text-text-muted" aria-hidden="true" />
             <input
               type="search"
@@ -1185,7 +1202,7 @@ function DirectoryTreePreview({
               onChange={(event) => setFilter(event.target.value)}
               placeholder="Filter files…"
               aria-label={isGitRepository ? 'Filter repository files' : 'Filter folder files'}
-              className="min-w-0 flex-1 bg-transparent text-xs text-text-default outline-none placeholder:text-text-subtle"
+              className="min-w-0 flex-1 bg-transparent text-supporting text-text-default outline-none placeholder:text-text-subtle"
             />
           </label>
         </div>
@@ -1234,8 +1251,10 @@ function DirectoryTreePreview({
                 }}
                 className={cn(
                   // A row in a list, not a card: selection is a fill, never a lift.
-                  'group flex h-7 w-full min-w-0 items-center gap-1 rounded-md px-1.5 text-left text-xs transition-colors',
-                  selected ? 'bg-background-focus font-medium' : 'hover:bg-background-medium'
+                  // `font-medium` on the selected row deliberately overrides
+                  // text-supporting's 400 — it is state emphasis, not a size.
+                  'group flex h-7 w-full min-w-0 items-center gap-1 rounded-element px-1.5 text-left text-supporting transition-colors',
+                  selected ? 'bg-overlay-selected font-medium' : 'hover:bg-overlay-hover'
                 )}
                 style={{ paddingLeft: `${6 + depth * 13}px` }}
               >
@@ -1285,7 +1304,7 @@ function DirectoryTreePreview({
             );
           })}
           {visibleEntries.length === 0 && (
-            <div className="px-2 py-6 text-center text-xs text-text-muted">
+            <div className="px-2 py-6 text-center text-supporting text-text-muted">
               {filter.trim() ? 'No matching files' : 'This folder is empty'}
             </div>
           )}
@@ -1323,10 +1342,12 @@ function DirectoryTreePreview({
             ) : (
               <Folder className="h-6 w-6 text-text-subtle" aria-hidden="true" />
             )}
-            <div className="text-sm font-medium text-text-default">
+            <div className="text-label text-text-default">
               {isGitRepository ? 'Select a repository file' : 'Select a file'}
             </div>
-            <p className="max-w-xs text-xs leading-relaxed text-text-muted">
+            {/* `leading-relaxed` deliberately overrides text-supporting's 16px:
+                this is a wrapped explanatory paragraph, not a metadata line. */}
+            <p className="max-w-xs text-supporting leading-relaxed text-text-muted">
               {isGitRepository
                 ? `This tree is locked to ${directory.title}. Git colors show each file’s current state.`
                 : `This tree is locked to ${directory.title}. Expand folders to browse without leaving this root.`}
@@ -1404,7 +1425,10 @@ function CopyButton({ text }: { text: string }) {
           // Clipboard unavailable (denied permission); leave the label alone.
         }
       }}
-      className="rounded-sm px-2 py-0.5 text-[11px] text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
+      // A control inside the status strip, so it takes the bottom rung of the
+      // radius ladder and the strip's own metadata size — `text-label` (14px)
+      // does not fit a 34px strip beside 12px metadata.
+      className="rounded-inner px-2 py-0.5 text-supporting text-text-muted transition-colors hover:bg-overlay-hover hover:text-text-default"
     >
       {copied ? 'Copied' : 'Copy'}
     </button>
@@ -1466,7 +1490,7 @@ function TextFilePreview({
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <CopyButton text={file.text} />
           {renderable && (
-            <div className="inline-flex overflow-hidden rounded-md border border-border-subtle">
+            <div className="inline-flex overflow-hidden rounded-element border border-border-subtle">
               {[
                 { label: delimited ? 'Table' : 'Preview', raw: false },
                 { label: 'Raw', raw: true },
@@ -1477,9 +1501,11 @@ function TextFilePreview({
                   onClick={() => setShowRaw(option.raw)}
                   aria-pressed={showRaw === option.raw}
                   className={cn(
-                    'px-2 py-0.5 text-[11px] transition-colors',
+                    // Same strip-density exception as CopyButton above: the
+                    // metadata size, not text-label's 14px.
+                    'px-2 py-0.5 text-supporting transition-colors',
                     showRaw === option.raw
-                      ? 'bg-background-medium text-text-default'
+                      ? 'bg-overlay-selected text-text-default'
                       : 'text-text-muted hover:text-text-default'
                   )}
                 >
@@ -1537,7 +1563,7 @@ function TextFilePreview({
 function DelimitedTable({ text, delimiter }: { text: string; delimiter: string }) {
   const rows = parseDelimitedTable(text, delimiter);
   if (rows.length === 0) {
-    return <div className="p-4 text-sm text-text-muted">This file has no rows.</div>;
+    return <div className="p-4 text-body text-text-muted">This file has no rows.</div>;
   }
 
   const [header, ...body] = rows;
@@ -1546,7 +1572,7 @@ function DelimitedTable({ text, delimiter }: { text: string; delimiter: string }
 
   return (
     <div className="h-full overflow-auto">
-      <table className="w-full border-collapse text-left text-[13px]">
+      <table className="w-full border-collapse text-left text-secondary">
         <thead className="sticky top-0 bg-background-muted">
           <tr>
             {header.map((cell, index) => (
@@ -1575,7 +1601,7 @@ function DelimitedTable({ text, delimiter }: { text: string; delimiter: string }
         </tbody>
       </table>
       {hidden > 0 && (
-        <div className="px-3 py-2 text-xs text-text-muted">
+        <div className="px-3 py-2 text-supporting text-text-muted">
           {hidden.toLocaleString()} more row{hidden === 1 ? '' : 's'} not shown. Open the raw view
           for the full file.
         </div>
