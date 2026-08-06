@@ -18,6 +18,40 @@ use std::{cmp::Ordering, collections::HashSet};
 
 const SESSION_ID_META_KEY: &str = "biorouter-session-id";
 
+/// Both axes of the caller's identity — the tier bit and the affiliation — read
+/// from ONE request meta at one instant (issue #56 DR-26).
+///
+/// ⚠ **It is a struct, and that is the whole point (audit finding 17).** The two
+/// guards over this one capability used to take different arguments:
+/// `assert_kb_reachable` took `(caller_private, caller_affiliation)` and
+/// `kb_is_out_of_reach` took `caller_private` alone — so the filters *could not*
+/// ask the affiliation axis even if their author wanted to, and in a
+/// cross-institution chat `kb_list_bases` listed the names of bases whose
+/// content the very next call refused. Half-knowing something is how a user
+/// experiences a barrier with two spellings.
+///
+/// Passing the pair as one value means a future filter cannot silently drop an
+/// axis: there is no narrower thing to pass. A third axis, if DR-26 ever grows
+/// one, is a field here and every guard gets it at once.
+#[derive(Clone, Debug)]
+pub(crate) struct CallerIdentity {
+    /// Whether the model bound to this chat is private (`ProviderTier`).
+    private: bool,
+    /// Whose agreements cover that model.
+    affiliation: CallerAffiliation,
+}
+
+impl CallerIdentity {
+    /// Read both axes off one `RequestContext`. Absent context reads the
+    /// restrictive value on both — see [`KnowledgeServer::caller_affiliation`].
+    fn from_context(context: Option<&RequestContext<RoleServer>>) -> Self {
+        Self {
+            private: KnowledgeServer::caller_is_private(context),
+            affiliation: KnowledgeServer::caller_affiliation(context),
+        }
+    }
+}
+
 /// Tools whose `kb_id` argument names a base the caller must be allowed to
 /// reach. One list, one rule.
 ///
@@ -349,17 +383,12 @@ impl KnowledgeServer {
     /// only the first. That is why its doc comment ("an explicit `kb_id` always
     /// wins and is never filtered against the session's set") stays true and
     /// this check lives above it rather than inside it.
-    fn assert_kb_reachable(
-        &self,
-        kb_id: &str,
-        caller_private: bool,
-        caller_affiliation: &CallerAffiliation,
-    ) -> Result<(), ErrorData> {
+    fn assert_kb_reachable(&self, kb_id: &str, caller: &CallerIdentity) -> Result<(), ErrorData> {
         crate::knowledge::tier::assert_reachable(
             self.service.root(),
             kb_id,
-            caller_private,
-            caller_affiliation,
+            caller.private,
+            &caller.affiliation,
         )
         .map_err(|e| ErrorData::invalid_request(e.to_string(), None))
     }
@@ -368,8 +397,33 @@ impl KnowledgeServer {
     /// behind every *filter* in this file — the fan-outs, the candidate lists
     /// and the two pointer tools — so "omit" and "refuse" cannot disagree about
     /// what is reachable.
-    fn kb_is_out_of_reach(&self, kb_id: &str, caller_private: bool) -> bool {
-        !caller_private && crate::knowledge::tier::is_private(self.service.root(), kb_id)
+    ///
+    /// ⚠ **Audit finding 17: this is [`Self::assert_kb_reachable`], negated, and
+    /// it must stay that way.** It used to be a *second* spelling — a public
+    /// caller conjoined with the tier-only predicate in
+    /// [`crate::knowledge::tier`] — which asked only the tier
+    /// axis. The consequence was visible to the user: in a chat bound to a model
+    /// covered by another institution's agreements, `kb_list_bases` listed the
+    /// base (tier says "private caller, fine") while `kb_read_page` on the id it
+    /// had just handed over refused it (affiliation says "cross-institutional").
+    /// A KB name routinely names a cohort or a study, so the listing was the
+    /// leak and the refusal was merely the tell.
+    ///
+    /// The fix is not "add the affiliation argument here too" — that is how the
+    /// two came to disagree in the first place, and a fourth axis would repeat
+    /// it. There is now no independent predicate to keep in sync: the barrier
+    /// answers, and the filters ask the barrier. `is_err()` and not a re-derived
+    /// condition, so the master toggle (DR-15), the tier axis and DR-26's
+    /// affiliation axis are read once, in `tier::assert_reachable`, for both the
+    /// "omit" decision and the "refuse" decision.
+    ///
+    /// It follows the toggle now, which it did not before: with privacy tiers
+    /// off, `assert_reachable` permits every read, so a listing that still hid
+    /// bases was the same inconsistency in the other direction — a name withheld
+    /// for content the very next call would hand over in full. DR-15's promise
+    /// is that nothing is impacted when the feature is off.
+    fn kb_is_out_of_reach(&self, kb_id: &str, caller: &CallerIdentity) -> bool {
+        self.assert_kb_reachable(kb_id, caller).is_err()
     }
 
     fn hidden_kbs_for_session(&self, session_id: Option<&str>) -> Result<Vec<String>, ErrorData> {
@@ -385,7 +439,7 @@ impl KnowledgeServer {
     fn visible_bases_for_session(
         &self,
         session_id: Option<&str>,
-        caller_private: bool,
+        caller: &CallerIdentity,
     ) -> Result<Vec<Manifest>, ErrorData> {
         let hidden = self.hidden_kbs_for_session(session_id)?;
         let hidden = hidden.into_iter().collect::<HashSet<_>>();
@@ -396,7 +450,7 @@ impl KnowledgeServer {
         // omitted base cannot tempt the model into passing the id explicitly,
         // which is the bypass Task 10C closes.
         bases.retain(|base| {
-            !hidden.contains(&base.id) && !self.kb_is_out_of_reach(&base.id, caller_private)
+            !hidden.contains(&base.id) && !self.kb_is_out_of_reach(&base.id, caller)
         });
         Ok(bases)
     }
@@ -405,7 +459,10 @@ impl KnowledgeServer {
         &self,
         context: Option<&RequestContext<RoleServer>>,
     ) -> Result<Vec<Manifest>, ErrorData> {
-        self.visible_bases_for_session(Self::session_id(context), Self::caller_is_private(context))
+        self.visible_bases_for_session(
+            Self::session_id(context),
+            &CallerIdentity::from_context(context),
+        )
     }
 
     fn search_visible_bases(
@@ -413,11 +470,11 @@ impl KnowledgeServer {
         query: &str,
         limit: usize,
         session_id: Option<&str>,
-        caller_private: bool,
+        caller: &CallerIdentity,
         scope: SearchScope,
     ) -> Result<Vec<SearchHitWithKb>, ErrorData> {
         let mut hits = Vec::new();
-        for base in self.visible_bases_for_session(session_id, caller_private)? {
+        for base in self.visible_bases_for_session(session_id, caller)? {
             // Issue #56. INSIDE the loop, per base. A guard BEFORE it would make
             // a KB-less search all-or-nothing, so one private base in the
             // session's set would cost the user every other base — and skipping
@@ -426,7 +483,7 @@ impl KnowledgeServer {
             // already dropped it; this is the second reading, on the base we are
             // about to open, so one that was ratcheted in between is still
             // skipped.
-            if self.kb_is_out_of_reach(&base.id, caller_private) {
+            if self.kb_is_out_of_reach(&base.id, caller) {
                 continue;
             }
             let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &base.id);
@@ -496,7 +553,7 @@ impl KnowledgeServer {
         if let Some(primary) = self.primary_kb_for_context(context)? {
             return Ok(primary);
         }
-        let caller_private = Self::caller_is_private(context);
+        let caller = CallerIdentity::from_context(context);
         let ids: Vec<String> = self
             .service
             .session_kb_ids(Self::session_id(context))
@@ -514,7 +571,7 @@ impl KnowledgeServer {
             // ⚠ Read per id, not once: that is what lets the public bases
             // survive the private one, the same all-or-nothing trap the fan-out
             // filters exist to avoid, in a third place.
-            .filter(|id| !self.kb_is_out_of_reach(id, caller_private))
+            .filter(|id| !self.kb_is_out_of_reach(id, &caller))
             .collect();
         Err(ErrorData::invalid_params(
             if ids.is_empty() {
@@ -814,7 +871,7 @@ impl KnowledgeServer {
                 &p.query,
                 p.limit,
                 Self::session_id(Some(&context)),
-                Self::caller_is_private(Some(&context)),
+                &CallerIdentity::from_context(Some(&context)),
                 scope,
             )?
         };
@@ -853,7 +910,7 @@ impl KnowledgeServer {
                 &p.query,
                 p.limit,
                 Self::session_id(Some(&context)),
-                Self::caller_is_private(Some(&context)),
+                &CallerIdentity::from_context(Some(&context)),
                 SearchScope::RawSources,
             )?
         };
@@ -894,12 +951,12 @@ impl KnowledgeServer {
     fn visible_kb_ids(
         &self,
         selection: &crate::knowledge::service::KbSelection,
-        caller_private: bool,
+        caller: &CallerIdentity,
     ) -> Vec<String> {
         selection
             .kb_ids
             .iter()
-            .filter(|id| !self.kb_is_out_of_reach(id, caller_private))
+            .filter(|id| !self.kb_is_out_of_reach(id, caller))
             .cloned()
             .collect()
     }
@@ -910,7 +967,7 @@ impl KnowledgeServer {
         &self,
         session_id: Option<&str>,
         kb_id: &str,
-        caller_private: bool,
+        caller: &CallerIdentity,
     ) -> Result<serde_json::Value, ErrorData> {
         crate::knowledge::paths::validate_kb_id(kb_id)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
@@ -919,7 +976,7 @@ impl KnowledgeServer {
         // to the answer an id that does not exist gets. Refusing it by name
         // would confirm it exists, in a politer sentence.
         let selection = self.service.selection(session_id).map_err(into_err)?;
-        let visible = self.visible_kb_ids(&selection, caller_private);
+        let visible = self.visible_kb_ids(&selection, caller);
         if !visible.iter().any(|id| id == kb_id) {
             return Err(ErrorData::invalid_params(
                 not_a_member(kb_id, &visible, session_id),
@@ -941,26 +998,26 @@ impl KnowledgeServer {
                 tracing::warn!("kb_set_active: {e:#}");
                 ErrorData::invalid_params(not_a_member(kb_id, &visible, session_id), None)
             })?;
-        Ok(self.selection_value(&selection, caller_private, true))
+        Ok(self.selection_value(&selection, caller, true))
     }
 
     /// Body of `kb_get_active`.
     fn selection_json(
         &self,
         session_id: Option<&str>,
-        caller_private: bool,
+        caller: &CallerIdentity,
     ) -> Result<serde_json::Value, ErrorData> {
         let selection = self.service.selection(session_id).map_err(into_err)?;
-        Ok(self.selection_value(&selection, caller_private, false))
+        Ok(self.selection_value(&selection, caller, false))
     }
 
     fn selection_value(
         &self,
         selection: &crate::knowledge::service::KbSelection,
-        caller_private: bool,
+        caller: &CallerIdentity,
         ok: bool,
     ) -> serde_json::Value {
-        let kb_ids = self.visible_kb_ids(selection, caller_private);
+        let kb_ids = self.visible_kb_ids(selection, caller);
         // Issue #56. The POINTER is metadata too, and it is the single id that
         // makes the explicit-`kb_id` branch usable without guessing. A primary
         // the caller may not reach reads `null` — truthful for this caller (it
@@ -998,7 +1055,7 @@ impl KnowledgeServer {
         let v = self.set_primary_json(
             Self::session_id(Some(&context)),
             &p.0.kb_id,
-            Self::caller_is_private(Some(&context)),
+            &CallerIdentity::from_context(Some(&context)),
         )?;
         ok_json(&v)
     }
@@ -1013,7 +1070,7 @@ impl KnowledgeServer {
     ) -> Result<CallToolResult, ErrorData> {
         let v = self.selection_json(
             Self::session_id(Some(&context)),
-            Self::caller_is_private(Some(&context)),
+            &CallerIdentity::from_context(Some(&context)),
         )?;
         ok_json(&v)
     }
@@ -1174,11 +1231,11 @@ impl ServerHandler for KnowledgeServer {
         mut request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let caller_private = Self::caller_is_private(Some(&context));
-        // Issue #56 DR-26 / Task 50 Step 1. Read from the SAME request meta as
-        // the bit above, at the same instant, so the two axes of one caller's
-        // identity cannot come from two reads.
-        let caller_affiliation = Self::caller_affiliation(Some(&context));
+        // Issue #56 DR-26 / Task 50 Step 1. BOTH axes off the SAME request meta,
+        // at the same instant, so the two halves of one caller's identity cannot
+        // come from two reads — and, since audit finding 17, they travel as one
+        // value so a callee cannot ask half the question.
+        let caller = CallerIdentity::from_context(Some(&context));
         let name = request.name.to_string();
 
         if let Some(kb_id) = self.gated_kb_id(&name, request.arguments.as_ref(), Some(&context))? {
@@ -1189,7 +1246,7 @@ impl ServerHandler for KnowledgeServer {
             // the raise, covers all fourteen — including the ones that resolve
             // an ABSENT id to the session's primary, because `gated_kb_id`
             // resolves it exactly as the tool will.
-            self.assert_kb_reachable(&kb_id, caller_private, &caller_affiliation)?;
+            self.assert_kb_reachable(&kb_id, &caller)?;
             if KB_RATCHETING_TOOLS.contains(&name.as_str()) {
                 // BEFORE the write: a raise that only lands on success leaves
                 // content in a base whose tier never moved if the write panics
@@ -1221,7 +1278,7 @@ impl ServerHandler for KnowledgeServer {
                 // `every_tool_that_ratchets_the_tier_also_records_the_callers_institution`
                 // drives every ratcheting tool through this seam and pins it.
                 self.service
-                    .raise_tier_and_affiliation(&kb_id, caller_private, &caller_affiliation)
+                    .raise_tier_and_affiliation(&kb_id, caller.private, &caller.affiliation)
                     .map_err(into_err)?;
             }
             // Issue #56, review round 5. PIN what was checked. Without this the
@@ -1305,6 +1362,19 @@ mod tests {
             instructions.contains("hidden") && instructions.to_lowercase().contains("explicit"),
             "instructions must explain searching a hidden KB by explicit kb_id"
         );
+    }
+
+    /// A private caller with no stated affiliation — what the unit tests below
+    /// mean by "the unfiltered view".
+    ///
+    /// `Unstated` and not `Local` for the reason `call_tool_as_session` gives
+    /// for its own default: `Local` clears every institutional base, so a future
+    /// affiliation assertion written against this helper would pass vacuously.
+    fn private_caller() -> CallerIdentity {
+        CallerIdentity {
+            private: true,
+            affiliation: CallerAffiliation::Unstated,
+        }
     }
 
     fn server_with_root(root: std::path::PathBuf) -> KnowledgeServer {
@@ -1443,7 +1513,7 @@ mod tests {
         // moves. Its refusal assertion below is also the check that
         // `not_a_member` really is a verbatim mirror of the service's sentence:
         // if the spelling drifted, `alpha, beta` stops matching.
-        let v = server.set_primary_json(Some("session-a"), "beta", true)?;
+        let v = server.set_primary_json(Some("session-a"), "beta", &private_caller())?;
         assert_eq!(v["primary_kb"], serde_json::json!("beta"));
         assert_eq!(
             v["active_kb"],
@@ -1457,7 +1527,7 @@ mod tests {
         );
 
         let err = server
-            .set_primary_json(Some("session-a"), "gamma", true)
+            .set_primary_json(Some("session-a"), "gamma", &private_caller())
             .expect_err("gamma is not in this session");
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert!(
@@ -1467,12 +1537,12 @@ mod tests {
         );
 
         let err = server
-            .set_primary_json(Some("session-a"), "no-such-kb", true)
+            .set_primary_json(Some("session-a"), "no-such-kb", &private_caller())
             .expect_err("a base that does not exist can never be primary");
         assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
 
         assert_eq!(
-            server.selection_json(Some("session-a"), true)?["primary_kb"],
+            server.selection_json(Some("session-a"), &private_caller())?["primary_kb"],
             serde_json::json!("beta")
         );
         Ok(())
@@ -1527,11 +1597,11 @@ mod tests {
             .service
             .set_hidden_for_session("session-a", &["hidden".to_string()])?;
 
-        let visible = server.visible_bases_for_session(Some("session-a"), true)?;
+        let visible = server.visible_bases_for_session(Some("session-a"), &private_caller())?;
         let ids = visible.into_iter().map(|base| base.id).collect::<Vec<_>>();
         assert_eq!(ids, vec!["visible".to_string()]);
 
-        let all_visible = server.visible_bases_for_session(Some("session-b"), true)?;
+        let all_visible = server.visible_bases_for_session(Some("session-b"), &private_caller())?;
         assert_eq!(all_visible.len(), 2);
         Ok(())
     }
@@ -1573,7 +1643,7 @@ mod tests {
             "shared topic",
             10,
             Some("session-a"),
-            true,
+            &private_caller(),
             SearchScope::Knowledge,
         )?;
         let kb_ids = hits.into_iter().map(|hit| hit.kb_id).collect::<Vec<_>>();
@@ -3382,5 +3452,349 @@ mod tests {
         )
         .await;
         assert!(rendered(&out).contains("omop-cohort-412"));
+    }
+
+    // ── Audit finding 17: one capability, ONE question ───────────────────────
+
+    /// Three bases the finding-17 tests tell apart: unclaimed and public,
+    /// UCSF's, Stanford's. Both cohorts are private *and* claimed, and the
+    /// public one is claimed by nobody — which is what separates the tier axis
+    /// from the affiliation axis. Ids and names are study-shaped on purpose:
+    /// "the name is the leak" is the finding.
+    ///
+    /// Classified through the production ratchets (`raise_unlocked` +
+    /// `raise_affiliation_unlocked`), so the on-disk shape is the one a real
+    /// chat would have written.
+    fn cross_institution_fixture() -> (KnowledgeServer, tempfile::TempDir, PathBuf) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().to_path_buf();
+        let srv = server_with_root(root.clone());
+        for (id, name) in [
+            ("open-notes", "Open Notes"),
+            ("ucsf-cohort-412", "UCSF Cohort 412"),
+            ("stanford-cohort-77", "Stanford Cohort 77"),
+        ] {
+            srv.service.create_base(id, name, None).unwrap();
+            crate::knowledge::store::write_page(
+                &crate::knowledge::paths::kb_root(&root, id),
+                "knowledge/x.md",
+                "# Shared topic\n\nbody",
+                "seed",
+                None,
+            )
+            .unwrap();
+        }
+        for (id, owner) in [
+            ("ucsf-cohort-412", "ucsf"),
+            ("stanford-cohort-77", "stanford"),
+        ] {
+            crate::knowledge::tier::raise_unlocked(&root, id, true).unwrap();
+            crate::knowledge::tier::raise_affiliation_unlocked(
+                &root,
+                id,
+                &CallerAffiliation::Institution(owner.to_string()),
+            )
+            .unwrap();
+        }
+        (srv, tmp, root)
+    }
+
+    const FIXTURE_BASES: [&str; 3] = ["open-notes", "ucsf-cohort-412", "stanford-cohort-77"];
+
+    /// One caller identity to drive the seam with, both axes stated.
+    struct Identity {
+        label: &'static str,
+        tier: Caller,
+        affiliation: CallerAffiliation,
+    }
+
+    fn identities() -> Vec<Identity> {
+        vec![
+            Identity {
+                label: "a public model",
+                tier: Public,
+                affiliation: CallerAffiliation::Unstated,
+            },
+            Identity {
+                label: "a private model that states no affiliation",
+                tier: Private,
+                affiliation: CallerAffiliation::Unstated,
+            },
+            Identity {
+                label: "a private model covered by UCSF",
+                tier: Private,
+                affiliation: CallerAffiliation::Institution("ucsf".to_string()),
+            },
+            Identity {
+                label: "a private model covered by Stanford",
+                tier: Private,
+                affiliation: CallerAffiliation::Institution("stanford".to_string()),
+            },
+            Identity {
+                label: "a local model",
+                tier: Private,
+                affiliation: CallerAffiliation::Local,
+            },
+        ]
+    }
+
+    /// Does this caller actually get `kb_id`'s CONTENT? Asked of the real
+    /// barrier through the real `call_tool` seam, never recomputed here — a test
+    /// that re-derives the expected answer is testing its own copy of the rule.
+    async fn serves_content(srv: &KnowledgeServer, id: &Identity, kb_id: &str) -> bool {
+        call_tool_as_full(
+            srv,
+            "kb_search",
+            serde_json::json!({ "kb_id": kb_id, "query": "shared topic" }),
+            Some("sess-1"),
+            id.tier,
+            &id.affiliation,
+        )
+        .await
+        .is_ok()
+    }
+
+    /// The finding, stated as the user experiences it: in a chat bound to
+    /// another institution's model the app listed the base's NAME and then
+    /// refused its content — half-knowing something.
+    ///
+    /// The two guards over one capability disagreed about how many axes to ask.
+    /// `assert_kb_reachable` asked tier **and** affiliation; `kb_is_out_of_reach`
+    /// — the predicate behind every listing filter — asked only the tier, so for
+    /// any private caller it answered "reachable" about every base on the
+    /// machine. A UCSF chat was therefore handed `stanford-cohort-77`, which is
+    /// both a disclosure in itself (a KB name routinely names a cohort or a
+    /// study) and the one argument the explicit-`kb_id` branch needs.
+    #[tokio::test]
+    async fn a_cross_institution_chat_is_not_shown_the_names_of_bases_it_will_be_refused() {
+        let (srv, _tmp, _root) = cross_institution_fixture();
+        let ucsf = Identity {
+            label: "a private model covered by UCSF",
+            tier: Private,
+            affiliation: CallerAffiliation::Institution("ucsf".to_string()),
+        };
+
+        let listing = rendered(
+            &call_tool_as_full(
+                &srv,
+                "kb_list_bases",
+                serde_json::json!({}),
+                Some("sess-1"),
+                ucsf.tier,
+                &ucsf.affiliation,
+            )
+            .await,
+        );
+        assert!(
+            listing.contains("open-notes") && listing.contains("ucsf-cohort-412"),
+            "the UCSF chat lost the bases it may actually read: {listing}"
+        );
+        assert!(
+            !listing.contains("stanford-cohort-77") && !listing.contains("Stanford Cohort 77"),
+            "kb_list_bases named a base whose content the barrier refuses: {listing}"
+        );
+
+        // …and the refusal it was protecting the caller from is real, so the
+        // omission above is not the listing simply being over-tight.
+        let refusal = err_of(
+            call_tool_as_full(
+                &srv,
+                "kb_search",
+                serde_json::json!({ "kb_id": "stanford-cohort-77", "query": "shared topic" }),
+                Some("sess-1"),
+                ucsf.tier,
+                &ucsf.affiliation,
+            )
+            .await,
+        );
+        assert!(
+            refusal.contains("Cross-institutional"),
+            "expected the affiliation barrier, got: {refusal}"
+        );
+    }
+
+    /// The completeness half. Every KB entry point that *omits* a base must omit
+    /// exactly the bases the barrier *refuses* — for every caller identity and
+    /// every base, with both sides computed by production code.
+    ///
+    /// ⚠ This is the test that makes finding 17 non-recurring, and it is written
+    /// as an invariant rather than a table of today's answers: `listed` and
+    /// `served` are both read out of real `call_tool` responses, so a future
+    /// axis added to the barrier and forgotten in a filter fails here without
+    /// anyone editing it. It also proves the predicate is WIRED — all four
+    /// listing surfaces below reach `kb_is_out_of_reach` through production
+    /// paths, which a unit test of the predicate alone would not show.
+    ///
+    /// The five surfaces are the complete set of places this file omits a base:
+    /// 1. `kb_list_bases`      → `visible_bases_for_session`
+    /// 2. `kb_get_active`      → `visible_kb_ids` (all three of its fields)
+    /// 3. the no-primary error → `kb_id_or_primary`'s candidate list
+    /// 4. a KB-less `kb_search` fan-out → `search_visible_bases`
+    /// 5. `kb_set_active`'s "not one of your bases" → `visible_kb_ids` again,
+    ///    through `not_a_member`
+    #[tokio::test]
+    async fn every_listing_surface_omits_exactly_what_the_barrier_refuses() {
+        for id in identities() {
+            let (srv, _tmp, root) = cross_institution_fixture();
+            clear_primary(&root, "sess-1");
+
+            let mut served = Vec::new();
+            for kb in FIXTURE_BASES {
+                if serves_content(&srv, &id, kb).await {
+                    served.push(kb);
+                }
+            }
+            assert!(
+                !served.is_empty(),
+                "{}: no base is readable at all, so every omission assertion below is vacuous",
+                id.label
+            );
+
+            // 1 + 2 + 3: three text surfaces, each asserted for every base.
+            let listing = rendered(
+                &call_tool_as_full(
+                    &srv,
+                    "kb_list_bases",
+                    serde_json::json!({}),
+                    Some("sess-1"),
+                    id.tier,
+                    &id.affiliation,
+                )
+                .await,
+            );
+            let selection = rendered(
+                &call_tool_as_full(
+                    &srv,
+                    "kb_get_active",
+                    serde_json::json!({}),
+                    Some("sess-1"),
+                    id.tier,
+                    &id.affiliation,
+                )
+                .await,
+            );
+            // No kb_id and no primary, so the tool answers with its candidate
+            // list — the fall-through `gated_kb_id` deliberately leaves open.
+            let candidates = rendered(
+                &call_tool_as_full(
+                    &srv,
+                    "kb_list_pages",
+                    serde_json::json!({}),
+                    Some("sess-1"),
+                    id.tier,
+                    &id.affiliation,
+                )
+                .await,
+            );
+            // 4: the fan-out, which attributes every hit with its kb_id.
+            let fanout = rendered(
+                &call_tool_as_full(
+                    &srv,
+                    "kb_search",
+                    serde_json::json!({ "query": "shared topic" }),
+                    Some("sess-1"),
+                    id.tier,
+                    &id.affiliation,
+                )
+                .await,
+            );
+            // 5: `not_a_member`. The id asked for is one that cannot exist, so
+            // nothing in the answer is an echo of what the caller supplied —
+            // every fixture id in it was volunteered by the server.
+            let not_a_member = rendered(
+                &call_tool_as_full(
+                    &srv,
+                    "kb_set_active",
+                    serde_json::json!({ "kb_id": "no-such-kb" }),
+                    Some("sess-1"),
+                    id.tier,
+                    &id.affiliation,
+                )
+                .await,
+            );
+
+            for kb in FIXTURE_BASES {
+                let served = served.contains(&kb);
+                for (surface, text) in [
+                    ("kb_list_bases", &listing),
+                    ("kb_get_active", &selection),
+                    ("the no-primary candidate list", &candidates),
+                    ("a KB-less kb_search", &fanout),
+                    ("kb_set_active's not-a-member answer", &not_a_member),
+                ] {
+                    assert_eq!(
+                        text.contains(kb),
+                        served,
+                        "{}: {surface} {} '{kb}', but the barrier {} its content.\n{text}",
+                        id.label,
+                        if served { "omitted" } else { "named" },
+                        if served { "serves" } else { "refuses" },
+                    );
+                }
+            }
+        }
+    }
+
+    /// Finding 17's structural half: there must be no SECOND spelling of the
+    /// question inside this file.
+    ///
+    /// The behavioural test above catches a filter that asks too little today.
+    /// This one catches the way that happens — someone writing
+    /// `tier::is_private(..)` inline next to a new listing, which reads
+    /// perfectly plausible and re-forks the two guards. The barrier
+    /// (`tier::assert_reachable`) is the only thing this file may ask, and it may
+    /// ask it only through `assert_kb_reachable`.
+    #[test]
+    fn this_file_asks_the_barrier_and_never_re_spells_it() {
+        let src = include_str!("server.rs");
+        let production = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("server.rs has a production half above its tests");
+
+        // Assembled at runtime so this test's own text cannot satisfy it.
+        let re_spelling = concat!("tier::", "is_private");
+        assert_eq!(
+            production.matches(re_spelling).count(),
+            1,
+            "a listing filter re-spelled the reachability question instead of asking \
+             assert_kb_reachable — that is exactly how finding 17 happened"
+        );
+        // The ONE permitted direct read, and it is not a reachability question:
+        // `kb_export` decides *where the archive lands*, over a base CP1 has
+        // already cleared. If it ever moves out of that function, the exemption
+        // this assertion grants has to be re-argued.
+        let export = production
+            .split("pub async fn kb_export")
+            .nth(1)
+            .expect("kb_export still exists");
+        assert!(
+            export.contains(re_spelling),
+            "the one permitted direct tier read is no longer inside kb_export"
+        );
+
+        // And the predicate really is the barrier, negated. A body that grew a
+        // condition of its own would pass the grep above and still fork.
+        let body = production
+            .split("fn kb_is_out_of_reach")
+            .nth(1)
+            .expect("kb_is_out_of_reach still exists")
+            .split("\n    }")
+            .next()
+            .expect("a closing brace");
+        assert!(
+            body.contains("self.assert_kb_reachable(kb_id, caller).is_err()")
+                && !body.contains("&&")
+                && !body.contains("||"),
+            "kb_is_out_of_reach must be assert_kb_reachable negated, nothing more, got:{body}"
+        );
+
+        // The predicate must have live production callers — nine guards in this
+        // campaign shipped correct, tested and called by nothing.
+        let call_sites = production.matches("self.kb_is_out_of_reach(").count();
+        assert!(
+            call_sites >= 4,
+            "expected the four listing surfaces to reach the predicate, found {call_sites}"
+        );
     }
 }
