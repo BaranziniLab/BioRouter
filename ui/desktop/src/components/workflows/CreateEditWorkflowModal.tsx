@@ -372,7 +372,7 @@ export default function CreateEditWorkflowModal({
         <div className="flex items-center justify-between px-6 py-5 pr-14 border-b border-border-subtle flex-shrink-0">
           <div>
             <DialogTitle>{isCreateMode ? 'Create Workflow' : 'Edit Workflow'}</DialogTitle>
-            <p className="text-xs text-text-muted mt-0.5">
+            <p className="text-supporting text-text-muted mt-0.5">
               {isCreateMode
                 ? 'Define agent behavior and capabilities for reusable chat sessions.'
                 : 'Edit the workflow to change agent behavior.'}{' '}
@@ -399,10 +399,10 @@ export default function CreateEditWorkflowModal({
 
           {/* Deep Link Display */}
           {requiredFieldsAreFilled() && (
-            <div className="biorouter-modal-panel w-full p-4 rounded-xl mt-6">
+            <div className="biorouter-modal-panel w-full p-4 rounded-container mt-6">
               <label
                 htmlFor="workflow-share-link"
-                className="block text-sm font-medium text-text-default mb-2"
+                className="block text-label text-text-default mb-2"
               >
                 Share link
               </label>
@@ -420,7 +420,7 @@ export default function CreateEditWorkflowModal({
                   }
                   onFocus={(e) => e.currentTarget.select()}
                   aria-invalid={deeplinkError}
-                  className="flex-1 text-xs font-mono"
+                  className="flex-1 text-code font-mono"
                 />
                 <Button
                   type="button"
@@ -428,7 +428,7 @@ export default function CreateEditWorkflowModal({
                   variant="outline"
                   disabled={!canCopyDeeplink}
                   aria-label={copied ? 'Link copied' : 'Copy share link'}
-                  className="ml-2 px-3 py-2 rounded-md flex items-center"
+                  className="ml-2 px-3 py-2 rounded-element flex items-center"
                 >
                   {copied ? (
                     <Check className="w-4 h-4 text-text-success" />
@@ -437,7 +437,7 @@ export default function CreateEditWorkflowModal({
                   )}
                 </Button>
               </div>
-              <p className="text-xs text-text-muted mt-1">
+              <p className="text-supporting text-text-muted mt-1">
                 Anyone with this link can open this workflow in Biorouter. Paste it into a browser,
                 or send it to a collaborator.
               </p>
@@ -451,7 +451,7 @@ export default function CreateEditWorkflowModal({
             onClick={() => onClose(false)}
             variant="ghost"
             disabled={isSaving}
-            className="px-4 py-2 text-text-muted rounded-lg hover:bg-background-medium transition-colors"
+            className="px-4 py-2 text-text-muted rounded-element hover:bg-overlay-hover transition-colors"
           >
             Close
           </Button>

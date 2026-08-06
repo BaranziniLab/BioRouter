@@ -23,7 +23,7 @@ export function WorkflowNameField({
 }: WorkflowNameFieldProps) {
   return (
     <div>
-      <label htmlFor={id} className="block text-sm font-medium text-text-default mb-2">
+      <label htmlFor={id} className="block text-label text-text-default mb-2">
         {label} {required && <span className="text-text-danger">*</span>}
       </label>
       <input
@@ -50,14 +50,14 @@ export function WorkflowNameField({
           onBlur();
         }}
         disabled={disabled}
-        className={`w-full p-3 border rounded-lg bg-background-default text-text-default ${errors.length > 0 ? 'border-border-danger' : 'border-border-subtle'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+        className={`w-full p-3 border rounded-element bg-background-default text-text-default ${errors.length > 0 ? 'border-border-danger' : 'border-border-subtle'} ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
         placeholder={WORKFLOW_NAME_PLACEHOLDER}
         data-testid="workflow-name-input"
       />
-      <p className="text-xs text-text-muted mt-1">
+      <p className="text-supporting text-text-muted mt-1">
         Will be automatically formatted (lowercase, dashes for spaces)
       </p>
-      {errors.length > 0 && <p className="text-text-danger text-sm mt-1">{errors[0]}</p>}
+      {errors.length > 0 && <p className="text-text-danger text-body mt-1">{errors[0]}</p>}
     </div>
   );
 }

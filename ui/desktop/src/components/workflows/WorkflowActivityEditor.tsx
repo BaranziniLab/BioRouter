@@ -60,22 +60,19 @@ export default function WorkflowActivityEditor({
 
   return (
     <div>
-      <label htmlFor="activities" className="block text-sm font-medium text-text-default mb-1">
+      <label htmlFor="activities" className="block text-label text-text-default mb-1">
         Activities
       </label>
-      <p className="text-xs text-text-muted mb-4">
+      <p className="text-supporting text-text-muted mb-4">
         The top-line prompts and activity buttons that will display in the workflow chat window.
       </p>
 
       {/* Message Field */}
       <div className="mb-4">
-        <label
-          htmlFor="message"
-          className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1"
-        >
+        <label htmlFor="message" className="block text-caps text-text-muted uppercase mb-1">
           Message
         </label>
-        <p className="text-xs text-text-muted mb-2">
+        <p className="text-supporting text-text-muted mb-2">
           Appears at the top of the workflow. Supports markdown formatting.
         </p>
         <textarea
@@ -83,7 +80,7 @@ export default function WorkflowActivityEditor({
           value={messageContent}
           onChange={(e) => handleMessageChange(e.target.value)}
           onBlur={onBlur}
-          className="w-full px-3 py-2 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150 resize-none"
+          className="w-full px-3 py-2 text-body border border-border-subtle rounded-element bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors resize-none"
           placeholder="Enter a user facing introduction message for your workflow (supports **bold**, *italic*, `code`, etc.)"
           rows={3}
           autoCorrect="off"
@@ -95,10 +92,8 @@ export default function WorkflowActivityEditor({
       {/* Activity Buttons */}
       <div className="space-y-3">
         <div>
-          <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
-            Activity Buttons
-          </label>
-          <p className="text-xs text-text-muted mb-3">
+          <label className="block text-caps text-text-muted uppercase mb-1">Activity Buttons</label>
+          <p className="text-supporting text-text-muted mb-3">
             Clickable buttons that appear below the message to help users interact with your
             workflow.
           </p>
@@ -109,7 +104,7 @@ export default function WorkflowActivityEditor({
             {nonMessageActivities.map((activity, index) => (
               <div
                 key={index}
-                className="inline-flex items-center gap-1.5 bg-background-medium border border-border-subtle rounded-lg px-3 py-1.5 text-sm text-text-default"
+                className="inline-flex items-center gap-1.5 bg-background-medium border border-border-subtle rounded-inner px-3 py-1.5 text-body text-text-default"
                 title={activity.length > 100 ? activity : undefined}
               >
                 <span>{activity.length > 100 ? activity.slice(0, 100) + '…' : activity}</span>
@@ -133,7 +128,7 @@ export default function WorkflowActivityEditor({
             onChange={(e) => setNewActivity(e.target.value)}
             onKeyPress={(e) => e.key === 'Enter' && handleAddActivity()}
             onBlur={onBlur}
-            className="flex-1 h-9 px-3 text-sm border border-border-subtle rounded-lg bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors duration-150"
+            className="flex-1 h-9 px-3 text-body border border-border-subtle rounded-element bg-background-default text-text-default placeholder:text-text-muted focus:border-border-strong transition-colors"
             placeholder="Add activity button label…"
           />
           <Button

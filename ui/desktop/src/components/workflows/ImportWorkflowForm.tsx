@@ -131,12 +131,12 @@ export default function ImportWorkflowForm({
           onDrop={handleDrop}
           onClick={() => !isSubmitting && fileInputRef.current?.click()}
           className={[
-            'biorouter-modal-panel flex flex-col items-center justify-center gap-2 rounded-xl py-10 cursor-pointer transition-colors duration-150 select-none',
+            'biorouter-modal-panel flex flex-col items-center justify-center gap-2 rounded-container py-10 cursor-pointer transition-colors select-none',
             isDragging
               ? '!border-block-teal bg-block-teal/5'
               : error
                 ? '!border-border-danger bg-background-danger/10'
-                : 'hover:!border-border-strong hover:bg-background-medium',
+                : 'hover:!border-border-strong hover:bg-overlay-hover',
           ].join(' ')}
         >
           <input
@@ -147,17 +147,17 @@ export default function ImportWorkflowForm({
             className="hidden"
           />
           {isSubmitting ? (
-            <p className="text-sm text-text-muted animate-pulse">Importing…</p>
+            <p className="text-body text-text-muted animate-pulse">Importing…</p>
           ) : (
             <>
               <Upload className="w-8 h-8 text-text-muted" />
-              <p className="text-sm font-medium text-text-default">Drop a YAML or JSON file here</p>
-              <p className="text-xs text-text-muted">or click to browse</p>
+              <p className="text-label text-text-default">Drop a YAML or JSON file here</p>
+              <p className="text-supporting text-text-muted">or click to browse</p>
             </>
           )}
         </div>
 
-        {error && <p className="text-sm text-text-danger">{error}</p>}
+        {error && <p className="text-body text-text-danger">{error}</p>}
 
         <DialogFooter>
           <Button variant="outline" onClick={handleClose} disabled={isSubmitting}>

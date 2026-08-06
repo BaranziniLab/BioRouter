@@ -87,9 +87,9 @@ export function WorkflowFormFields({
   const [expandedParameters, setExpandedParameters] = useState<Set<string>>(new Set());
   const [availableExtensions, setAvailableExtensions] = useState<ExtensionConfig[]>([]);
   const inputClass =
-    'w-full h-9 rounded-md border-0 bg-background-default px-3 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default ';
+    'w-full h-9 rounded-element border-0 bg-background-default px-3 text-body text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-overlay-hover focus:bg-background-default ';
   const textareaClass =
-    'w-full rounded-md border-0 bg-background-default px-3 py-2 text-sm text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-background-muted focus:bg-background-default resize-none';
+    'w-full rounded-element border-0 bg-background-default px-3 py-2 text-body text-text-default placeholder:text-text-muted ring-1 ring-border-input transition-colors hover:bg-overlay-hover focus:bg-background-default resize-none';
 
   useEffect(() => {
     getExtensions({ throwOnError: false }).then((res) => {
@@ -260,10 +260,7 @@ export function WorkflowFormFields({
       <form.Field name="title">
         {(field: FormFieldApi<string>) => (
           <div>
-            <label
-              htmlFor="workflow-title"
-              className="block text-sm font-medium text-text-default mb-2"
-            >
+            <label htmlFor="workflow-title" className="block text-label text-text-default mb-2">
               Title <span className="text-text-danger">*</span>
             </label>
             <input
@@ -280,7 +277,7 @@ export function WorkflowFormFields({
               data-testid="title-input"
             />
             {field.state.meta.errors.length > 0 && (
-              <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
             )}
           </div>
         )}
@@ -292,7 +289,7 @@ export function WorkflowFormFields({
           <div>
             <label
               htmlFor="workflow-description"
-              className="block text-sm font-medium text-text-default mb-2"
+              className="block text-label text-text-default mb-2"
             >
               Description <span className="text-text-danger">*</span>
             </label>
@@ -310,7 +307,7 @@ export function WorkflowFormFields({
               data-testid="description-input"
             />
             {field.state.meta.errors.length > 0 && (
-              <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
             )}
           </div>
         )}
@@ -321,10 +318,7 @@ export function WorkflowFormFields({
         {(field: FormFieldApi<string>) => (
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label
-                htmlFor="workflow-instructions"
-                className="block text-sm font-medium text-text-default"
-              >
+              <label htmlFor="workflow-instructions" className="block text-label text-text-default">
                 Instructions <span className="text-text-danger">*</span>
               </label>
               <Button
@@ -332,7 +326,7 @@ export function WorkflowFormFields({
                 onClick={() => setShowInstructionsEditor(true)}
                 variant="ghost"
                 size="sm"
-                className="h-7 rounded-md bg-background-medium px-2 text-xs hover:bg-background-muted"
+                className="h-7 rounded-element bg-background-medium px-2 text-supporting hover:bg-overlay-hover"
               >
                 Open Editor
               </Button>
@@ -353,12 +347,12 @@ export function WorkflowFormFields({
               rows={8}
               data-testid="instructions-input"
             />
-            <p className="text-xs text-text-muted mt-1">
+            <p className="text-supporting text-text-muted mt-1">
               Use {`{{parameter_name}}`} to define parameters that can be filled in when running the
               workflow.
             </p>
             {field.state.meta.errors.length > 0 && (
-              <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
+              <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
             )}
 
             {/* Instructions Editor Modal */}
@@ -381,13 +375,10 @@ export function WorkflowFormFields({
       <form.Field name="prompt">
         {(field: FormFieldApi<string | undefined>) => (
           <div>
-            <label
-              htmlFor="workflow-prompt"
-              className="block text-sm font-medium text-text-default mb-2"
-            >
+            <label htmlFor="workflow-prompt" className="block text-label text-text-default mb-2">
               Initial Prompt
             </label>
-            <p className="text-xs text-text-muted mt-2 mb-2">
+            <p className="text-supporting text-text-muted mt-2 mb-2">
               (Optional - Instructions or Prompt are required)
             </p>
             <textarea
@@ -412,12 +403,14 @@ export function WorkflowFormFields({
 
       {/* Advanced Section - Collapsible */}
       <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen} className="mt-6">
-        <CollapsibleTrigger className="flex w-full items-baseline gap-2 rounded-md bg-background-medium px-3 py-2.5 transition-colors hover:bg-background-muted">
+        <CollapsibleTrigger className="flex w-full items-baseline gap-2 rounded-element bg-background-medium px-3 py-2.5 transition-colors hover:bg-overlay-hover">
           <ChevronDown
-            className={`w-4 h-4 text-text-muted transition-transform duration-200 flex-shrink-0 relative top-0.5 ${advancedOpen ? 'rotate-0' : '-rotate-90'}`}
+            className={`w-4 h-4 text-text-muted transition-transform flex-shrink-0 relative top-0.5 ${advancedOpen ? 'rotate-0' : '-rotate-90'}`}
           />
-          <span className="text-sm font-medium text-text-default">Advanced Options</span>
-          <span className="text-xs text-text-muted">Activities, parameters, model, resources</span>
+          <span className="text-label text-text-default">Advanced Options</span>
+          <span className="text-supporting text-text-muted">
+            Activities, parameters, model, resources
+          </span>
         </CollapsibleTrigger>
 
         <CollapsibleContent className="mt-4 space-y-5">
@@ -490,10 +483,8 @@ export function WorkflowFormFields({
 
               return (
                 <div>
-                  <label className="block text-sm font-medium text-text-default mb-1">
-                    Parameters
-                  </label>
-                  <p className="text-text-muted text-sm space-y-2 pb-4">
+                  <label className="block text-label text-text-default mb-1">Parameters</label>
+                  <p className="text-text-muted text-body space-y-2 pb-4">
                     Parameters will be automatically detected from {`{{parameter_name}}`} syntax in
                     instructions/prompt/activities or you can manually add them below.
                   </p>
@@ -514,7 +505,7 @@ export function WorkflowFormFields({
                       disabled={!newParameterName.trim()}
                       variant="ghost"
                       size="sm"
-                      className="rounded-md bg-background-medium hover:bg-background-muted"
+                      className="rounded-element bg-background-medium hover:bg-overlay-hover"
                     >
                       Add parameter
                     </Button>
@@ -558,10 +549,10 @@ export function WorkflowFormFields({
           <form.Field name="jsonSchema">
             {(field: FormFieldApi<string | undefined>) => (
               <div>
-                <label className="block text-sm font-medium text-text-default mb-1">
+                <label className="block text-label text-text-default mb-1">
                   Response JSON Schema
                 </label>
-                <p className="text-text-muted text-sm space-y-2 pb-4">
+                <p className="text-text-muted text-body space-y-2 pb-4">
                   Define the expected structure of the AI's response using JSON Schema format
                 </p>
                 <div className="flex items-center justify-between mb-2">
@@ -570,7 +561,7 @@ export function WorkflowFormFields({
                     onClick={() => setShowJsonSchemaEditor(true)}
                     variant="ghost"
                     size="sm"
-                    className="h-7 rounded-md bg-background-medium px-2 text-xs hover:bg-background-muted"
+                    className="h-7 rounded-element bg-background-medium px-2 text-supporting hover:bg-overlay-hover"
                   >
                     Open Editor
                   </Button>
@@ -578,16 +569,16 @@ export function WorkflowFormFields({
 
                 {field.state.value && field.state.value.trim() && (
                   <div
-                    className={`rounded-md bg-background-medium p-3 ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
+                    className={`rounded-element bg-background-medium p-3 ${field.state.meta.errors.length > 0 ? 'ring-2 ring-border-danger' : ''}`}
                   >
-                    <pre className="text-xs font-mono text-text-default whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
+                    <pre className="text-code font-mono text-text-default whitespace-pre-wrap break-words max-h-32 overflow-y-auto">
                       {field.state.value}
                     </pre>
                   </div>
                 )}
 
                 {field.state.meta.errors.length > 0 && (
-                  <p className="text-text-danger text-sm mt-1">{field.state.meta.errors[0]}</p>
+                  <p className="text-text-danger text-body mt-1">{field.state.meta.errors[0]}</p>
                 )}
 
                 {/* JSON Schema Editor Modal */}
@@ -608,23 +599,23 @@ export function WorkflowFormFields({
           </form.Field>
 
           {/* Model Settings */}
-          <div className="space-y-3 rounded-md bg-background-muted/60 p-3">
+          <div className="space-y-3 rounded-element bg-background-muted/60 p-3">
             <div className="flex items-baseline justify-between gap-3">
               <div>
-                <label className="block text-sm font-medium text-text-default">
-                  Model settings
-                </label>
-                <p className="mt-0.5 text-xs text-text-muted">
+                <label className="block text-label text-text-default">Model settings</label>
+                <p className="mt-0.5 text-supporting text-text-muted">
                   Optional workflow-specific provider, model, and temperature.
                 </p>
               </div>
-              <span className="shrink-0 text-[11px] text-text-muted">Global default if blank</span>
+              <span className="shrink-0 text-supporting text-text-muted">
+                Global default if blank
+              </span>
             </div>
             <div className="grid grid-cols-2 gap-3">
               <form.Field name="settings.biorouter_provider">
                 {(field: FormFieldApi<string | undefined>) => (
                   <div>
-                    <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+                    <label className="block text-caps text-text-muted uppercase mb-1">
                       Provider
                     </label>
                     <input
@@ -640,9 +631,7 @@ export function WorkflowFormFields({
               <form.Field name="settings.biorouter_model">
                 {(field: FormFieldApi<string | undefined>) => (
                   <div>
-                    <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
-                      Model
-                    </label>
+                    <label className="block text-caps text-text-muted uppercase mb-1">Model</label>
                     <input
                       type="text"
                       value={field.state.value || ''}
@@ -657,7 +646,7 @@ export function WorkflowFormFields({
             <form.Field name="settings.temperature">
               {(field: FormFieldApi<number | undefined>) => (
                 <div>
-                  <label className="block text-xs font-medium text-text-muted uppercase tracking-wider mb-1">
+                  <label className="block text-caps text-text-muted uppercase mb-1">
                     Temperature{' '}
                     <span className="normal-case font-normal">(0 to 2, blank = default)</span>
                   </label>

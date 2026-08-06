@@ -401,7 +401,7 @@ export default function CreateWorkflowFromSessionModal({
         >
           <div>
             <DialogTitle>Create Workflow from Session</DialogTitle>
-            <p className="text-xs text-text-muted mt-0.5">
+            <p className="text-supporting text-text-muted mt-0.5">
               Create a reusable workflow based on your current conversation
             </p>
           </div>
@@ -419,10 +419,10 @@ export default function CreateWorkflowFromSessionModal({
                 data-testid="analysis-spinner"
               />
               <div className="text-center">
-                <p className="text-sm font-medium text-text-default" data-testid="analyzing-title">
+                <p className="text-label text-text-default" data-testid="analyzing-title">
                   Analyzing your conversation
                 </p>
-                <p className="text-xs text-text-muted mt-1" data-testid="analysis-stage">
+                <p className="text-supporting text-text-muted mt-1" data-testid="analysis-stage">
                   {analysisStage}
                 </p>
               </div>
@@ -472,7 +472,7 @@ export default function CreateWorkflowFromSessionModal({
             onClick={onClose}
             variant="ghost"
             disabled={isCreating}
-            className="rounded-md px-4 py-2 text-text-muted transition-colors hover:bg-background-medium"
+            className="rounded-element px-4 py-2 text-text-muted transition-colors hover:bg-overlay-hover"
             data-testid="cancel-button"
           >
             Cancel
@@ -485,7 +485,7 @@ export default function CreateWorkflowFromSessionModal({
                 disabled={!isFormValid || isCreating}
                 variant="ghost"
                 size="default"
-                className="inline-flex items-center justify-center gap-2 rounded-md bg-background-medium px-4 py-2 hover:bg-background-muted"
+                className="inline-flex items-center justify-center gap-2 rounded-element bg-background-medium px-4 py-2 hover:bg-overlay-hover"
                 data-testid="create-workflow-button"
               >
                 <Save className="w-4 h-4" />
