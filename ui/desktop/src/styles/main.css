@@ -2397,6 +2397,34 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
 }
 
 /*
+ * `text-caps` carries the transform, not just the metrics.
+ *
+ * Tailwind's `--text-*` namespace can express a size, a line-height, a weight
+ * and a tracking, but not a `text-transform` — so the generated `.text-caps`
+ * utility gave a call site 11px at 500 with +0.08em tracking and left the
+ * casing to be remembered separately. That is a role that only works if you
+ * also know the thing it is named after: a site that forgets `uppercase` gets
+ * tracked-out 11px LOWERCASE, which does not read as a mistake, it reads as a
+ * rendering bug. Tracking that wide is a typographic device that only makes
+ * sense on capitals.
+ *
+ * Folding the transform in makes the role complete: `text-caps` is now the
+ * whole caps style, and it is the app's ONLY one. `uppercase` sitting beside it
+ * at existing call sites is harmless and redundant — the phase-10 sweep removes
+ * those. A site that genuinely wants 11px un-capsed does not exist by design;
+ * the smallest non-caps role is `text-supporting` at 12px.
+ *
+ * Layered into `utilities` so it composes with the generated rule (which sets
+ * the four other properties) rather than fighting it, and so an explicit
+ * `normal-case` after it still wins on source order.
+ */
+@layer utilities {
+  .text-caps {
+    text-transform: uppercase;
+  }
+}
+
+/*
  * Prism token class names are unprefixed — `token table`, `token list`, `token
  * italic` — so they land in the same global namespace as Tailwind's utilities.
  * `.table { display: table }` was capturing every cell of a markdown table inside
