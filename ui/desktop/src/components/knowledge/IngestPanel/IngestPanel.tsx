@@ -400,7 +400,7 @@ export function IngestPanel() {
           {digestLabel}
         </Button>
         {nothingToDigest && !busy && (
-          <p className="text-center text-[11px] text-text-muted">
+          <p className="text-center text-supporting text-text-muted">
             {primaryKbId
               ? 'Stage a file to digest.'
               : 'Choose or create a primary knowledge base above to enable digestion.'}

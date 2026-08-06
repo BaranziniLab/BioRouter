@@ -49,12 +49,12 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
   return (
     <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden">
       <div className="mb-0 flex flex-wrap items-center justify-between gap-3 px-4 py-3">
-        <div className="flex min-w-[220px] flex-1 items-baseline gap-2 text-xs text-text-muted">
-          <span className="truncate text-sm font-semibold text-text-default">
+        <div className="flex min-w-[220px] flex-1 items-baseline gap-2 text-supporting text-text-muted">
+          <span className="truncate text-label font-semibold text-text-default">
             {primaryKb?.name ?? 'No primary knowledge base'}
           </span>
           {graph && (
-            <span className="shrink-0 text-[12px]">
+            <span className="shrink-0 text-supporting">
               <span data-testid="knowledge-graph-summary">
                 · {graph.nodes.length} {graph.nodes.length === 1 ? 'page' : 'pages'}
                 {' · '}
@@ -108,7 +108,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
       </div>
 
       {previewSha && (
-        <div className="mx-4 mt-2 flex items-center justify-between rounded-md border border-border-warning/40 bg-background-warning/10 px-4 py-2 text-xs text-text-warning">
+        <div className="mx-4 mt-2 flex items-center justify-between rounded-container border border-border-warning/40 bg-background-warning/10 px-4 py-2 text-supporting text-text-warning">
           <span>Previewing commit {previewSha.slice(0, 7)}: read-only</span>
           <button onClick={onClearPreview} className="underline">
             Exit preview
@@ -118,17 +118,17 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
 
       <div className="relative min-h-0 flex-1 overflow-hidden border-t border-border-subtle bg-background-muted">
         {!primaryKbId && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
+          <div className="absolute inset-0 flex items-center justify-center text-body text-text-muted">
             Make a knowledge base primary to see its graph.
           </div>
         )}
         {primaryKbId && error && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-text-danger">
+          <div className="absolute inset-0 flex items-center justify-center text-body text-text-danger">
             {error}
           </div>
         )}
         {primaryKbId && !error && graph && graph.nodes.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-text-muted">
+          <div className="absolute inset-0 flex items-center justify-center text-body text-text-muted">
             No pages yet. Ingest a source to populate the graph.
           </div>
         )}
@@ -151,8 +151,8 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
           />
         )}
         {primaryKbId && graph && graph.nodes.length > 0 && (
-          <div className="absolute bottom-4 left-4 rounded-xl border border-border-subtle bg-background-default px-3 py-2.5">
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-xs text-text-default">
+          <div className="absolute bottom-4 left-4 rounded-container border border-border-subtle bg-background-default px-3 py-2.5">
+            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-supporting text-text-default">
               <div className="flex items-center gap-2">
                 <span
                   className="h-2.5 w-2.5 rounded-full"

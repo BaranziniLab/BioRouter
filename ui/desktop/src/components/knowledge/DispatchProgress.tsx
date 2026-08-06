@@ -102,7 +102,7 @@ export function DispatchProgress({ state, onAbort }: Props) {
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
-          className="flex min-w-0 flex-1 items-center gap-2 text-left text-xs font-medium"
+          className="flex min-w-0 flex-1 items-center gap-2 text-left text-label"
         >
           {open ? (
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
@@ -122,7 +122,7 @@ export function DispatchProgress({ state, onAbort }: Props) {
             <button
               type="button"
               onClick={onAbort}
-              className="inline-flex shrink-0 items-center gap-1 text-xs text-text-muted transition-colors hover:text-text-danger"
+              className="inline-flex shrink-0 items-center gap-1 text-label text-text-muted transition-colors hover:text-text-danger"
               title="Stop digestion"
               disabled={state.status === 'stopping'}
             >
@@ -138,7 +138,7 @@ export function DispatchProgress({ state, onAbort }: Props) {
 
       {open && (
         <div className="px-3 pb-3">
-          <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-xl bg-background-muted px-3 py-3 text-[11px] leading-5">
+          <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-container bg-background-muted px-3 py-3 text-supporting">
             {lines.length === 0 && (
               <div className="flex items-start gap-2 text-text-muted">
                 <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
