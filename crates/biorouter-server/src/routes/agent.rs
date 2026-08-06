@@ -825,7 +825,13 @@ async fn get_tools(
     path = "/agent/update_provider",
     request_body = UpdateProviderRequest,
     responses(
-        (status = 200, description = "Provider updated successfully"),
+        (status = 200, description = "Provider updated. The body is DR-26's cross-institutional \
+                                      warning for this chat on the model just bound — the \
+                                      statement the user is shown before proceeding, warnings \
+                                      separated by a blank line — and is EMPTY when the bind \
+                                      crosses no institutional boundary, which is the normal \
+                                      case.",
+                       body = String),
         (status = 400, description = "Bad request - missing or invalid parameters"),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 409, description = "Refused by a privacy boundary (issue #56). Gate A: \
@@ -843,7 +849,7 @@ async fn update_agent_provider(
     // Before `Json`, which consumes the body and must be last.
     headers: axum::http::HeaderMap,
     Json(payload): Json<UpdateProviderRequest>,
-) -> Result<(), axum::response::Response> {
+) -> Result<String, axum::response::Response> {
     let agent = state
         .get_agent_for_route(payload.session_id.clone())
         .await
@@ -875,6 +881,14 @@ async fn update_agent_provider(
         )
             .into_response()
     })?;
+
+    // Issue #56 DR-26, taken from the provider this route CREATED rather than
+    // re-read off the agent afterwards. It is the key half of the triple the
+    // grant lookup below is done on, and `update_provider` reassigns the provider
+    // mutex with no turn lock — so a second read could key the lookup on a model
+    // some other caller bound in between and suppress a warning on an acceptance
+    // that was never given for this model.
+    let model_affiliation = new_provider.affiliation();
 
     // Issue #56 DR-16. Raising this chat's capability to Private is the user's
     // act alone, and this route has no principal — `check_token` compares one
@@ -928,7 +942,27 @@ async fn update_agent_provider(
         );
     }
 
-    Ok(())
+    // Issue #56 DR-26 at the BIND surface, and the whole of what this route was
+    // missing. `Agent::update_provider` has detected this mismatch since Task 48
+    // and has only ever written it to `tracing::warn!`, where the person who just
+    // switched models cannot see it — so the ruling's "warn the user, naming both
+    // institutions, before proceeding" was, on this surface, unimplemented.
+    //
+    // ⚠ **It warns; it does not refuse, and the ordering says so.** This is read
+    // AFTER the bind has succeeded and is returned with a 200, not raised as a
+    // 409 — both endpoints are Private, legitimate cross-institutional work under
+    // a real DUA exists, and refusing here would strand a chat whose model is
+    // already bound. Gate C still refuses the first DISPATCH, which is where the
+    // user meets an accept control; this is the earlier, quieter statement that
+    // stops the refusal being the first they hear of it.
+    //
+    // ⚠ **Empty is the normal answer** — every public model, every local model,
+    // every model bound to the same institution as the chat's connectors, and
+    // every machine with DR-27's `open` policy. A caller must treat an empty body
+    // as "nothing to say" and never as "the daemon did not answer".
+    Ok(agent
+        .cross_affiliation_notice(&payload.session_id, model_affiliation)
+        .await)
 }
 
 #[utoipa::path(
@@ -936,7 +970,13 @@ async fn update_agent_provider(
     path = "/agent/add_extension",
     request_body = AddExtensionRequest,
     responses(
-        (status = 200, description = "Extension added", body = String),
+        (status = 200, description = "Extension added. The body is DR-26's cross-institutional \
+                                      warning for this chat once the extension is attached — the \
+                                      statement the user is shown before proceeding, warnings \
+                                      separated by a blank line — and is EMPTY when nothing in \
+                                      the chat crosses an institutional boundary, which is the \
+                                      normal case.",
+                       body = String),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
                                       the named chat is private (or absent — an unproven caller \
@@ -954,7 +994,7 @@ async fn agent_add_extension(
     // Before `Json`, which consumes the body and must be last.
     headers: axum::http::HeaderMap,
     Json(request): Json<AddExtensionRequest>,
-) -> Result<StatusCode, ErrorResponse> {
+) -> Result<String, ErrorResponse> {
     // Issue #56 Task 58 / #47. FIRST, before the agent is fetched — `get_agent`
     // CREATES one for a session that has none, so a gate below it would let an
     // unproven caller materialise an agent for a chat it may not address, and
@@ -1007,6 +1047,12 @@ async fn agent_add_extension(
     // cross-affiliation check below, so this route cannot refuse on the tier
     // axis with tiers on and then warn — or not warn — with tiers off.
     let enforced = biorouter::privacy::privacy_tiers_enabled();
+    // The DR-26 half of that same single read, bound once here rather than taken
+    // twice: the gate below states the mismatch against it and the notice at the
+    // bottom suppresses flows the user has already accepted for it, and those two
+    // must be the same model or the route can warn about one institution while
+    // checking an acceptance recorded for another.
+    let model_affiliation = bound.as_ref().and_then(|p| p.affiliation());
     if enforced && classification.tier.is_private() && capability == ProviderTier::Public {
         return Err(ErrorResponse {
             status: StatusCode::CONFLICT,
@@ -1027,16 +1073,21 @@ async fn agent_add_extension(
     // through the GUI's Settings > Extensions, so the extension is attached and
     // the risk is stated.
     //
-    // ⚠ **The log is not yet the product.** DR-26 requires the user be shown the
-    // warning before proceeding, and this route returns a bare `StatusCode` —
-    // giving it a body is an OpenAPI change and a regenerated TypeScript client,
-    // which is the UI task that follows, not this one. What lands here is the
-    // detection and the exact copy, on the one code path that would otherwise
-    // have neither.
+    // ⚠ **The log is the support transcript's copy, not the product.** DR-26
+    // requires the user be shown the warning before proceeding, and for a long
+    // time this `tracing::warn!` was the whole of it: a researcher enabling
+    // another institution's connector from Settings > Extensions was told
+    // nothing. The user's copy is the 200 body at the bottom of this handler.
+    //
+    // ⚠ **Both remain, and neither is redundant.** This one is read here, BEFORE
+    // the attach, off the entry the caller actually sent — so a mismatch is on
+    // the record even if the attach then fails, and even for the callers that
+    // discard the body. The notice below is read AFTER the attach, off the
+    // agent's live extension set, so it states the chat as it now is.
     if let Some(warning) = biorouter::privacy::affiliation::gate_cross_affiliation_warning(
         enforced,
         capability,
-        bound.as_ref().and_then(|p| p.affiliation()),
+        model_affiliation,
         &extension_name,
         &classification,
     ) {
@@ -1063,7 +1114,29 @@ async fn agent_add_extension(
             ErrorResponse::internal(format!("Failed to persist extension state: {}", e))
         })?;
 
-    Ok(StatusCode::OK)
+    // Issue #56 DR-26 at the USER's enable surface — the second half of the
+    // ruling's "warn the user, naming both institutions, before proceeding", and
+    // the half that had no implementation at all. Composed by
+    // `Agent::cross_affiliation_notice`, the same method `/agent/update_provider`
+    // returns, so the two surfaces cannot start describing one boundary in
+    // different words.
+    //
+    // ⚠ **Read AFTER the attach, deliberately.** The user has already acted, and
+    // DR-26 says a user who insists proceeds — so this states the chat as it now
+    // is, including any OTHER connector the newly bound model does not reach.
+    // Reading it before the attach would answer for a chat that no longer exists
+    // by the time the caller sees it, and would silently omit the very extension
+    // the request was about.
+    //
+    // ⚠ **This is not a refusal and must never become one.** The agent's own
+    // enable path (`check_enable_allowed`) refuses; this one warns, because the
+    // caller here is the person at the keyboard. Inverting that strands a
+    // legitimate cross-institutional user with no way to attach their own
+    // connector, which is the "researchers turn the feature off" outcome DR-26
+    // exists to avoid.
+    Ok(agent
+        .cross_affiliation_notice(&request.session_id, model_affiliation)
+        .await)
 }
 
 /// What the grant route says to a caller that presented no proof of a human.
@@ -2714,6 +2787,156 @@ mod add_extension_resolver_tests {
                 !code.contains(&bare) || code.contains(&entry),
                 "a route classified an extension from its name alone, which a rename defeats: \
                  {line}"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod cross_affiliation_notice_route_tests {
+    //! Issue #56 DR-26 — the two surfaces where "warn the user, naming both
+    //! institutions, before proceeding" was **log-only**, and the shape of the
+    //! repair that can silently come undone.
+    //!
+    //! The daemon has detected this mismatch at the bind (`Agent::update_provider`)
+    //! and at the user's own enable (`POST /agent/add_extension`) since Task 48,
+    //! and both wrote it to `tracing::warn!` and nowhere else. The dispatch
+    //! surface's accept card worked; these two told the person at the keyboard
+    //! nothing, so a researcher attaching another institution's connector from
+    //! the extension picker learned about the boundary when a tool call was
+    //! refused, if at all.
+    //!
+    //! ⚠ **Structural, and the module above says why at length**: `AppState::new()`
+    //! opens the developer's real session database, so neither handler can be
+    //! driven here. What CAN regress silently is the wiring, and it is one line
+    //! per handler appended to a `try` block that already looked finished. The
+    //! behaviour behind those lines — that the notice names both institutions,
+    //! and goes quiet for a flow the user has already accepted — is driven end to
+    //! end where the seams exist, in `biorouter`'s
+    //! `agents::agent::gate_c_dispatch_tests::
+    //! the_bind_notice_names_both_institutions_and_goes_quiet_once_accepted`.
+
+    const SOURCE: &str = include_str!("agent.rs");
+
+    /// Assembled at run time for the reason the two modules above document: a
+    /// literal would appear in this very file and every scan below would find
+    /// its own assertion instead of the call site.
+    fn notice() -> String {
+        format!("cross_affiliation{}(", "_notice")
+    }
+
+    /// The handler's return type, read from its own signature.
+    ///
+    /// ⚠ A whole-file `contains` would not do: several handlers in this file
+    /// share a return type, so the assertion could be satisfied by a NEIGHBOUR's
+    /// signature while the one under test had been reverted to `()`.
+    fn returns(signature: &str) -> String {
+        let after = SOURCE
+            .split_once(signature)
+            .unwrap_or_else(|| panic!("{signature} is no longer in this file"))
+            .1;
+        after
+            .split_once(" {\n")
+            .expect("every handler signature ends at its opening brace")
+            .0
+            .to_string()
+    }
+
+    /// The BIND surface. `POST /agent/update_provider` returned a bare `()` and
+    /// the model picker showed a green success toast over a mismatch nobody had
+    /// mentioned.
+    ///
+    /// Two claims, and the second is the one a refactor breaks: the handler asks
+    /// for the notice, and it **returns** it. A version that computed it and
+    /// dropped it on the floor is the exact defect being repaired, one layer up.
+    #[test]
+    fn the_bind_route_hands_back_the_warning_it_used_to_only_log() {
+        let handler = crate::routes::body_of(SOURCE, "async fn update_agent_provider");
+        assert!(
+            handler.contains(&notice()),
+            "`/agent/update_provider` no longer asks for DR-26's bind statement. Binding a \
+             model covered by another institution's agreements into a chat holding this \
+             institution's connectors is the mismatch the ruling exists to state, and this \
+             route is the one the model picker calls."
+        );
+        // The signature, not the body: a handler that returns `()` cannot carry
+        // the statement however carefully it composed it.
+        let signature = returns("async fn update_agent_provider(");
+        assert!(
+            signature.contains("-> Result<String,"),
+            "`/agent/update_provider` no longer returns a body, so the warning it composes \
+             cannot reach the user — which is the state this fix found it in: {signature}"
+        );
+    }
+
+    /// The USER's enable surface, and the one the ruling names most directly.
+    ///
+    /// ⚠ The notice is read **after** the attach, and the ordering is asserted
+    /// rather than assumed. Read before it, the answer describes a chat that no
+    /// longer exists by the time the caller sees it and — worse — omits the very
+    /// extension the request was about, so the surface would go quiet in exactly
+    /// the case it exists for.
+    #[test]
+    fn the_enable_route_hands_back_the_warning_it_used_to_only_log() {
+        let handler = crate::routes::body_of(SOURCE, "async fn agent_add_extension");
+        let attach = format!(".add_extension{}", "(request.config)");
+
+        let asked = handler.find(&notice()).expect(
+            "`/agent/add_extension` no longer hands the user DR-26's statement. It logged this \
+             mismatch and nothing else for its whole life, which is how a user enabling a \
+             foreign connector from the extension picker came to be told nothing at all.",
+        );
+        let attached = handler
+            .find(&attach)
+            .expect("`/agent/add_extension` no longer attaches the extension it was given");
+        assert!(
+            attached < asked,
+            "the notice is composed BEFORE the extension is attached, so it answers for a chat \
+             that no longer exists — and omits the connector the request was about"
+        );
+        let signature = returns("async fn agent_add_extension(");
+        assert!(
+            signature.contains("-> Result<String,"),
+            "`/agent/add_extension` no longer returns a body, so the warning it composes cannot \
+             reach the user: {signature}"
+        );
+    }
+
+    /// The half that is a correctness bug rather than a wiring one.
+    ///
+    /// The notice suppresses flows the user has already accepted, and a grant is
+    /// keyed on (session, extension, **model affiliation**). Both handlers must
+    /// pass the affiliation of the provider they themselves hold — the one the
+    /// bind just created, the one the enable read once for both privacy axes.
+    /// `Agent::update_provider` reassigns the provider mutex with no turn lock,
+    /// so a second read here could key the lookup on a model some other caller
+    /// bound in between and suppress a warning on an acceptance that was never
+    /// given for the model in question. That failure is silent and it fails
+    /// OPEN — the user is not warned.
+    ///
+    /// So: exactly one binding of the affiliation per handler, and the notice
+    /// call reads that binding.
+    #[test]
+    fn each_route_keys_the_notice_on_the_provider_it_holds_itself() {
+        let bind = format!("let model_{} =", "affiliation");
+        for name in [
+            "async fn update_agent_provider",
+            "async fn agent_add_extension",
+        ] {
+            let handler = crate::routes::body_of(SOURCE, name);
+            let bindings = handler.matches(&bind).count();
+            assert_eq!(
+                bindings, 1,
+                "{name} binds the model affiliation {bindings} times. Two reads of the provider \
+                 are the read-then-read `CallCapability` exists to collapse: the route can warn \
+                 about one institution while checking an acceptance recorded for another, and \
+                 the failure is a warning that is never shown."
+            );
+            let at_bind = handler.find(&bind).expect("just counted one");
+            let at_notice = handler.find(&notice()).expect("pinned by the tests above");
+            assert!(
+                at_bind < at_notice,
+                "{name} composes the notice before it has the affiliation to key it on"
             );
         }
     }

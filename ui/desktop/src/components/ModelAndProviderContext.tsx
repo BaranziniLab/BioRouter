@@ -17,6 +17,7 @@ import {
 } from '../api';
 import { useConfig } from './ConfigContext';
 import { isUserActionRefusal, userActionHeaders } from '../utils/userAction';
+import { showCrossAffiliationNotice } from '../utils/crossAffiliationNotice';
 import {
   getModelDisplayName,
   getProviderDisplayName,
@@ -329,8 +330,19 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           }
         }
 
+        // Issue #56 DR-26. The bind's own answer, kept so the warning it carries
+        // can be shown once the switch has actually succeeded — `undefined` when
+        // this call was skipped because there is no chat to bind.
+        //
+        // ⚠ Typed `unknown`, matching what `showCrossAffiliationNotice` takes.
+        // The generated client declares this route's 200 as `unknown` (the
+        // OpenAPI `body = String` this handler now carries has not been
+        // regenerated into `src/api/` yet), and a narrower annotation here would
+        // have to be revised the moment it is — while the runtime check inside
+        // the presenter is what actually decides.
+        let boundNotice: unknown;
         if (sessionId) {
-          await updateAgentProvider({
+          const bound = await updateAgentProvider({
             body: {
               session_id: sessionId,
               provider: providerName,
@@ -349,6 +361,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             // refused provider, and a green toast claims the switch worked.
             throwOnError: true,
           });
+          boundNotice = bound.data;
         }
 
         phase = 'config';
@@ -370,6 +383,20 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           title: CHANGE_MODEL_TOAST_TITLE,
           msg: `${SWITCH_MODEL_SUCCESS_MSG} -- using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
         });
+        // Issue #56 DR-26 at the BIND surface. Binding a model covered by one
+        // institution's agreements into a chat holding another institution's
+        // connectors is a mismatch the daemon has detected since Task 48 and only
+        // ever logged — so the user got the success toast above and no statement
+        // at all until the first tool call was refused. The body is the daemon's
+        // own words, naming both institutions, and it is empty for every bind
+        // that crosses no boundary, which is nearly all of them.
+        //
+        // ⚠ **After the success toast and after the `return`-less path, not in
+        // place of them.** DR-26 warns; it does not refuse. The switch happened,
+        // it is reported as having happened, and this adds what the success toast
+        // cannot say. A refused switch never reaches here — it throws into the
+        // `catch` below, where the Gate A card explains a boundary that BLOCKED.
+        showCrossAffiliationNotice(boundNotice);
         return true;
       } catch (error) {
         console.error(`Failed to change model at ${phase} step -- ${modelName} ${providerName}`);

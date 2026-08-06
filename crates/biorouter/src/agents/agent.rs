@@ -7442,18 +7442,20 @@ impl Agent {
         // would also strand a chat — the model is bound, so the only exit would
         // be removing extensions the user cannot see the reason for.
         //
-        // The log is not the product, and — stated plainly rather than in the
-        // present tense — the product is NOT SHIPPED. DR-26's user-facing
-        // statement at a bind is [`Self::cross_affiliation_warnings`], which is
-        // the query a GUI or CLI is meant to ask after binding and render to
-        // the user. Nothing asks it today: its only non-test callers are the
-        // loop three lines below and nothing in `ui/desktop/`. Surfacing it is
-        // the task that follows this one.
+        // The log is not the product — it is the support transcript's copy of a
+        // statement the user gets separately. DR-26's user-facing statement at a
+        // bind is [`Self::cross_affiliation_notice`], which wraps the same query
+        // this loop reads and which `POST /agent/update_provider` returns in its
+        // 200 body for the model picker to show. Before that existed this loop
+        // WAS the whole of the bind surface's DR-26 story, and a user watching
+        // the screen was told nothing until they tried to use the connector.
         //
-        // So what this line buys is narrow and worth being honest about: a
-        // support transcript records that the mismatch was detected at the bind
-        // rather than only at the first refused dispatch. A user watching the
-        // screen is told nothing until they try to use the connector.
+        // ⚠ **This loop must stay a log and must not become the surface.** It
+        // runs inside `update_provider`, which every non-HTTP bind path also
+        // calls — the CLI's `configure`/`web`/session builder, the scheduler,
+        // ACP, the apps runtime — and none of those has a user watching. The
+        // statement is *pulled* by the surface that has one, which is why the
+        // notice is a method rather than a side effect here.
         //
         // ⚠ On the RESTART path this can legitimately log nothing:
         // `restore_provider_from_session` is `tokio::join!`ed with
@@ -7499,6 +7501,86 @@ impl Agent {
                 .cross_affiliation_warnings(None)
                 .await,
         )
+    }
+
+    /// What separates one warning from the next in
+    /// [`Self::cross_affiliation_notice`]'s body.
+    ///
+    /// ⚠ **A wire detail, mirrored in `ui/desktop/src/utils/crossAffiliation.ts`
+    /// as `CROSS_AFFILIATION_NOTICE_SEPARATOR`.** A blank line rather than a
+    /// newline, because each warning is a full sentence naming two institutions
+    /// and a run-together pair reads as one confused claim about three.
+    pub const CROSS_AFFILIATION_NOTICE_SEPARATOR: &'static str = "\n\n";
+
+    /// DR-26's statement for the two surfaces that **warn and proceed** — the
+    /// bind (`POST /agent/update_provider`) and the user's own enable
+    /// (`POST /agent/add_extension`) — as one body they return to the person who
+    /// just acted. Empty means there is nothing to say.
+    ///
+    /// ⚠ **This exists because the ruling was log-only where it mattered.**
+    /// [`Self::cross_affiliation_warnings`] has been correct since Task 48 and
+    /// was read by nothing a user could see: `update_provider`'s `tracing::warn!`
+    /// loop and `/agent/add_extension`'s were the only callers, so a researcher
+    /// enabling another institution's connector from Settings was told nothing at
+    /// all. The gate was fine; the sentence never left the daemon.
+    ///
+    /// ⚠ **It removes flows the user has already accepted, and `model` is what
+    /// makes that safe.** A grant is keyed on (session, extension, model
+    /// affiliation), so the affiliation passed here has to be the one the caller
+    /// actually bound or attached against — never a fresh sample. Both callers
+    /// hold the authoritative value: `update_provider` holds the provider it just
+    /// created, `add_extension` the one it read once for both privacy axes. A
+    /// re-read here would be the read-then-read `CallCapability` exists to
+    /// collapse, and getting it wrong in the permissive direction means
+    /// suppressing a warning against the wrong institution's acceptance.
+    ///
+    /// ⚠ **Suppression is narrow, and the narrowness is the point.** A bind to a
+    /// *different* institution's model produces a different key, so no earlier
+    /// acceptance can cover it and the user is asked again — which is DR-26's
+    /// intent, not a redundancy. What is suppressed is only the case where the
+    /// user has already said yes to this exact triple at a dispatch, where
+    /// repeating the warning would state a boundary the daemon has already agreed
+    /// to let them cross.
+    ///
+    /// ⚠ **Fail-loud, not fail-quiet.** [`crate::privacy::grant::is_granted`]
+    /// answers `false` for an unreadable store, so a database hiccup makes this
+    /// warn where it might not have needed to. That is the only acceptable
+    /// direction: the opposite would silently withhold a privacy statement.
+    ///
+    /// ⚠ **The one window this does NOT close, written down rather than left to
+    /// be discovered.** The warnings come from
+    /// [`Self::cross_affiliation_warnings`], which samples the provider mutex
+    /// itself, while `model` was read by the caller earlier in its own handler.
+    /// A concurrent `update_provider` on the SAME chat between those two reads
+    /// would have this suppress a warning about the newly bound model on an
+    /// acceptance recorded for the old one — and that direction fails OPEN, so it
+    /// is not a nicety. Closing it needs the warnings and the affiliation to come
+    /// off one [`crate::privacy::CallCapability`], the way
+    /// [`Self::cross_affiliation_grant_subject`] does; that is a change inside
+    /// `ExtensionManager::cross_affiliation_warnings`, not here. What bounds it
+    /// meanwhile: both callers are user actions on one chat, which the GUI
+    /// serialises, and the residue is one unshown warning for a connector the
+    /// same user already accepted under a neighbouring model.
+    pub async fn cross_affiliation_notice(
+        &self,
+        session_id: &str,
+        model: Option<crate::privacy::ModelAffiliation>,
+    ) -> String {
+        let mut speak: Vec<String> = Vec::new();
+        for (extension, warning) in self.cross_affiliation_warnings().await {
+            if crate::privacy::grant::is_granted(
+                &self.config.session_manager,
+                session_id,
+                &extension,
+                model,
+            )
+            .await
+            {
+                continue;
+            }
+            speak.push(warning);
+        }
+        speak.join(Self::CROSS_AFFILIATION_NOTICE_SEPARATOR)
     }
 
     /// Task 49 (DR-26): everything the grant route needs about ONE extension,
@@ -11509,6 +11591,179 @@ mod gate_c_dispatch_tests {
             agent.cross_affiliation_warnings().await.len(),
             1,
             "re-tightening did not restore the statement"
+        );
+    }
+
+    /// Issue #56, the "warn the user" half of DR-26 that shipped as a log line:
+    /// [`Agent::cross_affiliation_notice`], the body the bind and enable routes
+    /// hand back to the person who just acted.
+    ///
+    /// The test above proves the daemon *knows* about the mismatch. This one
+    /// proves the sentence a surface can actually show exists, says both
+    /// institutions, and respects the acceptance the user already gave — the
+    /// three ways this can be wrong that a caller cannot check for itself.
+    ///
+    /// ⚠ **Step 1 is the control that keeps the rest honest.** Without it every
+    /// assertion below is satisfied by a composer that returns the empty string
+    /// whenever it is confused, which is the failure mode of a privacy statement
+    /// nobody sees.
+    #[tokio::test]
+    async fn the_bind_notice_names_both_institutions_and_goes_quiet_once_accepted() {
+        let ucsf = Some(crate::privacy::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        ));
+        let stanford = Some(crate::privacy::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("stanford"),
+        ));
+        let mayo = Some(crate::privacy::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("mayo"),
+        ));
+
+        // 1. The approved arrangement says nothing. A notice that spoke here
+        //    would train every user to dismiss it.
+        let (_dir, agent, session) = agent_with_the_private_extension(covered_by("ucsf")).await;
+        assert_eq!(
+            agent.cross_affiliation_notice(&session.id, ucsf).await,
+            "",
+            "a model covered by the connector's own institution crosses no boundary"
+        );
+
+        // 2. Bound to another institution's model: the notice is the statement,
+        //    and it names BOTH ends. Naming only one is the version of this a
+        //    user cannot act on.
+        agent
+            .update_provider(covered_by("stanford"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let notice = agent.cross_affiliation_notice(&session.id, stanford).await;
+        assert!(
+            notice.contains(PRIVATE_EXTENSION),
+            "the notice must name the connector the user has to decide about: {notice}"
+        );
+        assert!(
+            notice.contains("UCSF (ucsf)"),
+            "the institution that owns the connector's data: {notice}"
+        );
+        assert!(
+            notice.contains("stanford"),
+            "the institution whose agreements cover the bound model: {notice}"
+        );
+
+        // 3. The user accepts that exact flow at a dispatch. The bind surface
+        //    must then stop repeating a boundary the daemon has agreed to let
+        //    them cross — otherwise Settings and the model picker nag about a
+        //    decision that has already been made.
+        crate::privacy::grant::record_for_test(
+            &agent.config.session_manager,
+            &session.id,
+            PRIVATE_EXTENSION,
+            stanford,
+        )
+        .await
+        .expect("the user's acceptance is recorded against this chat");
+        assert_eq!(
+            agent.cross_affiliation_notice(&session.id, stanford).await,
+            "",
+            "the notice repeated a flow the user has already accepted"
+        );
+
+        // 4. …and a THIRD institution is a different flow, so the acceptance
+        //    does not carry over. Dropping this axis would turn one yes into a
+        //    standing permission that survives a model switch nobody reviewed —
+        //    the same axis step 5 of the end-to-end test guards at the dispatch.
+        agent
+            .update_provider(covered_by("mayo"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let after_switch = agent.cross_affiliation_notice(&session.id, mayo).await;
+        assert!(
+            after_switch.contains("mayo"),
+            "an acceptance for one institution silenced the warning for another: \
+             {after_switch:?}"
+        );
+    }
+
+    /// Issue #56: the finding this notice exists to fix was **a correct query
+    /// with no user-facing caller**, so the composer is worthless without one and
+    /// this is the assertion that says so.
+    ///
+    /// ⚠ **It reads the daemon's real source, not a copy.** The two surfaces the
+    /// ruling names are HTTP routes in another crate, which no unit test in this
+    /// crate can drive; what can be checked mechanically is that both of them
+    /// still ask. Deleting either call — the exact regression, since the routes
+    /// worked for years while only logging — turns this red.
+    #[test]
+    fn the_notice_is_read_by_both_warn_and_proceed_routes() {
+        let routes = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("crates/biorouter-server/src/routes/agent.rs");
+        let src = std::fs::read_to_string(&routes).unwrap_or_else(|e| {
+            panic!(
+                "the routes that surface DR-26's bind statement are missing at {} ({e})",
+                routes.display()
+            )
+        });
+        // Assembled, so this assertion is not itself the match a copy of this
+        // test in the routes file would find.
+        let needle = concat!("cross_affiliation", "_notice(");
+        let callers = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(needle))
+            .count();
+        assert_eq!(
+            callers, 2,
+            "`Agent::cross_affiliation_notice` is read by {callers} routes, not by both \
+             warn-and-proceed surfaces. DR-26 requires the user be told at the bind \
+             (`POST /agent/update_provider`) AND at their own enable \
+             (`POST /agent/add_extension`); a composer with no caller is exactly the \
+             defect this method was added to fix, and it fails silently — the daemon \
+             keeps logging and the user keeps seeing nothing."
+        );
+    }
+
+    /// The wire detail neither side can check alone: the daemon joins the
+    /// warnings and the renderer splits them, and if the two ever spell the
+    /// separator differently **nothing fails** — two statements about two
+    /// different pairs of institutions render as one run-together paragraph, or
+    /// one statement is silently split in half.
+    ///
+    /// Modelled on `privacy::grant::tests::
+    /// the_scope_copy_the_user_reads_is_the_one_the_daemon_records`, which exists
+    /// for the same class of silent drift, and it has to live on the Rust side
+    /// for the same reason: the renderer's tests cannot see this constant.
+    #[test]
+    fn the_renderer_splits_the_notice_the_daemon_joins() {
+        assert_eq!(
+            Agent::CROSS_AFFILIATION_NOTICE_SEPARATOR,
+            "\n\n",
+            "the daemon changed how it joins warnings without the renderer being told"
+        );
+        let mirror = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("ui/desktop/src/utils/crossAffiliationNotice.ts");
+        let src = std::fs::read_to_string(&mirror).unwrap_or_else(|e| {
+            panic!(
+                "the renderer's notice module is missing at {} ({e}). Without it the bind and \
+                 enable surfaces are back to logging a warning nobody sees, which is the whole \
+                 of this fix.",
+                mirror.display()
+            )
+        });
+        // The escaped SPELLING, because the value itself is two newlines and a
+        // search for that matches every blank line in the file.
+        assert!(
+            src.contains(r"CROSS_AFFILIATION_NOTICE_SEPARATOR = '\n\n'"),
+            "the renderer no longer splits on the separator the daemon joins with, so a \
+             multi-warning notice renders as one confused claim. Re-mirror \
+             `Agent::CROSS_AFFILIATION_NOTICE_SEPARATOR` into {}.",
+            mirror.display()
         );
     }
 
