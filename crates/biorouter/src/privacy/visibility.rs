@@ -17,11 +17,33 @@
 //! public sessions. A public parent cannot spawn a private child at all
 //! (Task 23), so it can never mint a private-capability agent to read through.
 //!
-//! ⚠ **Nothing in production calls these yet, and that is a recorded gap rather
-//! than an oversight.** Design §7 rules `workspace_list` and
-//! `workspace_read_conversation`, and neither handler consults `privacy_tier`
-//! today; see the Task 20 note in `docs/security/privacy-tiers-execution-plan.md`.
-//! The predicate ships first so that wiring is one call on data already in hand.
+//! ⚠ **These predicates shipped with ZERO production callers, and that was the
+//! release blocker.** Task 21 landed the matrix; Task 20's gate recorded that no
+//! task wired it; and `workspace_read_conversation` went on returning any named
+//! session's whole transcript to a public-capability caller after a
+//! `session_type == Hidden` check and nothing else. A code review passes that,
+//! because the unit under review is correct and nothing calls it.
+//!
+//! They are wired now — `crates/biorouter/src/agents/workspace_extension.rs`,
+//! four handlers: `workspace_read_conversation`, `workspace_list`,
+//! `workspace_send_prompt` and `workspace_open` — and
+//! [`tests::the_matrix_has_production_callers`] is the assertion that keeps them
+//! wired. It exists specifically because "the mechanism is built, the entry point
+//! is never called" is the failure this campaign has now shipped four times, and
+//! every behavioural test in the world passes while it is true.
+//!
+//! **Still unwired, deliberately, and each for a stated reason** — §7 rules all
+//! three ✗ in column C, so these are known gaps rather than decisions:
+//!
+//! * `workspace_watch` — its ids are not necessarily session rows. A watched id
+//!   may be an in-process `BackgroundSubagent` handle with no row in the store
+//!   (`session_liveness`), so a store-resolved tier gate would refuse every
+//!   headless background-child watch. It returns a turn's end *reason*, not the
+//!   conversation.
+//! * `workspace_close` and `workspace_set_tools` — writes that return no content.
+//!   §7's write row is `may_write`, i.e. VIS **and** lineage, and this change
+//!   implements no lineage anywhere; wiring half of it here would make the other
+//!   half look done.
 
 use super::{visible_to, ProviderTier, SessionClassification};
 
@@ -149,6 +171,66 @@ mod tests {
         assert_eq!(lineage_of(Some("me"), "me"), Lineage::Child);
         assert_eq!(lineage_of(Some("my-child"), "me"), Lineage::Other);
         assert_eq!(lineage_of(None, "me"), Lineage::Other);
+    }
+
+    /// **The assertion that would have caught the release blocker: these
+    /// predicates have production callers.**
+    ///
+    /// The bug this replaces was an *absence*. Every unit in this module was
+    /// correct, every test here passed, and `workspace_read_conversation` handed
+    /// a public-capability caller a private session's whole transcript — because
+    /// nothing called any of it. No behavioural test can be written against a
+    /// gate that does not exist, which is exactly why the omission survived a
+    /// code review; the only thing that catches it is asking whether the wiring
+    /// is there at all.
+    ///
+    /// So this is a source scan, written to fail the two ways a source scan
+    /// usually lies:
+    ///
+    /// * it scans only the **production** half of the file, cut at the
+    ///   `#[cfg(test)]` module — otherwise the workspace tests' own fixtures
+    ///   would satisfy it. The negative control below is what proves the cut
+    ///   landed where it claims; without it, a `find` that returned 0 or the
+    ///   end of the file would make every assertion here vacuous, which is how
+    ///   this campaign has already shipped a grep gate that passed by accident;
+    /// * it names the file that ships the tool surface, so moving the wiring
+    ///   into a test helper, a doc comment or another crate does not keep it
+    ///   green.
+    ///
+    /// It deliberately does **not** assert *where* in that file the calls are.
+    /// Placement is what the behavioural tests in
+    /// `agents::workspace_extension::tests` hold (a public caller is refused on
+    /// each wired path); this holds the thing they cannot see, which is that
+    /// deleting the gate leaves the predicate with no consumer again.
+    #[test]
+    fn the_matrix_has_production_callers() {
+        const WORKSPACE: &str = include_str!("../agents/workspace_extension.rs");
+        let cut = WORKSPACE
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("workspace_extension.rs no longer has a `#[cfg(test)] mod tests`");
+        let (production, tests) = WORKSPACE.split_at(cut);
+
+        // The control, FIRST. `for_test_restricted` is spelled only by tests —
+        // production capabilities come from `CallCapability::sample` or
+        // `public_enforced` — so it is the marker that proves the split is real
+        // in BOTH directions.
+        assert!(
+            !production.contains("for_test_restricted"),
+            "the cut did not remove the test module, so the assertions below prove nothing"
+        );
+        assert!(
+            tests.contains("for_test_restricted"),
+            "the cut removed more than the test module"
+        );
+
+        for predicate in ["may_read(", "appears_in_list("] {
+            assert!(
+                production.contains(predicate),
+                "`{predicate}` has no production caller in workspace_extension.rs. This is the \
+                 release blocker recurring: the §7 matrix exists, the tool handlers do not ask \
+                 it, and every unit test in this module still passes."
+            );
+        }
     }
 
     #[test]

@@ -42,18 +42,24 @@
 //!   at a time; the bigger one, which returns them all at once, is still there.
 //!   Closing it is a listing-route decision (what a caller with no proof may be
 //!   shown), not a reach decision, and it is not made here;
-//! * **`workspace_read_conversation` is still open, and it is the same capability
-//!   this module closes on `GET /sessions/{id}`.** That MCP tool
-//!   (`crates/biorouter/src/agents/workspace_extension.rs`) loads any named
-//!   session *with messages* and checks only `session_type == Hidden` — no tier
-//!   check — so a model reads a private transcript through a tool call, needing
-//!   no daemon secret at all. ⚠ It is **not fixable with this instrument**: a
-//!   tool call is by definition the model, so it can never carry a proof of the
-//!   user, and refusing it for want of one would refuse it always. It needs §7's
-//!   `may_read`, which [`biorouter::privacy::visibility`] already ships and
-//!   nothing calls yet. So a reader who concludes from this module that private
-//!   transcripts are now protected is wrong, and this bullet is here to stop them
-//!   concluding it;
+//! * **`workspace_read_conversation` was open too, and it is CLOSED — but by a
+//!   different instrument, and a reader must not credit this module for it.**
+//!   That MCP tool (`crates/biorouter/src/agents/workspace_extension.rs`) used
+//!   to load any named session *with messages* and check only
+//!   `session_type == Hidden`, so a model read a private transcript through a
+//!   tool call, needing no daemon secret at all. It was **not fixable with this
+//!   instrument**: a tool call is by definition the model, so it can never carry
+//!   a proof of the user, and refusing it for want of one would refuse it
+//!   always. It is fixed with §7's `may_read`, which
+//!   [`biorouter::privacy::visibility`] ships and which
+//!   `workspace_read_conversation`, `workspace_list`, `workspace_send_prompt`
+//!   and `workspace_open` now call — comparing the CALLER'S CAPABILITY with the
+//!   target's classification instead of asking for a human. Its refusal answers
+//!   "private" and "no such conversation" in one sentence, for the same reason
+//!   [`SESSION_OUT_OF_REACH`] does. ⚠ Three workspace tools §7 also rules ✗ in
+//!   that column are still ungated — `workspace_watch` (its ids need not be
+//!   session rows), `workspace_close` and `workspace_set_tools` (writes, which
+//!   need `may_write`'s lineage half as well);
 //! * and the daemon still has no principal, which is the actual subject of #47.
 //!
 //! # The blast radius is wider than "private chats"

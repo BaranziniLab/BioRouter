@@ -586,9 +586,83 @@ impl WorkspaceClient {
         ]
     }
 
+    /// **Design §7 column C, as one call**: may a caller admitted on this
+    /// capability reach the conversation it just named at all?
+    ///
+    /// Issue #56. Every `workspace_*` handler that reads another conversation's
+    /// content asks this *first*. The predicate is
+    /// [`privacy::visibility::may_read`] — not a hand-rolled
+    /// comparison of the stored tier against the caller's, which is how one
+    /// table becomes seven slightly-different tables — and which the execution
+    /// plan's Task 21 Step 5 gate greps the tree for.
+    ///
+    /// Three properties, each load-bearing:
+    ///
+    /// * **The master opt-out is read off the same sample that carried the
+    ///   tier** (`cap.enforced()`), never re-derived here. This runs inside the
+    ///   driven future, past the dispatch semaphore, where the provider may
+    ///   already be a different one — the whole reason [`CallCapability`]
+    ///   exists. (The toggle's own function name is deliberately not spelled in
+    ///   this file: a Step 5 gate counts that token tree-wide and must see
+    ///   exactly one, inside `CallCapability`.)
+    ///
+    /// * **A caller that may read a private conversation never touches the
+    ///   store.** That is not an optimisation. It is what leaves the handler's
+    ///   own honest errors — "no such session" — intact for the caller entitled
+    ///   to them, so that the one sentence below is ambiguous *only* for the
+    ///   caller who must not tell the two apart.
+    ///
+    /// * **`Err` and "could not read the row" are the same answer.** §14.4 /
+    ///   R10, and the same rule `routes::session_reach` states for HTTP: an
+    ///   unauthorized caller must not learn from the refusal whether the
+    ///   conversation exists. §7 already OMITS private rows from
+    ///   `workspace_list` because a session's existence and its LLM-generated
+    ///   title are content; a refusal that distinguished them would hand those
+    ///   rows straight back, one id at a time.
+    ///
+    /// The row is read **metadata-only** (`with_messages: false`) for the reason
+    /// [`session_reach::target_tier`] gives: resolving the tier must never
+    /// itself be the way to load the transcript the gate is about to refuse.
+    ///
+    /// [`privacy::visibility::may_read`]: crate::privacy::visibility::may_read
+    /// [`CallCapability`]: crate::privacy::CallCapability
+    /// [`session_reach::target_tier`]: https://github.com/BaranziniLab/biorouter
+    async fn refuse_unless_visible(
+        &self,
+        cap: crate::privacy::CallCapability,
+        target_session_id: &str,
+    ) -> Result<(), String> {
+        if !cap.enforced() {
+            return Ok(());
+        }
+        // Asked THROUGH the matrix rather than as `cap.tier().is_private()`, so
+        // this short-circuit can never disagree with the decision below it.
+        if crate::privacy::visibility::may_read(
+            cap.tier(),
+            crate::privacy::SessionClassification::Private,
+        ) {
+            return Ok(());
+        }
+        match self
+            .context
+            .session_manager
+            .get_session(target_session_id, false)
+            .await
+        {
+            Ok(session)
+                if crate::privacy::visibility::may_read(cap.tier(), session.privacy_tier) =>
+            {
+                Ok(())
+            }
+            // Private, and unreadable, and absent — one sentence for all three.
+            _ => Err(crate::privacy::refusal::workspace_out_of_reach()),
+        }
+    }
+
     async fn handle_list(
         &self,
         _caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceListParams = match arguments {
@@ -666,6 +740,29 @@ impl WorkspaceClient {
                 if scanned > MAX_SCAN_ROWS {
                     scan_truncated = true;
                     break 'scan;
+                }
+                // Issue #56, design §7 row 1: a private conversation is **∅ —
+                // omitted** from a public caller's list, not redacted. A row
+                // carries the session's `name`, which in this product is
+                // LLM-generated from the conversation (§11.4: "the one that
+                // leaks most per byte"), and its `working_dir`, which routinely
+                // names a cohort or a study; `extensions` re-exposes by name the
+                // very private extensions Gate E hides from this model's own
+                // tool list. Omission is also what removes the temptation to
+                // then call `workspace_read_conversation` on the id.
+                //
+                // ⚠ **Before `matched += 1`, deliberately.** An omitted row must
+                // not be counted in `total_matching` or flip `has_more`, or the
+                // paging metadata becomes exactly the existence oracle the
+                // omission exists to close — "page 2 of 3, showing 0 rows" says
+                // there are private conversations and how many.
+                //
+                // No extra query: `SessionSummary.privacy_tier` was added by
+                // this issue for the sidebar badge and is already in hand.
+                if cap.enforced()
+                    && !crate::privacy::visibility::appears_in_list(cap.tier(), s.privacy_tier)
+                {
+                    continue;
                 }
                 let running = services
                     .as_ref()
@@ -805,11 +902,25 @@ impl WorkspaceClient {
     async fn handle_read_conversation(
         &self,
         caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceReadParams = parse_args(arguments)?;
         let view = args.view.as_deref().unwrap_or("transcript");
         let max_chars = args.max_chars.unwrap_or(20_000).min(200_000);
+
+        // ⚠ **Issue #56, design §7 row 2 — the release blocker.** This handler
+        // used to check `session_type == Hidden` and nothing else, so a chat
+        // running on a PUBLIC model read any named private conversation's whole
+        // transcript through a tool call. Not through the filesystem: through
+        // BioRouter's own API, which is precisely what the tier gates exist to
+        // stop.
+        //
+        // FIRST, and before the `with_messages: true` load below, so resolving
+        // the tier is not itself the way to load the transcript being refused —
+        // the ordering rule `routes::session_reach` states for the five gated
+        // HTTP routes, with a tool call as its subject.
+        self.refuse_unless_visible(cap, &args.session_id).await?;
 
         let session = self
             .context
@@ -821,6 +932,13 @@ impl WorkspaceClient {
         // §5 "no covert reads": Hidden sessions honor the same visibility rules
         // as the session list. The read itself is auditable — it IS a tool call
         // in the caller's transcript.
+        //
+        // ⚠ **A different rule, not a substitute for the one above, and it stays
+        // below it.** Hidden is a session TYPE (a machine-internal conversation);
+        // private is a CLASSIFICATION. A private-capability caller is still
+        // refused a hidden session here, and a public caller naming a private
+        // *hidden* one is refused above — so it never learns that a hidden
+        // session with that id exists.
         if session.session_type == crate::session::session_manager::SessionType::Hidden {
             return Err("this session is hidden and cannot be read".to_string());
         }
@@ -992,6 +1110,7 @@ impl WorkspaceClient {
     async fn handle_open(
         &self,
         caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceOpenParams = parse_args(arguments)?;
@@ -1019,6 +1138,18 @@ impl WorkspaceClient {
                 return Err("pass session_id (open existing) or new (start fresh)".into());
             }
             (Some(session_id), None) => {
+                // Issue #56, design §7 row 4: `workspace_open` on an EXISTING
+                // session is classed a **read** (✗ at C=Pub, T=Priv) — it puts
+                // that conversation in front of the user, and its GUI answer
+                // reports whether the id was real.
+                //
+                // ⚠ **Before the existence check below, not after.** "No such
+                // session" and "that one is private" have to be one answer, and
+                // this arm is the reason: for a caller the gate refuses, the
+                // check below is never reached, so the only sentence it can ever
+                // produce is the ambiguous one. (For a caller entitled to the
+                // difference the gate is inert and the honest error survives.)
+                self.refuse_unless_visible(cap, &session_id).await?;
                 // Validate it exists so the GUI never gets a dangling frame.
                 self.context
                     .session_manager
@@ -1279,6 +1410,7 @@ impl WorkspaceClient {
     async fn handle_send_prompt(
         &self,
         caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceSendPromptParams = parse_args(arguments)?;
@@ -1290,6 +1422,22 @@ impl WorkspaceClient {
         if args.text.trim().is_empty() {
             return Err("text must not be empty".into());
         }
+        // Issue #56, design §7 row 5 (`workspace_send_prompt` = ✗ at C=Pub,
+        // T=Priv, under every lineage). It is on this list as a **reader** as
+        // well as a writer, and that is the half easy to miss: `mode:"turn"`
+        // with `wait:"final_message"` parks on the target's turn and returns
+        // its final assistant message verbatim — a private conversation's
+        // content, arriving through a tool whose name says "send".
+        //
+        // Placed after the two pure argument checks above (neither touches the
+        // store, and neither can say anything about the target) and before
+        // `caller_provenance`, which is this handler's first store read.
+        //
+        // ⚠ This enforces VIS only. §7's write row is `may_write` — VIS **and**
+        // lineage ∈ {self, child} — and the lineage half is not implemented
+        // anywhere in this change, so a public caller may still steer a public
+        // sibling it did not spawn (column B, `✗ R6`).
+        self.refuse_unless_visible(cap, &args.session_id).await?;
         let provenance = self.caller_provenance(caller_session_id).await;
         let services = workspace_services::get();
 
@@ -2538,14 +2686,22 @@ impl McpClientTrait for WorkspaceClient {
         _cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let caller = &meta.session_id;
+        // Issue #56 §7. The capability this call was ADMITTED on, carried from
+        // `Agent::dispatch_tool_call` — never re-derived here. `Copy`, so it
+        // threads into each handler without a clone; see `CallCapability`'s own
+        // doc for why a second read at this program point would be a race rather
+        // than a refresh.
+        let cap = meta.capability;
         let content = match name {
-            "workspace_list" => self.handle_list(caller, arguments).await,
-            "workspace_read_conversation" => self.handle_read_conversation(caller, arguments).await,
-            "workspace_send_prompt" => self.handle_send_prompt(caller, arguments).await,
+            "workspace_list" => self.handle_list(caller, cap, arguments).await,
+            "workspace_read_conversation" => {
+                self.handle_read_conversation(caller, cap, arguments).await
+            }
+            "workspace_send_prompt" => self.handle_send_prompt(caller, cap, arguments).await,
             "workspace_set_tools" => self.handle_set_tools(caller, arguments).await,
             "workspace_close" => self.handle_close(caller, arguments).await,
             "workspace_watch" => self.handle_watch(caller, arguments).await,
-            "workspace_open" => self.handle_open(caller, arguments).await,
+            "workspace_open" => self.handle_open(caller, cap, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
             // Reachable only if that interception is ever removed.
@@ -3481,6 +3637,516 @@ mod tests {
         assert!(ok.contains("please compute"), "{ok}");
     }
 
+    // ------------------------------------------------------------------
+    // Issue #56, design §7 column C — the release blocker.
+    //
+    // A PUBLIC-capability caller reached a PRIVATE conversation through
+    // these tools. `privacy::visibility` shipped the matrix that rules it
+    // and no handler called it; the only check here was
+    // `session_type == Hidden`, which is a different rule about a
+    // different thing. The tests below drive each wired path with a real
+    // private row in a real store.
+    // ------------------------------------------------------------------
+
+    /// A string that appears in the private conversation and nowhere else, so
+    /// "the transcript came back" is an assertion rather than an impression.
+    ///
+    /// Unmistakably a fixture. These tests run against a throwaway temp
+    /// database (`client()`), not the developer's own, but a marker shaped like
+    /// a record would still be the wrong thing to teach.
+    const PRIVATE_MARKER: &str = "workspace-tier-fixture-not-real-data";
+
+    struct TierFixture {
+        client: WorkspaceClient,
+        /// Classified `private` through the store's own monotone ratchet.
+        private_id: String,
+        /// Classified `public`, with its own marker, so every refusal below can
+        /// be shown to be about the TIER rather than about a handler that
+        /// refuses whatever it is given.
+        public_id: String,
+        /// A syntactically ordinary id that names no row in this store.
+        absent_id: String,
+    }
+
+    /// One private conversation, one public one, and an id that does not exist.
+    ///
+    /// The private row is raised the way a real one gets there — through
+    /// `raise_privacy`, the monotone ratchet the storage layer owns — rather
+    /// than by writing the column, so what these tests refuse is the same state
+    /// a user's own chat reaches.
+    async fn tier_fixture() -> TierFixture {
+        use crate::conversation::message::Message;
+        use crate::session::session_manager::SessionType;
+        let c = client();
+        let sm = c.context.session_manager.clone();
+
+        let private = sm
+            .create_session(std::env::temp_dir(), "priv".into(), SessionType::User)
+            .await
+            .unwrap();
+        let public = sm
+            .create_session(std::env::temp_dir(), "pub".into(), SessionType::User)
+            .await
+            .unwrap();
+        for id in [&private.id, &public.id] {
+            let mut m = Message::user().with_text(PRIVATE_MARKER);
+            sm.add_message_adopting_uid(id, &mut m).await.unwrap();
+        }
+        sm.update(&private.id)
+            .raise_privacy(
+                crate::privacy::SessionClassification::Private,
+                "test:workspace-tier-fixture",
+            )
+            .apply()
+            .await
+            .unwrap();
+        // The ratchet really fired. Without this the whole file could pass
+        // against a fixture that is merely public — the one way these tests
+        // could lie in the dangerous direction.
+        assert_eq!(
+            sm.get_session(&private.id, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            crate::privacy::SessionClassification::Private,
+            "the fixture is not private, so nothing below is testing the gate"
+        );
+
+        TierFixture {
+            client: c,
+            private_id: private.id,
+            public_id: public.id,
+            absent_id: unique_id("no-such-conversation"),
+        }
+    }
+
+    fn meta_for(cap: crate::privacy::CallCapability) -> crate::agents::mcp_client::McpMeta {
+        crate::agents::mcp_client::McpMeta::new("tier-caller", cap)
+    }
+
+    /// A chat running on a public model, with the feature on. The capability
+    /// `test_meta()` already carries; named here so each assertion says which
+    /// side of the matrix it is on.
+    fn public_caller() -> crate::agents::mcp_client::McpMeta {
+        meta_for(crate::privacy::CallCapability::for_test(
+            crate::privacy::ProviderTier::Public,
+            true,
+        ))
+    }
+
+    /// A chat running on a model hosted inside the institution.
+    fn private_caller() -> crate::agents::mcp_client::McpMeta {
+        meta_for(crate::privacy::CallCapability::for_test(
+            crate::privacy::ProviderTier::Private,
+            true,
+        ))
+    }
+
+    /// A public chat on a machine where the user turned the whole feature off
+    /// (DR-15).
+    fn opted_out_caller() -> crate::agents::mcp_client::McpMeta {
+        meta_for(crate::privacy::CallCapability::for_test(
+            crate::privacy::ProviderTier::Public,
+            false,
+        ))
+    }
+
+    async fn call_as(
+        c: &WorkspaceClient,
+        tool: &str,
+        args: serde_json::Value,
+        meta: crate::agents::mcp_client::McpMeta,
+    ) -> CallToolResult {
+        let args: rmcp::model::JsonObject = serde_json::from_value(args).unwrap();
+        c.call_tool(tool, Some(args), meta, CancellationToken::new())
+            .await
+            .unwrap()
+    }
+
+    /// **The blocker itself, as a named regression test.** A chat on a public
+    /// model must not read a private conversation's transcript through
+    /// `workspace_read_conversation`.
+    ///
+    /// Every view, because refusing only the default would leave `tool_calls` —
+    /// the projection that shows exactly what that agent DID — as an unguarded
+    /// back door, and `summary` carries the working directory besides.
+    ///
+    /// Both directions in one test on purpose: a private caller reads the very
+    /// same row, so the refusal is provably about the tier rather than about a
+    /// handler that fails on everything, or about a fixture nobody could read.
+    #[tokio::test]
+    async fn a_public_caller_cannot_read_a_private_transcript_through_the_workspace_tool() {
+        let f = tier_fixture().await;
+        for view in ["transcript", "tool_calls", "summary", "spawn_context"] {
+            let refused = call_as(
+                &f.client,
+                "workspace_read_conversation",
+                serde_json::json!({ "session_id": f.private_id, "view": view }),
+                public_caller(),
+            )
+            .await;
+            let text = text_of(&refused);
+            assert_eq!(refused.is_error, Some(true), "view {view} was not refused");
+            assert!(
+                !text.contains(PRIVATE_MARKER),
+                "view {view} returned the private conversation: {text}"
+            );
+            assert!(
+                text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+                "view {view} was refused for some other reason: {text}"
+            );
+            // §14.4 / R10: the refusal names nothing about the conversation.
+            assert!(
+                !text.contains(&f.private_id),
+                "view {view} leaked the id: {text}"
+            );
+        }
+
+        // …and the same row, to a caller entitled to it.
+        let allowed = call_as(
+            &f.client,
+            "workspace_read_conversation",
+            serde_json::json!({ "session_id": f.private_id }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&allowed);
+        assert_ne!(allowed.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(PRIVATE_MARKER),
+            "a private caller could not read a private conversation: {text}"
+        );
+
+        // …and a PUBLIC conversation is untouched by the gate, which is the half
+        // a barrier written only for its refusal loses.
+        let public = call_as(
+            &f.client,
+            "workspace_read_conversation",
+            serde_json::json!({ "session_id": f.public_id }),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&public);
+        assert_ne!(public.is_error, Some(true), "{text}");
+        assert!(text.contains(PRIVATE_MARKER), "{text}");
+    }
+
+    /// DR-15's master opt-out reaches this gate too: with tiers off, nothing is
+    /// refused.
+    ///
+    /// Read off the capability's own sample rather than the process-global
+    /// toggle, so this asserts the conjunct rather than a global some other test
+    /// in this binary might have moved.
+    #[tokio::test]
+    async fn the_master_opt_out_turns_the_workspace_tier_gate_off() {
+        let f = tier_fixture().await;
+        let result = call_as(
+            &f.client,
+            "workspace_read_conversation",
+            serde_json::json!({ "session_id": f.private_id }),
+            opted_out_caller(),
+        )
+        .await;
+        let text = text_of(&result);
+        assert_ne!(result.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(PRIVATE_MARKER),
+            "the opt-out did not reach the workspace gate: {text}"
+        );
+    }
+
+    /// §7 row 1: a private conversation is **omitted** from a public caller's
+    /// `workspace_list`, not redacted — its `name` is LLM-generated from the
+    /// conversation and its `working_dir` routinely names a cohort.
+    ///
+    /// The paging metadata is asserted as well as the rows. `total_matching` is
+    /// what a model pages against, so a filter applied after the count would
+    /// leave "3 matched, 2 returned, has_more" — an existence oracle with a
+    /// number attached, which is exactly what omission is for.
+    #[tokio::test]
+    async fn a_private_conversation_is_omitted_from_a_public_callers_list() {
+        let f = tier_fixture().await;
+        let rows = |result: &CallToolResult| -> serde_json::Value {
+            serde_json::from_str(&text_of(result)).expect("workspace_list returns JSON")
+        };
+
+        let public = rows(
+            &call_as(
+                &f.client,
+                "workspace_list",
+                serde_json::json!({ "scope": "all" }),
+                public_caller(),
+            )
+            .await,
+        );
+        let ids = sorted_ids(&public);
+        assert!(
+            ids.contains(&f.public_id),
+            "the public conversation vanished too, so this proves nothing: {ids:?}"
+        );
+        assert!(
+            !ids.contains(&f.private_id),
+            "a public caller listed a private conversation: {ids:?}"
+        );
+        assert_eq!(
+            public["total_matching"].as_u64().unwrap(),
+            ids.len() as u64,
+            "the omitted row was still counted, which is an existence oracle: {public}"
+        );
+        // The title is content, and it is the reason omission was chosen over
+        // redaction — so assert it never appears anywhere in the payload, not
+        // merely that the id is absent from the row list.
+        assert!(
+            !public.to_string().contains("\"priv\""),
+            "the private conversation's title reached a public caller: {public}"
+        );
+
+        // A private caller sees both, so the omission is the tier and not a
+        // scope filter that happens to drop the row.
+        let private = rows(
+            &call_as(
+                &f.client,
+                "workspace_list",
+                serde_json::json!({ "scope": "all" }),
+                private_caller(),
+            )
+            .await,
+        );
+        let ids = sorted_ids(&private);
+        assert!(ids.contains(&f.private_id), "{ids:?}");
+        assert!(ids.contains(&f.public_id), "{ids:?}");
+    }
+
+    /// §7 row 5. `workspace_send_prompt` is on the gated list as a **reader** as
+    /// well as a writer: `mode:"turn"` with `wait:"final_message"` returns the
+    /// target's final assistant message verbatim.
+    ///
+    /// Driven through `mode:"note"`, which needs no daemon — and which makes the
+    /// refusal checkable as an ABSENCE OF EFFECT rather than as a sentence: the
+    /// note must not be in the conversation afterwards, read back by a caller
+    /// that is allowed to look.
+    #[tokio::test]
+    async fn a_public_caller_cannot_inject_into_a_private_conversation() {
+        let f = tier_fixture().await;
+        const INJECTED: &str = "workspace-tier-injection-marker";
+
+        let refused = call_as(
+            &f.client,
+            "workspace_send_prompt",
+            serde_json::json!({
+                "session_id": f.private_id, "text": INJECTED, "mode": "note"
+            }),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "refused for some other reason: {text}"
+        );
+
+        // Nothing was written. A refusal that reported failure after appending
+        // would pass every assertion above.
+        let after = text_of(
+            &call_as(
+                &f.client,
+                "workspace_read_conversation",
+                serde_json::json!({ "session_id": f.private_id }),
+                private_caller(),
+            )
+            .await,
+        );
+        assert!(
+            !after.contains(INJECTED),
+            "the refused injection landed in the private conversation anyway: {after}"
+        );
+
+        // The same call into a PUBLIC conversation is accepted, so the refusal
+        // is the tier rather than the mode.
+        let ok = call_as(
+            &f.client,
+            "workspace_send_prompt",
+            serde_json::json!({
+                "session_id": f.public_id, "text": INJECTED, "mode": "note"
+            }),
+            public_caller(),
+        )
+        .await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+    }
+
+    /// §7 row 4: opening an existing conversation is a read.
+    ///
+    /// `workspace_services` is pinned to "no daemon" because the accepted arm
+    /// below would otherwise talk to whatever fake another test in this binary
+    /// installed.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_public_caller_cannot_open_a_private_conversation() {
+        crate::workspace_services::set_for_tests(None);
+        let f = tier_fixture().await;
+
+        let refused = call_as(
+            &f.client,
+            "workspace_open",
+            serde_json::json!({ "session_id": f.private_id }),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "refused for some other reason: {text}"
+        );
+
+        let ok = call_as(
+            &f.client,
+            "workspace_open",
+            serde_json::json!({ "session_id": f.public_id }),
+            public_caller(),
+        )
+        .await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **The refusal is not a classification oracle.** §14.4 / R10, and the
+    /// reason §7 omits private rows from the list rather than redacting them: a
+    /// model that could tell "private" from "does not exist" would rebuild the
+    /// omitted list one id at a time.
+    ///
+    /// Asserted on the whole result — `is_error` and every byte of the text —
+    /// because either half alone is an oracle: two different statuses enumerate
+    /// private conversations just as well as two different sentences do.
+    ///
+    /// The other direction is what keeps this from being satisfied by a handler
+    /// that refuses everything: a caller entitled to the difference is told it.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_refusal_cannot_tell_a_private_conversation_from_one_that_does_not_exist() {
+        crate::workspace_services::set_for_tests(None);
+        let f = tier_fixture().await;
+
+        for (tool, extra) in [
+            ("workspace_read_conversation", serde_json::json!({})),
+            (
+                "workspace_send_prompt",
+                serde_json::json!({ "text": "hello", "mode": "note" }),
+            ),
+            ("workspace_open", serde_json::json!({})),
+        ] {
+            let args = |id: &str| {
+                let mut a = extra.clone();
+                a["session_id"] = serde_json::json!(id);
+                a
+            };
+            let private = call_as(&f.client, tool, args(&f.private_id), public_caller()).await;
+            let absent = call_as(&f.client, tool, args(&f.absent_id), public_caller()).await;
+            assert_eq!(
+                (private.is_error, text_of(&private)),
+                (absent.is_error, text_of(&absent)),
+                "{tool} tells a public caller whether the conversation exists"
+            );
+
+            // …and a private caller IS told, which is what makes the equality
+            // above a property of the refusal rather than of a tool that answers
+            // the same thing to everyone.
+            let private = call_as(&f.client, tool, args(&f.private_id), private_caller()).await;
+            let absent = call_as(&f.client, tool, args(&f.absent_id), private_caller()).await;
+            assert_ne!(
+                (private.is_error, text_of(&private)),
+                (absent.is_error, text_of(&absent)),
+                "{tool} refuses a caller that is entitled to the difference"
+            );
+        }
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **The Hidden rule survives, and it is a different rule.** §5's "no covert
+    /// reads" is about a session TYPE — a machine-internal conversation — while
+    /// the tier gate is about a CLASSIFICATION. Neither substitutes for the
+    /// other, and the way that is asserted is that a hidden conversation is
+    /// refused to a **private** caller, whom the tier gate lets straight through.
+    ///
+    /// The second half is the ordering: a hidden conversation that is also
+    /// private must refuse a public caller with the *tier* sentence, so it never
+    /// learns that a hidden session with that id exists.
+    #[tokio::test]
+    async fn a_hidden_conversation_is_refused_whatever_the_callers_tier() {
+        use crate::conversation::message::Message;
+        use crate::session::session_manager::SessionType;
+        let c = client();
+        let sm = c.context.session_manager.clone();
+        let hidden = sm
+            .create_session(std::env::temp_dir(), "h".into(), SessionType::Hidden)
+            .await
+            .unwrap();
+        let mut m = Message::user().with_text(PRIVATE_MARKER);
+        sm.add_message_adopting_uid(&hidden.id, &mut m)
+            .await
+            .unwrap();
+
+        for meta in [public_caller(), private_caller(), opted_out_caller()] {
+            let result = call_as(
+                &c,
+                "workspace_read_conversation",
+                serde_json::json!({ "session_id": hidden.id }),
+                meta,
+            )
+            .await;
+            let text = text_of(&result);
+            assert_eq!(
+                result.is_error,
+                Some(true),
+                "a hidden session was read: {text}"
+            );
+            assert!(text.contains("hidden"), "{text}");
+            assert!(!text.contains(PRIVATE_MARKER), "{text}");
+        }
+
+        // Hidden AND private: the public caller meets the tier gate first, so it
+        // is not told that a hidden conversation with this id exists.
+        sm.update(&hidden.id)
+            .raise_privacy(
+                crate::privacy::SessionClassification::Private,
+                "test:workspace-tier-fixture",
+            )
+            .apply()
+            .await
+            .unwrap();
+        let result = call_as(
+            &c,
+            "workspace_read_conversation",
+            serde_json::json!({ "session_id": hidden.id }),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&result);
+        assert_eq!(result.is_error, Some(true), "{text}");
+        assert!(
+            !text.contains("hidden"),
+            "the tier refusal disclosed that the conversation is hidden: {text}"
+        );
+        assert!(
+            text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "{text}"
+        );
+        // …and a private caller still meets the Hidden rule, unchanged.
+        let result = call_as(
+            &c,
+            "workspace_read_conversation",
+            serde_json::json!({ "session_id": hidden.id }),
+            private_caller(),
+        )
+        .await;
+        assert_eq!(result.is_error, Some(true));
+        assert!(text_of(&result).contains("hidden"));
+    }
+
     /// §4.1 `tool_calls`: request/response pairs only, correlated by their
     /// shared id, each carrying its status and a result digest.
     #[tokio::test]
@@ -4304,6 +4970,60 @@ mod tests {
         format!("{prefix}-{}", SEQ.fetch_add(1, Ordering::SeqCst))
     }
 
+    /// A **real** session row whose id is unique across this whole test binary.
+    ///
+    /// Two properties are needed at once, and until issue #56 only one of them
+    /// was:
+    ///
+    /// * the row must EXIST, because the cross-session tools now resolve the
+    ///   target's `privacy_tier` and refuse an id they cannot read — identically
+    ///   to a private one, which is the anti-oracle rule and therefore not
+    ///   negotiable. A made-up id is no longer a valid injection target;
+    /// * the id must be unique in the PROCESS, because `session_events` and
+    ///   `AgentManager` are keyed by session id process-wide while
+    ///   `create_session` numbers ids `YYYYMMDD_N` **within one database file**
+    ///   — and `client()` hands every test its own temp directory, so the first
+    ///   session of every test would be `<today>_1`. That collision is exactly
+    ///   why these tests reached for [`unique_id`] in the first place, and it is
+    ///   a real hazard: one test's bus event would wake another's watcher.
+    ///
+    /// So reserve one number from a process-wide counter and burn the store's
+    /// id sequence up to it. The n-th row created in a fresh store is
+    /// `<today>_n`, so a distinct n per call yields a real row with an id no
+    /// other test can mint. Overshooting is asserted rather than tolerated: it
+    /// would silently reintroduce the collision this exists to avoid.
+    async fn seeded_target(c: &WorkspaceClient, label: &str) -> String {
+        // Starts above any test's own pre-created rows, so the assert below is
+        // a tripwire rather than a routine failure.
+        static BAND: AtomicUsize = AtomicUsize::new(16);
+        let want = BAND.fetch_add(1, Ordering::SeqCst);
+        let sm = c.context.session_manager.clone();
+        loop {
+            let id = sm
+                .create_session(
+                    std::env::temp_dir(),
+                    format!("{label}-seed"),
+                    crate::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap()
+                .id;
+            let n: usize = id
+                .rsplit('_')
+                .next()
+                .and_then(|n| n.parse().ok())
+                .unwrap_or_else(|| panic!("session id numbering changed: {id}"));
+            assert!(
+                n <= want,
+                "this test consumed its reserved band before asking for a target \
+                 ({n} > {want}); raise BAND's start"
+            );
+            if n == want {
+                return id;
+            }
+        }
+    }
+
     /// Call `workspace_send_prompt` as `caller`.
     async fn send_prompt(
         c: &WorkspaceClient,
@@ -4371,7 +5091,9 @@ mod tests {
             .install();
         let c = client();
         let caller = unique_id("caller");
-        let target = unique_id("target");
+        // A REAL row: issue #56's tier gate resolves the target's classification
+        // before this handler runs, and refuses an id it cannot read.
+        let target = seeded_target(&c, "target").await;
 
         let result = send_prompt(
             &c,
@@ -4422,7 +5144,7 @@ mod tests {
 
         let mut targets = Vec::new();
         for i in 0..cap {
-            let target = unique_id("fanout-target");
+            let target = seeded_target(&c, "fanout-target").await;
             let result = send_prompt(
                 &c,
                 &caller,
@@ -4441,11 +5163,16 @@ mod tests {
         // Every one of those turns is STILL RUNNING (no terminal published), so
         // the next injection is over budget — even though every one of the calls
         // that started them has long since returned.
+        // One more real row, reused by the over-cap probe and by the retry loop
+        // below. Both must reach the CAP check, which sits behind issue #56's
+        // tier gate — a made-up id would be refused before it, and the "in
+        // flight" assertion would then be testing the wrong refusal.
+        let spare = seeded_target(&c, "fanout-spare").await;
         let over = send_prompt(
             &c,
             &caller,
             serde_json::json!({
-                "session_id": unique_id("fanout-target"), "text": "go", "mode": "turn"
+                "session_id": spare, "text": "go", "mode": "turn"
             }),
         )
         .await;
@@ -4471,7 +5198,7 @@ mod tests {
                 &c,
                 &caller,
                 serde_json::json!({
-                    "session_id": unique_id("fanout-target"), "text": "go", "mode": "turn"
+                    "session_id": spare, "text": "go", "mode": "turn"
                 }),
             )
             .await;
@@ -4506,7 +5233,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let target = unique_id("turn-target");
+        let target = seeded_target(&c, "turn-target").await;
 
         let result = send_prompt(
             &c,
@@ -4566,7 +5293,10 @@ mod tests {
         let services = FakeServices::with_gui(false).install();
         let c = client();
         let caller = unique_id("caller");
-        let unknown = unique_id("no-agent-target");
+        // Real rows: issue #56's tier gate refuses an id it cannot resolve, so a
+        // made-up target would now be refused for the wrong reason and this test
+        // would pass without ever reaching the approval-mode check it is about.
+        let unknown = seeded_target(&c, "no-agent-target").await;
 
         let refused = send_prompt(
             &c,
@@ -4586,7 +5316,7 @@ mod tests {
         );
 
         // The mirror: a LIVE agent whose own mode cannot raise a confirmation.
-        let live = unique_id("live-agent-target");
+        let live = seeded_target(&c, "live-agent-target").await;
         let manager = crate::execution::manager::AgentManager::instance()
             .await
             .expect("agent manager");
@@ -4620,9 +5350,12 @@ mod tests {
     async fn a_steer_lands_in_the_running_turns_queue_stamped_and_unframed() {
         use crate::agents::agent::TurnId;
         use crate::conversation::message::ProvenanceKind;
-        let target = unique_id("steer-target");
-        let services = FakeServices::with_gui(true).busy(&target).install();
+        // The client comes FIRST now: the target has to be a real row (issue
+        // #56's tier gate resolves it), and only a client owns a store to seed
+        // it in. `install()` is process-global, so the order is free.
         let c = client();
+        let target = seeded_target(&c, "steer-target").await;
+        let services = FakeServices::with_gui(true).busy(&target).install();
         let caller = c
             .context
             .session_manager
@@ -4692,9 +5425,11 @@ mod tests {
     #[serial_test::serial(workspace_services)]
     async fn a_steer_into_a_closed_queue_is_refused_not_deferred() {
         use crate::agents::agent::{Drained, TurnId};
-        let target = unique_id("closed-steer-target");
-        let _services = FakeServices::with_gui(true).busy(&target).install();
+        // Client first: the target must be a real row for issue #56's tier gate
+        // to resolve. `install()` is process-global, so the order is free.
         let c = client();
+        let target = seeded_target(&c, "closed-steer-target").await;
+        let _services = FakeServices::with_gui(true).busy(&target).install();
         let caller = unique_id("caller");
 
         let manager = crate::execution::manager::AgentManager::instance()
@@ -6179,11 +6914,35 @@ mod tests {
         assert!(text.contains(&existing.id), "got: {text}");
         assert!(text.contains("gui_attached: false"), "got: {text}");
 
+        // An id that names no row is still refused — the GUI is never handed a
+        // frame for a session that is not there.
+        //
+        // ⚠ **What it is refused WITH changed with issue #56**, and the change is
+        // the point rather than a casualty. `open_as` carries a PUBLIC
+        // capability, and §7's anti-oracle rule says a public caller must not be
+        // able to tell "that conversation is private" from "there is no such
+        // conversation" — so the sentence it gets is the one that says both. A
+        // caller entitled to the difference is still told it, which is the arm
+        // below; `the_refusal_cannot_tell_a_private_conversation_from_one_that_
+        // does_not_exist` is what pins the equality itself.
         let r = open_as(&c, "caller", serde_json::json!({ "session_id": "s-nope" })).await;
         assert_eq!(r.is_error, Some(true));
         assert!(
-            text_of(&r).contains("no such session"),
+            text_of(&r).contains(&crate::privacy::refusal::workspace_out_of_reach()),
             "got: {}",
+            text_of(&r)
+        );
+        let r = call_as(
+            &c,
+            "workspace_open",
+            serde_json::json!({ "session_id": "s-nope" }),
+            private_caller(),
+        )
+        .await;
+        assert_eq!(r.is_error, Some(true));
+        assert!(
+            text_of(&r).contains("no such session"),
+            "the existence check is gone, not merely shadowed: {}",
             text_of(&r)
         );
 

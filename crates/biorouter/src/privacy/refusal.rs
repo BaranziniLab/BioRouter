@@ -373,6 +373,43 @@ pub const fn chatrecall_load_refusal() -> &'static str {
      the boundary is the same everywhere."
 }
 
+/// Design §7 column C, for every Workspace Control tool that names **another
+/// conversation**: the caller is running on a public model and the conversation
+/// it named is private — **or there is no such conversation.**
+///
+/// ⚠ **ONE sentence for both answers, deliberately.** This is the same
+/// discipline `biorouter_server::routes::session_reach::SESSION_OUT_OF_REACH`
+/// states for the HTTP surface, and it is load-bearing here for a reason that
+/// surface does not have: §7 already makes `workspace_list` **omit** private
+/// rows rather than redact them, precisely because a session's existence and its
+/// LLM-generated title are content. A refusal that answered "no such
+/// conversation" for an absent id and "that one is private" for a private one
+/// would hand the omitted rows straight back — a model could walk id space and
+/// rebuild the list the omission exists to withhold.
+///
+/// §14.4 / R10: it names no session id, no title, no working directory and no
+/// provider, so the sentence is identical whichever conversation was asked for —
+/// which is what makes the indistinguishability checkable by equality rather
+/// than by reading. It forecloses the retry, and it forecloses it across
+/// **tools** as well as across arguments, because this feature's whole surface
+/// is seven ways to ask the same question.
+///
+/// A `String` rather than a `const fn`, only so the shared
+/// [`ASK_THE_USER_TO_SWITCH`] sentence can be composed in rather than re-typed;
+/// it is still deterministic, which is the property that matters (a model that
+/// sees a different string on retry concludes the refusal is transient and
+/// loops).
+pub fn workspace_out_of_reach() -> String {
+    format!(
+        "That conversation is private, or there is no conversation with that id — this chat is \
+         running on a public model, and the two answers are deliberately the same so that nothing \
+         about the conversation is disclosed. Nothing was read and nothing was changed. Do not \
+         retry: not with another view, not with a different session id, and not through another \
+         workspace tool or code execution — the boundary is the same everywhere. If this task \
+         genuinely needs that conversation, {ASK_THE_USER_TO_SWITCH}"
+    )
+}
+
 /// Gate D on the **third** axis (issue #56, DR-26 / Task 50 Step 3): the model
 /// asked to recall a chat that reached institutions its own agreements do not
 /// cover.
@@ -1036,5 +1073,46 @@ mod tests {
         assert_eq!(chatrecall_load_refusal(), chatrecall_load_refusal());
         assert!(chatrecall_load_refusal().contains("private"));
         assert!(!chatrecall_load_refusal().contains("session id\": "));
+    }
+
+    /// §7 column C's refusal, on all three obligations at once: it is stable, it
+    /// forecloses the retry, and — the one that is specific to this surface — it
+    /// carries **no argument at all**, so it cannot say anything about the
+    /// conversation that was asked for.
+    ///
+    /// The signature is what makes the last claim structural rather than
+    /// observed. `turn_refusal(&Session)` needs a unit test to prove it does not
+    /// print the row's name or working directory; this takes nothing, so there is
+    /// no id, title or directory in scope to leak. The assertions below are
+    /// therefore about the *sentence*: that it states the boundary, offers the
+    /// one way out, and shuts the door on the six sibling tools.
+    #[test]
+    fn the_workspace_refusal_is_stable_forecloses_the_retry_and_takes_no_target() {
+        let msg = workspace_out_of_reach();
+        assert_eq!(
+            msg,
+            workspace_out_of_reach(),
+            "a refusal that varies is one the model retries"
+        );
+        assert!(msg.contains("private"), "{msg}");
+        // Both answers, in one sentence: this is the anti-oracle claim, and it
+        // is the reason the whole string exists rather than two shorter ones.
+        assert!(
+            msg.contains("or there is no conversation with that id"),
+            "{msg}"
+        );
+        assert!(msg.contains("Nothing was read"), "{msg}");
+        assert!(msg.contains("Do not retry"), "{msg}");
+        // Foreclosed ACROSS TOOLS, not merely across arguments: `workspace_open`,
+        // `workspace_send_prompt` and `workspace_read_conversation` are three
+        // ways to ask the same question, and a model told only "not with a
+        // different session id" will try the next tool.
+        assert!(msg.contains("another workspace tool"), "{msg}");
+        assert!(msg.contains(ASK_THE_USER_TO_SWITCH), "{msg}");
+        // …and it must not claim to be one of the other refusals. The model
+        // picker's marker sends the renderer to a model-switch card; the turn
+        // marker tells the user their message was not sent. Neither happened.
+        assert!(!msg.contains(USER_ACTION_REFUSAL_MARKER), "{msg}");
+        assert!(!msg.contains(TURN_REFUSAL_MARKER), "{msg}");
     }
 }
