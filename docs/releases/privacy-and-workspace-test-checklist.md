@@ -134,7 +134,54 @@ Each was a real defect found in this campaign. A silent pass here is the point.
 - [ ] Project-local memory written in a private chat is **not** inlined into a later public chat
 - [ ] A legacy import, or a rebuilt `sessions.db`, does not bring chats back **public**
 
-## 8. What cannot be tested here — say so, do not imply coverage
+## 8. Visual verification — look at it, do not only assert on it
+
+⚠ **Most of section 4–6 can pass functionally and still be unusable.** A refusal that fires correctly
+but renders as a bare error, a badge that is present in the DOM but invisible against its background,
+an accept control that exists but sits below the fold — each is a pass in a unit test and a failure in
+front of a user. This section is looked at, not asserted.
+
+### Driving a release build
+
+A release app has no debugging port by default. Launch it with one:
+
+```bash
+open -a BioRouter --args --remote-debugging-port=9223
+```
+
+⚠ **Screenshot over CDP, never `screencapture` of the whole screen.** The app sits behind the editor,
+raising it is unreliable, and a full-screen grab captures whatever else is on the display. Use the
+agent-browser connection against port 9223.
+
+⚠ **This is a release build, so the dev-GUI launch problems do not apply** — no
+`ELECTRON_RUN_AS_NODE`, no vite config, no HMR. If it will not start, that is a real packaging
+failure, not a launcher quirk. Check the bundled binaries' architecture with `file` before
+diagnosing anything else.
+
+### What to look at
+
+| # | Surface | Confirm visually |
+|---|---|---|
+| 8.1 | A child tab | The **`sub` badge** is legible and distinguishable from the privacy badge beside it |
+| 8.2 | Chat list, tab strip, composer, model picker, Settings → Providers, Settings → Extensions | The **privacy badge** appears in each, and reads the same in all of them |
+| 8.3 | The pre-first-turn **disclosure** | Present, readable, and not dismissible in a way that hides it permanently |
+| 8.4 | A **cross-affiliation mismatch** | The warning names **both institutions**, and the **accept control is visible without scrolling** inside the failed tool call |
+| 8.5 | A **refused** tool call (public chat, private extension) | The refusal reads as an explanation with a remedy, not as a stack trace or a bare "error" |
+| 8.6 | History with subagent runs shown | The nesting is visually obvious — a reader can tell parent from child at a glance |
+| 8.7 | The **declassification** dialog at both grades | The typed-phrase field and the OS password prompt both appear, in the right order |
+| 8.8 | Settings → Extensions | A **daemon-enforced** private badge is visually distinct from a **catalogue-only** one |
+| 8.9 | Settings → Privacy | The master switch, the mixing mode, and their current state are all legible |
+
+### Across themes
+
+⚠ **Repeat 8.1, 8.2, 8.4 and 8.8 in all three theme families — Parchment, Alma Mater, Roche Limit —
+in both light and dark.** Badges and warnings carry colour, and colour is exactly what a theme
+changes. A badge that is legible in Parchment light can vanish in Roche Limit dark.
+
+At three viewport widths: **1440×900, 1120×800, 800×600**. The accept control at 8.4 is the one most
+likely to fall below the fold on the narrow one.
+
+## 9. What cannot be tested here — say so, do not imply coverage
 
 - **Windows Hello** and **polkit** system-authentication prompts. macOS only on this hardware.
 - The **Windows zip** and **Linux deb/rpm** beyond "it builds" — no machine to run them.
