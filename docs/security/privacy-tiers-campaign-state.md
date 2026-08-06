@@ -148,6 +148,35 @@ would hold plaintext beside encrypted content) and extending the shipped `ShellS
 read-deny (cheap on macOS Seatbelt, expensive on Linux Landlock which is allowlist-based, impossible
 on Windows which ships an honest no-containment tier).
 
+## 6b. ⚠ Merge preconditions — nothing in the tree enforces these
+
+Found by verification on 2026-08-06. Both are ordering hazards with no automated guard, so they live
+here rather than in a commit message nobody will re-read.
+
+**1. `docs/campaign-documentation` must NOT merge before, or without, `feat/privacy-tiers`.**
+
+The README on the docs branch carries two references that resolve **only** on the privacy branch:
+
+- an anchor into `data-privacy-and-phi.md#the-provider-guidance-on-this-page-is-now-enforced` — that
+  heading exists only on `feat/privacy-tiers`;
+- a link to `docs/security/privacy-tiers-migration.md`, which is **absent** from the docs branch.
+
+Merge the docs branch first and `main` ships a README with a broken anchor and a dead link, on the
+page a security reviewer reads first. The content itself is correct — it is the sanctioned
+"lands *with* the merge" kind — but the ordering is load-bearing and unguarded.
+
+**2. Both branches edit `data-privacy-and-phi.md` in the same header region, and the second one
+conflicts.**
+
+- The **docs** branch replaces the "no recorded last-reviewed date" / provider-drift block with a
+  dated review **and the Llama Server correction** (its local-model guidance previously named only
+  Ollama, predating the bundled sidecar).
+- The **privacy** branch still carries the old block, plus three new sections.
+
+⚠ **A careless resolution silently drops the Llama Server correction** — taking the privacy branch's
+side of that hunk looks clean and loses it. The privacy branch has three "Llama Server" mentions in
+that file; the docs branch has the corrected tables. Check for both after resolving.
+
 ## 7. Constraints and lessons that cost time to learn
 
 **The machine.** The binding resource is file-event and log throughput through a serialised security
