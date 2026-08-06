@@ -21,13 +21,104 @@
 @theme {
   --shadow-*: initial;
 
-  /* Radius scale — retuned so Tailwind's own rounded-* classes land exactly on
-     the canonical 4 / 8 / 12 / 16 scale (design.md §3.4, D-04). No call-site churn. */
-  --radius-sm: 4px; /* chips, tags, inline code, checkbox */
-  --radius-md: 8px; /* buttons, inputs, selects, list rows, menu items */
-  --radius-lg: 8px; /* alias of md — both render the control radius */
-  --radius-xl: 12px; /* cards, panels, code blocks, tool-call cards */
-  --radius-2xl: 16px; /* modals, popovers, the composer */
+  /* ── Radius: a semantic ladder (Astryx A-04) ──────────────────────────────
+     Radius is named for the ROLE a corner plays, not for a t-shirt size, because
+     the size names could not answer the only question that matters at a call
+     site: is this thing a container or an element inside one? `--radius-lg` was
+     a silent alias of `--radius-md`, so 234 call sites shared 8px under two
+     names and no grep could recover which were meant to be 12px cards.
+
+     The nesting rule is normative: an element inside a container takes the next
+     step DOWN, and when a container's padding is `p`, its inner radius is
+     `outer − p`. That is what makes nested corners look deliberate.
+
+     Values are Biorouter's squarer taste, not Astryx's pills — see the contract
+     in the design of record (§1.4). */
+  --radius-inner: 4px; /* inline code, chips, checkbox, swatches — nested inside a control */
+  --radius-element: 8px; /* buttons, inputs, selects, tabs, list rows, menu items */
+  --radius-container: 12px; /* cards, panels, dialogs, popovers, toasts, code blocks, composer */
+  --radius-surface: 16px; /* RESERVED: the artifact / preview sheet only */
+
+  /* Deprecated size aliases, kept for one release so nothing moves while call
+     sites migrate to the ladder above. `rounded-md`/`lg`/`xl`/`2xl` still render
+     exactly what they render today — these are re-pointed, not retuned. Sweep
+     them in the Astryx phase-10 pass, then delete this block. */
+  --radius-sm: var(--radius-inner);
+  --radius-md: var(--radius-element);
+  --radius-lg: var(--radius-element); /* was already a silent alias of md */
+  --radius-xl: var(--radius-container);
+  --radius-2xl: var(--radius-surface);
+
+  /* ── Type: semantic roles on a 14px base, 4px grid (Astryx A-02) ──────────
+     The canonical scale was documented in design.md and had NO tokens, so
+     Tailwind's defaults stood in and the two most characteristic steps had no
+     utility at all — which is how the app accumulated 149 × `text-[11px]`,
+     21 × `text-[10px]` and 18 × `text-[13px]`.
+
+     These are ROLES, not sizes: a row title is `text-label` because it labels a
+     control, and it stays `text-label` if the size ever changes. Each carries
+     its own line-height, weight and tracking, so a call site can no longer pick
+     14px and forget the 500 weight that makes it a control label.
+
+     NAMESPACE HAZARD: Tailwind v4 requires font-size tokens to live under
+     `--text-*`, which is also what this app names its ink COLOURS in `:root`
+     (`--text-default`, `--text-muted`, …). They do not collide — the colours are
+     exposed to Tailwind as `--color-text-*` in the `@theme inline` block below,
+     so `text-text-muted` is ink and `text-supporting` is a size — but never add
+     a colour to this block, or `text-danger` would silently become a font size.
+
+     Nothing below 11px exists. Anything smaller is deleted, not migrated. */
+  --text-display: 30px; /* metric readouts */
+  --text-display--line-height: 36px;
+  --text-display--font-weight: 400;
+  --text-display--letter-spacing: -0.01em;
+
+  --text-title: 24px; /* page titles */
+  --text-title--line-height: 32px;
+  --text-title--font-weight: 600;
+  --text-title--letter-spacing: -0.01em;
+
+  --text-heading: 20px; /* section headings, markdown h1 */
+  --text-heading--line-height: 28px;
+  --text-heading--font-weight: 600;
+
+  --text-subheading: 17px; /* card and panel titles, markdown h2, empty-state titles */
+  --text-subheading--line-height: 24px;
+  --text-subheading--font-weight: 600;
+
+  --text-body: 14px; /* message text, prose, table cells */
+  --text-body--line-height: 20px;
+  --text-body--font-weight: 400;
+
+  --text-label: 14px; /* EVERY control's text, row titles, markdown h3 */
+  --text-label--line-height: 20px;
+  --text-label--font-weight: 500;
+
+  --text-secondary: 13px; /* tab labels, menu rows, dense descriptions */
+  --text-secondary--line-height: 18px;
+  --text-secondary--font-weight: 400;
+
+  --text-supporting: 12px; /* timestamps, metadata, captions, counts */
+  --text-supporting--line-height: 16px;
+  --text-supporting--font-weight: 400;
+
+  --text-caps: 11px; /* section labels — the ONE caps style */
+  --text-caps--line-height: 16px;
+  --text-caps--font-weight: 500;
+  --text-caps--letter-spacing: 0.08em;
+
+  --text-code: 13px; /* code blocks and terminal — byte-identical to each other */
+  --text-code--line-height: 20px;
+  --text-code--font-weight: 400;
+
+  /* ── Motion defaults ──────────────────────────────────────────────────────
+     Tailwind ships its own 150ms / cubic-bezier(0.4, 0, 0.2, 1) and was never
+     re-pointed at this app's tokens, so all 134 bare `transition-colors` ran a
+     duration and a curve that exist nowhere in the design system — 49 tokenized
+     sites against ~74 literal durations. Re-pointing the defaults here is what
+     makes every future bare transition on-spec without an annotation. */
+  --default-transition-duration: var(--dur-fast);
+  --default-transition-timing-function: var(--ease-out);
 
   --color-white: #ffffff;
   --color-black: #000000;
@@ -84,16 +175,81 @@
 :root {
   /* Geometry, motion, layering (design.md §3.3–§3.7).
      Fonts live in the @theme inline block below — the single source of truth. */
+  /* `--radius-full` is NOT part of the ladder in the @theme block above, and
+     that is deliberate: it is permitted on exactly three things — status dots,
+     the switch knob, and avatars. Everything else that wants "very round" wants
+     `--radius-container`. */
   --radius-full: 9999px;
-  --motion-fast: 120ms; /* hover, focus, colour — and every exit */
-  --motion-base: 180ms; /* popover / dropdown / tooltip enter, tab switch */
-  --motion-slow: 260ms; /* modal enter, route transition, drawer */
-  --ease-out: cubic-bezier(0.2, 0, 0, 1);
-  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* ── Duration: three tiers, min / default / max (Astryx §5) ───────────────
+     The governing rule is legible in the values: THE BIGGER THE ELEMENT, THE
+     SLOWER THE MOTION. A menu item answering the pointer at 450ms feels broken;
+     a dialog arriving in 95ms feels like a glitch. Pick by what is moving, not
+     by how important it is.
+
+     Entrances are staged; EXITS ARE FAST OR INSTANT — an element you are
+     leaving must never delay you. */
+  --dur-fast-min: 95ms; /* menu-item hover, row hover, table rows — highest-frequency feedback */
+  --dur-fast: 125ms; /* buttons, switches, inputs, chips — control state changes */
+  --dur-fast-max: 175ms; /* menus, tooltips, the tab indicator */
+  --dur-med-min: 250ms; /* progress fill, small layout settles */
+  --dur-med: 300ms; /* sidebar collapse, panel resize, accordion, long-message expand */
+  --dur-med-max: 450ms; /* dialogs, the command palette */
+  /* The slow tier has exactly one member. It is not "a slower dialog" — it is
+     the period of an ambient loop that never ends (the spinner), and giving it
+     min/max variants would invite it to be used for transitions. */
+  --dur-slow: 525ms;
+
+  /* Deprecated aliases. The three-token scale was correct; it just had no way to
+     express the difference between a row hover and a tab indicator. Re-pointed
+     rather than retuned, so existing sites shift by at most 5ms — except
+     `--motion-slow`, which was 260ms and is now the 300ms medium tier it was
+     always describing. Sweep call sites to `--dur-*` and delete this block. */
+  --motion-fast: var(--dur-fast);
+  --motion-base: var(--dur-fast-max);
+  --motion-slow: var(--dur-med);
+
+  /* ONE curve, everywhere: a strong decelerate with no overshoot. A system with
+     two general-purpose easings has no easing — it has a coin flip at every call
+     site, which is how this app ended up running four curves for one hover. */
+  --ease-out: cubic-bezier(0.24, 1, 0.4, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* DEPRECATED: defined, never used. Deleted in the sweep. */
   /* Gentle overshoot for physical gestures — tab reorder/select settle and the
      drag-ghost lift (#37). Reserved for TRANSFORMS: an overshooting colour or
-     opacity clamps and reads as a flicker, so colour keeps --ease-out. */
+     opacity clamps and reads as a flicker, so colour keeps --ease-out.
+     This is the one sanctioned exception to "one curve"; it survives because the
+     tab-drag choreography is the best-reasoned motion in the app. */
   --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+
+  /* ── Interaction tints (Astryx A-05) ─────────────────────────────────────
+     Hover and press are INK AT AN ALPHA, composited over whatever ground the
+     control happens to sit on — not a per-surface colour someone chose by eye.
+     That is the whole point: one token works on the sidebar, on a card, on the
+     canvas and inside a popover, in light and dark, in every family, because it
+     is derived from that family's own ink rather than authored against one
+     assumed background.
+
+     Derived HERE in CSS rather than emitted per family by the generator (which
+     is what the design of record proposed) for a strictly stronger reason: the
+     `var(--text-default)` below resolves against whichever family block won on
+     `<html>`, so a new family gets correct tints by existing. There is no
+     generated copy to drift from, and nothing for a fourth family to author.
+
+     These replace the hand-authored `--sidebar-hover` / `--sidebar-active`
+     hexes (three families × two modes × two tokens, none of them documenting
+     their relationship to the surface they sit on) and the 42%-vs-38%
+     `color-mix` fork between list rows and settings rows for one gesture. */
+  --overlay-hover: color-mix(in oklab, var(--text-default) 5%, transparent);
+  --overlay-pressed: color-mix(in oklab, var(--text-default) 10%, transparent);
+  --overlay-selected: color-mix(in oklab, var(--text-default) 14%, transparent);
+  /* Accent at a low alpha: inset focus rings and selected accents. Reaching for
+     the solid accent at 8% opacity instead would tint toward the ground it sits
+     on; mixing to transparent keeps the hue and lets it composite. */
+  --accent-muted: color-mix(in oklab, var(--background-accent) 8%, transparent);
+  /* The border an INTERACTIVE element carries — inputs, selects, the things you
+     are invited to click into. Heavier than `--border-subtle` (which separates)
+     and lighter than `--border-strong` (which encloses). */
+  --border-emphasized: color-mix(in oklab, var(--text-default) 24%, transparent);
   --row-height: 40px; /* D-12·B — one row rhythm, no compact mode */
 
   --z-base: 0;
@@ -695,6 +851,17 @@
   --color-text-on-accent: var(--text-on-accent);
   --color-text-on-status: var(--text-on-status);
   --color-accent-bar: var(--accent-bar);
+
+  /* Interaction tints as utilities: `bg-overlay-hover`, `border-border-emphasized`,
+     `ring-accent-muted`. They belong in THIS block, not the one above, because
+     `@theme inline` is what keeps them late-bound to the semantic token — a
+     plain `@theme` would freeze the color-mix at build time against the base
+     family's ink and every other family would silently get Parchment's wash. */
+  --color-overlay-hover: var(--overlay-hover);
+  --color-overlay-pressed: var(--overlay-pressed);
+  --color-overlay-selected: var(--overlay-selected);
+  --color-accent-muted: var(--accent-muted);
+  --color-border-emphasized: var(--border-emphasized);
 
   --color-border-default: var(--border-default);
   --color-border-subtle: var(--border-subtle);
