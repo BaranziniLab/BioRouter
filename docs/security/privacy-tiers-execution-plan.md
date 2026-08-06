@@ -20388,6 +20388,72 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+## DR-30 — the remaining eleven audit findings are all in scope
+
+> **Ruled 2026-08-06.** After [DR-29](#dr-29--the-five-audit-rulings) took the top five, the operator
+> folded in **every** remaining finding — the six further leaks and the five inconsistencies.
+> Tasks 67–77.
+
+⚠ **I under-scoped this once already.** Findings 14–18 were called "small items to fold in", and
+finding **4** was wrongly swept in with them — it is ranked a **leak**, not a nicety. Two ungated
+extension-enable doors is not a tidying item.
+
+### The pattern that produced three of these
+
+⚠ **A refusal that closes one door pushes the user through an adjacent open one.** Three instances now:
+
+| Refused | Where the user goes instead | Guarded? |
+| --- | --- | --- |
+| `spawn_downgrade` (private→public spawn) | `workspace_open {new:{prompt}}` | ❌ (DR-29 D2 closes it) |
+| Gate F1 (enable a private extension) | `workspace_set_tools` | ❌ (Task 70) |
+| The global-memory write from a private chat | **project-local memory** | ❌ (Task 67) |
+
+⚠ **Task 63's gate does not catch the third.** That gate finds refusals whose *text advises* a
+forbidden action. Nothing advises project memory — the user simply does the next obvious thing. So
+the class is wider than "bad refusal copy": **whenever a control is added, ask what the user will do
+instead, and whether that is guarded.** Task 77 makes this a review question rather than a hope.
+
+### The migration cluster — rows that end up silently public
+
+Findings 9, 10 and 11 share one shape and are the most likely of all of these to bite a real user,
+because none of them requires anybody to do anything unusual. A chat is simply mis-labelled.
+⚠ For a release whose headline is privacy, a wrongly-public row is worse than a missing feature.
+
+### The findings
+
+| # | Finding | Task |
+| --- | --- | --- |
+| 4 | `workspace_set_tools` and `workspace_open {new:{extensions}}` are ungated extension-enable doors; the latter also discards the operator's `enabled:false` | 70 |
+| 6 | Project-local memory written from a private chat is inlined **in full** into every future session's system prompt in that directory, on any model | 67 |
+| 9 | The backfill reads only the last-bound provider, and nothing surfaces the rows it mis-classified | 68 |
+| 10 | Legacy-JSONL import lands **Public** and skips the backfill — the fresh-database branch stamps the schema version before `import_legacy` runs, so migration arm 19 never fires | 69 |
+| 11 | With the master switch off, a private parent mints **permanently public** children, and re-enabling never revisits them | 71 |
+| 13 | `search_available_extensions` prints private connectors' names **and marketplace descriptions** to a public model, while Gate E hides their tools | 72 |
+| 14 | `manage_extensions {disable}` is ungated — a public chat can drop the clinical connector | 73 |
+| 15 | `workspace_watch` / `workspace_close` are ungated — an activity oracle, and cross-conversation cancel | 74 |
+| 16 | The cross-affiliation warning is **log-only** at bind and at user-enable; the accept card exists only at dispatch, and the grant clears only the tool-call door | 75 |
+| 17 | `kb_is_out_of_reach` asks one axis where `assert_kb_reachable` asks two, so cross-institution KB **names** list while content is refused | 76 |
+| 18 | `privacy-tiers.md`'s "Did not ship" is false for four handlers and understates the still-open set | 77 |
+
+### Tasks 67–77
+
+Each closes its row above. Shared requirements, so they are not restated eleven times:
+
+- [ ] **The gate must fail a plausible wrong implementation.** Break the fix, watch the test fail,
+      restore it, record the observed failure in the commit message.
+- [ ] **Enumerate siblings.** Every one of these was a path someone missed while fixing its neighbour.
+      Before reporting done, list the other entry points to the same capability and say whether each
+      is guarded.
+- [ ] ⚠ **Do not add a guard without a caller.** Nine unwired guards have shipped in this campaign.
+      If the fix is a new predicate, its gate must assert it has live callers.
+- [ ] For 68, 69 and 71: assert against rows created **before** the fix. "Correct going forward"
+      leaves exactly the mis-labelled data these findings are about.
+- [ ] **Task 77** additionally: make "what will the user do instead?" an explicit checklist item in
+      the privacy design doc's review section, so the pattern above is caught by process rather than
+      by a fourth incident.
+
+---
+
 ## DR-29 — the five audit rulings
 
 > **Ruled 2026-08-06.** A six-surface audit found nine unwired guards and a set of cross-surface
