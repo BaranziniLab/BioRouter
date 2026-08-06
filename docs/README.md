@@ -22,6 +22,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | Look up a command or flag | [biorouter CLI command reference](cli/command-reference.md) |
 | Change a setting | [Configuration file reference](configuration/config-file-reference.md) for `config.yaml`, [Environment variables](configuration/environment-variables.md) for per-invocation overrides |
 | Decide how much autonomy the agent gets | [Permission modes](security/permission-modes.md) |
+| Understand a cross-institution warning you just saw | [Institutional affiliation](security/institutional-affiliation.md) |
 | Resume, export or prune your past work | [Managing sessions](getting-started/managing-sessions.md) |
 | Run several conversations at once, or delegate to a subagent you can watch | [Workspace control](agent-loop/workspace-control.md) |
 | Run BioRouter as a shared headless server | [Headless Linux deployment](deployment/headless-linux.md) |
@@ -41,7 +42,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [integrations](integrations/README.md) | The opposite direction from `extensions/`: adapters that let another application host a Biorouter agent, starting with the `@Biorouter` persona for JupyterLab's Jupyter AI chat. |
 | [knowledge-base](knowledge-base/README.md) | The live working documents for the personal, LLM-maintained wiki: surveys of the ingestion pipeline and plans for extending it. |
 | [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. |
-| [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, and which providers are acceptable for patient and other sensitive data. |
+| [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, which providers are acceptable for patient and other sensitive data, and the institutional affiliation check behind cross-institution warnings. |
 | [workflows](workflows/README.md) | Reusable workflow files that package instructions, extensions and model settings into one shareable session, plus the built-in cron scheduler. |
 | [cli](cli/README.md) | The `biorouter` command-line surface: subcommands and flags, the interactive terminal UI, and the manual QA script that verifies both. |
 | [configuration](configuration/README.md) | The complete reference for both configuration forms — persistent YAML files and the environment variables that override them. |
