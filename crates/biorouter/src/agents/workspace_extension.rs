@@ -627,36 +627,27 @@ impl WorkspaceClient {
     /// [`privacy::visibility::may_read`]: crate::privacy::visibility::may_read
     /// [`CallCapability`]: crate::privacy::CallCapability
     /// [`session_reach::target_tier`]: https://github.com/BaranziniLab/biorouter
+    /// ⚠ **The body moved, the behaviour did not.** When
+    /// `platform__manage_schedule`'s `session_content` action turned out to be a
+    /// second handler reading any named transcript, the choice was one adapter
+    /// with two callers or two adapters that agree until they do not. The
+    /// decision itself — resolve metadata-only, ask [`may_read`], answer private
+    /// and absent in one sentence — now lives at
+    /// [`privacy::visibility::refuse_unless_readable`], which this delegates to.
+    ///
+    /// [`may_read`]: crate::privacy::visibility::may_read
+    /// [`privacy::visibility::refuse_unless_readable`]: crate::privacy::visibility::refuse_unless_readable
     async fn refuse_unless_visible(
         &self,
         cap: crate::privacy::CallCapability,
         target_session_id: &str,
     ) -> Result<(), String> {
-        if !cap.enforced() {
-            return Ok(());
-        }
-        // Asked THROUGH the matrix rather than as `cap.tier().is_private()`, so
-        // this short-circuit can never disagree with the decision below it.
-        if crate::privacy::visibility::may_read(
-            cap.tier(),
-            crate::privacy::SessionClassification::Private,
-        ) {
-            return Ok(());
-        }
-        match self
-            .context
-            .session_manager
-            .get_session(target_session_id, false)
-            .await
-        {
-            Ok(session)
-                if crate::privacy::visibility::may_read(cap.tier(), session.privacy_tier) =>
-            {
-                Ok(())
-            }
-            // Private, and unreadable, and absent — one sentence for all three.
-            _ => Err(crate::privacy::refusal::workspace_out_of_reach()),
-        }
+        crate::privacy::visibility::refuse_unless_readable(
+            cap,
+            &self.context.session_manager,
+            target_session_id,
+        )
+        .await
     }
 
     async fn handle_list(

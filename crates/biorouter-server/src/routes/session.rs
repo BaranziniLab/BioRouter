@@ -740,6 +740,7 @@ async fn delete_session(
     responses(
         (status = 200, description = "Session exported successfully", body = String),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -751,17 +752,28 @@ async fn delete_session(
 async fn export_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<Json<String>, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Syntax only, and deliberately ahead of the gate — see `get_session`.
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
-    let exported = state
-        .session_manager()
-        .export_session(&session_id)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    // `SessionManager::export_session` is `get_session(id, true)` followed by
+    // `to_string_pretty`: byte for byte the payload `GET /sessions/{id}` returns,
+    // and that route has been gated since Task 58. An unguarded sibling of a
+    // guarded read is the defect this campaign keeps shipping, so the gate goes
+    // here too, before the transcript is loaded.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    let Ok(exported) = state.session_manager().export_session(&session_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
 
-    Ok(Json(exported))
+    Json(exported).into_response()
 }
 
 #[utoipa::path(

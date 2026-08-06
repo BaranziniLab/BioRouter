@@ -3761,8 +3761,15 @@ impl Agent {
                 .arguments
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
+            // Issue #56: the schedule branch returns from `dispatch_tool_call`
+            // BEFORE the agent loop's own sample below, so `platform__manage_schedule`
+            // had no capability in scope at all — and two of its actions read
+            // another chat's content. Sampled here, on the same provider mutex and
+            // for the same reason: the value the call is granted must be fixed
+            // before the call runs, not re-read while it runs.
+            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
             let result = self
-                .handle_schedule_management(arguments, request_id.clone(), &session.id)
+                .handle_schedule_management(arguments, request_id.clone(), &session.id, cap)
                 .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,

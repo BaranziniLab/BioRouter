@@ -25,9 +25,15 @@
 //!   [the gated list](self#the-gated-list). `POST /interrupt` (inject text into
 //!   the turn running in a named chat), `POST /agent/cancel`, `POST
 //!   /agent/resume`, `GET /sessions/{id}/extensions`, `PUT /sessions/{id}/name`
-//!   and `DELETE /sessions/{id}` are all still open. The list is the five the
-//!   ruling named, and `/reply` dominates them, but "dominates" is an argument
-//!   about capability rather than a proof about every route;
+//!   and `DELETE /sessions/{id}` are all still open. The list began as the five
+//!   the ruling named, and `/reply` dominates them, but "dominates" is an
+//!   argument about capability rather than a proof about every route — which is
+//!   how `/export` and `/events` sat outside it while returning the same bytes
+//!   as `GET /sessions/{id}`. They are on it now. **The residual below is a
+//!   snapshot of an enumeration, not a proof of completeness**; the only
+//!   mechanical part of this is the wiring census
+//!   (`crates/biorouter/tests/privacy_guard_wiring.rs`), and even that pins the
+//!   guards, not the routes;
 //! * **`GET /knowledge/active?session_id=…` is still open**, because
 //!   [`gate_knowledge_active`] matches on `POST`. The read half of the very route
 //!   on the list still reports a private chat's knowledge-base set and its
@@ -85,6 +91,8 @@
 //! |---|---|
 //! | `POST /reply` | Runs an agent turn, with tools, in the named session. It **strictly dominates** the rest: a caller who can run a turn in a session can already do anything that session can do. |
 //! | `GET /sessions/{session_id}` | Returns the transcript. |
+//! | `GET /sessions/{session_id}/export` | The **same** transcript: `SessionManager::export_session` is `get_session(id, true)` then `to_string_pretty`. Added by the wiring sweep — an unguarded sibling of the row above, reachable from the generated TS client as `exportSession`. |
+//! | `GET /sessions/{session_id}/events` | The same transcript **plus a live tail**: the stream opens with an `UpdateConversation` snapshot of the whole stored conversation. Added by the wiring sweep; it is the route `biorouter session watch <id>` drives. |
 //! | `POST /agent/update_working_dir` | Repoints the session at a directory of the caller's choosing and restarts its agent. |
 //! | `POST /agent/add_extension` | Attaches tools to the session. |
 //! | `POST /knowledge/active` | Repoints the session's knowledge bases and its write target. |

@@ -24,13 +24,24 @@
 //! `session_type == Hidden` check and nothing else. A code review passes that,
 //! because the unit under review is correct and nothing calls it.
 //!
-//! They are wired now — `crates/biorouter/src/agents/workspace_extension.rs`,
-//! four handlers: `workspace_read_conversation`, `workspace_list`,
-//! `workspace_send_prompt` and `workspace_open` — and
-//! [`tests::the_matrix_has_production_callers`] is the assertion that keeps them
-//! wired. It exists specifically because "the mechanism is built, the entry point
-//! is never called" is the failure this campaign has now shipped four times, and
-//! every behavioural test in the world passes while it is true.
+//! They are wired now — four handlers in
+//! `crates/biorouter/src/agents/workspace_extension.rs`
+//! (`workspace_read_conversation`, `workspace_list`, `workspace_send_prompt`,
+//! `workspace_open`) and two actions of `platform__manage_schedule` in
+//! `agents/schedule_tool.rs` (`session_content`, which returned any named
+//! session's whole transcript, and `sessions`, which listed titles and working
+//! directories) — through [`refuse_unless_readable`] below, which is the one
+//! adapter both surfaces call.
+//!
+//! Two assertions keep them wired, and they are not redundant:
+//! [`tests::the_matrix_has_production_callers`] holds the *placement* (the file
+//! that ships the workspace tool surface names the gate), and the tree-wide
+//! census in `crates/biorouter/tests/privacy_guard_wiring.rs` holds the general
+//! property for every guard in this module — including the ones below that have
+//! no caller at all, which it requires to carry a written reason. Both exist
+//! because "the mechanism is built, the entry point is never called" is the
+//! failure this campaign has now shipped five times, and every behavioural test
+//! in the world passes while it is true.
 //!
 //! **Still unwired, deliberately, and each for a stated reason** — §7 rules all
 //! three ✗ in column C, so these are known gaps rather than decisions:
@@ -128,6 +139,52 @@ pub fn requires_first_crossing_approval(c: ProviderTier, t: SessionClassificatio
     c.is_private() && !t.is_private()
 }
 
+/// READ, applied to a session the caller merely **named**: resolve the target's
+/// classification and refuse unless [`may_read`] permits it.
+///
+/// ⚠ **One adapter, not one per tool.** This is the body that used to live in
+/// `workspace_extension`'s `refuse_unless_visible`, lifted here when a second
+/// caller appeared — `platform__manage_schedule`'s `session_content` action,
+/// which returned any named session's entire transcript with no tier check at
+/// all. Two handlers resolving a tier and phrasing a refusal by hand is how one
+/// table becomes seven slightly-different tables; the second copy would have
+/// been the one that forgot the metadata-only read, or answered "no such
+/// session" separately from "private".
+///
+/// Three properties, each load-bearing and each inherited from the original:
+///
+/// * **The master opt-out is read off the same sample that carried the tier**
+///   (`cap.enforced()`), never re-derived here.
+/// * **A caller that may read a private conversation never touches the store**,
+///   which leaves the handler's own honest errors intact for the caller
+///   entitled to them.
+/// * **`Err` and "could not read the row" are the same answer** (§14.4 / R10):
+///   an unauthorised caller must not learn from the refusal whether the
+///   conversation exists.
+///
+/// The row is read **metadata-only** (`with_messages: false`): resolving the
+/// tier must never itself be the way to load the transcript the gate is about
+/// to refuse.
+pub async fn refuse_unless_readable(
+    cap: super::CallCapability,
+    session_manager: &crate::session::session_manager::SessionManager,
+    target_session_id: &str,
+) -> Result<(), String> {
+    if !cap.enforced() {
+        return Ok(());
+    }
+    // Asked THROUGH the matrix rather than as `cap.tier().is_private()`, so this
+    // short-circuit can never disagree with the decision below it.
+    if may_read(cap.tier(), SessionClassification::Private) {
+        return Ok(());
+    }
+    match session_manager.get_session(target_session_id, false).await {
+        Ok(session) if may_read(cap.tier(), session.privacy_tier) => Ok(()),
+        // Private, and unreadable, and absent — one sentence for all three.
+        _ => Err(super::refusal::workspace_out_of_reach()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +280,19 @@ mod tests {
             "the cut removed more than the test module"
         );
 
-        for predicate in ["may_read(", "appears_in_list("] {
+        // ⚠ `may_read(` is deliberately NOT one of these any more, and reading
+        // this list as a weakening would be wrong. When `platform__manage_schedule`
+        // turned out to be a second handler reading any named transcript, the
+        // resolve-then-ask body moved into `refuse_unless_readable` above so both
+        // callers ask one predicate instead of two hand-written copies. So the
+        // workspace file now names the adapter rather than the matrix, and it is
+        // the adapter that names `may_read`. What holds the general property —
+        // every guard in the matrix has a live caller *somewhere*, through
+        // whatever chain — is the tree-wide census in
+        // `crates/biorouter/tests/privacy_guard_wiring.rs`, which knows the
+        // difference between a call, an import and a same-named local, and which
+        // would fail if this delegation ever became a dead link.
+        for predicate in ["refuse_unless_readable(", "appears_in_list("] {
             assert!(
                 production.contains(predicate),
                 "`{predicate}` has no production caller in workspace_extension.rs. This is the \

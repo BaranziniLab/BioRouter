@@ -111,10 +111,13 @@ const EXPECTED: &[Site] = &[
     Site {
         needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/agent.rs",
-        count: 3,
+        count: 4,
         what: "`call_prefetch_tool` (which dispatches before the turn), the agent \
-               loop's own tool-call sample, and `cross_affiliation_grant_subject` \
-               (which composes the sentence the user is asked to accept)",
+               loop's own tool-call sample, `cross_affiliation_grant_subject` \
+               (which composes the sentence the user is asked to accept), and the \
+               schedule branch of `dispatch_tool_call` — which returns before the \
+               loop's own sample, so `platform__manage_schedule` had no capability \
+               in scope while two of its actions read another chat's content",
     },
     Site {
         needle: "CallCapability::sample(",
