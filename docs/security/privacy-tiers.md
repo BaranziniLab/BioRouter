@@ -15,7 +15,8 @@
 > things a reader would otherwise assume from §7 and §9. Read it first. The general filesystem
 > read-deny of §9.5 is **descoped for v1** and this document
 > no longer claims it. §17 still needs rulings. **§3's R17 (added 2026-08-02) governs the shape of
-> every control here** — warn the user and let them proceed, never let an agent proceed at all —
+> every control here, and [§3.1](#31-the-review-checklist--two-questions-every-control-answers-in-writing)
+> is the two-question checklist each one is reviewed against** — warn the user and let them proceed, never let an agent proceed at all —
 > and **R18 (added the same day) refines it for declassification**: an operating-system
 > authentication per operation, which is what lets an agent *ask* for one. ⚠ **§12 is amended in
 > three places by R18**; read the banners in §12.1, §12.2 and §12.6 before implementing any of it.
@@ -104,16 +105,82 @@ this section is the ledger.
   plan Tasks 14A–14F are `DEFERRED`, not deleted. A public-capability chat with a shell can still
   read ordinary files on this machine, including files an earlier private chat wrote outside
   Biorouter's own storage. This is disclosed to the user rather than mechanised.
-- **§7's cross-session capability matrix is written but not wired.**
-  `crates/biorouter/src/privacy/visibility.rs` implements VIS / READ / WRITE / BIND as pure
-  functions and **no production handler calls them.** `workspace_list` and
-  `workspace_read_conversation` do not consult `privacy_tier`: the latter loads any named session
-  *with messages* and checks only `session_type == Hidden`. So a public chat with Workspace Control
-  enabled reads a private transcript through a tool call — the door Gate D closes for `chatrecall`
-  and this leaves open for BR-71. It is not fixable with the daemon's user-action proof (a tool call
-  is by definition the model, so it can never carry proof of a human); it needs §7's `may_read`
-  wired to those two handlers. The reasoning is recorded in full in
-  `crates/biorouter-server/src/routes/session_reach.rs`.
+- **§7's cross-session capability matrix: READ is wired on all seven workspace tools, WRITE is
+  wired on none.** ⚠ **This entry was false, and was rewritten against the tree on 2026-08-06.**
+  It used to claim that `crates/biorouter/src/privacy/visibility.rs` had **no production caller**
+  and that `workspace_list` and `workspace_read_conversation` *"do not consult `privacy_tier`"* —
+  and then to name those two tools as the whole of the exposure. Every part of that was wrong by
+  the time it was read: the predicates have callers, and the still-open set is neither those two
+  tools nor a set of that size. A security document that understates its coverage costs as much
+  trust as one that overstates it, so what follows is the state of the tree, symbol by symbol.
+
+  ⚠ **Re-verify before you rely on this.** This branch is under concurrent repair; between the
+  first and second reading of `workspace_extension.rs` while this entry was being written, three
+  tools moved from the *open* list to the *wired* one. Treat every claim here as timestamped
+  2026-08-06 and check the symbol, not the sentence.
+
+  **Wired — the READ half** (the handlers are all in
+  `crates/biorouter/src/agents/workspace_extension.rs`):
+  `workspace_read_conversation`, `workspace_open` *on an existing id*, `workspace_send_prompt`,
+  `workspace_set_tools`, `workspace_close` and `workspace_watch` (per named id, before it
+  subscribes) each call `refuse_unless_visible` before touching the target — a thin delegation to
+  `visibility::refuse_unless_readable`, which asks `visibility::may_read` against a metadata-only
+  row read; `workspace_list` drops rows with `visibility::appears_in_list`. The refusal
+  (`privacy::refusal::workspace_out_of_reach`) answers *private*, *unreadable* and *no such
+  conversation* in one sentence, so it cannot be walked as an oracle. Both extension-**enable**
+  doors on this surface — `workspace_set_tools { add_extensions }` and
+  `workspace_open { new: { extensions } }` — now carry Gate F1's tier arm as
+  `refuse_gated_extension_enable`, resolved from the compiled baseline *before* the installed-set
+  lookup so that an uninstalled private extension and an installed one give the same sentence.
+
+  `visibility::tests::the_matrix_has_production_callers` is the assertion that keeps the predicates
+  wired at all — it exists because "the mechanism is built, the entry point is never called" is a
+  failure this campaign shipped repeatedly, and no behavioural test can be written against a gate
+  that does not exist. ⚠ **It is a source scan of `workspace_extension.rs`, and it does not follow
+  the code it guards.** As of this writing the decision body has moved into `visibility.rs`, so
+  `may_read(` no longer appears in the production half of the file the scan reads, while
+  `appears_in_list(` still does. An anti-regression gate keyed on a file name goes quiet when the
+  thing it watches is refactored out of that file, and it cannot tell that case from the
+  regression it was written to catch. Whoever finishes that refactor owes the scan a new anchor.
+
+  **Still open:**
+
+  1. **§7's WRITE row is implemented nowhere, so every wired write enforces VIS only.**
+     `visibility::may_write`, `lineage_of`, `Lineage` and `requires_first_crossing_approval` have
+     **zero** production callers — a tree-wide search for each returns `visibility.rs` itself and
+     two doc comments. So R6's lineage floor (columns B, E and G, `✗ R6`) is unenforced: a public
+     caller may steer, re-tool and close a **public sibling it did not spawn**. And column D's
+     `✓!` first-crossing approval — the disclosure that is the entire reason a private→public
+     downgrade write is *permitted* rather than refused — never fires. `workspace_send_prompt` and
+     `workspace_set_tools` both say so in their own source: *"⚠ This enforces VIS only. §7's write
+     row is `may_write` … and the lineage half is not implemented anywhere"*.
+  2. **`workspace_open { new: … }` implements none of §8.2's spawn matrix.** §7's last row defers
+     that form to §8.2. The extension dimension is now gated (above), but the **model** dimension
+     is not: `open_new_session` creates the session through `WorkspaceServices::start_session`,
+     which takes no capability and binds the machine default provider, and then optionally seeds it
+     with a detached turn carrying prompt text the model wrote. §8.2's hard refusal (public parent,
+     private child) and its approval (private parent, public child) live in `subagent_tool.rs` and
+     are reached only by the `subagent` tool. This is the exact route DR-19's own refusal names —
+     *"they can start a new chat on it and give it the task directly"* — with the model, rather than
+     the user, taking it.
+  3. **DR-16's upward capability raise is HTTP-only.** `raise_needs_user_action` is called from
+     `routes/agent.rs` and `routes/apps.rs` and nowhere else, while
+     `workspace_set_tools { provider, model }` performs the same bind in-process through
+     `Agent::update_provider`. Gate A refuses the *downward* bind there, so a private chat cannot be
+     moved onto a public model; nothing on that path asks for the user proof DR-16 requires to move
+     a chat **up**. `workspace_set_tools` also has no self-target guard — only
+     `workspace_send_prompt` refuses `session_id == caller` — so the target may be the caller's own
+     conversation.
+
+  What is unchanged is the reasoning about the **instrument**: none of this is fixable with the
+  daemon's user-action proof, because a tool call is by definition the model and can never carry
+  proof of a human. That is why the wired half uses `may_read` — the caller's capability against
+  the target's classification — and it is recorded in full in
+  `crates/biorouter-server/src/routes/session_reach.rs`, whose module header carries an overlapping
+  still-open list and must be kept in step with this one.
+
+  Items 1–3 are instances of the pattern [§3.1](#31-the-review-checklist--two-questions-every-control-answers-in-writing)
+  exists to catch: each is the door a requester reaches for once a neighbouring one is shut.
 - **Every open question in §17.** They are open questions, not resolved ones, and several
   (5 — institutional versus hosted Ollama; 9 — skills carry no classification) describe live
   permissiveness in the shipped system.
@@ -306,7 +373,8 @@ separate rules — as are DR-16's user-only tier raise and DR-18's user-only pub
 Read R17 first when designing any refusal, confirmation or override, and answer its question — *who
 can initiate this?* — for every control. A design that does not say is defective: an unstated
 initiator becomes whatever the implementer assumes, and the assumption that ships is the permissive
-one.
+one. [§3.1](#31-the-review-checklist--two-questions-every-control-answers-in-writing) turns that
+question into the two-item checklist a review must answer **in writing**.
 
 Both halves are load-bearing. A control that **walls the user** is one they route around — by
 turning the whole feature off (R7's master switch exists because that pressure is real) or by
@@ -326,6 +394,80 @@ session"* remains the invariant every gate is written against. What [DR-17](priv
 **filesystem** channel to that material, not the rule: a public model may not be *handed* a private
 session by BioRouter, and it may still read files on the machine it is running on. §1 states the
 boundary; R15 is why that is disclosed rather than implied.
+
+### 3.1 The review checklist — two questions every control answers in writing
+
+Every new control in this design — a gate, a refusal, a confirmation, an override, a filter — is
+reviewed against exactly two questions. Neither is answerable with a judgement; both are answered
+with an enumeration, in the control's own text, where the next reader finds it instead of
+re-deriving it.
+
+> **Q1 (R17 / [DR-19](privacy-tiers-execution-plan.md#dr-19--a-warning-for-the-user-a-wall-for-the-agent)). Who can initiate this?**
+> A user, an agent, or both — and what does the other party get instead? Silence is a defect, not a
+> gap: an unstated initiator becomes whatever the implementer assumes, and the assumption that
+> ships is the permissive one.
+>
+> **Q2 (added 2026-08-06). What will the user or the model do instead, and is that guarded?**
+> A control does not end the requester's attempt; it redirects it. Name every other entry point to
+> the same capability, and say for each whether it is guarded, by which named predicate, at which
+> call site.
+
+**Q2 exists because one pattern produced three separate leaks in a single audit:** *a refusal that
+closes one door pushes the requester through an adjacent open one.* All three were found by
+someone else's fix, not by the review of the control that did the refusing.
+
+| The control that refused | Where the requester goes next | Guarded when the audit found it |
+|---|---|---|
+| DR-19's spawn downgrade (`PrivacyRefusal::PublicChildOfPrivateParent`), whose text ends *"they can start a new chat on it and give it the task directly"* | `workspace_open { new: { prompt: … } }` — the model starts that chat itself and seeds it with a detached turn | **No**, and **still no**: `open_new_session` binds the machine default provider and asks nothing; §8.2 is enforced only in `subagent_tool.rs` |
+| Gate F1 (`check_enable_allowed`), refusing `manage_extensions` on a private extension | `workspace_set_tools { add_extensions: … }` and `workspace_open { new: { extensions: … } }`, which reached `ExtensionManager::add_extension` directly | **No.** F1 sat on the `manage_extensions` path alone. Closed 2026-08-06 by `refuse_gated_extension_enable` on both doors |
+| The global-memory consent gate (`security/global_memory.rs`), refusing `retrieve_memories(category="*", is_global=true)` | the **project-local** store — itself a cross-session channel, since local memories are inlined in full into every session opened in that directory (§19 item 2) | **No**, by a ruled scope boundary, and the refusal *points at it*: *"Local bulk retrieval (is_global=false) is unaffected."* |
+
+**The third row is why Q2 is worded the way it is.** The weaker question a reviewer reaches for
+first — *does this refusal's text advise a forbidden action?* — catches rows 1 and 2 and misses row
+3, because that refusal advises nothing: it states a **scope disclaimer**, which is good practice,
+accurate, and hands the model the pointer anyway. Nothing in the sentence is advice-shaped for a
+text scan to catch, and the requester needs no advice — it does the next obvious thing. Q2 is a
+question about the **space of available next actions**, not about the wording of the refusal, and
+it must be answered even for a control whose message names no alternative at all.
+
+How an answer is judged:
+
+- **An enumeration, or it is not an answer.** *"Considered"*, *"no other path"* and *"seems
+  covered"* are nods. The artifact Q2 produces is a list of sibling entry points with a verdict
+  each. *"Nothing else reaches this capability"* is acceptable **only** with the list that
+  establishes it — which, for every finding in this campaign, is where the missed path turned up.
+- **Both audiences, separately.** The user's next move matters as much as the model's, and they
+  differ. A control that walls a **user** is one they route around — by turning the whole feature
+  off (R7's master switch exists because that pressure is real) or by leaving the product. A
+  control that merely inconveniences a **model** is one it re-attempts through the next tool in its
+  list, without malice and usually within the same turn.
+- **A guard with no caller is not a guard.** If an answer cites a predicate, it must also cite the
+  production call site. This campaign has shipped **nine** correct, tested, entirely uncalled
+  guards; §7's own matrix was one of them, and the *"Did not ship"* entry above records both the
+  omission and the assertion (`the_matrix_has_production_callers`) that now holds it.
+- **"The model would not think of that" is not a verdict.** The model reads the refusal, the tool
+  list and the error text, and the next tool call is the cheapest thing in the loop. Treat every
+  advertised tool that touches the same data as a live path until it is shown gated.
+- **Q1 does not imply Q2.** A control can name its initiator perfectly and still leak: Q1 is about
+  who *starts* the operation, Q2 about what happens *after it is refused*. Every one of the three
+  rows above answers Q1 correctly.
+
+⚠ **Scope this to the capability, not to the module.** All three leaks crossed a file boundary, and
+two crossed a crate boundary. The sibling path is rarely next to the control — it is the other
+surface that reaches the same data, which is why the answer is written as a list of entry points
+rather than as a claim about the file the control lives in.
+
+**The form the answer takes**, so that a review can be checked for having done it rather than for
+having said it. Q2 is answered with this table and nothing shorter; a control whose section does
+not carry one has not answered Q2, whatever prose surrounds it.
+
+| Other entry point to the same capability | Reachable by | Guarded by | Where that guard is called |
+|---|---|---|---|
+| *(one row per surface — tool, HTTP route, CLI command, config key, file the agent can write)* | user / model / both | named predicate, or **nothing** | `file::symbol`, or **no caller** |
+
+A row reading *"nothing / no caller"* is a legitimate answer. It is a **finding**, recorded where
+the next reader meets it, which is the whole difference between this campaign's fixed leaks and its
+found ones. What is not legitimate is the absence of the row.
 
 ---
 
