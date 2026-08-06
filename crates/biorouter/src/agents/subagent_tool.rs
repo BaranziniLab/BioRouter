@@ -887,6 +887,12 @@ async fn create_subagent_session(
         data: None,
     };
 
+    // Issue #56 finding 11. The stamp is the child's own capability floor RAISED
+    // to its parent's classification, and the raise is read here rather than
+    // taken from `task_config`, because this is the statement that writes the
+    // row. See [`parent_classification`] for why it is ungated.
+    let privacy_tier = privacy_tier.max(parent_classification(config, parent_session_id).await);
+
     let mut session = config
         .session_manager
         .create_session(
@@ -902,9 +908,10 @@ async fn create_subagent_session(
         .update(&session.id)
         .parent_session_id(Some(parent_session_id.to_string()))
         // Issue #56 §8.2: the child's classification is stamped in the SAME
-        // statement as its parent link, and `privacy_tier` reaches here already
-        // decided — `apply_settings_overrides` runs before this function on both
-        // spawn paths, so a refused spawn never gets as far as a row.
+        // statement as its parent link, and the capability half of
+        // `privacy_tier` reaches here already decided —
+        // `apply_settings_overrides` runs before this function on both spawn
+        // paths, so a refused spawn never gets as far as a row.
         //
         // `raise_privacy` rather than a plain set, because the storage layer is
         // what refuses a downgrade; on a row created two statements up it is
@@ -918,6 +925,68 @@ async fn create_subagent_session(
     session.privacy_tier = privacy_tier;
 
     Ok(session)
+}
+
+/// The spawning session's own classification — the floor its child's row is born
+/// at, **ungated by DR-15's master switch** (issue #56, finding 11).
+///
+/// ⚠ **Enforcement and classification are different things, and the switch is
+/// only allowed to disable the first.** Every *gate* in
+/// [`apply_settings_overrides`] is behind `privacy_tiers_enabled()`, so with the
+/// switch off a Private-classified chat may be bound to, and may run, a public
+/// provider. The child of such a chat resolves `child_tier = Public`, and the
+/// capability floor alone would therefore stamp its row `public` — permanently,
+/// because re-enabling never revisits a row (AR-7). The documented opt-out would
+/// then be a way to mint rows that turning protection back ON cannot correct,
+/// which is a *worse* outcome than the enforcement it was asked to suspend.
+///
+/// So the parent's classification is carried across unconditionally. This is the
+/// same rule, in the same polarity, that
+/// `SessionStorage::create_derived_session` already applies to the copy/diverge
+/// paths — carrying a parent's stamp is **column propagation**, not a
+/// classification decision, and `privacy_toggle.rs`'s row 17 asserts that
+/// identically in both toggle columns.
+///
+/// ⚠ **It cannot make the switch-off case worse than the switch-on case**, which
+/// is what keeps this from becoming enforcement by the back door. `max` over
+/// [`SessionClassification`] can only *raise*, and with the switch ON the raise
+/// is provably a no-op: a Private-classified parent can only have bound a
+/// private provider (Gate A) and can only have reached this spawn inside a turn
+/// that same tier permitted (Gate B), so `floor(child_tier)` is already Private.
+/// Only the switch-off state — a private row running a public model — is changed
+/// by this, and only in the direction of keeping the row's true classification.
+///
+/// ⚠ **An unreadable parent keeps today's stamp rather than failing closed**, and
+/// that is a deliberate, bounded trade rather than an oversight. The production
+/// caller (`Agent::dispatch`) builds the `TaskConfig` from a session it has just
+/// loaded, so the row is always there; a read that fails means the store is
+/// gone, and `create_session` below would fail on it anyway. Failing closed to
+/// Private instead would make every such spawn refuse its own provider bind at
+/// `subagent_handler`'s `update_provider` (Gate A) and mint permanently
+/// over-classified rows in the process — a raise is what §12.5's
+/// declassification exists to undo, but only with the three proofs, and paying
+/// that price for a store error is the worse of the two directions.
+async fn parent_classification(
+    config: &AgentConfig,
+    parent_session_id: &str,
+) -> crate::privacy::SessionClassification {
+    match config
+        .session_manager
+        .get_session(parent_session_id, false)
+        .await
+    {
+        Ok(parent) => parent.privacy_tier,
+        Err(e) => {
+            tracing::warn!(
+                parent_session_id = %parent_session_id,
+                error = %e,
+                "could not read the spawning session's classification; the child's row is \
+                 stamped from its own provider alone"
+            );
+            // The identity element of `max`, so the caller's own floor stands.
+            crate::privacy::SessionClassification::Public
+        }
+    }
 }
 
 /// Issue #56 §8.2: what the parent is told when its child was denied one of the
@@ -1277,11 +1346,15 @@ pub async fn apply_settings_overrides(
     // the spawn path, which builds a whole new agent rather than dispatching a
     // tool, and has no admitted capability to inherit.
     //
-    // ⚠ `task_config.privacy_tier` is NOT gated. That is the child's row being
-    // born carrying its parent's stamp — column propagation, the same invariant
-    // as a session copy — and a spawn that laundered a private parent's tier to
-    // public while the feature was off would write that permanently, because
-    // re-enabling never revisits a row (AR-7).
+    // ⚠ `task_config.privacy_tier` is NOT gated, and what it carries is only
+    // HALF of the child's classification: the floor its own capability
+    // establishes. It cannot carry the other half here, because the parent's
+    // classification lives in the parent's ROW and this function is given a
+    // `TaskConfig` (whose seed is `Public`) rather than a session. The two are
+    // combined at the statement that writes the child's row — see
+    // [`parent_classification`], which is likewise ungated, so that the switch
+    // suspends enforcement without ever laundering a private parent's row to
+    // public. Both halves matter: re-enabling never revisits a row (AR-7).
     let privacy_enforced = crate::privacy::privacy_tiers_enabled();
 
     if let Some(settings) = &params.settings {
@@ -2691,6 +2764,139 @@ mod tests {
             assert_eq!(row.parent_session_id.as_deref(), Some("parent-1"));
         }
     }
+
+    /// A persisted parent session at a given classification, for the rows below.
+    ///
+    /// The raise goes through the real `SessionUpdateBuilder`, so the fixture
+    /// produces the same row shape Gate B's ratchet produces, provenance
+    /// included.
+    async fn persisted_parent(
+        sm: &crate::session::SessionManager,
+        working_dir: &std::path::Path,
+        tier: SessionClassification,
+    ) -> String {
+        let parent = sm
+            .create_session(
+                working_dir.to_path_buf(),
+                "parent".to_string(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        if tier.is_private() {
+            sm.update(&parent.id)
+                .raise_privacy(tier, "mcp:ucsfomopagent")
+                .apply()
+                .await
+                .unwrap();
+        }
+        parent.id
+    }
+
+    /// **Issue #56, finding 11.** A child's row is never born BELOW the
+    /// classification of the session that spawned it.
+    ///
+    /// The shape under test is the one DR-15's master switch makes reachable and
+    /// nothing else does: a **Private-classified parent row bound to a public
+    /// provider**. With the switch on it cannot exist — Gate A refuses that bind
+    /// and Gate B refuses the turn the spawn would happen inside — so it is
+    /// exactly what a period with the switch OFF leaves behind, and it outlives
+    /// the switch being turned back on, because re-enabling never revisits a row
+    /// (AR-7).
+    ///
+    /// ⚠ **Driven with the toggle untouched, and that is the point rather than a
+    /// shortcut.** The classification half must be ungated, so a test that had to
+    /// turn the switch off to see it would be testing the wrong thing — and
+    /// flipping the process-global atomic from a lib test would disarm every
+    /// other privacy test sharing this binary, which is why the toggle's
+    /// behavioural matrix lives in its own process. The switch-off *sequence*
+    /// (spawn while off → re-enable → read the row) is asserted there, in
+    /// `crates/biorouter/tests/privacy_spawn_classification.rs`.
+    ///
+    /// ⚠ **Both classifications, because the private arm alone would pass against
+    /// a stamp that is unconditionally Private** — which would be its own defect,
+    /// permanently over-classifying every child. The public arm is what says the
+    /// raise is a `max` and not a floor.
+    #[tokio::test]
+    async fn a_child_is_never_born_below_the_classification_of_its_parent() {
+        for (parent_row, expected) in [
+            (
+                SessionClassification::Private,
+                SessionClassification::Private,
+            ),
+            (SessionClassification::Public, SessionClassification::Public),
+        ] {
+            let temp = tempfile::TempDir::new().unwrap();
+            let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+                temp.path().to_path_buf(),
+            ));
+            let config = AgentConfig::new(
+                sm.clone(),
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            );
+            let parent_id = persisted_parent(&sm, temp.path(), parent_row).await;
+
+            // A PUBLIC parent provider in both rows: the child inherits the same
+            // `Arc`, so its own capability floor is Public either way. That is
+            // the pre-condition the finding describes, and it is asserted rather
+            // than assumed — without it the private row could pass because the
+            // capability floor happened to be Private already.
+            let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+                std::sync::Arc::new(TieredParent {
+                    tier: ProviderTier::Public,
+                });
+            let task_config = TaskConfig::new(provider, &parent_id, temp.path(), vec![]);
+            let params = ask_params(Ask::Inherit);
+            let child_config = apply_settings_overrides(task_config, &params)
+                .await
+                .unwrap();
+            assert_eq!(
+                child_config.privacy_tier,
+                SessionClassification::Public,
+                "the capability floor must be Public, or this row proves nothing"
+            );
+
+            let session = create_subagent_session(
+                &config,
+                temp.path().to_path_buf(),
+                &parent_id,
+                &params,
+                child_config.privacy_tier,
+            )
+            .await
+            .unwrap();
+
+            let row = sm.get_session(&session.id, false).await.unwrap();
+            assert_eq!(
+                row.privacy_tier, expected,
+                "a parent classified {parent_row:?} must not mint a child row below itself"
+            );
+            assert_eq!(
+                session.privacy_tier, expected,
+                "{parent_row:?}: the in-memory handle disagreed with the row just written"
+            );
+            let expected_reason = format!("inherited:{parent_id}");
+            assert_eq!(
+                row.privacy_reason.as_deref(),
+                Some(expected_reason.as_str()),
+                "{parent_row:?}: the provenance still names the spawn, so §12.4 can grade it"
+            );
+        }
+    }
+
+    // ⚠ The same invariant through the **tool entry point**, on BOTH spawn
+    // paths, is asserted in `crates/biorouter/tests/privacy_spawn_classification.rs`
+    // and deliberately NOT here. Driving a blocking spawn to completion in this
+    // binary runs the child, and the child's first act is
+    // `run_complete_subagent_task`'s `begin_turn` against the PROCESS-GLOBAL
+    // `workspace_services` override — which neighbouring tests in this same
+    // binary install and remove concurrently, and whose double `unreachable!`s
+    // on `begin_turn`. The test failed exactly that way when it lived here, and
+    // it would have been a flake rather than a failure on a luckier schedule.
+    // The integration binary has no such neighbour, so the both-paths claim is
+    // made there, where it is deterministic.
 
     /// DR-19, and it replaces `a_downgraded_child_is_born_public_…`.
     ///
