@@ -114,6 +114,20 @@
   --text-supporting--line-height: 16px;
   --text-supporting--font-weight: 400;
 
+  /* The chip role. 12/500 is what the design of record specifies for a chip and
+     what the role set was missing, which is why `badge.tsx` was still carrying a
+     raw `text-[11px] font-medium` after every other primitive had moved: no role
+     could serve it. `text-caps` bakes in uppercase and +0.08em tracking, both
+     wrong on a sentence-case chip; `text-supporting` is 12/400 and would drop
+     the weight that makes a chip read as a discrete object rather than as
+     metadata that happens to have a background.
+
+     It shares a size with `text-supporting` and differs only in weight, and that
+     is the distinction: supporting text is READ, a chip is COUNTED. */
+  --text-chip: 12px;
+  --text-chip--line-height: 16px;
+  --text-chip--font-weight: 500;
+
   --text-caps: 11px; /* section labels — the ONE caps style */
   --text-caps--line-height: 16px;
   --text-caps--font-weight: 500;
@@ -1216,7 +1230,16 @@
 .biorouter-modal-surface {
   background: var(--background-default);
   border: 1px solid color-mix(in srgb, var(--border-subtle) 44%, transparent);
-  border-radius: 16px;
+  /* On the ladder, and no longer a literal. This rule is unlayered (see the
+     z-index note below, which is why it has to be), so a hardcoded 16px here
+     outranked every `rounded-*` utility and made a modal's geometry
+     unreachable from a call site — decision A-04 was not enforceable while it
+     stood. A dialog is a container, so it takes the container step; 16px stays
+     reserved for the artifact sheet alone, which is the fork the ladder exists
+     to end. Every modal and the composer lose 4px of corner, and that is the
+     single change the design of record says most makes the app read as one
+     system rather than two. */
+  border-radius: var(--radius-container);
   box-shadow: var(--shadow-modal);
   /* Structural safety floor: a modal surface must always stack ABOVE its scrim.
      Radix's Dialog renders the overlay (--z-overlay) and the content as

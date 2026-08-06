@@ -33,7 +33,7 @@ export function Badge({ tone = 'neutral', uppercase = false, className, ...props
   return (
     <span
       className={cn(
-        'inline-flex flex-shrink-0 items-center gap-1 rounded-inner px-1.5 py-0.5 text-[11px] font-medium leading-none',
+        'inline-flex flex-shrink-0 items-center gap-1 rounded-inner px-1.5 py-0.5 text-chip leading-none',
         uppercase && 'uppercase tracking-wider',
         toneClass[tone],
         className

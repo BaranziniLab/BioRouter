@@ -32,6 +32,7 @@ const twMerge = extendTailwindMerge({
         'secondary',
         'supporting',
         'caps',
+        'chip',
         'code',
       ],
       radius: ['inner', 'element', 'container', 'surface'],
