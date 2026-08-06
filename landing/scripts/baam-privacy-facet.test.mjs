@@ -197,7 +197,14 @@ if (!existsSync(PLAYWRIGHT)) {
     // EXACT, not "at most 3". `chips.length <= 3` is satisfied by a row that
     // shows nothing but the badge, which is precisely the over-trimming this
     // file has to be able to fail on.
-    assert.deepEqual(chips, ['Private', 'UCSF', 'MCP']);
+    //
+    // "UCSF data" is the institution badge and it REPLACES the plain "UCSF"
+    // subject tag rather than joining it: the two say the same word for the same
+    // reason, and side by side they read as a rendering fault. The badge is the
+    // one derived from a declaration, so the subject tag is the one that gives
+    // way — which is also what keeps this row at the same three chips it had
+    // before the badge existed.
+    assert.deepEqual(chips, ['Private', 'UCSF data', 'MCP']);
 
     // The clip test: every laid-out chip must sit inside the 22px row. A chip
     // that wrapped is not "a bit cramped", it is invisible — and the row's
@@ -292,9 +299,114 @@ if (!existsSync(PLAYWRIGHT)) {
           .filter(Boolean)
       );
       assert.deepEqual(wrong, [], `unlabelled or mislabelled no-JS cards at ${width}px`);
+
+      // The institution badge, same view and the same guarantee. It is authored
+      // SECOND — right behind the tier it qualifies — so `overflow: hidden` eats
+      // subject tags before it, and it must be laid out inside the row at both
+      // geometries. A badge that wrapped is not cramped, it is deleted, and the
+      // reader is left thinking the connector carries no institutional
+      // constraint at all.
+      const badgeWrong = await page.$$eval('#extensions-section .ext-card', (els) =>
+        els
+          .map((e) => {
+            const name = e.querySelector('h3').textContent;
+            const declared = (e.dataset.affiliation || '').split(/\s+/).filter(Boolean);
+            const chips = [...e.querySelectorAll('.ext-tags > span[data-affiliation-badge]')];
+            const ids = chips.map((c) => c.dataset.affiliationBadge);
+            // Absent means unconstrained. An empty badge on an unaffiliated card
+            // would read as a constraint that does not exist, which is worse
+            // than saying nothing.
+            if (ids.join(' ') !== declared.join(' ')) {
+              return `${name}: badges [${ids}] but declares data-affiliation="${declared.join(' ')}"`;
+            }
+            const row = e.querySelector('.ext-tags');
+            for (const chip of chips) {
+              if (chip.previousElementSibling !== row.firstElementChild &&
+                  chip.previousElementSibling.dataset.affiliationBadge === undefined) {
+                return `${name}: the institution badge does not follow the privacy badge`;
+              }
+              const r = chip.getBoundingClientRect();
+              if (r.width === 0 || r.bottom > row.getBoundingClientRect().bottom + 0.5) {
+                return `${name}: the institution badge is clipped out of the tag row`;
+              }
+            }
+            return null;
+          })
+          .filter(Boolean)
+      );
+      assert.deepEqual(badgeWrong, [], `institution badges wrong in the no-JS view at ${width}px`);
       await page.close();
     }
     await ctx.close();
+  });
+
+  test('the rendered shelf states affiliation the same way the authored cards do', async () => {
+    // The bug this exists for: the authored cards carried `data-affiliation` and
+    // `extCardHtml` did not, so the two views of the same card disagreed the
+    // moment the registry landed. A badge driven off that attribute would have
+    // painted once, over the static markup, and vanished on the re-render — the
+    // hardest possible failure to see, because the page is correct until the
+    // fetch resolves.
+    const page = await shelfPage();
+    const bad = await page.evaluate(() => {
+      const out = [];
+      const cards = [...document.querySelectorAll('#extensions-section .ext-card')];
+      if (cards.length === 0) out.push('the shelf rendered no cards at all');
+      for (const card of cards) {
+        const name = card.querySelector('h3').textContent;
+        const declared = (card.dataset.affiliation || '').split(/\s+/).filter(Boolean);
+        const chips = [...card.querySelectorAll('.ext-tags > span[data-affiliation-badge]')];
+        // Absent means unconstrained: a card with no affiliation must render NO
+        // institution badge, not an empty one. `data-affiliation=""` is also the
+        // spelling the generator refuses outright, so an attribute present and
+        // empty is itself the failure.
+        if (card.getAttribute('data-affiliation') === '') {
+          out.push(`${name}: data-affiliation is present but empty`);
+        }
+        if (chips.length !== declared.length) {
+          out.push(`${name}: ${chips.length} institution badges for ${declared.length} declared`);
+          continue;
+        }
+        chips.forEach((chip, i) => {
+          if (chip.dataset.affiliationBadge !== declared[i]) {
+            out.push(`${name}: badge ${i} is "${chip.dataset.affiliationBadge}", declared "${declared[i]}"`);
+          }
+          // The DISPLAY NAME, never the id. "ucsf data" is a slug that escaped
+          // onto the public marketplace.
+          if (/^[a-z0-9-]+ data$/.test(chip.textContent) && chip.textContent === `${declared[i]} data`) {
+            out.push(`${name}: badge ${i} renders the raw id "${chip.textContent}"`);
+          }
+        });
+      }
+      return out;
+    });
+    assert.deepEqual(bad, []);
+
+    // …and the two UCSF connectors really do carry it, so the assertions above
+    // are not vacuously true of a shelf that renders no affiliation anywhere.
+    const cdw = page.locator('#ext-featured .ext-card[data-extension-name="cdwagent"]');
+    assert.equal(await cdw.getAttribute('data-affiliation'), 'ucsf');
+    assert.equal(
+      await cdw.locator('.ext-tags > span[data-affiliation-badge="ucsf"]').textContent(),
+      'UCSF data',
+      "the badge must render registry.json's institutions[id], not the id"
+    );
+    assert.equal(
+      await page.locator('#extensions-section .ext-card[data-affiliation]').count(),
+      2,
+      'exactly the two private UCSF connectors declare an affiliation today'
+    );
+    // The complement, stated directly: 35 unconstrained cards, no badge on any
+    // of them. An institution badge with a fallback label would satisfy every
+    // assertion above and fail this one.
+    assert.equal(
+      await page.locator(
+        '#extensions-section .ext-card:not([data-affiliation]) .ext-tags > span[data-affiliation-badge]'
+      ).count(),
+      0,
+      'an unaffiliated card must render no institution badge — absent means unconstrained'
+    );
+    await page.close();
   });
 
   /** The shelf after `registry.json` has been rewritten in flight. */
@@ -339,6 +451,49 @@ if (!existsSync(PLAYWRIGHT)) {
     await page.close();
   });
 
+  // The three affiliations `build-registry.mjs` hard-fails on. It cannot protect
+  // this page: registry.json is fetched at runtime from a server the generator
+  // never ran against. Rendering must not paper over any of them — a chip built
+  // from a broken declaration states a constraint nobody approved, and quietly
+  // dropping the chip states the opposite. The authored cards underneath are the
+  // answer in both cases.
+  const UNRENDERABLE_AFFILIATIONS = [
+    ['an institution the map does not name', (e) => { e.affiliation = ['atlantis']; }],
+    ['an affiliation on a public extension', (e, r) => {
+      const pub = r.extensions.find((x) => x.privacy !== 'private');
+      pub.affiliation = ['ucsf'];
+    }],
+    ['an empty affiliation list', (e) => { e.affiliation = []; }],
+  ];
+  for (const [what, mutate] of UNRENDERABLE_AFFILIATIONS) {
+    test(`a registry with ${what} keeps the static fallback`, async () => {
+      const page = await shelfWithRegistry((r) => {
+        mutate(r.extensions.find((e) => e.extension_name === 'cdwagent'), r);
+      });
+      assert.equal(
+        await renderedFromRegistry(page),
+        false,
+        `a registry with ${what} must not reach the DOM`
+      );
+      assert.equal(
+        await page.locator('.ext-card[data-privacy="private"] .tag.private').count(),
+        2,
+        'the fallback is the authored cards, not a blank shelf'
+      );
+      await page.close();
+    });
+  }
+
+  test('an institution map that is missing entirely keeps the static fallback', async () => {
+    // The label comes out of `registry.institutions`, so a payload that declares
+    // affiliations without the map has no display name to render — and the
+    // failure mode is `undefined data` painted on the marketplace, which looks
+    // like a bug in the card rather than a bad catalog.
+    const page = await shelfWithRegistry((r) => { delete r.institutions; });
+    assert.equal(await renderedFromRegistry(page), false);
+    await page.close();
+  });
+
   test('both badges are a visible pill in dark as well as light', async () => {
     // `.tag.private` is the navy ramp: `background: rgba(5,32,73,0.07)`, a 7%
     // tint that reads as a soft chip on a white card. `landing/theme.js` sets
@@ -377,11 +532,21 @@ if (!existsSync(PLAYWRIGHT)) {
           const on = paint(card, getComputedStyle(document.querySelector(sel)).backgroundColor);
           return Math.max(...on.map((c, i) => Math.abs(c - base[i])));
         };
-        return { dark: document.documentElement.classList.contains('dark'), private: chip('.tag.private'), public: chip('.tag.public') };
+        return {
+          dark: document.documentElement.classList.contains('dark'),
+          private: chip('.tag.private'),
+          public: chip('.tag.public'),
+          // The institution badge joined the same navy ramp, so it inherits the
+          // same dark-mode failure: a 7% navy literal over the #1e1811 card is
+          // no pill at all. It is only covered because it was added to the dark
+          // override list beside .tag.private, and nothing but this asserts that.
+          affiliation: chip('.tag.affiliation'),
+        };
       });
       assert.equal(seen.dark, scheme === 'dark', 'theme.js did not follow the colour scheme');
       assert.ok(seen.private >= 8, `the Private badge is ${seen.private.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);
       assert.ok(seen.public >= 8, `the Public badge is ${seen.public.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);
+      assert.ok(seen.affiliation >= 8, `the institution badge is ${seen.affiliation.toFixed(1)}/255 from the card in ${scheme} — no visible pill`);
       await ctx.close();
     }
   });

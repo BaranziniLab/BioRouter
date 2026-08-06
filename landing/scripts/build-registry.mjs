@@ -497,7 +497,19 @@ const first = (re, s) => {
 // catalog. An attribute nothing else uses cannot collide with a topic name.
 const PRIVACY_BADGE_ATTR = 'data-privacy-badge';
 
-/** Every `<span class="tag …">` in `block`, as `{ label, badge }`. */
+// The INSTITUTION badge, DR-26's third axis rendered on the card, and it is
+// filtered out of the harvested tags for exactly the reason the privacy badge is
+// — it shares the .ext-tags row, so without this "UCSF data" would be published
+// as a subject topic of the two private extensions and then re-rendered as a
+// second chip beside the badge the shelf already prepends.
+//
+// It carries its institution ID as its VALUE, not merely a marker, because the
+// label a reader sees is a display name and the card's declaration is a slug:
+// with only a marker there would be no way to tell whether the chip on the card
+// is the picture of the affiliation the card declares, or of some other one.
+const AFFILIATION_BADGE_ATTR = 'data-affiliation-badge';
+
+/** Every `<span class="tag …">` in `block`, as `{ label, badge, institution }`. */
 function tagSpans(block) {
   const all = tagsOf(block);
   const out = [];
@@ -506,7 +518,15 @@ function tagSpans(block) {
     if (t.closing || t.name !== 'span' || !classList(t).includes('tag')) continue;
     const inner = innerOf(block, all, k);
     if (inner === null) continue; // an unclosed span has no label to read
-    out.push({ label: stripTags(inner), badge: PRIVACY_BADGE_ATTR in t.attrs });
+    out.push({
+      label: stripTags(inner),
+      badge: PRIVACY_BADGE_ATTR in t.attrs,
+      // null = not an institution badge. '' = one that names no institution,
+      // which is a chip claiming an affiliation it cannot name and is caught
+      // below rather than folded into "not a badge".
+      institution:
+        AFFILIATION_BADGE_ATTR in t.attrs ? String(t.attrs[AFFILIATION_BADGE_ATTR] ?? '') : null,
+    });
   }
   return out;
 }
@@ -515,7 +535,7 @@ const allTags = (containerRe, s) => {
   const block = first(containerRe, s);
   if (!block) return [];
   return tagSpans(block)
-    .filter((t) => !t.badge)
+    .filter((t) => !t.badge && t.institution === null)
     .map((t) => t.label);
 };
 
@@ -527,6 +547,22 @@ const privacyBadges = (containerRe, s) => {
     .filter((t) => t.badge)
     .map((t) => t.label);
 };
+
+/** The institution badge chips in a card's tag row, in document order. */
+const affiliationBadges = (containerRe, s) => {
+  const block = first(containerRe, s);
+  if (!block) return [];
+  return tagSpans(block)
+    .filter((t) => t.institution !== null)
+    .map((t) => ({ id: t.institution, label: t.label }));
+};
+
+// The badge label, in one place, so the page and this generator cannot spell it
+// differently. The DISPLAY NAME, never the id — a badge reading "ucsf data" is a
+// slug that escaped onto the marketplace, and DR-26 asks for a name a reader can
+// act on. The " data" suffix is not decoration either: it is what keeps this chip
+// from being read as the ordinary "UCSF" org tag sitting beside it on the row.
+const institutionBadgeLabel = (name) => `${name} data`;
 
 // ---- Extensions ----------------------------------------------------------
 // A missing or unclosed section, or a section with no cards, is a FAILURE and
@@ -667,6 +703,53 @@ const extensions = extCards.map(({ attrs, inner: card }, index) => {
     for (const inst of affiliation) {
       if (!Object.prototype.hasOwnProperty.call(INSTITUTION_NAMES, inst)) {
         fail(`${label}: data-affiliation names "${inst}", which is not in the institutions map`);
+      }
+    }
+  }
+
+  // The institution badge is held to the declaration the same way the privacy
+  // badge is, and for the same reason: without JavaScript the chip is the whole
+  // of what a visitor is told, and nothing on that path trims, filters or
+  // corrects it. Two sources for one fact drift.
+  //
+  // Both directions. A badge on a card that declares NO affiliation is the
+  // dangerous one — it paints an institutional constraint the catalog does not
+  // record, so the page and the daemon disagree about a flow the daemon is the
+  // one enforcing.
+  const instBadges = affiliationBadges(/<div class="ext-tags">([\s\S]*?)<\/div>/, card);
+  const badgeIds = instBadges.map((b) => b.id);
+  if (affiliation === null) {
+    if (instBadges.length > 0) {
+      fail(
+        `${label}: the tag row carries an institution badge (${badgeIds.map((i) => `"${i}"`).join(', ')}) ` +
+          `but the card declares no data-affiliation — absent means unconstrained, and a badge ` +
+          `nobody declared paints a constraint the app will not enforce`
+      );
+    }
+  } else if (
+    privacy === 'private' &&
+    affiliation.length > 0 &&
+    affiliation.every((i) => Object.prototype.hasOwnProperty.call(INSTITUTION_NAMES, i))
+  ) {
+    // Only once the declaration itself is sound. A card that already failed one
+    // of the rules above would otherwise be reported twice, the second time
+    // pointing at the badge — the wrong half of the problem to fix.
+    if (badgeIds.join(' ') !== affiliation.join(' ')) {
+      fail(
+        `${label}: the tag row badges [${badgeIds.join(', ')}] but the card declares ` +
+          `data-affiliation="${affiliation.join(' ')}" — without JavaScript this card is all a ` +
+          `visitor sees, so the badge and the attribute must name the same institutions in the ` +
+          `same order`
+      );
+    } else {
+      for (const b of instBadges) {
+        const want = institutionBadgeLabel(INSTITUTION_NAMES[b.id]);
+        if (b.label !== want) {
+          fail(
+            `${label}: the institution badge for "${b.id}" reads "${b.label}", expected "${want}" — ` +
+              `the badge renders the institutions map's DISPLAY NAME, never the raw id`
+          );
+        }
       }
     }
   }

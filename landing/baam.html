@@ -483,7 +483,7 @@
         </div>
         <p class="ext-desc">Multimodal access to the UCSF Clinical Data Warehouse through natural language. One-call cohort building across diagnoses, medications, procedures, labs, radiology/imaging, immunizations, allergies, and vitals; clinical-notes/NLP search; read-only queries, schema discovery, and structured results. Requires UCSF network credentials (CAMPUS\username and password).</p>
         <div class="ext-footer">
-          <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">CDW</span><span class="tag">Clinical</span></div>
+          <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">CDW</span><span class="tag">Clinical</span></div>
           <a href="https://github.com/BaranziniLab/CDWAgent/releases/download/v0.5.1-brxt/cdwagent.brxt" class="brxt-chip">
             <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             .brxt
@@ -507,7 +507,7 @@
         </div>
         <p class="ext-desc">Natural language SQL on the UCSF OMOP de-identified clinical database. Read-only access to standardized EHR data under the OMOP Common Data Model. v0.2.0 adds built-in OMOP/SQL-Server context plus concept-search, lab-finder, and live schema tools so the agent reaches the right data faster and more reliably. Requires UCSF credentials.</p>
         <div class="ext-footer">
-          <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">OMOP</span><span class="tag">EHR</span></div>
+          <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span><span class="tag">OMOP</span><span class="tag">EHR</span></div>
           <a href="https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.2.0-brxt/ucsfomopagent.brxt" class="brxt-chip">
             <svg class="icon icon-sm" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7,10 12,15 17,10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
             .brxt
@@ -3831,7 +3831,61 @@ extensions: []</pre>
     return false;
   }
 
-  function extCardHtml(extension, featured) {
+  // The affiliation a registry entry DECLARES, as a list. Absent, null and an
+  // entry that is not an array all read as `[]` here — but only because
+  // readableAffiliations() below has already refused the payload for anything
+  // that is present and unusable. Nothing downstream may quietly turn a broken
+  // declaration into "unconstrained": absent means unconstrained, and that is a
+  // different answer from "we could not read it".
+  const affiliationOf = (extension) =>
+    Array.isArray(extension.affiliation) ? extension.affiliation : [];
+
+  // The badge label. The display name out of the registry's `institutions` map,
+  // never the raw id — "ucsf data" is a slug leaking onto the page, and DR-26
+  // wants a name a reader can act on. The " data" is what keeps this chip from
+  // reading as the ordinary "UCSF" org tag it sits beside on the same row.
+  const institutionBadgeLabel = (institutions, id) => institutions[id] + ' data';
+
+  // The affiliation half of readableTiers(), and it exists for the same reason:
+  // registry.json is fetched at runtime, so none of the generator's refusals
+  // reach this page. The generator hard-fails on an empty affiliation, on an
+  // affiliation naming an institution the map does not declare, and on an
+  // affiliation on a public card. Rendering must not paper over any of the
+  // three — a chip built from a broken declaration would state a constraint
+  // nobody approved, and dropping the chip silently would state the opposite.
+  // Either way the honest answer is the authored static shelf underneath.
+  function readableAffiliations(extensions, institutions) {
+    const names = institutions && typeof institutions === 'object' ? institutions : {};
+    const bad = [];
+    extensions.forEach(e => {
+      const declared = e.affiliation;
+      if (declared === undefined || declared === null || !('affiliation' in e)) return;
+      if (!Array.isArray(declared) || declared.length === 0) {
+        bad.push(e.id + ': affiliation is ' + JSON.stringify(declared) +
+          ' — absent means unconstrained, so an empty one would render a constraint nobody declared');
+        return;
+      }
+      if (tierOf(e) !== 'private') {
+        bad.push(e.id + ': affiliation on a public extension — affiliation asks under whose ' +
+          'agreements, which only arises once the data is private');
+        return;
+      }
+      declared.forEach(id => {
+        if (typeof names[id] !== 'string' || names[id].length === 0) {
+          bad.push(e.id + ': affiliation names ' + JSON.stringify(id) +
+            ', which the registry\'s institutions map does not name');
+        }
+      });
+    });
+    if (bad.length === 0) return true;
+    console.warn(
+      'baam: keeping the static extension shelf — ' + bad.length +
+      ' registry affiliation' + (bad.length === 1 ? '' : 's') + ' cannot be rendered: ' + bad.join('; ')
+    );
+    return false;
+  }
+
+  function extCardHtml(extension, featured, institutions) {
     const privacy = tierOf(extension);
     const privacyLabel = privacy === 'private' ? 'Private' : 'Public';
     // BOTH states are labelled. A badge shown only on private extensions teaches
@@ -3843,11 +3897,40 @@ extensions: []</pre>
     // attribute — never by the `private`/`public` class, which a real subject
     // tag is free to use.
     const privacyBadge = `<span class="tag ${privacy}" data-privacy-badge>${privacyLabel}</span>`;
+    // The institution badge, one chip per declared affiliation, immediately
+    // after the tier it qualifies. Position is load-bearing twice: `trimTagRows`
+    // drops chips from the END, so a badge authored second is the last thing
+    // sacrificed to a narrow row; and the no-JS view has no trimmer at all, so
+    // whatever is authored first is what survives `overflow: hidden`.
+    //
+    // A card with no `data-affiliation` renders NOTHING here. Absent means
+    // unconstrained, and an empty badge would read as a constraint that does
+    // not exist — which is why this is a map over the declared list rather than
+    // a chip with a fallback label.
+    const affiliation = affiliationOf(extension);
+    const affiliationBadges = affiliation.map(id =>
+      `<span class="tag affiliation" data-affiliation-badge="${escapeHtml(id)}">` +
+      `${escapeHtml(institutionBadgeLabel(institutions, id))}</span>`
+    ).join('');
+    // The institution badge and the "UCSF" subject tag say the same word for the
+    // same reason, and side by side they read as a rendering fault. The badge is
+    // the one derived from a declaration, so the tag is the one that gives way.
+    // Matched on the id AND the display name, because a card is free to spell
+    // its own tag either way.
+    const affiliationWords = {};
+    affiliation.forEach(id => {
+      affiliationWords[String(id).toLowerCase()] = 1;
+      affiliationWords[String(institutions[id]).toLowerCase()] = 1;
+    });
     // .ext-tags is `max-height: 22px; overflow: hidden`, i.e. exactly one row.
     // The badge takes a slot, so only TWO real tags can follow it; slicing at 3
-    // here would silently clip the third on every card.
-    const rawTags = (extension.tags || []).filter(t => !/^apache/i.test(t));
-    const tags = privacyBadge + rawTags.slice(0, 2).map(tag => {
+    // here would silently clip the third on every card. Each institution badge
+    // takes one of those two slots for the same reason.
+    const rawTags = (extension.tags || []).filter(
+      t => !/^apache/i.test(t) && !affiliationWords[t.toLowerCase()]
+    );
+    const budget = Math.max(0, 2 - affiliation.length);
+    const tags = privacyBadge + affiliationBadges + rawTags.slice(0, budget).map(tag => {
       const low = tag.toLowerCase();
       const cls = low === 'ucsf' ? 'tag ucsf' : low === 'mcp' ? 'tag mcp' : 'tag';
       return `<span class="${cls}">${escapeHtml(tag)}</span>`;
@@ -3865,7 +3948,17 @@ extensions: []</pre>
     const extName = escapeHtml(extension.extension_name || '');
     const featCls = featured ? ' is-feat' : '';
     const eyebrow = featured ? '<div class="feat-eyebrow">Featured</div>' : '';
-    return `<div class="ext-card${featCls}" data-tags="${keywords}" data-license="${license}" data-org="${orgToken}" data-privacy="${privacy}" data-extension-name="${extName}">
+    // The authored cards carry `data-affiliation` and this renderer did not, so
+    // the two views of the same card disagreed about the third axis the moment
+    // the registry landed. ABSENT, not empty, when there is no affiliation:
+    // `data-affiliation=""` is the one spelling the generator refuses outright,
+    // and re-introducing it here would make the JS-rendered DOM state a
+    // constraint that does not exist — and would put the shelf a step away from
+    // failing its own build the day anything reads the attribute back.
+    const affAttr = affiliation.length
+      ? ` data-affiliation="${escapeHtml(affiliation.join(' '))}"`
+      : '';
+    return `<div class="ext-card${featCls}" data-tags="${keywords}" data-license="${license}" data-org="${orgToken}" data-privacy="${privacy}" data-extension-name="${extName}"${affAttr}>
       ${eyebrow}
       <div class="ext-card-header">
         <div class="icon-tile"><svg class="icon" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg></div>
@@ -3928,7 +4021,7 @@ extensions: []</pre>
     });
   }
 
-  function renderExtensions(extensions) {
+  function renderExtensions(extensions, institutions) {
     const featured = [], primary = [], adapters = [];
     extensions.forEach(e => {
       if (featIndex(e.id) !== -1) featured.push(e);
@@ -3937,12 +4030,12 @@ extensions: []</pre>
     });
     featured.sort((a, b) => featIndex(a.id) - featIndex(b.id));
 
-    document.getElementById('ext-featured').innerHTML = featured.map(e => extCardHtml(e, true)).join('');
+    document.getElementById('ext-featured').innerHTML = featured.map(e => extCardHtml(e, true, institutions)).join('');
     document.getElementById('ext-featured-wrap').hidden = featured.length === 0;
-    document.getElementById('ext-primary').innerHTML = primary.map(e => extCardHtml(e, false)).join('');
+    document.getElementById('ext-primary').innerHTML = primary.map(e => extCardHtml(e, false, institutions)).join('');
 
     const adaptWrap = document.getElementById('ext-adapters-wrap');
-    document.getElementById('ext-adapters').innerHTML = adapters.map(e => extCardHtml(e, false)).join('');
+    document.getElementById('ext-adapters').innerHTML = adapters.map(e => extCardHtml(e, false, institutions)).join('');
     adaptWrap.hidden = adapters.length === 0;
     if (adapters.length === 0) adaptWrap.dataset.empty = '1';
     document.getElementById('count-adapters').textContent = adapters.length + ' adapters';
@@ -4023,7 +4116,8 @@ extensions: []</pre>
       // empties the static grid as its last step, so a half-applied render has
       // already destroyed the fallback it would need to fall back to.
       if (!readableTiers(registry.extensions)) return;
-      renderExtensions(registry.extensions);
+      if (!readableAffiliations(registry.extensions, registry.institutions)) return;
+      renderExtensions(registry.extensions, registry.institutions || {});
       if (activeShelf === 'extensions') runFilter();
     } catch (e) { /* keep the static no-JS fallback grid */ }
   }

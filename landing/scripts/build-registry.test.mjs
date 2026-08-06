@@ -130,6 +130,31 @@ const REJECTED = [
   ['badge-contradicts-tier', /^registry: .*the privacy badge reads "Public" but the card declares data-privacy="private"/m],
   ['unbadged-card', /^registry: .*carries 0 \[data-privacy-badge\] chips, expected exactly one reading "Public"/m],
 
+  // The same drift one axis over. The institution badge is the only place the
+  // no-JS view states DR-26's third axis, and each of these three publishes a
+  // card that says something the catalog does not.
+  //
+  //   undeclared  — a badge with no attribute behind it paints an institutional
+  //                 constraint the daemon will never enforce. Absent means
+  //                 unconstrained, so this is the fail-OPEN direction.
+  //   contradicts — badge and attribute name different institutions, and only
+  //                 the attribute reaches registry.json and the app.
+  //   shows-the-id— the badge rendered from the slug. INSTITUTIONS carries a
+  //                 display name precisely so DR-26's warning can NAME an
+  //                 institution instead of shrugging a slug at the user.
+  [
+    'affiliation-badge-undeclared',
+    /^registry: .*carries an institution badge \("ucsf"\) but the card declares no data-affiliation/m,
+  ],
+  [
+    'affiliation-badge-contradicts-declaration',
+    /^registry: .*badges \[stanford\] but the card declares data-affiliation="ucsf"/m,
+  ],
+  [
+    'affiliation-badge-shows-the-id',
+    /^registry: .*institution badge for "ucsf" reads "ucsf data", expected "UCSF data"/m,
+  ],
+
   // A catalog of nothing is never a legitimate result — on a real run it
   // rewrites the compiled-in private set to empty.
   ['missing-section', /^registry: .*no element with id="extensions-section"/m],
@@ -204,7 +229,16 @@ test('the happy fixture parses, so the refusals above are not "zero cards"', () 
   // too many, or published "Private" as a topic, satisfies every other
   // assertion here.
   assert.deepEqual(pub.tags, ['MCP'], 'the Public badge must not be published as a subject tag');
-  assert.deepEqual(priv.tags, ['UCSF', 'MCP'], 'the Private badge must not be published as a subject tag');
+  // Exact for the institution badge too: it shares this row, so an unfiltered
+  // one publishes "UCSF data" as a TOPIC of the extension — and the shelf then
+  // re-renders it as a third chip beside the badge it already prepends. The
+  // plain "UCSF" subject tag beside it must survive, which is what separates
+  // "skip the badge" from "delete anything that mentions the institution".
+  assert.deepEqual(
+    priv.tags,
+    ['UCSF', 'MCP'],
+    'neither the Private badge nor the institution badge may be published as a subject tag'
+  );
 });
 
 test('a subject tag is not deleted for being spelled like the badge', () => {
