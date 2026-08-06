@@ -129,9 +129,26 @@ this section is the ledger.
   (`privacy::refusal::workspace_out_of_reach`) answers *private*, *unreadable* and *no such
   conversation* in one sentence, so it cannot be walked as an oracle. Both extension-**enable**
   doors on this surface — `workspace_set_tools { add_extensions }` and
-  `workspace_open { new: { extensions } }` — now carry Gate F1's tier arm as
+  `workspace_open { new: { extensions } }` — carry Gate F1 through
   `refuse_gated_extension_enable`, resolved from the compiled baseline *before* the installed-set
   lookup so that an uninstalled private extension and an installed one give the same sentence.
+
+  ⚠ **That sentence was true of one of the two doors when it was written.** `refuse_gated_extension_enable`
+  was a second, independent spelling of the gate `manage_extensions` already had
+  (`check_enable_allowed`) — same three arms, different words, and the **operator pin first**,
+  where the other put the tier arm first because issue #56's finding 13 had shown the pin to be
+  an install-state oracle. `workspace_set_tools` survived that ordering by accident (it asks with
+  no config entry, before the lookup); `workspace_open { new: { extensions } }` looks the entry up
+  first and so answered *"…is disabled in the Biorouter configuration (enabled: false)"* to a
+  public caller who may not have the connector at all. Closed 2026-08-06 by collapsing the two
+  functions into one — `privacy::refusal::extension_enable_refusal` — with a single clause order:
+  **tier arm, affiliation arm, then the operator pin**, both privacy arms above the one arm that
+  says anything about this machine. `check_enable_allowed` and `refuse_gated_extension_enable` are
+  now renderings of that one gate and decide nothing themselves; a source scan in each file fails
+  if either grows an arm of its own again. The user's HTTP enable door
+  (`POST /agent/add_extension`) keeps its own typed refusal and its own warn-and-proceed posture on
+  the other two arms — DR-26's user/agent asymmetry — but asks the same tier predicate,
+  `privacy::refusal::tier_refuses`, rather than a fourth hand-written copy of it.
 
   `visibility::tests::the_matrix_has_production_callers` is the assertion that keeps the predicates
   wired at all — it exists because "the mechanism is built, the entry point is never called" is a
@@ -468,6 +485,51 @@ not carry one has not answered Q2, whatever prose surrounds it.
 A row reading *"nothing / no caller"* is a legitimate answer. It is a **finding**, recorded where
 the next reader meets it, which is the whole difference between this campaign's fixed leaks and its
 found ones. What is not legitimate is the absence of the row.
+
+### 3.1 Q2 answered for one capability: unloading an extension
+
+Kept here as the worked example, because it is the capability that produced the pattern twice —
+once as the leak (finding 14: `manage_extensions {disable}` ran `ExtensionManager::remove_extension`
+with no privacy decision in scope, so a chat on a public model could unload the clinical connector
+that Gate E will not show it, that Gate C refuses its every call into, and that — since finding 13
+— the catalogue will not even name) and once as the leak's own sibling. The first fix gated
+`manage_extensions` and named the workspace file out of scope; the workspace fix gated the two
+**enable** doors and did not look at the unload one. **One capability, two entrances, and the
+requester needed one line of the tool list to walk from the closed one to the open one.**
+
+| Other entry point to the same capability | Reachable by | Guarded by | Where that guard is called |
+|---|---|---|---|
+| `extensionmanager__manage_extensions {action:"disable"}` | model | `ExtensionManager::assert_extension_manageable` (= `assert_extension_reachable(&normalize(name), Some(admitted))`) | `agents/extension_manager_extension.rs::manage_extensions_impl` |
+| `workspace_set_tools {remove_extensions}` | model | the **same** predicate, called by name | `agents/workspace_extension.rs::handle_set_tools`, per name, before `apply_extension_changes` — **closed 2026-08-06; it was the open door** |
+| `POST /agent/remove_extension` | user, and any holder of the daemon secret (AR-11) | **nothing** | **no caller.** Deliberately off [the gated list](../../crates/biorouter-server/src/routes/session_reach.rs) — it is a *negative control* in `session_reach.rs::every_gated_route_resolves_the_tier_before_it_touches_the_session`, so gating it is an edit to that list and not a line in the handler. Its sibling `POST /agent/add_extension` **is** gated (`session_reach`), which is the same asymmetry one crate over. **Open, and stated: the residual of [#47](https://github.com/BaranziniLab/biorouter/issues/47)** |
+| `GET /agent/tools?session_id=` (the empty-`session_id` branch) | user, through Settings → Extensions → tool permissions | **nothing**, by ruling | `routes/agent.rs::get_tools` removes and re-adds one globally enabled extension on the permission-settings pseudo-session to list its tools. Task 16 keeps this surface unfiltered on purpose — it is the user's own administration view, not the model's context — and the pseudo-session is not a conversation |
+| The config path: `biorouter configure` and `biorouter extension remove` → `config::set_extension_enabled` / `config::remove_extension` | user at the keyboard | **nothing**, by ruling | `biorouter-cli/src/commands/configure.rs`, `commands/extension.rs`. These edit the operator's own file and unload nothing from a live agent. #42's pin is *read* out of that file by every gate above; a gate *on* it would be a gate on the user's own config, which R7's master switch already says is theirs |
+
+The enable half of the same capability is enumerated in §3's third row above and is now one
+predicate (`privacy::refusal::extension_enable_refusal`) behind three model-facing doors —
+`manage_extensions {enable}`, `workspace_set_tools {add_extensions}`,
+`workspace_open {new:{extensions}}` — with the user's HTTP door asking the same tier boolean under
+its own typed refusal. Two further **load** paths are deliberately ungated and belong in the
+enumeration rather than in a fix: `config::resolve_extensions_for_new_session` (a session starts
+holding the operator's enabled set; the tier is enforced downstream at Gates E and C, never by
+refusing to load) and the app/ACP paths (`routes/apps.rs`, `biorouter-acp/src/server.rs`), which
+attach an app's declared extensions to that app's own agent.
+
+The enumeration above is the complete set of production call sites that reach
+`ExtensionManager::remove_extension`, whether directly or through `Agent::remove_extension`. Two
+further matches for `.remove_extension(` in the tree are **not** this capability and are recorded
+so the next enumeration does not have to re-decide them: `PermissionManager::remove_extension`
+(`biorouter-cli/src/commands/configure.rs`, `config/permission.rs`) drops a *permission map* entry
+and touches no server — the census's standing lesson that a name match is not a call site.
+
+⚠ **Do not add a third spelling of the unload rule.** Both model-facing doors call
+`assert_extension_manageable`, which is `assert_extension_reachable` **verbatim** — so discovery
+and management answer with one function, and all three of its consequences hold at both doors: an
+unknown name reads Private and is refused (which is what stops the refusal being the install-state
+oracle finding 13 closed at the catalogue), the name is normalized to the key the executor removes
+under, and a model bound to another institution may *see* a mismatched connector but may not unload
+it. A hand-written `class.tier.is_private() && cap.tier() == Public` at a third door is how these
+two came apart.
 
 ---
 

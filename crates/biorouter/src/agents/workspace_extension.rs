@@ -1771,6 +1771,48 @@ impl WorkspaceClient {
         };
 
         if let Some(agent) = &agent {
+            // **Gate F1's UNLOAD half, at this tool's own door (issue #56,
+            // finding 14's SECOND door).** `manage_extensions {disable}` has
+            // asked `assert_extension_manageable` since finding 14 landed; this
+            // handler reached the very same executor — `Agent::remove_extension`,
+            // a passthrough to `ExtensionManager::remove_extension` — with no
+            // privacy decision anywhere on the path. So the capability was gated
+            // at one entrance and open at the other, and the reachable caller is
+            // the one finding 14 names: a chat classified Private but bound to a
+            // public model passes `refuse_unless_visible` for its own row, and
+            // then unloaded the private connector the public model may not see,
+            // may not call into, and may not name.
+            //
+            // ⚠ **The same predicate as the other door, called by name — not a
+            // second spelling of it.** `assert_extension_manageable` is
+            // `assert_extension_reachable(&normalize(name), Some(admitted))`
+            // verbatim, so all three of its consequences arrive here too, and
+            // all three are wanted: an unknown name reads Private and is refused
+            // (which is what stops this refusal being the existence oracle
+            // `add_extensions` needed a comment to avoid), the name is
+            // normalized to the key the executor removes under, and a model
+            // bound to another institution may see a mismatched connector but
+            // may not unload it. Writing the rule out here in this file's own
+            // words is exactly how these two doors drifted apart in the first
+            // place.
+            //
+            // ⚠ **Asked on the TARGET's manager**, because it is the target's
+            // loaded set that is about to change and the tier is a property of
+            // that entry — while `cap` is the CALLER's, because the caller is
+            // the one being entitled. Both halves matter when the two
+            // conversations differ.
+            //
+            // ⚠ **BEFORE `apply_extension_changes`, not inside its remove loop**,
+            // so a refused removal cannot land after that function has already
+            // applied the adds — the "resolve everything before mutating
+            // anything" rule the add half states above, held across both halves.
+            for name in &args.remove_extensions {
+                agent
+                    .extension_manager
+                    .assert_extension_manageable(name, cap)
+                    .await
+                    .map_err(|e| e.message.to_string())?;
+            }
             applied.extend(
                 Self::apply_extension_changes(
                     agent,
@@ -2098,6 +2140,18 @@ impl WorkspaceClient {
     /// The exact /agent/add_extension handler path (routes/agent.rs:744-767):
     /// add on the live agent, persist only after a successful load. Returns the
     /// `applied` labels for the extensions that changed.
+    ///
+    /// ⚠ **This function decides nothing about privacy, and it has exactly one
+    /// caller for that reason.** Both of its halves are gated at
+    /// [`Self::handle_set_tools`], where the capability lives: `add_configs`
+    /// have already been through Gate F1's enable arm
+    /// ([`Self::resolve_added_extensions`]), and every name in
+    /// `remove_extensions` has already been through its unload arm
+    /// (`ExtensionManager::assert_extension_manageable`, issue #56 finding 14's
+    /// second door). A SECOND caller would silently be an ungated door to
+    /// `Agent::add_extension` and `Agent::remove_extension` — which is precisely
+    /// how this one came to be one. If you need this here, carry both gates with
+    /// it or move them inside.
     async fn apply_extension_changes(
         agent: &crate::agents::Agent,
         session_id: &str,
@@ -4441,6 +4495,147 @@ mod tests {
         crate::workspace_services::clear_test_override();
     }
 
+    /// An MCP server with nothing in it, so a test can put a **loaded**
+    /// extension under a chosen name into a real `ExtensionManager` without
+    /// spawning `biorouter mcp <name>`.
+    ///
+    /// Every `ServerHandler` method has a default, so the empty impl is the
+    /// whole server: the unload gate reads the extensions map and the entry's
+    /// config, never the server's behaviour.
+    #[derive(Clone)]
+    struct NullServer;
+
+    impl rmcp::ServerHandler for NullServer {}
+
+    /// **Finding 14's SECOND door.** `manage_extensions {disable}` has asked
+    /// `assert_extension_manageable` since finding 14 landed — and
+    /// `workspace_set_tools {remove_extensions}` reached the same executor
+    /// (`Agent::remove_extension`, a passthrough to
+    /// `ExtensionManager::remove_extension`) with no privacy decision anywhere
+    /// on the path. One capability, gated at one entrance and open at the other.
+    ///
+    /// Driven with a **loaded** connector and asserted as an ABSENCE OF EFFECT,
+    /// because a handler that unloads the server and then reports a refusal
+    /// passes every prose assertion: the private extension must still be in the
+    /// target's extensions map afterwards.
+    ///
+    /// Three arms, because two of them are how the gate could be wrong while
+    /// looking right:
+    ///
+    ///  * the private connector survives a public caller's unload, with Gate
+    ///    F1's own sentence — not a local paraphrase;
+    ///  * a **public** extension, loaded in the same manager, is still
+    ///    unloadable by that same caller, so this is not a blanket refusal of
+    ///    `remove_extensions`;
+    ///  * the connector NOT being loaded produces the identical sentence, so
+    ///    the refusal is not the existence oracle finding 13 closed next door.
+    ///
+    /// The target row is **public**, so `refuse_unless_visible` is provably not
+    /// what refused: what is being tested is the EXTENSION's tier against the
+    /// caller's capability, which is the axis the finding names.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_a_public_caller_the_unload_of_a_private_extension() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = seeded_target(&c, "set-tools-unload").await;
+        let private_ext = a_private_extension();
+
+        let manager = crate::execution::manager::AgentManager::instance()
+            .await
+            .expect("agent manager");
+        let agent = manager
+            .get_or_create_agent(target.clone())
+            .await
+            .expect("agent");
+        // Loaded under the normalized key the gate and the executor both resolve.
+        for name in [private_ext, "developer"] {
+            agent
+                .extension_manager
+                .add_inprocess_server(name, NullServer)
+                .await
+                .expect("in-process server");
+        }
+
+        let unload = |name: &str| {
+            serde_json::json!({
+                "session_id": target, "remove_extensions": [name]
+            })
+        };
+
+        let refused = call_as(
+            &c,
+            "workspace_set_tools",
+            unload(private_ext),
+            public_caller(),
+        )
+        .await;
+        let loaded_refusal = text_of(&refused);
+        // FIRST, and deliberately: the assertion the prose cannot make for
+        // itself. An ungated handler unloads the connector and then reports a
+        // failure of its own (the persist step, which cannot find the row) —
+        // which satisfies `is_error` while the damage is already done.
+        assert!(
+            agent
+                .extension_manager
+                .is_extension_enabled(private_ext)
+                .await,
+            "the public model unloaded the private connector: {loaded_refusal}"
+        );
+        assert_eq!(refused.is_error, Some(true), "{loaded_refusal}");
+        assert!(
+            loaded_refusal.contains(&expected_private_extension_refusal(private_ext)),
+            "not Gate F1's refusal: {loaded_refusal}"
+        );
+
+        // …and the same caller still unloads a PUBLIC extension, so the gate is
+        // the tier and not a refusal of the whole argument. Asserted on the
+        // manager rather than on the sentence: this test's session row lives in
+        // the client's own store, so the persist step at the end of
+        // `apply_extension_changes` may fail after the unload has happened.
+        let public_unload = call_as(
+            &c,
+            "workspace_set_tools",
+            unload("developer"),
+            public_caller(),
+        )
+        .await;
+        let public_text = text_of(&public_unload);
+        assert!(
+            !public_text.contains("private extension"),
+            "a public extension met the tier gate: {public_text}"
+        );
+        assert!(
+            !agent
+                .extension_manager
+                .is_extension_enabled("developer")
+                .await,
+            "the public extension was not unloaded: {public_text}"
+        );
+
+        // §14.4 / R10: "installed", "not installed" and "no such extension" are
+        // one indistinguishable refusal for a caller that may not touch it.
+        agent
+            .extension_manager
+            .remove_extension(private_ext)
+            .await
+            .expect("remove_extension is idempotent");
+        let absent = call_as(
+            &c,
+            "workspace_set_tools",
+            unload(private_ext),
+            public_caller(),
+        )
+        .await;
+        assert_eq!(
+            (absent.is_error, text_of(&absent)),
+            (refused.is_error, loaded_refusal),
+            "the refusal tells a public caller whether the private connector is loaded"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
     /// **Finding 4, door 2.** `workspace_open {new:{extensions}}` chooses what a
     /// brand-new conversation is BORN holding, and forwards the names to
     /// `start_session`, whose own resolution goes through the flag-less
@@ -4744,16 +4939,21 @@ mod tests {
         crate::workspace_services::clear_test_override();
     }
 
-    /// DR-15's master opt-out reaches all four newly gated doors, read off the
-    /// capability's own sample rather than a process-global.
+    /// DR-15's master opt-out reaches every newly gated door in this file, read
+    /// off the capability's own sample rather than a process-global.
     ///
-    /// Without this, "the feature is off" could mean four different things at
-    /// four gates — and a gate that ignored the toggle would refuse a user who
+    /// Without this, "the feature is off" could mean five different things at
+    /// five gates — and a gate that ignored the toggle would refuse a user who
     /// has switched the whole mechanism off, which is the one outcome DR-15
     /// forbids.
+    ///
+    /// The fifth arm is finding 14's second door (`remove_extensions`). It
+    /// inherits the toggle rather than re-reading it — `assert_extension_reachable`
+    /// asks `cap.enforced()` off the same sample that carried the tier — and
+    /// this is what proves the inheritance rather than assuming it.
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
-    async fn the_master_opt_out_turns_the_four_new_workspace_gates_off() {
+    async fn the_master_opt_out_turns_every_new_workspace_gate_off() {
         let recorder = FakeServices::with_gui(true).install();
         let f = tier_fixture().await;
         let private_ext = a_private_extension();
@@ -4807,6 +5007,22 @@ mod tests {
         assert!(
             !text.contains("private extension"),
             "the opt-out did not reach the set_tools enable gate: {text}"
+        );
+
+        // Finding 14's second door: the UNLOAD half honours the same switch.
+        let unload = call_as(
+            &f.client,
+            "workspace_set_tools",
+            serde_json::json!({
+                "session_id": f.public_id, "remove_extensions": [private_ext]
+            }),
+            opted_out_caller(),
+        )
+        .await;
+        let text = text_of(&unload);
+        assert!(
+            !text.contains("private extension"),
+            "the opt-out did not reach the set_tools unload gate: {text}"
         );
 
         crate::workspace_services::clear_test_override();
@@ -4873,6 +5089,19 @@ mod tests {
                 "`{wiring}` is gone: an extension-enable door lost its Gate F1 wiring"
             );
         }
+
+        // …and Gate F1's UNLOAD half, at the one door in this file that takes an
+        // extension AWAY (finding 14's second door). Spelled as the shared
+        // predicate's own name rather than as a local rule, so a re-spelling of
+        // the tier comparison here fails this assertion instead of passing it:
+        // the whole defect was two doors to one capability answering with two
+        // different pieces of code.
+        assert!(
+            production.contains(".assert_extension_manageable(name, cap)"),
+            "`workspace_set_tools {{remove_extensions}}` lost Gate F1's unload wiring: it \
+             reaches `Agent::remove_extension` again with no privacy decision on the path, \
+             which is finding 14 with the other door open"
+        );
 
         // …and the dispatcher hands each newly gated handler the capability the
         // call was ADMITTED on. Without this the guards above have nothing to
