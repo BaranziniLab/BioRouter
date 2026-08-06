@@ -20388,6 +20388,127 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+## DR-29 — the five audit rulings
+
+> **Ruled 2026-08-06.** A six-surface audit found nine unwired guards and a set of cross-surface
+> inconsistencies. The operator accepted all five recommendations. Tasks 62–66.
+
+⚠ **Read [the campaign state record](privacy-tiers-campaign-state.md) first.** These rulings assume
+the safety-not-security posture already settled there; none of them attempts to close the accepted
+filesystem residuals.
+
+### D1 — the ungated transcript read is deleted, not gated
+
+`platform__manage_schedule {action: "session_content"}` reads **any** conversation's full transcript
+with no privacy check. `handle_session_content` (`schedule_tool.rs:448-495`) takes only `arguments` —
+no `CallCapability` in its signature — and is intercepted at `agent.rs:3759` **before**
+`dispatch_tool_call`, so it never meets a gate. `is_workspace_tool_refused_for` matches only the
+workspace names, so **subagents can call it too**, which is the one context every other cross-session
+reach was carefully closed in.
+
+**Ruled: delete the action.** It duplicates `workspace_read_conversation`, which is now gated and
+better shaped. Threading a capability into it is the fallback if deletion turns out to break a real
+workflow — but two implementations of one capability is what produced the hole.
+
+⚠ **Fix the refusal copy in the same change.** `workspace_out_of_reach` says *"not through another
+workspace tool"* — true, and actively misleading, because four of the six doors to a transcript are
+not workspace tools.
+
+### D2 — the private→public write is refused, like the spawn already is
+
+The same act gets opposite rulings depending on the tool: `subagent` with a public override is
+**refused** (`spawn_downgrade`), while `workspace_send_prompt` into a public chat and
+`workspace_open {new:{prompt}}` are **permitted and silent** — the latter minting a permanently
+public row holding private-origin text.
+
+**Ruled: refuse the downgrade write.** One branch, and it removes the contradiction rather than
+documenting it.
+
+⚠ **Amend `spawn_downgrade`'s advice text in the same change.** It currently reads *"start a new chat
+on it and give it the task directly"* — which points at exactly the path being closed. This is the
+audit's sharpest finding: **the refusals were routing cooperative agents into the ungated paths.** A
+model that reads its refusals carefully was *more* likely to find the bypass than one that gave up.
+
+Deleting `requires_first_crossing_approval`, `may_write` and `lineage_of` is in scope here — refusing
+makes all three unnecessary, and shipping a fifth correct-but-uncalled guard is worse than shipping
+none.
+
+### D3 — private payloads stay out of the logs, and diagnostics stop being cross-session
+
+`RequestLog` writes full payloads unconditionally, private providers included. The diagnostics bundle
+zips the last ten `llm_request.*.jsonl` **regardless of which session produced them**, plus a verbatim
+`config.yaml`.
+
+⚠ **This is the only path in the entire audit where private transcripts leave the machine to a third
+party** — a user hits a bug, saves the zip, and emails it to support believing they sent a bug report.
+
+**Ruled: fix both.** Metadata-only logging for private-tier providers (model, timings, tokens, error),
+and filter the diagnostics sweep to the named session. Neither needs lattice reasoning; both are
+filters on two call sites.
+
+### D4 — forks carry their affiliations
+
+`create_derived_session` carries `privacy_tier` via `raise_privacy` but never copies
+`session_affiliations`; `import_session` does the same. **Editing a message forks a session** — the
+most ordinary gesture in the product — and the fork then reads as *"no institution has touched
+this,"* which `owners_compatible` treats as compatible with every model.
+
+**Ruled: carry it.** One monotone `UPDATE`, in the safe direction. Recorded as a ruling only because
+it changes behaviour for rows that already forked.
+
+### D5 — the badge tells the truth
+
+The renderer derives privacy from the live BAAM catalogue; the daemon's private set is two
+compile-time strings and implements only the first union term. So after a catalogue update tags a new
+connector private, Settings shows a **Private** badge on an extension a public model may enable and
+call. The renderer's own comment calls this *"a promise the daemon is not yet keeping."*
+
+**Ruled: at minimum make the badge honest** — mark catalogue-only entries as not yet enforced. The
+full fix, a Rust reader for the second union term, is the real answer and is larger; it is not
+required for this release.
+
+---
+
+### Task 62: Delete the ungated transcript read (D1)
+
+- [ ] Remove `session_content` from `manage_schedule`; keep the `sessions` action (names, working
+      dirs, counts) and gate it like its siblings.
+- [ ] Correct `workspace_out_of_reach`'s copy so it does not imply workspace tools are the only doors.
+- [ ] **Gate:** a test asserting no tool reachable from a public chat returns another session's
+      message bodies. ⚠ Enumerate the doors — this bug existed because one door was found and four
+      were not.
+
+### Task 63: Refuse the private→public write (D2)
+
+- [ ] `workspace_send_prompt` and `workspace_open {new:{prompt}}` refuse a private→public downgrade,
+      reusing `spawn_downgrade`'s predicate and shape.
+- [ ] Amend `spawn_downgrade`'s advice text.
+- [ ] Delete `requires_first_crossing_approval`, `may_write`, `lineage_of` — refusing makes them dead.
+- [ ] **Gate:** the same downgrade is refused through spawn, send-prompt and open, asserted per path.
+      Plus: no privacy refusal in the tree advises an action another gate forbids — this is the
+      finding, made mechanical.
+
+### Task 64: Keep private payloads out of logs and bug reports (D3)
+
+- [ ] `RequestLog` records metadata only for private-tier providers.
+- [ ] The diagnostics bundle includes only the named session's logs.
+- [ ] **Gate:** a private turn leaves no payload on disk; a diagnostics zip built from a public
+      session contains no private session's log. ⚠ Assert on the zip's **contents**, not on the
+      filter's return value.
+
+### Task 65: Forks carry their affiliations (D4)
+
+- [ ] `create_derived_session` and `import_session` copy `session_affiliations`.
+- [ ] **Gate:** fork a two-institution session, assert the child carries both; assert a model matching
+      one is still refused. Verify against a row forked *before* the fix — the migration case.
+
+### Task 66: The extension badge stops overpromising (D5)
+
+- [ ] A catalogue-only Private entry renders as not-yet-enforced, distinctly from a daemon-enforced one.
+- [ ] **Gate:** the two states render differently, and the copy names which is which.
+
+---
+
 ## DR-28 — capability governs reach, and exporting is a declassifying act
 
 > **Ruled 2026-08-05**, from the operator, in three parts. This corrects
