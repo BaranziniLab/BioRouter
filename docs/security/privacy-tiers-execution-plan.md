@@ -20388,6 +20388,94 @@ fail, revert, and record the observed failures in the commit message.
 ⚠ And one case that must **pass**: a public card whose description says "patient". That is the
 false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
 
+## DR-32 — affiliation must be visible, not only enforced
+
+> **Ruled 2026-08-06.** Task 79.
+
+**Measured asymmetry.** Tier is stated wherever a user looks — `PrivacyBadge` renders from **13
+non-test call sites**: the chat's name pill, the tab strip, the sidebar, History rows, the composer,
+Settings → Extensions (item and modal), Settings → Privacy, the `.brxt` install modal, and the
+first-run notice.
+
+**Affiliation renders nowhere.** The only renderer file that mentions it is
+`ui/desktop/src/utils/crossAffiliation.ts`, which exists to turn a **refused** tool call into an
+accept card. So a user learns their chat's institution **only at the moment something is refused** —
+after they have already tried.
+
+⚠ **And no UI could show it today even if one wanted to.** `ProviderMetadata` carries no affiliation
+field, and `GET /config/providers` serves `tier` and `runs_locally` and nothing else. Affiliation
+exists only as the instance-level `Provider::affiliation()`. The plumbing has to come first.
+
+⚠ **Also unread: the extension side.** `registry.json` carries per-extension `affiliation` and an
+`institutions` display-name map. The desktop reads neither; affiliation reaches enforcement only
+through the compiled Rust constant.
+
+### What must NOT change
+
+⚠ **The accept card's request deliberately carries no client-supplied institution**, and that must
+stay. Its own comment says why:
+
+> *"The institution is read by the daemon from the same sample that produced the warning; a
+> client-supplied one would let a caller record an acceptance for a triple the user was never shown."*
+
+That is about the **grant payload**. Displaying a chat's own affiliation is a different question, and
+this task must not blur them: **render** affiliation freely, **never** send one back as authority.
+
+### Task 79: Affiliation becomes visible, in the app and on the marketplace
+
+- [ ] **Step 1: Expose it from the daemon.** An affiliation on the provider metadata and on
+      `GET /config/providers`, resolved from the same instance-level source the gates use — never a
+      name-keyed table (DR-26 rejected that: a Versa module repointed elsewhere must lose Private and
+      `ucsf` together).
+- [ ] **Step 2: Render it beside the tier badge**, at the surfaces where a user decides something —
+      at minimum the model picker, the composer, and the chat's name pill. Reuse `PrivacyBadge`'s
+      shape so the two axes read as one system rather than two features.
+- [ ] **Step 3: Render the extension side too**, from `registry.json`'s `affiliation` and the
+      `institutions` display-name map — the fields the desktop currently ignores.
+- [ ] **Step 4: Get the three non-obvious states right.** Each is a real value, and each will be
+      rendered wrong by a naive mapping:
+      - **`Local`** is the **most permissive** affiliation, not the narrowest. A user seeing `Local`
+        beside `UCSF` must not read it as more restricted. ⚠ This is DR-26's central inversion showing
+        up in the visual hierarchy.
+      - **Private with no stated institution** is meaningful, not missing — such a model clears only
+        `Any` extensions. `affiliation::unstated_model` already names this case.
+      - **Public** has no affiliation at all, and should show none rather than an empty one.
+- [ ] **Step 5: Be honest about enforcement**, exactly as [Task 66](#task-66-the-extension-badge-stops-overpromising-d5)
+      requires for the tier badge. A catalogue-declared affiliation the daemon does not enforce must
+      not render identically to one it does.
+- [ ] **Step 6: The gate.**
+      - The three states of Step 4 render distinguishably, asserted per state.
+      - ⚠ A client-supplied affiliation is still refused by the grant route — assert the security
+        property this task must not erode.
+      - The renderer's value agrees with the daemon's for the same provider. Two sources that agree
+        today diverge on the first edit to one of them.
+      - Visual: legible in all three theme families, light and dark. Colour is what a theme changes,
+        and these badges are colour-carrying.
+
+- [ ] **Step 7: The landing site and BAAM.** Measured 2026-08-06: **privacy already ships there** —
+      43 `data-privacy` attributes on `baam.html`, badges rendering, and a Private/Public facet on the
+      shelf (Task 35). **Affiliation does not.** It is declared as `data-affiliation` on the two UCSF
+      cards and carried in `registry.json` alongside the `institutions` map, and **nothing on the page
+      reads it, renders it, or filters by it.**
+      - Render the institution on a card, from `institutions`' display name rather than the raw id.
+      - ⚠ **The JS shelf that re-renders cards from `registry.json` emits only `data-privacy` and
+        `data-extension-name` — it does not re-emit `data-affiliation`.** So the JS-rendered DOM and
+        the authored static DOM already differ on that attribute. Fix that before rendering from it,
+        or the badge appears on a first paint and vanishes on a re-render.
+      - ⚠ Keep the generator's rules intact: absent means unconstrained, an empty list is a build
+        failure, and an id absent from `institutions` is a build failure. Rendering must not
+        soften what the build already refuses.
+
+⚠ **This is a new surface, not a bug fix.** Enforcement already works; nothing leaks because it is
+invisible. The argument for shipping it is that *"the user should know what regime their chat is
+under"* is the premise of the whole axis — and today they find out only when it is too late to matter.
+
+⚠ **Both surfaces move together.** Shipping the app badge without the marketplace one leaves a user
+unable to tell, before installing, whether a connector will be reachable from the model they use —
+which is the decision the badge exists to inform.
+
+---
+
 ## DR-31 — a subagent inherits its parent's affiliation, and cannot change it
 
 > **Ruled 2026-08-06**, in the operator's words: *"the subagents should also inherit the affiliations
@@ -20431,7 +20519,7 @@ proof of user. An approval an agent can author the approver for is not an approv
 So the refusal says what the user can do instead — start a chat on that model themselves — which is
 the same remedy `spawn_downgrade` offers.
 
-### Task 78
+### Task 78: A subagent inherits its parent's affiliation
 
 - [ ] **Step 1** Compare the child's affiliation against the parent's, beside the two existing tier
       checks, reading it off the **constructed instance** exactly as `child_tier` is — a provider
