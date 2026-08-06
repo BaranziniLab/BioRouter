@@ -27,7 +27,22 @@ use std::sync::{Arc, LazyLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 19;
+pub const CURRENT_SCHEMA_VERSION: i32 = 20;
+
+/// The arm that first ran issue #56's classification backfill.
+///
+/// Named because the migration tests need "one below the backfill" and
+/// `CURRENT_SCHEMA_VERSION - 1` stopped meaning that the moment arm 20 landed.
+#[cfg(test)]
+const PRIVACY_BACKFILL_ARM: i32 = 19;
+
+/// The arm that re-runs the backfill with every evidence source, repairing the
+/// rows [`PRIVACY_BACKFILL_ARM`] classified from the bound provider alone.
+///
+/// Named because [`SessionStorage::retreat_to_privacy_repair`] has to name the
+/// number it rewinds to, and a literal there that drifted from the arm would
+/// silently rewind to a version that re-runs nothing.
+const PRIVACY_REPAIR_ARM: i32 = 20;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -2203,6 +2218,22 @@ fn read_privacy_tier(row: &sqlx::sqlite::SqliteRow) -> SessionClassification {
 pub(crate) struct BackfillCounts {
     /// Rows this run raised to Private, from a bound private-tier provider.
     pub private: i64,
+    /// Rows this run raised to Private from the **turn ledger** — `token_events`
+    /// recorded a billed turn served by a private-tier provider, and the row's
+    /// `provider_name` (the LAST binding) did not say so.
+    ///
+    /// This is the population finding 9 is about, counted rather than described:
+    /// a chat that ran on Ollama and was then switched to Claude for one
+    /// formatting question. `provider_name` reads `anthropic`; the ledger still
+    /// holds the Ollama turns. Disjoint from [`Self::private`] by construction —
+    /// the last-bound statement runs first, so anything it raised is no longer
+    /// `privacy_tier = 'public'` when the ledger statement runs.
+    pub private_from_turn_history: i64,
+    /// Rows that matched a raise on the evidence but were **skipped because the
+    /// user declassified them**. Not an error; the number exists so a support
+    /// conversation can tell "the migration found nothing" apart from "the
+    /// migration found it and correctly left it alone".
+    pub declassified_skipped: i64,
     /// Rows left public with a provider name recorded — a read, not a guess.
     pub public_named: i64,
     /// Rows left public with NO provider recorded. Unknown provenance, failed
@@ -2560,6 +2591,41 @@ impl SessionStorage {
                     Self::create_schema(&self.pool).await?;
                     if let Err(e) = Self::import_legacy(&self.pool, &self.session_dir).await {
                         warn!("Failed to import some legacy sessions: {}", e);
+                    }
+                    // ⚠ Issue #56 finding 10 — **the classification backfill must
+                    // run HERE too, and this branch is the reason it is not
+                    // enough to own the numbered arms.**
+                    //
+                    // `create_schema` stamps `CURRENT_SCHEMA_VERSION` before this
+                    // line, so `run_migrations` will never enter arm 19 or arm 20
+                    // on this database in any later process either. Every legacy
+                    // JSONL chat therefore arrived Public and stayed Public:
+                    // `import_legacy_session` binds `session.privacy_tier`, which
+                    // deserialises from a file written years before the column
+                    // existed and so takes `#[serde(default =
+                    // "SessionClassification::public")]`.
+                    //
+                    // The innocent path is not exotic — it is `sessions.db` being
+                    // lost or reset (a support instruction, a Reset App Data, a
+                    // machine move). The user's Ollama history comes back public,
+                    // silently, on a database that reports itself fully migrated.
+                    //
+                    // ⚠ Failure here must NOT be logged and forgotten, which is the
+                    // shape the rest of this branch uses. `create_schema` has
+                    // already stamped the counter at the top, so a swallowed
+                    // failure leaves imported rows public on a database that no
+                    // arm will ever re-enter — the same silent-public outcome, one
+                    // level down. It is also not worth aborting a first launch
+                    // over. So the counter is walked back below the repair arm and
+                    // the next launch retries there. `retreat_to_privacy_repair`
+                    // owns that, and says why it is safe.
+                    if let Err(e) = Self::backfill_privacy_from_recorded_provenance(&self.pool).await
+                    {
+                        warn!(
+                            "issue #56: the privacy backfill failed on the fresh-database import \
+                             path; imported legacy chats stay public until it succeeds: {e}"
+                        );
+                        Self::retreat_to_privacy_repair(&self.pool).await;
                     }
                 }
                 Ok::<(), anyhow::Error>(())
@@ -3314,11 +3380,43 @@ impl SessionStorage {
                 // privacy_tier` and abort startup. The helper is idempotent and
                 // shape-guarded, so the second call is free.
                 Self::ensure_privacy_schema(pool).await?;
-                // ...and the backfill, HERE and nowhere else. See the function's
-                // own comment for why a startup-repeating home would be a silent
-                // one-way regression. The counts it returns are logged inside it;
-                // nothing on this path branches on them.
-                let _ = Self::backfill_privacy_from_bound_provider(pool).await?;
+                // ...and the backfill. See the function's own comment for why a
+                // startup-repeating home would still be wrong even now that the
+                // statement is declassification-guarded. The counts it returns are
+                // logged inside it; nothing on this path branches on them.
+                let _ = Self::backfill_privacy_from_recorded_provenance(pool).await?;
+            }
+            20 => {
+                // ⚠ **The repair arm, and it exists because arm 19 already ran on
+                // the databases that matter most.**
+                //
+                // Arm 19 shipped a backfill that read exactly one column —
+                // `sessions.provider_name`, the LAST provider the row was bound
+                // to. A chat that ran its history on Ollama and was then switched
+                // to Claude for one formatting question reads `anthropic` there
+                // and was backfilled **public**, with a private transcript. That
+                // is issue #56 finding 9, and it is not a "going forward" problem:
+                // the rows are already on disk, on every database that has opened
+                // this branch — including the operator's, whose `schema_version`
+                // records 19 applied on 2026-08-03.
+                //
+                // Arm 19 cannot be edited to fix them. That is the O10 hazard this
+                // file already records twice: work added to a number a machine has
+                // passed runs on no machine that has passed it. So the widened
+                // backfill needs a number nobody has passed, which is this one.
+                //
+                // It is the SAME function as arm 19's, deliberately. A database
+                // arriving from ≤18 runs it twice in one ladder, and that is the
+                // point — the statements are idempotent (`AND privacy_tier =
+                // 'public'`) and declassification-guarded, so "ran twice" is a
+                // property this arm proves on every upgrade rather than a hazard.
+                // `the_repair_arm_reruns_the_backfill_without_undoing_a_declassification`
+                // is the behavioural check.
+                //
+                // `ensure_privacy_schema` first, for arm 19's reason: this arm must
+                // not assume any earlier arm ran.
+                Self::ensure_privacy_schema(pool).await?;
+                let _ = Self::backfill_privacy_from_recorded_provenance(pool).await?;
             }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
@@ -3326,6 +3424,20 @@ impl SessionStorage {
         }
 
         Ok(())
+    }
+
+    /// Whether `table` exists. Sibling of [`Self::table_has_column`]: a
+    /// `pragma_table_info` on a missing table returns zero rows, so the column
+    /// check alone cannot tell "no such table" from "no such column", and the
+    /// backfill's shape guards need both answers.
+    async fn table_exists(pool: &Pool<Sqlite>, table: &str) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name = ?1)",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await?;
+        Ok(exists)
     }
 
     async fn table_has_column(pool: &Pool<Sqlite>, table: &str, column: &str) -> Result<bool> {
@@ -3393,10 +3505,15 @@ impl SessionStorage {
     /// own, and it landed first. With this helper the arm number stops being
     /// load-bearing and either merge order is safe.
     ///
-    /// No backfill lives here. The migration backfill runs ONCE from the
-    /// numbered arm, because a startup-repeating `WHERE provider_name IN (..)`
-    /// would re-privatise a session the user has just declassified —
-    /// declassification deliberately leaves `provider_name` untouched.
+    /// No backfill lives here. The backfill runs from the numbered arms and from
+    /// the fresh-database import, never per launch: a startup-repeating `WHERE
+    /// provider_name IN (..)` would re-privatise a session the user has just
+    /// declassified, because declassification deliberately leaves
+    /// `provider_name` untouched. That statement now also carries its own
+    /// declassification guard — which makes a re-run non-destructive and is
+    /// exactly why it must still not live here, since one guard between a
+    /// per-launch rewrite of every row and the user's declassifications is one
+    /// mechanism too few.
     async fn ensure_privacy_schema(pool: &Pool<Sqlite>) -> Result<()> {
         // BEGIN IMMEDIATE serializes the check-then-ALTER sequence across
         // concurrently running Biorouter processes, exactly as
@@ -3499,54 +3616,216 @@ impl SessionStorage {
     /// `the_backfilled_provider_set_is_every_provider_that_claims_private` checks
     /// against the shipped provider modules.
     fn backfill_update_sql() -> String {
-        let quoted: Vec<String> = Self::BACKFILL_PRIVATE_PROVIDERS
-            .iter()
-            .map(|name| format!("'{name}'"))
-            .collect();
         format!(
             "UPDATE sessions \
                 SET privacy_tier = '{private}', \
                     privacy_reason = 'backfill:' || provider_name \
               WHERE provider_name IN ({list}) \
-                AND privacy_tier = '{public}'",
+                AND privacy_tier = '{public}' \
+                AND {not_declassified}",
             private = SessionClassification::PRIVATE_SQL,
             public = SessionClassification::PUBLIC_SQL,
-            list = quoted.join(","),
+            list = Self::quoted_private_providers(),
+            not_declassified = Self::NOT_DECLASSIFIED_BY_USER,
         )
     }
 
-    /// Issue #56 §15 — the ONE-TIME classification backfill.
+    /// [`Self::BACKFILL_PRIVATE_PROVIDERS`] as a SQL `IN` list, shared by the two
+    /// raising statements so a provider can never be in one and not the other.
+    fn quoted_private_providers() -> String {
+        Self::BACKFILL_PRIVATE_PROVIDERS
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The declassification exclusion, as a correlated `NOT EXISTS` over the
+    /// append-only ledger.
     ///
-    /// ⚠ **This belongs to the numbered migration arm and to nothing else.**
-    /// [`Self::ensure_privacy_schema`] runs on **every** startup, and that is
-    /// the correct home for the columns and wrong home for this statement:
-    /// `declassify` deliberately leaves `provider_name` in place (a public chat
-    /// may run a private model — `bind_allowed` has always admitted that
-    /// direction), so a `WHERE provider_name IN (…)` re-run on the next launch
-    /// would re-privatise the row the user just declassified. That is a silent
-    /// reversal of the one irreversible action the design gives the user, and
-    /// `the_backfill_cannot_un_declassify` is the behavioural proof.
+    /// ⚠ **`AND privacy_tier = 'public'` is NOT this check, and reading it as
+    /// though it were is the bug that made the backfill a one-shot statement.**
+    /// A declassified row IS public — `declassify` lowers the tier and
+    /// deliberately leaves `provider_name` in place, because a public chat is
+    /// allowed to run a private model. So the tier guard admits exactly the rows
+    /// the user has just rescued, and a second run of the raising statement would
+    /// silently undo the one irreversible action the design gives them.
     ///
-    /// Fails OPEN, by decision (DR-10). A fail-CLOSED backfill (NULL provider
-    /// plus at least one message ⇒ private) was rejected: a user who has only
-    /// ever used a commercial provider would find a large slice of their history
-    /// marked private on first launch, refused on the model they normally use,
-    /// with only an irreversible declassification as the exit, one chat at a
-    /// time.
+    /// Keyed on the **ledger**, not on `privacy_reason = 'declassified_by_user'`.
+    /// The reason column holds the *current* provenance and is overwritten by the
+    /// next raise, so a chat that was declassified and later re-raised by a real
+    /// turn no longer records the declassification anywhere else; the ledger row
+    /// is append-only and permanent. It is also the artefact §12.5 already
+    /// guarantees exists for every declassification, so this cannot drift from
+    /// what "the user declassified it" means.
     ///
-    /// The residual, stated rather than buried: `provider_name` records the
-    /// LAST provider, not every provider. A session that ran on Versa and was
-    /// later switched backfills public even though its transcript contains
-    /// private-model work. There is no transcript scan and there will not be
-    /// one. `docs/security/privacy-tiers-migration.md` says this to the user in
-    /// one sentence.
+    /// The consequence is the point: with this clause the backfill is safe to run
+    /// more than once, which is what lets arm 20 repair arm 19's rows at all.
+    /// `the_repair_arm_reruns_the_backfill_without_undoing_a_declassification`
+    /// is the behavioural proof, and it fails if this clause is deleted.
+    const NOT_DECLASSIFIED_BY_USER: &str = "NOT EXISTS (SELECT 1 FROM classification_audit \
+         ca WHERE ca.session_id = sessions.id AND ca.to_classification = 'public')";
+
+    /// The **turn-ledger** raise — issue #56 finding 9.
     ///
-    /// `AND privacy_tier = 'public'` is not redundant even on the arm's single
-    /// run: a database that reached this arm with the columns already present
-    /// (BR-71's number collision is exactly that case) can hold rows a running
-    /// build already raised, and the ratchet must never be walked backwards or
-    /// re-stamped with a weaker `backfill:` provenance.
-    async fn backfill_privacy_from_bound_provider(pool: &Pool<Sqlite>) -> Result<BackfillCounts> {
+    /// ⚠ **`sessions.provider_name` is the last binding, not the history**, and
+    /// that residual used to be documented and left. The innocent path it costs:
+    /// a user runs a chat on Ollama, then switches to Claude for one formatting
+    /// question. `provider_name` reads `anthropic`, and the chat backfills
+    /// **public** with a private transcript sitting in it.
+    ///
+    /// `token_events` is the fix, and it is not a transcript scan — the residual
+    /// the design refused. It is a per-turn ledger the app has written since
+    /// migration 11: one append-only row per billed turn, carrying the
+    /// `session_id` and the `provider` that served it, from the same
+    /// `Provider::get_name()` string that `sessions.provider_name` is bound from.
+    /// A row there is the same fact the live ratchet fires on — *this session ran
+    /// a turn against this provider* — recorded before the ratchet existed.
+    ///
+    /// **The reason is `turn:<provider>`, not `backfill:<provider>`, and that is
+    /// a deliberate downgrade of the declassification control.** §12.4 grades on
+    /// what actually happened: `backfill:*` takes the strong (typed-phrase +
+    /// OS-password) control because the migration inferred a tier from a binding
+    /// and observed nothing, and `strong_confirmation_reason` says exactly that to
+    /// the user in those words. That sentence is FALSE for these rows — the ledger
+    /// is an observation of a turn, which is precisely what `turn:*` means and
+    /// what the live ratchet writes. Stamping `backfill:` here would show every
+    /// one of these users a reason that did not happen, which is the specific
+    /// falsehood `strong_confirmation_reason` exists to have stopped. And the
+    /// comparison that matters is not against `backfill:` but against the status
+    /// quo, which is **public with no control at all**: single-click-private is
+    /// strictly more protection than the row has today.
+    ///
+    /// The named provider is the EARLIEST *trustworthy* private-tier one in the
+    /// ledger, which is the turn that should have ratcheted the row had the
+    /// feature existed then.
+    ///
+    /// Deliberately a second statement rather than an `OR` on the first: the two
+    /// carry different provenance and different confirmation grades, and the
+    /// ordering (last-bound first) is what keeps [`BackfillCounts::private`] and
+    /// [`BackfillCounts::private_from_turn_history`] disjoint.
+    fn backfill_turn_history_update_sql() -> String {
+        let evidence = Self::TRUSTWORTHY_TURN_PROVIDER;
+        let list = Self::quoted_private_providers();
+        format!(
+            "UPDATE sessions \
+                SET privacy_tier = '{private}', \
+                    privacy_reason = 'turn:' || ( \
+                        SELECT te.provider FROM token_events te \
+                         WHERE te.session_id = sessions.id \
+                           AND te.provider IN ({list}) \
+                           AND {evidence} \
+                         ORDER BY te.ts ASC, te.id ASC LIMIT 1) \
+              WHERE privacy_tier = '{public}' \
+                AND EXISTS (SELECT 1 FROM token_events te \
+                             WHERE te.session_id = sessions.id \
+                               AND te.provider IN ({list}) \
+                               AND {evidence}) \
+                AND {not_declassified}",
+            private = SessionClassification::PRIVATE_SQL,
+            public = SessionClassification::PUBLIC_SQL,
+            not_declassified = Self::NOT_DECLASSIFIED_BY_USER,
+        )
+    }
+
+    /// Which `token_events` rows may be read as evidence of *which provider
+    /// served this turn*.
+    ///
+    /// ⚠ **Not every row's `provider` describes the call it sits on, and this is
+    /// the tree's own ruling rather than a new one.**
+    /// `reconcile_usage_schema_locked` runs on every startup and NULLs
+    /// `provider`/`model_id` on exactly the rows this predicate excludes, with the
+    /// reason written beside it: the old v11/v12 development migrations copied
+    /// each session's **final** model backward across its whole history, so
+    /// without a durable event identity (`event_key`) or a billed total there is
+    /// no evidence those values describe the original call.
+    ///
+    /// That is the SAME defect as finding 9 — a per-session last-provider value
+    /// masquerading as history — one table over. Reading those rows would have
+    /// re-imported the bug into its own fix, and on a first upgrade it would
+    /// actually happen: `run_migrations` walks the numbered arms **before** it
+    /// calls the reconcile, so on that one run the untrustworthy values are still
+    /// on disk when the backfill looks.
+    ///
+    /// Found by `the_repair_arm_reruns_the_backfill_without_undoing_a_declassification`
+    /// reporting one skipped row where two were expected — the fixture's own
+    /// ledger row had been scrubbed by the reconcile between the arm and the
+    /// assertion. `an_untrustworthy_ledger_row_does_not_classify_anything` is the
+    /// direct test.
+    const TRUSTWORTHY_TURN_PROVIDER: &str =
+        "(te.event_key IS NOT NULL OR te.billed_total_tokens IS NOT NULL)";
+
+    /// How many rows BOTH raising statements would have raised but skipped
+    /// because the user declassified them.
+    ///
+    /// Reporting only — but it is the number that distinguishes "the guard is
+    /// working" from "the guard matched nothing", and those are the same zero
+    /// everywhere else.
+    fn declassified_skipped_sql() -> String {
+        let evidence = Self::TRUSTWORTHY_TURN_PROVIDER;
+        let list = Self::quoted_private_providers();
+        format!(
+            "SELECT COUNT(*) FROM sessions \
+              WHERE privacy_tier = '{public}' \
+                AND (provider_name IN ({list}) \
+                     OR EXISTS (SELECT 1 FROM token_events te \
+                                 WHERE te.session_id = sessions.id \
+                                   AND te.provider IN ({list}) \
+                                   AND {evidence})) \
+                AND NOT ({not_declassified})",
+            public = SessionClassification::PUBLIC_SQL,
+            not_declassified = Self::NOT_DECLASSIFIED_BY_USER,
+        )
+    }
+
+    /// Issue #56 §15 — the classification backfill, from every provenance the
+    /// database actually records.
+    ///
+    /// ⚠ **It belongs to the numbered migration arms and to the fresh-database
+    /// import, and to nothing else.** [`Self::ensure_privacy_schema`] runs on
+    /// **every** startup, and that remains the wrong home even now that the
+    /// statements are declassification-guarded: the guard makes a re-run
+    /// *non-destructive*, it does not make a per-launch re-scan of every row a
+    /// thing this code should do, and one guard standing between a per-startup
+    /// statement and the user's declassifications is one mechanism too few.
+    /// `the_backfill_runs_from_the_migration_arms_and_the_import_and_nowhere_else`
+    /// pins the call sites.
+    ///
+    /// **Two evidence sources, in this order.**
+    ///
+    /// 1. [`Self::backfill_update_sql`] — the row's bound provider. What issue
+    ///    #56 shipped, unchanged apart from the declassification guard.
+    /// 2. [`Self::backfill_turn_history_update_sql`] — the `token_events` turn
+    ///    ledger. This is finding 9's fix: `provider_name` is the LAST binding,
+    ///    so a chat that ran on Ollama and was later switched to Claude read
+    ///    `anthropic` and backfilled public with a private transcript. The ledger
+    ///    still holds its Ollama turns. See that function for why those rows are
+    ///    stamped `turn:` rather than `backfill:`.
+    ///
+    /// The order is load-bearing for the counts, not for the outcome: the second
+    /// statement's `AND privacy_tier = 'public'` means it can only see rows the
+    /// first left alone, which is what makes the two counts disjoint.
+    ///
+    /// Still fails OPEN where it has nothing (DR-10). A fail-CLOSED backfill
+    /// (NULL provider plus at least one message ⇒ private) was rejected: a user
+    /// who has only ever used a commercial provider would find a large slice of
+    /// their history marked private on first launch, refused on the model they
+    /// normally use, with only an irreversible declassification as the exit, one
+    /// chat at a time.
+    ///
+    /// The residual, narrower than it was but still real: a session whose private
+    /// turns predate `token_events.provider` (migration 11) and which was later
+    /// rebound to a public provider records the private work in neither column,
+    /// and backfills public. There is no transcript scan and there will not be
+    /// one. `docs/security/privacy-tiers-migration.md` says this to the user.
+    ///
+    /// `AND privacy_tier = 'public'` is not redundant: a database that reached an
+    /// arm with the columns already present (BR-71's number collision is exactly
+    /// that case) can hold rows a running build already raised, and the ratchet
+    /// must never be walked backwards or re-stamped with a weaker provenance.
+    async fn backfill_privacy_from_recorded_provenance(
+        pool: &Pool<Sqlite>,
+    ) -> Result<BackfillCounts> {
         // Shape-guarded for the same reason `ensure_privacy_schema` is: this arm
         // must not assume an earlier arm ran. `provider_name` arrives in
         // migration 6, so every database that walked the ladder has it — but a
@@ -3564,10 +3843,49 @@ impl SessionStorage {
             return Ok(BackfillCounts::default());
         }
 
+        // ⚠ The declassification guard reads `classification_audit`, so BOTH
+        // statements below name a table that a database arriving from an early
+        // enough version has never had. `no such table` there is a failed
+        // startup, and — worse — the obvious repair (drop the guard when the
+        // table is missing) is the un-declassification bug wearing a fallback.
+        // Creating it is unconditionally correct instead: the DDL is
+        // `IF NOT EXISTS`, `ensure_privacy_schema` runs the identical statement
+        // on every launch anyway, and a database with no ledger has by
+        // construction recorded no declassification for the guard to miss.
+        sqlx::query(CLASSIFICATION_AUDIT_DDL).execute(pool).await?;
+
+        // The turn ledger is older still (`token_events` at migration 9, its
+        // `provider` column at 11, `event_key`/`billed_total_tokens` at 12-14),
+        // but a database that reaches here without it must lose the second
+        // evidence source, not the startup. All four columns are required, not
+        // just `provider`: without the two identity columns
+        // `TRUSTWORTHY_TURN_PROVIDER` cannot be evaluated, and dropping the
+        // predicate instead would read exactly the backward-copied values it
+        // exists to reject.
+        let turn_ledger = Self::table_exists(pool, "token_events").await?
+            && Self::table_has_column(pool, "token_events", "provider").await?
+            && Self::table_has_column(pool, "token_events", "event_key").await?
+            && Self::table_has_column(pool, "token_events", "billed_total_tokens").await?;
+        if !turn_ledger {
+            warn!(
+                "issue #56: this database has no usable turn ledger, so the backfill reads \
+                 only each row's bound provider — chats that switched providers may stay public"
+            );
+        }
+
         let private = sqlx::query(&Self::backfill_update_sql())
             .execute(pool)
             .await?
             .rows_affected() as i64;
+
+        let private_from_turn_history = if turn_ledger {
+            sqlx::query(&Self::backfill_turn_history_update_sql())
+                .execute(pool)
+                .await?
+                .rows_affected() as i64
+        } else {
+            0
+        };
 
         // ── Everything below this line is REPORTING, and none of it may fail the
         // migration. ────────────────────────────────────────────────────────────
@@ -3582,8 +3900,8 @@ impl SessionStorage {
         // one-shot property must not rest on a second mechanism, and none of
         // these numbers is worth a failed startup: they feed a log line that
         // nothing branches on.
-        let count = |sql: &'static str| async move {
-            match sqlx::query_scalar::<_, i64>(sql).fetch_one(pool).await {
+        let count = |sql: String| async move {
+            match sqlx::query_scalar::<_, i64>(&sql).fetch_one(pool).await {
                 Ok(value) => value,
                 Err(error) => {
                     warn!(
@@ -3596,27 +3914,38 @@ impl SessionStorage {
             }
         };
 
-        // What the migration did, in the four buckets a support conversation
-        // actually needs. The first three partition the table; `backfilled_empty`
-        // cuts across it and is the gap between these numbers and the ones the
-        // user can see, since History hides message-less rows. `-1` in any of
-        // them means "the count failed", which is why they are `i64` and not
-        // `u64`.
+        // What the migration did, in the buckets a support conversation actually
+        // needs. `public_named`/`unknown_provider` plus the private rows partition
+        // the table; `backfilled_empty` cuts across it and is the gap between
+        // these numbers and the ones the user can see, since History hides
+        // message-less rows. `-1` in any of them means "the count failed", which
+        // is why they are `i64` and not `u64`.
         let public_named = count(
             "SELECT COUNT(*) FROM sessions \
-              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') <> ''",
+              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') <> ''"
+                .to_string(),
         )
         .await;
         let unknown_provider = count(
             "SELECT COUNT(*) FROM sessions \
-              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') = ''",
+              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') = ''"
+                .to_string(),
         )
         .await;
         let empty = count(
             "SELECT COUNT(*) FROM sessions s \
-              WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)",
+              WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
+                .to_string(),
         )
         .await;
+        // Rows the evidence pointed at and the guard held back. Zero on a machine
+        // that has never declassified anything, which is most of them — its value
+        // is that a NON-zero here is the only place the guard is visible at all.
+        let declassified_skipped = if turn_ledger {
+            count(Self::declassified_skipped_sql()).await
+        } else {
+            0
+        };
 
         let visible = Self::privacy_notice_counts(pool)
             .await
@@ -3631,6 +3960,8 @@ impl SessionStorage {
 
         info!(
             backfilled_private = private,
+            backfilled_private_from_turn_history = private_from_turn_history,
+            backfilled_declassified_skipped = declassified_skipped,
             backfilled_public_named = public_named,
             backfilled_unknown_provider = unknown_provider,
             backfilled_empty = empty,
@@ -3638,14 +3969,72 @@ impl SessionStorage {
             notice_public_named_visible = visible.public_named_visible,
             notice_unknown_provider_visible = visible.unknown_provider_visible,
             notice_total_visible = visible.total_visible,
-            "issue #56: one-time privacy backfill from each session's last bound provider"
+            "issue #56: privacy backfill from each session's bound provider and turn ledger"
         );
         Ok(BackfillCounts {
             private,
+            private_from_turn_history,
+            declassified_skipped,
             public_named,
             unknown_provider,
             empty,
         })
+    }
+
+    /// Walk the recorded schema version back below the privacy repair arm, so the
+    /// next launch re-enters it.
+    ///
+    /// The one caller is the fresh-database import path, where `create_schema`
+    /// has already stamped `CURRENT_SCHEMA_VERSION` and a failed backfill would
+    /// otherwise strand imported chats public on a database that reports itself
+    /// fully migrated — no arm re-runs, and the failure is a log line nobody
+    /// reads. Walking the counter back converts it into a retry.
+    ///
+    /// Safe because arm 20 is `ensure_privacy_schema` + this backfill, and both
+    /// are idempotent: the columns are shape-guarded and the raising statements
+    /// are `AND privacy_tier = 'public'` plus the declassification guard. Deleting
+    /// only versions at or above the repair arm keeps every lower arm's record, so
+    /// no earlier migration re-runs.
+    ///
+    /// Best-effort by construction — it is already the recovery path, and a
+    /// failure here leaves exactly the state that not calling it would.
+    ///
+    /// ⚠ **The DELETE alone is not the rewind, and a version of this that stopped
+    /// there was written and caught by
+    /// `the_retreat_moves_the_counter_back_into_the_repair_arm`.** `create_schema`
+    /// records exactly ONE row, so deleting everything at or above the repair arm
+    /// empties the table — and `get_schema_version` then reads `MAX(version)` over
+    /// no rows and reports **0**. The next launch would replay the entire ladder
+    /// from migration 1 against a database that already has every table, which
+    /// aborts startup on `table … already exists`. Turning a mis-classification
+    /// into an unopenable database is not a recovery. The row below is what makes
+    /// the counter land ON the arm's predecessor instead of at the bottom.
+    async fn retreat_to_privacy_repair(pool: &Pool<Sqlite>) {
+        let below = PRIVACY_REPAIR_ARM - 1;
+        let rewind = async {
+            sqlx::query("DELETE FROM schema_version WHERE version >= ?1")
+                .bind(PRIVACY_REPAIR_ARM)
+                .execute(pool)
+                .await?;
+            // `OR IGNORE` because `version` is the primary key and a database
+            // that walked the ladder already records this number.
+            sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (?1)")
+                .bind(below)
+                .execute(pool)
+                .await?;
+            Ok::<(), sqlx::Error>(())
+        };
+        match rewind.await {
+            Ok(()) => warn!(
+                "issue #56: rewound the schema counter to v{below}; the next launch will \
+                 re-enter the privacy repair arm and retry the backfill"
+            ),
+            Err(error) => warn!(
+                %error,
+                "issue #56: could not rewind the schema counter — imported legacy chats may \
+                 stay classified public"
+            ),
+        }
     }
 
     /// The day-one notice's numbers (§15.5), computed from the user's own
@@ -13192,7 +13581,14 @@ mod tests {
             }
             pool.close().await;
 
-            force_schema_version(&db, CURRENT_SCHEMA_VERSION - 1).await;
+            // ⚠ `PRIVACY_BACKFILL_ARM - 1`, NOT `CURRENT_SCHEMA_VERSION - 1`.
+            // The doc above says "one below the backfill arm" and that used to be
+            // the same number; arm 20 (the repair) made them different, and a
+            // database left at 19 would skip the arm every test here is about
+            // while still passing several of them — arm 20 runs the same
+            // statements. Pinning the fixture to the arm keeps each test honest
+            // about which arm it exercised.
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM - 1).await;
             db
         }
 
@@ -13250,6 +13646,26 @@ mod tests {
                     .unwrap();
             pool.close().await;
             count
+        }
+
+        /// The stored tier, read WITHOUT opening a `SessionManager`.
+        ///
+        /// ⚠ `row()` opens the manager, and opening the manager runs the
+        /// migration ladder. Every "assert the fixture really is mis-classified
+        /// before the repair runs" check therefore has to read the database
+        /// directly — `row()` would silently apply the very arm under test and
+        /// then report the repaired value, turning the pre-condition into an
+        /// assertion that fails for the right-looking wrong reason.
+        async fn raw_tier(db: &Path, id: &str) -> String {
+            let pool = raw_pool(db).await;
+            let tier: String =
+                sqlx::query_scalar("SELECT privacy_tier FROM sessions WHERE id = ?1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            pool.close().await;
+            tier
         }
 
         async fn private_count(db: &Path) -> i64 {
@@ -13358,6 +13774,50 @@ mod tests {
             );
         }
 
+        /// The recovery the fresh-database branch falls back on, exercised
+        /// directly because the failure that triggers it cannot be provoked from
+        /// outside.
+        ///
+        /// ⚠ It is asserted through `get_schema_version`, not by counting rows.
+        /// That function reads `MAX(version)`, and `update_schema_version`
+        /// *appends* — so "walk the counter back" has to mean deleting the rows at
+        /// or above the arm, and a `DELETE … WHERE version = N` (or an UPDATE)
+        /// would leave the maximum untouched and rewind nothing at all, silently.
+        #[tokio::test]
+        async fn the_retreat_moves_the_counter_back_into_the_repair_arm() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let storage = SessionStorage::create(temp.path()).await.unwrap();
+            let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+            assert_eq!(
+                SessionStorage::get_schema_version(&storage.pool)
+                    .await
+                    .unwrap(),
+                CURRENT_SCHEMA_VERSION,
+                "a fresh database must start stamped, or the rewind below is a no-op"
+            );
+
+            SessionStorage::retreat_to_privacy_repair(&storage.pool).await;
+
+            assert_eq!(
+                SessionStorage::get_schema_version(&storage.pool)
+                    .await
+                    .unwrap(),
+                PRIVACY_REPAIR_ARM - 1,
+                "the next launch would not re-enter the repair arm"
+            );
+            storage.close().await;
+
+            // …and a real open from there does re-enter it and stamps back up,
+            // rather than failing on an arm that assumes an earlier one ran.
+            open(&db).await;
+            let pool = raw_pool(&db).await;
+            assert_eq!(
+                SessionStorage::get_schema_version(&pool).await.unwrap(),
+                CURRENT_SCHEMA_VERSION
+            );
+            pool.close().await;
+        }
+
         /// The six-provider fixture both count assertions read.
         fn one_of_each() -> [Seed; 6] {
             [
@@ -13381,15 +13841,17 @@ mod tests {
             // NULL provider backfills PUBLIC — fail-open, by decision (DR-10).
             assert_eq!(public_count(&db).await, 2);
 
-            // ...and the four buckets are what `info!` is handed. See `fn_body`
-            // for why this is a scan and not a captured event.
-            let body = fn_body("backfill_privacy_from_bound_provider");
+            // ...and the buckets are what `info!` is handed. See `fn_body` for
+            // why this is a scan and not a captured event.
+            let body = fn_body("backfill_privacy_from_recorded_provenance");
             assert!(
                 body.contains("info!("),
                 "the backfill no longer logs anything"
             );
             for key in [
                 "backfilled_private",
+                "backfilled_private_from_turn_history",
+                "backfilled_declassified_skipped",
                 "backfilled_public_named",
                 "backfilled_unknown_provider",
                 "backfilled_empty",
@@ -13401,13 +13863,12 @@ mod tests {
             }
         }
 
-        /// The values behind those four names, on the same fixture.
+        /// The values behind those names, on the same fixture.
         ///
         /// Driven through `ensure_privacy_schema` + the backfill directly rather
         /// than through `open`, because the counts describe the state at the
-        /// moment the migration runs and the statement is deliberately not
-        /// re-runnable — a second call would report `private = 0`, having
-        /// nothing left to do.
+        /// moment the migration runs: a second call reports `private = 0`, having
+        /// nothing left to do, and `open` now walks two arms that both call it.
         #[tokio::test]
         async fn the_backfill_reports_the_four_counts_it_logs() {
             let temp = tempfile::TempDir::new().unwrap();
@@ -13415,15 +13876,368 @@ mod tests {
 
             let pool = raw_pool(&db).await;
             SessionStorage::ensure_privacy_schema(&pool).await.unwrap();
-            let counts = SessionStorage::backfill_privacy_from_bound_provider(&pool)
+            let counts = SessionStorage::backfill_privacy_from_recorded_provenance(&pool)
                 .await
                 .unwrap();
             pool.close().await;
 
             assert_eq!(counts.private, 4, "the four private-tier providers");
+            assert_eq!(
+                counts.private_from_turn_history, 0,
+                "this fixture writes no turn ledger, so the second source must find nothing"
+            );
+            assert_eq!(counts.declassified_skipped, 0);
             assert_eq!(counts.public_named, 1, "anthropic");
             assert_eq!(counts.unknown_provider, 1, "the NULL-provider row");
             assert_eq!(counts.empty, 6, "none of the fixture rows has a message");
+        }
+
+        /// Append a turn to the per-turn ledger the way `apply_usage_event` does:
+        /// same table, same `provider` column (from the same `get_name()` string
+        /// `sessions.provider_name` is bound from), and — load-bearing — a durable
+        /// `event_key` and a `billed_total_tokens`.
+        ///
+        /// ⚠ **A fixture row without those two is not a weaker fixture, it is a
+        /// different one.** `reconcile_usage_schema_locked` runs on every startup
+        /// and NULLs `provider` on exactly the rows that have neither, so a row
+        /// written without them survives the migration arms, gets scrubbed by the
+        /// reconcile immediately afterwards, and reads as "this session never ran
+        /// that provider" for the rest of the test. That is how the trust
+        /// predicate was found; `an_untrustworthy_ledger_row_does_not_classify_anything`
+        /// keeps the other half of the behaviour pinned.
+        async fn record_turn(db: &Path, session_id: &str, provider: &str, ts: i64) {
+            record_turn_row(db, session_id, provider, ts, true).await;
+        }
+
+        async fn record_turn_row(
+            db: &Path,
+            session_id: &str,
+            provider: &str,
+            ts: i64,
+            durable: bool,
+        ) {
+            let pool = raw_pool(db).await;
+            let (event_key, billed) = if durable {
+                (Some(format!("{session_id}:{ts}")), Some(10_i64))
+            } else {
+                (None, None)
+            };
+            sqlx::query(
+                "INSERT INTO token_events \
+                     (session_id, ts, total_tokens, model_id, provider, event_key, \
+                      billed_total_tokens) \
+                 VALUES (?1, ?2, 10, 'm', ?3, ?4, ?5)",
+            )
+            .bind(session_id)
+            .bind(ts)
+            .bind(provider)
+            .bind(event_key)
+            .bind(billed)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        /// The other half of the trust predicate, and it is about real data.
+        ///
+        /// The old v11/v12 development migrations copied each session's **final**
+        /// model backward over its whole history, which is finding 9's own defect
+        /// one table over: a per-session last-provider value wearing the shape of
+        /// per-turn history. `reconcile_usage_schema_locked` NULLs those rows'
+        /// `provider` for exactly that reason — but the numbered arms run
+        /// **before** the reconcile on the one upgrade that matters, so the
+        /// backfill would see them if it did not exclude them itself.
+        #[tokio::test]
+        async fn an_untrustworthy_ledger_row_does_not_classify_anything() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db =
+                pre_privacy_database_with(temp.path(), &[session_on_with_messages("anthropic")])
+                    .await;
+            // No `event_key`, no `billed_total_tokens` — a row the tree already
+            // says is not evidence of the call it sits on.
+            record_turn_row(&db, "s1", "ollama", 100, false).await;
+
+            open(&db).await;
+
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Public,
+                "a backward-copied provider value was read as observed turn history"
+            );
+
+            // …and the same row WITH a durable identity does classify, so the
+            // assertion above is about the identity columns and not about a
+            // predicate that matches nothing.
+            record_turn_row(&db, "s1", "ollama", 200, true).await;
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM).await;
+            open(&db).await;
+
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Private
+            );
+        }
+
+        /// Issue #56 finding 9 — **the innocent path, and it is asserted against a
+        /// row that already exists.**
+        ///
+        /// A user ran a chat on Ollama and then switched to Claude for one
+        /// formatting question. `sessions.provider_name` is the LAST binding, so
+        /// it reads `anthropic`, and arm 19's backfill left the chat **public**
+        /// with a private transcript in it.
+        ///
+        /// The fixture is deliberately the state that shipped, reconstructed
+        /// rather than assumed: arm 19's own statement is run directly, the row is
+        /// confirmed **public** through a raw read, the counter is then set to
+        /// `PRIVACY_BACKFILL_ARM`, and only THEN is the repair arm allowed to run.
+        /// A test that started from a pre-19 database would prove the fix works
+        /// going forward and prove nothing about the rows the finding is about —
+        /// which are already on disk, on every machine that has opened this
+        /// branch.
+        #[tokio::test]
+        async fn the_repair_arm_classifies_a_chat_that_switched_away_from_a_private_provider() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(
+                temp.path(),
+                &[
+                    session_on_with_messages("anthropic"), // s1: ran on Ollama first
+                    session_on_with_messages("anthropic"), // s2: only ever Claude
+                ],
+            )
+            .await;
+            record_turn(&db, "s1", "ollama", 100).await;
+            record_turn(&db, "s1", "anthropic", 200).await;
+            record_turn(&db, "s2", "anthropic", 100).await;
+
+            // Arm 19 only: the state on every machine that has opened this branch.
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM - 1).await;
+            {
+                let pool = raw_pool(&db).await;
+                SessionStorage::ensure_privacy_schema(&pool).await.unwrap();
+                sqlx::query(&SessionStorage::backfill_update_sql())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            assert_eq!(
+                raw_tier(&db, "s1").await,
+                SessionClassification::PUBLIC_SQL,
+                "the fixture must reproduce the mis-classification, or the repair below \
+                 proves nothing"
+            );
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM).await;
+
+            open(&db).await; // arm 20, the repair
+
+            let s1 = row(&db, "s1").await;
+            assert_eq!(
+                s1.privacy_tier,
+                SessionClassification::Private,
+                "a chat with Ollama turns in the ledger is still classified from its last \
+                 binding alone"
+            );
+            assert_eq!(
+                s1.privacy_reason.as_deref(),
+                Some("turn:ollama"),
+                "the ledger is an OBSERVED turn, so the provenance — and with it §12.4's \
+                 declassification grade — must say so"
+            );
+            // …and the grade that provenance buys is the one the live ratchet
+            // would have given the same fact. Read through the real predicate, not
+            // restated here.
+            assert!(
+                !crate::privacy::declassify::requires_typed_confirmation(
+                    s1.privacy_reason.as_deref()
+                ),
+                "an observed private turn is §12.4's weak control"
+            );
+            assert_eq!(
+                row(&db, "s2").await.privacy_tier,
+                SessionClassification::Public,
+                "a chat whose whole ledger is a public provider must not be swept up"
+            );
+        }
+
+        /// The repair arm re-runs the same statements a second time, and that is
+        /// only safe because of the declassification guard.
+        ///
+        /// ⚠ This is the test that makes arm 20 possible at all. Arm 19's backfill
+        /// was a one-shot statement precisely because `declassify` leaves
+        /// `provider_name` in place, so `AND privacy_tier = 'public'` admits every
+        /// row the user has just rescued. `the_backfill_cannot_un_declassify`
+        /// cannot see that: it opens the database twice, and on the second open
+        /// the statement does not run, so it passes whether the guard exists or
+        /// not. Here the statement is run **directly**, after a real
+        /// declassification, so deleting `NOT_DECLASSIFIED_BY_USER` fails it.
+        #[tokio::test]
+        async fn the_repair_arm_reruns_the_backfill_without_undoing_a_declassification() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(
+                temp.path(),
+                &[
+                    session_on_with_messages("ollama"),    // s1: declassified below
+                    session_on_with_messages("anthropic"), // s2: ledger says ollama
+                ],
+            )
+            .await;
+            record_turn(&db, "s2", "ollama", 100).await;
+
+            open(&db).await;
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Private
+            );
+            declassify_via_user(&db, "s1").await;
+            declassify_via_user(&db, "s2").await;
+
+            // Not a second `open` — the arms have all run. This calls the
+            // statements the way arm 20 does, so the guard is the only thing
+            // standing between them and the two rescued rows.
+            let counts = {
+                let pool = raw_pool(&db).await;
+                let counts = SessionStorage::backfill_privacy_from_recorded_provenance(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                counts
+            };
+
+            for id in ["s1", "s2"] {
+                let session = row(&db, id).await;
+                assert_eq!(
+                    session.privacy_tier,
+                    SessionClassification::Public,
+                    "{id}: the re-run re-privatised a session the user declassified"
+                );
+                assert_eq!(
+                    session.privacy_reason.as_deref(),
+                    Some("declassified_by_user"),
+                    "{id}: the re-run overwrote the declassification provenance"
+                );
+            }
+            assert_eq!(counts.private, 0);
+            assert_eq!(counts.private_from_turn_history, 0);
+            assert_eq!(
+                counts.declassified_skipped, 2,
+                "both rows matched the evidence and were held back by the guard — a 0 here \
+                 would mean the statements simply found nothing, which is a different fact"
+            );
+        }
+
+        /// Issue #56 finding 10 — **legacy JSONL import landed Public and skipped
+        /// the backfill entirely.**
+        ///
+        /// `create_schema` stamps `CURRENT_SCHEMA_VERSION` *before* `import_legacy`
+        /// runs, so no numbered arm ever sees the imported rows, and
+        /// `import_legacy_session` binds `session.privacy_tier`, which
+        /// deserialises from a file predating the column and takes
+        /// `#[serde(default = "SessionClassification::public")]`.
+        ///
+        /// The innocent path is a lost or reset `sessions.db`: every legacy chat
+        /// comes back public. This drives the real `SessionManager` open against a
+        /// real `.jsonl` on disk — the production path, not the helper.
+        #[tokio::test]
+        async fn legacy_jsonl_import_classifies_instead_of_landing_public() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let session_dir = temp.path().join(SESSIONS_FOLDER);
+            std::fs::create_dir_all(&session_dir).unwrap();
+            // Two legacy chats: one on Ollama, one on Claude. The metadata line is
+            // what a pre-privacy build wrote — no `privacy_tier` key at all.
+            for (name, provider) in [("20240101_120000", "ollama"), ("20240102_120000", "openai")] {
+                std::fs::write(
+                    session_dir.join(format!("{name}.jsonl")),
+                    format!(
+                        "{{\"id\":\"{name}\",\"description\":\"legacy\",\"working_dir\":\"/tmp\",\
+                          \"provider_name\":\"{provider}\",\"message_count\":1}}\n\
+                         {{\"id\":\"m1\",\"role\":\"user\",\"created\":1704110400,\
+                          \"content\":[{{\"type\":\"text\",\"text\":\"hello\"}}]}}\n"
+                    ),
+                )
+                .unwrap();
+            }
+
+            let db = session_dir.join(DB_NAME);
+            assert!(!db.exists(), "the import path requires a missing database");
+            open(&db).await;
+
+            let imported = row(&db, "20240101_120000").await;
+            assert_eq!(
+                imported.provider_name.as_deref(),
+                Some("ollama"),
+                "the import did not carry the provider through — the assertion below would \
+                 then pass or fail for an unrelated reason"
+            );
+            assert_eq!(
+                imported.privacy_tier,
+                SessionClassification::Private,
+                "a legacy Ollama chat came back Public after a database reset"
+            );
+            assert_eq!(imported.privacy_reason.as_deref(), Some("backfill:ollama"));
+            assert_eq!(
+                row(&db, "20240102_120000").await.privacy_tier,
+                SessionClassification::Public,
+                "fail-open (DR-10) still holds for a legacy chat on a public provider"
+            );
+        }
+
+        /// The other half of finding 10: a database a **buggy build** already
+        /// imported into. Those rows are on disk, public, on a database stamped
+        /// with the current version — nothing re-enters, so "correct going
+        /// forward" leaves exactly them.
+        ///
+        /// ⚠ The buggy build is **reproduced, not simulated by rewriting the row
+        /// afterwards.** `create_schema` + `import_legacy` with no backfill
+        /// between them is literally the old code path, called here as its two
+        /// halves. The obvious alternative — import through the fixed path, then
+        /// `UPDATE … SET privacy_tier = <public>` to undo it — would put a
+        /// runtime-composed tier-lowering statement in this file purely to get
+        /// past a security audit that permits exactly one, which is a shape this
+        /// module already refuses (see `declassify_via_user`).
+        #[tokio::test]
+        async fn a_database_a_buggy_build_imported_into_is_repaired_by_the_repair_arm() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let session_dir = temp.path().join(SESSIONS_FOLDER);
+            std::fs::create_dir_all(&session_dir).unwrap();
+            std::fs::write(
+                session_dir.join("20240101_120000.jsonl"),
+                "{\"id\":\"20240101_120000\",\"description\":\"legacy\",\
+                  \"working_dir\":\"/tmp\",\"provider_name\":\"ollama\",\"message_count\":1}\n\
+                 {\"id\":\"m1\",\"role\":\"user\",\"created\":1704110400,\
+                  \"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}\n",
+            )
+            .unwrap();
+
+            let db = session_dir.join(DB_NAME);
+            {
+                // The old fresh-database branch, exactly: schema (which stamps the
+                // counter), then the import, and nothing else.
+                let storage = SessionStorage::new(temp.path().to_path_buf());
+                SessionStorage::create_schema(&storage.pool).await.unwrap();
+                SessionStorage::import_legacy(&storage.pool, &storage.session_dir)
+                    .await
+                    .unwrap();
+                storage.close().await;
+            }
+            assert_eq!(
+                raw_tier(&db, "20240101_120000").await,
+                SessionClassification::PUBLIC_SQL,
+                "the fixture must reproduce the mis-classification, or the repair below \
+                 proves nothing"
+            );
+            // …and it is stamped, which is the reason nothing re-enters. Forced to
+            // the backfill arm because that is where such a database sits once the
+            // repair arm exists.
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM).await;
+
+            open(&db).await; // arm 20
+
+            assert_eq!(
+                row(&db, "20240101_120000").await.privacy_tier,
+                SessionClassification::Private,
+                "the repair arm left a previously-imported legacy chat public"
+            );
         }
 
         #[tokio::test]
@@ -13562,42 +14376,66 @@ mod tests {
         /// delegating wrapper, not the function holding the DDL.
         ///
         /// So the property is asserted directly, and it is the property that
-        /// matters: the backfill has exactly one production call site, that site
-        /// is the numbered arm, and **nothing reachable from the per-startup
-        /// reconcile** performs it or reaches it. Unlike the shell gate this runs
-        /// on every CI build, and it cannot pass vacuously — every range is
-        /// asserted non-empty first, which is the failure mode the plan's own gate
-        /// text warns about at length.
+        /// matters: the backfill's production call sites are exactly the two
+        /// numbered arms and the fresh-database import, and **nothing reachable
+        /// from the per-startup reconcile** performs it or reaches it. Unlike the
+        /// shell gate this runs on every CI build, and it cannot pass vacuously —
+        /// every range is asserted non-empty first, which is the failure mode the
+        /// plan's own gate text warns about at length.
+        ///
+        /// ⚠ **The third call site is not a relaxation, it is finding 10.**
+        /// `create_schema` stamps `CURRENT_SCHEMA_VERSION` before `import_legacy`
+        /// runs, so the arms below can never see an imported legacy chat on the
+        /// database that imported it. Owning only the arms is precisely the gap
+        /// that let a reset `sessions.db` restore a user's whole Ollama history as
+        /// public. What must stay true is the *dangerous* half — not per startup —
+        /// and that is asserted separately below.
         #[test]
-        fn the_backfill_is_reachable_only_from_the_numbered_migration_arm() {
+        fn the_backfill_runs_from_the_migration_arms_and_the_import_and_nowhere_else() {
             let production = production_source();
 
-            let arm_start = production
-                .find("            19 => {")
-                .expect("no `19 => {` arm at 12-space indentation, like arms 10..18");
-            let after_arm = production
-                .get(arm_start..)
-                .expect("find returns a char boundary");
-            let arm_len = after_arm
-                .find("\n            }")
-                .expect("the `19 =>` arm does not close");
-            let arm = after_arm.get(..arm_len).expect("find yields a boundary");
-            assert!(
-                arm.lines().count() > 1,
-                "the `19 =>` arm range is empty — every assertion below would pass vacuously"
-            );
+            let arm_body = |version: i32| -> String {
+                let header = format!("            {version} => {{");
+                let arm_start = production.find(&header).unwrap_or_else(|| {
+                    panic!("no `{version} => {{` arm at 12-space indentation, like arms 10..18")
+                });
+                let after_arm = production
+                    .get(arm_start..)
+                    .expect("find returns a char boundary");
+                let arm_len = after_arm
+                    .find("\n            }")
+                    .unwrap_or_else(|| panic!("the `{version} =>` arm does not close"));
+                let arm = after_arm.get(..arm_len).expect("find yields a boundary");
+                assert!(
+                    arm.lines().count() > 1,
+                    "the `{version} =>` arm range is empty — every assertion below would \
+                     pass vacuously"
+                );
+                arm.to_string()
+            };
 
-            // One definition, one call. Anything else is a second door.
+            // One definition, three calls. Anything else is a fourth door.
             assert_eq!(
                 production
-                    .matches("backfill_privacy_from_bound_provider(")
+                    .matches("backfill_privacy_from_recorded_provenance(")
                     .count(),
-                2,
-                "expected exactly one definition and one production call site of the backfill"
+                4,
+                "expected exactly one definition and three production call sites of the backfill"
             );
+            for version in [PRIVACY_BACKFILL_ARM, PRIVACY_REPAIR_ARM] {
+                assert!(
+                    arm_body(version).contains("Self::backfill_privacy_from_recorded_provenance("),
+                    "the `{version} =>` arm does not run the backfill"
+                );
+            }
+            // ...and the third is the fresh-database branch, identified by the
+            // call it sits beside rather than by a line number.
+            let pool_body = fn_body("pool");
             assert!(
-                arm.contains("Self::backfill_privacy_from_bound_provider("),
-                "the backfill's one call site is not the numbered migration arm"
+                pool_body.contains("Self::import_legacy(")
+                    && pool_body.contains("Self::backfill_privacy_from_recorded_provenance("),
+                "the fresh-database branch imports legacy sessions without classifying them — \
+                 a reset `sessions.db` restores every legacy chat as public"
             );
 
             // ...and NOTHING the per-startup reconcile reaches performs it. This
@@ -13627,8 +14465,8 @@ mod tests {
                      declassification deliberately leaves `provider_name` in place"
                 );
                 assert!(
-                    !body.contains("backfill_privacy_from_bound_provider"),
-                    "`{name}` runs on every startup and reaches the one-time backfill"
+                    !body.contains("backfill_privacy_from_recorded_provenance"),
+                    "`{name}` runs on every startup and reaches the backfill"
                 );
             }
         }
@@ -13648,19 +14486,96 @@ mod tests {
         /// `BACKFILL_PRIVATE_PROVIDERS` all fail here.
         #[test]
         fn the_backfill_statement_raises_and_nothing_else() {
-            let sql = SessionStorage::backfill_update_sql();
+            let guard = "NOT EXISTS (SELECT 1 FROM classification_audit ca \
+                 WHERE ca.session_id = sessions.id AND ca.to_classification = 'public')";
             assert_eq!(
-                sql,
-                "UPDATE sessions \
-                    SET privacy_tier = 'private', \
-                        privacy_reason = 'backfill:' || provider_name \
-                  WHERE provider_name IN ('llamacpp','ollama','versa_azure','versa_bedrock') \
-                    AND privacy_tier = 'public'"
+                SessionStorage::backfill_update_sql(),
+                format!(
+                    "UPDATE sessions \
+                        SET privacy_tier = 'private', \
+                            privacy_reason = 'backfill:' || provider_name \
+                      WHERE provider_name IN ('llamacpp','ollama','versa_azure','versa_bedrock') \
+                        AND privacy_tier = 'public' \
+                        AND {guard}"
+                )
+            );
+            // The turn-ledger statement, pinned for the same reasons — it is the
+            // second runtime-composed tier assignment in the tree, it raises, and
+            // it must carry both the ratchet guard and the declassification guard.
+            let evidence = "(te.event_key IS NOT NULL OR te.billed_total_tokens IS NOT NULL)";
+            assert_eq!(
+                SessionStorage::backfill_turn_history_update_sql(),
+                format!(
+                    "UPDATE sessions \
+                        SET privacy_tier = 'private', \
+                            privacy_reason = 'turn:' || ( \
+                                SELECT te.provider FROM token_events te \
+                                 WHERE te.session_id = sessions.id \
+                                   AND te.provider IN \
+                                   ('llamacpp','ollama','versa_azure','versa_bedrock') \
+                                   AND {evidence} \
+                                 ORDER BY te.ts ASC, te.id ASC LIMIT 1) \
+                      WHERE privacy_tier = 'public' \
+                        AND EXISTS (SELECT 1 FROM token_events te \
+                                     WHERE te.session_id = sessions.id \
+                                       AND te.provider IN \
+                                       ('llamacpp','ollama','versa_azure','versa_bedrock') \
+                                       AND {evidence}) \
+                        AND {guard}"
+                )
             );
             // ...and the two ends of the composition are what this file thinks
-            // they are, so the literal above cannot drift from the enum.
+            // they are, so the literals above cannot drift from the enum.
             assert_eq!(SessionClassification::PRIVATE_SQL, "private");
             assert_eq!(SessionClassification::PUBLIC_SQL, "public");
+        }
+
+        /// Neither raising statement may reach a row the user declassified.
+        ///
+        /// A structural companion to the behavioural test above it: that one
+        /// proves the guard works on a real declassified row, this one proves
+        /// nobody added a *third* raising statement without it. The guard is
+        /// invisible in the outcome when no declassification has happened, which
+        /// is every database in CI except the one test that makes one.
+        ///
+        /// ⚠ **The first block is not decoration.** The obvious form of this test
+        /// — `sql.contains(NOT_DECLASSIFIED_BY_USER)` alone — is a tautology
+        /// whenever the const itself is the thing that broke: rewriting it to
+        /// `"1 = 1"` leaves both statements still "containing the guard" and the
+        /// test green. That was written first, and the deliberate-break pass
+        /// caught it passing against a backfill that DID re-privatise a
+        /// declassified row. So the const's own shape is asserted before it is
+        /// used as a needle.
+        #[test]
+        fn every_raising_statement_carries_the_declassification_guard() {
+            let guard = SessionStorage::NOT_DECLASSIFIED_BY_USER;
+            for required in [
+                "NOT EXISTS",
+                "classification_audit",
+                "ca.session_id = sessions.id",
+                "ca.to_classification = 'public'",
+            ] {
+                assert!(
+                    guard.contains(required),
+                    "the guard no longer excludes rows the user declassified — it does not \
+                     mention `{required}`: {guard}"
+                );
+            }
+
+            for sql in [
+                SessionStorage::backfill_update_sql(),
+                SessionStorage::backfill_turn_history_update_sql(),
+            ] {
+                assert!(
+                    sql.contains("SET privacy_tier"),
+                    "the fixture is not a raising statement, so the assertion below is vacuous"
+                );
+                assert!(
+                    sql.contains(guard),
+                    "a raising statement without the declassification guard silently reverses \
+                     the one irreversible action the design gives the user: {sql}"
+                );
+            }
         }
 
         /// The backfill's provider list is a **literal** in SQL, because a
