@@ -10,16 +10,26 @@ const buttonVariants = cva(
   // NB: Tailwind v4 maps scale-*/hover:scale-*/active:scale-* to the standalone
   // `scale` property (not `transform`), so `scale` must be in the transition list
   // for the press/hover scale to ease rather than snap.
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-[color,background-color,border-color,transform,scale,opacity] duration-[var(--motion-fast)] ease-[var(--ease-out)] active:scale-[0.97] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
+  // `text-label` IS 14/20/500 — it replaces `text-sm font-medium` exactly, and is
+  // the one type role every control in the app now shares.
+  // The duration/easing annotations are gone: `--default-transition-duration` and
+  // `--default-transition-timing-function` are already `--dur-fast` / `--ease-out`
+  // in main.css, so any `transition-*` utility picks them up unannotated.
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-label transition-[color,background-color,border-color,transform,scale,opacity] active:scale-[0.97] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
         default: 'bg-background-accent text-text-on-accent hover:bg-background-accent-hover',
         destructive: 'bg-background-danger text-text-on-status hover:opacity-90',
+        // `outline` and `ghost` sit on a transparent ground, so their hover IS the
+        // shared interaction tint — `bg-overlay-hover` (ink @5%) composites onto
+        // whatever surface hosts the button and is correct in every family and mode.
+        // `secondary` keeps a surface step: it is FILLED with `--background-medium`,
+        // and an overlay tint would replace that fill rather than sit on top of it.
         outline:
-          'bg-transparent border border-border-strong text-text-default hover:bg-background-medium',
+          'bg-transparent border border-border-strong text-text-default hover:bg-overlay-hover',
         secondary: 'bg-background-medium text-text-default hover:bg-background-strong',
-        ghost: 'bg-transparent text-text-default hover:bg-background-medium',
+        ghost: 'bg-transparent text-text-default hover:bg-overlay-hover',
         link: 'text-text-accent underline-offset-4 hover:underline',
       },
       size: {
@@ -28,10 +38,10 @@ const buttonVariants = cva(
         sm: 'h-8 gap-1.5',
         lg: 'h-10',
       },
-      // 'pill' is a misnomer — it maps to rounded-md (8px), not a full pill.
-      // 'round' is a square icon button (w==h via compound variants) also at rounded-md.
+      // 'pill' is a misnomer — it maps to rounded-element (8px), not a full pill.
+      // 'round' is a square icon button (w==h via compound variants), also rounded-element.
       shape: {
-        pill: 'rounded-md',
+        pill: 'rounded-element',
         round: '',
       },
     },
@@ -59,22 +69,22 @@ const buttonVariants = cva(
       {
         shape: 'round',
         size: 'xs',
-        className: 'w-6 h-6 p-0 rounded-md',
+        className: 'w-6 h-6 p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'default',
-        className: 'w-9 h-9 p-0 rounded-md',
+        className: 'w-9 h-9 p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'sm',
-        className: 'w-8 h-8 p-0 rounded-md',
+        className: 'w-8 h-8 p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'lg',
-        className: 'w-10 h-10 p-0 rounded-md',
+        className: 'w-10 h-10 p-0 rounded-element',
       },
     ],
     defaultVariants: {

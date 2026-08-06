@@ -56,7 +56,10 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          'biorouter-modal-surface bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-[var(--z-modal)] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-2xl p-6 duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] sm:max-w-lg',
+          // No radius utility here on purpose: `.biorouter-modal-surface` (main.css,
+          // unlayered, so it outranks Tailwind's utilities layer) already owns the
+          // 16px dialog corner. A `rounded-*` here could only duplicate it or lie.
+          'biorouter-modal-surface bg-background-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 fixed top-[50%] left-[50%] z-[var(--z-modal)] grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 p-6 duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] sm:max-w-lg',
           className
         )}
         onEscapeKeyDown={(event) => {
@@ -73,7 +76,7 @@ function DialogContent({
         {showCloseButton && (
           <DialogPrimitive.Close
             disabled={!dismissible}
-            className="p-2 flex items-center justify-center hover:bg-background-muted rounded-md data-[state=open]:bg-background-muted transition-[background-color,color,opacity] duration-[var(--motion-fast)] data-[state=open]:text-text-muted absolute top-4 right-4 opacity-70 hover:opacity-100 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
+            className="p-2 flex items-center justify-center hover:bg-overlay-hover rounded-element data-[state=open]:bg-overlay-hover transition-[background-color,color,opacity] data-[state=open]:text-text-muted absolute top-4 right-4 opacity-70 hover:opacity-100 disabled:pointer-events-none [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4"
           >
             <XIcon />
             <span className="sr-only">Close</span>
@@ -108,7 +111,7 @@ function DialogTitle({ className, ...props }: React.ComponentProps<typeof Dialog
   return (
     <DialogPrimitive.Title
       data-slot="dialog-title"
-      className={cn('text-lg leading-[26px] font-semibold', className)}
+      className={cn('text-subheading', className)}
       {...props}
     />
   );
@@ -121,7 +124,7 @@ function DialogDescription({
   return (
     <DialogPrimitive.Description
       data-slot="dialog-description"
-      className={cn('text-text-muted text-sm', className)}
+      className={cn('text-text-muted text-body', className)}
       {...props}
     />
   );

@@ -31,13 +31,13 @@ export function EmptyState({
         compact ? 'py-12' : 'min-h-[clamp(17rem,48vh,25rem)] py-12'
       } ${className}`.trim()}
     >
-      <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-xl border border-border-subtle bg-background-muted text-text-muted">
+      <div className="mb-5 flex h-12 w-12 items-center justify-center rounded-container border border-border-subtle bg-background-muted text-text-muted">
         <Icon className="h-6 w-6" aria-hidden="true" />
       </div>
-      <h2 id={titleId} className="text-base font-semibold tracking-tight text-text-default">
+      <h2 id={titleId} className="text-subheading text-text-default">
         {title}
       </h2>
-      <p id={descriptionId} className="mt-2 max-w-sm text-sm leading-6 text-text-muted">
+      <p id={descriptionId} className="mt-2 max-w-sm text-body text-text-muted">
         {description}
       </p>
       {actions && (

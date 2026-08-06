@@ -5,7 +5,10 @@ import { cn } from '../../utils';
 
 /**
  * design.md §4.4 — `--background-inverse` fill, `--text-inverse` 12/16, 6px×8px
- * padding, `--radius-sm`, no arrow, 8px offset. This already matches canonical.
+ * padding, `--radius-inner`, no arrow, 8px offset. This already matches canonical.
+ * `text-supporting` is the 12/16 role; `font-medium` is a DELIBERATE override of
+ * its 400 weight — a tooltip sits on an inverse fill and needs the extra weight
+ * to hold up, and that is what shipped before the roles existed.
  *
  * Z — deliberately `--z-modal-dropdown` (500), not `--z-dropdown` (200). A tooltip
  * must paint above whatever surface owns its trigger, and it is portalled to <body>
@@ -15,7 +18,7 @@ import { cn } from '../../utils';
  * very popover that contains them.
  */
 export const TOOLTIP_SURFACE_CLASS_NAME =
-  'bg-background-inverse text-text-inverse z-[var(--z-modal-dropdown)] w-max max-w-[min(20rem,calc(100vw-16px))] break-words rounded-sm px-2 py-1.5 text-left font-sans text-xs font-medium leading-4 whitespace-normal';
+  'bg-background-inverse text-text-inverse z-[var(--z-modal-dropdown)] w-max max-w-[min(20rem,calc(100vw-16px))] break-words rounded-inner px-2 py-1.5 text-left font-sans text-supporting font-medium whitespace-normal';
 
 function TooltipProvider({
   delayDuration = 500,

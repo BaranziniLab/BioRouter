@@ -13,7 +13,7 @@ export const Switch = React.forwardRef<
     className={cn(
       // Track: 36x20 rounded-full, 2px transparent border insets the 16px knob.
       // Focus is the global outline (main.css) — no per-component ring here.
-      'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors duration-[var(--motion-fast)] ease-[var(--ease-out)] disabled:cursor-not-allowed disabled:opacity-50',
+      'peer inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors disabled:cursor-not-allowed disabled:opacity-50',
       'bg-background-strong data-[state=checked]:bg-background-accent',
       className
     )}
@@ -22,7 +22,7 @@ export const Switch = React.forwardRef<
   >
     <SwitchPrimitives.Thumb
       className={cn(
-        'pointer-events-none block h-4 w-4 rounded-full bg-white ring-0 transition-transform duration-[var(--motion-fast)] ease-[var(--ease-out)]',
+        'pointer-events-none block h-4 w-4 rounded-full bg-white ring-0 transition-transform',
         'data-[state=unchecked]:translate-x-0 data-[state=checked]:translate-x-4'
       )}
     />
