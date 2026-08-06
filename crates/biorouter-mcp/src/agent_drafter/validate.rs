@@ -159,7 +159,16 @@ pub fn unmet_requirements<'a>(
 mod tests {
     use super::*;
     use crate::agent_drafter::catalog::{drafter_catalog_root_with_kbs, KbEntry, SkillEntry};
+    use crate::knowledge::affiliation::CallerAffiliation;
+    use crate::knowledge::caller::KbCaller;
     use crate::knowledge::tier;
+
+    /// A private, LOCAL model — the caller DR-26 clears everywhere. `Unstated`
+    /// would be the restrictive value and would assert the opposite of what
+    /// these fixtures mean by "a private caller".
+    fn private_local() -> KbCaller {
+        KbCaller::new(true, CallerAffiliation::Local)
+    }
 
     /// Issue #56, CP5. `:33`, `:42` and `:52` render
     /// `Catalog::render_list(&catalog.kb_ids())` into `INVALID_PARAMS` strings the
@@ -173,7 +182,7 @@ mod tests {
     fn a_rejection_message_cannot_be_used_to_enumerate_private_bases() {
         let (_d, root, _env) = drafter_catalog_root_with_kbs(&["default", "omop"]);
         tier::raise_unlocked(&root, "omop", true).unwrap();
-        let public = Catalog::discover(/* caller_is_private */ false);
+        let public = Catalog::discover(&KbCaller::restricted());
         for probe in ["br.kb", "NOT A VALID ID", "clinvar"] {
             let e = check_knowledge_base(probe, &public).unwrap_err();
             assert!(
@@ -194,10 +203,11 @@ mod tests {
     fn a_public_session_cannot_configure_an_app_against_a_private_base() {
         let (_d, root, _env) = drafter_catalog_root_with_kbs(&["omop"]);
         tier::raise_unlocked(&root, "omop", true).unwrap();
-        let e = check_knowledge_base("omop", &Catalog::discover(false)).unwrap_err();
+        let e =
+            check_knowledge_base("omop", &Catalog::discover(&KbCaller::restricted())).unwrap_err();
         assert!(e.contains("not installed"), "{e}");
         assert!(!e.to_lowercase().contains("private"), "{e}");
-        assert!(check_knowledge_base("omop", &Catalog::discover(true)).is_ok());
+        assert!(check_knowledge_base("omop", &Catalog::discover(&private_local())).is_ok());
     }
 
     fn catalog_with(kbs: &[&str], skills: &[&str]) -> Catalog {
@@ -216,7 +226,7 @@ mod tests {
                     description: String::new(),
                 })
                 .collect(),
-            extensions: Catalog::discover(/* caller_is_private */ false).extensions,
+            extensions: Catalog::discover(&KbCaller::restricted()).extensions,
         }
     }
 
@@ -287,7 +297,7 @@ mod tests {
     /// Built-ins must never be rejected — every app names some of them.
     #[test]
     fn builtin_extensions_are_always_available() {
-        let catalog = Catalog::discover(false);
+        let catalog = Catalog::discover(&KbCaller::restricted());
         let exts = vec![
             "developer".to_string(),
             "autovisualiser".to_string(),
@@ -298,7 +308,7 @@ mod tests {
 
     #[test]
     fn an_invented_extension_is_rejected() {
-        let catalog = Catalog::discover(false);
+        let catalog = Catalog::discover(&KbCaller::restricted());
         let err = check_extensions(&["spoke_agent".to_string()], &catalog).unwrap_err();
         assert!(err.contains("spoke_agent"));
         assert!(

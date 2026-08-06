@@ -27,6 +27,7 @@ pub mod validate;
 pub mod vault;
 
 use crate::developer::shell::strip_daemon_private_env_std;
+use crate::knowledge::caller::KbCaller;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use indoc::formatdoc;
 use rmcp::{
@@ -1079,7 +1080,11 @@ fn persist_created_app(
     // Issue #56 (CP5). The catalog this write boundary validates against is the
     // one the CALLER may see, so a public session cannot save an app scoped to a
     // private base and cannot learn the base exists from the rejection.
-    caller_is_private: bool,
+    //
+    // ⚠ Finding 17: BOTH axes, as one value. This was a bare `caller_is_private`
+    // and the catalogue below asked the tier axis alone — see
+    // `Catalog::discover`.
+    caller: &KbCaller,
 ) -> Result<(), ErrorData> {
     if let Some(theme) = p.theme.take() {
         manifest.theme = theme.into_config();
@@ -1091,7 +1096,7 @@ fn persist_created_app(
     }
 
     let agent = created_agent_config(&mut p)?;
-    let catalog = catalog::Catalog::discover(caller_is_private);
+    let catalog = catalog::Catalog::discover(caller);
     validate::check_all(
         agent.knowledge_base.as_deref(),
         &agent.skills,
@@ -1395,12 +1400,11 @@ fn stage_full_payload(
     manifest: &Manifest,
     target: &std::path::Path,
     include: Option<&serde_json::Value>,
-    // Issue #56 (CP4). The capability of the session that asked for the export.
-    caller_is_private: bool,
-    // Issue #56 DR-26 / Task 50. Whose agreements cover that session's model —
-    // the third axis, threaded beside the tier so the barrier below asks one
-    // caller's whole identity rather than half of it.
-    caller_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
+    // Issue #56 (CP4). The capability of the session that asked for the export —
+    // BOTH axes as one value (issue #56 DR-26 / Task 50, and finding 17's
+    // lesson): a signature that took them separately let one call site pass one
+    // caller's tier and another's institution, and the wrong one compiles.
+    caller: &KbCaller,
 ) -> StagedPayload {
     let agent = manifest.agent.clone().unwrap_or_default();
 
@@ -1438,12 +1442,7 @@ fn stage_full_payload(
                     // export, matching `search_visible_bases`: the rest of the
                     // payload is still useful and the user is told what was left
                     // out.
-                    if let Err(e) = crate::knowledge::tier::assert_reachable(
-                        svc.root(),
-                        kb,
-                        caller_is_private,
-                        caller_affiliation,
-                    ) {
+                    if let Err(e) = caller.assert_reachable(svc.root(), kb) {
                         out.notes
                             .push(format!("skipped knowledge base '{kb}': {e}"));
                         continue;
@@ -1647,19 +1646,15 @@ impl AgentDrafterServer {
         &self,
         params: Parameters<ExportAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.export_app_inner(
-            params.0,
-            /* caller_is_private */ false,
-            Default::default(),
-        )
-        .await
+        self.export_app_inner(params.0, &KbCaller::restricted())
+            .await
     }
 
     async fn configure_app_public(
         &self,
         params: Parameters<ConfigureAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.configure_app_inner(params.0, /* caller_is_private */ false)
+        self.configure_app_inner(params.0, &KbCaller::restricted())
             .await
     }
 
@@ -1667,7 +1662,7 @@ impl AgentDrafterServer {
         &self,
         params: Parameters<UpdateAppParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.update_app_inner(params.0, /* caller_is_private */ false)
+        self.update_app_inner(params.0, &KbCaller::restricted())
             .await
     }
 }
@@ -1696,6 +1691,23 @@ impl AgentDrafterServer {
         context: &RequestContext<RoleServer>,
     ) -> crate::knowledge::affiliation::CallerAffiliation {
         crate::knowledge::affiliation::caller_affiliation(&context.meta)
+    }
+
+    /// Both axes of the caller's identity, off ONE request meta at one instant
+    /// (issue #56 DR-26; audit finding 17).
+    ///
+    /// ⚠ **The only value CP4 and CP5 may take.** They used to take the tier
+    /// alone (CP5) or the two axes as separate arguments (CP4), which is how a
+    /// listing and a barrier over the same capability came to ask different
+    /// questions. `KbCaller` cannot express half a caller, so a future filter
+    /// cannot silently drop an axis — there is no narrower thing to pass. The
+    /// twin of `KnowledgeServer::CallerIdentity::from_context`, and it fails
+    /// closed on both fields for the same reason.
+    fn caller(context: &RequestContext<RoleServer>) -> KbCaller {
+        KbCaller::new(
+            Self::caller_is_private(context),
+            Self::caller_affiliation(context),
+        )
     }
 
     /// The chat session id carried in a tool call's request meta, if present.
@@ -2110,7 +2122,7 @@ impl AgentDrafterServer {
         self.create_app_inner(
             params.0,
             Self::session_id_from_context(&context),
-            Self::caller_is_private(&context),
+            &Self::caller(&context),
         )
         .await
     }
@@ -2120,8 +2132,8 @@ impl AgentDrafterServer {
         p: CreateAppParams,
         session_id: Option<String>,
         // Issue #56 (CP5). Threaded beside `session_id` rather than defaulted, so
-        // the caller's tier is legible at each call site.
-        caller_is_private: bool,
+        // the caller's identity is legible at each call site.
+        caller: &KbCaller,
     ) -> Result<CallToolResult, ErrorData> {
         if p.title.trim().is_empty() {
             return Err(err(ErrorCode::INVALID_PARAMS, "title must not be empty"));
@@ -2151,7 +2163,7 @@ impl AgentDrafterServer {
             kind,
             archetype,
             use_starter,
-            caller_is_private,
+            caller,
         )?;
 
         let arch_note = if kind == ArtifactKind::Agentic {
@@ -2180,14 +2192,14 @@ impl AgentDrafterServer {
         // deliberately-invalid call was an enumeration oracle.
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.configure_app_inner(params.0, Self::caller_is_private(&context))
+        self.configure_app_inner(params.0, &Self::caller(&context))
             .await
     }
 
     async fn configure_app_inner(
         &self,
         p: ConfigureAppParams,
-        caller_is_private: bool,
+        caller: &KbCaller,
     ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         let mut manifest = store
@@ -2223,7 +2235,7 @@ impl AgentDrafterServer {
         // makes this checkable; the error names what IS installed so the retry is
         // grounded rather than another guess — and, since issue #56, what is
         // installed *and reachable by this caller*.
-        let catalog = catalog::Catalog::discover(caller_is_private);
+        let catalog = catalog::Catalog::discover(caller);
         validate::check_all(
             agent.knowledge_base.as_deref(),
             &agent.skills,
@@ -2289,14 +2301,14 @@ impl AgentDrafterServer {
         // check as `configure_app`, and renders the same list.
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.update_app_inner(params.0, Self::caller_is_private(&context))
+        self.update_app_inner(params.0, &Self::caller(&context))
             .await
     }
 
     async fn update_app_inner(
         &self,
         p: UpdateAppParams,
-        caller_is_private: bool,
+        caller: &KbCaller,
     ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         let mut manifest = store
@@ -2365,7 +2377,7 @@ impl AgentDrafterServer {
             // Same write-boundary rule as create/configure: a manifest cannot name
             // a knowledge base, skill, or extension that does not exist here.
             if let Some(agent) = parsed.agent.as_ref() {
-                let catalog = catalog::Catalog::discover(caller_is_private);
+                let catalog = catalog::Catalog::discover(caller);
                 validate::check_all(
                     agent.knowledge_base.as_deref(),
                     &agent.skills,
@@ -2678,7 +2690,7 @@ impl AgentDrafterServer {
             .load_manifest(&p.id)
             .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
 
-        let catalog = catalog::Catalog::discover(Self::caller_is_private(&context));
+        let catalog = catalog::Catalog::discover(&Self::caller(&context));
         let mut profiles: std::collections::HashMap<String, store::AgentConfig> =
             std::collections::HashMap::new();
 
@@ -2802,7 +2814,7 @@ impl AgentDrafterServer {
         // app-building turn.
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let catalog = catalog::Catalog::discover(Self::caller_is_private(&context));
+        let catalog = catalog::Catalog::discover(&Self::caller(&context));
         let json = serde_json::to_string_pretty(&catalog).map_err(internal)?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -2929,19 +2941,14 @@ impl AgentDrafterServer {
         // Split into an `_inner` exactly like `create_app`/`create_app_inner`
         // above: the eight unit tests below drive the body without fabricating a
         // `RequestContext`, and the capability still enters at the one seam.
-        self.export_app_inner(
-            params.0,
-            Self::caller_is_private(&context),
-            Self::caller_affiliation(&context),
-        )
-        .await
+        self.export_app_inner(params.0, &Self::caller(&context))
+            .await
     }
 
     async fn export_app_inner(
         &self,
         p: ExportAppParams,
-        caller_is_private: bool,
-        caller_affiliation: crate::knowledge::affiliation::CallerAffiliation,
+        caller: &KbCaller,
     ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         if !store.exists(&p.id) {
@@ -2989,13 +2996,7 @@ impl AgentDrafterServer {
         let manifest = store.load_manifest(&p.id).map_err(internal)?;
 
         let staged = if mode == "full" {
-            stage_full_payload(
-                &manifest,
-                &target,
-                p.include.as_ref(),
-                caller_is_private,
-                &caller_affiliation,
-            )
+            stage_full_payload(&manifest, &target, p.include.as_ref(), caller)
         } else {
             StagedPayload::empty()
         };
@@ -3095,6 +3096,21 @@ mod tests {
     use super::*;
     use rmcp::model::RawContent;
     use tempfile::TempDir;
+
+    /// A caller the KB barrier clears on both axes: private tier, LOCAL model.
+    ///
+    /// ⚠ `Local` and not `Unstated`. `Unstated` is DR-26's restrictive value —
+    /// it mismatches every base an institution claims — so a test that meant
+    /// "a private caller may reach a private base" and reached for it would
+    /// assert the opposite of what it says. `Local` transfers nothing, so it
+    /// clears every base, which is the pre-DR-26 meaning of `caller_is_private
+    /// = true` these fixtures were written against.
+    fn private_test_caller() -> KbCaller {
+        KbCaller::new(
+            true,
+            crate::knowledge::affiliation::CallerAffiliation::Local,
+        )
+    }
 
     #[test]
     fn agent_drafter_children_strip_daemon_credentials_only() {
@@ -3203,7 +3219,7 @@ mod tests {
         p.system_prompt = Some("You analyze data.".into());
         p.extensions = vec!["autovisualiser".into()];
         let res = s
-            .create_app_inner(p, None, /* caller_is_private */ false)
+            .create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
         assert!(has_ui_resource(&res));
@@ -3228,7 +3244,7 @@ mod tests {
         s.create_app_inner(
             create("Sessioned", None),
             Some("sess-123".into()),
-            /* caller_is_private */ false,
+            &KbCaller::restricted(),
         )
         .await
         .unwrap();
@@ -3239,7 +3255,7 @@ mod tests {
         s.create_app_inner(
             create("StaticOne", Some("static")),
             Some("sess-999".into()),
-            /* caller_is_private */ false,
+            &KbCaller::restricted(),
         )
         .await
         .unwrap();
@@ -3247,13 +3263,9 @@ mod tests {
         assert_eq!(sm.session_id.as_deref(), Some("sess-999"));
 
         // No session meta (headless/CLI) leaves it unset.
-        s.create_app_inner(
-            create("NoSession", None),
-            None,
-            /* caller_is_private */ false,
-        )
-        .await
-        .unwrap();
+        s.create_app_inner(create("NoSession", None), None, &KbCaller::restricted())
+            .await
+            .unwrap();
         assert_eq!(
             s.store().load_manifest("nosession").unwrap().session_id,
             None
@@ -3270,7 +3282,7 @@ mod tests {
             tokens: None,
         });
 
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -3282,13 +3294,9 @@ mod tests {
     async fn configure_app_sets_model_and_extensions() {
         let _strict = relax_catalog_strictness();
         let (_d, s) = server();
-        s.create_app_inner(
-            create("Cfg", Some("static")),
-            None,
-            /* caller_is_private */ false,
-        )
-        .await
-        .unwrap();
+        s.create_app_inner(create("Cfg", Some("static")), None, &KbCaller::restricted())
+            .await
+            .unwrap();
         s.configure_app_public(Parameters(ConfigureAppParams {
             id: "cfg".into(),
             system_prompt: Some("Be terse.".into()),
@@ -3326,13 +3334,9 @@ mod tests {
     async fn configure_app_sets_advanced_agent_design_fields() {
         let _strict = relax_catalog_strictness();
         let (_d, s) = server();
-        s.create_app_inner(
-            create("Harnessed", None),
-            None,
-            /* caller_is_private */ false,
-        )
-        .await
-        .unwrap();
+        s.create_app_inner(create("Harnessed", None), None, &KbCaller::restricted())
+            .await
+            .unwrap();
         s.configure_app_public(Parameters(ConfigureAppParams {
             id: "harnessed".into(),
             system_prompt: Some("Use the visible workflow and cite each step.".into()),
@@ -3442,14 +3446,14 @@ mod tests {
         s.create_app_inner(
             create("Plain Widget", Some("static")),
             None,
-            /* caller_is_private */ false,
+            &KbCaller::restricted(),
         )
         .await
         .unwrap();
         s.create_app_inner(
             create("Agent Workspace", Some("agentic")),
             None,
-            /* caller_is_private */ false,
+            &KbCaller::restricted(),
         )
         .await
         .unwrap();
@@ -3527,7 +3531,7 @@ run.addEventListener("click", async () => {
             .into(),
         }];
 
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
         s.configure_app_public(Parameters(ConfigureAppParams {
@@ -3603,7 +3607,7 @@ run.addEventListener("click", async () => {
         s.create_app_inner(
             create("Advanced Agent", None),
             None,
-            /* caller_is_private */ false,
+            &KbCaller::restricted(),
         )
         .await
         .unwrap();
@@ -3730,13 +3734,9 @@ run.addEventListener("click", async () => {
     #[tokio::test]
     async fn manifest_update_rejects_invalid_json_and_id_mismatch() {
         let (_d, s) = server();
-        s.create_app_inner(
-            create("Manifest Safe", None),
-            None,
-            /* caller_is_private */ false,
-        )
-        .await
-        .unwrap();
+        s.create_app_inner(create("Manifest Safe", None), None, &KbCaller::restricted())
+            .await
+            .unwrap();
         let original = s.store().load_manifest("manifest-safe").unwrap();
 
         assert!(s
@@ -3784,7 +3784,7 @@ br.run("hello", "#missing");
 "##
             .into(),
         }];
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -3821,15 +3821,11 @@ br.run("hello", "#missing");
     async fn create_rejects_empty_title_and_bad_kind() {
         let (_d, s) = server();
         assert!(s
-            .create_app_inner(create("  ", None), None, /* caller_is_private */ false)
+            .create_app_inner(create("  ", None), None, &KbCaller::restricted())
             .await
             .is_err());
         assert!(s
-            .create_app_inner(
-                create("X", Some("bogus")),
-                None,
-                /* caller_is_private */ false
-            )
+            .create_app_inner(create("X", Some("bogus")), None, &KbCaller::restricted())
             .await
             .is_err());
     }
@@ -3839,7 +3835,7 @@ br.run("hello", "#missing");
         let (_d, s) = server();
         let mut p = create("Edit Me", None);
         p.html = Some("<html><body>ORIGINAL</body></html>".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -3875,13 +3871,9 @@ br.run("hello", "#missing");
     #[tokio::test]
     async fn build_then_launch_returns_url() {
         let (_d, s) = server();
-        s.create_app_inner(
-            create("Launchy", None),
-            None,
-            /* caller_is_private */ false,
-        )
-        .await
-        .unwrap();
+        s.create_app_inner(create("Launchy", None), None, &KbCaller::restricted())
+            .await
+            .unwrap();
         let res = s
             .build_app(Parameters(AppIdParams {
                 id: "launchy".into(),
@@ -3909,13 +3901,9 @@ br.run("hello", "#missing");
     #[tokio::test]
     async fn list_read_delete() {
         let (_d, s) = server();
-        s.create_app_inner(
-            create("One", None),
-            None,
-            /* caller_is_private */ false,
-        )
-        .await
-        .unwrap();
+        s.create_app_inner(create("One", None), None, &KbCaller::restricted())
+            .await
+            .unwrap();
         let all = s
             .list_apps(Parameters(ListAppsParams { kind: None }))
             .await
@@ -3944,7 +3932,7 @@ br.run("hello", "#missing");
         let mut p = create("Exporter", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4008,7 +3996,7 @@ br.run("hello", "#missing");
         let (_d, s) = server();
         let mut p = create("Vaulted", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
         let vault_dir = s.store().artifact_dir("vaulted").unwrap().join(".vault");
@@ -4068,7 +4056,7 @@ br.run("hello", "#missing");
         let mut p = create("Launcher", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4122,7 +4110,7 @@ br.run("hello", "#missing");
         p.skills = vec!["ggplot".into()];
         // developer is builtin (travels with the daemon); spokeagent is external.
         p.extensions = vec!["developer".into(), "spokeagent".into()];
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4196,7 +4184,7 @@ br.run("hello", "#missing");
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
         p.knowledge_base = Some("does-not-exist".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4245,7 +4233,7 @@ br.run("hello", "#missing");
         let mut p = create("Payload", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4262,8 +4250,7 @@ br.run("hello", "#missing");
                     include: Some(include.clone()),
                     ..Default::default()
                 },
-                /* caller_is_private */ false,
-                Default::default(),
+                &KbCaller::restricted(),
             )
             .await
             .unwrap();
@@ -4297,8 +4284,7 @@ br.run("hello", "#missing");
                 include: Some(include),
                 ..Default::default()
             },
-            /* caller_is_private */ true,
-            Default::default(),
+            &private_test_caller(),
         )
         .await
         .unwrap();
@@ -4321,7 +4307,7 @@ br.run("hello", "#missing");
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
         p.knowledge_base = Some("kb1".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4357,7 +4343,7 @@ br.run("hello", "#missing");
         let mut p = create("Fat", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4409,7 +4395,7 @@ br.run("hello", "#missing");
         let mut p = create("NoDaemon", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4454,7 +4440,7 @@ br.run("hello", "#missing");
             let mut p = create("Starter", None);
             p.id = Some(id.clone());
             p.archetype = Some(arch.to_string());
-            s.create_app_inner(p, None, /* caller_is_private */ false)
+            s.create_app_inner(p, None, &KbCaller::restricted())
                 .await
                 .unwrap();
 
@@ -4518,7 +4504,7 @@ br.run("hello", "#missing");
         let mut p = create("Trial metrics dashboard", None);
         p.id = Some("override".into());
         p.archetype = Some("canvas".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4534,7 +4520,7 @@ br.run("hello", "#missing");
         let mut bad = create("X", None);
         bad.archetype = Some("spaceship".into());
         assert!(s
-            .create_app_inner(bad, None, /* caller_is_private */ false)
+            .create_app_inner(bad, None, &KbCaller::restricted())
             .await
             .is_err());
     }
@@ -4544,7 +4530,7 @@ br.run("hello", "#missing");
         let (_d, s) = server();
         let mut p = create("Support assistant", None);
         p.id = Some("chatty".into());
-        s.create_app_inner(p, None, /* caller_is_private */ false)
+        s.create_app_inner(p, None, &KbCaller::restricted())
             .await
             .unwrap();
 
@@ -4566,7 +4552,7 @@ br.run("hello", "#missing");
         let mut c = create("Simulation", None);
         c.id = Some("sim".into());
         c.archetype = Some("canvas".into());
-        s.create_app_inner(c, None, /* caller_is_private */ false)
+        s.create_app_inner(c, None, &KbCaller::restricted())
             .await
             .unwrap();
         let cm = s.store().load_manifest("sim").unwrap();
@@ -4583,7 +4569,7 @@ br.run("hello", "#missing");
         let mut e = create("Graph tool", None);
         e.id = Some("graph".into());
         e.archetype = Some("explorer".into());
-        s.create_app_inner(e, None, /* caller_is_private */ false)
+        s.create_app_inner(e, None, &KbCaller::restricted())
             .await
             .unwrap();
         let em = s.store().load_manifest("graph").unwrap();
@@ -4603,7 +4589,7 @@ br.run("hello", "#missing");
             path: "src/main.ts".into(),
             content: "import { createApp } from \"./sdk\";\ncreateApp();\n".into(),
         }];
-        s.create_app_inner(byo, None, /* caller_is_private */ false)
+        s.create_app_inner(byo, None, &KbCaller::restricted())
             .await
             .unwrap();
         assert!(
@@ -4911,7 +4897,9 @@ br.run("hello", "#missing");
             let mut seed = create("Probe", None);
             seed.system_prompt = Some("help".into());
             seed.html = Some("<html><head></head><body>hi</body></html>".into());
-            srv.create_app_inner(seed, None, false).await.unwrap();
+            srv.create_app_inner(seed, None, &KbCaller::restricted())
+                .await
+                .unwrap();
             let manifest_json = srv.store().read_file("probe", "manifest.json").unwrap();
             let mut manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap();
             manifest["agent"]["knowledge_base"] = json!("br.kb");
@@ -5031,7 +5019,9 @@ br.run("hello", "#missing");
             // tools this fixture exists to reach unable to build one.
             p.system_prompt = Some("help".into());
             p.html = Some("<html><head></head><body>hi</body></html>".into());
-            srv.create_app_inner(p, None, false).await.unwrap();
+            srv.create_app_inner(p, None, &KbCaller::restricted())
+                .await
+                .unwrap();
         }
 
         /// An id no base on this machine has.

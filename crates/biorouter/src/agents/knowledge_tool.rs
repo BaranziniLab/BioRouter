@@ -17,6 +17,7 @@ use crate::mcp_utils::ToolResult;
 use crate::model::ModelConfig;
 use crate::privacy::ProviderTier;
 use crate::session::session_manager::{Session, SessionType};
+use biorouter_mcp::knowledge::caller::KbCaller;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use biorouter_mcp::knowledge::subagent::loop_::{Completer, SubAgentBounds};
 use biorouter_mcp::knowledge::types::ModelRef;
@@ -41,18 +42,21 @@ impl Agent {
             .filter(|v: &Vec<String>| !v.is_empty())
             .unwrap_or_else(|| vec![session.id.clone()]);
 
-        // Issue #56. The capability of the model *in this chat* — the audience
-        // of every string this handler returns, including the candidate list
-        // `resolve_target_kb` may put in its no-target error. Fail-closed to
-        // Public when no provider is bound: less reach, never more.
-        let chat_capability = self
-            .provider()
-            .await
-            .map(|p| p.tier())
-            .unwrap_or(ProviderTier::Public);
+        // Issue #56. The identity of the model *in this chat* — the audience of
+        // every string this handler returns, including the candidate list
+        // `resolve_target_kb` may put in its no-target error.
+        //
+        // ⚠ Audit finding 17. This used to be `p.tier()` alone, and the filter
+        // below asked the tier axis alone with it. Both axes now come off ONE
+        // sample of the provider mutex (`CallCapability::sample`), for the
+        // reason that type exists: `update_provider` can reassign the mutex with
+        // no turn lock, so two reads would gate one call on one model's tier and
+        // another model's institution. An unbound provider fails closed to
+        // Public + no affiliation — less reach, never more.
+        let chat_capability = crate::privacy::CallCapability::sample(&self.provider).await;
 
         // Resolve target KB: explicit id → new-by-name → this session's primary.
-        let kb_id = resolve_target_kb(&svc, &arguments, &session.id, chat_capability)
+        let kb_id = resolve_target_kb(&svc, &arguments, &session.id, &kb_caller(chat_capability))
             .map_err(invalid_params)?;
 
         // Load the sessions (with messages).
@@ -149,6 +153,26 @@ impl Agent {
     }
 }
 
+/// This chat's capability in the vocabulary the KB barrier owns — the ONE
+/// crossing between `biorouter`'s three-axis [`CallCapability`] and
+/// `biorouter-mcp`'s [`KbCaller`] (issue #56, audit finding 17).
+///
+/// ⚠ **`enforced` is deliberately dropped.** DR-15's master toggle is read at
+/// the choke point — inside `tier::assert_reachable`, which `KbCaller::can_reach`
+/// delegates to — and nowhere above it. Passing the sampled `enforced` through
+/// and *also* calling the barrier would be two reads of one switch, which is the
+/// race `CallCapability` exists to prevent, reintroduced one layer down. Every
+/// other KB filter in the tree (`KnowledgeServer`'s five, `Catalog::discover`)
+/// does the same.
+///
+/// [`CallCapability`]: crate::privacy::CallCapability
+fn kb_caller(cap: crate::privacy::CallCapability) -> KbCaller {
+    KbCaller::new(
+        cap.tier().is_private(),
+        crate::privacy::affiliation::caller_affiliation(cap.affiliation()),
+    )
+}
+
 /// Resolve which KB a conversation ingest targets: `new_kb_name` creates one,
 /// else an explicit `kb_id`, else **this session's primary**.
 ///
@@ -156,16 +180,33 @@ impl Agent {
 /// surface writes session-scoped state, so reading the machine default here
 /// sent a workflow/Meditation session's transcript into an unrelated base.
 ///
-/// `caller` is the capability of the model that will read the error text
+/// `caller` is the identity of the model that will read the error text
 /// (issue #56). This function is `kb_id_or_primary`'s twin one crate over —
 /// Task 10C's fix lives in `biorouter-mcp`'s `KnowledgeServer` and cannot reach
-/// an `impl Agent` in `biorouter` — so it takes the same filter and the same
-/// degrade.
+/// an `impl Agent` in `biorouter` — so it takes the same value and asks the same
+/// question.
+///
+/// ⚠ **Audit finding 17's second spelling lived here.** The filter below was
+/// `caller.is_private() || !tier::is_private(root, id)`: the tier axis alone,
+/// and not DR-15's master toggle either. Two consequences, mirror images of each
+/// other and both user-visible:
+///
+///  * With tiers ON, a chat bound to a model covered by another institution's
+///    agreements was handed the ids of bases whose content the barrier then
+///    refused — and that id is the one argument that makes this function's
+///    explicit-`kb_id` branch reachable.
+///  * With tiers OFF, it went on hiding bases the very next call would serve in
+///    full, which is the same inconsistency in the other direction and breaks
+///    DR-15's promise that nothing is impacted when the feature is off.
+///
+/// It now asks [`KbCaller::can_reach`] — `tier::assert_reachable` negated,
+/// exactly what `KnowledgeServer::kb_is_out_of_reach` asks. There is no
+/// independent predicate left to keep in sync.
 pub(crate) fn resolve_target_kb(
     svc: &KnowledgeService,
     arguments: &Value,
     session_id: &str,
-    caller: ProviderTier,
+    caller: &KbCaller,
 ) -> anyhow::Result<String> {
     if let Some(name) = arguments.get("new_kb_name").and_then(|v| v.as_str()) {
         let name = name.trim();
@@ -200,7 +241,11 @@ pub(crate) fn resolve_target_kb(
         // refuses a read and then hands over the identifier of the thing it
         // refused is not a barrier, and that identifier is the one argument that
         // makes the explicit-`kb_id` branch reachable.
-        .filter(|id| caller.is_private() || !crate::knowledge::tier::is_private(svc.root(), id))
+        //
+        // ⚠ Finding 17: the BARRIER, negated — never a re-derived condition.
+        // Per id and not once over the set, so one unreachable base does not
+        // cost the chat every other one.
+        .filter(|id| caller.can_reach(svc.root(), id))
         .collect();
     if ids.is_empty() {
         anyhow::bail!(
@@ -318,11 +363,35 @@ fn invalid_params(e: impl std::fmt::Display) -> ErrorData {
 #[cfg(test)]
 mod tests {
     use super::{
-        ingest_summary, resolve_target_kb, should_use_knowledge_default_model, slugify_kb_name,
+        ingest_summary, kb_caller, resolve_target_kb, should_use_knowledge_default_model,
+        slugify_kb_name, KbCaller,
     };
+    use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+    use crate::privacy::{CallCapability, ProviderTier};
     use crate::session::session_manager::{Session, SessionType};
+    use biorouter_mcp::knowledge::affiliation::CallerAffiliation;
     use biorouter_mcp::knowledge::service::KnowledgeService;
     use std::path::PathBuf;
+
+    /// The two callers the pre-finding-17 filter could not tell apart: both are
+    /// PRIVATE, so the tier axis says "reachable" for both, and only the
+    /// affiliation axis separates them.
+    fn private_at(institution: &str) -> KbCaller {
+        KbCaller::new(
+            true,
+            CallerAffiliation::Institution(institution.to_string()),
+        )
+    }
+
+    /// A private, LOCAL model — the caller DR-26 clears everywhere, because it
+    /// transfers nothing. The pre-DR-26 meaning of "a private caller".
+    fn private_local() -> KbCaller {
+        KbCaller::new(true, CallerAffiliation::Local)
+    }
+
+    fn public_caller() -> KbCaller {
+        KbCaller::restricted()
+    }
 
     /// Pre-existing bug: the KB-less target came from the **machine-wide**
     /// `.active-kb`, while every other surface — the chat chip, kb_set_active,
@@ -339,19 +408,19 @@ mod tests {
         svc.set_primary_for_session("chat-1", Some("session-kb"))?;
 
         let args = serde_json::json!({});
-        let public = crate::privacy::ProviderTier::Public;
+        let public = public_caller();
         assert_eq!(
-            resolve_target_kb(&svc, &args, "chat-1", public)?,
+            resolve_target_kb(&svc, &args, "chat-1", &public)?,
             "session-kb"
         );
         assert_eq!(
-            resolve_target_kb(&svc, &args, "chat-2", public)?,
+            resolve_target_kb(&svc, &args, "chat-2", &public)?,
             "machine-kb",
             "a chat that never chose one still inherits the machine pointer"
         );
 
         svc.set_primary_persisted(None)?;
-        let err = resolve_target_kb(&svc, &args, "chat-9", public)
+        let err = resolve_target_kb(&svc, &args, "chat-9", &public)
             .unwrap_err()
             .to_string();
         assert!(
@@ -402,8 +471,6 @@ mod tests {
     /// the model the identifier of the thing it refused is not a barrier.
     #[test]
     fn the_no_target_error_names_only_the_bases_the_caller_may_reach() -> anyhow::Result<()> {
-        use crate::privacy::ProviderTier;
-
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
         svc.create_base("default", "Default", None)?;
@@ -411,7 +478,7 @@ mod tests {
         crate::knowledge::tier::raise_unlocked(tmp.path(), "omop", true)?;
 
         let args = serde_json::json!({});
-        let public = resolve_target_kb(&svc, &args, "chat-9", ProviderTier::Public)
+        let public = resolve_target_kb(&svc, &args, "chat-9", &public_caller())
             .unwrap_err()
             .to_string();
         assert!(
@@ -425,7 +492,7 @@ mod tests {
 
         // Both directions: a private model still sees both, or the filter is
         // just "refuse everyone" and the feature has quietly stopped working.
-        let private = resolve_target_kb(&svc, &args, "chat-9", ProviderTier::Private)
+        let private = resolve_target_kb(&svc, &args, "chat-9", &private_local())
             .unwrap_err()
             .to_string();
         assert!(
@@ -440,14 +507,12 @@ mod tests {
     /// `(one of: )` — which is both useless and a tell.
     #[test]
     fn a_chat_whose_only_base_is_private_is_told_it_has_none() -> anyhow::Result<()> {
-        use crate::privacy::ProviderTier;
-
         let tmp = tempfile::TempDir::new()?;
         let svc = KnowledgeService::new(tmp.path().to_path_buf());
         svc.create_base("omop", "OMOP", None)?;
         crate::knowledge::tier::raise_unlocked(tmp.path(), "omop", true)?;
 
-        let err = resolve_target_kb(&svc, &serde_json::json!({}), "chat-9", ProviderTier::Public)
+        let err = resolve_target_kb(&svc, &serde_json::json!({}), "chat-9", &public_caller())
             .unwrap_err()
             .to_string();
         assert!(
@@ -457,6 +522,102 @@ mod tests {
         assert!(!err.contains("omop"), "{err}");
         assert!(!err.contains("one of"), "an empty candidate list: {err}");
         Ok(())
+    }
+
+    /// **Audit finding 17, second spelling.** The candidate list asked the tier
+    /// axis alone, so both callers below — each of them PRIVATE — got the same
+    /// answer, and the Stanford one was handed the id of a base the barrier then
+    /// refused. That id is the one argument that makes the explicit-`kb_id`
+    /// branch of this very function reachable.
+    ///
+    /// The discrimination is the point: `default` (unclaimed) must survive for
+    /// BOTH, or the filter is just "refuse the second caller" and the test would
+    /// pass against a fix that broke the feature.
+    #[test]
+    fn the_candidate_list_asks_the_affiliation_axis_not_only_the_tier() -> anyhow::Result<()> {
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("default", "Default", None)?;
+        svc.create_base("omop", "OMOP", None)?;
+        crate::knowledge::tier::raise_unlocked(tmp.path(), "omop", true)?;
+        crate::knowledge::tier::raise_affiliation_unlocked(
+            tmp.path(),
+            "omop",
+            &CallerAffiliation::Institution("ucsf".to_string()),
+        )?;
+
+        let args = serde_json::json!({});
+
+        let ucsf = resolve_target_kb(&svc, &args, "chat-9", &private_at("ucsf"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            ucsf.contains("omop") && ucsf.contains("default"),
+            "the institution that owns the base was denied its own id: {ucsf}"
+        );
+
+        let stanford = resolve_target_kb(&svc, &args, "chat-9", &private_at("stanford"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !stanford.contains("omop"),
+            "the candidate list named a base the barrier refuses across an \
+             institutional boundary: {stanford}"
+        );
+        assert!(
+            stanford.contains("default"),
+            "the unclaimed base must still be offered: {stanford}"
+        );
+
+        // A private model that states nothing is DR-26's restrictive caller: it
+        // mismatches every claimed base. `Unstated` reaching `omop` would mean
+        // the filter is reading the tier bit and calling it an affiliation.
+        let unstated_caller = KbCaller::new(true, CallerAffiliation::Unstated);
+        let unstated = resolve_target_kb(&svc, &args, "chat-9", &unstated_caller)
+            .unwrap_err()
+            .to_string();
+        assert!(!unstated.contains("omop"), "{unstated}");
+        assert!(stanford.contains("default"), "{unstated}");
+
+        // …and a LOCAL model transfers nothing, so it clears the base. Without
+        // this row the fix could be "refuse every private caller".
+        let local = resolve_target_kb(&svc, &args, "chat-9", &private_local())
+            .unwrap_err()
+            .to_string();
+        assert!(local.contains("omop"), "a local model was denied: {local}");
+        Ok(())
+    }
+
+    /// The wiring, not the filter. `resolve_target_kb` could ask the barrier
+    /// perfectly and still be handed half a caller: the production call site
+    /// used to read `p.tier()` and nothing else, so a correct filter would have
+    /// received `Unstated` for every chat and quietly refused every claimed
+    /// base. This drives the crossing the handler actually performs.
+    #[test]
+    fn the_production_crossing_carries_both_axes_off_one_sample() {
+        let ucsf = CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(ModelAffiliation::institution(InstitutionId::new("UCSF"))),
+        );
+        assert_eq!(
+            kb_caller(ucsf),
+            KbCaller::new(true, CallerAffiliation::Institution("ucsf".to_string())),
+            "the affiliation axis was dropped on the way to the barrier"
+        );
+
+        // Public collapses to the restrictive pair on both fields — the
+        // fail-closed direction an unbound provider takes.
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+        assert_eq!(kb_caller(public), KbCaller::restricted());
+
+        // ⚠ `enforced` must NOT ride along: the toggle is read once, inside
+        // `tier::assert_reachable`. Two capabilities differing only in
+        // `enforced` must cross to the same caller.
+        assert_eq!(
+            kb_caller(CallCapability::for_test(ProviderTier::Private, true)),
+            kb_caller(CallCapability::for_test(ProviderTier::Private, false)),
+        );
     }
 
     /// Issue #56 Gate H. A scheduled knowledge job prefers the target KB's

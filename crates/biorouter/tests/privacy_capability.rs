@@ -20,12 +20,18 @@
 //!
 //! ⚠ **Not "every path goes through `CallCapability`" — that claim is false**, and
 //! a test asserting it would either fail immediately or be quietly weakened until
-//! it passed. `CallCapability` covers Gates C, E and F; four other paths decide
+//! it passed. `CallCapability` covers Gates C, E and F; three other paths decide
 //! reach without touching one, for reasons documented in the tree and which are
 //! not defects (an HTTP route with no admitted capability to inherit, a subagent
-//! spawn constructing a whole new agent, the `biorouter-mcp` crate boundary
-//! across which only a bare `bool` and a `_meta` string can travel, and the
-//! agent-drafter catalog's direct read of the process-global).
+//! spawn constructing a whole new agent, and the `biorouter-mcp` crate boundary
+//! across which only a `KbCaller` and a `_meta` string can travel).
+//!
+//! ⚠ There used to be a fourth: the agent-drafter catalog read the master toggle
+//! itself, because it asked `tier::is_private` rather than the barrier. Audit
+//! finding 17 removed that second spelling — the catalog now asks
+//! `KbCaller::can_reach`, which inherits the toggle from `tier::assert_reachable`
+//! like every other knowledge-base filter — so that row is gone rather than
+//! merely renumbered.
 //!
 //! The audit is therefore a **census**: it pins the complete set of sites, the
 //! sanctioned ones and the bypassing ones together, and fails when a new one
@@ -121,6 +127,18 @@ const EXPECTED: &[Site] = &[
     },
     Site {
         needle: "CallCapability::sample(",
+        file: "crates/biorouter/src/agents/knowledge_tool.rs",
+        count: 1,
+        what: "`handle_ingest_conversation` — the conversation-ingest branch of \
+               `dispatch_tool_call`, which returns before the agent loop's own \
+               sample exactly as the schedule branch does. It reads `p.tier()` \
+               alone before audit finding 17: the tier fed a candidate list that \
+               names knowledge bases to the model, so a cross-institution chat was \
+               handed the ids of bases the KB barrier then refused. It now samples \
+               both axes at one instant and crosses them to `KbCaller`",
+    },
+    Site {
+        needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/extension_manager.rs",
         count: 2,
         what: "`extension_reach` (Gate E's discovery filter and mark, which \
@@ -197,16 +215,9 @@ const EXPECTED: &[Site] = &[
     },
     // ------------------------------------------------ the `biorouter-mcp` crate
     // boundary. That crate cannot depend on `biorouter`, so no `CallCapability`
-    // can cross: what crosses is a bare `bool` and a `_meta` string, and the
-    // master opt-out is read from the process-global directly.
-    Site {
-        needle: "crate::privacy_toggle::privacy_tiers_enabled()",
-        file: "crates/biorouter-mcp/src/agent_drafter/catalog.rs",
-        count: 1,
-        what: "DR-26 bypassing path 4 — the agent-drafter catalog's knowledge-base \
-               filter, which has no `assert_reachable` choke point to inherit the \
-               toggle from and so reads it itself",
-    },
+    // can cross: what crosses is a `KbCaller` (both axes, one value — audit
+    // finding 17) and a `_meta` string, and the master opt-out is read from the
+    // process-global directly.
     Site {
         needle: "crate::privacy_toggle::privacy_tiers_enabled()",
         file: "crates/biorouter-mcp/src/knowledge/server.rs",
@@ -221,7 +232,9 @@ const EXPECTED: &[Site] = &[
         count: 3,
         what: "DR-26 bypassing path 3 — the knowledge-base gates: the affiliation \
                ratchet (`add_owners_unlocked`), the barrier (`assert_reachable`) \
-               and the tier ratchet (`raise_unlocked`)",
+               and the tier ratchet (`raise_unlocked`). Every knowledge-base \
+               LISTING inherits the toggle from the barrier here rather than \
+               reading it — see audit finding 17",
     },
 ];
 

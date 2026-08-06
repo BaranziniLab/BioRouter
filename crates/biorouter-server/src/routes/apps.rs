@@ -769,18 +769,24 @@ fn valid_profile_count_is_zero(cfg: &AgentConfig) -> bool {
 
 /// What this install can actually give **this** agent.
 ///
-/// `caller_is_private` is issue #56's CP5 crossing: `biorouter-mcp` cannot
-/// depend on `biorouter`, so `Catalog::discover` takes a `bool` and the
-/// `ProviderTier → bool` conversion happens here, at the one call site. A public
-/// agent's catalog omits every private knowledge base, so `missing_knowledge_base`
-/// reports one it may not reach exactly as it reports one that is not installed —
-/// which is the omission semantics the whole task chose, not a refusal that would
-/// itself confirm the base exists.
-fn capability_report(cfg: &AgentConfig, caller_is_private: bool) -> CapabilityReport {
+/// `caller` is issue #56's CP5 crossing: `biorouter-mcp` cannot depend on
+/// `biorouter`, so `Catalog::discover` takes that crate's own [`KbCaller`] and
+/// the `ProviderTier`/`ModelAffiliation` translation happens in [`caller_of`].
+/// An agent the barrier would refuse gets the base omitted from its catalog, so
+/// `missing_knowledge_base` reports one it may not reach exactly as it reports
+/// one that is not installed — which is the omission semantics the whole task
+/// chose, not a refusal that would itself confirm the base exists.
+///
+/// ⚠ **Audit finding 17.** This took the tier axis alone, so an app agent bound
+/// to a model covered by another institution's agreements was told its
+/// configured base was present — and `br.kb` (CP3, `handle_kb_frame` below)
+/// then refused every read of it. Same file, same capability, two questions.
+/// Both doors now take one [`KbCaller`] and ask `assert_reachable`.
+fn capability_report(cfg: &AgentConfig, caller: &KbCaller) -> CapabilityReport {
     // What this install actually has. Everything below is intersected against
     // it: we never arm a tool for a grant that cannot be satisfied, because
     // doing so is what made the app's first turn fail by construction.
-    let catalog = biorouter_mcp::agent_drafter::catalog::Catalog::discover(caller_is_private);
+    let catalog = biorouter_mcp::agent_drafter::catalog::Catalog::discover(caller);
     let (granted_skills, missing_skills) = cfg
         .skills
         .iter()
@@ -1644,15 +1650,16 @@ async fn configure_agent(
     // that survives `configure_main_provider`'s fallbacks — the same rule the HTTP
     // macro routes apply: the constructed instance, never the requested name.
     //
-    // A dead or unbound provider resolves to Public, the same fail-safe direction
-    // `caller_is_private_of` takes: unknown must be the less privileged answer.
-    let caller_is_private = agent
-        .provider()
-        .await
-        .map(|p| p.tier())
-        .unwrap_or(biorouter::privacy::ProviderTier::Public)
-        .is_private();
-    let mut report = capability_report(cfg, caller_is_private);
+    // A dead or unbound provider resolves to Public + Unstated, the same
+    // fail-safe direction `caller_of` takes: unknown must be the less privileged
+    // answer, on BOTH axes.
+    //
+    // ⚠ Finding 17: through `caller_of`, so this reads the tier and the
+    // affiliation off ONE `provider()` resolution and hands CP5 the same value
+    // CP3 gets. Two separate reads here would let the catalogue be built from
+    // one model's tier and the barrier consulted with another's institution.
+    let caller = caller_of(agent).await;
+    let mut report = capability_report(cfg, &caller);
 
     configure_main_extensions(agent, manifest, cfg, &report).await;
 
@@ -2108,15 +2115,13 @@ async fn configure_worker_agent(
     let granted_kb = match cfg.knowledge_base.as_ref() {
         None => None,
         Some(kb) => {
-            let worker_is_private = agent
-                .provider()
-                .await
-                .map(|p| p.tier())
-                .unwrap_or(biorouter::privacy::ProviderTier::Public)
-                .is_private();
-            if biorouter_mcp::agent_drafter::catalog::Catalog::discover(worker_is_private)
-                .has_kb(kb)
-            {
+            // Finding 17: the worker's WHOLE identity, off one `provider()`
+            // resolution — `caller_of` is the same reader `handle_kb_frame`'s
+            // mid-turn call site uses for this very agent, so the catalogue that
+            // decides whether to arm the profile's `kb_*` tools and the barrier
+            // that answers them cannot disagree.
+            let worker = caller_of(agent).await;
+            if biorouter_mcp::agent_drafter::catalog::Catalog::discover(&worker).has_kb(kb) {
                 Some(kb)
             } else {
                 warn!(app = %manifest.id, profile = %profile_name, kb = %kb,
@@ -3459,31 +3464,37 @@ fn cap_kb_result(mut v: serde_json::Value) -> serde_json::Value {
 /// A dead or unbound provider resolves to Public + `None` — the same fail-safe
 /// direction `CallCapability::sample` takes: a provider that cannot be read is
 /// unknown, and unknown must be the *less* privileged answer on both axes.
-async fn caller_of(agent: &Arc<biorouter::agents::Agent>) -> KbCaller {
+/// Takes `&Agent` rather than `&Arc<Agent>` so `configure_agent` and
+/// `configure_worker_agent` — which hold a borrow, not the `Arc` — can read the
+/// same value the socket loop's three `handle_kb_frame` sites do. `&Arc<Agent>`
+/// deref-coerces here, so those call sites are unchanged.
+async fn caller_of(agent: &biorouter::agents::Agent) -> KbCaller {
     match agent.provider().await {
-        Ok(p) => KbCaller {
-            is_private: p.tier().is_private(),
-            affiliation: p.affiliation(),
-        },
-        Err(_) => KbCaller {
-            is_private: false,
-            affiliation: None,
-        },
+        Ok(p) => KbCaller::new(
+            p.tier().is_private(),
+            biorouter::privacy::affiliation::caller_affiliation(p.affiliation()),
+        ),
+        Err(_) => KbCaller::restricted(),
     }
 }
 
-/// The capability of the agent whose KB access this is — the TURN's agent
-/// mid-turn, the main agent between turns.
-///
-/// One value rather than two parameters because the two axes are one caller's
-/// identity: a signature that takes them separately invites a call site that
-/// passes the turn agent's tier and the main agent's institution, and the wrong
-/// one compiles.
-#[derive(Clone, Copy)]
-struct KbCaller {
-    is_private: bool,
-    affiliation: Option<biorouter::privacy::affiliation::ModelAffiliation>,
-}
+// The capability of the agent whose KB access this is — the TURN's agent
+// mid-turn, the main agent between turns.
+//
+// One value rather than two parameters because the two axes are one caller's
+// identity: a signature that takes them separately invites a call site that
+// passes the turn agent's tier and the main agent's institution, and the wrong
+// one compiles.
+//
+// ⚠ AUDIT FINDING 17. This used to be a `struct KbCaller` local to this file,
+// holding `Option<ModelAffiliation>` and translated to `CallerAffiliation` at
+// each use. It is now `biorouter_mcp::knowledge::caller::KbCaller` — the same
+// carrier CP5's `Catalog::discover` takes — so the two doors this file opens
+// onto one capability (CP3's `br.kb` barrier and CP5's catalogue listing, which
+// asked the tier axis alone and named bases CP3 then refused) cannot be handed
+// different halves of a caller. The translation happens once, in `caller_of`,
+// where the provider is read.
+use biorouter_mcp::knowledge::caller::KbCaller;
 
 /// Emit a `kb_result` error frame (never kills the socket).
 fn emit_kb_error(ui_bridge: &UiBridge, req_id: &str, msg: &str) {
@@ -3525,12 +3536,7 @@ async fn handle_kb_frame(
     // — authored by the drafting model, which learned the ids from
     // `discover_kbs` — and says nothing about which CALLER; `br.kb` never touches
     // `KnowledgeServer`, so CP1 is blind to this whole surface.
-    if let Err(e) = biorouter_mcp::knowledge::tier::assert_reachable(
-        knowledge.root(),
-        &kb_id,
-        caller.is_private,
-        &biorouter::privacy::affiliation::caller_affiliation(caller.affiliation),
-    ) {
+    if let Err(e) = caller.assert_reachable(knowledge.root(), &kb_id) {
         emit_kb_error(ui_bridge, req_id, &e.to_string());
         return;
     }
@@ -3580,8 +3586,8 @@ async fn handle_kb_frame(
             // claimed base at public tier everywhere else.
             if let Err(e) = knowledge.raise_tier_and_affiliation(
                 &kb_id,
-                caller.is_private,
-                &biorouter::privacy::affiliation::caller_affiliation(caller.affiliation),
+                caller.is_private(),
+                caller.affiliation(),
             ) {
                 emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
@@ -8290,10 +8296,7 @@ mod tests {
                 &bridge,
                 &svc,
                 Some(&cfg),
-                KbCaller {
-                    is_private: true,
-                    affiliation: None,
-                },
+                KbCaller::new(true, Default::default()),
                 "ingest",
                 &serde_json::json!({ "kb_id": "kbx", "text": "n=412" }),
                 "r1",
@@ -8324,10 +8327,7 @@ mod tests {
                 &bridge,
                 &svc,
                 Some(&cfg),
-                KbCaller {
-                    is_private: false,
-                    affiliation: None,
-                },
+                KbCaller::new(false, Default::default()),
                 "ingest",
                 &serde_json::json!({ "kb_id": "kby", "text": "public note" }),
                 "r2",
@@ -8385,10 +8385,7 @@ mod tests {
                 &bridge,
                 &svc,
                 Some(&cfg),
-                KbCaller {
-                    is_private: false,
-                    affiliation: None,
-                },
+                KbCaller::new(false, Default::default()),
                 "search",
                 &serde_json::json!({ "kb_id": "kbx", "query": "SENTINEL" }),
                 "r1",
@@ -8408,10 +8405,7 @@ mod tests {
                 &bridge,
                 &svc,
                 Some(&cfg),
-                KbCaller {
-                    is_private: true,
-                    affiliation: None,
-                },
+                KbCaller::new(true, Default::default()),
                 "search",
                 &serde_json::json!({ "kb_id": "kbx", "query": "SENTINEL" }),
                 "r2",
@@ -8443,10 +8437,7 @@ mod tests {
                 &bridge,
                 &svc,
                 Some(&cfg),
-                KbCaller {
-                    is_private: false,
-                    affiliation: None,
-                },
+                KbCaller::new(false, Default::default()),
                 "ingest",
                 &serde_json::json!({ "kb_id": "kbz", "text": "n=412" }),
                 "r3",

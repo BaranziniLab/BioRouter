@@ -47,6 +47,7 @@ use biorouter::providers::base::{Provider, ProviderMetadata, ProviderUsage, Usag
 use biorouter::providers::errors::ProviderError;
 use biorouter::session::session_manager::{Session, SessionType};
 use biorouter::session::SessionManager;
+use biorouter_mcp::knowledge::caller::KbCaller;
 use futures::StreamExt;
 use rmcp::model::{CallToolRequestParams, Tool};
 use tempfile::TempDir;
@@ -677,8 +678,8 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     // 14 CP5   (Task 10D) — the Agent Drafter catalog's knowledge bases. The
     //          private base is omitted for a public caller, and the assertion is
     //          NOT vacuous: a private caller sees it in the same tree.
-    assert!(catalog_kb_ids(path_root, /* caller_is_private */ true).contains(&"omop".to_string()));
-    assert!(!catalog_kb_ids(path_root, /* caller_is_private */ false).contains(&"omop".to_string()));
+    assert!(catalog_kb_ids(path_root, &private_kb_caller()).contains(&"omop".to_string()));
+    assert!(!catalog_kb_ids(path_root, &KbCaller::restricted()).contains(&"omop".to_string()));
 
     // 16 ratchet (Task 10B) — a private caller's write marks the base private.
     biorouter_mcp::knowledge::tier::raise_unlocked(kb_root, "notes", true).unwrap();
@@ -795,7 +796,7 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
         vec![PRIVATE_EXTENSION.to_string(), "developer".to_string()]
     );
     assert!(inherited_off.dropped_private_extensions.is_empty());
-    assert!(catalog_kb_ids(path_root, /* caller_is_private */ false).contains(&"omop".to_string()));
+    assert!(catalog_kb_ids(path_root, &KbCaller::restricted()).contains(&"omop".to_string()));
     // AR-7: the ratchet stops too.
     biorouter_mcp::knowledge::tier::raise_unlocked(kb_root, "notes2", true).unwrap();
     assert!(!biorouter_mcp::knowledge::tier::is_private(
@@ -893,16 +894,32 @@ async fn no_environment_variable_can_turn_protection_off() {
 /// the env guard is taken here — inside a SYNCHRONOUS helper — rather than
 /// around the `await`s in the matrix: `env_lock`'s guard is a `std::sync` guard
 /// and holding one across an `.await` is not `Send` in a `#[tokio::test]`.
-fn catalog_kb_ids(path_root: &std::path::Path, caller_is_private: bool) -> Vec<String> {
+fn catalog_kb_ids(path_root: &std::path::Path, caller: &KbCaller) -> Vec<String> {
     let _env = env_lock::lock_env([(
         "BIOROUTER_PATH_ROOT",
         Some(path_root.to_str().expect("utf-8 temp path")),
     )]);
-    biorouter_mcp::agent_drafter::catalog::Catalog::discover(caller_is_private)
+    biorouter_mcp::agent_drafter::catalog::Catalog::discover(caller)
         .knowledge_bases
         .into_iter()
         .map(|kb| kb.id)
         .collect()
+}
+
+/// The two callers the CP5 rows use.
+///
+/// ⚠ The private one is `Local`, not `Unstated`. After audit finding 17 the
+/// catalog asks `tier::assert_reachable`, which reads DR-26's affiliation axis
+/// as well as the tier — and `Unstated` is that axis's RESTRICTIVE value, so a
+/// row that meant "a private caller sees the private base" and spelled it
+/// `Unstated` would pass for the wrong reason the day the base gains an owner.
+/// `Local` transfers nothing and clears every base, which is what
+/// `caller_is_private = true` meant before the axis existed.
+fn private_kb_caller() -> KbCaller {
+    KbCaller::new(
+        true,
+        biorouter_mcp::knowledge::affiliation::CallerAffiliation::Local,
+    )
 }
 
 /// The knowledge root `Catalog::discover` will resolve under `path_root`, so the
