@@ -1150,7 +1150,7 @@ impl WorkspaceClient {
                 (session_id, None)
             }
             (None, Some(new)) => {
-                let created = self.open_new_session(caller_session_id, new).await?;
+                let created = self.open_new_session(caller_session_id, cap, new).await?;
                 (created.session_id.clone(), Some(created))
             }
         };
@@ -1188,8 +1188,13 @@ impl WorkspaceClient {
     async fn open_new_session(
         &self,
         caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         new: WorkspaceOpenNew,
     ) -> Result<NewSession, String> {
+        // Issue #56, finding 4: the second ungated extension-ENABLE door. Before
+        // the daemon lookup and long before `create_session`, so a refusal
+        // cannot leave a half-built conversation behind.
+        Self::refuse_gated_new_session_extensions(cap, new.extensions.as_ref())?;
         let services = workspace_services::get()
             .ok_or("starting a new session requires the BioRouter daemon")?;
         // Decision 5: the working dir DEFAULTS to the caller's. A different
@@ -1714,13 +1719,26 @@ impl WorkspaceClient {
     async fn handle_set_tools(
         &self,
         caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceSetToolsParams = parse_args(arguments)?;
 
+        // Issue #56, design §7 — the WRITE row, and the same predicate
+        // `workspace_send_prompt` asks one screen up. This tool rewrites another
+        // conversation's provider, its extension set, its skills and its
+        // knowledge bases; a public caller that may not even read a private
+        // conversation must certainly not re-tool one. FIRST, before any store
+        // read that could answer a question about the target.
+        //
+        // ⚠ VIS only, exactly as `handle_send_prompt` documents: §7's write row
+        // is `may_write` — VIS **and** lineage ∈ {self, child} — and the lineage
+        // half is not implemented anywhere in this file.
+        self.refuse_unless_visible(cap, &args.session_id).await?;
+
         // ---- Resolve EVERYTHING before mutating anything, so a bad name is a
         // clean no-op rather than a half-applied change. ------------------
-        let add_configs = Self::resolve_added_extensions(&args.add_extensions)?;
+        let add_configs = Self::resolve_added_extensions(cap, &args.add_extensions)?;
         self.refuse_workspace_grant_to_subagent(&args.session_id, &add_configs)
             .await?;
         // Model/provider (decision b): resolve and validate here; apply below.
@@ -1818,6 +1836,87 @@ impl WorkspaceClient {
         ))])
     }
 
+    /// **Gate F1, at the workspace's own two enable doors** (issue #56,
+    /// finding 4).
+    ///
+    /// `extensionmanager__manage_extensions {action:"enable"}` is not the only
+    /// way an agent turns an extension on. `workspace_set_tools
+    /// {add_extensions}` attaches one to a live conversation, and
+    /// `workspace_open {new:{extensions}}` picks the set a brand-new
+    /// conversation starts with — and the instruction block above tells the
+    /// model to prefer exactly these ("do this yourself instead of pointing at
+    /// Settings"). Both ran with no tier check at all, so a chat on a public
+    /// model could enable `ucsfomopagent` on itself, hand it to a sibling, or
+    /// start a fresh conversation holding it. Enabling is not a tool call INTO
+    /// a private server; it is the call that SPAWNS one — it pulls that
+    /// server's secrets out of the keychain and opens the session — so Gate C
+    /// refusing the first tool call afterwards is already too late.
+    ///
+    /// ⚠ **Every arm here is the shared spelling, never a local re-derivation.**
+    /// `check_enable_allowed` (`extension_manager_extension.rs`) is the same
+    /// gate at the `manage_extensions` door, and it is built out of exactly
+    /// these three pieces: the persisted-`enabled:false` pin (#42),
+    /// [`privacy::resolve_extension`] + [`refusal::privacy_refusal`] for the
+    /// tier, and [`CallCapability::cross_affiliation_warning`] for DR-26. A
+    /// hand-written `class.tier.is_private() && cap.tier() == Public` here
+    /// would be a third copy of one table, and the copies disagree on the row
+    /// nobody thought about.
+    ///
+    /// `entry` is the on-disk config entry when the extension is installed.
+    /// `None` means "not installed, or not looked up yet"; the tier still
+    /// resolves, by name, from the compiled marketplace baseline.
+    ///
+    /// [`privacy::resolve_extension`]: crate::privacy::resolve_extension
+    /// [`refusal::privacy_refusal`]: crate::privacy::refusal::privacy_refusal
+    /// [`CallCapability::cross_affiliation_warning`]: crate::privacy::CallCapability::cross_affiliation_warning
+    fn refuse_gated_extension_enable(
+        cap: crate::privacy::CallCapability,
+        name: &str,
+        entry: Option<&crate::config::ExtensionEntry>,
+    ) -> Result<(), String> {
+        // Issue #42's operator pin. Same refusal text `manage_extensions`
+        // gives, so the model gets the same guidance whichever door it tried.
+        if let Some(entry) = entry {
+            if !entry.enabled && crate::config::extension_entry_is_persisted(&entry.config.name()) {
+                return Err(format!(
+                    "Extension '{name}' is disabled in the Biorouter configuration \
+                     (enabled: false). The operator turned it off deliberately, so do not \
+                     enable it yourself — not here and not on another conversation. If it \
+                     is needed for this task, ask the user to re-enable it."
+                ));
+            }
+        }
+        // ONE resolution, both axes, exactly as `check_enable_allowed` and
+        // `assert_extension_reachable` take it: two lookups would let the tier
+        // and the affiliation disagree about the same entry.
+        let class = crate::privacy::resolve_extension(name, entry.map(|e| &e.config));
+        // Gate F1's tier arm. DR-15's master opt-out is read off the SAME
+        // sample that carried the tier (`cap.enforced()`), never re-derived
+        // here — the toggle's own function name is deliberately not spelled in
+        // this file.
+        if cap.enforced() {
+            if let Some(err) =
+                crate::privacy::refusal::privacy_refusal(name, class.tier, cap.tier())
+            {
+                return Err(err.message.to_string());
+            }
+        }
+        // DR-26's third axis, last because it is the narrowest: every arm above
+        // refuses a class of extension outright, where this refuses one PAIRING
+        // of an extension with one bound model. `None` for the accept control,
+        // for `check_enable_allowed`'s reason — a grant is the user's
+        // acceptance of a data flow through a connector this chat already has,
+        // not permission to attach one it did not have.
+        if let Some(warning) = cap.cross_affiliation_warning(name, &class) {
+            return Err(
+                crate::privacy::refusal::cross_affiliation_refusal(&warning, None)
+                    .message
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+
     /// Resolve `add_extensions` to loadable configs, or fail the whole call.
     ///
     /// Resolve through `get_extension_entry_by_name`, NOT
@@ -1833,29 +1932,62 @@ impl WorkspaceClient {
     /// tool-environment case (benchmarking, safety) the #42 doc comment
     /// names, and defeating it is a straight privilege escalation.
     fn resolve_added_extensions(
+        cap: crate::privacy::CallCapability,
         names: &[String],
     ) -> Result<Vec<crate::agents::ExtensionConfig>, String> {
         let mut add_configs = Vec::new();
         for name in names {
+            // ⚠ **BEFORE the lookup, and that ordering is the point.** A
+            // private extension the machine has not installed would otherwise
+            // come back "unknown extension 'ucsfomopagent'" while an installed
+            // one came back with the privacy refusal — an install oracle for a
+            // model that may not reach the connector either way. Resolved by
+            // NAME here, from the compiled baseline, so the sentence is the
+            // same in both worlds.
+            Self::refuse_gated_extension_enable(cap, name, None)?;
             match crate::config::get_extension_entry_by_name(name) {
                 None => return Err(format!("unknown extension '{name}'")),
-                Some(entry)
-                    if !entry.enabled
-                        && crate::config::extension_entry_is_persisted(&entry.config.name()) =>
-                {
-                    // Same refusal text `manage_extensions` gives, so the model
-                    // gets the same guidance whichever door it tried.
-                    return Err(format!(
-                        "Extension '{name}' is disabled in the Biorouter configuration \
-                         (enabled: false). The operator turned it off deliberately, so do not \
-                         enable it yourself — not here and not on another conversation. If it \
-                         is needed for this task, ask the user to re-enable it."
-                    ));
+                // Asked a SECOND time with the entry, because it can only raise
+                // the answer: `resolve_extension` also matches a renamed entry
+                // through its install directory and the provenance store
+                // (Task 43 / DR-23), which the name alone no longer carries.
+                Some(entry) => {
+                    Self::refuse_gated_extension_enable(cap, name, Some(&entry))?;
+                    add_configs.push(entry.config);
                 }
-                Some(entry) => add_configs.push(entry.config),
             }
         }
         Ok(add_configs)
+    }
+
+    /// The same gate at `workspace_open {new:{extensions}}` — the door that
+    /// chooses what a conversation is BORN holding.
+    ///
+    /// It refuses rather than resolving, because the names are forwarded to
+    /// `WorkspaceServices::start_session`, whose own resolution goes through
+    /// `get_extension_by_name` — the flag-less helper that discards the
+    /// operator's `enabled` flag (`config/extensions.rs`). So this path had
+    /// neither of Gate F1's arms *nor* #42's pin, and was the one way to get an
+    /// operator-disabled extension running again.
+    ///
+    /// ⚠ **An unknown name is NOT an error here**, unlike
+    /// [`Self::resolve_added_extensions`]. `start_session` already answers
+    /// `unknown extension '<name>'` for one, and duplicating that check would
+    /// make this function's behaviour depend on whether the *caller's* process
+    /// shares the daemon's installed set. The tier arm still fires, because it
+    /// resolves from the compiled baseline and not from what is installed.
+    ///
+    /// Runs BEFORE `create_session`, so a refusal leaves no orphan conversation
+    /// behind — the session is committed the moment `start_session` returns.
+    fn refuse_gated_new_session_extensions(
+        cap: crate::privacy::CallCapability,
+        extensions: Option<&Vec<String>>,
+    ) -> Result<(), String> {
+        for name in extensions.into_iter().flatten() {
+            let entry = crate::config::get_extension_entry_by_name(name);
+            Self::refuse_gated_extension_enable(cap, name, entry.as_ref())?;
+        }
+        Ok(())
     }
 
     /// §5: workspace control must not fan out through delegation trees.
@@ -2072,9 +2204,23 @@ impl WorkspaceClient {
     async fn handle_close(
         &self,
         caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceCloseParams = parse_args(arguments)?;
+
+        // Issue #56, finding 15. Every scope here acts ON another conversation:
+        // `tab` closes the window the user is reading it in, `turn` cancels the
+        // work it is doing, `agent` evicts it mid-flight. A caller that §7
+        // refuses even a READ of that conversation must not be able to stop it —
+        // and the answers are an oracle besides ("had no turn in flight" vs
+        // "cancelled turn <id>" reports whether a private conversation is
+        // working, one call at a time).
+        //
+        // FIRST, before the scope match: an out-of-reach target must produce the
+        // one ambiguous sentence whatever scope was named, including an invalid
+        // one, or the scope argument becomes the probe.
+        self.refuse_unless_visible(cap, &args.session_id).await?;
         let services = workspace_services::get();
 
         match args.scope.as_str() {
@@ -2135,6 +2281,7 @@ impl WorkspaceClient {
     async fn handle_watch(
         &self,
         caller_session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
     ) -> Result<Vec<Content>, String> {
         use crate::session_events;
@@ -2148,6 +2295,27 @@ impl WorkspaceClient {
                 "watching {} conversations at once exceeds the cap of {WATCH_MAX_SESSIONS}",
                 args.session_ids.len()
             ));
+        }
+        // Issue #56, finding 15: an ACTIVITY ORACLE over conversations §7 will
+        // not let this caller read. "still running" / "already idle" /
+        // "completed (stop)" is a live readout of whether a private
+        // conversation is working and when it stopped — the same shape of
+        // disclosure `workspace_list` omits rows to avoid, arriving through a
+        // tool whose name says "wait".
+        //
+        // ⚠ **The WHOLE call is refused when any named id is out of reach**,
+        // rather than the unreachable ids being dropped from the report. A
+        // partial answer would say "these three are still running" and silently
+        // omit the fourth — which is the existence disclosure with an extra
+        // step, since the caller supplied the list and can diff it. The refusal
+        // reveals no more than the same id asked for on its own would, and
+        // private stays indistinguishable from absent because
+        // `refuse_unless_visible` composes both into one sentence.
+        //
+        // Before `subscribe`, so a refused watch never claims a slot in another
+        // conversation's event ring either.
+        for id in &args.session_ids {
+            self.refuse_unless_visible(cap, id).await?;
         }
         let wait_all = match args.mode.as_deref() {
             None | Some("any") => false,
@@ -2689,9 +2857,9 @@ impl McpClientTrait for WorkspaceClient {
                 self.handle_read_conversation(caller, cap, arguments).await
             }
             "workspace_send_prompt" => self.handle_send_prompt(caller, cap, arguments).await,
-            "workspace_set_tools" => self.handle_set_tools(caller, arguments).await,
-            "workspace_close" => self.handle_close(caller, arguments).await,
-            "workspace_watch" => self.handle_watch(caller, arguments).await,
+            "workspace_set_tools" => self.handle_set_tools(caller, cap, arguments).await,
+            "workspace_close" => self.handle_close(caller, cap, arguments).await,
+            "workspace_watch" => self.handle_watch(caller, cap, arguments).await,
             "workspace_open" => self.handle_open(caller, cap, arguments).await,
             // BR-71 decision 22: the spawn tool is advertised here but
             // dispatched by the agent loop (it needs the parent's TaskConfig).
@@ -4136,6 +4304,589 @@ mod tests {
         .await;
         assert_eq!(result.is_error, Some(true));
         assert!(text_of(&result).contains("hidden"));
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #56, findings 4 and 15 — the four doors this file still had
+    // open after the round above wired the other four.
+    //
+    //   4  `workspace_set_tools {add_extensions}` and
+    //      `workspace_open {new:{extensions}}` ENABLE an extension with no
+    //      Gate F1 check, and the second also discarded the operator's
+    //      `enabled: false`.
+    //  15  `workspace_watch` and `workspace_close` act on — and report on —
+    //      a conversation §7 refuses this caller even a read of.
+    // ------------------------------------------------------------------
+
+    /// A genuinely private extension, straight out of the compiled marketplace
+    /// baseline (`privacy::registry_private::PRIVATE_EXTENSIONS`).
+    ///
+    /// Read off the real table rather than typed as a literal: a test that
+    /// hardcodes a name keeps passing after the name leaves the private set,
+    /// asserting a refusal the shipped build no longer produces.
+    fn a_private_extension() -> &'static str {
+        crate::privacy::private_extension_ids()
+            .next()
+            .expect("the marketplace baseline publishes at least one private extension")
+    }
+
+    /// Gate F1's refusal for `name`, composed by the shared function itself.
+    ///
+    /// Asserting against this rather than against a prose fragment is what pins
+    /// the *reuse*: an equivalent-but-local re-spelling of the predicate would
+    /// produce different words and fail here, which is the whole point of
+    /// "do not write a second spelling".
+    fn expected_private_extension_refusal(name: &str) -> String {
+        crate::privacy::refusal::privacy_refusal(
+            name,
+            crate::privacy::ProviderTier::Private,
+            crate::privacy::ProviderTier::Public,
+        )
+        .expect("a private extension refuses a public caller")
+        .message
+        .to_string()
+    }
+
+    /// A task-local `extensions:` map, so a test can install an extension —
+    /// or pin one off — **without writing the developer's `config.yaml`**.
+    ///
+    /// `Config::get_param` consults the task-local override before the
+    /// environment and before the file, and `get_extensions_map` /
+    /// `persisted_extension_names` both go through it, so an entry supplied
+    /// here is visible to the gate as an operator-authored one. That is the
+    /// only machine-independent way to exercise the `enabled: false` arm:
+    /// `extension_entry_is_persisted` answers from the real config file, so a
+    /// synthetic entry that is not in *some* config can never trip it.
+    fn extensions_override(
+        key: &str,
+        name: &str,
+        enabled: bool,
+    ) -> std::collections::HashMap<String, String> {
+        let map = serde_json::json!({
+            key: {
+                "enabled": enabled,
+                "type": "stdio",
+                "name": name,
+                "description": "br71 privacy fixture",
+                "cmd": "/nonexistent/br71-fixture",
+                "args": [],
+                "timeout": 1,
+            }
+        });
+        std::collections::HashMap::from([("EXTENSIONS".to_string(), map.to_string())])
+    }
+
+    /// **Finding 4, door 1.** `workspace_set_tools {add_extensions}` is an
+    /// extension-ENABLE door, and it had no tier check at all — while the
+    /// instruction block above points the model straight at it ("do this
+    /// yourself instead of pointing at Settings").
+    ///
+    /// Enabling is not a call INTO a private server; it is the call that
+    /// SPAWNS one, pulling its credentials out of the keychain. Gate C refusing
+    /// the first tool call afterwards is already too late, which is why Gate F1
+    /// exists at `manage_extensions` and why it has to exist here.
+    ///
+    /// Three properties, because two of them are how the gate could be wrong
+    /// while looking right:
+    ///
+    ///  * the refusal is Gate F1's own words, not a local paraphrase;
+    ///  * it does not depend on whether the extension is INSTALLED — an
+    ///    installed-only gate answers "unknown extension 'x'" otherwise, which
+    ///    tells a public model exactly which private connectors this machine
+    ///    has;
+    ///  * a caller entitled to it gets a different answer, so the refusal is
+    ///    about the tier and not about a handler that refuses this name.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_a_public_caller_a_private_extension() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = seeded_target(&c, "set-tools-tier").await;
+        let private_ext = a_private_extension();
+        let args = serde_json::json!({
+            "session_id": target, "add_extensions": [private_ext]
+        });
+
+        let refused = call_as(&c, "workspace_set_tools", args.clone(), public_caller()).await;
+        let uninstalled = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{uninstalled}");
+        assert!(
+            uninstalled.contains(&expected_private_extension_refusal(private_ext)),
+            "not Gate F1's refusal: {uninstalled}"
+        );
+
+        // …and the identical sentence when the connector IS installed and
+        // enabled, so the refusal is not an installation oracle.
+        let installed = crate::config::with_config_overrides(
+            extensions_override(private_ext, private_ext, true),
+            call_as(&c, "workspace_set_tools", args.clone(), public_caller()),
+        )
+        .await;
+        assert_eq!(
+            (installed.is_error, text_of(&installed)),
+            (refused.is_error, uninstalled.clone()),
+            "the refusal tells a public caller whether the private connector is installed"
+        );
+
+        // The other direction. A private caller is NOT refused on tier grounds —
+        // it gets the ordinary "you named something that is not installed",
+        // which is also why this half never tries to spawn anything.
+        let allowed = call_as(&c, "workspace_set_tools", args, private_caller()).await;
+        let text = text_of(&allowed);
+        assert!(
+            text.contains("unknown extension") && !text.contains("private extension"),
+            "a private caller met the tier gate: {text}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **Finding 4, door 2.** `workspace_open {new:{extensions}}` chooses what a
+    /// brand-new conversation is BORN holding, and forwards the names to
+    /// `start_session`, whose own resolution goes through the flag-less
+    /// `get_extension_by_name`. So this door had neither Gate F1 nor #42's
+    /// operator pin.
+    ///
+    /// The assertion that matters is not the sentence: it is that
+    /// `sessions_started()` is EMPTY. A refusal issued after `start_session`
+    /// would leave a real conversation on disk holding the private connector
+    /// and merely report failure — every prose assertion would still pass.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn open_new_refuses_a_public_caller_a_conversation_born_private() {
+        let recorder = FakeServices::with_gui(true).install();
+        let c = client();
+        let private_ext = a_private_extension();
+        let args = serde_json::json!({ "new": {
+            "working_dir": std::env::temp_dir().to_string_lossy(),
+            "extensions": [private_ext],
+        }});
+
+        let refused = call_as(&c, "workspace_open", args.clone(), public_caller()).await;
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(&expected_private_extension_refusal(private_ext)),
+            "not Gate F1's refusal: {text}"
+        );
+        assert!(
+            recorder.sessions_started().is_empty(),
+            "the refusal came AFTER the conversation was created: {:?}",
+            recorder.sessions_started()
+        );
+
+        // A private caller starts exactly that conversation, so the refusal is
+        // the caller's tier and not the argument.
+        let ok = call_as(&c, "workspace_open", args, private_caller()).await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+        let started = recorder.sessions_started();
+        assert_eq!(started.len(), 1, "got {started:?}");
+        assert_eq!(started[0].extensions, Some(vec![private_ext.to_string()]));
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **Finding 4, door 2's second half: the operator's `enabled: false` was
+    /// discarded.**
+    ///
+    /// `workspace_set_tools` has honoured #42's pin since Task 10
+    /// (`resolve_added_extensions` deliberately resolves through
+    /// `get_extension_entry_by_name`); `workspace_open {new:{extensions}}` did
+    /// not, and forwarded the name to a daemon helper that drops the flag. So
+    /// an agent could re-enable an extension the operator turned off simply by
+    /// starting a fresh conversation with it — the pinned tool environment
+    /// (benchmarking, safety) defeated in one call.
+    ///
+    /// Nothing about the TIER here: the fixture extension is public, so this
+    /// arm is provably not the tier gate firing under another name.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn open_new_honours_an_extension_the_operator_pinned_off() {
+        let recorder = FakeServices::with_gui(true).install();
+        let c = client();
+        const KEY: &str = "br71pinnedoff";
+        const NAME: &str = "br71-pinned-off";
+        let args = serde_json::json!({ "new": {
+            "working_dir": std::env::temp_dir().to_string_lossy(),
+            "extensions": [NAME],
+        }});
+
+        let refused = crate::config::with_config_overrides(
+            extensions_override(KEY, NAME, false),
+            call_as(&c, "workspace_open", args.clone(), public_caller()),
+        )
+        .await;
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("enabled: false") && text.contains(NAME),
+            "not #42's refusal: {text}"
+        );
+        assert!(
+            recorder.sessions_started().is_empty(),
+            "a conversation was started holding the operator-disabled extension"
+        );
+
+        // The SAME name with the operator's flag on is accepted, so the refusal
+        // is the flag and not the fixture.
+        let ok = crate::config::with_config_overrides(
+            extensions_override(KEY, NAME, true),
+            call_as(&c, "workspace_open", args, public_caller()),
+        )
+        .await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+        assert_eq!(recorder.sessions_started().len(), 1);
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **Finding 4's third door, found by enumerating what `workspace_set_tools`
+    /// changes rather than what finding 4 named.** The tool rewrites another
+    /// conversation's provider, extension set, session-scoped skills and
+    /// knowledge bases, and had no §7 check on the TARGET at all — so a public
+    /// caller could re-tool a private conversation it may not even read.
+    ///
+    /// Driven through `add_skills`, which needs no daemon and no agent, and
+    /// asserted as an ABSENCE OF EFFECT: the skills override must not be on the
+    /// private session afterwards, read back by a caller that is allowed to
+    /// look.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_public_caller_cannot_retool_a_private_conversation() {
+        crate::workspace_services::set_for_tests(None);
+        let f = tier_fixture().await;
+        let args =
+            |id: &str| serde_json::json!({ "session_id": id, "add_skills": ["single-cell"] });
+
+        let refused = call_as(
+            &f.client,
+            "workspace_set_tools",
+            args(&f.private_id),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "refused for some other reason: {text}"
+        );
+
+        let over = crate::agents::session_skills::for_session(
+            &f.client.context.session_manager,
+            &f.private_id,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !over.add.contains(&"single-cell".to_string()),
+            "the refused re-tool landed on the private conversation anyway"
+        );
+
+        // §14.4 / R10: private and absent are the same answer.
+        let absent = call_as(
+            &f.client,
+            "workspace_set_tools",
+            args(&f.absent_id),
+            public_caller(),
+        )
+        .await;
+        assert_eq!(
+            (absent.is_error, text_of(&absent)),
+            (refused.is_error, text),
+            "workspace_set_tools tells a public caller whether the conversation exists"
+        );
+
+        // …and the same call into a PUBLIC conversation is applied.
+        let ok = call_as(
+            &f.client,
+            "workspace_set_tools",
+            args(&f.public_id),
+            public_caller(),
+        )
+        .await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **Finding 15, door 1: cross-conversation cancel.** All three
+    /// `workspace_close` scopes act on another conversation — close the window
+    /// the user is reading it in, cancel the work it is doing, evict its agent
+    /// mid-flight — and none of them asked §7 anything.
+    ///
+    /// Asserted on the FakeServices call log, not on the sentence: a handler
+    /// that cancels and then reports a refusal passes every prose assertion.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_public_caller_cannot_close_a_private_conversation() {
+        let f = tier_fixture().await;
+        let services = FakeServices::with_gui(true).busy(&f.private_id).install();
+
+        for scope in ["tab", "turn", "agent"] {
+            let refused = call_as(
+                &f.client,
+                "workspace_close",
+                serde_json::json!({ "session_id": f.private_id, "scope": scope }),
+                public_caller(),
+            )
+            .await;
+            let text = text_of(&refused);
+            assert_eq!(refused.is_error, Some(true), "scope {scope}: {text}");
+            assert!(
+                text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+                "scope {scope} refused for some other reason: {text}"
+            );
+        }
+        assert!(services.cancels().is_empty(), "a private turn was cancelled");
+        assert!(services.stops().is_empty(), "a private agent was evicted");
+        assert!(
+            services.all_frames().is_empty(),
+            "a frame about a private conversation reached the GUI: {:?}",
+            services.all_frames()
+        );
+
+        // The gate is the tier: the same scope on a PUBLIC conversation still
+        // cancels, and a private caller may still close the private one.
+        let ok = call_as(
+            &f.client,
+            "workspace_close",
+            serde_json::json!({ "session_id": f.public_id, "scope": "turn" }),
+            public_caller(),
+        )
+        .await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+        let ok = call_as(
+            &f.client,
+            "workspace_close",
+            serde_json::json!({ "session_id": f.private_id, "scope": "turn" }),
+            private_caller(),
+        )
+        .await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+        assert_eq!(
+            services.cancels(),
+            vec![f.public_id.clone(), f.private_id.clone()],
+            "the cancels that DID happen are not the ones expected"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **Finding 15, door 2: an activity oracle.** `workspace_watch` reports
+    /// whether each named conversation is still working and, when it stops,
+    /// why. Over a conversation §7 will not let this caller read, that is a
+    /// live readout of a private chat's progress arriving through a tool whose
+    /// name says "wait".
+    ///
+    /// The elapsed-time assertion is what distinguishes a refusal from a park:
+    /// a gate placed after `subscribe`/`park_for_completions` would still
+    /// return the refusal, one timeout later, having held a slot in the private
+    /// conversation's event ring the whole time.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_public_caller_cannot_watch_a_private_conversation() {
+        crate::workspace_services::set_for_tests(None);
+        let f = tier_fixture().await;
+
+        let started = std::time::Instant::now();
+        let refused = call_as(
+            &f.client,
+            "workspace_watch",
+            serde_json::json!({ "session_ids": [f.private_id], "timeout_s": 5 }),
+            public_caller(),
+        )
+        .await;
+        let elapsed = started.elapsed();
+        let text = text_of(&refused);
+        assert_eq!(refused.is_error, Some(true), "{text}");
+        assert!(
+            text.contains(&crate::privacy::refusal::workspace_out_of_reach()),
+            "refused for some other reason: {text}"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_secs(4),
+            "the gate ran after the park rather than before it: {elapsed:?}"
+        );
+
+        // A batch is refused WHOLE. Reporting on the readable ids and silently
+        // dropping the rest is the existence disclosure with one extra step,
+        // since the caller supplied the list and can diff it.
+        let mixed = call_as(
+            &f.client,
+            "workspace_watch",
+            serde_json::json!({
+                "session_ids": [f.public_id, f.private_id], "timeout_s": 1
+            }),
+            public_caller(),
+        )
+        .await;
+        let text = text_of(&mixed);
+        assert_eq!(mixed.is_error, Some(true), "{text}");
+        assert!(
+            !text.contains(&f.public_id),
+            "the batch refusal reported on the readable conversation: {text}"
+        );
+
+        // …and the same watch, by a caller entitled to it, is the ordinary
+        // timeout — not an error, and naming the conversation.
+        let ok = call_as(
+            &f.client,
+            "workspace_watch",
+            serde_json::json!({ "session_ids": [f.private_id], "timeout_s": 1 }),
+            private_caller(),
+        )
+        .await;
+        let text = text_of(&ok);
+        assert_ne!(ok.is_error, Some(true), "{text}");
+        assert!(text.contains(&f.private_id), "{text}");
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// DR-15's master opt-out reaches all four newly gated doors, read off the
+    /// capability's own sample rather than a process-global.
+    ///
+    /// Without this, "the feature is off" could mean four different things at
+    /// four gates — and a gate that ignored the toggle would refuse a user who
+    /// has switched the whole mechanism off, which is the one outcome DR-15
+    /// forbids.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn the_master_opt_out_turns_the_four_new_workspace_gates_off() {
+        let recorder = FakeServices::with_gui(true).install();
+        let f = tier_fixture().await;
+        let private_ext = a_private_extension();
+
+        // Finding 15: close and watch reach the private conversation.
+        for (tool, args) in [
+            (
+                "workspace_close",
+                serde_json::json!({ "session_id": f.private_id, "scope": "turn" }),
+            ),
+            (
+                "workspace_watch",
+                serde_json::json!({ "session_ids": [f.private_id], "timeout_s": 1 }),
+            ),
+        ] {
+            let result = call_as(&f.client, tool, args, opted_out_caller()).await;
+            let text = text_of(&result);
+            assert_ne!(result.is_error, Some(true), "{tool}: {text}");
+            assert!(
+                !text.contains("private"),
+                "{tool} refused a caller with tiers switched off: {text}"
+            );
+        }
+
+        // Finding 4: the private extension is enableable again. #42's operator
+        // pin is NOT part of this — it is not a privacy tier and the master
+        // switch does not silence it.
+        let ok = call_as(
+            &f.client,
+            "workspace_open",
+            serde_json::json!({ "new": {
+                "working_dir": std::env::temp_dir().to_string_lossy(),
+                "extensions": [private_ext],
+            }}),
+            opted_out_caller(),
+        )
+        .await;
+        assert_ne!(ok.is_error, Some(true), "{}", text_of(&ok));
+        assert_eq!(recorder.sessions_started().len(), 1);
+
+        let set_tools = call_as(
+            &f.client,
+            "workspace_set_tools",
+            serde_json::json!({
+                "session_id": f.public_id, "add_extensions": [private_ext]
+            }),
+            opted_out_caller(),
+        )
+        .await;
+        let text = text_of(&set_tools);
+        assert!(
+            !text.contains("private extension"),
+            "the opt-out did not reach the set_tools enable gate: {text}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// **The assertion the behavioural tests above cannot make: every gate this
+    /// file owns is WIRED, and the dispatcher hands it the capability.**
+    ///
+    /// Nine unwired guards have shipped in this campaign — correct, tested, and
+    /// called by nothing — and this file alone has produced two rounds of missed
+    /// paths. A behavioural test cannot catch that class of defect for a door
+    /// nobody thought to open, because the test for the missing door is the test
+    /// nobody wrote. So this scans the production half of the source for the
+    /// wiring itself, and it is written to fail the two ways a source scan
+    /// usually lies:
+    ///
+    ///  * it cuts at `#[cfg(test)]` so the fixtures below cannot satisfy it, and
+    ///    the `for_test_restricted` control proves the cut landed where it
+    ///    claims (a `find` that returned the end of the file would otherwise
+    ///    make every assertion here vacuous);
+    ///  * it names the DISPATCH ARMS, not just the guards. A guard that exists,
+    ///    is tested, and is never reached is the exact failure mode; a handler
+    ///    that stopped taking `cap` would compile fine and silently return to
+    ///    ungated, because a capability-less handler has nothing to ask with.
+    #[test]
+    fn every_gate_this_file_owns_is_wired_into_dispatch() {
+        const SELF: &str = include_str!("workspace_extension.rs");
+        let cut = SELF
+            .find("#[cfg(test)]\nmod tests {")
+            .expect("workspace_extension.rs no longer has a `#[cfg(test)] mod tests`");
+        let (production, tests) = SELF.split_at(cut);
+        assert!(
+            !production.contains("for_test_restricted"),
+            "the cut did not remove the test module, so the assertions below prove nothing"
+        );
+        assert!(
+            tests.contains("for_test_restricted"),
+            "the cut removed more than the test module"
+        );
+
+        // §7 column C, at every handler that names another conversation:
+        // read_conversation, open (existing), send_prompt, set_tools, close, and
+        // watch. An exact count, so a SEVENTH tool that names a conversation
+        // cannot be added without either wiring the gate or editing this number
+        // — which is the moment to think about it.
+        assert_eq!(
+            production.matches("self.refuse_unless_visible(cap,").count(),
+            6,
+            "the number of §7-gated call sites changed. Six tools name another \
+             conversation; if a seventh arrived it needs the gate, and if one was \
+             removed this count needs to shrink deliberately."
+        );
+
+        // Gate F1, at the two doors that ENABLE an extension.
+        for wiring in [
+            "Self::refuse_gated_extension_enable(cap, name, None)",
+            "Self::refuse_gated_extension_enable(cap, name, Some(&entry))",
+            "Self::refuse_gated_extension_enable(cap, name, entry.as_ref())",
+            "Self::resolve_added_extensions(cap, &args.add_extensions)",
+            "Self::refuse_gated_new_session_extensions(cap, new.extensions.as_ref())",
+        ] {
+            assert!(
+                production.contains(wiring),
+                "`{wiring}` is gone: an extension-enable door lost its Gate F1 wiring"
+            );
+        }
+
+        // …and the dispatcher hands each newly gated handler the capability the
+        // call was ADMITTED on. Without this the guards above have nothing to
+        // ask and the handlers go quietly back to ungated.
+        for arm in [
+            "\"workspace_set_tools\" => self.handle_set_tools(caller, cap, arguments)",
+            "\"workspace_close\" => self.handle_close(caller, cap, arguments)",
+            "\"workspace_watch\" => self.handle_watch(caller, cap, arguments)",
+        ] {
+            assert!(
+                production.contains(arm),
+                "dispatch no longer threads the capability: {arm}"
+            );
+        }
     }
 
     /// §4.1 `tool_calls`: request/response pairs only, correlated by their
@@ -5786,7 +6537,11 @@ mod tests {
     async fn close_tab_with_a_gui_sends_the_close_tab_frame_and_nothing_else() {
         let services = FakeServices::with_gui(true).install();
         let c = client();
-        let target = unique_id("tab-target");
+        // A REAL row, for the reason `seeded_target` documents: since issue #56
+        // `workspace_close` resolves the target's tier and refuses an id it
+        // cannot read — identically to a private one. A made-up id is no longer
+        // a closeable target.
+        let target = seeded_target(&c, "tab-target").await;
 
         let result = close(
             &c,
@@ -5818,9 +6573,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
     async fn close_turn_cancels_the_running_turn_and_tells_the_target() {
-        let target = unique_id("turn-target");
-        let services = FakeServices::with_gui(true).busy(&target).install();
         let c = client();
+        let target = seeded_target(&c, "turn-target").await;
+        let services = FakeServices::with_gui(true).busy(&target).install();
         let caller = unique_id("closer");
 
         let result = close(
@@ -5866,9 +6621,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
     async fn close_agent_stops_the_agent_and_tells_the_target() {
-        let target = unique_id("agent-target");
-        let services = FakeServices::with_gui(true).busy(&target).install();
         let c = client();
+        let target = seeded_target(&c, "agent-target").await;
+        let services = FakeServices::with_gui(true).busy(&target).install();
         let caller = unique_id("closer");
 
         let result = close(
@@ -5908,11 +6663,11 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
     async fn close_agent_surfaces_a_failed_stop() {
-        let target = unique_id("stop-fail");
+        let c = client();
+        let target = seeded_target(&c, "stop-fail").await;
         let services = FakeServices::with_gui(true)
             .stop_fails("registry is wedged")
             .install();
-        let c = client();
 
         let result = close(
             &c,
@@ -5940,9 +6695,9 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial(workspace_services)]
     async fn close_rejects_an_unknown_scope_without_touching_anything() {
-        let target = unique_id("bad-scope");
-        let services = FakeServices::with_gui(true).busy(&target).install();
         let c = client();
+        let target = seeded_target(&c, "bad-scope").await;
+        let services = FakeServices::with_gui(true).busy(&target).install();
 
         let result = close(
             &c,
@@ -6045,15 +6800,16 @@ mod tests {
         crate::workspace_services::set_for_tests(None);
 
         let c = client();
-        let _running = BackgroundSubagent::register(
-            "caller",
-            "child-live",
-            "long job",
-            CancellationToken::new(),
-        );
+        // A REAL row: since issue #56 `workspace_watch` resolves each watched
+        // conversation's tier and refuses one it cannot read. `seeded_target`
+        // gives a row whose id is also unique in the process, which is what the
+        // handle registry and the event bus need.
+        let child = seeded_target(&c, "child-live").await;
+        let _running =
+            BackgroundSubagent::register("caller", &child, "long job", CancellationToken::new());
 
         let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_ids": ["child-live"], "timeout_s": 1
+            "session_ids": [child], "timeout_s": 1
         }))
         .unwrap();
         let result = c
@@ -6095,15 +6851,16 @@ mod tests {
         )));
 
         let c = client();
+        let child = seeded_target(&c, "child-queued").await;
         let _queued = BackgroundSubagent::register(
             "caller",
-            "child-queued",
+            &child,
             "waiting on the semaphore",
             CancellationToken::new(),
         );
 
         let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_ids": ["child-queued"], "timeout_s": 1
+            "session_ids": [child], "timeout_s": 1
         }))
         .unwrap();
         let result = c
@@ -6131,16 +6888,13 @@ mod tests {
         use crate::agents::subagent_handle::BackgroundSubagent;
         use crate::agents::subagent_result::SubagentResult;
         let c = client();
-        let handle = BackgroundSubagent::register(
-            "caller",
-            "child-done",
-            "short job",
-            CancellationToken::new(),
-        );
+        let child = seeded_target(&c, "child-done").await;
+        let handle =
+            BackgroundSubagent::register("caller", &child, "short job", CancellationToken::new());
         handle.complete(SubagentResult::from_error("finished"));
 
         let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
-            "session_ids": ["child-done"], "timeout_s": 30
+            "session_ids": [child], "timeout_s": 30
         }))
         .unwrap();
         let started = std::time::Instant::now();
@@ -6159,7 +6913,7 @@ mod tests {
         );
         assert_ne!(result.is_error, Some(true));
         let text = result.content[0].as_text().unwrap().text.clone();
-        assert!(text.contains("child-done"));
+        assert!(text.contains(&child));
         assert!(text.contains("already idle"));
     }
 
@@ -6181,7 +6935,11 @@ mod tests {
         // "watching something that is not one of my background children" row.
         crate::workspace_services::set_for_tests(None);
         let c = client();
-        let target_id = unique_id("never-seen");
+        // A real row that no HANDLE in this process knows about — which is what
+        // `Unknown` liveness means. (Before issue #56 this was a made-up id; the
+        // tier gate now refuses one of those, and "not a background child of
+        // mine" is the property this test is actually about.)
+        let target_id = seeded_target(&c, "never-seen").await;
 
         let args: rmcp::model::JsonObject = serde_json::from_value(serde_json::json!({
             "session_ids": [target_id], "timeout_s": 1
@@ -6221,18 +6979,18 @@ mod tests {
     async fn watch_wakes_on_a_terminal_bus_event() {
         use crate::session_events::{self, SessionBusEvent};
         let c = client();
-        // `unique_id`, NOT `session_manager::create_session`. Session ids are
+        // `seeded_target`, NOT a bare `create_session`. Session ids are
         // `YYYYMMDD_N` counted within one SQLite file, and every `client()` here
         // gets a fresh temp DB — so the first session of EVERY test in this
         // binary is `<today>_1`, while `session_events` is a process-global bus
         // keyed by that id. Two such tests then publish onto each other's bus:
         // this test's `TurnFinished{reason:"stop"}` was arriving inside
         // `watch_timeout_is_not_an_error_…`, turning its timeout into a
-        // completion. Production mints ids from one manager per process, so the
-        // collision is a fixture artifact — and `handle_watch` never consults
-        // the session manager at all, it only subscribes by id, so a plain
-        // unique id exercises exactly the same path.
-        let target_id = unique_id("watched");
+        // completion. A plain `unique_id` used to be the answer; since issue #56
+        // `handle_watch` DOES consult the session manager — it resolves each
+        // watched conversation's tier — so the id must now be a real row *and*
+        // process-unique, which is exactly what `seeded_target` reserves.
+        let target_id = seeded_target(&c, "watched").await;
 
         // Make the session look busy to the watcher, then finish it.
         session_events::publish(
@@ -6277,10 +7035,11 @@ mod tests {
     async fn watch_timeout_is_not_an_error_and_names_what_is_still_running() {
         use crate::session_events::{self, SessionBusEvent};
         let c = client();
-        // Unique id rather than a minted session id — see
+        // A reserved, process-unique REAL row — see
         // `watch_wakes_on_a_terminal_bus_event` for why `<today>_1` is shared by
-        // every test in this binary and what that cost this test specifically.
-        let target_id = unique_id("slow");
+        // every test in this binary and what that cost this test specifically,
+        // and why the id must nevertheless name a row the tier gate can read.
+        let target_id = seeded_target(&c, "slow").await;
         session_events::publish(
             &target_id,
             SessionBusEvent::TurnStarted {
@@ -6721,11 +7480,20 @@ mod tests {
             .await
             .unwrap();
 
+        // ⚠ **A name no config on any machine carries**, and NOT `developer`.
+        // Since issue #56 this path runs Gate F1 and #42's operator pin over the
+        // requested set, and both read the machine's real `config.yaml`: on a
+        // developer box that has `developer: enabled: false` — the common case,
+        // because the GUI writes that — a `["developer"]` fixture would refuse
+        // here and this test would fail for a reason that has nothing to do with
+        // what it asserts. An unregistered name resolves Public (R11(ii)) and is
+        // not persisted, so it passes the gate on every machine, and
+        // `start_session` is faked here so nothing tries to load it.
         let r = open_as(
             &c,
             &caller.id,
             serde_json::json!({ "new": {
-                "extensions": ["developer"],
+                "extensions": ["br71-fixture-extension"],
                 "knowledge_bases": ["kb-a", "kb-b"],
                 "primary_knowledge_base": "kb-b",
                 "prompt": "start on the migration",
@@ -6738,7 +7506,7 @@ mod tests {
         assert_eq!(started.len(), 1, "one session; got {started:?}");
         assert_eq!(
             started[0].extensions,
-            Some(vec!["developer".to_string()]),
+            Some(vec!["br71-fixture-extension".to_string()]),
             "the granted extension set reaches the daemon"
         );
         assert_eq!(
