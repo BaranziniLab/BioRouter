@@ -17,6 +17,8 @@
 //! | 18A | [`ASK_THE_USER_TO_SWITCH`], [`raise_needs_user_action`] and the three HTTP-channel variants |
 //! | 23 | the two spawn variants and `PrivacyRefusal::spawn_upgrade` / `spawn_downgrade` |
 //! | 41 | [`PrivacyRefusal::AppSessionTierFixed`], DR-21's app-runtime refusal |
+//! | DR-31 | [`PrivacyRefusal::SpawnCrossesAffiliation`] and [`PrivacyRefusal::spawn_affiliation`] — the spawn gate's third axis |
+//! | findings 4+13's seam | [`extension_enable_refusal`] — the WHOLE enable gate, tier arm above the operator pin, called by both agent enable doors — and [`tier_refuses`], the boolean under [`privacy_refusal`] that the user's HTTP enable door asks instead of re-typing |
 
 use super::{ProviderTier, SessionClassification};
 use crate::session::session_manager::Session;
@@ -249,6 +251,60 @@ pub enum PrivacyRefusal {
          model and start a fresh session for it."
     )]
     AppSessionTierFixed { requested: String },
+
+    /// DR-31: a subagent spawn named a provider whose **affiliation** differs
+    /// from the chat that started it — DR-26's third axis, at the one gate that
+    /// had only ever compared tiers.
+    ///
+    /// ⚠ **Equality, both directions, and not the subset rule DR-26 uses for
+    /// model-versus-extension.** Affiliation has exactly the two failure modes
+    /// the tier pair already refuses, so it takes the same shape rather than
+    /// inventing a third:
+    ///
+    /// * *Elevation.* [`super::ModelAffiliation::Local`] is the TOP of this
+    ///   lattice — a local model reaches every private extension, because no
+    ///   transfer occurs at all — so `Institution(x) → Local` hands the child
+    ///   reach the chat that spawned it does not have. Same shape as
+    ///   [`Self::PrivateChildOfPublicParent`], on the axis that gate never
+    ///   looked at.
+    /// * *Disclosure.* `Local → Institution(x)` sends a chat's text off a
+    ///   machine it was never leaving. A subset rule would **permit** exactly
+    ///   this, which is why one is not used here.
+    ///
+    /// And `Institution(a) → Institution(b)` is refused on both readings at
+    /// once: compliance does not transfer between institutions.
+    ///
+    /// ⚠ **Refused, not escalated**, for the reason spelled out at
+    /// [`Self::PublicChildOfPrivateParent`]: a spawn is a tool call, no shipped
+    /// surface lets a human spawn one and pick its provider, and no request on
+    /// that path can carry a proof of user. An approval an agent can author the
+    /// approver for is not an approval.
+    ///
+    /// ⚠ **It says what it costs.** This genuinely narrows `settings.provider`,
+    /// and a user who meets it should learn why rather than conclude the
+    /// override is broken — so the message names both the move that still works
+    /// (`versa_azure` ↔ `versa_bedrock`, both `ucsf`) and the one that no longer
+    /// does (`llamacpp`).
+    ///
+    /// §14.4: the payload is two affiliations and nothing else — no session, no
+    /// working directory, no prompt. The prompt is the thing being withheld.
+    #[error(
+        "This chat runs on a model covered by {parent}, so it cannot start a subagent on a model \
+         covered by {child}. A subagent may not move the work under a different set of \
+         agreements, in either direction: one direction gives the child reach this chat does not \
+         have (a local model is covered by nothing because nothing leaves the machine, so it \
+         reaches everything private), and the other sends this chat's text somewhere it was not \
+         going. Compliance does not transfer — a model approved at one institution has no \
+         permission over another's data. This narrows `settings.provider` rather than disabling \
+         it: a subagent may still be moved to any model with the SAME affiliation (a UCSF chat \
+         can move its child between `versa_azure` and `versa_bedrock`, which are both UCSF), but \
+         not to one with a different affiliation (`llamacpp` runs on this machine and is covered \
+         by no institution). No subagent was started and this chat is unchanged. Do not retry — \
+         the same call will be refused again, and no setting, hook or permission mode changes it. \
+         If the task really belongs on that model, tell the user: they can start a new chat on it \
+         and give it the task directly."
+    )]
+    SpawnCrossesAffiliation { parent: String, child: String },
 }
 
 impl PrivacyRefusal {
@@ -262,6 +318,23 @@ impl PrivacyRefusal {
     /// can have asked. Same call site, opposite direction.
     pub fn spawn_downgrade(requested: ProviderTier) -> Self {
         Self::PublicChildOfPrivateParent { requested }
+    }
+
+    /// DR-31: the child's affiliation was not the parent's. Third call site of
+    /// the same spawn gate, third axis.
+    ///
+    /// It takes the two affiliations **typed** and renders them here, so no
+    /// caller composes its own wording for a mismatch and the prose stays in the
+    /// one module §14.4 is checkable by reading
+    /// ([`super::affiliation::model_affiliation_label`] is the shared renderer).
+    pub fn spawn_affiliation(
+        parent: Option<super::affiliation::ModelAffiliation>,
+        child: Option<super::affiliation::ModelAffiliation>,
+    ) -> Self {
+        Self::SpawnCrossesAffiliation {
+            parent: super::affiliation::model_affiliation_label(parent),
+            child: super::affiliation::model_affiliation_label(child),
+        }
     }
 
     /// The classification of the session that refused. Half of the pair the
@@ -286,7 +359,10 @@ impl PrivacyRefusal {
             | Self::PublicChildOfPrivateParent { .. }
             // DR-21 is about WHEN an app session's tier may be set, not about a
             // stored transcript, so it has no classification either.
-            | Self::AppSessionTierFixed { .. } => None,
+            | Self::AppSessionTierFixed { .. }
+            // DR-31 is about WHOSE agreements cover the two models, which is a
+            // different axis from the classification a repair card names.
+            | Self::SpawnCrossesAffiliation { .. } => None,
         }
     }
 
@@ -305,7 +381,12 @@ impl PrivacyRefusal {
             // channel rather than about a session/model pair, so it reports the
             // same `None` its DR-16 siblings do rather than seeding a repair
             // card the app has no way to act on.
-            | Self::AppSessionTierFixed { .. } => None,
+            | Self::AppSessionTierFixed { .. }
+            // DR-31 fires only where the TIERS already agreed — the two spawn
+            // arms above return first — so there is no refused tier to report,
+            // and naming one would put a tier crossing on a card for a refusal
+            // that is not about tiers at all.
+            | Self::SpawnCrossesAffiliation { .. } => None,
         }
     }
 
@@ -323,7 +404,8 @@ impl PrivacyRefusal {
             // §14.4: an app refusal reaches the app's own page and the model
             // reading it. It carries no session id for the same reason the
             // spawn refusals do not.
-            | Self::AppSessionTierFixed { .. } => None,
+            | Self::AppSessionTierFixed { .. }
+            | Self::SpawnCrossesAffiliation { .. } => None,
         }
     }
 }
@@ -433,6 +515,26 @@ pub fn chatrecall_cross_affiliation_refusal(warning: &str) -> String {
     )
 }
 
+/// The boolean under [`privacy_refusal`], as its own name.
+///
+/// One rule, three renderings: the model-facing sentence [`privacy_refusal`]
+/// composes, the typed HTTP body [`PrivacyRefusal::PrivateExtensionOverHttp`]
+/// renders for the GUI, and the plain `if` a route needs when it holds neither.
+/// Extracted so `POST /agent/add_extension` — the *user's* enable door, which
+/// must keep its own typed refusal and so cannot call `privacy_refusal` — asks
+/// the same predicate as the agent's doors instead of re-typing
+/// `class.tier.is_private() && caller == Public` a fourth time. Two spellings of
+/// one table agree until the edit nobody cross-checks.
+///
+/// ⚠ **The master opt-out is deliberately NOT in here.** DR-15 is read off the
+/// admitted [`CallCapability`](super::CallCapability) on a dispatch path and
+/// straight off the global on a route that has no capability to inherit; folding
+/// it in would make this predicate lie to whichever caller reads the toggle the
+/// other way. Callers gate on it themselves, visibly.
+pub const fn tier_refuses(extension_tier: ProviderTier, caller_tier: ProviderTier) -> bool {
+    extension_tier.is_private() && !caller_tier.is_private()
+}
+
 /// Gate C's refusal. Returns `None` when the call is permitted, so the caller
 /// reads as `if let Some(err) = privacy_refusal(..) { return Err(err.into()); }`.
 ///
@@ -456,7 +558,7 @@ pub fn privacy_refusal(
     extension_tier: ProviderTier,
     caller_tier: ProviderTier,
 ) -> Option<ErrorData> {
-    if extension_tier != ProviderTier::Private || caller_tier == ProviderTier::Private {
+    if !tier_refuses(extension_tier, caller_tier) {
         return None;
     }
     Some(ErrorData::new(
@@ -543,6 +645,148 @@ pub fn cross_affiliation_refusal(warning: &str, acceptable: Option<&str>) -> Err
     )
 }
 
+/// **Gate F1, whole: the one function that decides whether an extension may be
+/// ENABLED** (issue #56, findings 4 and 13 — and the seam their two fixes left
+/// between them).
+///
+/// `Some(err)` refuses; `None` permits. Three arms, in this order, and the order
+/// is the security property:
+///
+///  1. **The tier arm** (Gate F1 proper) — [`privacy_refusal`].
+///  2. **The affiliation arm** (DR-26) —
+///     [`CallCapability::cross_affiliation_warning`], wrapped by
+///     [`cross_affiliation_refusal`].
+///  3. **The operator pin** (#42) — a persisted `enabled: false`.
+///
+/// ⚠ **Both privacy arms sit above the pin, and that is finding 13 generalised.**
+/// The pin's refusal is an *install-state answer*: "this machine has that
+/// extension and the operator turned it off" is exactly the fact a caller who may
+/// not reach the extension must not be able to read out of a refusal. Finding 13
+/// established this for `manage_extensions`, where the tier arm was moved above
+/// the pin **and** above the not-found branch; the same reasoning does not stop at
+/// the tier axis, so the affiliation arm is above the pin too. Nothing is lost in
+/// the other direction: a caller entitled to the extension reaches the pin exactly
+/// as before, which is every case #42 was written for.
+///
+/// ⚠ **One function because two were one rule.** `check_enable_allowed`
+/// (`agents/extension_manager_extension.rs`) and
+/// `WorkspaceClient::refuse_gated_extension_enable` (`agents/workspace_extension.rs`)
+/// were written in parallel, arm for arm, with different words and — the part
+/// that mattered — different clause order: the workspace copy asked the pin
+/// first, so `workspace_open {new:{extensions}}` reopened the very oracle its
+/// sibling had just closed. Reordering the copy would have left two spellings
+/// that agree today and diverge on the next edit, so there is now one, and both
+/// doors call it. Do not add a third; give the new door this one.
+///
+/// # Arguments
+///
+/// `entry` is the on-disk config entry when the extension is installed, and
+/// `None` for "not installed, or not looked up yet". The classification still
+/// resolves — by name, from the compiled marketplace baseline — which is what
+/// makes the tier arm answer identically in both worlds. Passing the entry can
+/// only RAISE the answer: [`super::resolve_extension`] also matches a renamed
+/// entry through the install directory in its arguments (Task 43 / DR-23), which
+/// the name alone no longer carries.
+///
+/// `persisted` is #42's provenance signal — `extension_entry_is_persisted`,
+/// asked by each caller rather than in here, because that helper reads the global
+/// config and this function is otherwise pure. Purity is what lets the enable
+/// gate be driven in both toggle positions, at every tier, with no config file
+/// and no machine state; a version that looked the flag up itself could only be
+/// tested on a machine that had the extension installed.
+///
+/// ⚠ **The not-found branch is NOT here**, and deliberately: the two doors give
+/// different answers to an unknown name (`manage_extensions` says "not found",
+/// `workspace_open` stays silent because `start_session` answers for it) and
+/// neither answer is a privacy decision. What matters is that both doors ask
+/// *this* first, so no unknown-name answer can be reached by a caller the tier or
+/// affiliation arm refuses.
+///
+/// ⚠ **Task 49's grant is not consulted**, hence the `None` passed to
+/// [`cross_affiliation_refusal`]. A grant is the user's acceptance of a data flow
+/// through a connector this chat already has; it is not permission for the model
+/// to attach one the chat did not have. Reading it here would let an agent turn
+/// one accepted flow into the authority to open the very server that flow runs
+/// over — the enable is what pulls credentials out of the keychain and starts the
+/// process. The route out is a user's: enable it from Settings
+/// (`POST /agent/add_extension`, which warns and proceeds), then accept the flow.
+///
+/// [`CallCapability::cross_affiliation_warning`]: super::CallCapability::cross_affiliation_warning
+pub fn extension_enable_refusal(
+    cap: super::CallCapability,
+    extension: &str,
+    entry: Option<&crate::config::ExtensionEntry>,
+    persisted: bool,
+) -> Option<ErrorData> {
+    // DR-15's master opt-out, read off the SAME sample as the tier so the two can
+    // never be observed at different instants. With tiers switched off the caller
+    // is treated as private, which silences the tier arm and nothing else — the
+    // alternative, a second flag inside this predicate, is exactly the second read
+    // `CallCapability` exists to prevent. (The affiliation arm reads the same
+    // sample for itself, inside `cross_affiliation_warning`.)
+    let caller = if cap.enforced() {
+        cap.tier()
+    } else {
+        ProviderTier::Private
+    };
+    // ⚠ **ONE resolution, both axes, for the whole of this function.** Nothing
+    // local may GRANT private (R11(i)), so the tier comes from the compiled-in
+    // marketplace baseline. Task 48 (DR-26) first asked the registry a SECOND
+    // time from a `match` guard — the "two lookups let the two axes disagree
+    // about one entry" pattern `resolve_extension` exists to prevent. Resolved
+    // once, here; both arms below read fields off that one value.
+    let class = super::resolve_extension(extension, entry.map(|entry| &entry.config));
+
+    // 1. The tier arm. FIRST, above every answer that would betray install state.
+    //
+    // Enabling is not a tool call INTO a private server; it is the call that
+    // SPAWNS one — it pulls that server's secrets out of the keychain and opens
+    // the session — so Gate C refusing the first tool call afterwards is already
+    // too late.
+    if let Some(err) = privacy_refusal(extension, class.tier, caller) {
+        return Some(err);
+    }
+
+    // 2. The affiliation arm.
+    //
+    // ⚠ **The agent is refused, not warned, and that is not an inconsistency with
+    // the bind surface.** DR-26's asymmetry: a user who insists may proceed past a
+    // warning; an agent never clears one automatically — it escalates to the user
+    // or the call does not happen. Every caller of this function is an agent path.
+    // The user's own enable path is `POST /agent/add_extension`, which warns and
+    // proceeds.
+    if let Some(warning) = cap.cross_affiliation_warning(extension, &class) {
+        return Some(cross_affiliation_refusal(&warning, None));
+    }
+
+    // 3. Issue #42's operator pin, LAST because it is the one arm that speaks
+    // about this machine. An extension whose PERSISTED config entry carries
+    // `enabled: false` was turned off by the operator, and the agent must not
+    // silently re-enable it — that would defeat the pinned tool environment the
+    // operator set up (benchmarking, safety).
+    //
+    // ⚠ **Not a privacy control, and so not silenced by the master opt-out.**
+    // Turning privacy tiers off must not quietly hand the agent the power to
+    // re-enable everything the operator disabled.
+    if let Some(entry) = entry {
+        if !entry.enabled && persisted {
+            return Some(ErrorData::new(
+                ErrorCode::INVALID_REQUEST,
+                format!(
+                    "Extension '{extension}' is disabled in the Biorouter configuration \
+                     (enabled: false). The operator turned it off deliberately, so do not \
+                     enable it yourself — not here, and not on another conversation. If it \
+                     is needed for this task, ask the user to re-enable it — in the desktop \
+                     app under Settings > Extensions, with `biorouter configure`, or by \
+                     editing the extension's entry in config.yaml."
+                ),
+                None,
+            ));
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,6 +837,173 @@ mod tests {
             .to_string();
         for content in ["20260801_7", "Patient MRN 4471 workup", "phi/cohort-3"] {
             assert!(!m.contains(content), "{m}");
+        }
+    }
+
+    /// An installed extension entry under `name`, enabled or not.
+    ///
+    /// The tier is resolved from the NAME the caller asked for and never from
+    /// the config record, so this fixture only has to carry a name that is not
+    /// itself a refusal for some other reason.
+    fn entry_for(name: &str, enabled: bool) -> crate::config::ExtensionEntry {
+        crate::config::ExtensionEntry {
+            enabled,
+            config: crate::agents::ExtensionConfig::Builtin {
+                name: name.to_string(),
+                display_name: None,
+                description: "fixture".to_string(),
+                timeout: None,
+                bundled: Some(true),
+                available_tools: vec![],
+            },
+        }
+    }
+
+    /// **The enable gate's clause order, which is a security property rather
+    /// than a matter of taste** (issue #56, findings 4 + 13).
+    ///
+    /// #42's operator pin is the one arm that speaks about *this machine*: its
+    /// refusal says the extension is installed here and the operator turned it
+    /// off. A caller the tier arm or the affiliation arm refuses may not learn
+    /// that, so both privacy arms answer first. The two enable doors used to
+    /// carry their own copy of this order and disagreed about it; there is one
+    /// copy now, and this is where it is pinned.
+    ///
+    /// Every case is the SAME pinned-off entry, so what varies is only who is
+    /// asking — which is what makes this about the order rather than about a
+    /// gate that refuses one fixture.
+    #[test]
+    fn both_privacy_arms_answer_before_the_operator_pin() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+        use crate::privacy::CallCapability;
+        const NAME: &str = "ucsfomopagent";
+        let pinned_off = entry_for(NAME, false);
+
+        // 1. The tier arm, above the pin. A public caller may not have this
+        //    connector at all and must not learn that this machine does.
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+        let tier = extension_enable_refusal(public, NAME, Some(&pinned_off), true)
+            .expect("a public caller may not enable a private extension");
+        assert_eq!(
+            tier.message,
+            privacy_refusal(NAME, ProviderTier::Private, ProviderTier::Public)
+                .unwrap()
+                .message,
+            "the pin answered first, or the tier arm was re-spelled locally"
+        );
+        assert!(!tier.message.contains("enabled: false"), "{}", tier.message);
+
+        // 2. The affiliation arm, above the pin, for the same reason one axis
+        //    down: a model covered by another institution's agreements may not
+        //    have it either.
+        let stanford = CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(ModelAffiliation::institution(InstitutionId::new(
+                "stanford",
+            ))),
+        );
+        let mismatch = extension_enable_refusal(stanford, NAME, Some(&pinned_off), true)
+            .expect("a Stanford-covered model may not spawn a UCSF connector");
+        assert!(
+            !mismatch.message.contains("enabled: false"),
+            "the operator pin — an answer about this machine — reached a caller the \
+             affiliation arm refuses: {}",
+            mismatch.message
+        );
+
+        // 3. …and for the caller #42 was written for, the pin still fires. Without
+        //    this the two assertions above are satisfied by a gate that refuses
+        //    everything before it ever reaches the pin.
+        let local = CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(ModelAffiliation::Local),
+        );
+        let pin = extension_enable_refusal(local, NAME, Some(&pinned_off), true)
+            .expect("the operator's `enabled: false` is still a pin");
+        assert!(pin.message.contains("enabled: false"), "{}", pin.message);
+        assert!(pin.message.contains("operator"), "{}", pin.message);
+
+        // 4. The pin is not a privacy control, so DR-15's master opt-out must not
+        //    silence it — turning tiers off would otherwise hand the agent the
+        //    power to re-enable everything the operator disabled.
+        let opted_out = CallCapability::for_test(ProviderTier::Public, false);
+        let off = extension_enable_refusal(opted_out, NAME, Some(&pinned_off), true)
+            .expect("the master opt-out silences the privacy arms, not #42");
+        assert!(off.message.contains("operator"), "{}", off.message);
+        // …and with tiers off the private connector itself is enableable again.
+        assert!(
+            extension_enable_refusal(opted_out, NAME, Some(&entry_for(NAME, true)), false)
+                .is_none(),
+            "with privacy tiers off nothing is refused"
+        );
+    }
+
+    /// The gate permits the cases every door depends on, so "refuses correctly"
+    /// is not being satisfied by a function that refuses everything.
+    #[test]
+    fn the_enable_gate_permits_what_it_must() {
+        use crate::privacy::CallCapability;
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+        let private = CallCapability::for_test(ProviderTier::Private, true);
+
+        // A public extension, for a public caller, installed or not.
+        assert!(extension_enable_refusal(public, "developer", None, false).is_none());
+        assert!(extension_enable_refusal(
+            public,
+            "developer",
+            Some(&entry_for("developer", true)),
+            true
+        )
+        .is_none());
+        // A private extension for a caller entitled to it.
+        assert!(extension_enable_refusal(
+            private,
+            "ucsfomopagent",
+            Some(&entry_for("ucsfomopagent", true)),
+            true
+        )
+        .is_none());
+        // #42's provenance half: a default-off PLATFORM extension is injected
+        // with `enabled: false` and no operator ever wrote it, so `persisted:
+        // false` must stay enableable.
+        assert!(
+            extension_enable_refusal(
+                public,
+                "chatrecall",
+                Some(&entry_for("chatrecall", false)),
+                false
+            )
+            .is_none(),
+            "an injected default-off entry was treated as an operator pin"
+        );
+    }
+
+    /// The refusal a caller who may not reach the extension gets is **identical**
+    /// across every install state — the property the two doors' disagreement
+    /// broke, stated once at the gate they now share.
+    #[test]
+    fn no_install_state_reaches_a_caller_the_gate_refuses() {
+        use crate::privacy::CallCapability;
+        const NAME: &str = "ucsfomopagent";
+        let public = CallCapability::for_test(ProviderTier::Public, true);
+        let absent = extension_enable_refusal(public, NAME, None, false).unwrap();
+        for (state, entry, persisted) in [
+            ("installed and enabled", entry_for(NAME, true), true),
+            (
+                "installed, not in the on-disk config",
+                entry_for(NAME, false),
+                false,
+            ),
+            ("installed and pinned off", entry_for(NAME, false), true),
+        ] {
+            let err = extension_enable_refusal(public, NAME, Some(&entry), persisted).unwrap();
+            assert_eq!(
+                (absent.code, absent.message.to_string()),
+                (err.code, err.message.to_string()),
+                "the refusal tells the caller the connector is {state}"
+            );
         }
     }
 

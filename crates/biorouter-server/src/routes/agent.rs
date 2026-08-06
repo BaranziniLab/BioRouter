@@ -1053,7 +1053,19 @@ async fn agent_add_extension(
     // must be the same model or the route can warn about one institution while
     // checking an acceptance recorded for another.
     let model_affiliation = bound.as_ref().and_then(|p| p.affiliation());
-    if enforced && classification.tier.is_private() && capability == ProviderTier::Public {
+    // ⚠ **The predicate is asked, not re-typed.** This is the third door to the
+    // same capability — the agent's two are `extensionmanager__manage_extensions`
+    // and the workspace's enable pair, which share
+    // `privacy::refusal::extension_enable_refusal` — and the rule it applies is
+    // the identical one. It cannot call that gate (its refusal is the typed
+    // `PrivateExtensionOverHttp` body the GUI renders a repair card from, and its
+    // posture on the other two arms is deliberately different: a user proceeds
+    // past the affiliation warning, and the operator pin is theirs to override).
+    // So it asks the boolean underneath instead. Writing
+    // `classification.tier.is_private() && capability == Public` out here is what
+    // made this rule four hand-written copies; copies agree until the edit nobody
+    // cross-checks.
+    if enforced && biorouter::privacy::refusal::tier_refuses(classification.tier, capability) {
         return Err(ErrorResponse {
             status: StatusCode::CONFLICT,
             message: PrivacyRefusal::PrivateExtensionOverHttp {

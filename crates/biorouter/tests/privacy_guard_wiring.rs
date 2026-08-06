@@ -396,12 +396,6 @@ const REGISTRY: &[Guard] = &[
                 what: "add / list / dispatch / tool-listing paths of the extension manager",
             },
             Site {
-                file: "crates/biorouter/src/agents/extension_manager_extension.rs",
-                counts: c(1, 0, 0),
-                kind: SiteKind::Guard,
-                what: "the extension-management MCP tool",
-            },
-            Site {
                 file: "crates/biorouter/src/agents/subagent_tool.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
@@ -409,10 +403,14 @@ const REGISTRY: &[Guard] = &[
                        capability",
             },
             Site {
-                file: "crates/biorouter/src/agents/workspace_extension.rs",
+                file: "crates/biorouter/src/privacy/refusal.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`workspace_set_tools`' extension resolution",
+                what: "`extension_enable_refusal`, the ONE enable gate — the resolution the \
+                       tier arm and the affiliation arm both read off, which is why there is \
+                       one of it. It absorbed the two separate resolutions that used to sit in \
+                       `extension_manager_extension.rs` and `workspace_extension.rs`, one per \
+                       copy of that gate",
             },
             Site {
                 file: EXTENSIONS,
@@ -585,10 +583,68 @@ const REGISTRY: &[Guard] = &[
                 what: "subagent spawn",
             },
             Site {
+                file: "crates/biorouter/src/privacy/refusal.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`extension_enable_refusal`'s tier arm — the enable doors' one ask. \
+                       `workspace_extension.rs` used to ask it directly and \
+                       `extension_manager_extension.rs` hand-wrote the same rule in its own \
+                       words; both now go through the shared gate, which is what fixed the \
+                       clause order the two copies disagreed about",
+            },
+        ],
+    },
+    Guard {
+        ident: "extension_enable_refusal",
+        defined_in: "crates/biorouter/src/privacy/refusal.rs",
+        decides: "whether an extension may be ENABLED: the tier arm, then the affiliation arm, \
+                  then #42's operator pin — one clause order, shared by every agent-facing \
+                  enable door, with both privacy arms above the one arm that speaks about this \
+                  machine",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter/src/agents/extension_manager_extension.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`check_enable_allowed` — `extensionmanager__manage_extensions \
+                       {action:\"enable\"}`, which is now the gate plus a not-found branch",
+            },
+            Site {
                 file: "crates/biorouter/src/agents/workspace_extension.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`workspace_set_tools`' extension refusal",
+                what: "`refuse_gated_extension_enable`, which both workspace enable doors \
+                       reach: `workspace_set_tools {add_extensions}` and `workspace_open \
+                       {new:{extensions}}`. It renders the refusal as a `String` and decides \
+                       nothing",
+            },
+        ],
+    },
+    Guard {
+        ident: "tier_refuses",
+        defined_in: "crates/biorouter/src/privacy/refusal.rs",
+        decides: "the boolean under `privacy_refusal`: private extension, non-private caller. \
+                  One rule, three renderings — the model's sentence, the typed HTTP body, and a \
+                  bare `if`",
+        status: Status::Wired,
+        sites: &[
+            Site {
+                file: "crates/biorouter-server/src/routes/agent.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`POST /agent/add_extension` — the USER's enable door. It cannot call \
+                       `extension_enable_refusal` (its refusal is the typed \
+                       `PrivateExtensionOverHttp` body, and a user proceeds past the other two \
+                       arms), so it asks the predicate instead of re-typing it, which is what \
+                       it did until this seam was closed",
+            },
+            Site {
+                file: "crates/biorouter/src/privacy/refusal.rs",
+                counts: c(1, 0, 0),
+                kind: SiteKind::Guard,
+                what: "`privacy_refusal`, which is this predicate plus the sentence the model \
+                       reads",
             },
         ],
     },
@@ -671,7 +727,11 @@ fn strip_lexical(src: &str) -> Vec<String> {
             }
             S::Block(depth) => {
                 if two == "*/" {
-                    st = if depth == 1 { S::Code } else { S::Block(depth - 1) };
+                    st = if depth == 1 {
+                        S::Code
+                    } else {
+                        S::Block(depth - 1)
+                    };
                     line.push_str("  ");
                     i += 2;
                 } else if two == "/*" {

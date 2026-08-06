@@ -1894,69 +1894,53 @@ impl WorkspaceClient {
     /// server's secrets out of the keychain and opens the session — so Gate C
     /// refusing the first tool call afterwards is already too late.
     ///
-    /// ⚠ **Every arm here is the shared spelling, never a local re-derivation.**
-    /// `check_enable_allowed` (`extension_manager_extension.rs`) is the same
-    /// gate at the `manage_extensions` door, and it is built out of exactly
-    /// these three pieces: the persisted-`enabled:false` pin (#42),
+    /// ⚠ **This decides nothing. It asks
+    /// [`refusal::extension_enable_refusal`], which is the ONE enable gate, and
+    /// renders its refusal as the `String` this file's handlers return.**
+    ///
+    /// It used to re-implement that gate arm for arm — the #42 pin, then
     /// [`privacy::resolve_extension`] + [`refusal::privacy_refusal`] for the
-    /// tier, and [`CallCapability::cross_affiliation_warning`] for DR-26. A
-    /// hand-written `class.tier.is_private() && cap.tier() == Public` here
-    /// would be a third copy of one table, and the copies disagree on the row
-    /// nobody thought about.
+    /// tier, then [`CallCapability::cross_affiliation_warning`] for DR-26 — and
+    /// this comment used to claim `check_enable_allowed`
+    /// (`extension_manager_extension.rs`) was "built out of exactly these three
+    /// pieces". **It was not:** that function hand-wrote its tier arm
+    /// (`class.tier.is_private() && caller == Public`) with its own sentence,
+    /// and put it FIRST, above the operator pin, because finding 13 showed the
+    /// pin is an install-state oracle. The copy here asked the pin first — so at
+    /// `workspace_open {new:{extensions}}`, which looks the entry up before
+    /// asking, a public caller naming a private connector learned from the
+    /// refusal whether this machine had it installed and pinned off. Two
+    /// spellings of one rule, agreeing on the verdict and disagreeing on the
+    /// order, with a false comment asserting they were one. Both doors now call
+    /// the one function; the clause order lives there, once.
     ///
     /// `entry` is the on-disk config entry when the extension is installed.
     /// `None` means "not installed, or not looked up yet"; the tier still
-    /// resolves, by name, from the compiled marketplace baseline.
+    /// resolves, by name, from the compiled marketplace baseline — which is what
+    /// makes the refusal identical in both worlds.
     ///
     /// [`privacy::resolve_extension`]: crate::privacy::resolve_extension
     /// [`refusal::privacy_refusal`]: crate::privacy::refusal::privacy_refusal
+    /// [`refusal::extension_enable_refusal`]: crate::privacy::refusal::extension_enable_refusal
     /// [`CallCapability::cross_affiliation_warning`]: crate::privacy::CallCapability::cross_affiliation_warning
     fn refuse_gated_extension_enable(
         cap: crate::privacy::CallCapability,
         name: &str,
         entry: Option<&crate::config::ExtensionEntry>,
     ) -> Result<(), String> {
-        // Issue #42's operator pin. Same refusal text `manage_extensions`
-        // gives, so the model gets the same guidance whichever door it tried.
-        if let Some(entry) = entry {
-            if !entry.enabled && crate::config::extension_entry_is_persisted(&entry.config.name()) {
-                return Err(format!(
-                    "Extension '{name}' is disabled in the Biorouter configuration \
-                     (enabled: false). The operator turned it off deliberately, so do not \
-                     enable it yourself — not here and not on another conversation. If it \
-                     is needed for this task, ask the user to re-enable it."
-                ));
-            }
+        // #42's provenance signal, asked here rather than inside the gate: it
+        // reads the global config, and the gate is kept pure so it can be driven
+        // at every tier in both toggle positions with no machine state. The gate
+        // decides what to do with it — including that it is decided LAST, below
+        // both privacy arms, because "the operator turned this off" is an answer
+        // about this machine and no caller that may not reach the extension may
+        // read it out of a refusal.
+        let persisted =
+            entry.is_some_and(|e| crate::config::extension_entry_is_persisted(&e.config.name()));
+        match crate::privacy::refusal::extension_enable_refusal(cap, name, entry, persisted) {
+            Some(err) => Err(err.message.to_string()),
+            None => Ok(()),
         }
-        // ONE resolution, both axes, exactly as `check_enable_allowed` and
-        // `assert_extension_reachable` take it: two lookups would let the tier
-        // and the affiliation disagree about the same entry.
-        let class = crate::privacy::resolve_extension(name, entry.map(|e| &e.config));
-        // Gate F1's tier arm. DR-15's master opt-out is read off the SAME
-        // sample that carried the tier (`cap.enforced()`), never re-derived
-        // here — the toggle's own function name is deliberately not spelled in
-        // this file.
-        if cap.enforced() {
-            if let Some(err) =
-                crate::privacy::refusal::privacy_refusal(name, class.tier, cap.tier())
-            {
-                return Err(err.message.to_string());
-            }
-        }
-        // DR-26's third axis, last because it is the narrowest: every arm above
-        // refuses a class of extension outright, where this refuses one PAIRING
-        // of an extension with one bound model. `None` for the accept control,
-        // for `check_enable_allowed`'s reason — a grant is the user's
-        // acceptance of a data flow through a connector this chat already has,
-        // not permission to attach one it did not have.
-        if let Some(warning) = cap.cross_affiliation_warning(name, &class) {
-            return Err(
-                crate::privacy::refusal::cross_affiliation_refusal(&warning, None)
-                    .message
-                    .to_string(),
-            );
-        }
-        Ok(())
     }
 
     /// Resolve `add_extensions` to loadable configs, or fail the whole call.
@@ -4735,6 +4719,143 @@ mod tests {
         crate::workspace_services::clear_test_override();
     }
 
+    /// **The seam between finding 4's fix and finding 13's, at the door where it
+    /// was open: `workspace_open {new:{extensions}}`.**
+    ///
+    /// Finding 13 established that #42's operator pin is an install-state
+    /// oracle, and moved `manage_extensions`' tier arm above it. Finding 4's fix
+    /// gated these two workspace doors the same afternoon, in different words
+    /// and with the pin FIRST — which for `workspace_set_tools` was harmless
+    /// (`resolve_added_extensions` asks with `entry: None` before the lookup, so
+    /// the tier arm answers first anyway) but for this door was not: it looks
+    /// the entry up and then asks, so a public caller naming a private connector
+    /// this machine has and the operator pinned off was told exactly that.
+    ///
+    /// Three install states of one private connector, one caller who may not
+    /// have it, one sentence. The `absent` arm is the reference because it is
+    /// the state a caller can never learn anything from.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn open_new_tells_a_public_caller_nothing_about_a_private_extensions_install_state() {
+        let recorder = FakeServices::with_gui(true).install();
+        let c = client();
+        let private_ext = a_private_extension();
+        let args = serde_json::json!({ "new": {
+            "working_dir": std::env::temp_dir().to_string_lossy(),
+            "extensions": [private_ext],
+        }});
+
+        let absent = text_of(&call_as(&c, "workspace_open", args.clone(), public_caller()).await);
+        let installed = text_of(
+            &crate::config::with_config_overrides(
+                extensions_override(private_ext, private_ext, true),
+                call_as(&c, "workspace_open", args.clone(), public_caller()),
+            )
+            .await,
+        );
+        let pinned_off = text_of(
+            &crate::config::with_config_overrides(
+                extensions_override(private_ext, private_ext, false),
+                call_as(&c, "workspace_open", args.clone(), public_caller()),
+            )
+            .await,
+        );
+
+        assert!(
+            absent.contains(&expected_private_extension_refusal(private_ext)),
+            "not Gate F1's refusal: {absent}"
+        );
+        for (state, text) in [
+            ("installed and enabled", &installed),
+            ("installed and pinned off by the operator", &pinned_off),
+        ] {
+            assert_eq!(
+                &absent, text,
+                "the refusal tells a public caller that the private connector is {state}"
+            );
+        }
+        assert!(
+            !pinned_off.contains("enabled: false"),
+            "#42's refusal — an answer about this machine — reached a caller who may not \
+             have the connector at all: {pinned_off}"
+        );
+        assert!(
+            recorder.sessions_started().is_empty(),
+            "a conversation was started holding the private connector: {:?}",
+            recorder.sessions_started()
+        );
+
+        // …and the pin is not swallowed: a caller ENTITLED to the connector still
+        // meets #42 at this door, and still starts no conversation. Without this
+        // the test above is satisfied by a gate that refuses everything.
+        let entitled = crate::config::with_config_overrides(
+            extensions_override(private_ext, private_ext, false),
+            call_as(&c, "workspace_open", args, private_caller()),
+        )
+        .await;
+        let text = text_of(&entitled);
+        assert_eq!(entitled.is_error, Some(true), "{text}");
+        assert!(
+            text.contains("enabled: false"),
+            "the reorder swallowed #42's pin for the caller it was written for: {text}"
+        );
+        assert!(recorder.sessions_started().is_empty(), "{text}");
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The same property at the other workspace door. `workspace_set_tools`
+    /// reached the right answer by a different route — it asks the gate once
+    /// with no entry, before the lookup — so this pins the OUTCOME rather than
+    /// that route: whatever order the two calls happen in, an operator pin must
+    /// not become visible to a caller the tier arm refuses.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_tells_a_public_caller_nothing_about_a_private_extensions_install_state() {
+        crate::workspace_services::set_for_tests(None);
+        let c = client();
+        let target = seeded_target(&c, "set-tools-oracle").await;
+        let private_ext = a_private_extension();
+        let args = serde_json::json!({
+            "session_id": target, "add_extensions": [private_ext]
+        });
+
+        let absent =
+            text_of(&call_as(&c, "workspace_set_tools", args.clone(), public_caller()).await);
+        let pinned_off = text_of(
+            &crate::config::with_config_overrides(
+                extensions_override(private_ext, private_ext, false),
+                call_as(&c, "workspace_set_tools", args.clone(), public_caller()),
+            )
+            .await,
+        );
+        assert_eq!(
+            absent, pinned_off,
+            "the refusal tells a public caller that the private connector is installed \
+             and pinned off"
+        );
+        assert!(
+            absent.contains(&expected_private_extension_refusal(private_ext)),
+            "not Gate F1's refusal: {absent}"
+        );
+        assert!(!pinned_off.contains("enabled: false"), "{pinned_off}");
+
+        // The entitled caller still meets the pin here too.
+        let entitled = text_of(
+            &crate::config::with_config_overrides(
+                extensions_override(private_ext, private_ext, false),
+                call_as(&c, "workspace_set_tools", args, private_caller()),
+            )
+            .await,
+        );
+        assert!(
+            entitled.contains("enabled: false"),
+            "the reorder swallowed #42's pin at this door: {entitled}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
     /// **Finding 4's third door, found by enumerating what `workspace_set_tools`
     /// changes rather than what finding 4 named.** The tool rewrites another
     /// conversation's provider, extension set, session-scoped skills and
@@ -4833,7 +4954,10 @@ mod tests {
                 "scope {scope} refused for some other reason: {text}"
             );
         }
-        assert!(services.cancels().is_empty(), "a private turn was cancelled");
+        assert!(
+            services.cancels().is_empty(),
+            "a private turn was cancelled"
+        );
         assert!(services.stops().is_empty(), "a private agent was evicted");
         assert!(
             services.all_frames().is_empty(),
@@ -5069,7 +5193,9 @@ mod tests {
         // cannot be added without either wiring the gate or editing this number
         // — which is the moment to think about it.
         assert_eq!(
-            production.matches("self.refuse_unless_visible(cap,").count(),
+            production
+                .matches("self.refuse_unless_visible(cap,")
+                .count(),
             6,
             "the number of §7-gated call sites changed. Six tools name another \
              conversation; if a seventh arrived it needs the gate, and if one was \
@@ -5087,6 +5213,32 @@ mod tests {
             assert!(
                 production.contains(wiring),
                 "`{wiring}` is gone: an extension-enable door lost its Gate F1 wiring"
+            );
+        }
+
+        // …and that gate DECIDES nothing here. Its three arms and their order are
+        // shared with `manage_extensions`' door through
+        // `refusal::extension_enable_refusal`; this file's copy of them is what
+        // reopened finding 13's oracle at `workspace_open`, because two spellings
+        // of one rule agreed on every verdict and disagreed on the order. A
+        // behavioural test cannot see a re-derivation that happens to agree
+        // today, which is the only kind anyone ever writes.
+        assert!(
+            production.contains("crate::privacy::refusal::extension_enable_refusal("),
+            "`refuse_gated_extension_enable` no longer asks the shared enable gate"
+        );
+        for respelling in [
+            "resolve_extension(",
+            "privacy_refusal(",
+            "cross_affiliation_warning(",
+            "cross_affiliation_refusal(",
+        ] {
+            assert!(
+                !production.contains(respelling),
+                "`{respelling}` is back in this file's production text: an arm of the \
+                 enable gate is being re-derived here instead of asked for. That is the \
+                 two-spellings shape, and last time it cost an install-state oracle at \
+                 `workspace_open {{new:{{extensions}}}}`"
             );
         }
 
