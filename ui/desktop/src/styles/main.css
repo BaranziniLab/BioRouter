@@ -328,7 +328,79 @@
      are invited to click into. Heavier than `--border-subtle` (which separates)
      and lighter than `--border-strong` (which encloses). */
   --border-emphasized: color-mix(in oklab, var(--text-default) 24%, transparent);
-  --row-height: 40px; /* D-12·B — one row rhythm, no compact mode */
+
+  /* ── Geometry: the control ladder and the bands (Astryx §2.3) ─────────────
+     Every value below is already written down in the adoption document; what it
+     did not have was a NAME, which is why the app runs four bar heights, four
+     item heights, three icon-label gaps and a Button scale that row actions
+     bypass wholesale for an off-scale 28px. A size with no token is a size that
+     gets re-measured by eye at every call site.
+
+     Authored HERE rather than in the `@theme` block, and mirrored into
+     `@theme inline` below as `--spacing-*`, for the same reason the colours are:
+     a hand-authored `:root` declaration is emitted unconditionally, and the
+     `inline` mirror substitutes the `var()` — so `h-control-md` stays late-bound
+     to a token a theme family can re-point, and the token itself exists for raw
+     CSS whether or not any utility happens to be in use yet. (Astryx calls
+     radius a themeable multiplier; the same door is open here.)
+
+     THE VALUES ARE NOT RETUNED BY THIS BLOCK. Naming them moves nothing —
+     `--row-height` keeps D-12·B's 40px, and A-03's 36px is a phase-8 change to
+     this one declaration, not a second token beside it. */
+
+  /* Control heights. `md` is the default for buttons, inputs, selects, icon
+     buttons, nav rows, tabs and menu items alike; `lg` is for a view's single
+     dominant action. FONT SIZE DOES NOT CHANGE WITH HEIGHT — only the box (the
+     one exception is the dense-control note beside `--text-secondary`). */
+  --control-sm: 28px;
+  --control-md: 32px;
+  --control-lg: 36px;
+  /* The compact icon-button tier, and the ONLY thing below `sm`. It exists for
+     a glyph-only control inside an already-dense cluster; a control carrying a
+     label never uses it. */
+  --control-compact: 24px;
+
+  /* Icon boxes, named for WHERE the glyph sits, because that is the rule §3.8b
+     states and the one the app breaks: never two sizes in one cluster. */
+  --icon-chip: 14px; /* inside a chip — nowhere else */
+  --icon-row: 16px; /* a row, a control, a toolbar: the default */
+  --icon-banner: 20px; /* banners, empty states */
+
+  /* Press. The state stack is variant-agnostic: hover is `--overlay-hover`,
+     press is `--overlay-pressed` PLUS this scale. One number so a control
+     cannot half-implement the gesture. */
+  --press-scale: 0.98;
+
+  /* Bands. One `--chrome-height` for the titlebar band, the chat header and the
+     artifact strip — today 52px written three ways, with two different hairline
+     colours and three grounds meeting at a seam the comments claim is
+     continuous. Retuning the three declarations onto this token is the phase-7
+     shell change; the token is what makes it one edit. */
+  --chrome-height: 44px;
+  --dock-height: 36px; /* terminal dock strip — one step down, same tab language */
+  --tab-height: 32px; /* chat, artifact and dock tabs; pulled from 34 */
+
+  /* Rows. Two rhythms and no more: the rail (sidebar, nav, menu item, recents,
+     select option) and the content list. They are separate because they answer
+     different questions — a rail row is navigation, a content row is data. */
+  --row-height-rail: 32px;
+  --row-height: 40px; /* D-12·B — one row rhythm, no compact mode. A-03 retunes to 36px in phase 8. */
+
+  /* Overlay widths (§3.6/§3.7). Three dialog widths and one full-screen replace
+     the fifteen distinct `max-w` values in use; `full` is not a token because it
+     is `100%`, not a measurement. The toast sits mid-band of the 380–420px the
+     census supports — narrower truncates a 95-character confirmation onto a
+     fourth line, which is the threshold that makes it a banner instead. */
+  --dialog-sm: 400px; /* confirm */
+  --dialog-md: 480px; /* form */
+  --dialog-lg: 640px; /* palette, detail */
+  --toast-width: 400px;
+
+  /* Reading measures. Both are already shipped as arbitrary values in
+     ReadableContent.tsx; naming them is what lets the 896px replay fork be
+     deleted against something rather than against a comment. */
+  --measure-chat: 760px;
+  --measure-page: 1120px;
 
   --z-base: 0;
   --z-sticky: 100;
@@ -408,6 +480,27 @@
   --text-warning: var(--color-yellow-700); /* 5.93:1 */
   --text-info: var(--color-blue-700); /* 6.10:1 */
 
+  /* Status WASHES — the translucent counterpart of the solid `--background-*`
+     fills above (§2.5, §3.4). Status is a wash with tinted ink almost
+     everywhere: chips, badges, inline banners, the tinted destructive button.
+     The solid fill survives for exactly one case — a persistent error toast.
+
+     ONE FORMULA, not four hand-picked pairs: the hue at 22% behind that same
+     hue as saturated ink. Derived from `--text-*` rather than `--background-*`
+     because the text stop is the one already proven legible against the page
+     ground, and mixing to `transparent` (not to a ground colour) is what lets a
+     chip sit on a card, the canvas or a popover unchanged.
+
+     These are NOT interaction tints and must not be confused with them: a wash
+     states a category, `--overlay-*` answers a pointer. A wash is therefore a
+     background-COLOR (a chip brings no ground of its own), whereas the overlay
+     tints are painted as a background-IMAGE by `tint-interactive` precisely
+     because they must composite over one. */
+  --wash-danger: color-mix(in oklab, var(--text-danger) 22%, transparent);
+  --wash-success: color-mix(in oklab, var(--text-success) 22%, transparent);
+  --wash-warning: color-mix(in oklab, var(--text-warning) 22%, transparent);
+  --wash-info: color-mix(in oklab, var(--text-info) 22%, transparent);
+
   /* Focus (D-03, revised by D-15).
      The ring is NEUTRAL, not the brand coral. A 2px coral outline around every
      focused field read as an alarm on a surface whose whole thesis is calm — and
@@ -457,6 +550,13 @@
   /* Modal / diagnostics scrim. Tokenised so each family tints it to its own
      ink rather than inheriting Parchment's warm brown. */
   --scrim: rgba(32, 25, 15, 0.18);
+  /* The fifth, micro tier (A-07). Below `--shadow-default`: the pill lift on an
+     active document tab and nothing heavier. It existed already as two literals
+     hardcoded into `.br-tab[data-active]` and its `.dark` override — which is
+     why Alma Mater and Roche Limit are currently lifted with Parchment's warm
+     brown ink. Same values, one name; a family that wants its own can now
+     re-point one token instead of finding two rules. */
+  --shadow-raised: 0px 1px 2px 0px rgba(32, 25, 15, 0.07);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12);
   /* composer: a hair more lift than --shadow-default so the chat box reads as a
      distinct, gently raised surface — deliberately very subtle */
@@ -471,6 +571,24 @@
      they are now no-ops, retained as null values so any stale reference is inert. */
   --shadow-modal-chrome-bottom: none;
   --shadow-modal-chrome-top: none;
+
+  /* ── Inset rings (§2.7, §3.2, §4.4) ──────────────────────────────────────
+     An INSET ring, not an outline and not a border, and the distinction is the
+     whole reason these exist: an inset box-shadow is drawn inside the box, so it
+     costs no layout, composes with the elevation already on a floating surface,
+     and cannot be clipped by an ancestor's overflow the way an outline is.
+
+     `hairline` is the edge a floating surface keeps so it stays crisp in dark
+     families, where a shadow alone disappears against a near-black ground — the
+     popover/dialog/composer recipe is elevation PLUS this, replacing the
+     composer's current border (the one element in the app stating its edge
+     twice). `accent` is the focused-field halo: D-15 says focus is a surface
+     shift and never a ring, and this honours that more literally than today's
+     outline does, because nothing moves and nothing is drawn outside the
+     control. Both are box-shadow fragments, so a call site composes them:
+     `box-shadow: var(--shadow-popover), var(--inset-hairline)`. */
+  --inset-hairline: inset 0 0 0 1px color-mix(in oklab, var(--text-default) 9%, transparent);
+  --inset-accent: inset 0 0 0 2px var(--accent-muted);
 }
 
 .dark {
@@ -551,6 +669,9 @@
   --sidebar-ring: var(--ring);
 
   --scrim: rgba(0, 0, 0, 0.48);
+  /* The micro tier needs its own dark weight — a 7%-alpha warm brown is invisible
+     on near-black. Same value the `.dark .br-tab[data-active]` override carried. */
+  --shadow-raised: 0px 1px 3px 0px rgba(0, 0, 0, 0.45);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
   --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
@@ -941,6 +1062,21 @@
   --color-accent-muted: var(--accent-muted);
   --color-border-emphasized: var(--border-emphasized);
 
+  /* Status washes as utilities: `bg-wash-danger`, `border-wash-info`. Same
+     `inline` reasoning as the tints directly above — the color-mix must resolve
+     against whichever family block won on `<html>`, not be frozen at build time
+     against Parchment's status stops.
+
+     Unlike `bg-overlay-*`, `bg-wash-*` is SAFE on an opaque control, because a
+     status chip is the ground it paints — it is not compositing a gesture over
+     something that was already there. It is still wrong on top of a filled
+     button: a tinted destructive button takes the wash INSTEAD of the solid
+     `--background-danger`, never over it. */
+  --color-wash-danger: var(--wash-danger);
+  --color-wash-success: var(--wash-success);
+  --color-wash-warning: var(--wash-warning);
+  --color-wash-info: var(--wash-info);
+
   --color-border-default: var(--border-default);
   --color-border-subtle: var(--border-subtle);
   --color-border-input: var(--border-input);
@@ -997,13 +1133,59 @@
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-icon: var(--sidebar-icon);
 
-  /* The four permitted elevations (D-05). Tailwind's default shadow scale is
-     unset above (`--shadow-*: initial`), so `shadow-sm/md/lg/xl` generate
-     nothing on purpose — every surface is flat unless it is one of these. */
+  /* The five permitted elevations (D-05, extended by A-07). Tailwind's default
+     shadow scale is unset above (`--shadow-*: initial`), so `shadow-sm/md/lg/xl`
+     generate nothing on purpose — every surface is flat unless it is one of
+     these. `raised` is the micro tier below `default`; see its note in `:root`. */
+  --shadow-raised: var(--shadow-raised);
   --shadow-default: var(--shadow-default);
   --shadow-composer: var(--shadow-composer);
   --shadow-popover: var(--shadow-popover);
   --shadow-modal: var(--shadow-modal);
+
+  /* The inset rings, as `inset-shadow-hairline` / `inset-shadow-accent`.
+     Tailwind v4 gives inset box-shadows their own namespace, which is what keeps
+     `shadow-popover inset-shadow-hairline` composable on one element — two
+     utilities, two properties, no arbitrary value. */
+  --inset-shadow-hairline: var(--inset-hairline);
+  --inset-shadow-accent: var(--inset-accent);
+
+  /* ── Geometry, as utilities ──────────────────────────────────────────────
+     `--spacing-*` is Tailwind v4's namespace for the whole size family, so one
+     declaration yields `h-control-md`, `w-control-md`, `min-h-row`, `gap-*`,
+     `max-w-measure-chat` and the rest. The literals live in `:root` above (see
+     the geometry note there for why); these are pointers, so a family that
+     re-points a token moves every utility with it.
+
+     ⚠ tailwind-merge does NOT know this scale by default — its stock `spacing`
+     scale is `['px', <number>]`, so `h-control-md` would fall out of the `h`
+     class group entirely, stop conflicting with `h-8`, and let source order
+     decide which one paints. Every name added here must also be added to the
+     `spacing` list in `src/utils.ts`. That is the same failure the radius ladder
+     hit, documented there. */
+  --spacing-control-sm: var(--control-sm);
+  --spacing-control-md: var(--control-md);
+  --spacing-control-lg: var(--control-lg);
+  --spacing-control-compact: var(--control-compact);
+
+  --spacing-icon-chip: var(--icon-chip);
+  --spacing-icon-row: var(--icon-row);
+  --spacing-icon-banner: var(--icon-banner);
+
+  --spacing-chrome: var(--chrome-height);
+  --spacing-dock: var(--dock-height);
+  --spacing-tab: var(--tab-height);
+
+  --spacing-row: var(--row-height);
+  --spacing-row-rail: var(--row-height-rail);
+
+  --spacing-dialog-sm: var(--dialog-sm);
+  --spacing-dialog-md: var(--dialog-md);
+  --spacing-dialog-lg: var(--dialog-lg);
+  --spacing-toast: var(--toast-width);
+
+  --spacing-measure-chat: var(--measure-chat);
+  --spacing-measure-page: var(--measure-page);
 }
 
 @layer base {
@@ -1501,8 +1683,10 @@
   background-position: 50% 100%;
   color: var(--text-default);
   font-weight: 500;
-  /* The drop shadow is the original pill lift. */
-  box-shadow: 0px 1px 2px 0px rgba(32, 25, 15, 0.07);
+  /* The drop shadow is the original pill lift — now the system's micro
+     elevation tier (A-07) rather than a literal, so a family can re-point it
+     instead of inheriting Parchment's warm ink. Same value, one name. */
+  box-shadow: var(--shadow-raised);
   /* Selection settles with a small spring (#37). The keyframes animate the
      STANDALONE `scale` property, never `transform`: when closing the active
      tab, the successor gains data-active (starting this animation) in the same
@@ -1520,11 +1704,12 @@
   animation: br-tab-select var(--motion-base) var(--ease-spring);
 }
 
-.dark .br-tab[data-active='true'] {
-  /* The accent stripe rides the background-image from the base rule; only the
-     pill lift needs a dark-mode weight. */
-  box-shadow: 0px 1px 3px 0px rgba(0, 0, 0, 0.45);
-}
+/* There is no `.dark .br-tab[data-active]` box-shadow override any more: it
+   carried the second of the two hardcoded pill literals, and `--shadow-raised`
+   is re-declared in `.dark` with exactly that value, so the base rule above now
+   resolves it per mode. Verified pixel-identical — no rule sits between the two
+   in specificity, and the unfocused-group `box-shadow: none` still wins on
+   source order. */
 
 @keyframes br-tab-select {
   from {
@@ -1631,10 +1816,33 @@
   color: var(--text-default);
   box-shadow: var(--shadow-popover);
   opacity: 0.95;
+  /* Carried at full transparency so the detach state below only has to change a
+     COLOUR. `outline-color` cannot animate out of `outline-style: none` — the
+     outline does not exist to interpolate — so declaring it here is what makes
+     the transition a fade rather than a snap. Outlines take no layout, so an
+     invisible one costs nothing. */
+  outline: 2px dashed transparent;
   /* Pick-up spring (#37): mount-only, transform-only (rotate/scale — NEVER
      left/top, which are set per-pointermove in JS and must not lag the
      cursor). The ghost springs from flat to its 2deg lift as it comes up. */
   animation: br-tab-ghost-lift var(--motion-base) var(--ease-spring);
+  /* Detach is a state change on a MOUNTED element, so it is a transition, not
+     an animation — the lift above is mount-only and would re-run. Same
+     prohibition as the lift: never `left`/`top`. */
+  transition:
+    transform var(--motion-fast) var(--ease-spring),
+    outline-color var(--motion-fast) var(--ease-out);
+}
+
+/* Outside the window, where the drop would make a new one (tear-off D7).
+   Electron cannot paint outside a window's frame, so the ghost cannot follow the
+   cursor onto the desktop; instead it changes what it IS. The tilt returns to 0
+   and it takes the dashed accent outline the drop zones already use, because a
+   flat, outlined, shadowed rectangle detached from the strip reads as a window,
+   and a tilted one riding the strip reads as a tab. */
+.br-tab-ghost[data-detach='true'] {
+  transform: rotate(0deg);
+  outline-color: color-mix(in srgb, var(--accent-bar) 55%, transparent);
 }
 
 @keyframes br-tab-ghost-lift {
@@ -1687,6 +1895,14 @@
   .br-tab[data-active='true'],
   .br-tab-ghost {
     animation: none;
+  }
+
+  /* The detach state is carried by colour and geometry, not by movement, so
+     zeroing the transition loses nothing: the outline and the untilt just land
+     instantly. Stated explicitly rather than left to the global reduce block,
+     which only clamps the duration to 0.01ms. */
+  .br-tab-ghost {
+    transition: none;
   }
 }
 
