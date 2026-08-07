@@ -9830,6 +9830,11 @@
             "type": "string",
             "format": "date-time"
           },
+          "diverged_from": {
+            "type": "string",
+            "description": "BR-45: the session this one was branched from, or `None`.\n\nCarried on the SUMMARY, not just on the full [`Session`], because the\nsidebar draws a glyph per chat kind and had no other way to know. Its\nonly remaining signal was the default branch NAME (`\"… (branch 2)\"`),\nwhich anyone can rename away: of the branches on this machine, one in\nfive had been renamed and so drew as an ordinary chat.",
+            "nullable": true
+          },
           "id": {
             "type": "string"
           },

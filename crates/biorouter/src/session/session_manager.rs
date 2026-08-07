@@ -271,6 +271,15 @@ pub struct SessionSummary {
     /// BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_type: Option<String>,
+    /// BR-45: the session this one was branched from, or `None`.
+    ///
+    /// Carried on the SUMMARY, not just on the full [`Session`], because the
+    /// sidebar draws a glyph per chat kind and had no other way to know. Its
+    /// only remaining signal was the default branch NAME (`"… (branch 2)"`),
+    /// which anyone can rename away: of the branches on this machine, one in
+    /// five had been renamed and so drew as an ordinary chat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diverged_from: Option<String>,
     /// Issue #56. Carried here so the sidebar's recent-chats list can badge a
     /// private chat without an N+1 `get_session` per row.
     #[serde(default = "SessionClassification::public")]
@@ -2610,6 +2619,9 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
             message_count: row.try_get("message_count")?,
             parent_session_id: row.try_get("parent_session_id").ok().flatten(),
             session_type: row.try_get("session_type").ok().flatten(),
+            // Tolerant, like the two above: a SELECT that omits the column
+            // yields None rather than erroring.
+            diverged_from: row.try_get("diverged_from").ok().flatten(),
             privacy_tier: read_privacy_tier(row),
         })
     }
@@ -5956,6 +5968,7 @@ impl SessionStorage {
                    s.updated_at,
                    s.parent_session_id,
                    s.session_type,
+                   s.diverged_from,
                    s.privacy_tier,
                    COUNT(m.id) AS message_count
             FROM sessions s
@@ -14022,6 +14035,84 @@ mod tests {
                 .privacy_tier,
             SessionClassification::Public,
             "list_session_summaries"
+        );
+    }
+
+    /// BR-45 + the chat-kind glyphs. The sidebar draws a different icon for a
+    /// BRANCH, and `SessionSummary` is the only shape it ever sees.
+    ///
+    /// ⚠ **The read is tolerant on purpose, which is exactly why this test
+    /// exists.** `try_get("diverged_from").ok().flatten()` means a SELECT that
+    /// stops listing the column yields `None` rather than erroring — so
+    /// dropping `s.diverged_from` from the summary query would compile, run,
+    /// return every row, and silently redraw every branch as an ordinary chat.
+    /// Nothing else in the suite would notice.
+    ///
+    /// The signal it replaced was the branch's default NAME, and the slack
+    /// there is not hypothetical: on the machine this landed from, 5 of 25 real
+    /// branches had been renamed and so drew as plain chats. This test renames
+    /// its branch for that reason — a name-based implementation passes only if
+    /// the name still says "branch".
+    #[tokio::test]
+    async fn a_summary_carries_the_branch_lineage_the_sidebar_draws_from() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+
+        let parent = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "Parent".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let branch = manager
+            .create_session(
+                temp.path().to_path_buf(),
+                "My Branch".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .update(&branch.id)
+            .diverged_from(Some(parent.id.clone()))
+            .apply()
+            .await
+            .unwrap();
+
+        // The summary listing INNER JOINs messages, so an empty session is
+        // invisible to it and every assertion below would vacuously find
+        // nothing to check.
+        for id in [&parent.id, &branch.id] {
+            manager
+                .add_message(id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+        }
+
+        let summaries = manager
+            .list_session_summaries(50, 0, false, false)
+            .await
+            .unwrap();
+
+        let branch_row = summaries
+            .iter()
+            .find(|x| x.id == branch.id)
+            .expect("the branch is missing from the summary listing");
+        assert_eq!(
+            branch_row.diverged_from.as_deref(),
+            Some(parent.id.as_str()),
+            "the summary dropped the lineage the sidebar needs to draw a branch"
+        );
+
+        let parent_row = summaries
+            .iter()
+            .find(|x| x.id == parent.id)
+            .expect("the parent is missing from the summary listing");
+        assert_eq!(
+            parent_row.diverged_from, None,
+            "an ordinary chat must not claim a lineage it does not have"
         );
     }
 

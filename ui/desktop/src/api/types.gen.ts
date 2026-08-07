@@ -2228,6 +2228,16 @@ export type SessionModelUsageResponse = {
 
 export type SessionSummary = {
     created_at: string;
+    /**
+     * BR-45: the session this one was branched from, or `None`.
+     *
+     * Carried on the SUMMARY, not just on the full [`Session`], because the
+     * sidebar draws a glyph per chat kind and had no other way to know. Its
+     * only remaining signal was the default branch NAME (`"… (branch 2)"`),
+     * which anyone can rename away: of the branches on this machine, one in
+     * five had been renamed and so drew as an ordinary chat.
+     */
+    diverged_from?: string | null;
     id: string;
     message_count: number;
     name: string;
