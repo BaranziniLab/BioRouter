@@ -377,7 +377,26 @@
      artifact strip — today 52px written three ways, with two different hairline
      colours and three grounds meeting at a seam the comments claim is
      continuous. Retuning the three declarations onto this token is the phase-7
-     shell change; the token is what makes it one edit. */
+     shell change; the token is what makes it one edit.
+
+     ⚠ 44 IS NOT A TYPO FOR 52, AND THIS TOKEN IS NOT YET WIRED UP. It is the
+     TARGET value, not a name for the current one: the design of record drops the
+     band 52 → 44px (`astryx-ui-adoption-design.md` §2 geometry table, §4.1
+     proposal 1, §4.2 lead, and phase 7 of the plan table — four statements, one
+     value). The 8px is bought back by the sidebar compaction in the same phase,
+     which is why the drop and the shell rework ship together and why nothing may
+     adopt `h-chrome` before then: a band that shrinks while the wordmark, the
+     16px traffic-light channel and the two titlebar controls are still laid out
+     for 52px is a regression, not a migration.
+
+     So the three literals are DELIBERATELY still 52px and deliberately not this
+     token — `BioRouterSidebar/AppSidebar.tsx` (`h-13`), `BaseChat.tsx` and
+     `artifacts/ArtifactViewer.tsx` (`h-[52px]`). An adversarial review read the
+     mismatch as a bug and two stewards passed it to each other before that;
+     nobody was wrong about the numbers, only about which one was the plan. This
+     paragraph is the answer, so the next reader does not have to re-derive it
+     from the design docs. Phase 7 deletes the three literals and this warning
+     together. */
   --chrome-height: 44px;
   --dock-height: 36px; /* terminal dock strip — one step down, same tab language */
   --tab-height: 32px; /* chat, artifact and dock tabs; pulled from 34 */
