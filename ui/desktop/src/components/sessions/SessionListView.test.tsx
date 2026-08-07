@@ -222,9 +222,8 @@ describe('SessionListView row actions', () => {
   it('offers Open in new tab above Open in new window, on the row-click path', async () => {
     const user = userEvent.setup();
     const onSelectSession = vi.fn();
-    // A name of its own: this file leaks `listSessions` promises through a
-    // module-global cache no `cleanup()` resets, so a query that could also
-    // match the PREVIOUS test's row resolves against a detached tree.
+    // A name of its own, so the query names the row this case rendered and
+    // cannot also read as another case's.
     mocks.listSessions.mockResolvedValue({
       data: { sessions: [row({ id: 'session-1', name: 'A launchable session' })] },
     });
@@ -235,15 +234,9 @@ describe('SessionListView row actions', () => {
       </MemoryRouter>
     );
 
-    // Let the list settle before touching it. A leaked promise resolving between
-    // the query and the click detaches the button, and the click then lands on
-    // nothing — which reads as "the menu never opened".
-    await screen.findByRole('button', { name: 'More actions for A launchable session' });
-    await act(async () => {
-      await Promise.resolve();
-    });
-
-    await user.click(screen.getByRole('button', { name: 'More actions for A launchable session' }));
+    await user.click(
+      await screen.findByRole('button', { name: 'More actions for A launchable session' })
+    );
 
     const items = (await screen.findAllByRole('menuitem')).map((el) => el.textContent);
     expect(items.indexOf('Open in new tab')).toBeGreaterThanOrEqual(0);
@@ -334,12 +327,9 @@ describe('SessionListView row actions', () => {
       )
     );
     // Nested, not merely present: the child sits inside the indented wrapper
-    // and carries the badge, so the row reads as belonging to 'Parent'.
-    // Re-query on every attempt — `SessionItem` is declared inside
-    // `SessionListView`'s body, so each re-render is a fresh component type and
-    // React replaces the row's DOM node. A node captured once goes stale (it is
-    // detached, and `closest` then walks nothing), which is a flake, not a bug
-    // in the nesting.
+    // and carries the badge, so the row reads as belonging to 'Parent'. The
+    // wait is for the refetch the toggle kicked off; re-querying inside it
+    // keeps the assertion reading the tree as it stands on each attempt.
     await waitFor(() => {
       const childRow = screen.getByText('Subagent task').closest('.ml-6');
       expect(childRow).not.toBeNull();

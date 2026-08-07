@@ -9,21 +9,14 @@ import type { Session } from '../../api';
 /**
  * Issue #56 §12.1 — declassification is reached from the History ROW.
  *
- * ⚠ **Its own file, deliberately.** These cases belong to `SessionListView` and
- * would naturally live in `SessionListView.test.tsx`, but two cases in that
- * file's `row actions` block are a PRE-EXISTING failure: they time out after 5
- * seconds each (verified against the unmodified file at HEAD), and they leave
- * `listSessions` promises resolving into whatever test runs next — through the
- * module-global session-list cache, which no `cleanup()` can reset. Any Radix
- * menu interaction that follows them is then racing a component that replaces
- * its own DOM nodes, and a trigger queried a tick early is detached, so
- * `pointerDown` is silently a no-op.
- *
- * Vitest isolates test FILES, so this is the one boundary available that does
- * not require either fixing that flake (a refactor of `sessionListCache` and of
- * `SessionItem`'s placement, neither of which belongs to this task) or softening
- * an assertion. The assertions here are exactly what they would be in the other
- * file.
+ * Its own file for topic, not for isolation. It used to be for isolation: while
+ * `SessionItem` was declared inside `SessionListView`'s body it was a fresh
+ * component TYPE on every parent render, so React discarded and rebuilt every
+ * row's DOM on each one — closing any open Radix menu and detaching any node a
+ * test had already queried. These cases were split out to dodge that, and the
+ * helpers below retried around it. `SessionItem` is at module scope now, so a
+ * parent render reconciles the rows instead of replacing them, and neither the
+ * split nor a retry is load-bearing any more.
  *
  * The paired absence assertion — that this action is NOT in the chat title menu,
  * which is the obvious slot and the one §12.1 forbids — lives in
@@ -92,28 +85,18 @@ function renderList() {
  *
  * `fireEvent.pointerDown`, not `userEvent.click`: Radix's menu opens on
  * pointerdown, and `userEvent` yields to the event loop between pointerdown and
- * pointerup — long enough for a re-render to replace the row and detach the node
- * mid-click. Every passing interaction in the sibling file uses `fireEvent` for
+ * pointerup. Every passing interaction in the sibling file uses `fireEvent` for
  * the same reason.
  *
- * Retrying the open is the other half, and it is a harness concession rather
- * than a softened assertion — the expectation is exactly the one a single click
- * would make. `SessionItem` is declared inside `SessionListView`'s BODY, so
- * every re-render is a fresh component type and React replaces the row's whole
- * DOM node; a trigger queried in the window before the list settles is already
- * detached, and `pointerDown` on a detached node is silently a no-op. The
- * sibling file documents the same hazard on its subagent-nesting cases.
- *
- * The early return keeps it idempotent: a second pointerdown on an OPEN Radix
- * menu closes it, so a naive retry would flip it shut on the attempt after the
- * one that worked.
+ * One pointerdown, deliberately. This used to retry inside a `waitFor` because
+ * a parent render could shut the menu the instant it opened; that is fixed at
+ * the source (see the file header), and a retry here would now hide a real
+ * regression — a menu that needs two clicks to stay open is a bug, and this is
+ * the test that should say so.
  */
 async function openRowMenu(trigger: RegExp | string) {
-  await waitFor(() => {
-    if (screen.queryByText(/Make this chat public/)) return;
-    fireEvent.pointerDown(screen.getByLabelText(trigger), { button: 0, ctrlKey: false });
-    expect(screen.getByText(/Make this chat public/)).toBeInTheDocument();
-  });
+  fireEvent.pointerDown(screen.getByLabelText(trigger), { button: 0, ctrlKey: false });
+  await screen.findByText(/Make this chat public/);
 }
 
 /**

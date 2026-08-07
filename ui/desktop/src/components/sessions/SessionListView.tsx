@@ -286,6 +286,301 @@ function HistoryLoading() {
   );
 }
 
+/**
+ * One history row.
+ *
+ * ⚠ **Module scope, and it has to stay there.** This lived inside
+ * `SessionListView`'s body, which made it a NEW component type on every render
+ * of the list. React compares element types by identity, so every state change
+ * in the parent — a refetch, the skeleton→content cross-fade, a search
+ * keystroke — unmounted every row and mounted a replacement, discarding each
+ * row's DOM node, its focus, its hover state and any Radix menu it had open.
+ * That is why an overflow menu could close by itself mid-interaction, and why
+ * tests had to retry a click that landed on a node the list had already
+ * detached. `React.memo` could not help: memo compares props, and a fresh type
+ * never reaches that comparison.
+ *
+ * Everything it used to close over — `onSelectSession`, the diverged-from name
+ * lookup, the ref registry — is a prop now, so the type is stable for the life
+ * of the module.
+ */
+const SessionItem = React.memo(function SessionItem({
+  session,
+  onSelectSession,
+  sessionNameById,
+  setSessionRef,
+  onEditClick,
+  onDeleteClick,
+  onExportClick,
+  onOpenInNewWindow,
+  onDeclassifyClick,
+}: {
+  session: Session;
+  onSelectSession: (sessionId: string) => void;
+  /** id → name, so a diverged row can name its lineage parent. */
+  sessionNameById: Map<string, string>;
+  setSessionRef: (itemId: string, element: HTMLDivElement | null) => void;
+  onEditClick: (session: Session) => void;
+  onDeleteClick: (session: Session) => void;
+  onExportClick: (session: Session, e: React.MouseEvent) => void;
+  onOpenInNewWindow: (session: Session, e: React.MouseEvent) => void;
+  onDeclassifyClick: (session: Session) => void;
+}) {
+  const handleEditClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation(); // Prevent card click
+      onEditClick(session);
+    },
+    [onEditClick, session]
+  );
+
+  const handleDeleteClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation(); // Prevent card click
+      onDeleteClick(session);
+    },
+    [onDeleteClick, session]
+  );
+
+  const handleCardClick = useCallback(() => {
+    onSelectSession(session.id);
+  }, [onSelectSession, session.id]);
+
+  // The menu's "Open in new tab" is the same call the row's own click makes.
+  // It exists because that behaviour was undiscoverable, not because it was
+  // missing — so it must stay the SAME path, not a second one that can drift.
+  const handleOpenInNewTabClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onSelectSession(session.id);
+    },
+    [onSelectSession, session.id]
+  );
+
+  const handleExportClick = useCallback(
+    (e: React.MouseEvent) => {
+      onExportClick(session, e);
+    },
+    [onExportClick, session]
+  );
+
+  const handleOpenInNewWindowClick = useCallback(
+    (e: React.MouseEvent) => {
+      onOpenInNewWindow(session, e);
+    },
+    [onOpenInNewWindow, session]
+  );
+
+  // Get extension names for this session
+  const extensionNames = useMemo(
+    () => getSessionExtensionNames(session.extension_data),
+    [session.extension_data]
+  );
+  const billedTokenEstimate = billedSessionTokenEstimate(session);
+
+  return (
+    <div
+      className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
+      ref={(el) => setSessionRef(session.id, el)}
+    >
+      {/* BR-71: the badge lives INSIDE the row, and is derived from the row
+          itself rather than from where it was rendered — so a subagent run
+          whose parent is missing from the list is still labelled instead of
+          reading as an unexplained bare conversation. */}
+      {session.session_type === 'sub_agent' && (
+        <span
+          data-testid="subagent-badge"
+          title="Subagent run"
+          className="flex-shrink-0 rounded-inner bg-background-code px-1 text-chip text-text-subtle"
+        >
+          sub
+        </span>
+      )}
+
+      {/* Title + metadata */}
+      <button
+        type="button"
+        onClick={handleCardClick}
+        className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        aria-label={`Open session ${session.name}`}
+      >
+        {/* This row's SessionItem SHADOWS the exported
+            components/sessions/SessionItem.tsx — same name, different
+            component, both reachable from History. They are badged
+            identically and to the same rule (dense dot, Private only), or
+            the marker would depend on which of the two a surface happened
+            to mount. */}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <h3 className="text-label truncate">{session.name}</h3>
+          {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
+        </div>
+        {session.diverged_from && (
+          <div className="flex items-center gap-2 mt-0.5 text-text-muted text-supporting min-w-0">
+            <GitBranch className="w-3 h-3 flex-shrink-0" />
+            <span className="truncate max-w-[320px]">
+              branched from {sessionNameById.get(session.diverged_from) ?? session.diverged_from}
+            </span>
+          </div>
+        )}
+        <div className="flex items-center gap-3 mt-0.5 text-text-muted text-supporting">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-3 h-3 flex-shrink-0" />
+            <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
+          </div>
+          <div className="flex items-center gap-2 min-w-0">
+            <Folder className="w-3 h-3 flex-shrink-0" />
+            <span className="truncate max-w-[240px]">{session.working_dir}</span>
+          </div>
+        </div>
+      </button>
+
+      {/* Right-side stats + hover actions.
+          §3.10 "one optical axis per row": each right-hand cluster gets its
+          own 20px-high centred box rather than trusting a 32px button and a
+          12px glyph to agree on a baseline. The figures are `tabular-nums`
+          inside fixed-width boxes so the counts form real columns down the
+          list instead of drifting with each value's width. */}
+      <div className="flex h-5 items-center gap-3 flex-shrink-0">
+        <div className="flex h-5 items-center gap-3 text-supporting text-text-muted font-mono tabular-nums">
+          <div className="flex items-center gap-2">
+            <MessageSquareText className="w-3 h-3" />
+            <span className="w-8 text-right">{session.message_count}</span>
+          </div>
+          {billedTokenEstimate && (
+            <div
+              className="flex items-center gap-2"
+              title={
+                billedTokenEstimate.lowerBound
+                  ? 'At least this many tokens; only last-turn usage is available for this legacy session'
+                  : 'Billed tokens across every turn, including recorded cache usage'
+              }
+            >
+              <Target className="w-3 h-3" />
+              <span className="sr-only">Billed tokens: </span>
+              <span className="w-12 text-right">
+                {formatBilledTokenEstimate(billedTokenEstimate)}
+              </span>
+            </div>
+          )}
+          {extensionNames.length > 0 && (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    <Puzzle className="w-3 h-3" />
+                    <span className="w-4 text-right">{extensionNames.length}</span>
+                  </div>
+                </TooltipTrigger>
+                <TooltipContent side="top" className="max-w-xs">
+                  <div className="text-supporting">
+                    <div className="text-label mb-1">Extensions:</div>
+                    <ul className="list-disc list-inside">
+                      {extensionNames.map((name) => (
+                        <li key={name}>{name}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          )}
+        </div>
+        {/* §3.10: at most three visible actions, all 32px with 16px icons —
+            this is where the 28-vs-32px fork between the outlined trio and
+            the delete button ended. Everything else, and every DESTRUCTIVE
+            action, lives behind the one `⋯` overflow, so a hover-revealed
+            cluster can never put Delete under a stray click. */}
+        <div className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={handleEditClick}
+                variant="outline"
+                shape="round"
+                aria-label={`Edit ${session.name}`}
+              >
+                <Edit2 className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Edit session name</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                onClick={handleExportClick}
+                variant="outline"
+                shape="round"
+                aria-label={`Export ${session.name}`}
+              >
+                <Download className="w-4 h-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="top">Export session</TooltipContent>
+          </Tooltip>
+          <DropdownMenu>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    onClick={(e) => e.stopPropagation()}
+                    variant="outline"
+                    shape="round"
+                    aria-label={`More actions for ${session.name}`}
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+              </TooltipTrigger>
+              <TooltipContent side="top">More actions</TooltipContent>
+            </Tooltip>
+            <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+              {/* Clicking the row already opens the session in a tab — this
+                  item is discoverability, not new behaviour, and it calls
+                  the same `onSelectSession` the row's own click does. The
+                  glyph is the one the tab strip uses for a tab. */}
+              <DropdownMenuItem onClick={handleOpenInNewTabClick}>
+                <MessageSquare className="w-4 h-4" />
+                Open in new tab
+              </DropdownMenuItem>
+              <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
+                <NewWindow className="w-4 h-4" />
+                Open in new window
+              </DropdownMenuItem>
+              {/* Issue #56 §12.1. The row's own overflow menu, and the ONLY
+                  place declassification is offered besides the session
+                  page's action bar — deliberately not `SessionNamePill`'s
+                  title menu, which is one careless click from the chat
+                  title.
+
+                  Private rows only: a public chat has nothing to
+                  declassify. Before §3.10 folded every row action behind
+                  this one `⋯`, the tier gated the whole BUTTON, because a
+                  "More actions" trigger that opened a one-item menu — and
+                  an empty one on every public row — was worse than no
+                  trigger at all. The menu now always carries the open and
+                  delete items, so only the ITEM is gated. */}
+              {session.privacy_tier === 'private' && (
+                <DropdownMenuItem onSelect={() => onDeclassifyClick(session)}>
+                  Make this chat public
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                variant="destructive"
+                onClick={handleDeleteClick}
+                aria-label={`Delete ${session.name}`}
+              >
+                <Trash2 className="w-4 h-4" />
+                Delete session
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
+      </div>
+    </div>
+  );
+});
+
 const SessionListView: React.FC<SessionListViewProps> = React.memo(
   ({ onSelectSession, selectedSessionId }) => {
     const initialSessions = useRef(getCachedSessionList()).current;
@@ -372,13 +667,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
     // Track session to element ref
     const sessionRefs = useRef<Record<string, HTMLElement>>({});
-    const setSessionRefs = (itemId: string, element: HTMLDivElement | null) => {
+    // Stable across renders: it is a prop of every row now, and a new function
+    // each render would defeat `SessionItem`'s `React.memo` on every row at
+    // once. It only ever writes to a ref, so it has nothing to close over.
+    const setSessionRefs = useCallback((itemId: string, element: HTMLDivElement | null) => {
       if (element) {
         sessionRefs.current[itemId] = element;
       } else {
         delete sessionRefs.current[itemId];
       }
-    };
+    }, []);
 
     const visibleDateGroups = useMemo(() => {
       let remainingSessions = visibleSessionCount;
@@ -731,277 +1029,6 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       );
     }, []);
 
-    const SessionItem = React.memo(function SessionItem({
-      session,
-      onEditClick,
-      onDeleteClick,
-      onExportClick,
-      onOpenInNewWindow,
-      onDeclassifyClick,
-    }: {
-      session: Session;
-      onEditClick: (session: Session) => void;
-      onDeleteClick: (session: Session) => void;
-      onExportClick: (session: Session, e: React.MouseEvent) => void;
-      onOpenInNewWindow: (session: Session, e: React.MouseEvent) => void;
-      onDeclassifyClick: (session: Session) => void;
-    }) {
-      const handleEditClick = useCallback(
-        (e: React.MouseEvent) => {
-          e.stopPropagation(); // Prevent card click
-          onEditClick(session);
-        },
-        [onEditClick, session]
-      );
-
-      const handleDeleteClick = useCallback(
-        (e: React.MouseEvent) => {
-          e.stopPropagation(); // Prevent card click
-          onDeleteClick(session);
-        },
-        [onDeleteClick, session]
-      );
-
-      const handleCardClick = useCallback(() => {
-        onSelectSession(session.id);
-      }, [session.id]);
-
-      // The menu's "Open in new tab" is the same call the row's own click makes.
-      // It exists because that behaviour was undiscoverable, not because it was
-      // missing — so it must stay the SAME path, not a second one that can drift.
-      const handleOpenInNewTabClick = useCallback(
-        (e: React.MouseEvent) => {
-          e.stopPropagation();
-          onSelectSession(session.id);
-        },
-        [session.id]
-      );
-
-      const handleExportClick = useCallback(
-        (e: React.MouseEvent) => {
-          onExportClick(session, e);
-        },
-        [onExportClick, session]
-      );
-
-      const handleOpenInNewWindowClick = useCallback(
-        (e: React.MouseEvent) => {
-          onOpenInNewWindow(session, e);
-        },
-        [onOpenInNewWindow, session]
-      );
-
-      // Get extension names for this session
-      const extensionNames = useMemo(
-        () => getSessionExtensionNames(session.extension_data),
-        [session.extension_data]
-      );
-      const billedTokenEstimate = billedSessionTokenEstimate(session);
-
-      return (
-        <div
-          className="biorouter-list-row session-item flex items-center gap-3 py-2 px-4 relative group"
-          ref={(el) => setSessionRefs(session.id, el)}
-        >
-          {/* BR-71: the badge lives INSIDE the row, and is derived from the row
-              itself rather than from where it was rendered — so a subagent run
-              whose parent is missing from the list is still labelled instead of
-              reading as an unexplained bare conversation. */}
-          {session.session_type === 'sub_agent' && (
-            <span
-              data-testid="subagent-badge"
-              title="Subagent run"
-              className="flex-shrink-0 rounded-inner bg-background-code px-1 text-chip text-text-subtle"
-            >
-              sub
-            </span>
-          )}
-
-          {/* Title + metadata */}
-          <button
-            type="button"
-            onClick={handleCardClick}
-            className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-            aria-label={`Open session ${session.name}`}
-          >
-            {/* This row's SessionItem SHADOWS the exported
-                components/sessions/SessionItem.tsx — same name, different
-                component, both reachable from History. They are badged
-                identically and to the same rule (dense dot, Private only), or
-                the marker would depend on which of the two a surface happened
-                to mount. */}
-            <div className="flex min-w-0 items-center gap-1.5">
-              <h3 className="text-label truncate">{session.name}</h3>
-              {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
-            </div>
-            {session.diverged_from && (
-              <div className="flex items-center gap-2 mt-0.5 text-text-muted text-supporting min-w-0">
-                <GitBranch className="w-3 h-3 flex-shrink-0" />
-                <span className="truncate max-w-[320px]">
-                  branched from{' '}
-                  {sessionNameById.get(session.diverged_from) ?? session.diverged_from}
-                </span>
-              </div>
-            )}
-            <div className="flex items-center gap-3 mt-0.5 text-text-muted text-supporting">
-              <div className="flex items-center gap-2">
-                <Calendar className="w-3 h-3 flex-shrink-0" />
-                <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
-              </div>
-              <div className="flex items-center gap-2 min-w-0">
-                <Folder className="w-3 h-3 flex-shrink-0" />
-                <span className="truncate max-w-[240px]">{session.working_dir}</span>
-              </div>
-            </div>
-          </button>
-
-          {/* Right-side stats + hover actions.
-              §3.10 "one optical axis per row": each right-hand cluster gets its
-              own 20px-high centred box rather than trusting a 32px button and a
-              12px glyph to agree on a baseline. The figures are `tabular-nums`
-              inside fixed-width boxes so the counts form real columns down the
-              list instead of drifting with each value's width. */}
-          <div className="flex h-5 items-center gap-3 flex-shrink-0">
-            <div className="flex h-5 items-center gap-3 text-supporting text-text-muted font-mono tabular-nums">
-              <div className="flex items-center gap-2">
-                <MessageSquareText className="w-3 h-3" />
-                <span className="w-8 text-right">{session.message_count}</span>
-              </div>
-              {billedTokenEstimate && (
-                <div
-                  className="flex items-center gap-2"
-                  title={
-                    billedTokenEstimate.lowerBound
-                      ? 'At least this many tokens; only last-turn usage is available for this legacy session'
-                      : 'Billed tokens across every turn, including recorded cache usage'
-                  }
-                >
-                  <Target className="w-3 h-3" />
-                  <span className="sr-only">Billed tokens: </span>
-                  <span className="w-12 text-right">
-                    {formatBilledTokenEstimate(billedTokenEstimate)}
-                  </span>
-                </div>
-              )}
-              {extensionNames.length > 0 && (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                        <Puzzle className="w-3 h-3" />
-                        <span className="w-4 text-right">{extensionNames.length}</span>
-                      </div>
-                    </TooltipTrigger>
-                    <TooltipContent side="top" className="max-w-xs">
-                      <div className="text-supporting">
-                        <div className="text-label mb-1">Extensions:</div>
-                        <ul className="list-disc list-inside">
-                          {extensionNames.map((name) => (
-                            <li key={name}>{name}</li>
-                          ))}
-                        </ul>
-                      </div>
-                    </TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              )}
-            </div>
-            {/* §3.10: at most three visible actions, all 32px with 16px icons —
-                this is where the 28-vs-32px fork between the outlined trio and
-                the delete button ended. Everything else, and every DESTRUCTIVE
-                action, lives behind the one `⋯` overflow, so a hover-revealed
-                cluster can never put Delete under a stray click. */}
-            <div className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    onClick={handleEditClick}
-                    variant="outline"
-                    shape="round"
-                    aria-label={`Edit ${session.name}`}
-                  >
-                    <Edit2 className="w-4 h-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Edit session name</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    onClick={handleExportClick}
-                    variant="outline"
-                    shape="round"
-                    aria-label={`Export ${session.name}`}
-                  >
-                    <Download className="w-4 h-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Export session</TooltipContent>
-              </Tooltip>
-              <DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        onClick={(e) => e.stopPropagation()}
-                        variant="outline"
-                        shape="round"
-                        aria-label={`More actions for ${session.name}`}
-                      >
-                        <MoreHorizontal className="w-4 h-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">More actions</TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                  {/* Clicking the row already opens the session in a tab — this
-                      item is discoverability, not new behaviour, and it calls
-                      the same `onSelectSession` the row's own click does. The
-                      glyph is the one the tab strip uses for a tab. */}
-                  <DropdownMenuItem onClick={handleOpenInNewTabClick}>
-                    <MessageSquare className="w-4 h-4" />
-                    Open in new tab
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
-                    <NewWindow className="w-4 h-4" />
-                    Open in new window
-                  </DropdownMenuItem>
-                  {/* Issue #56 §12.1. The row's own overflow menu, and the ONLY
-                      place declassification is offered besides the session
-                      page's action bar — deliberately not `SessionNamePill`'s
-                      title menu, which is one careless click from the chat
-                      title.
-
-                      Private rows only: a public chat has nothing to
-                      declassify. Before §3.10 folded every row action behind
-                      this one `⋯`, the tier gated the whole BUTTON, because a
-                      "More actions" trigger that opened a one-item menu — and
-                      an empty one on every public row — was worse than no
-                      trigger at all. The menu now always carries the open and
-                      delete items, so only the ITEM is gated. */}
-                  {session.privacy_tier === 'private' && (
-                    <DropdownMenuItem onSelect={() => onDeclassifyClick(session)}>
-                      Make this chat public
-                    </DropdownMenuItem>
-                  )}
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem
-                    variant="destructive"
-                    onClick={handleDeleteClick}
-                    aria-label={`Delete ${session.name}`}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                    Delete session
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </div>
-          </div>
-        </div>
-      );
-    });
-
     const renderActualContent = () => {
       if (error) {
         // The error state is the empty state with a different cause: same icon
@@ -1071,6 +1098,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                     <React.Fragment key={session.id}>
                       <SessionItem
                         session={session}
+                        onSelectSession={onSelectSession}
+                        sessionNameById={sessionNameById}
+                        setSessionRef={setSessionRefs}
                         onEditClick={handleEditSession}
                         onDeleteClick={handleDeleteSession}
                         onExportClick={handleExportSession}
@@ -1087,6 +1117,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                             <SessionItem
                               key={child.id}
                               session={child}
+                              onSelectSession={onSelectSession}
+                              sessionNameById={sessionNameById}
+                              setSessionRef={setSessionRefs}
                               onEditClick={handleEditSession}
                               onDeleteClick={handleDeleteSession}
                               onExportClick={handleExportSession}
