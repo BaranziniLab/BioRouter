@@ -39,7 +39,14 @@ describe('Checkbox', () => {
 
   it('forwards a ref to the input, not to the wrapper', () => {
     let node: HTMLInputElement | null = null;
-    render(<Checkbox aria-label="Ref target" ref={(el) => (node = el)} />);
+    render(
+      <Checkbox
+        aria-label="Ref target"
+        ref={(el) => {
+          node = el;
+        }}
+      />
+    );
     expect((node as HTMLInputElement | null)?.tagName).toBe('INPUT');
   });
 });

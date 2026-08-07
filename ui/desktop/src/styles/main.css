@@ -416,6 +416,11 @@
   --dialog-md: 480px; /* form */
   --dialog-lg: 640px; /* palette, detail */
   --toast-width: 400px;
+  /* Where the toast layer starts. Measured, not chosen: at 1440×960 the lowest
+     right-hand ink in any top-level page header is a description at y=136, and
+     the toast clears it by 8px. The library's own inset put the layer at y=40,
+     on top of every page title and of Chat history's Import Session button. */
+  --toast-inset-top: 144px;
 
   /* Reading measures. Both are already shipped as arbitrary values in
      ReadableContent.tsx; naming them is what lets the 896px replay fork be
@@ -1387,10 +1392,25 @@
 /* react-toastify ships its own `.Toastify__close-button` rules from the vendored
    ReactToastify.css, which is imported AFTER this file. The positioning below
    must stay `!important` or the vendor rule wins and the × lands outside the
-   pill, clipped against the toast's top-right corner. */
-.Toastify__close-button {
+   pill, clipped against the toast's top-right corner.
+
+   THE CONTAINER IN THE SELECTOR IS LOAD-BEARING, and it is what makes the ×
+   visible at all. The library also emits `.Toastify__close-button--light` on
+   every toast — the container has no `theme` prop, so "light" is the default
+   whatever the app's theme is — and that rule sets `color: #000; opacity: 0.3`.
+   Two classes to our one, later in the cascade, so it won: the × computed as
+   30%-opacity BLACK on a dark toast card, which is very nearly nothing. The
+   v1.89.0 review recorded the extension-failure toast as one that "never
+   dismisses"; it always could, but its only dismissal control was invisible.
+   Adding the container lifts us to (0,2,0) and beats the modifier by
+   specificity rather than by another `!important`.
+
+   Resting opacity is 1, not 0.7. `--text-muted` already carries "quiet"; a
+   second multiplier on top of it double-mutes the one control that closes a
+   notice the user cannot otherwise get rid of. Hover firms the ink instead. */
+.Toastify__toast-container .Toastify__close-button {
   color: var(--text-muted);
-  opacity: 0.7;
+  opacity: 1;
   align-self: flex-start !important;
   margin: 0 !important;
   padding: 4px;
@@ -1412,7 +1432,7 @@
     background-color var(--motion-fast) var(--ease-out);
 }
 
-.Toastify__close-button:hover {
+.Toastify__toast-container .Toastify__close-button:hover {
   opacity: 1;
   color: var(--text-default);
   background-color: var(--background-medium);

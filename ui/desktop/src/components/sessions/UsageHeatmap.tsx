@@ -211,7 +211,13 @@ function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
     <div
       ref={ref}
       role="tooltip"
-      className="pointer-events-none fixed z-[var(--z-toast)] w-max min-w-[228px] max-w-[calc(100vw-16px)] rounded-surface border border-border-subtle bg-background-default p-3 shadow-popover"
+      // `--z-dropdown`, not `--z-toast`. This tooltip was the token's only real
+      // consumer, and it borrowed the top rung of the ladder for a hover hint —
+      // which put it above any actual toast once the toast layer started
+      // honouring its own tier. It is portalled to `document.body`, so it only
+      // has to clear the sticky page chrome (`--z-sticky`), and a transient
+      // popover is exactly what `--z-dropdown` names.
+      className="pointer-events-none fixed z-[var(--z-dropdown)] w-max min-w-[228px] max-w-[calc(100vw-16px)] rounded-surface border border-border-subtle bg-background-default p-3 shadow-popover"
       style={{
         left: pos?.left ?? -9999,
         top: pos?.top ?? -9999,

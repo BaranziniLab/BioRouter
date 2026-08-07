@@ -611,15 +611,39 @@ export function AppInner() {
   return (
     <>
       <AppTooltipLayer />
+      {/* The toast layer's geometry lives here, inline, and both entries below
+          exist because a stylesheet could not win the argument.
+
+          `--toastify-z-index` is the library's own knob, declared on `:root` in
+          the vendored ReactToastify.css — which is imported AFTER main.css, so
+          a `:root` rule of ours loses on source order. That is why `--z-toast`
+          shipped as a DEAD token: the ladder declared 600 and the container
+          rendered 9999, and the one element that did honour the token (the
+          usage-heatmap tooltip) therefore sat below any real toast. Setting the
+          library's variable rather than `z-index` also fixes the `translate3d`
+          the vendor derives from it.
+
+          `top` keeps the layer off the page-header band. A toast is transient
+          chrome; a page's title, description and right-hand action are not. At
+          the library's inset the container landed at y 40–155 at 1440×960 —
+          exactly on them — and it hid Chat history's Import Session button
+          outright and truncated the description on Extensions, Applications and
+          Knowledge. Measured across every top-level route at 1440×960, the
+          lowest right-hand header ink is a description at y=136, so the layer
+          starts 8px below that and overlays scrolling content instead, which is
+          what an overlay is for. */}
       <ToastContainer
         aria-label="Toast notifications"
         toastClassName={() => TOAST_SURFACE_CLASS_NAME}
-        style={{
-          width: 'fit-content',
-          minWidth: '280px',
-          maxWidth: 'min(420px, calc(100vw - 32px))',
-        }}
-        className="mt-6"
+        style={
+          {
+            '--toastify-z-index': 'var(--z-toast)',
+            top: 'var(--toast-inset-top)',
+            width: 'fit-content',
+            minWidth: '280px',
+            maxWidth: 'min(420px, calc(100vw - 32px))',
+          } as React.CSSProperties
+        }
         position="top-right"
         autoClose={3000}
         closeOnClick
