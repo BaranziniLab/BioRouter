@@ -7,10 +7,23 @@ const mocks = vi.hoisted(() => ({
   getSessionExtensions: vi.fn(async () => ({ data: { extensions: [] } })),
   addToAgent: vi.fn(async (): Promise<void> => undefined),
   removeFromAgent: vi.fn(async (): Promise<void> => undefined),
+  /**
+   * The `ProviderDetails` row `GET /config/providers` serves for the bound
+   * provider. `resolved_tier` is the instance-resolved field the composer now
+   * judges pairings on; `metadata.tier` is deliberately set to the OPPOSITE
+   * value in the tests that care, so a component that read the type-level claim
+   * instead would fail rather than coincidentally pass.
+   */
+  providerRow: undefined as unknown,
+}));
+
+vi.mock('../ModelAndProviderContext', () => ({
+  useModelAndProvider: () => ({ currentProvider: 'versa_azure' }),
 }));
 
 vi.mock('../ConfigContext', () => ({
   useConfig: () => ({
+    getProviders: async () => (mocks.providerRow ? [mocks.providerRow] : []),
     extensionsList: [
       {
         type: 'stdio',
@@ -69,9 +82,23 @@ async function openMenu() {
   await screen.findAllByRole('menuitemcheckbox');
 }
 
+/**
+ * A bound provider whose INSTANCE resolved `resolved_tier`, with `metadata.tier`
+ * pinned to the opposite value on purpose — see `mocks.providerRow`.
+ */
+function boundProvider(resolvedTier: 'public' | 'private' | undefined) {
+  return {
+    name: 'versa_azure',
+    is_configured: true,
+    resolved_tier: resolvedTier,
+    metadata: { tier: resolvedTier === 'private' ? 'public' : 'private' },
+  };
+}
+
 describe('BottomMenuExtensionSelection — the pairing, not the extension', () => {
   beforeEach(() => {
     mocks.overrides.clear();
+    mocks.providerRow = boundProvider('public');
     vi.clearAllMocks();
   });
 
@@ -108,7 +135,8 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     expect(item).not.toHaveTextContent(/public model/i);
   });
 
-  it('leaves the private extension usable once the chat is private', async () => {
+  it('leaves the private extension usable once the bound model is private', async () => {
+    mocks.providerRow = boundProvider('private');
     render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="private" />);
     await openMenu();
 
@@ -117,11 +145,50 @@ describe('BottomMenuExtensionSelection — the pairing, not the extension', () =
     expect(item).not.toHaveTextContent(/public model/i);
   });
 
-  // A tier nobody could resolve is not a claim that the chat is public. Walling
+  /**
+   * The reported defect, as a test: a chat the daemon still classifies `public`
+   * — every chat that has not yet run a turn, because a session is created
+   * public and the ratchet fires at the START of the first turn — bound to UCSF
+   * Versa, whose instance resolves **Private**.
+   *
+   * Gate C judges `privacy_refusal(extension, ext_tier, cap.tier())` where
+   * `cap.tier()` is `Provider::tier()` off the bound instance; the session row
+   * is never consulted. So the daemon dispatches `ucsfomopagent` here without
+   * complaint, and the composer that greyed it out with "(public model)" was
+   * telling the user something false about UCSF's own model.
+   *
+   * ⚠ The session tier is passed as `public` DELIBERATELY. An implementation
+   * that went back to reading the prop passes every other test in this file and
+   * fails only this one.
+   */
+  it('does not call a private model public just because the chat has not ratcheted yet', async () => {
+    mocks.providerRow = boundProvider('private');
+    render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
+    await openMenu();
+
+    const item = screen.getByText('ucsfomopagent').closest('[role="menuitemcheckbox"]')!;
+    expect(item).not.toHaveAttribute('aria-disabled', 'true');
+    expect(item).not.toHaveTextContent(/public model/i);
+  });
+
+  // A tier nobody could resolve is not a claim that the model is public. Walling
   // a working tool on a missing read is the failure this whole state exists to
-  // prevent.
-  it('judges nothing when the chat tier is unknown', async () => {
-    render(<BottomMenuExtensionSelection sessionId="s1" />);
+  // prevent — and failing an unresolvable model over to "public" is the wrong
+  // direction twice over.
+  it('judges nothing when the bound model tier is unknown', async () => {
+    mocks.providerRow = boundProvider(undefined);
+    render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
+    await openMenu();
+
+    const item = screen.getByText('ucsfomopagent').closest('[role="menuitemcheckbox"]')!;
+    expect(item).not.toHaveAttribute('aria-disabled', 'true');
+  });
+
+  // The row may predate `resolved_tier`, or the provider may be one the daemon
+  // could not construct. Neither is evidence of a tier.
+  it('judges nothing when the provider row is absent entirely', async () => {
+    mocks.providerRow = undefined;
+    render(<BottomMenuExtensionSelection sessionId="s1" privacyTier="public" />);
     await openMenu();
 
     const item = screen.getByText('ucsfomopagent').closest('[role="menuitemcheckbox"]')!;

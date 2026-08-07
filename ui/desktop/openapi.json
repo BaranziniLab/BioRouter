@@ -8695,6 +8695,14 @@
           },
           "provider_type": {
             "$ref": "#/components/schemas/ProviderType"
+          },
+          "resolved_tier": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderTier"
+              }
+            ],
+            "nullable": true
           }
         }
       },

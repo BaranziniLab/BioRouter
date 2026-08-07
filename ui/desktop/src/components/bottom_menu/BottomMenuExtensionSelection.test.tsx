@@ -25,8 +25,20 @@ const mocks = vi.hoisted(() => ({
  * number is non-zero and every one of them differs from the number a chip that
  * ignored `isCapabilityExtension` would print.
  */
+// The selector resolves the BOUND MODEL's tier to judge pairings (issue #56 —
+// see `useBoundProviderTier`), so it reads this context and the provider
+// catalogue. Neither is what this file is about: the rows below are all public
+// extensions, so no pairing is refused whatever the tier says. The pairing
+// states themselves live in `BottomMenuExtensionSelection.privacy.test.tsx`.
+vi.mock('../ModelAndProviderContext', () => ({
+  useModelAndProvider: () => ({ currentProvider: 'versa_azure' }),
+}));
+
 vi.mock('../ConfigContext', () => ({
   useConfig: () => ({
+    getProviders: async () => [
+      { name: 'versa_azure', is_configured: true, resolved_tier: 'private' },
+    ],
     extensionsList: [
       {
         type: 'builtin',
