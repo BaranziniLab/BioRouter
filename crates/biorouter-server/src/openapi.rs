@@ -675,6 +675,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::agent::AddExtensionRequest,
         super::routes::agent::RemoveExtensionRequest,
         super::routes::agent::ResumeAgentResponse,
+        super::routes::agent::ActiveTurnRef,
         super::routes::agent::AgentInitializationError,
         super::routes::agent::RestartAgentResponse,
         biorouter::agents::ExtensionLoadResult,
