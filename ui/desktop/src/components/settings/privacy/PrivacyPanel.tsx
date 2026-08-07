@@ -3,7 +3,7 @@ import { Switch } from '../../ui/switch';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
 import { useConfig } from '../../ConfigContext';
-import { useDisclosure } from '../../privacy/disclosureCopy';
+import { disclosureTitle, useDisclosure } from '../../privacy/disclosureCopy';
 import { DisclosureProse } from '../../privacy/DisclosureProse';
 import { DISABLE_PHRASE, PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './privacyTiers';
 
@@ -122,6 +122,20 @@ export default function PrivacyPanel() {
           data-testid="non-private-model-statement"
           className="rounded-lg border border-borderStandard px-3 py-3 space-y-2 text-sm text-text-default"
         >
+          {/* The subject the prose refers to.
+              `disclosure.long` opens "It is not HIPAA-compliant, …" and the
+              modal binds that "It" with the served heading above it. This pane
+              reused the paragraphs WITHOUT the heading, so the first words of
+              Settings → Privacy were a pronoun with no antecedent anywhere on
+              the page.
+
+              The heading is the served template, not a sentence written here —
+              the one-definition rule holds. Only the substitution differs: the
+              modal names the provider it is about to open, and this pane is
+              about the whole class, so the class is what fills the slot. */}
+          <p className="text-label text-text-default">
+            {disclosureTitle(disclosure, 'A non-private model')}
+          </p>
           <DisclosureProse
             text={disclosure.long}
             paragraphClassName="min-w-0 [overflow-wrap:anywhere]"
