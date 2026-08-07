@@ -325,6 +325,17 @@ const REGISTRY: &[Guard] = &[
                        snapshot frame and then tails it live — ungated until this sweep",
             },
             Site {
+                file: "crates/biorouter-server/src/routes/status.rs",
+                counts: c(1, 1, 0),
+                kind: SiteKind::Guard,
+                what: "`GET /diagnostics/{id}`, whose zip carries `session.json` straight from \
+                       `export_session` — the third spelling of the same transcript — plus \
+                       this session's log files, which carry its prompts. It was the one \
+                       session-addressing route in the tree with ZERO `session_reach` calls \
+                       after the first sweep, and this census could not see that: a file with \
+                       no mention of a guard is indistinguishable from a file that needs none",
+            },
+            Site {
                 file: SESSION_REACH,
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,

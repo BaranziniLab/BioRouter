@@ -1,7 +1,7 @@
 use axum::body::Body;
 use axum::extract::State;
 use axum::http::HeaderValue;
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::{extract::Path, http::StatusCode, routing::get, Json, Router};
 use biorouter::session::{generate_diagnostics, get_system_info, SystemInfo};
 use std::sync::Arc;
@@ -26,33 +26,56 @@ async fn system_info() -> Json<SystemInfo> {
     Json(get_system_info())
 }
 
+/// `GET /diagnostics/{session_id}` — the support bundle for one chat.
+///
+/// ⚠ **This route returns the transcript.** `generate_diagnostics` writes
+/// `session.json` into the zip from `SessionManager::export_session`, which is
+/// `get_session(id, true)` — byte for byte the payload `GET /sessions/{id}` and
+/// `GET /sessions/{id}/export` return, both of which have been gated since
+/// Task 58. It ships this session's log files beside it, which carry its prompts.
+/// So it is a third spelling of the same read, and `routes::session_reach`'s own
+/// header names that shape: *an unguarded sibling of a guarded read is the defect
+/// this campaign keeps shipping.*
+///
+/// The gate is the first thing in the body, ahead of `generate_diagnostics`,
+/// because that call loads the very transcript being refused.
 #[utoipa::path(get, path = "/diagnostics/{session_id}",
     responses(
         (status = 200, description = "Diagnostics zip file", content_type = "application/zip", body = Vec<u8>),
+        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof"),
         (status = 500, description = "Failed to generate diagnostics"),
     )
 )]
 async fn diagnostics(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> impl IntoResponse {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Issue #56 Task 58 / #47. `session_id` is a request parameter, not a
+    // credential; see `routes::session_reach`.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
     match generate_diagnostics(state.session_manager(), &session_id).await {
         Ok(zip_data) => {
             let filename = format!("attachment; filename=\"diagnostics_{}.zip\"", session_id);
-            let headers = [
+            let Ok(disposition) = HeaderValue::from_str(&filename) else {
+                return StatusCode::BAD_REQUEST.into_response();
+            };
+            let response_headers = [
                 (
                     http::header::CONTENT_TYPE,
                     HeaderValue::from_static("application/zip"),
                 ),
-                (
-                    http::header::CONTENT_DISPOSITION,
-                    HeaderValue::from_str(&filename).map_err(|_e| StatusCode::BAD_REQUEST)?,
-                ),
+                (http::header::CONTENT_DISPOSITION, disposition),
             ];
 
-            Ok((headers, Body::from(zip_data)))
+            (response_headers, Body::from(zip_data)).into_response()
         }
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
 pub fn routes(state: Arc<AppState>) -> Router {

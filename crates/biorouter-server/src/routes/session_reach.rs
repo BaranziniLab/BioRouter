@@ -30,8 +30,11 @@
 //!   the ruling named, and `/reply` dominates them, but "dominates" is an
 //!   argument about capability rather than a proof about every route — which is
 //!   how `/export` and `/events` sat outside it while returning the same bytes
-//!   as `GET /sessions/{id}`. They are on it now. **The residual below is a
-//!   snapshot of an enumeration, not a proof of completeness**; the only
+//!   as `GET /sessions/{id}`, and how `GET /diagnostics/{id}` sat outside it
+//!   afterwards while returning those same bytes *inside a zip*. All three are
+//!   on it now, and the third one is why the sentence above is worded as an
+//!   enumeration: two sweeps have each ended one route short. **The residual
+//!   below is a snapshot of an enumeration, not a proof of completeness**; the only
 //!   mechanical part of this is the wiring census
 //!   (`crates/biorouter/tests/privacy_guard_wiring.rs`), and even that pins the
 //!   guards, not the routes;
@@ -74,10 +77,11 @@
 //! `Unreadable` is refused **identically** to `Private`, which Step 4.3 requires:
 //! a refusal that answered "no such chat" would be the per-id oracle described
 //! above. The consequence is a behaviour change rather than a wording one, and it
-//! is bigger than the headline. Over HTTP, on these five routes, an unproven
-//! caller naming a session this daemon cannot read is refused **whatever tier
-//! that session would have had** — an id that never existed, one that was
-//! deleted, one a client held across a store reset, one not persisted yet.
+//! is bigger than the headline. Over HTTP, on [the gated
+//! routes](self#the-gated-list), an unproven caller naming a session this daemon
+//! cannot read is refused **whatever tier that session would have had** — an id
+//! that never existed, one that was deleted, one a client held across a store
+//! reset, one not persisted yet.
 //!
 //! `biorouter session send <id>` is the concrete case, and it is also the case
 //! that **used to be enforced backwards**. The CLI posts `/reply` and can never
@@ -122,6 +126,7 @@
 //! | `GET /sessions/{session_id}` | Returns the transcript. |
 //! | `GET /sessions/{session_id}/export` | The **same** transcript: `SessionManager::export_session` is `get_session(id, true)` then `to_string_pretty`. Added by the wiring sweep — an unguarded sibling of the row above, reachable from the generated TS client as `exportSession`. |
 //! | `GET /sessions/{session_id}/events` | The same transcript **plus a live tail**: the stream opens with an `UpdateConversation` snapshot of the whole stored conversation. Added by the wiring sweep; it is the route `biorouter session watch <id>` drives. |
+//! | `GET /diagnostics/{session_id}` | The same transcript **in a zip**: `generate_diagnostics` writes `session.json` straight from `SessionManager::export_session`, and ships this session's log files — which carry its prompts — beside it. Added by the second wiring sweep; it is the third route on this list whose entire payload is `get_session(id, true)` under a different name. |
 //! | `POST /agent/update_working_dir` | Repoints the session at a directory of the caller's choosing and restarts its agent. |
 //! | `POST /agent/add_extension` | Attaches tools to the session. |
 //! | `POST /knowledge/active` | Repoints the session's knowledge bases and its write target. |
@@ -263,7 +268,7 @@ impl From<SessionOutOfReach> for super::errors::ErrorResponse {
 /// May a caller in this credential state reach a session in this state?
 ///
 /// ⚠ **Extracted so the claim is asserted rather than grepped for.** None of the
-/// five gated handlers can be driven from a unit test cheaply — `AppState::new()`
+/// gated handlers can be driven from a unit test cheaply — `AppState::new()`
 /// opens the developer's REAL session database — so a scan for
 /// `session_reach(` would keep passing against a call whose result was
 /// discarded. This mapping is pure, so every corner of it is driven for real by
@@ -756,14 +761,25 @@ mod tests {
     ///
     /// A source scan because none of these handlers can be driven cheaply from a
     /// unit test — `AppState::new()` opens the developer's REAL session
-    /// database. The two that can be are driven, over HTTP, by
-    /// [`super::bypass_tests`]; this is what holds the other three, and the
-    /// ordering of all five.
+    /// database. Every route on the list is also driven over HTTP by
+    /// [`super::bypass_tests`] except `POST /agent/add_extension` (whose admitted
+    /// arm mints a real agent) and `POST /knowledge/active` (a middleware, which
+    /// a body scan cannot see and
+    /// [`super::bypass_tests::the_knowledge_active_gate_is_actually_wired`]
+    /// drives instead); this is what holds the ORDERING, which no status code
+    /// can show.
+    ///
+    /// ⚠ **Every route added to the gated list gets a row here.** `/export`,
+    /// `/events` and `/diagnostics` each shipped a gate that this table did not
+    /// name, and a gate nothing names can be deleted without a red build — which
+    /// is the failure the whole census exists for.
     #[test]
     fn every_gated_route_resolves_the_tier_before_it_touches_the_session() {
         let session_rs = include_str!("session.rs");
         let reply_rs = include_str!("reply.rs");
         let agent_rs = include_str!("agent.rs");
+        let events_rs = include_str!("session_events.rs");
+        let status_rs = include_str!("status.rs");
         for (src, func, first_touch, what) in [
             (
                 reply_rs,
@@ -776,6 +792,25 @@ mod tests {
                 "async fn get_session(",
                 "get_session(&session_id, true)",
                 "the transcript read",
+            ),
+            (
+                session_rs,
+                "async fn export_session(",
+                "export_session(&session_id)",
+                "the transcript read, under another name",
+            ),
+            (
+                events_rs,
+                "pub async fn observe_session_events(",
+                "session_events::subscribe(",
+                "the bus subscription, which would outlive the refusal — and the \
+                 full-conversation snapshot frame right behind it",
+            ),
+            (
+                status_rs,
+                "async fn diagnostics(",
+                "generate_diagnostics(",
+                "the diagnostics bundle, whose `session.json` IS the transcript",
             ),
             (
                 agent_rs,
@@ -817,6 +852,14 @@ mod tests {
             (session_rs, "async fn get_session_extensions"),
             (agent_rs, "async fn agent_remove_extension"),
             (agent_rs, "async fn update_agent_provider"),
+            // BOTH sides in the two files this sweep added, for the same reason:
+            // `system_info` sits before `diagnostics` and `routes` after it,
+            // `bus_lag_resync_frame` before `observe_session_events` and `routes`
+            // after it.
+            (events_rs, "pub(crate) async fn bus_lag_resync_frame"),
+            (events_rs, "pub fn routes("),
+            (status_rs, "async fn system_info("),
+            (status_rs, "pub fn routes("),
         ] {
             assert!(
                 !body_of(src, control).contains("session_reach("),
@@ -891,6 +934,116 @@ mod bypass_tests {
         let status = res.status();
         let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// `GET /sessions/{id}/export` — the same transcript as
+    /// [`get_session_with`], `to_string_pretty`'d.
+    async fn get_export_with(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        let app = crate::routes::session::routes(state);
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(format!("/sessions/{session_id}/export"));
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let res = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// `GET /sessions/{id}/events` — the same transcript as an opening SSE
+    /// frame, then a live tail.
+    ///
+    /// ⚠ **The body must be read as a PREFIX, never with `to_bytes`.** An
+    /// admitted observer's stream stays open for the life of the session, so
+    /// draining it to completion hangs the test suite forever rather than
+    /// failing it. This reads until the snapshot frame has arrived (or the whole
+    /// finite body of a refusal has), then drops the stream — which is also what
+    /// tears down the spawned observer task.
+    async fn get_events_with(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        use futures::StreamExt;
+        let app = crate::routes::session_events::routes(state);
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(format!("/sessions/{session_id}/events"));
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let res = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let mut stream = res.into_body().into_data_stream();
+        let mut collected: Vec<u8> = Vec::new();
+        // The timeout is the backstop for the case this helper exists to avoid:
+        // a stream that neither sends the snapshot nor ends. Its expiry is not
+        // an assertion — whatever arrived is returned and the caller judges it.
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            while let Some(Ok(chunk)) = stream.next().await {
+                collected.extend_from_slice(&chunk);
+                if collected.len() >= 1_000_000
+                    || String::from_utf8_lossy(&collected).contains("UpdateConversation")
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+        (status, String::from_utf8_lossy(&collected).into_owned())
+    }
+
+    /// `GET /diagnostics/{id}` — the support bundle, whose `session.json` is
+    /// `SessionManager::export_session` verbatim.
+    ///
+    /// Returns the raw bytes because the payload is a **Deflated** zip: a
+    /// `contains(MARKER)` over the compressed body would pass whether or not the
+    /// transcript is in there, which is exactly the test that claims a guarantee
+    /// it does not have. [`session_json_in`] decompresses instead.
+    async fn get_diagnostics_with(
+        state: Arc<AppState>,
+        session_id: &str,
+        user_action: Option<&str>,
+    ) -> (StatusCode, Vec<u8>) {
+        let app = crate::routes::status::routes(state);
+        let mut builder = Request::builder()
+            .method("GET")
+            .uri(format!("/diagnostics/{session_id}"));
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let res = app
+            .oneshot(builder.body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, bytes.to_vec())
+    }
+
+    /// `session.json` out of a diagnostics zip, decompressed.
+    fn session_json_in(zip_bytes: &[u8]) -> String {
+        use std::io::Read;
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
+            .expect("the diagnostics response is not a zip");
+        let mut entry = archive
+            .by_name("session.json")
+            .expect("the diagnostics zip carries no session.json");
+        let mut text = String::new();
+        entry.read_to_string(&mut text).unwrap();
+        text
     }
 
     /// `POST /reply`.
@@ -1237,6 +1390,9 @@ mod bypass_tests {
 
         // READ. The whole transcript, to a caller carrying nothing but the
         // daemon secret — which is exactly the request the gate must not touch.
+        // All four spellings of that read, because a gate added to one of them
+        // with the wrong sense would refuse every header-less client on every
+        // public chat, and nothing else here would notice.
         let (status, body) = get_session_with(state.clone(), public.id(), None).await;
         assert_eq!(
             status,
@@ -1246,6 +1402,39 @@ mod bypass_tests {
         assert!(
             body.contains(MARKER_IN_THE_TRANSCRIPT),
             "a public read came back without the conversation: {body}"
+        );
+
+        let (status, body) = get_export_with(state.clone(), public.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "/sessions/{{id}}/export refused an unproven caller on a PUBLIC chat ({body})"
+        );
+        assert!(
+            body.contains(MARKER_IN_THE_TRANSCRIPT),
+            "a public export came back without the conversation: {body}"
+        );
+
+        let (status, body) = get_events_with(state.clone(), public.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "/sessions/{{id}}/events refused an unproven caller on a PUBLIC chat ({body})"
+        );
+        assert!(
+            body.contains(MARKER_IN_THE_TRANSCRIPT),
+            "a public observer opened without the conversation: {body}"
+        );
+
+        let (status, bytes) = get_diagnostics_with(state.clone(), public.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "/diagnostics/{{id}} refused an unproven caller on a PUBLIC chat"
+        );
+        assert!(
+            session_json_in(&bytes).contains(MARKER_IN_THE_TRANSCRIPT),
+            "a public diagnostics bundle came back without the conversation"
         );
 
         let turn_guard = state
@@ -1330,6 +1519,139 @@ mod bypass_tests {
         assert!(
             body.contains(SESSION_OUT_OF_REACH),
             "the refusal did not survive the JSON envelope: {body}"
+        );
+    }
+
+    /// `GET /sessions/{id}/export` — the same transcript as
+    /// [`holding_the_secret_you_cannot_read_a_private_transcript_or_run_a_turn_in_it`]
+    /// reads, `to_string_pretty`'d and reachable from the generated TS client as
+    /// `exportSession`.
+    ///
+    /// ⚠ **This route's gate shipped with no test of any kind** — it was on
+    /// neither the ordering scan next door nor this module's HTTP list — so
+    /// deleting the two lines in `export_session` turned nothing red. That is
+    /// the same shape as the hole the gate closes, one level up.
+    ///
+    /// ⚠ **Both arms.** A refusal-only test passes equally well against a route
+    /// that 403s everything, so the proving arm asserts the marker really comes
+    /// back — which is what makes the refusing arm a refusal *of the transcript*
+    /// rather than of the route.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_export_sibling_refuses_a_private_transcript_over_http() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Task 58 export (test fixture)").await;
+
+        let (status, body) = get_export_with(state.clone(), private.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a caller holding only the daemon secret exported a private transcript"
+        );
+        assert!(
+            !body.contains(MARKER_IN_THE_TRANSCRIPT),
+            "the refusal carried the private conversation in its body: {body}"
+        );
+
+        let (status, body) =
+            get_export_with(state.clone(), private.id(), Some(TEST_USER_ACTION_KEY)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the user cannot export their own chat: {body}"
+        );
+        assert!(
+            body.contains(MARKER_IN_THE_TRANSCRIPT),
+            "the user's own export did not return the conversation: {body}"
+        );
+    }
+
+    /// `GET /sessions/{id}/events` — the same transcript as an opening
+    /// `UpdateConversation` frame, and then a live tail of everything said next.
+    ///
+    /// ⚠ **The one partial pin this route had was not about privacy.**
+    /// `session_events::tests::observing_an_unknown_session_is_refused` asserts
+    /// 403 for an id that does not exist, which the gate happens to produce via
+    /// `Unreadable` — so deleting the gate does turn that test red, but it says
+    /// nothing about a private chat's transcript, which is the property the gate
+    /// exists for. A future reader "restoring" the honest 404 there would reopen
+    /// this hole and see a green suite.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_events_stream_refuses_a_private_transcript_over_http() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Task 58 events (test fixture)").await;
+
+        let (status, body) = get_events_with(state.clone(), private.id(), None).await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a caller holding only the daemon secret opened a live observer on a private \
+             chat and was handed its whole conversation as the first frame"
+        );
+        assert!(
+            !body.contains(MARKER_IN_THE_TRANSCRIPT),
+            "the refusal carried the private conversation in its body: {body}"
+        );
+
+        let (status, body) =
+            get_events_with(state.clone(), private.id(), Some(TEST_USER_ACTION_KEY)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the user cannot watch their own chat: {body}"
+        );
+        assert!(
+            body.contains(MARKER_IN_THE_TRANSCRIPT),
+            "the user's own observer opened without the conversation: {body}"
+        );
+    }
+
+    /// `GET /diagnostics/{id}` — the support bundle, whose `session.json` is
+    /// `SessionManager::export_session` verbatim and whose `logs/` entries carry
+    /// this session's prompts.
+    ///
+    /// ⚠ **The marker is asserted through the DECOMPRESSOR.** The zip is
+    /// Deflated, so `contains(MARKER)` over the response bytes answers "no"
+    /// whether or not the transcript is in there — a test written that way would
+    /// pass with the gate deleted, which is worse than no test at all.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_diagnostics_bundle_refuses_a_private_transcript_over_http() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let private = seed_private_chat(&state, "Task 58 diagnostics (test fixture)").await;
+
+        let (status, bytes) = get_diagnostics_with(state.clone(), private.id(), None).await;
+        let refusal = String::from_utf8_lossy(&bytes).into_owned();
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a caller holding only the daemon secret downloaded a private chat's transcript \
+             as a diagnostics zip"
+        );
+        assert!(
+            !refusal.starts_with("PK"),
+            "the refusal is a zip, so the bundle was generated and returned anyway"
+        );
+        assert!(
+            !refusal.contains(MARKER_IN_THE_TRANSCRIPT),
+            "the refusal carried the private conversation in its body: {refusal}"
+        );
+
+        let (status, bytes) =
+            get_diagnostics_with(state.clone(), private.id(), Some(TEST_USER_ACTION_KEY)).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the user cannot download diagnostics for their own chat"
+        );
+        assert!(
+            session_json_in(&bytes).contains(MARKER_IN_THE_TRANSCRIPT),
+            "the user's own bundle came back without the conversation, so the refusal above \
+             is not evidence that the gate withholds a transcript"
         );
     }
 
