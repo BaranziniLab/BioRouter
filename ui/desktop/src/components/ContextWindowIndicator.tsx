@@ -186,11 +186,17 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
         ? 'bg-background-warning'
         : 'bg-background-warning';
   return (
-    <div className="flex items-center gap-2 px-2 py-1.5 rounded">
-      <span className="flex h-4 w-4 flex-shrink-0 items-center justify-center text-text-default/70">
+    <div className="flex items-center gap-2 rounded-element px-2 py-1.5">
+      <span className="flex size-icon-row flex-shrink-0 items-center justify-center text-text-muted">
         <span className="h-3.5 w-3.5 rounded-full border-2 border-current" />
       </span>
-      <span className="text-[11px] text-text-default/60 w-12 flex-shrink-0">Context</span>
+      {/* ONE metadata size in this popover. It ran four — 11px here, 13px on the
+          numbers below, 11px in the threshold tooltip, 12px elsewhere — for text
+          that is all the same kind of thing: a reading off a gauge. They are all
+          `supporting` now. And the ink is the semantic muted token rather than
+          `text-text-default/60`, which was a second, slightly different muted
+          that no family could re-point. */}
+      <span className="w-12 flex-shrink-0 text-supporting text-text-muted">Context</span>
       <div className="flex-1 min-w-0 flex flex-col gap-1">
         {/* The bar holds the usage fill *and* a draggable downward triangle
             marking the auto-compact threshold. The bar is the drag target;
@@ -247,13 +253,13 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
                   />
                 </div>
               </TooltipTrigger>
-              <TooltipContent side="top" className="text-[11px]">
+              <TooltipContent side="top" className="text-supporting">
                 Drag to adjust auto-compact threshold ({thresholdPct}%)
               </TooltipContent>
             </Tooltip>
           </div>
         </div>
-        <div className="flex items-center justify-between text-sm text-text-muted">
+        <div className="flex items-center justify-between text-supporting text-text-muted tabular-nums">
           <span>
             {fmt(current)} / {fmt(total)}
           </span>
@@ -272,7 +278,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
               }}
               disabled={current === 0}
               aria-label={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
-              className={`flex h-7 w-7 items-center justify-center rounded transition-colors ${current === 0 ? 'cursor-not-allowed text-text-default/40' : 'cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default'}`}
+              className={`flex size-control-sm items-center justify-center rounded-element transition-colors ${current === 0 ? 'cursor-not-allowed text-text-muted opacity-50' : 'tint-interactive cursor-pointer text-text-muted hover:text-text-default'}`}
             >
               <ChevronsDownUp data-testid="compact-conversation-icon" className="size-4" />
             </button>
@@ -335,12 +341,19 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
       <Tooltip>
         <TooltipTrigger asChild>
           <PopoverTrigger asChild>
+            {/* The composer toolbar's two named iconography violations, both
+                here: a glyph at 18px on a row where every other glyph is 16
+                (§3.8b forbids two sizes in one cluster), inside a 24px-wide box
+                that left ~3px of horizontal padding — a ~20px hit zone on a
+                control the user is meant to click. It is now the row's 16px
+                icon in a 28px box with 6px of padding either side, so the
+                pointer target matches what the eye sees. */}
             <button
               type="button"
               aria-label={tooltip}
-              className="relative flex h-7 w-6 flex-shrink-0 items-center justify-center rounded-md text-text-default/70 hover:text-text-default hover:bg-background-medium cursor-pointer transition-colors"
+              className="relative flex h-control-sm flex-shrink-0 cursor-pointer items-center justify-center rounded-element px-1.5 text-text-muted tint-interactive transition-colors hover:text-text-default"
             >
-              <svg className="absolute size-[18px]" viewBox="0 0 24 24" aria-hidden="true">
+              <svg className="size-icon-row" viewBox="0 0 24 24" aria-hidden="true">
                 <circle
                   cx="12"
                   cy="12"
@@ -360,7 +373,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                   strokeLinecap="round"
                   strokeDasharray={circumference}
                   strokeDashoffset={strokeOffset}
-                  className="text-text-default/70 transition-[stroke-dashoffset] duration-200"
+                  className="text-text-muted transition-[stroke-dashoffset] duration-[var(--dur-med-min)]"
                   transform="rotate(-90 12 12)"
                 />
               </svg>
@@ -374,7 +387,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
           <span className="block">{usageSummary}</span>
         </TooltipContent>
       </Tooltip>
-      <PopoverContent side="top" align="start" className="w-72 p-1.5">
+      <PopoverContent side="top" align="start" className="w-72 p-1">
         <ContextWindowGauge
           totalTokens={totalTokens}
           tokenLimit={tokenLimit}

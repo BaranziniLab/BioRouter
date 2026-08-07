@@ -1,4 +1,4 @@
-import { useMemo, useRef } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
 import { InlineImage } from './InlineImage';
 import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils';
@@ -18,6 +18,8 @@ import ToolCallConfirmation from './ToolCallConfirmation';
 import ElicitationRequest from './ElicitationRequest';
 import MessageCopyLink from './MessageCopyLink';
 import MessageDivergeLink from './MessageDivergeLink';
+import { MessageMeta } from './MessageMeta';
+import { ChevronRight } from './icons/app-icons';
 import { cn } from '../utils';
 import { identifyConsecutiveToolCalls, shouldHideTimestamp } from '../utils/toolCallChaining';
 import type { ArtifactSource } from './artifacts/artifactTypes';
@@ -66,6 +68,9 @@ export default function BioRouterMessage({
   workingDir,
 }: BioRouterMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
+  // Collapsed by default and sticky per message while it is mounted — a thought
+  // you opened stays open as the turn continues below it.
+  const [thinkingOpen, setThinkingOpen] = useState(false);
 
   let textContent = getTextContent(message);
 
@@ -146,15 +151,35 @@ export default function BioRouterMessage({
   return (
     <div className="biorouter-message flex w-full justify-start min-w-0">
       <div className="flex flex-col w-full min-w-0">
+        {/* Chain of thought is a disclosure, not a card. It used to be a native
+            `<details>` on a filled, bordered 4px box with the browser's own
+            triangle — the one control in the transcript the USER AGENT drew
+            rather than the app, so it could not take the app's chevron, its
+            32px row, its motion or its type role, and it was the last place a
+            marker rotated with no transition. It is now the same disclosure the
+            tool rows use: a 32px line, a 16px chevron VISIBLE AT REST (a marker
+            that appears on hover teaches nobody that the row opens), and a body
+            indented 24px to the left edge that chevron establishes. */}
         {cotText && (
-          <details className="bg-background-medium border border-border-subtle rounded p-2 mb-2">
-            <summary className="cursor-pointer text-sm text-text-muted select-none">
-              Show thinking
-            </summary>
-            <div className="mt-2">
-              <MarkdownContent content={cotText} />
-            </div>
-          </details>
+          <div className="mb-2">
+            <button
+              type="button"
+              onClick={() => setThinkingOpen((open) => !open)}
+              aria-expanded={thinkingOpen}
+              className="flex h-8 cursor-pointer items-center gap-2 rounded-element text-secondary text-text-muted transition-colors hover:text-text-default"
+            >
+              <ChevronRight
+                aria-hidden="true"
+                className={cn('size-4 shrink-0 transition-transform', thinkingOpen && 'rotate-90')}
+              />
+              <span>{thinkingOpen ? 'Hide thinking' : 'Show thinking'}</span>
+            </button>
+            {thinkingOpen && (
+              <div className="pl-6">
+                <MarkdownContent content={cotText} />
+              </div>
+            )}
+          </div>
         )}
 
         {displayText && (
@@ -191,24 +216,19 @@ export default function BioRouterMessage({
               </div>
             )}
 
-            {toolRequests.length === 0 && (
-              <div className="relative flex justify-start">
-                {!isStreaming && (
-                  <div className="font-sans text-sm text-text-muted pt-1 transition-[transform,opacity] duration-150 group-hover:-translate-y-4 group-hover:opacity-0">
-                    {timestamp}
-                  </div>
-                )}
-                {message.content.every((content) => content.type === 'text') && !isStreaming && (
-                  <div className="absolute left-0 pt-1 flex items-center gap-3">
+            {toolRequests.length === 0 && !isStreaming && (
+              <MessageMeta timestamp={timestamp}>
+                {message.content.every((content) => content.type === 'text') && (
+                  <>
                     <MessageCopyLink text={displayText} contentRef={contentRef} />
                     <MessageDivergeLink
                       sessionId={sessionId}
                       truncateAfterMs={message.created}
                       truncateAfterId={message.id ?? undefined}
                     />
-                  </div>
+                  </>
                 )}
-              </div>
+              </MessageMeta>
             )}
           </div>
         )}
@@ -234,9 +254,7 @@ export default function BioRouterMessage({
                   </div>
                 ))}
               </div>
-              <div className="font-sans text-sm text-text-muted transition-[transform,opacity] duration-150 group-hover:-translate-y-4 group-hover:opacity-0 pt-1">
-                {!isStreaming && !hideTimestamp && timestamp}
-              </div>
+              {!isStreaming && !hideTimestamp && <MessageMeta timestamp={timestamp} />}
             </div>
           </div>
         )}

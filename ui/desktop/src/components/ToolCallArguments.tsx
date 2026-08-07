@@ -20,6 +20,24 @@ interface ToolCallArgumentsProps {
   args?: Record<string, ToolCallArgumentValue> | null;
 }
 
+/**
+ * MONO FOR DATA — the app's own rule (P6), and this was the largest surface
+ * still breaking it.
+ *
+ * A tool's arguments are file paths, ids, globs, SQL, JSON and shell fragments.
+ * Set in the proportional UI face they were unreadable in the way that matters:
+ * `l` and `1` and `I` collapse, a leading or trailing space in a path is
+ * invisible, and two paths under one another do not line up so you cannot see
+ * where they diverge. `text-code` is the same 13/20 the terminal and every code
+ * block use, so an argument and the command it produced are set identically.
+ *
+ * The KEY column stays proportional: a key is a label naming the value, not the
+ * value, and setting both in mono would remove the one cue that tells the two
+ * columns apart.
+ */
+const ARG_KEY_CLASS = 'min-w-[140px] shrink-0 text-secondary text-text-muted';
+const ARG_VALUE_CLASS = 'min-w-0 font-mono text-code text-text-muted';
+
 export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
   const [expandedKeys, setExpandedKeys] = useState<Record<string, boolean>>({});
 
@@ -34,33 +52,30 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
 
       if (!needsExpansion) {
         return (
-          <div className="font-sans text-sm mb-2">
+          <div className="mb-2">
             <div className="flex flex-row">
-              <span className="text-text-muted min-w-[140px]">{key}</span>
-              <span className="min-w-0 break-words text-text-muted">{value}</span>
+              <span className={ARG_KEY_CLASS}>{key}</span>
+              <span className={`${ARG_VALUE_CLASS} break-words`}>{value}</span>
             </div>
           </div>
         );
       }
 
       return (
-        <div className={`font-sans text-sm mb-2 ${isExpanded ? '' : 'truncate min-w-0'}`}>
+        <div className={`mb-2 ${isExpanded ? '' : 'truncate min-w-0'}`}>
           <div className={`flex flex-row items-stretch ${isExpanded ? '' : 'truncate min-w-0'}`}>
-            <button
-              onClick={() => toggleKey(key)}
-              className="flex text-left text-text-muted min-w-[140px]"
-            >
+            <button onClick={() => toggleKey(key)} className={`flex text-left ${ARG_KEY_CLASS}`}>
               <span>{key}</span>
             </button>
             <div className={`w-full flex items-stretch ${isExpanded ? '' : 'truncate min-w-0'}`}>
               {isExpanded ? (
-                <div>
-                  <MarkdownContent content={value} className="font-sans text-sm text-text-muted" />
+                <div className="min-w-0">
+                  <MarkdownContent content={value} className="text-secondary text-text-muted" />
                 </div>
               ) : (
                 <button
                   onClick={() => toggleKey(key)}
-                  className={`text-left text-text-muted ${isExpanded ? '' : 'truncate min-w-0'}`}
+                  className={`text-left ${ARG_VALUE_CLASS} ${isExpanded ? '' : 'truncate'}`}
                 >
                   {value}
                 </button>
@@ -87,9 +102,9 @@ export function ToolCallArguments({ args }: ToolCallArgumentsProps) {
 
     return (
       <div className="mb-2">
-        <div className="flex flex-row font-sans text-sm">
-          <span className="text-text-muted min-w-[140px]">{key}</span>
-          <pre className="font-sans text-sm whitespace-pre-wrap text-text-muted overflow-x-auto max-w-full">
+        <div className="flex flex-row">
+          <span className={ARG_KEY_CLASS}>{key}</span>
+          <pre className={`${ARG_VALUE_CLASS} max-w-full overflow-x-auto whitespace-pre-wrap`}>
             {content}
           </pre>
         </div>

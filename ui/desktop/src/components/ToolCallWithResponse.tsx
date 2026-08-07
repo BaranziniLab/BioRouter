@@ -438,6 +438,26 @@ function ToolCallWithResponseContent({
   );
 }
 
+/**
+ * ONE inset grid for everything a tool call opens into.
+ *
+ * Six met inside this one component — `pr-4 pl-6 pb-2`, `px-4 py-2`, `pl-4 pr-4
+ * pb-2`, `pl-6 pr-2 pb-2`, `pl-4 pr-4 py-4` and `p-4` — so expanding two
+ * different tool rows in the same transcript stepped the content in by two
+ * different amounts, and nesting a disclosure inside a disclosure compounded the
+ * disagreement. 12px on the sides and the bottom, 4px on top because the
+ * disclosure row above has already opened the gap.
+ */
+const TOOL_INTERIOR_CLASS = 'px-3 pt-1 pb-3';
+
+/**
+ * ONE label recipe for a nested disclosure row. Was `pl-2 font-sans text-sm
+ * text-text-muted` in four places and `pl-2 py-1 font-sans text-sm …` in two
+ * more — the same sentence with a different vertical rhythm depending on which
+ * one you opened.
+ */
+const TOOL_DISCLOSURE_LABEL_CLASS = 'pl-2 text-secondary text-text-muted';
+
 interface ToolCallExpandableProps {
   label: string | React.ReactNode;
   isStartExpanded?: boolean;
@@ -471,11 +491,18 @@ function ToolCallExpandable({
         <span className="flex min-w-0 max-w-full items-center overflow-hidden font-sans text-sm leading-6">
           {label}
         </span>
+        {/* VISIBLE AT REST. It used to be `opacity-0` until hover, so nothing on
+            a freshly loaded transcript said these rows open at all — a first-run
+            user had to discover the whole tool detail view by accidentally
+            hovering it. It is now muted-but-present, brightening on hover and on
+            keyboard focus, and it takes the row's 16px icon size rather than
+            14px so it does not sit in a cluster with a 16px tool glyph at a
+            different scale (§3.8b: never two sizes in one cluster). */}
         <ChevronRight
           className={cn(
-            'opacity-0 group-hover:opacity-70 group-focus-visible:opacity-70 transition-[opacity,transform] duration-[var(--motion-fast)] size-3.5 ml-1.5 text-text-muted',
-            isExpanded && 'opacity-70',
-            isExpanded && 'rotate-90'
+            'ml-1.5 size-4 shrink-0 text-text-muted opacity-60',
+            'transition-[opacity,transform] group-hover:opacity-100 group-focus-visible:opacity-100',
+            isExpanded && 'rotate-90 opacity-100'
           )}
         />
       </Button>
@@ -957,7 +984,7 @@ function ToolCallView({
       )}
 
       {toolError && (
-        <div className="border-t border-border-subtle px-3 py-3">
+        <div className="border-t border-border-subtle p-3">
           <NotificationContent status="error" title="Tool call failed" message={toolError} />
         </div>
       )}
@@ -1012,10 +1039,10 @@ interface ToolDetailsViewProps {
 function ToolDetailsView({ toolCall, isStartExpanded }: ToolDetailsViewProps) {
   return (
     <ToolCallExpandable
-      label={<span className="pl-2 font-sans text-sm text-text-muted">View tool details</span>}
+      label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>View tool details</span>}
       isStartExpanded={isStartExpanded}
     >
-      <div className="pr-4 pl-6 pb-2">
+      <div className={TOOL_INTERIOR_CLASS}>
         {toolCall.arguments && (
           <ToolCallArguments args={toolCall.arguments as Record<string, ToolCallArgumentValue>} />
         )}
@@ -1050,16 +1077,14 @@ function ToolGraphView({ toolGraph, code }: ToolGraphViewProps) {
   };
 
   return (
-    <div className="px-4 py-2">
-      <pre className="font-sans text-sm text-text-muted whitespace-pre-wrap overflow-x-auto">
+    <div className={TOOL_INTERIOR_CLASS}>
+      <pre className="overflow-x-auto whitespace-pre-wrap text-secondary text-text-muted">
         {renderGraph()}
       </pre>
       {code && (
-        <div className="border-t border-border-subtle -mx-4 mt-2">
+        <div className="-mx-3 mt-2 border-t border-border-subtle">
           <ToolCallExpandable
-            label={
-              <span className="pl-2 font-sans text-sm text-text-muted">View generated code</span>
-            }
+            label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>View generated code</span>}
             isStartExpanded={false}
           >
             {/* bg-background-code: the ground the syntax palette is verified
@@ -1122,18 +1147,16 @@ function ExecutedCallsView({ calls, dropped }: { calls: ExecutedToolCall[]; drop
   return (
     <ToolCallExpandable
       label={
-        <span className="pl-2 font-sans text-sm text-text-muted">
-          View executed calls ({calls.length})
-        </span>
+        <span className={TOOL_DISCLOSURE_LABEL_CLASS}>View executed calls ({calls.length})</span>
       }
       isStartExpanded={false}
     >
-      <div className="pl-4 pr-4 pb-2">
+      <div className={TOOL_INTERIOR_CLASS}>
         {calls.map((call, index) => (
           <ExecutedCallRow key={index} call={call} index={index} />
         ))}
         {dropped > 0 && (
-          <div className="py-1 font-sans text-xs text-text-muted">
+          <div className="py-1 text-supporting text-text-muted">
             …and {dropped} more call{dropped === 1 ? '' : 's'} not recorded.
           </div>
         )}
@@ -1152,9 +1175,9 @@ function ExecutedCallArguments({ args }: { args: Record<string, ToolCallArgument
   return (
     <div className="my-2">
       {Object.entries(args).map(([key, value]) => (
-        <div key={key} className="mb-2 flex flex-row font-sans text-sm">
+        <div key={key} className="mb-2 flex flex-row text-secondary">
           <span className="min-w-[140px] shrink-0 text-text-muted">{key}</span>
-          <pre className="min-w-0 max-w-full flex-1 overflow-x-auto whitespace-pre-wrap break-words font-sans text-sm text-text-muted">
+          <pre className="min-w-0 max-w-full flex-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-code text-text-muted">
             {typeof value === 'string' ? value : JSON.stringify(value, null, 2)}
           </pre>
         </div>
@@ -1184,16 +1207,16 @@ function ExecutedCallRow({ call, index }: { call: ExecutedToolCall; index: numbe
       }
       isStartExpanded={false}
     >
-      <div className="pl-6 pr-2 pb-2">
+      <div className={TOOL_INTERIOR_CLASS}>
         {parsedArgs && Object.keys(parsedArgs).length > 0 ? (
           <ExecutedCallArguments args={parsedArgs} />
         ) : call.args ? (
           // Truncated/malformed JSON still shows the exact recorded text.
-          <pre className="whitespace-pre-wrap break-all font-mono text-xs text-text-muted">
+          <pre className="whitespace-pre-wrap break-all font-mono text-code text-text-muted">
             {call.args}
           </pre>
         ) : (
-          <div className="font-sans text-xs text-text-muted">No arguments recorded.</div>
+          <div className="text-supporting text-text-muted">No arguments recorded.</div>
         )}
         {call.error && (
           <div className="mt-2">
@@ -1235,10 +1258,10 @@ function ToolResultView({
 
   return (
     <ToolCallExpandable
-      label={<span className="pl-2 py-1 font-sans text-sm text-text-muted">View output</span>}
+      label={<span className={TOOL_DISCLOSURE_LABEL_CLASS}>View output</span>}
       isStartExpanded={isStartExpanded}
     >
-      <div className="pl-4 pr-4 py-4">
+      <div className={TOOL_INTERIOR_CLASS}>
         {hasText(result) && (
           <MarkdownContent
             content={result.text}
@@ -1295,7 +1318,7 @@ function ToolLogsView({
   return (
     <ToolCallExpandable
       label={
-        <span className="pl-2 py-1 font-sans text-sm flex items-center text-text-muted">
+        <span className={cn(TOOL_DISCLOSURE_LABEL_CLASS, 'flex items-center')}>
           <span>View live logs</span>
           {working && (
             <div className="mx-2 inline-block">
@@ -1313,12 +1336,16 @@ function ToolLogsView({
     >
       <div
         ref={boxRef}
-        className={`flex flex-col items-start space-y-2 overflow-y-auto p-4 ${working ? 'max-h-[4rem]' : 'max-h-[20rem]'}`}
+        className={cn(
+          TOOL_INTERIOR_CLASS,
+          'flex flex-col items-start space-y-2 overflow-y-auto',
+          working ? 'max-h-[4rem]' : 'max-h-[20rem]'
+        )}
       >
         {logs.map((log, i) => (
           <span
             key={i}
-            className="w-full whitespace-pre-wrap break-words font-sans text-sm text-text-muted"
+            className="w-full whitespace-pre-wrap break-words font-mono text-code text-text-muted"
           >
             {log}
           </span>

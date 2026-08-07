@@ -68,6 +68,7 @@ import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
+import { ComposerSuggestions } from './ComposerSuggestions';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import InAppTerminalDock from './InAppTerminalDock';
@@ -2004,7 +2005,7 @@ function BaseChatContent({
       ref={composerMotionRef}
       data-composer-shell="true"
       className={cn(
-        'w-full max-w-[760px] mx-auto biorouter-chat-composer biorouter-composer-motion',
+        'w-full max-w-measure-chat mx-auto biorouter-chat-composer biorouter-composer-motion',
         'biorouter-composer-view-transition'
       )}
     >
@@ -2051,7 +2052,7 @@ function BaseChatContent({
     if (chatState === ChatState.Idle) return null;
 
     return (
-      <div className="w-full max-w-[760px] mx-auto mb-2.5 pl-2 pointer-events-none">
+      <div className="w-full max-w-measure-chat mx-auto mb-2.5 pl-2 pointer-events-none">
         <LoadingBioRouter
           chatState={chatState}
           message={
@@ -2189,14 +2190,20 @@ function BaseChatContent({
                   onDragOver={handleDragOver}
                   data-drop-zone="true"
                 >
-                  <div className="biorouter-clean-conversation-content w-full max-w-[760px] flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
-                    <Greeting
-                      key={sessionId}
-                      className={cn(
-                        'text-center text-2xl font-semibold tracking-tight text-text-default'
-                      )}
-                    />
+                  <div className="biorouter-clean-conversation-content w-full max-w-measure-chat flex flex-col items-center gap-6 -translate-y-10 sm:-translate-y-12">
+                    {/* The greeting takes the `title` role (24/600) rather than
+                        spelling it out as `text-2xl font-semibold tracking-tight`
+                        — the same three utilities every page title in the app was
+                        writing by hand before there was a token for it. */}
+                    <Greeting key={sessionId} className={cn('text-center text-title')} />
                     {renderChatInput()}
+                    <ComposerSuggestions
+                      sessionId={sessionId}
+                      // A workflow already put a prompt in the composer. Offering
+                      // starters that would overwrite it is the interface arguing
+                      // with itself.
+                      hidden={Boolean(initialPrompt)}
+                    />
                   </div>
                 </div>
               ) : (
@@ -2214,7 +2221,7 @@ function BaseChatContent({
                   paddingX={6}
                   paddingY={0}
                 >
-                  <div className="biorouter-chat-column mx-auto w-full max-w-[760px]">
+                  <div className="biorouter-chat-column mx-auto w-full max-w-measure-chat">
                     {workflow?.title && (
                       <div className="sticky top-0 z-10 bg-background-canvas mb-4 pt-2">
                         <WorkflowHeader title={workflow.title} />

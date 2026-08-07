@@ -196,7 +196,14 @@ describe('summarizeToolCall', () => {
     expect(trigger).toHaveClass('h-6');
     expect(trigger).toHaveClass('min-h-0');
     expect(trigger).toHaveClass('!px-0');
-    expect(trigger.querySelector('svg:last-child')).toHaveClass('opacity-0');
+    // The chevron is VISIBLE AT REST. This asserted `opacity-0` — it was
+    // pinning the defect: with the marker hidden until hover, nothing on a
+    // freshly loaded transcript said the row opened at all, so the whole tool
+    // detail view was discoverable only by accident. Muted-but-present at rest,
+    // full ink on hover and on keyboard focus.
+    const chevron = trigger.querySelector('svg:last-child');
+    expect(chevron).not.toHaveClass('opacity-0');
+    expect(chevron).toHaveClass('opacity-60', 'group-hover:opacity-100');
     // No tool response ever arrived and the turn is not running, so the card
     // reports the truth ("No result") rather than the old fabricated "Finished".
     expect(screen.getByText(/No result/)).toBeInTheDocument();
