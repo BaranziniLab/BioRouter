@@ -5,6 +5,7 @@ pub mod openapi;
 pub mod routes;
 pub mod state;
 pub mod tunnel;
+pub mod turn_stream;
 pub mod workspace;
 
 /// Redirects the data/config/state dirs at a throwaway root before `main`, so

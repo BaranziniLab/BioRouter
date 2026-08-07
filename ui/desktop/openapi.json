@@ -2782,7 +2782,7 @@
         },
         "responses": {
           "200": {
-            "description": "Streaming response initiated",
+            "description": "Streaming response initiated — either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -2792,7 +2792,7 @@
             }
           },
           "409": {
-            "description": "A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
+            "description": "A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
           },
           "424": {
             "description": "Agent not initialized"
@@ -4762,6 +4762,19 @@
           }
         }
       },
+      "ActiveTurnRef": {
+        "type": "object",
+        "description": "A pointer to a live turn, handed to a client that needs to attach to it.",
+        "required": [
+          "turn_id"
+        ],
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "description": "Post this as `ChatRequest.turn_id` to attach. `POST /reply` accepts\neither this server-assigned id or the idempotency key the turn's original\ncaller chose, so a client can use whichever it happens to hold."
+          }
+        }
+      },
       "ActiveWorkItemDto": {
         "type": "object",
         "description": "One active unit of work, kind-tagged so the GUI can render/route uniformly.",
@@ -5086,6 +5099,13 @@
             "description": "The client's own copy of the session's history, which REPLACES what the\nserver has stored.\n\nDEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:\nthe copy must already contain every message the server holds, and the\nrequest is refused with 409 if it does not. See\n[`apply_client_writeback`]. The desktop app has never sent this field.",
             "nullable": true
           },
+          "from_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Attach only from this per-turn sequence number, when `turn_id` names a\nturn already in flight.\n\nA pure OPTIMISATION and deliberately so: a client that already rendered\nframes `0..N` skips re-receiving them, but one that omits the field gets\nthe whole turn replayed and its own sequence gate makes that idempotent.\nNothing about correctness depends on the server honouring it.\n\nIt lives in the BODY rather than in `?from_seq=`, because `/reply` is\ngenerated with `query?: never` in `api/types.gen.ts` — a query parameter\ncould only be smuggled past the typed client, while a `ChatRequest` field\nappears properly the next time the OpenAPI spec is regenerated.",
+            "nullable": true,
+            "minimum": 0
+          },
           "reasoning_effort": {
             "allOf": [
               {
@@ -5099,7 +5119,7 @@
           },
           "turn_id": {
             "type": "string",
-            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` — an SSE reconnect, a fetch retry on a\nflaky network — should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.",
+            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` — an SSE reconnect, a fetch retry on a\nflaky network — should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.\n\nSince the live-turn-stream work this is also the ATTACH pointer: posting\na `turn_id` that names a turn already in flight is answered 200 with that\nturn's stream instead of 409. Either name works — the key the client\nchose, or the server-assigned `turn-N` it read off a frame's `turn_id` /\n`POST /agent/resume`'s `active_turn`.",
             "nullable": true
           },
           "user_message": {
@@ -7991,7 +8011,7 @@
           },
           "userVisible": {
             "type": "boolean",
-            "description": "Whether this row is HIDDEN from the transcript. It is not a rendering\ninstruction, and reading it as one double-draws.\n\n`false` is the model-only plumbing a turn stores but deliberately keeps\nout of the transcript (the BR-47 post-edit diagnostics, the loop-guard /\nstall / budget nudges, hook context). Publishing it *with* the flag is\nwhat separates \"you are deliberately not being shown this row\" from \"you\nwere never told it exists\" — the client can name the id without drawing\nanything for it. That direction is exact: `false` means the row must not\nappear in the transcript.\n\n`true` means only \"not hidden\" — NOT \"draw this\". The content may\nalready have been delivered inside a `Message` frame, and on a\ntool-bearing turn it has been: one streamed reply is stored as a rebuilt\nthinking row plus one `tool_use` row per request, each built from\n`Message::assistant()` / `Message::new` and so carrying the default\n`user_visible: true`, while the client was shown that same content once\nalready as the reply itself. A client that drew every `true` row would\nrender the same tool request twice.\n\nThis frame is for ACCOUNTING — naming rows so `expectedMessageIds` can\nbe complete. The transcript still comes from `Message` frames alone."
+            "description": "Whether this row is HIDDEN from the transcript. It is not a rendering\ninstruction, and reading it as one double-draws.\n\n`false` is the model-only plumbing a turn stores but deliberately\nkeeps out of the transcript (the BR-47 post-edit diagnostics, the\nloop-guard / stall / budget nudges, hook context). Publishing it\n*with* the flag is what separates \"you are deliberately not being\nshown this row\" from \"you were never told it exists\" — the client can\nname the id without drawing anything for it. That direction is exact:\n`false` means the row must not appear in the transcript.\n\n`true` means only \"not hidden\" — NOT \"draw this\". The content may\nalready have been delivered inside a `Message` frame, and on a\ntool-bearing turn it has been: one streamed reply is stored as a\nrebuilt thinking row plus one `tool_use` row per request, each built\nfrom `Message::assistant()` / `Message::new` and so carrying the\ndefault `user_visible: true`, while the client was shown that same\ncontent once already as the reply itself. A client that drew every\n`true` row would render the same tool request twice.\n\nThis frame is for ACCOUNTING — naming rows so `expectedMessageIds`\ncan be complete. The transcript still comes from `Message` frames\nalone."
           }
         }
       },
@@ -8708,6 +8728,14 @@
           "session"
         ],
         "properties": {
+          "active_turn": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActiveTurnRef"
+              }
+            ],
+            "nullable": true
+          },
           "extension_results": {
             "type": "array",
             "items": {

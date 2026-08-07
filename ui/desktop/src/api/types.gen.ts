@@ -45,6 +45,18 @@ export type ActiveKbResponse = {
 };
 
 /**
+ * A pointer to a live turn, handed to a client that needs to attach to it.
+ */
+export type ActiveTurnRef = {
+    /**
+     * Post this as `ChatRequest.turn_id` to attach. `POST /reply` accepts
+     * either this server-assigned id or the idempotency key the turn's original
+     * caller chose, so a client can use whichever it happens to hold.
+     */
+    turn_id: string;
+};
+
+/**
  * One active unit of work, kind-tagged so the GUI can render/route uniformly.
  */
 export type ActiveWorkItemDto = {
@@ -193,6 +205,21 @@ export type ChatRequest = {
      * [`apply_client_writeback`]. The desktop app has never sent this field.
      */
     conversation_so_far?: Array<Message> | null;
+    /**
+     * Attach only from this per-turn sequence number, when `turn_id` names a
+     * turn already in flight.
+     *
+     * A pure OPTIMISATION and deliberately so: a client that already rendered
+     * frames `0..N` skips re-receiving them, but one that omits the field gets
+     * the whole turn replayed and its own sequence gate makes that idempotent.
+     * Nothing about correctness depends on the server honouring it.
+     *
+     * It lives in the BODY rather than in `?from_seq=`, because `/reply` is
+     * generated with `query?: never` in `api/types.gen.ts` — a query parameter
+     * could only be smuggled past the typed client, while a `ChatRequest` field
+     * appears properly the next time the OpenAPI spec is regenerated.
+     */
+    from_seq?: number | null;
     reasoning_effort?: ReasoningEffort | null;
     session_id: string;
     /**
@@ -201,6 +228,12 @@ export type ChatRequest = {
      * flaky network — should send the same key it sent the first time. The retry
      * then comes back as a 409 with `duplicate: true`, meaning "that turn is
      * still running", instead of being mistaken for a genuine second turn.
+     *
+     * Since the live-turn-stream work this is also the ATTACH pointer: posting
+     * a `turn_id` that names a turn already in flight is answered 200 with that
+     * turn's stream instead of 409. Either name works — the key the client
+     * chose, or the server-assigned `turn-N` it read off a frame's `turn_id` /
+     * `POST /agent/resume`'s `active_turn`.
      */
     turn_id?: string | null;
     user_message: Message;
@@ -1408,25 +1441,26 @@ export type PersistedMessage = {
      * Whether this row is HIDDEN from the transcript. It is not a rendering
      * instruction, and reading it as one double-draws.
      *
-     * `false` is the model-only plumbing a turn stores but deliberately keeps
-     * out of the transcript (the BR-47 post-edit diagnostics, the loop-guard /
-     * stall / budget nudges, hook context). Publishing it *with* the flag is
-     * what separates "you are deliberately not being shown this row" from "you
-     * were never told it exists" — the client can name the id without drawing
-     * anything for it. That direction is exact: `false` means the row must not
-     * appear in the transcript.
+     * `false` is the model-only plumbing a turn stores but deliberately
+     * keeps out of the transcript (the BR-47 post-edit diagnostics, the
+     * loop-guard / stall / budget nudges, hook context). Publishing it
+     * *with* the flag is what separates "you are deliberately not being
+     * shown this row" from "you were never told it exists" — the client can
+     * name the id without drawing anything for it. That direction is exact:
+     * `false` means the row must not appear in the transcript.
      *
      * `true` means only "not hidden" — NOT "draw this". The content may
      * already have been delivered inside a `Message` frame, and on a
-     * tool-bearing turn it has been: one streamed reply is stored as a rebuilt
-     * thinking row plus one `tool_use` row per request, each built from
-     * `Message::assistant()` / `Message::new` and so carrying the default
-     * `user_visible: true`, while the client was shown that same content once
-     * already as the reply itself. A client that drew every `true` row would
-     * render the same tool request twice.
+     * tool-bearing turn it has been: one streamed reply is stored as a
+     * rebuilt thinking row plus one `tool_use` row per request, each built
+     * from `Message::assistant()` / `Message::new` and so carrying the
+     * default `user_visible: true`, while the client was shown that same
+     * content once already as the reply itself. A client that drew every
+     * `true` row would render the same tool request twice.
      *
-     * This frame is for ACCOUNTING — naming rows so `expectedMessageIds` can
-     * be complete. The transcript still comes from `Message` frames alone.
+     * This frame is for ACCOUNTING — naming rows so `expectedMessageIds`
+     * can be complete. The transcript still comes from `Message` frames
+     * alone.
      */
     userVisible: boolean;
 };
@@ -1684,6 +1718,7 @@ export type ResumeAgentRequest = {
 };
 
 export type ResumeAgentResponse = {
+    active_turn?: ActiveTurnRef | null;
     extension_results?: Array<ExtensionLoadResult> | null;
     initialization_error?: AgentInitializationError | null;
     session: Session;
@@ -4641,7 +4676,7 @@ export type ReplyData = {
 
 export type ReplyErrors = {
     /**
-     * A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
+     * A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
      */
     409: unknown;
     /**
@@ -4656,7 +4691,7 @@ export type ReplyErrors = {
 
 export type ReplyResponses = {
     /**
-     * Streaming response initiated
+     * Streaming response initiated — either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live
      */
     200: MessageEvent;
 };

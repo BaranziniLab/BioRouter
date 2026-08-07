@@ -227,6 +227,26 @@ pub struct ResumeAgentResponse {
     pub extension_results: Option<Vec<ExtensionLoadResult>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initialization_error: Option<AgentInitializationError>,
+    /// The turn in flight for this session right now, if any, so a window that
+    /// has just reloaded can re-attach to it (`POST /reply` with this
+    /// `turn_id`).
+    ///
+    /// The alternative is a pointer the client publishes through `localStorage`
+    /// and carries across the reload itself — and a pointer the client keeps is
+    /// a pointer that can go stale, which makes "attached to a turn that no
+    /// longer exists" a category of bug. The server always knows; asking it
+    /// removes the class. Absent means the session is idle.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active_turn: Option<ActiveTurnRef>,
+}
+
+/// A pointer to a live turn, handed to a client that needs to attach to it.
+#[derive(Serialize, utoipa::ToSchema)]
+pub struct ActiveTurnRef {
+    /// Post this as `ChatRequest.turn_id` to attach. `POST /reply` accepts
+    /// either this server-assigned id or the idempotency key the turn's original
+    /// caller chose, so a client can use whichever it happens to hold.
+    pub turn_id: String,
 }
 
 #[derive(Serialize, utoipa::ToSchema)]
@@ -487,10 +507,15 @@ async fn resume_agent(
         None
     };
 
+    let active_turn = state
+        .active_turn_id(&payload.session_id)
+        .map(|turn_id| ActiveTurnRef { turn_id });
+
     Ok(Json(ResumeAgentResponse {
         session,
         extension_results,
         initialization_error,
+        active_turn,
     }))
 }
 
