@@ -52,9 +52,7 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
             'flex h-8 w-full items-center rounded-element border bg-background-default px-2',
             'text-label text-text-default transition-[color,background-color,border-color,box-shadow]',
             isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
-            isFocused
-              ? 'border-[var(--border-focus)] bg-[var(--background-focus)]'
-              : 'border-border-emphasized',
+            isFocused ? 'border-border-focus bg-background-focus' : 'border-border-emphasized',
             !isDisabled && !isFocused
               ? 'hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
               : '',

@@ -1015,6 +1015,12 @@
   --color-background-info: var(--background-info);
   --color-background-warning: var(--background-warning);
   --color-background-card: var(--background-card);
+  /* The focused-control fill (D-15: focus is a surface shift, not a ring). Same
+     unmirrored-token gap as `--border-focus` below — declared in all six family
+     blocks, reachable from no utility. It went unnoticed because its one call
+     site (`ui/Select.tsx`) wrote the arbitrary `bg-[var(--background-focus)]`,
+     which works; the arbitrary spelling is the symptom, not the fix. */
+  --color-background-focus: var(--background-focus);
 
   --color-background-accent: var(--background-accent);
   --color-background-accent-hover: var(--background-accent-hover);
@@ -1058,6 +1064,16 @@
   --color-border-success: var(--border-success);
   --color-border-warning: var(--border-warning);
   --color-border-info: var(--border-info);
+  /* `--border-focus` is declared in all six family blocks and asserted by
+     `check-contrast.mjs`, but it had no mirror here — so `ring-border-focus` and
+     `border-border-focus` generated NOTHING and the nine call sites using them
+     silently rendered something else. Measured before this line existed:
+     `ring-2 ring-border-focus` computed `rgb(42,37,32) 0 0 0 2px` — that is
+     `currentcolor` falling through to `--text-default`, not the #6e6760 the
+     token names; `border-border-focus` fell through to the `--border-default`
+     hairline the base layer pins. A token can be declared, themed and audited
+     and still be unreachable from a utility: the mirror is what makes it real. */
+  --color-border-focus: var(--border-focus);
 
   --color-text-default: var(--text-default);
   --color-text-muted: var(--text-muted);
@@ -1102,6 +1118,10 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-icon: var(--sidebar-icon);
+  /* Same missing-mirror bug as `--border-focus` above: six `ring-sidebar-ring`
+     call sites in `ui/sidebar.tsx` and `SidebarUpdateButton.tsx` were painting
+     `currentcolor`. */
+  --color-sidebar-ring: var(--sidebar-ring);
 
   /* The five permitted elevations (D-05, extended by A-07). Tailwind's default
      shadow scale is unset above (`--shadow-*: initial`), so `shadow-sm/md/lg/xl`
