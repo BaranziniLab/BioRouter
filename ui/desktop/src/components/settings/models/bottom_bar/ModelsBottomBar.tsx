@@ -277,7 +277,7 @@ export default function ModelsBottomBar({
   const affiliationWords = affiliationPresentation(affiliation);
 
   return (
-    <div className="relative flex items-center" ref={dropdownRef}>
+    <div className="relative flex min-w-0 items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
       <DropdownMenu>
         <Tooltip>
@@ -286,7 +286,19 @@ export default function ModelsBottomBar({
               aria-label={`Current model: ${fullModelLabel}${privacyLine ? ` (${privacyLine})` : ''}${
                 affiliationWords ? ` (Affiliation: ${affiliationWords.label})` : ''
               }`}
-              className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-element px-0.5 hover:cursor-pointer text-text-default/70 tint-interactive hover:text-text-default transition-colors"
+              // A CAP, and one the label can actually reach. At 120px the
+              // name got an 80px span after the glyph and the badges, so
+              // `gpt-5.5-2026-04-24` rendered as `gpt-5.5-202…` — a truncation
+              // that keeps only the part every model shares — while ~250px of
+              // the composer's footer row sat empty immediately to its right.
+              // 220px fits the 24-character ceiling `MAX_INLINE_MODEL_LABEL_CHARS`
+              // already imposes, so the two limits now agree instead of the CSS
+              // one silently biting first.
+              //
+              // Shrinkable, deliberately: the chip was `flex-shrink-0`, which is
+              // safe at 120px and would push the row at 220px. Letting it give
+              // way means the cap costs nothing when the composer is narrow.
+              className="flex h-7 min-w-0 max-w-[220px] items-center rounded-element px-0.5 hover:cursor-pointer text-text-default/70 tint-interactive hover:text-text-default transition-colors"
             >
               <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
                 <Brain className="size-[18px] flex-shrink-0" />
