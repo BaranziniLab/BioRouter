@@ -171,7 +171,8 @@ function DropdownMenuLabel({
       data-inset={inset}
       // design.md §4.5 section label: `text-caps` (11px, 500, +0.08em), --text-muted, 8px×12px.
       // It names a group; it is not a row, so it never takes the row height or hover.
-      className={cn('px-3 py-1.5 text-caps text-text-muted uppercase data-[inset]:pl-8', className)}
+      // No `uppercase` beside `text-caps` — the role carries the transform itself.
+      className={cn('px-3 py-1.5 text-caps text-text-muted data-[inset]:pl-8', className)}
       {...props}
     />
   );

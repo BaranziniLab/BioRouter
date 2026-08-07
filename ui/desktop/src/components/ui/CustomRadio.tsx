@@ -42,8 +42,13 @@ const CustomRadio = ({
       className={`flex min-h-8 justify-between items-center py-2 cursor-pointer ${disabled ? 'opacity-50 cursor-not-allowed' : ''} ${className}`}
     >
       <div className="flex items-center">
-        {/* 16px control. input, ring and dot share this box so both siblings react to peer-checked. */}
-        <span className="relative mr-2 inline-flex h-4 w-4 shrink-0 items-center justify-center">
+        {/* §3.3: a 22px visual ring inside a 24px hit target, with a 10px inner
+            dot and an 8px gap to the label. The outer box is the TARGET — it is
+            deliberately 1px larger than what you can see on each side, because a
+            selection control should be forgiving of a near miss without looking
+            heavier for it. Input, ring and dot share this box so both siblings
+            react to peer-checked. */}
+        <span className="relative mr-2 inline-flex h-6 w-6 shrink-0 items-center justify-center">
           <input
             type="radio"
             id={id}
@@ -54,13 +59,16 @@ const CustomRadio = ({
             disabled={disabled}
             className="peer sr-only"
           />
+          {/* `--border-emphasized` is the interactive-border token (§3.2) — ink at
+              24%, derived per family — replacing a neutral that each family had to
+              author and that drifted against the surface it sat on. */}
           <span
-            className="pointer-events-none absolute inset-0 rounded-full border-[1.5px] border-border-strong
+            className="pointer-events-none absolute inset-[1px] rounded-full border-[1.5px] border-border-emphasized
                       transition-colors
                       peer-checked:border-border-accent"
           />
           <span
-            className="pointer-events-none h-1.5 w-1.5 rounded-full bg-background-accent opacity-0
+            className="pointer-events-none h-2.5 w-2.5 rounded-full bg-background-accent opacity-0
                       transition-opacity
                       peer-checked:opacity-100"
           />

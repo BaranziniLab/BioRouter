@@ -147,7 +147,13 @@ export default function JsonSchemaForm({
           value={String(value ?? '')}
           onChange={(e) => handleChange(key, e.target.value)}
           disabled={disabled}
-          className="flex h-9 w-full rounded-element border focus:border-border-strong hover:border-border-strong bg-background-default px-3 py-1 text-label transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          // The native <select> is a text field wearing a different tag, so it
+          // takes the <Input> chrome exactly (§3.2): the 32px md rung, an 8px
+          // inset, the derived `--border-emphasized` edge and the inset-ring
+          // hover whisper. `main.css` already owns focus for `select` alongside
+          // input and textarea, so the old `focus:border-border-strong` was a
+          // second, weaker answer to a question already settled globally.
+          className="flex h-8 w-full rounded-element border border-border-emphasized bg-background-default px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 focus:inset-ring-0 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {!isRequired && <option value="">Select...</option>}
           {prop.enum.map((option) => (
@@ -162,14 +168,22 @@ export default function JsonSchemaForm({
     if (prop.type === 'boolean') {
       return (
         <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            id={key}
-            checked={Boolean(value)}
-            onChange={(e) => handleChange(key, e.target.checked)}
-            disabled={disabled}
-            className="h-4 w-4 rounded-inner border-border-strong text-text-accent "
-          />
+          {/* §3.3, and the same construction CustomRadio uses so the two controls
+              are interchangeable in a form: a 22px visual box centred in a 24px
+              target box. `accent-background-accent` is what actually binds a
+              NATIVE checkbox to the theme — `border-*` and `rounded-*` on an
+              `appearance: auto` control are inert, which is why the old classes
+              looked like theming and were not. */}
+          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center">
+            <input
+              type="checkbox"
+              id={key}
+              checked={Boolean(value)}
+              onChange={(e) => handleChange(key, e.target.checked)}
+              disabled={disabled}
+              className="h-[22px] w-[22px] cursor-pointer accent-background-accent disabled:cursor-not-allowed"
+            />
+          </span>
           <span className="text-label text-text-default">{prop.description || key}</span>
         </label>
       );
