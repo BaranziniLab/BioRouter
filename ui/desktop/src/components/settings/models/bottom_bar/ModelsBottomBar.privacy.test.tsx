@@ -76,13 +76,19 @@ const providerEntry = (
   // Issue #56 DR-26: served BESIDE the metadata, never inside it. The metadata's
   // tier is the type-level claim; the affiliation is resolved by the daemon from
   // a live instance, which is what makes it safe to state as a badge.
-  affiliation?: unknown
+  affiliation?: unknown,
+  // The instance-resolved tier, likewise beside the metadata. Defaults to
+  // agreeing with the type-level claim because that is the ordinary case; pass
+  // it explicitly to build the row where they DISAGREE, which is the only shape
+  // that can tell the two fields apart.
+  resolvedTier?: 'private' | 'public' | null
 ) => ({
   name,
   is_configured: true,
   provider_type: 'Builtin',
   metadata: { name, display_name: name, tier, runs_locally: tier === 'private' },
   affiliation: affiliation ?? null,
+  resolved_tier: resolvedTier === undefined ? tier : resolvedTier,
 });
 
 const ucsfAffiliation = {
@@ -111,28 +117,134 @@ describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
     });
   });
 
-  it('marks a private chat with the dense badge and no added text', () => {
+  it('marks a private MODEL with the dense badge and no added text', async () => {
     renderBar('private');
 
-    const badge = screen.getByTestId('privacy-badge');
+    const badge = await screen.findByTestId('privacy-badge');
     expect(badge).toHaveAttribute('data-privacy', 'private');
     // The trigger is `max-w-[120px]` with a 24-character truncation: a "Private"
     // pill cannot fit, so the dense form is the only one this surface may use.
     expect(badge).not.toHaveTextContent(/Private/);
   });
 
-  it('leaves a public chat unmarked', () => {
-    renderBar('public');
+  /**
+   * ⚠ Rendered into a PRIVATE chat deliberately. A public model in a public
+   * chat draws nothing under either the old rule or the new one, so it cannot
+   * tell them apart; a public model in a private chat is the one arrangement
+   * where the old rule drew a Private dot beside a public model's name — and it
+   * is also the pairing Gate C refuses, so it is the arrangement most worth
+   * showing honestly.
+   */
+  it('leaves a public model unmarked even in a private chat', async () => {
+    mocks.currentProvider = 'openai';
+    renderBar('private');
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+    // Settle the same effect the dot would have arrived on, so this asserts the
+    // resolved state rather than winning a race against it.
+    await screen.findByTestId('non-private-model-chip-note');
     expect(screen.queryByTestId('privacy-badge')).toBeNull();
   });
 
-  it('says the word in the dropdown header, where there is room for it', async () => {
+  /**
+   * ⚠ **The regression this chip shipped with, and the reason the badge moved.**
+   *
+   * A session is created `public` and its classification ratchets at the start
+   * of its FIRST turn. So in every brand-new chat — and every chat predating
+   * the feature — a UCSF Versa model resolving Private was drawn with the
+   * chat's public dot beside its name, under a tooltip reading
+   * `gpt-5.5-… · Public chat`, and the only subject in reach was the model.
+   *
+   * The dot is the model's now. `SessionNamePill` carries the chat's, in the
+   * full pill, at the top of the chat — so nothing was lost and the duplicate
+   * that was misattributing itself is gone.
+   *
+   * ⚠ This test fails against the old implementation, which is the whole point:
+   * `privacyTier='public'` with a private model is exactly the disagreement.
+   */
+  it('draws the MODEL’s tier when the chat’s ratchet has not caught up', async () => {
+    mocks.currentProvider = 'versa_azure';
+    renderBar('public');
+
+    const badge = await screen.findByTestId('privacy-badge');
+    expect(badge).toHaveAttribute('data-privacy', 'private');
+  });
+
+  /**
+   * ⚠ **`resolved_tier`, never `metadata.tier`.** The metadata's tier is what
+   * the provider MODULE ships; `providers/base.rs` says in as many words not to
+   * hang a badge on it, because an `ollama` re-pointed off this machine by
+   * `OLLAMA_HOST` still ships `private` there while its instance resolves
+   * `public`. A badge on the type-level field reads Private in precisely the
+   * demotion case the tier exists to catch.
+   */
+  it('honours the instance’s demotion over the module’s claim', async () => {
+    mocks.currentProvider = 'ollama';
+    mocks.getProviders.mockResolvedValue([
+      // Ships `private`, resolves `public` — a re-pointed endpoint.
+      providerEntry('ollama', 'private', null, 'public'),
+    ]);
+    renderBar('private');
+
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+    expect(await screen.findByText(/Public model/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('privacy-badge')).toBeNull();
+  });
+
+  /**
+   * ⚠ **Unresolved is not public.** A daemon older than `resolved_tier`, a
+   * provider that failed to construct, and a catalog that would not load all
+   * arrive as the same absent field. Drawing the public dot for any of them
+   * would state a fact about a model nobody resolved — and would do it in the
+   * permissive direction.
+   */
+  it('draws no tier at all when the daemon does not serve one', async () => {
+    mocks.currentProvider = 'versa_azure';
+    mocks.getProviders.mockResolvedValue([
+      providerEntry('versa_azure', 'private', ucsfAffiliation, null),
+    ]);
+    renderBar('public');
+
+    // The affiliation off the same row still lands, so this waits on the very
+    // effect that would have set a tier had one been served.
+    await screen.findByTestId('affiliation-badge');
+    expect(screen.queryByTestId('privacy-badge')).toBeNull();
+
+    // ⚠ The dense badge alone cannot carry this assertion: its public form is
+    // nothing at all, so a parser defaulting `undefined` to 'public' would draw
+    // exactly the same emptiness. The WORD is what separates unresolved from
+    // resolved-public, so the header is where the claim has to be checked.
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+    await screen.findByText(/Current model/);
+    expect(screen.queryByText(/Public model|Private model/i)).toBeNull();
+  });
+
+  /**
+   * The accessible name is where the misattribution was most literal:
+   * `Current model: … (Public chat) (Affiliation: UCSF)` put the CHAT's tier
+   * between the model's name and the model's institution. The parenthetical is
+   * the model's now, and the chat's tier follows a full stop.
+   */
+  it('attributes each tier to its own subject in the accessible name', async () => {
+    mocks.currentProvider = 'versa_azure';
+    renderBar('public');
+
+    const trigger = await screen.findByLabelText(/Private model/);
+    const label = trigger.getAttribute('aria-label') ?? '';
+    expect(label).toBe('Current model: claude-opus-4 (Private model, UCSF). Public chat');
+    // The exact failure: the chat's tier standing inside the model's clause.
+    expect(label).not.toMatch(/\(Public chat/);
+  });
+
+  it('says both words in the dropdown header, where there is room for them', async () => {
     renderBar('private');
     fireEvent.pointerDown(screen.getByLabelText(/Current model/), {
       button: 0,
       ctrlKey: false,
     });
 
+    // The model's tier, under the heading that reads "Current model"...
+    expect(await screen.findByText(/Private model/i)).toBeInTheDocument();
+    // ...and the chat's, set apart below it.
     expect(await screen.findByText(/Private chat/i)).toBeInTheDocument();
   });
 

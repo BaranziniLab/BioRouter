@@ -8,7 +8,18 @@ import { usePrivacyTiersEnabled } from '../ConfigContext';
 import type { SessionClassification } from '../../api';
 
 export interface PrivacyBadgeProps {
-  /** The chat's tier — the generated union the daemon actually sends. */
+  /**
+   * A tier — the generated union the daemon actually sends.
+   *
+   * ⚠ **Whose** tier is the call site's to know, and the two subjects disagree
+   * routinely: a session's ratcheted classification (`SessionNamePill`, the
+   * History rows) and a bound model's instance-resolved tier (`ProviderTier`,
+   * on the model chip) are the same string union and mean different things. A
+   * fresh chat is classified `public` until its first turn, so a model chip
+   * that borrowed the chat's value drew a public dot next to a private UCSF
+   * model. Structurally identical, semantically not — this badge draws what it
+   * is handed and cannot tell them apart, so the caller must.
+   */
   tier: SessionClassification;
   /**
    * Dense surfaces (History rows, tab strips) where a full pill would crowd the
