@@ -1,0 +1,33 @@
+<!--
+  Fixture: a private card whose data-extension-name contains punctuation.
+
+  Expected: exit 1 naming data-extension-name and both spellings. The registry's
+  reduction (strip whitespace, lowercase) gives "private.agent"; the extension
+  manager's `normalize` turns every character outside [A-Za-z0-9_-] into "_" and
+  gives "private_agent". The compiled-in set would hold a key the running app
+  never produces, so the extension classifies Public. The two reductions have to
+  agree, and where they cannot, the name is refused rather than guessed at.
+
+  A backslash lands here too: it would otherwise reach the generated Rust source
+  as an escape inside a string literal.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="Private.Agent">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Punctuated Name Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/punctuated-name-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A private card whose declared extension name contains a character the installer rewrites.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/punctuatednameagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

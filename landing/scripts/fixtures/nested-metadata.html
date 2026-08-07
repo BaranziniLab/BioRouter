@@ -1,0 +1,30 @@
+<!--
+  Fixture: the privacy metadata sits on a CHILD of the card, not on the card.
+
+  Expected: exit 1 naming data-privacy. Read as a substring of the whole card
+  fragment, this looks like a private card; read as the card element's own
+  attributes, the card declares nothing and is public. The two readings
+  disagree, which is exactly the state that must never be resolved silently —
+  in either direction. A nested annotation is markup nobody meant, so it is a
+  build failure rather than a value.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0">
+      <div class="ext-card-header" data-privacy="private" data-extension-name="ImpersonatingAgent">
+        <div class="ext-meta">
+          <h3>Nested Metadata Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/nested-metadata-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A card whose annotation was put on an inner element instead of the card itself.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/nestedmetadataagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

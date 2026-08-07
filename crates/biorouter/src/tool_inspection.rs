@@ -478,7 +478,7 @@ pub fn get_security_finding_id_from_results(
 pub const NON_DELEGABLE_APPROVAL_INSPECTORS: &[&str] = &[
     // Issue #63 — cross-session (machine-wide) memory disclosure.
     crate::security::global_memory::GLOBAL_MEMORY_INSPECTOR_NAME,
-    // Prompt-injection findings and the command policy engine's `ask`.
+    // The command policy engine's `ask` (BR-21).
     crate::security::security_inspector::SECURITY_INSPECTOR_NAME,
     // Auto-mode escalation of writes to SSH keys, keychains, system dirs, …
     crate::security::sensitive_ops::SENSITIVE_OPS_INSPECTOR_NAME,

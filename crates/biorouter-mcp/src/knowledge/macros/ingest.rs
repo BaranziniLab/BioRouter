@@ -22,6 +22,16 @@ use anyhow::{Context, Result};
 
 pub struct IngestArgs {
     pub kb_id: String,
+    /// The capability of the model this macro will run (issue #56). Required,
+    /// so all four production callers are a compile error rather than an
+    /// omission. A `bool` and not `ProviderTier` because `biorouter-mcp` cannot
+    /// depend on `biorouter`, where that enum lives.
+    pub caller_is_private: bool,
+    /// Whose agreements cover that model — DR-26's third axis (issue #56, Task
+    /// 50). Required for the same reason `caller_is_private` is: an omission
+    /// must be a compile error. `Unstated` is its `Default`, so a caller that
+    /// cannot determine one fails closed.
+    pub caller_affiliation: crate::knowledge::affiliation::CallerAffiliation,
     pub source: SourceInput,
     pub completer: Box<dyn Completer>,
     pub focus: Option<String>,
@@ -46,6 +56,30 @@ pub struct IngestResult {
 
 pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestResult> {
     let _lock = svc.lock_kb(&args.kb_id).await?;
+    // Issue #56. The ratchet for EVERY sub-agent macro, because `KbToolDispatch`
+    // (subagent/kb_tools.rs) is bound to this one `kb_id` and reaches `store::*`
+    // directly — there is no lower seam, and no MCP gate can see it. Before the
+    // sub-agent, not after: a run that fails halfway has already written pages.
+    //
+    // Task 10C (CP2): the barrier sits on the line ABOVE the ratchet, so a
+    // public model never reaches the sub-agent's read tools at all — and never
+    // reaches a raise that would stamp an entry-less directory explicitly
+    // public. `conversation_ingest` builds these same `IngestArgs`, so it is
+    // gated here too.
+    crate::knowledge::tier::assert_reachable(
+        svc.root(),
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
+    // Issue #56, both axes in one call under one lock — see
+    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
+    // two.
+    svc.raise_tier_and_affiliation(
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the
@@ -312,6 +346,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Note about HRV.".into(),
                     title: Some("HRV note".into()),
@@ -362,6 +398,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Some note.".into(),
                     title: Some("x".into()),
@@ -430,6 +468,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Note about HRV.".into(),
                     title: Some("HRV note".into()),
@@ -481,6 +521,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Note about HRV.".into(),
                     title: Some("HRV note".into()),
@@ -524,6 +566,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Note about HRV.".into(),
                     title: Some("HRV note".into()),
@@ -578,6 +622,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Note about HRV.".into(),
                     title: Some("HRV note".into()),
@@ -628,6 +674,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Note about HRV.".into(),
                     title: Some("HRV note".into()),
@@ -711,6 +759,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Note about HRV.".into(),
                     title: Some("HRV note".into()),
@@ -792,6 +842,8 @@ mod tests {
             &svc,
             IngestArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 source: SourceInput::Text {
                     text: "Some note.".into(),
                     title: Some("y".into()),
@@ -812,5 +864,91 @@ mod tests {
         );
         // The git repo must still be openable (not corrupted).
         GitRepo::open(&kb).unwrap();
+    }
+
+    // ── Issue #56, Task 10B: CP2 ────────────────────────────────────────────
+
+    /// A completer that never answers. The sub-agent run fails immediately, so
+    /// this test says nothing about the macro's happy path and everything about
+    /// WHEN the raise runs.
+    struct RefusesImmediately;
+
+    #[async_trait]
+    impl Completer for RefusesImmediately {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[crate::knowledge::subagent::loop_::LlmMessage],
+            _tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            anyhow::bail!("no model here")
+        }
+    }
+
+    #[tokio::test]
+    async fn the_ingest_macro_ratchets_before_its_sub_agent_runs() {
+        // CP2, and the reason it exists. The sub-agent writes through
+        // KbToolDispatch → store::write_page / svc.add_raw_source, which no MCP
+        // tool gate can see. This is also the test that makes Task 11's headline
+        // test reachable: `conversation_ingest::ingest_conversation` funnels into
+        // this function, as do the four HTTP macro routes, the CLI and the probe.
+        let (dir, svc) = fresh_svc();
+        let root = dir.path().to_path_buf();
+        assert!(!crate::knowledge::tier::is_private(&root, "k"));
+
+        let _ = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                caller_is_private: true,
+                caller_affiliation: Default::default(),
+                source: SourceInput::Text {
+                    text: "n=412".into(),
+                    title: Some("t".into()),
+                },
+                completer: Box::new(RefusesImmediately),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await; // the sub-agent fails; the raise stands
+
+        assert!(
+            crate::knowledge::tier::is_private(&root, "k"),
+            "the raise ran after the sub-agent, or not at all"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_public_ingest_never_lowers_a_ratcheted_base() {
+        let (dir, svc) = fresh_svc();
+        let root = dir.path().to_path_buf();
+        crate::knowledge::tier::raise_unlocked(&root, "k", true).unwrap();
+
+        let _ = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                source: SourceInput::Text {
+                    text: "public note".into(),
+                    title: Some("t".into()),
+                },
+                completer: Box::new(RefusesImmediately),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await;
+
+        assert!(
+            crate::knowledge::tier::is_private(&root, "k"),
+            "a public ingest lowered the tier"
+        );
     }
 }

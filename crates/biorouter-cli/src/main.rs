@@ -22,6 +22,34 @@ async fn main() -> ExitCode {
         eprintln!("Warning: Failed to initialize logging: {}", e);
     }
 
+    // Issue #56 Task 30. The CLI is a SECOND host of the same agent library, and
+    // it loaded this switch nowhere: a user who turned privacy tiers off in
+    // Settings got every gate still enforcing in the terminal, because the
+    // fail-safe default is ON and nothing here ever read their config.
+    //
+    // That direction is safe, which is why it was invisible — but DR-15's
+    // promise is "nothing will be impacted", not "nothing except the CLI", and a
+    // control that silently applies where the user cannot see they turned it off
+    // is worse than one that does not exist. Refusals here name Settings >
+    // Privacy, which they had already visited.
+    //
+    // ⚠ NOT a third writer of the atomic. `load_privacy_tiers_from_config` is
+    // the same one function `biorouterd` calls; `set_privacy_tiers_enabled` is
+    // still spoken in exactly two places tree-wide, which is what Task 30's
+    // Step 5 (2) counts.
+    //
+    // Before `cli()`, so no subcommand can run a turn against the default when
+    // the user turned the feature off — and after logging, so a config failure
+    // is reported rather than swallowed.
+    biorouter::privacy::load_privacy_tiers_from_config();
+    // Issue #56 Task 52 (DR-27). Beside the master switch's load rather than
+    // anywhere else, because the omission this pair guards against is a host
+    // that loads ONE of them: the CLI already skipped the master switch for a
+    // whole round, and the direction it failed in was safe enough to be
+    // invisible. `strict` failing quietly back to `standard` would be the same
+    // kind of silence.
+    biorouter::privacy::load_mixing_policy_from_record();
+
     match cli().await {
         Ok(()) => ExitCode::from(abort_exit::OK),
         Err(e) => {

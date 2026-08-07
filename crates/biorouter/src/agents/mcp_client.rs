@@ -1,5 +1,6 @@
 use crate::action_required_manager::ActionRequiredManager;
 use crate::agents::types::SharedProvider;
+use crate::privacy::CallCapability;
 use crate::session_context::SESSION_ID_HEADER;
 use rmcp::model::{
     Content, CreateElicitationRequestParams, CreateElicitationResult, ElicitationAction, ErrorCode,
@@ -141,13 +142,50 @@ pub struct McpMeta {
     /// letting a pooled (shared) client route those notifications to exactly this
     /// dispatch's session (BR-54). `None` on the unpooled path (legacy broadcast).
     pub progress_token: Option<String>,
+    /// Issue #56. The capability this call was ADMITTED on. Set from
+    /// `dispatch_tool_call`'s parameter, never re-derived: an in-process
+    /// extension that re-reads the provider mutex from inside the driven future
+    /// reads it minutes later, past the dispatch semaphore.
+    pub capability: CallCapability,
+    /// Whether the model bound to this session is private (issue #56).
+    ///
+    /// `None` for every extension that is not a Biorouter built-in: the session
+    /// id already goes to third-party MCP servers, and this deliberately does
+    /// not follow that precedent — "this user is on an institutional model" is a
+    /// fact about their configuration, not something a third-party server needs.
+    /// A built-in receiving `None` reads it as PUBLIC, which is the safe
+    /// direction for every gate that consumes it.
+    ///
+    /// Distinct from `capability` above, which never leaves the process: this is
+    /// the ON-THE-WIRE disclosure, and it is opt-in per extension.
+    pub capability_private: Option<bool>,
+    /// Whose agreements cover the model bound to this session (issue #56, DR-26
+    /// / Task 50 Step 0), already in the wire spelling
+    /// [`biorouter_mcp::knowledge::affiliation::capability_meta_value`] produces.
+    ///
+    /// A **second** key beside [`Self::capability_private`] rather than a richer
+    /// value on that one: widening the tier key's grammar would make
+    /// `tier::caller_is_private` — which compares against the exact word
+    /// `private` — read every new-grammar value as PUBLIC in any binary that has
+    /// not been updated, and this tree ships a separately-installed PATH CLI
+    /// that routinely lags the app. The whole argument is in that module's
+    /// header.
+    ///
+    /// `None` on the same terms as `capability_private`: built-ins only, and a
+    /// built-in that receives nothing reads
+    /// [`CallerAffiliation::Unstated`](biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated),
+    /// which is the restrictive answer for every gate that consumes it.
+    pub capability_affiliation: Option<String>,
 }
 
 impl McpMeta {
-    pub fn new(session_id: impl Into<String>) -> Self {
+    pub fn new(session_id: impl Into<String>, capability: CallCapability) -> Self {
         Self {
             session_id: session_id.into(),
             progress_token: None,
+            capability,
+            capability_private: None,
+            capability_affiliation: None,
         }
     }
 
@@ -158,8 +196,56 @@ impl McpMeta {
         self
     }
 
-    fn inject_into_extensions(&self, extensions: Extensions) -> Extensions {
+    /// Disclose the caller's capability tier to this call's server (issue #56).
+    /// Built-ins only — see [`McpMeta::capability_private`].
+    pub fn with_capability_private(mut self, private: bool) -> Self {
+        self.capability_private = Some(private);
+        self
+    }
+
+    /// Disclose the caller's **affiliation** to this call's server (issue #56,
+    /// DR-26). Built-ins only — see [`McpMeta::capability_affiliation`].
+    ///
+    /// The wire spelling is composed by the reader's own crate
+    /// ([`biorouter_mcp::knowledge::affiliation::capability_meta_value`]), not
+    /// here: one spelling, one function, both sides. `None` — an unstated
+    /// affiliation — leaves the key off entirely, which is exactly how an older
+    /// daemon looks and is read the same restrictive way.
+    pub fn with_capability_affiliation(mut self, affiliation: Option<String>) -> Self {
+        self.capability_affiliation = affiliation;
+        self
+    }
+
+    pub(crate) fn inject_into_extensions(&self, extensions: Extensions) -> Extensions {
         let mut extensions = inject_session_id_into_extensions(extensions, &self.session_id);
+        if let Some(private) = self.capability_private {
+            // Issue #56. The SAME `_meta` object the session id rides in, for
+            // the same wire-collision reason the progress token below gives.
+            // BOTH halves come from the shared module — the key from its const
+            // and the value from `capability_meta_value` — because the reader
+            // (`tier::caller_is_private`) compares against that module's own
+            // spelling, and a hand-typed literal here would drift silently.
+            let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
+            meta.0.insert(
+                biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY.to_string(),
+                serde_json::Value::String(
+                    biorouter_mcp::knowledge::tier::capability_meta_value(private).to_string(),
+                ),
+            );
+            extensions.insert(meta);
+        }
+        if let Some(affiliation) = &self.capability_affiliation {
+            // Issue #56 DR-26 / Task 50 Step 0. The SAME `_meta` object again,
+            // under its own key: `tier::caller_is_private` compares the tier
+            // key's value against the exact word `private`, so a richer value
+            // there would read PUBLIC on any binary that has not been updated.
+            let mut meta = extensions.get::<Meta>().cloned().unwrap_or_default();
+            meta.0.insert(
+                biorouter_mcp::knowledge::affiliation::CAPABILITY_AFFILIATION_META_KEY.to_string(),
+                serde_json::Value::String(affiliation.clone()),
+            );
+            extensions.insert(meta);
+        }
         if let Some(token) = &self.progress_token {
             // Add the progressToken to the SAME `_meta` object the session id
             // rides in (rmcp serializes `extensions.get::<Meta>()` as params._meta),
@@ -1013,7 +1099,11 @@ mod tests {
     /// id, so both ride the wire together and neither clobbers the other.
     #[tokio::test]
     async fn test_meta_carries_session_and_progress_token_together() {
-        let meta = McpMeta::new("sess-1").with_progress_token("tok-xyz");
+        let meta = McpMeta::new(
+            "sess-1",
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+        .with_progress_token("tok-xyz");
         let ext = meta.inject_into_extensions(Default::default());
         let m = ext.get::<Meta>().expect("meta present");
         assert_eq!(
@@ -1024,6 +1114,67 @@ mod tests {
             m.get_progress_token(),
             Some(ProgressToken(NumberOrString::String("tok-xyz".into())))
         );
+    }
+
+    /// Issue #56. The capability tier rides the SAME `_meta` object as the
+    /// session id. The wire key is spelled literally exactly here — this is the
+    /// one place pinning the format is the point; every other reader takes the
+    /// const from `biorouter_mcp::knowledge::tier`.
+    #[test]
+    fn the_capability_tier_rides_the_same_meta_object_as_the_session_id() {
+        let meta = McpMeta::new(
+            "sess-1",
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+        .with_capability_private(true);
+        let ext = meta.inject_into_extensions(Extensions::default());
+        let m = ext.get::<Meta>().unwrap();
+        assert_eq!(
+            m.0.get("biorouter-session-id").and_then(|v| v.as_str()),
+            Some("sess-1")
+        );
+        assert_eq!(
+            m.0.get("biorouter-capability-tier")
+                .and_then(|v| v.as_str()),
+            Some("private")
+        );
+    }
+
+    /// Issue #56, the OTHER half: what the daemon writes is what the barrier
+    /// reads. The test above pins the wire format against a literal on this
+    /// side, and `tier.rs`'s tests compare against consts on that side — so a
+    /// drift in the VALUE (the key is already a shared const) would have been
+    /// caught by neither. This composes the writer with the real reader and is
+    /// the only test that crosses the seam.
+    #[test]
+    fn the_injected_capability_tier_is_read_back_as_the_same_decision() {
+        for private in [true, false] {
+            let ext = McpMeta::new(
+                "sess-1",
+                crate::privacy::CallCapability::for_test_restricted(),
+            )
+            .with_capability_private(private)
+            .inject_into_extensions(Extensions::default());
+            let m = ext.get::<Meta>().unwrap();
+            assert_eq!(
+                biorouter_mcp::knowledge::tier::caller_is_private(m),
+                private,
+                "the daemon wrote {:?} and the barrier read it back as {}",
+                m.0.get(biorouter_mcp::knowledge::tier::CAPABILITY_TIER_META_KEY),
+                !private
+            );
+        }
+        // And an extension that is never told — decision (4)'s third parties —
+        // reads PUBLIC, which is the safe direction for every gate that
+        // consumes it.
+        let ext = McpMeta::new(
+            "sess-1",
+            crate::privacy::CallCapability::for_test_restricted(),
+        )
+        .inject_into_extensions(Extensions::default());
+        assert!(!biorouter_mcp::knowledge::tier::caller_is_private(
+            ext.get::<Meta>().unwrap()
+        ));
     }
 
     #[tokio::test]

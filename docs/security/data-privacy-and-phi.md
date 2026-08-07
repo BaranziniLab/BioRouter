@@ -36,6 +36,119 @@ Different providers have fundamentally different data handling policies:
 - **Local models** (Ollama) — data is processed entirely on your own device. Nothing is
   transmitted to any external service.
 
+## What a non-private model can reach
+
+Biorouter shows this to you the first time you bind a model that is not private, and keeps it in
+front of you afterwards on the model chip, in Settings → Privacy, and above the Commercial section
+of the provider grid. **It is shown whether or not privacy tiers are enabled** — turning the
+feature off removes the enforcement, not the exposure, so with it off this is larger rather than
+smaller.
+
+> **{Provider} is not hosted by your institution.**
+>
+> It is not HIPAA-compliant, is not hosted on-premise, and does not run on this machine. It can
+> read **files on this computer** — anything a chat on this model can reach, it can send there:
+> the contents of your working directory, and whatever a command you approve prints.
+>
+> Biorouter does stop three things: this model cannot read another chat's transcript, cannot read
+> a knowledge base marked private, and cannot use the private data extensions (UCSF OMOP, CDW) or
+> switch this chat to a private model to reach them.
+>
+> It **does not** stop it reading ordinary files on this computer through the shell — including files
+> an earlier private chat wrote outside Biorouter's own storage. If the work involves patient
+> data, use a local model or an institutional one.
+
+The one-line form, which appears on the model chip and in `biorouter configure`:
+
+> Not HIPAA-compliant, not on-premise, not local — this model can read files on this computer.
+> Private chats and private knowledge bases stay out of its reach.
+
+> **Maintenance.** These are the exact words of `COPY_LONG` and `COPY_SHORT` in
+> [`crates/biorouter/src/privacy/disclosure.rs`](../../crates/biorouter/src/privacy/disclosure.rs),
+> which is the single definition every surface renders. Quote them; do not paraphrase them. The
+> app fetches them over `GET /privacy/disclosure` rather than shipping a second copy in the
+> renderer, for the same reason: four hand-written copies drift within one release, and the
+> drifted one is always the one somebody reads.
+
+## The provider guidance on this page is now enforced
+
+Everything below used to be advice you could follow or ignore. Since **privacy tiers** shipped, the
+central rule — *a conversation that has touched a private model or a private data source never
+reaches a model hosted outside your institution* — is enforced by the app rather than left to you.
+
+What that means in practice:
+
+- **A chat remembers where it has been.** Run one turn on a local model or on UCSF Versa, or call a
+  private data extension (UCSF OMOP, CDW), and the chat is marked **private**, permanently. It is a
+  ratchet: it only ever goes up on its own.
+- **A private chat cannot be switched to a commercial model.** The model picker, the CLI, the HTTP
+  API and another chat steering this one all reach the same check and are refused the same way: the
+  chat is left unchanged, the refusal names the **provider** it declined, and retrying does not
+  help. Starting a *new* chat on the commercial model is always available and is the intended way
+  through — the boundary is the transcript, not the model.
+- **A public chat cannot reach private material through the tools it has by default.** It cannot
+  call the private data extensions, read a private chat's transcript through chat recall, read a
+  knowledge base marked private, or spawn a subagent on a private model to fetch any of it on its
+  behalf. ⚠ **Two paths are exceptions and are listed under *What it does not do* below** — read
+  them before relying on this bullet.
+- **Knowledge bases carry the same mark.** A base takes the tier of the most sensitive chat that has
+  written into it, and a public chat may not read a private base. You can publicize or privatize a
+  base deliberately; a publicize tells you how many pages and sources it is about to release.
+- **Institution matters, not just sensitivity.** A model your institution hosts has no blanket
+  permission over *another* institution's regulated data — HIPAA compliance is established per data
+  flow and does not transfer. A flow that crosses institutions is warned about, and accepting it is
+  a deliberate act that is recorded.
+
+**Undoing it is a deliberate, recorded act, and how deliberate depends on why the chat was marked.**
+The single-confirmation path is narrow: it applies only to a chat Biorouter watched *run a turn* on
+a private model. Everything else gets the stronger control — a chat that reached a private **data
+source** (a private extension, a private knowledge base, or a private parent it was spawned from),
+a chat that was imported, and, importantly, **every chat the one-time migration marked private**.
+Those carry a "we inferred this from the model you last used" provenance rather than an observed
+turn, so they take the strong path even though all they ever did was run turns; on day one that is
+likely to be most of your private chats.
+[What happens to your existing chats](privacy-tiers-migration.md#fixing-a-chat-the-migration-got-wrong)
+explains why.
+
+The stronger control asks for two proofs, because they answer different questions: you type the last
+six characters of the session id (*which* chat), and you clear your operating-system password prompt
+(*who* you are) — the same prompt macOS, Windows or Linux raises for any privileged action. Either
+way the change is written to a ledger. From the terminal:
+`biorouter session declassify <session-id>`.
+
+**Turning it off is one switch, and it is not subtle.** Settings → Privacy disables every guardrail
+on this machine, for every chat, behind a typed confirmation. Nothing is classified while it is off,
+and re-enabling it does not go back and classify the gap. The disclosure above is shown *whether or
+not* the feature is enabled, because turning it off removes the enforcement and not the exposure.
+
+⚠ **What it does not do.** Privacy tiers govern what the *agent* can reach through Biorouter's own
+storage and tools, and they do not encrypt anything at rest. Three gaps are known and deliberate
+enough to name, because each one is a way a commercial model still reaches material you would call
+private:
+
+- **The shell reads ordinary files.** Nothing stops a public chat from reading files on this
+  computer through the shell — including a file an earlier private chat wrote somewhere on disk.
+  This is the one the guardrails were explicitly not extended to cover, and it is why the
+  [what a non-private model can reach](#what-a-non-private-model-can-reach) disclosure is shown
+  whether or not privacy tiers are enabled.
+- **Workspace Control reads private transcripts.** If you have turned on the **Workspace Control**
+  extension (it is off by default, and you get the whole tool set when you enable it), a public chat
+  can read *any* other chat's transcript with `workspace_read_conversation` — including a private
+  one. That tool checks only whether a chat is hidden, not its privacy tier, so the door chat recall
+  closes is left open beside it. **"Chat recall refused it" does not mean the content is
+  unreachable.** If you use Workspace Control and you keep PHI in chats, treat every chat on the
+  machine as reachable by whichever model is driving.
+- **The chat list is not filtered.** Anything that can talk to the local Biorouter daemon can list
+  every chat on the machine — name, working directory and privacy mark, though not the contents.
+
+That is why the guidance below still matters: **de-identify first, and pick the right provider
+first.** The enforcement is a backstop for a chat that drifts into sensitive territory, not a licence
+to start one there.
+
+For the mechanics — what the migration did to chats you already have, and how each guardrail works —
+see [what happens to your existing chats](privacy-tiers-migration.md) and
+[privacy tiers](privacy-tiers.md).
+
 ## Patient data and sensitive research data
 
 > **Warning.** If you need to work with patient data, PHI, clinical records, genomic data
@@ -136,6 +249,10 @@ Information Commons.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the full
   provider inventory, including the institutional `versa_azure` / `versa_bedrock` providers and
   the bundled Llama Server.
+- [Privacy tiers](privacy-tiers.md) — the design behind the enforcement described above: how models,
+  chats, extensions and knowledge bases acquire a tier, and where each guardrail sits.
+- [Privacy tiers — what happens to your existing chats](privacy-tiers-migration.md) — which of the
+  chats you already have were marked private, and how to fix one the guess got wrong.
 - [Permission modes](permission-modes.md) — limiting what the agent may do with the data once
   it is in a session.
 - [Managed enterprise policy](managed-policy.md) — how an administrator enforces tool

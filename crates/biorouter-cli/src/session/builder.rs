@@ -1,4 +1,5 @@
 use super::output;
+use super::privacy::{available_private_models, repair_block, terminal_refusal, ProviderSource};
 use super::CliSession;
 use biorouter::agents::{Agent, AgentConfig};
 use biorouter::config::get_enabled_extensions;
@@ -19,6 +20,59 @@ use std::sync::Arc;
 use tokio::task::JoinSet;
 
 const EXTENSION_HINT_MAX_LEN: usize = 5;
+
+/// Issue #56 Task 31 / R10 — the refusal a chat earns before it starts, or
+/// `None` if it may start.
+///
+/// The four precedence slots do not all deserve the same sentence. Three of them
+/// are settings on *this* machine; the fourth is a pin inside a workflow YAML
+/// somebody else authored and mailed around, and that one is checked by the
+/// workflow module's own load-time check so the refusal names the workflow
+/// rather than the model. Both endings share [`repair_block`], because there is
+/// only one repair.
+///
+/// DR-15's master switch is read by both branches — directly, because a session
+/// start is not a tool call and has no [`biorouter::privacy::CallCapability`] to
+/// inherit a sample from.
+async fn privacy_start_refusal(
+    provider_name: &str,
+    source: ProviderSource,
+    classification: biorouter::privacy::SessionClassification,
+    session_id: Option<&str>,
+    workflow_settings: Option<&biorouter::workflow::Settings>,
+) -> Option<String> {
+    // The id is only ever interpolated into the two repair commands. A
+    // `--no-session` run has none, and cannot reach here anyway: its row is born
+    // Public.
+    let session_id = session_id.unwrap_or("<session-id>");
+
+    if source == ProviderSource::Workflow {
+        let why = biorouter::workflow::privacy::assert_workflow_provider_allowed(
+            workflow_settings,
+            classification,
+        )
+        .await
+        .err()?;
+        return Some(format!(
+            "{why}\n{}",
+            repair_block(session_id, &available_private_models().await)
+        ));
+    }
+
+    if !biorouter::privacy::privacy_tiers_enabled() {
+        return None;
+    }
+    let tier = biorouter::workflow::privacy::declared_provider_tier(provider_name).await;
+    if biorouter::privacy::bind_allowed(tier, classification) {
+        return None;
+    }
+    Some(terminal_refusal(
+        session_id,
+        provider_name,
+        source,
+        &available_private_models().await,
+    ))
+}
 
 fn truncate_with_ellipsis(s: &str, max_len: usize) -> String {
     let truncated: String = s.chars().take(max_len).collect();
@@ -476,12 +530,24 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
     let workflow = session_config.workflow.as_ref();
     let workflow_settings = workflow.and_then(|r| r.settings.as_ref());
 
-    let provider_name = session_config
-        .provider
-        .or(saved_provider)
-        .or_else(|| workflow_settings.and_then(|s| s.biorouter_provider.clone()))
-        .or_else(|| config.get_biorouter_provider().ok())
-        .expect("No provider configured. Run 'biorouter configure' first");
+    // Issue #56 Task 31. The same four-slot precedence as before, with a record
+    // of WHICH slot won. Three of the four are things the user did not type just
+    // now — a provider stored on the row months ago, a pin inside a workflow
+    // somebody mailed them, the global default — so "why will this chat not
+    // start" has four answers and only one of them is obvious.
+    let workflow_provider = workflow_settings.and_then(|s| s.biorouter_provider.clone());
+    let (resolved_provider, provider_source) =
+        match (session_config.provider, saved_provider, workflow_provider) {
+            (Some(p), _, _) => (Some(p), ProviderSource::CliFlag),
+            (None, Some(p), _) => (Some(p), ProviderSource::SavedSession),
+            (None, None, Some(p)) => (Some(p), ProviderSource::Workflow),
+            (None, None, None) => (
+                config.get_biorouter_provider().ok(),
+                ProviderSource::GlobalDefault,
+            ),
+        };
+    let provider_name =
+        resolved_provider.expect("No provider configured. Run 'biorouter configure' first");
 
     let model_name = session_config
         .model
@@ -511,6 +577,44 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             }
         }
     };
+
+    // Issue #56 Task 31 / R10. The classification of the chat this provider is
+    // about to be bound to. Read from the row rather than carried, because on a
+    // `--resume` the row is the only thing that knows.
+    //
+    // A read failure reads Public, and that is not a fail-open: this refusal is
+    // an early, well-worded explanation, never the authority. Gate A — the
+    // `WHERE` clause of `bind_provider_if_allowed`, a few lines below — is the
+    // authority, and it fails closed on its own. Refusing here on an unreadable
+    // row would only replace a specific message with a vaguer one.
+    let session_classification = match session_config.session_id.as_deref() {
+        Some(id) => session_manager
+            .get_session(id, false)
+            .await
+            .map(|s| s.privacy_tier)
+            .unwrap_or(biorouter::privacy::SessionClassification::Public),
+        // `--no-session` creates its row below, in the private per-run store: a
+        // brand-new chat, so Public.
+        None => biorouter::privacy::SessionClassification::Public,
+    };
+
+    // ⚠ BEFORE `providers::create` and before the bind, so a refused chat never
+    // builds a provider and never sends anything. `builder::tests::
+    // the_privacy_check_runs_before_the_provider_is_ever_created` is what keeps
+    // that ordering.
+    if let Some(text) = privacy_start_refusal(
+        &provider_name,
+        provider_source,
+        session_classification,
+        session_config.session_id.as_deref(),
+        workflow_settings,
+    )
+    .await
+    {
+        output::render_error(&text);
+        close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
+        process::exit(1);
+    }
 
     agent
         .apply_workflow_components(
@@ -759,12 +863,22 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
 
     // Display session information unless in quiet mode
     if !session_config.quiet {
+        // Issue #56 Task 31 / R10. Re-read rather than reusing the value the
+        // start-time check sampled: the bind above ratchets nothing, but a
+        // `--no-session` run had no row to read then and has one now, and a
+        // resumed chat can have been raised by another process in between.
+        let privacy = session_manager
+            .get_session(&session_id, false)
+            .await
+            .map(|s| s.privacy_tier)
+            .unwrap_or(session_classification);
         output::display_session_info(
             session_config.resume,
             &provider_name,
             &model_name,
             &Some(session_id),
             Some(&provider_for_display),
+            privacy,
         );
     }
     session
@@ -980,6 +1094,37 @@ mod tests {
         // This test mainly serves as a compilation check
         assert_eq!(extension_name, "test-extension");
         assert_eq!(error_message, "test error");
+    }
+
+    /// Issue #56 Task 31, the half the plan writes as `assert_eq!(turns_started(),
+    /// 0)`. There is no turn counter to read here — `build_session` calls
+    /// `process::exit` and cannot be driven from a test at all — so what is
+    /// pinned instead is the property that makes the count zero: the privacy
+    /// check runs BEFORE `providers::create`, which is the first thing on this
+    /// path that constructs anything at all, let alone sends.
+    ///
+    /// A source-order tripwire rather than a behavioural test, and it is written
+    /// down as such: it catches the realistic regression (someone moves the
+    /// check down to where the provider instance is handy, so a workflow pinning
+    /// a public model gets refused only after the model has been built and the
+    /// session bound) and it catches nothing subtler.
+    #[test]
+    fn the_privacy_check_runs_before_the_provider_is_ever_created() {
+        let src = include_str!("builder.rs");
+        // The CALL, not the definition: `= privacy_start_refusal(` appears only
+        // at the `if let Some(text) = …` call site, so a check that stayed
+        // defined but moved below `create` still fails this.
+        let check = src
+            .find("= privacy_start_refusal(")
+            .expect("the start-time privacy check is gone from build_session");
+        let create = src
+            .find("create(&provider_name, model_config)")
+            .expect("`providers::create` is no longer called the way this audit looks for");
+        assert!(
+            check < create,
+            "the privacy check moved BELOW `providers::create`; a refused chat now builds a \
+             provider (and, a few lines later, binds it) before saying no"
+        );
     }
 
     #[test]

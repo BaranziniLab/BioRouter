@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { FolderDot } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/Tooltip';
 import { updateWorkingDir } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import { toastError } from '../../toasts';
 import { ChatState } from '../../types/chatState';
 
@@ -111,6 +112,9 @@ export const DirSwitcher: React.FC<DirSwitcherProps> = ({
         // RESOLVES with an error object on a non-2xx (e.g. the #44 409 once
         // the chat has messages) and the catch below would never fire.
         await updateWorkingDir({
+          // Issue #56 Task 58: repointing a private chat's working directory
+          // needs the proof-of-user.
+          headers: await userActionHeaders(),
           body: { session_id: sessionId, working_dir: newDir },
           throwOnError: true,
         });

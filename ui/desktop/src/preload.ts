@@ -238,6 +238,12 @@ type ElectronAPI = {
   getSettings: () => Promise<unknown | null>;
   saveSettings: (settings: unknown) => Promise<boolean>;
   getSecretKey: () => Promise<string>;
+  /**
+   * Issue #56 DR-16: the proof a tier-raising request came from the user.
+   * Attached as `X-User-Action` on those requests only — not as a default
+   * header, which would make it ambient on every call.
+   */
+  getUserActionKey: () => Promise<string>;
   getBiorouterdHostPort: () => Promise<string | null>;
   setWakelock: (enable: boolean) => Promise<boolean>;
   getWakelockState: () => Promise<boolean>;
@@ -347,13 +353,32 @@ type ElectronAPI = {
       }
     | { error: string }
   >;
+  /**
+   * Issue #56 Task 43 (DR-23). `registrySource` carries the BAAM registry `id`
+   * the bundle came from, so the install can record provenance beside the
+   * config entry and the daemon can re-derive the privacy tier from it instead
+   * of from the (locally renameable) config name. Omitted for a hand-dropped
+   * `.brxt`, which has no registry id to record.
+   */
   installBrxtBundle: (
     filePath: string,
-    extensionName: string
+    extensionName: string,
+    registrySource?: { registryId: string; sourceUrl?: string }
   ) => Promise<{ success: true; installDir: string } | { error: string }>;
   // BAAM registry (Browse Skills / Browse Extensions)
+  /**
+   * Issue #56 §10.2. `stale: true` means the main process could not reach the
+   * registry and answered from its last-good copy; `fetchedAt` dates whichever
+   * document came back, so the renderer can say how old the catalogue is instead
+   * of only that it is not live.
+   */
   fetchRegistry: () => Promise<
-    { registry: import('./components/baam/registry').BaamRegistry } | { error: string }
+    | {
+        registry: import('./components/baam/registry').BaamRegistry;
+        fetchedAt?: string;
+        stale?: boolean;
+      }
+    | { error: string }
   >;
   downloadRegistryAsset: (url: string) => Promise<{ path: string } | { error: string }>;
   // Dependency checker
@@ -535,6 +560,7 @@ const electronAPI: ElectronAPI = {
   getSettings: () => ipcRenderer.invoke('get-settings'),
   saveSettings: (settings: unknown) => ipcRenderer.invoke('save-settings', settings),
   getSecretKey: () => ipcRenderer.invoke('get-secret-key'),
+  getUserActionKey: () => ipcRenderer.invoke('get-user-action-key'),
   getBiorouterdHostPort: () => ipcRenderer.invoke('get-biorouterd-host-port'),
   setWakelock: (enable: boolean) => ipcRenderer.invoke('set-wakelock', enable),
   getWakelockState: () => ipcRenderer.invoke('get-wakelock-state'),
@@ -641,8 +667,11 @@ const electronAPI: ElectronAPI = {
   openBrxtFilePicker: () => ipcRenderer.invoke('brxt:open-file-dialog'),
   validateBrxtBundle: (filePath: string) =>
     ipcRenderer.invoke('brxt:validate-and-read', { filePath }),
-  installBrxtBundle: (filePath: string, extensionName: string) =>
-    ipcRenderer.invoke('brxt:install', { filePath, extensionName }),
+  installBrxtBundle: (
+    filePath: string,
+    extensionName: string,
+    registrySource?: { registryId: string; sourceUrl?: string }
+  ) => ipcRenderer.invoke('brxt:install', { filePath, extensionName, registrySource }),
   uninstallBrxtExtension: (extensionName: string) =>
     ipcRenderer.invoke('brxt:uninstall', { extensionName }),
   extractSkillZip: (filePath: string) => ipcRenderer.invoke('skills:extract-zip', { filePath }),

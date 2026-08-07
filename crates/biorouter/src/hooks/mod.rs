@@ -77,6 +77,14 @@ pub const FIRE_JOIN_BUDGET_SHUTDOWN: Duration = Duration::from_secs(5);
 /// must not grow the buffer without bound; the oldest entry is dropped.
 const MAX_FIRED_OUTCOMES: usize = 64;
 
+/// Issue #56 Gate H: cap on the per-session classifications one
+/// [`HooksManager`] remembers. Nothing clears the store at session end, and
+/// `biorouter web` hosts an unbounded number of sessions on a single manager.
+/// The oldest entry is evicted, and an evicted session reads as *unknown*,
+/// which refuses a public prompt-hook provider rather than admitting one — so
+/// the bound can only cost liveness, never disclosure.
+const MAX_SESSION_CLASSIFICATIONS: usize = 256;
+
 /// BR-28: the aggregate of an observe-only hook event dispatched via
 /// [`HooksManager::fire`] — Notification, SubagentStart/Stop, Pre/PostCompact.
 ///
@@ -158,6 +166,38 @@ pub struct HooksManager {
     /// `std::sync::Mutex` (never held across an await) so the staging call sites
     /// stay synchronous.
     staged_tool_hooks: std::sync::Mutex<HashMap<String, VecDeque<StagedToolHook>>>,
+    /// Issue #56 Gate H: the classification of each session that has stated one
+    /// on this manager, mirrored from `Agent::cached_classification` at the one
+    /// seam that writes it (`Agent::reply`), so the two cannot disagree about
+    /// the same turn.
+    ///
+    /// **Keyed by session id, not a single scalar.** A `HooksManager` is built
+    /// one per `Agent` and `AgentManager` holds one agent per session, so a
+    /// scalar looks sufficient — but `biorouter web` shares ONE `Arc<Agent>`
+    /// across every chat it hosts (`commands/web.rs`) and spawns concurrent
+    /// turns from caller-supplied session ids. A scalar there records whichever
+    /// turn wrote last: a private turn stores `Private`, an overlapping public
+    /// turn overwrites it with `Public`, and the private turn's Stop hook — the
+    /// one carrying `transcript_tail` — then resolves a public prompt provider.
+    ///
+    /// A field rather than a parameter because a prompt hook's provider is
+    /// resolved five frames below `dispatch`, and threading a classification
+    /// through `dispatch`/`fire`/`stop`/`pre_tool_use`/… would change every
+    /// public entry point on this type for the benefit of one hook kind. The
+    /// session id needs no such threading: `HookPayload` already carries it the
+    /// whole way down.
+    ///
+    /// **Absent means unknown, and unknown is fail-closed** — the same direction
+    /// as `CachedClassification`'s `Private` default. A hook that fires before
+    /// the owning agent has stated the classification is skipped with a message
+    /// saying exactly that, rather than run against an unknown session, and
+    /// hooks are failure-open by doctrine so a skipped hook never blocks a turn.
+    ///
+    /// A `VecDeque` rather than a `HashMap` so the bound is the structure
+    /// itself: at most [`MAX_SESSION_CLASSIFICATIONS`] entries, oldest evicted
+    /// first, scanned linearly on a path that runs at most once per turn.
+    session_classifications:
+        std::sync::Mutex<VecDeque<(String, crate::privacy::SessionClassification)>>,
 }
 
 impl HooksManager {
@@ -216,7 +256,45 @@ impl HooksManager {
             fired: std::sync::Mutex::new(VecDeque::new()),
             post_tool_blocks: Mutex::new(HashMap::new()),
             staged_tool_hooks: std::sync::Mutex::new(HashMap::new()),
+            session_classifications: std::sync::Mutex::new(VecDeque::new()),
         }
+    }
+
+    /// Issue #56 Gate H. State the classification of the session whose turn is
+    /// running. Called by `Agent::reply` at the same seam that stores the
+    /// agent's own cached classification — mirror it there and nowhere else, or
+    /// the two answers drift.
+    pub fn set_session_classification(
+        &self,
+        session_id: &str,
+        classification: crate::privacy::SessionClassification,
+    ) {
+        let mut store = self
+            .session_classifications
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        store.retain(|(id, _)| id != session_id);
+        store.push_back((session_id.to_string(), classification));
+        while store.len() > MAX_SESSION_CLASSIFICATIONS {
+            store.pop_front();
+        }
+    }
+
+    /// The classification stated for `session_id`, or `None` when no turn of
+    /// that session has run on this manager (or its entry has been evicted).
+    ///
+    /// `None` is **not** `Public`: see the field's doc comment. Callers must
+    /// treat it as at least as restrictive as `Private`.
+    fn session_classification(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::privacy::SessionClassification> {
+        self.session_classifications
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|(id, _)| id == session_id)
+            .map(|(_, classification)| *classification)
     }
 
     /// Replace the runtime hooks for (session, event). Session hooks are
@@ -663,9 +741,11 @@ impl HooksManager {
             } => {
                 let timeout =
                     Duration::from_secs(timeout.unwrap_or(DEFAULT_PROMPT_TIMEOUT_SECS).max(1));
-                let resolved = self.resolve_prompt_provider(provider, model).await;
+                let resolved = self
+                    .resolve_prompt_provider(&payload.session_id, provider, model)
+                    .await;
                 match resolved {
-                    Some(provider) => {
+                    Ok(provider) => {
                         prompt_runner::run_prompt_hook(
                             provider,
                             event,
@@ -675,8 +755,22 @@ impl HooksManager {
                         )
                         .await
                     }
-                    None => HookOutcome {
-                        error: Some("prompt hook: no provider available".to_string()),
+                    // Issue #56 Gate H. The reason travels with the refusal
+                    // rather than being flattened into a bare `None`, so it
+                    // lands in `HookAggregate::errors` — which `dispatch` logs
+                    // at `warn!`, and which every caller that reads the
+                    // aggregate can show.
+                    //
+                    // ⚠ For the Stop hook specifically that is the LOG and
+                    // nothing else: `HooksManager::stop` returns a
+                    // `StopHookVerdict` built from `aggregate.decision` alone
+                    // and drops `aggregate.errors` on the floor. A skipped
+                    // prompt hook is therefore invisible to the user and to the
+                    // model on that path. That is the plan's `last_warning()`
+                    // requirement met and no more; do not describe it as a
+                    // user-visible refusal.
+                    Err(reason) => HookOutcome {
+                        error: Some(reason),
                         ..Default::default()
                     },
                 }
@@ -687,45 +781,95 @@ impl HooksManager {
     /// Provider for a prompt hook: an explicit provider+model pair builds
     /// (and caches) a dedicated provider; otherwise the agent's provider is
     /// used (its fast model when configured).
+    ///
+    /// `Err` carries the sentence the outcome shows rather than a bare `None`,
+    /// so the one refusal that is a *decision* — issue #56 Gate H below — is
+    /// distinguishable from a missing provider.
+    ///
+    /// The `else` branch is deliberately **not** gated: that is the session's own
+    /// bound provider, which Gates A and B already govern. Gating it here would
+    /// be a second answer to a question already answered, and it would break the
+    /// `/goal` Stop-hook evaluator, whose definition carries no provider at all.
     async fn resolve_prompt_provider(
         &self,
+        session_id: &str,
         provider_name: Option<String>,
         model: Option<String>,
-    ) -> Option<Arc<dyn Provider>> {
-        if let (Some(name), Some(model)) = (provider_name, model) {
-            let key = (name.clone(), model.clone());
-            {
-                let cache = self.custom_providers.lock().await;
-                if let Some(provider) = cache.get(&key) {
-                    return Some(Arc::clone(provider));
-                }
-            }
-            let model_config = match crate::model::ModelConfig::new(&model) {
-                Ok(config) => config,
-                Err(e) => {
+    ) -> Result<Arc<dyn Provider>, String> {
+        let Some((name, model)) = provider_name.zip(model) else {
+            return self
+                .provider
+                .lock()
+                .await
+                .clone()
+                .ok_or_else(|| "prompt hook: no provider available".to_string());
+        };
+
+        let key = (name.clone(), model.clone());
+        let cached = {
+            let cache = self.custom_providers.lock().await;
+            cache.get(&key).map(Arc::clone)
+        };
+        // The gate below runs on BOTH paths — a cache hit is the common case
+        // once a hook has fired once, so a gate that only guarded the freshly
+        // created provider would protect the first turn of a session and nothing
+        // after it. The cache entry is still recorded on a refusal, because the
+        // provider itself is legitimate: it is this *session* that may not use
+        // it, and the next one on this manager may.
+        let provider = match cached {
+            Some(provider) => provider,
+            None => {
+                let model_config = crate::model::ModelConfig::new(&model).map_err(|e| {
                     warn!("hooks: invalid prompt hook model '{}': {}", model, e);
-                    return None;
-                }
-            };
-            match crate::providers::create(&name, model_config).await {
-                Ok(provider) => {
-                    self.custom_providers
-                        .lock()
-                        .await
-                        .insert(key, Arc::clone(&provider));
-                    Some(provider)
-                }
-                Err(e) => {
-                    warn!(
-                        "hooks: failed to create prompt hook provider '{}': {}",
-                        name, e
-                    );
-                    None
-                }
+                    format!("prompt hook: invalid model '{model}': {e}")
+                })?;
+                let provider = crate::providers::create(&name, model_config)
+                    .await
+                    .map_err(|e| {
+                        warn!(
+                            "hooks: failed to create prompt hook provider '{}': {}",
+                            name, e
+                        );
+                        format!("prompt hook: no provider available: {e}")
+                    })?;
+                self.custom_providers
+                    .lock()
+                    .await
+                    .insert(key, Arc::clone(&provider));
+                provider
             }
-        } else {
-            self.provider.lock().await.clone()
-        }
+        };
+
+        // Issue #56 Gate H. The Stop hook's payload carries
+        // `transcript_tail(&conversation)` at the end of every turn, and this
+        // provider was named by a config file rather than by the session row.
+        //
+        // A session that has stated nothing is treated as `Private` — fail
+        // closed — but it must not be TOLD it is private, because nobody read a
+        // row: `SubagentStart` fires on a freshly built child agent whose
+        // `reply` has not run, and `SessionEnd` can fire on a session with no
+        // turn at all. Same decision, honest sentence.
+        let stated = self.session_classification(session_id);
+        crate::privacy::assert_alt_provider_allowed(
+            "this prompt hook",
+            provider.as_ref(),
+            stated.unwrap_or(crate::privacy::SessionClassification::Private),
+            "the hook's `provider:` field",
+        )
+        .map_err(|e| {
+            let reason = match stated {
+                Some(_) => e.to_string(),
+                None => format!(
+                    "No turn of this chat has stated whether it is private, so this prompt hook \
+                     was skipped rather than run on `{}`, which is a public model. Hooks that \
+                     fire outside a turn have no classification to check against.",
+                    provider.get_name()
+                ),
+            };
+            warn!("hooks: {reason}");
+            reason
+        })?;
+        Ok(provider)
     }
 
     // ---- Typed wrappers used by the agent loop ----
@@ -902,6 +1046,196 @@ mod tests {
                 yaml.replace(token, &serde_json::to_string(command).unwrap())
             });
         manager_with_yaml(&yaml)
+    }
+
+    /// Issue #56 Gate H. `Agent::reply` fires the Stop hook with
+    /// `transcript_tail(&conversation)` at the end of EVERY turn — real
+    /// transcript text — and a prompt hook's `provider:`/`model:` pair names an
+    /// endpoint the session row never records. Global hooks load from
+    /// `config.yaml` unconditionally; project hooks from `.biorouter/hooks.yaml`
+    /// when `allow_project_hooks` is set, and that file is agent-writable.
+    /// Neither `Agent::update_provider` nor `Agent::reply` is on the path from
+    /// the hook definition to `complete_fast`, so Gates A–F are blind to it.
+    #[tokio::test]
+    async fn a_prompt_hook_on_a_public_provider_is_skipped_for_a_private_session() {
+        use crate::config::with_config_overrides;
+        use crate::privacy::SessionClassification;
+        use std::collections::HashMap;
+
+        fn ollama_at(host: &str) -> HashMap<String, String> {
+            HashMap::from([("OLLAMA_HOST".to_string(), host.to_string())])
+        }
+        // `tier()` reads the base URL this instance resolved, so a host that is
+        // not this machine is a real Public provider. `.invalid` never resolves,
+        // so a completion that escaped the gate would fail rather than arrive.
+        const OFF_MACHINE: &str = "https://api.example-saas.invalid";
+        const THIS_MACHINE: &str = "http://localhost:11434";
+
+        let manager = manager_with_yaml(
+            r#"
+Stop:
+  - hooks:
+      - type: prompt
+        prompt: "Judge this."
+        provider: "ollama"
+        model: "qwen3"
+"#,
+        );
+        let payload = HookPayload::new(HookEvent::Stop, "chat-1", test_cwd().to_string_lossy());
+
+        manager.set_session_classification("chat-1", SessionClassification::Private);
+        let refused = with_config_overrides(
+            ollama_at(OFF_MACHINE),
+            manager.dispatch(HookEvent::Stop, None, &payload, test_cwd()),
+        )
+        .await;
+        assert!(
+            refused
+                .errors
+                .iter()
+                .any(|e| e.to_lowercase().contains("private")),
+            "the skipped hook has to say why, in the outcome the user reads: {:?}",
+            refused.errors
+        );
+        assert!(
+            refused.decision.is_none(),
+            "a hook that never ran cannot have decided anything: {:?}",
+            refused.decision
+        );
+
+        // The gate discriminates. A private provider is still resolved for a
+        // private chat — otherwise "refuse everything" would pass the assertion
+        // above and prompt hooks would be quietly dead.
+        //
+        // A DISTINCT model name per case on purpose: `resolve_prompt_provider`
+        // caches by (provider, model), so reusing `qwen3` here would answer from
+        // the cache and assert nothing about the tier.
+        assert!(
+            with_config_overrides(
+                ollama_at(THIS_MACHINE),
+                manager.resolve_prompt_provider(
+                    "chat-1",
+                    Some("ollama".to_string()),
+                    Some("qwen3-on-this-machine".to_string())
+                ),
+            )
+            .await
+            .is_ok(),
+            "a private chat must still reach a private prompt-hook model"
+        );
+        // ...and a public chat is unaffected by the same public provider the
+        // private one was refused. A DIFFERENT session id, not a mutation of
+        // chat-1's: the store is per session, and this is the pair the bypass
+        // below is about.
+        manager.set_session_classification("chat-2", SessionClassification::Public);
+        assert!(
+            with_config_overrides(
+                ollama_at(OFF_MACHINE),
+                manager.resolve_prompt_provider(
+                    "chat-2",
+                    Some("ollama".to_string()),
+                    Some("qwen3-off-machine".to_string())
+                ),
+            )
+            .await
+            .is_ok(),
+            "a public chat must be unaffected"
+        );
+
+        // THE BYPASS. `biorouter web` shares one `Arc<Agent>` — and so one
+        // `HooksManager` — across every chat it hosts, and spawns concurrent
+        // turns from caller-supplied session ids. With a single classification
+        // scalar, chat-2's public turn (just recorded above) overwrites chat-1's
+        // `Private`, and chat-1's Stop hook — the one carrying `transcript_tail`
+        // — then resolves the public provider. Ask for chat-1 again, AFTER the
+        // public turn, and it must still be refused.
+        //
+        // It also pins the CACHE path: `qwen3-off-machine` is now in
+        // `custom_providers`, so this resolve returns early from the cache. A
+        // gate placed only on the fresh-create branch would protect the first
+        // turn of a session and nothing after it.
+        let refused = with_config_overrides(
+            ollama_at(OFF_MACHINE),
+            manager.resolve_prompt_provider(
+                "chat-1",
+                Some("ollama".to_string()),
+                Some("qwen3-off-machine".to_string()),
+            ),
+        )
+        .await
+        .err()
+        .expect("an overlapping public turn must not unlock a private chat's hooks");
+        assert!(
+            refused.to_lowercase().contains("private"),
+            "the refusal has to say why, got: {refused}"
+        );
+
+        // A session nobody has classified is refused too — fail closed — but is
+        // NOT told it is private, because no row was read. `SubagentStart` fires
+        // on a freshly built child agent whose `reply` has not run, and
+        // `SessionEnd` can fire on a session with no turn at all; calling those
+        // "private" would be a claim of fact nobody checked.
+        let unclassified = with_config_overrides(
+            ollama_at(OFF_MACHINE),
+            manager.resolve_prompt_provider(
+                "chat-never-replied",
+                Some("ollama".to_string()),
+                Some("qwen3-off-machine".to_string()),
+            ),
+        )
+        .await
+        .err()
+        .expect("an unclassified session must not reach a public prompt-hook provider");
+        assert!(
+            unclassified.contains("has stated whether it is private"),
+            "an unclassified session must not be told it is private, got: {unclassified}"
+        );
+    }
+
+    /// Issue #56 Gate H. The per-session classification store is bounded, and
+    /// eviction must fall on the refusing side: an evicted session reads as
+    /// unknown, and unknown is treated as `Private`.
+    #[test]
+    fn the_classification_store_is_bounded_and_evicts_towards_refusal() {
+        use crate::privacy::SessionClassification;
+
+        let manager =
+            HooksManager::with_config(HooksConfig::default(), false, Arc::new(Mutex::new(None)));
+        manager.set_session_classification("oldest", SessionClassification::Public);
+        for i in 0..MAX_SESSION_CLASSIFICATIONS {
+            manager.set_session_classification(&format!("chat-{i}"), SessionClassification::Public);
+        }
+        assert_eq!(
+            manager.session_classifications.lock().unwrap().len(),
+            MAX_SESSION_CLASSIFICATIONS,
+            "the store must stay bounded"
+        );
+        assert_eq!(
+            manager.session_classification("oldest"),
+            None,
+            "eviction is oldest-first, and the evicted entry must read as \
+             unknown — which refuses — not as Public"
+        );
+        assert_eq!(
+            manager.session_classification("chat-0"),
+            Some(SessionClassification::Public),
+            "only the overflow is evicted"
+        );
+        assert_eq!(
+            manager.session_classification(&format!("chat-{}", MAX_SESSION_CLASSIFICATIONS - 1)),
+            Some(SessionClassification::Public),
+        );
+
+        // Restating a session updates it in place rather than growing the store.
+        manager.set_session_classification("chat-5", SessionClassification::Private);
+        assert_eq!(
+            manager.session_classification("chat-5"),
+            Some(SessionClassification::Private)
+        );
+        assert_eq!(
+            manager.session_classifications.lock().unwrap().len(),
+            MAX_SESSION_CLASSIFICATIONS
+        );
     }
 
     fn stdout_command(value: &str) -> String {

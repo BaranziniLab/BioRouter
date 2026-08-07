@@ -143,7 +143,12 @@ async fn cancelling_a_turn_reaps_a_shell_tree_spawned_inside_code_execution() {
         arguments: Some(object!({ "code": code })),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, token.clone())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            token.clone(),
+        )
         .await
         .expect("dispatch");
     let call_task = tokio::spawn(dispatched.result);
@@ -178,7 +183,12 @@ async fn tearing_down_the_extension_reaps_a_running_shell_tree() {
         arguments: Some(object!({ "command": tree_command(dir.path()) })),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let call_task = tokio::spawn(dispatched.result);
@@ -218,7 +228,12 @@ async fn cancelling_a_turn_reaps_a_shell_tree_spawned_directly() {
         arguments: Some(object!({ "command": tree_command(dir.path()) })),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, token.clone())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            token.clone(),
+        )
         .await
         .expect("dispatch");
     let call_task = tokio::spawn(dispatched.result);

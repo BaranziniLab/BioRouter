@@ -4,6 +4,7 @@ use crate::conversation::message::{
 };
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
+use crate::privacy::SessionClassification;
 use crate::providers::base::{Provider, MSG_COUNT_FOR_SESSION_NAME_GENERATION};
 use crate::providers::pricing::{
     cost_with_pricing, provider_model_pricing, resolved_provider_model_pricing,
@@ -26,7 +27,22 @@ use std::sync::{Arc, LazyLock};
 use tracing::{debug, info, warn};
 use utoipa::ToSchema;
 
-pub const CURRENT_SCHEMA_VERSION: i32 = 17;
+pub const CURRENT_SCHEMA_VERSION: i32 = 20;
+
+/// The arm that first ran issue #56's classification backfill.
+///
+/// Named because the migration tests need "one below the backfill" and
+/// `CURRENT_SCHEMA_VERSION - 1` stopped meaning that the moment arm 20 landed.
+#[cfg(test)]
+const PRIVACY_BACKFILL_ARM: i32 = 19;
+
+/// The arm that re-runs the backfill with every evidence source, repairing the
+/// rows [`PRIVACY_BACKFILL_ARM`] classified from the bound provider alone.
+///
+/// Named because [`SessionStorage::retreat_to_privacy_repair`] has to name the
+/// number it rewinds to, and a literal there that drifted from the arm would
+/// silently rewind to a version that re-runs nothing.
+const PRIVACY_REPAIR_ARM: i32 = 20;
 pub const SESSIONS_FOLDER: &str = "sessions";
 pub const DB_NAME: &str = "sessions.db";
 
@@ -48,6 +64,59 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 
 const MESSAGES_FTS_INSERT: &str =
     "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)";
+
+/// The append-only declassification ledger (issue #56, §12.5). A constant
+/// because the two schema paths that create it run against different handles —
+/// `create_schema` against the pool, the reconcile against the one connection
+/// holding its write transaction.
+const CLASSIFICATION_AUDIT_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS classification_audit (
+  id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id              TEXT NOT NULL,
+  from_classification     TEXT NOT NULL,
+  to_classification       TEXT NOT NULL,
+  reason                  TEXT NOT NULL,
+  actor                   TEXT NOT NULL,
+  actor_kind              TEXT NOT NULL,
+  occurred_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  app_version             TEXT NOT NULL,
+  provider_name_at_change TEXT,
+  privacy_reason_before   TEXT,
+  message_count_at_change INTEGER
+)
+"#;
+
+/// The user's cross-affiliation grants (issue #56, DR-26 / Task 49): one row per
+/// accepted (session, extension, model affiliation) triple. See
+/// [`crate::privacy::grant`], which owns every read and the one write.
+///
+/// A constant for the same reason [`CLASSIFICATION_AUDIT_DDL`] is one — the two
+/// schema paths that create it run against different handles, `create_schema`
+/// against the pool and the reconcile against the connection holding its write
+/// transaction.
+///
+/// ⚠ **No numbered migration arm, deliberately.** This table is additive and
+/// version-independent, so it is created by `ensure_privacy_schema` on every
+/// startup rather than by a new `apply_migration` number. Issue #56's own O10
+/// hazard is a migration number consumed by testers: every developer's database —
+/// and the operator's — already stands at `CURRENT_SCHEMA_VERSION` and would
+/// never re-enter a newly written arm, so a table added there would not exist on
+/// any machine that has opened this branch. `CREATE TABLE IF NOT EXISTS` in the
+/// idempotent reconcile is the shape this tree already uses for the checkpoints
+/// and message-blob tables.
+///
+/// The composite primary key is the triple, which is what makes re-approval an
+/// upsert rather than a duplicate row.
+const CROSS_AFFILIATION_GRANTS_DDL: &str = r#"
+CREATE TABLE IF NOT EXISTS cross_affiliation_grants (
+  session_id        TEXT NOT NULL,
+  extension         TEXT NOT NULL,
+  model_affiliation TEXT NOT NULL,
+  granted_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  app_version       TEXT NOT NULL,
+  PRIMARY KEY (session_id, extension, model_affiliation)
+)
+"#;
 
 /// True when `err` is the `UNIQUE(messages.session_id, messages.msg_uid)`
 /// violation (SQLite error 2067) from the message insert — the one failure
@@ -162,11 +231,33 @@ pub struct Session {
     /// Id of the parent session that spawned this one as a subagent (BR-71).
     /// Sibling of `diverged_from` (branch lineage): `diverged_from` records a
     /// user fork; this records a delegation. `None` for non-subagent sessions.
+    /// It is also what the §7 capability matrix's `L` axis reads (issue #56).
     #[serde(default)]
     pub parent_session_id: Option<String>,
+    /// How sensitive this session's contents are (issue #56). A permanent
+    /// ratchet: the storage layer's `CASE WHEN` refuses to lower it, and
+    /// `privacy::declassify` is the only writer in the tree permitted to.
+    #[serde(default = "SessionClassification::public")]
+    pub privacy_tier: SessionClassification,
+    /// Audit and UX only — never read by a gate. One of `turn:<provider>`,
+    /// `mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,
+    /// `backfill:<provider>`, `declassified_by_user`. §12.4 grades the
+    /// declassification confirmation on whether it has ever been `mcp:*`.
+    ///
+    /// It therefore holds the **dominant** provenance, not the first or the
+    /// latest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`
+    /// reason and lets nothing displace an `mcp:` reason. Freezing it on the
+    /// first raise would answer "has it ever been `mcp:*`" with a flat no, since
+    /// Gate B's `turn:*` always lands before Gate C's `mcp:*`.
+    #[serde(default)]
+    pub privacy_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, ToSchema, sqlx::FromRow)]
+// `sqlx::FromRow` is hand-written rather than derived (see below) so
+// `privacy_tier` can use the same fail-closed read as [`Session`]. Deliberately
+// not a doc comment: utoipa publishes those as the schema's `description`, and
+// a note about a Rust row decoder is noise in the generated TypeScript client.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SessionSummary {
     pub id: String,
     pub working_dir: String,
@@ -180,6 +271,10 @@ pub struct SessionSummary {
     /// BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_type: Option<String>,
+    /// Issue #56. Carried here so the sidebar's recent-chats list can badge a
+    /// private chat without an N+1 `get_session` per row.
+    #[serde(default = "SessionClassification::public")]
+    pub privacy_tier: SessionClassification,
 }
 
 /// One turn's token usage, applied additively and atomically in SQL.
@@ -242,6 +337,9 @@ pub struct SessionUpdateBuilder<'a> {
     diverged_from: Option<Option<String>>,
     branch_point_msg_uid: Option<Option<String>>,
     parent_session_id: Option<Option<String>>,
+    /// Raise-only. There is deliberately NO setter that accepts an arbitrary
+    /// value, and the SQL refuses a lowering write even if one appeared.
+    privacy_raise: Option<(SessionClassification, String)>,
 }
 
 #[derive(Serialize, ToSchema, Debug)]
@@ -871,6 +969,7 @@ impl<'a> SessionUpdateBuilder<'a> {
             diverged_from: None,
             branch_point_msg_uid: None,
             parent_session_id: None,
+            privacy_raise: None,
         }
     }
 
@@ -1009,6 +1108,19 @@ impl<'a> SessionUpdateBuilder<'a> {
     /// subagent (BR-71 delegation lineage).
     pub fn parent_session_id(mut self, parent_session_id: Option<String>) -> Self {
         self.parent_session_id = Some(parent_session_id);
+        self
+    }
+
+    /// Raise the classification and record why. Monotone: passing `Public` to a
+    /// row that is not exactly `public` is a no-op in SQL, so no caller — a
+    /// route handler, a CLI command, a test, a future BR-71 tool, a hand-written
+    /// query through this builder — can lower the tier.
+    ///
+    /// `reason` is likewise monotone, by dominance rather than by recency: an
+    /// `mcp:` reason displaces a non-`mcp:` one and nothing displaces an `mcp:`
+    /// one, so §12.4 can ask whether a private data source was ever reached.
+    pub fn raise_privacy(mut self, to: SessionClassification, reason: &str) -> Self {
+        self.privacy_raise = Some((to, reason.to_string()));
         self
     }
 }
@@ -1217,6 +1329,58 @@ impl SessionManager {
         self.storage
             .create_session(working_dir, name, session_type)
             .await
+    }
+
+    /// Record that this chat has reached an extension belonging to
+    /// `institution` (issue #56, DR-26 / Task 50 Step 3).
+    ///
+    /// Monotone, and the union is computed **in SQL** for the reason
+    /// [`SessionUpdateBuilder::raise_privacy`]'s `CASE WHEN` is: a
+    /// read-modify-write from Rust has a window between the read and the write
+    /// that a concurrent tool call fits inside, and the institution it recorded
+    /// would be silently dropped. Two extensions of two institutions really can
+    /// be dispatched in one parallel tool batch, so that window is not
+    /// theoretical here.
+    ///
+    /// `NULL` and `''` are the empty set — every row that predates this column.
+    /// A value that is not a JSON array is left alone rather than replaced:
+    /// `json_each` errors on it and the statement fails, which surfaces as a
+    /// refused turn (the caller `?`s) instead of silently erasing whatever was
+    /// there.
+    ///
+    /// ⚠ **Known residual: "the extensions it touched" is the whole trigger.**
+    /// Content can enter a chat from elsewhere — a `kb_search` against an
+    /// institution's knowledge base, a `chatrecall` LOAD of that institution's
+    /// chat — and neither records anything here, so the reading chat holds the
+    /// content without carrying its owner. That is Step 3's literal scope, and
+    /// the **tier** axis has had exactly the same boundary since Task 10:
+    /// `raise_session_privacy` fires from the same one place, so reading a
+    /// private base does not privatise the reading chat either. Widening it is
+    /// one change to both axes. The symmetry is pinned by
+    /// `extension_manager::tests::the_two_chat_side_ratchets_share_one_production_call_site`,
+    /// which fails the build if the tier trigger widens and this one does not.
+    pub async fn record_session_affiliation(
+        &self,
+        session_id: &str,
+        institution: crate::privacy::affiliation::InstitutionId,
+    ) -> Result<()> {
+        self.storage
+            .record_session_affiliation(session_id, institution.as_str())
+            .await
+    }
+
+    /// The institutions whose extensions this chat has touched.
+    ///
+    /// ⚠ **`Err` is not "no institutions".** An unreadable or unparseable value
+    /// means the answer is unknown, and Gate D's caller must treat that the way
+    /// `KbAffiliation::Unknown` is treated — restrictively — rather than as an
+    /// empty set. Returning a `Result` rather than defaulting is what forces
+    /// that decision to be made at the gate instead of here.
+    pub async fn session_affiliations(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::BTreeSet<crate::privacy::affiliation::InstitutionId>> {
+        self.storage.session_affiliations(session_id).await
     }
 
     pub async fn get_session(&self, id: &str, include_messages: bool) -> Result<Session> {
@@ -1503,6 +1667,24 @@ impl SessionManager {
         self.storage.list_sessions_by_types(types).await
     }
 
+    /// [`Self::list_sessions_by_types`], including sessions that have recorded
+    /// no message yet.
+    ///
+    /// The CLI's `session list --subagents` is the only surface in the product
+    /// that shows subagent runs, and the default query INNER JOINs `messages` —
+    /// so a child that produced nothing was absent from the one listing that
+    /// could have found it. See
+    /// [`SessionStorage::list_sessions_by_types_maybe_empty`] for why the
+    /// sidebar keeps the opposite default.
+    pub async fn list_sessions_by_types_including_empty(
+        &self,
+        types: &[SessionType],
+    ) -> Result<Vec<Session>> {
+        self.storage
+            .list_sessions_by_types_maybe_empty(types, true)
+            .await
+    }
+
     pub async fn delete_session(&self, id: &str) -> Result<()> {
         self.storage.delete_session(id).await
     }
@@ -1592,6 +1774,303 @@ impl SessionManager {
         self.storage.export_session(id).await
     }
 
+    /// Issue #56 — **the privacy gate on exporting a chat.**
+    ///
+    /// Export had *zero* privacy checks: `biorouter session export <id>` read a
+    /// private transcript out of the store and wrote it to a plain file (or to
+    /// stdout) with no capability check, no proof of a human, no record, and no
+    /// word to the user that the file it just wrote carries none of the
+    /// protection the chat had. Every other way out of a private chat — running
+    /// a turn on a public model, spawning a public child, reaching a public
+    /// connector, declassifying — is gated; a `>` redirect was not.
+    ///
+    /// ⚠ **This does NOT declassify, and it must never grow into that.** The
+    /// ruling is explicit: the chat stays private. `to_classification` on the row
+    /// this writes is `private`, the same value as `from_classification`, and
+    /// nothing here touches `sessions.privacy_tier`. The ratchet is untouched —
+    /// the point of the record is that a copy left the store, not that the
+    /// original changed.
+    ///
+    /// Three conditions, in this order, and the order is the same one
+    /// [`crate::privacy::declassify`] establishes for the same reason: the
+    /// cheapest and most explicable refusal first, the operating-system dialog
+    /// last, so a user is never asked for their password and *then* told they
+    /// were never eligible.
+    ///
+    /// 1. **Capability.** `caller` is the tier of the model the exporting
+    ///    process is running (`ProviderTier`), and a public-capability caller may
+    ///    not take a private transcript out. This is the same
+    ///    caller-capability ≥ target-classification rule
+    ///    [`crate::privacy::visibility::may_read`] states, asked at the one place
+    ///    bytes leave the store as a file.
+    /// 2. **The person at the keyboard**, via the platform's own authentication
+    ///    ([`authenticate_export`]). Capability says *which model*; this says
+    ///    *who*, and neither substitutes for the other — an agent holding
+    ///    `developer__shell` inherits the terminal's capability but cannot
+    ///    satisfy a Touch ID / polkit / Windows Hello prompt.
+    /// 3. **The record**, written inside the same transaction that re-reads the
+    ///    row, so the tier the ledger reports is the tier that was true when the
+    ///    export was authorised rather than one read a moment earlier.
+    ///
+    /// ⚠ **A public chat is [`ExportDecision::Unrestricted`] and costs nothing** —
+    /// no prompt, no row. A gate that fired on every export is one people route
+    /// around, and DR-16's posture is a condition, not a wall in front of the
+    /// user. The master switch (DR-15) turns the whole thing off for the same
+    /// reason it turns off every other gate.
+    ///
+    /// The copy the caller must show is [`EXPORT_NOT_PROTECTED`]; it is a
+    /// constant here rather than in each surface so the terminal and the desktop
+    /// cannot describe the same file differently.
+    ///
+    /// # Which doors call this, and which do not
+    ///
+    /// ⚠ **State this honestly rather than let a reader assume it is universal.**
+    /// Three things in this tree turn a stored session into a file, and only one
+    /// of them consults this today:
+    ///
+    /// * `biorouter session export <id>` (`biorouter-cli`'s
+    ///   `handle_session_export`) — **calls this**, before it reads the
+    ///   transcript.
+    /// * `GET /sessions/{id}/export` (`biorouter-server`'s `routes/session.rs`,
+    ///   which the desktop's export button drives) — **does NOT call this yet**.
+    ///   It is gated by `routes/session_reach.rs`, so a caller must already
+    ///   reach the session, but it raises no system-authentication prompt,
+    ///   writes no ledger row and shows no copy. Wiring it is one call in that
+    ///   handler; this function is deliberately a `SessionManager` method, and
+    ///   not private to the CLI, so that call is available.
+    /// * `generate_diagnostics` (`session/diagnostics.rs`, driven by `biorouter
+    ///   session diagnostics`) — **does NOT call this**, and reaches
+    ///   [`Self::export_session`] directly.
+    ///
+    /// [`Self::export_session`] itself is intentionally left ungated: it is the
+    /// storage read, and a hard refusal inside it would take away the desktop's
+    /// ability to export a private chat *at all* (the route has no way to pass
+    /// an authorisation), which is a worse answer than the one above.
+    pub async fn authorize_export(
+        &self,
+        session_id: &str,
+        caller: crate::privacy::ProviderTier,
+        authorization: Option<&ExportAuthorization>,
+    ) -> Result<ExportDecision> {
+        // DR-15's master opt-out, read once, before the store is touched.
+        if !crate::privacy::privacy_tiers_enabled() {
+            return Ok(ExportDecision::Unrestricted);
+        }
+
+        let pool = self.storage.pool().await?;
+        let mut tx = pool.begin().await?;
+
+        let Some((raw_tier, reason_before, provider_name)) =
+            sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                "SELECT privacy_tier, privacy_reason, provider_name FROM sessions WHERE id = ?1",
+            )
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(ExportDecision::SessionNotFound);
+        };
+
+        // The tier the READER sees, not the raw bytes: `from_stored` fails
+        // closed, so a hand-edited or restored row that no gate in the tree
+        // treats as public is not treated as public here either.
+        if SessionClassification::from_stored(&raw_tier) == SessionClassification::Public {
+            return Ok(ExportDecision::Unrestricted);
+        }
+
+        if !caller.is_private() {
+            return Ok(ExportDecision::CapabilityRequired);
+        }
+
+        // ⚠ `covers`, not merely `is_some`: one authentication may cover a batch,
+        // but only the chats its dialog named (DR-20 point 4). `is_some_and`
+        // fails closed for a caller that presented none.
+        if !authorization.is_some_and(|granted| granted.covers(session_id)) {
+            return Ok(ExportDecision::SystemAuthenticationRequired);
+        }
+
+        let message_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE session_id = ?1")
+                .bind(session_id)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        // `actor`/`actor_kind` are both "user" for the reason
+        // `privacy::declassify` records: this daemon has no principal, so the
+        // honest thing the row can say is the KIND of actor, and a fabricated
+        // username would be worse than none.
+        //
+        // ⚠ `from` and `to` are BOTH `private`. Every consumer of this table
+        // that means "was declassified" keys on `to_classification = 'public'`
+        // (see `SessionStorage::NOT_DECLASSIFIED_BY_USER`), so an export row
+        // cannot be mistaken for a declassification by anything that reads it.
+        sqlx::query(
+            "INSERT INTO classification_audit ( \
+                session_id, from_classification, to_classification, reason, actor, actor_kind, \
+                app_version, provider_name_at_change, privacy_reason_before, \
+                message_count_at_change \
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )
+        .bind(session_id)
+        .bind(SessionClassification::Private.as_sql())
+        .bind(SessionClassification::Private.as_sql())
+        .bind(EXPORTED_BY_USER)
+        .bind("user")
+        .bind("user")
+        .bind(env!("CARGO_PKG_VERSION"))
+        .bind(provider_name)
+        .bind(reason_before)
+        .bind(message_count)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        tracing::info!(
+            session_id,
+            "a private chat was exported to a file (issue #56); the chat itself is unchanged"
+        );
+        Ok(ExportDecision::Authorized)
+    }
+}
+
+/// The `reason` an export writes into `classification_audit`.
+///
+/// Deliberately not one of `privacy::declassify`'s reasons: nothing about the
+/// session changed, and a value that collided with a declassification reason
+/// would make the ledger's own history unreadable.
+pub const EXPORTED_BY_USER: &str = "exported_by_user";
+
+/// What the user is told before a private chat is written to a file.
+///
+/// ⚠ **It is about the FILE, not about the chat.** The failure this copy exists
+/// to prevent is the user believing the exported markdown inherits the chat's
+/// protection: it does not, it is an ordinary file that any model, any tool and
+/// any sync client can read. The chat itself is unchanged and the sentence says
+/// so, because a user who thinks exporting declassified their chat will
+/// declassify it again "properly" and be surprised twice.
+///
+/// One constant so the terminal and the desktop cannot describe the same file
+/// differently.
+pub const EXPORT_NOT_PROTECTED: &str =
+    "This chat is private. The file this writes is NOT protected: it is an ordinary file on \
+     disk, readable by any model, any tool and anything that syncs your folders — the privacy \
+     tier does not travel with it. The chat itself stays private, and the export is recorded in \
+     the classification ledger.";
+
+/// What [`SessionManager::authorize_export`] decided.
+///
+/// Named outcomes rather than a `bool`, because a caller has to say something
+/// different for each: "you are on a public model", "the operating system did
+/// not authenticate you" and "there is no such chat" send a user to three
+/// different places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportDecision {
+    /// A public chat, or the master switch is off. Export as before: no prompt,
+    /// no record, no copy.
+    Unrestricted,
+    /// A private chat and the exporting process is running a public model.
+    CapabilityRequired,
+    /// A private chat, the capability is there, and no system authentication
+    /// covering this chat was presented.
+    SystemAuthenticationRequired,
+    /// Everything is satisfied and the ledger row has been written.
+    Authorized,
+    /// No such session.
+    SessionNotFound,
+}
+
+/// Proof that the **operating system** authenticated the user for an export, for
+/// the chats it named.
+///
+/// ⚠ **Unforgeable by the language, not by an audit.** The field is private and
+/// there is no public constructor: outside this module the only way to obtain
+/// one is [`authenticate_export`], which raises a real platform prompt and
+/// returns `Ok` for [`crate::privacy::system_auth::AuthOutcome::Approved`] and
+/// nothing else. This mirrors `privacy::declassify::SystemAuthorization`
+/// exactly, and is a separate type on purpose: an authorisation the user granted
+/// for "export this chat" must not be spendable on "make this chat public".
+///
+/// Not `Clone` and not `Copy`, for DR-20 point 2's reason — a value that could
+/// be duplicated could be stashed in a static and spent again next week.
+#[derive(Debug)]
+pub struct ExportAuthorization {
+    session_ids: Vec<String>,
+}
+
+impl ExportAuthorization {
+    /// Was `session_id` named by the prompt this authorisation came from?
+    pub fn covers(&self, session_id: &str) -> bool {
+        self.session_ids.iter().any(|id| id == session_id)
+    }
+
+    /// The same proof, for tests that exercise the gate rather than a prompt.
+    ///
+    /// `#[cfg(test)]` and private, so it is absent from every shipped binary and
+    /// unnameable outside this file even in a test build — the same shape
+    /// `privacy::declassify::SystemAuthorization::for_test` has, and for the same
+    /// reason.
+    #[cfg(test)]
+    fn for_test(session_ids: &[String]) -> Self {
+        Self {
+            session_ids: session_ids.to_vec(),
+        }
+    }
+}
+
+/// Raise the platform's authentication prompt **once** for an export of
+/// `session_ids`.
+///
+/// ⚠ **Call this LAST, after [`SessionManager::authorize_export`] has answered
+/// [`ExportDecision::SystemAuthenticationRequired`]** — i.e. only once the row is
+/// really private and the caller's capability really is sufficient. Prompting
+/// earlier asks a user for their password and then tells them they were never
+/// allowed.
+///
+/// The sentence the dialog shows says *export*, never *declassify*: a prompt
+/// that misdescribes what it authorises is the one thing an authorisation dialog
+/// cannot be.
+pub async fn authenticate_export(
+    session_ids: &[String],
+) -> Result<ExportAuthorization, crate::privacy::system_auth::SystemAuthRefusal> {
+    // `SystemAuthenticator` is deliberately NOT imported: `prompter()` returns a
+    // `&'static dyn SystemAuthenticator`, and a method called on a trait object
+    // resolves through the object's own vtable without the trait in scope.
+    use crate::privacy::system_auth::{self, AuthRequest};
+
+    let mut named: Vec<String> = session_ids.to_vec();
+    named.sort();
+    named.dedup();
+    let reason = if named.len() == 1 {
+        "Write a copy of this private Biorouter chat to a file.".to_string()
+    } else {
+        format!(
+            "Write copies of {} private Biorouter chats to files.",
+            named.len()
+        )
+    };
+    let Ok(request) = AuthRequest::new(reason, &named) else {
+        // An empty set names nothing, so the prompt could not state what it
+        // authorises and the proof would be spendable on nothing. Refused rather
+        // than accepted-and-ignored.
+        return Err(system_auth::SystemAuthRefusal {
+            outcome: system_auth::AuthOutcome::Denied,
+            message: "No chats were named, so there was nothing to authenticate for and \
+                      nothing was exported."
+                .to_string(),
+        });
+    };
+
+    let prompter = system_auth::prompter();
+    let outcome = prompter.authenticate(&request).await;
+    match system_auth::refusal_for(outcome, prompter) {
+        None => Ok(ExportAuthorization {
+            session_ids: request.session_ids,
+        }),
+        Some(refusal) => Err(refusal),
+    }
+}
+
+impl SessionManager {
     pub async fn import_session(&self, json: &str) -> Result<Session> {
         self.storage.import_session(self, json).await
     }
@@ -1828,6 +2307,10 @@ impl SessionManager {
         crate::utils::safe_truncate(&snippet, 60)
     }
 
+    /// Issue #56 Gate D. `caller_capability` is the reach the *reader* has, not
+    /// the classification of the session doing the searching: with
+    /// [`ProviderTier::Public`] the storage layer filters private sessions out
+    /// in SQL, before the `LIMIT` is applied.
     pub async fn search_chat_history(
         &self,
         query: &str,
@@ -1835,9 +2318,19 @@ impl SessionManager {
         after_date: Option<chrono::DateTime<chrono::Utc>>,
         before_date: Option<chrono::DateTime<chrono::Utc>>,
         exclude_session_id: Option<String>,
+        // Issue #56 Gate D and DR-26 / Task 50 Step 3: both axes together — see
+        // `chat_history_search::SearchReach`.
+        reach: crate::session::chat_history_search::SearchReach,
     ) -> Result<crate::session::chat_history_search::ChatRecallResults> {
         self.storage
-            .search_chat_history(query, limit, after_date, before_date, exclude_session_id)
+            .search_chat_history(
+                query,
+                limit,
+                after_date,
+                before_date,
+                exclude_session_id,
+                reach,
+            )
             .await
     }
 }
@@ -1895,6 +2388,8 @@ impl Default for Session {
             diverged_from: None,
             branch_point_msg_uid: None,
             parent_session_id: None,
+            privacy_tier: SessionClassification::Public,
+            privacy_reason: None,
         }
     }
 }
@@ -2009,6 +2504,118 @@ pub(crate) fn trim_to_last_complete_answer_at(
     }
 }
 
+/// The fail-closed read of `sessions.privacy_tier`, shared by every row reader
+/// so the two cannot drift.
+///
+/// This deliberately does NOT follow the `try_get(..).ok().flatten()` convention
+/// the optional columns beside it use: a projection that omits the column is a
+/// bug, and issue #56 would rather paint every row Private (loudly, and visibly
+/// to the user on day one) than quietly hand back Public.
+fn read_privacy_tier(row: &sqlx::sqlite::SqliteRow) -> SessionClassification {
+    use sqlx::Row;
+    row.try_get::<String, _>("privacy_tier")
+        .map(|s| SessionClassification::from_stored(&s))
+        .unwrap_or_else(|_| {
+            tracing::error!("privacy_tier missing from projection; reading Private");
+            SessionClassification::Private
+        })
+}
+
+/// What the one-time backfill did, in the four buckets a support conversation
+/// needs. Returned as well as logged, so a test can assert the numbers without
+/// reading a process-global log stream — see `fn_body` in this file's tests for
+/// why that distinction had to be made.
+///
+/// The first three partition the `sessions` table. `empty` cuts across it: it
+/// counts the message-less rows, which is the whole of the gap between these
+/// figures and the ones the user can see, because History hides them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct BackfillCounts {
+    /// Rows this run raised to Private, from a bound private-tier provider.
+    pub private: i64,
+    /// Rows this run raised to Private from the **turn ledger** — `token_events`
+    /// recorded a billed turn served by a private-tier provider, and the row's
+    /// `provider_name` (the LAST binding) did not say so.
+    ///
+    /// This is the population finding 9 is about, counted rather than described:
+    /// a chat that ran on Ollama and was then switched to Claude for one
+    /// formatting question. `provider_name` reads `anthropic`; the ledger still
+    /// holds the Ollama turns. Disjoint from [`Self::private`] by construction —
+    /// the last-bound statement runs first, so anything it raised is no longer
+    /// `privacy_tier = 'public'` when the ledger statement runs.
+    pub private_from_turn_history: i64,
+    /// Rows that matched a raise on the evidence but were **skipped because the
+    /// user declassified them**. Not an error; the number exists so a support
+    /// conversation can tell "the migration found nothing" apart from "the
+    /// migration found it and correctly left it alone".
+    pub declassified_skipped: i64,
+    /// Rows left public with a provider name recorded — a read, not a guess.
+    pub public_named: i64,
+    /// Rows left public with NO provider recorded. Unknown provenance, failed
+    /// open (DR-10). Historically the largest of the three.
+    pub unknown_provider: i64,
+    /// Rows with no messages at all, whatever their tier.
+    pub empty: i64,
+}
+
+/// The numbers issue #56's day-one notice quotes (§15.5), over the population
+/// **History actually shows**.
+///
+/// That qualifier is the whole point of the type. The raw `sessions` table holds
+/// message-less rows — a chat opened and abandoned, a workspace shell — and
+/// `list_sessions_by_types` INNER JOINs `messages`, so those rows exist in the
+/// database and nowhere in the user's window. Measured on the operator's
+/// 8,415-row database on 2026-08-03, the two populations differ by more than 2×:
+/// **1,486** rows the backfill would raise, **654** of them visible. A notice
+/// quoting the raw number tells the user to go and act on 832 conversations they
+/// cannot see.
+///
+/// ⚠ Those are a measurement with a date on it, not a constant. §16's table has
+/// been re-measured three times during this work and moved by a factor of three
+/// in four days; a figure in this comment is stale the moment the user opens
+/// another chat. Nothing reads them — every number the user sees is computed —
+/// and any figure quoted here must carry the date it was taken.
+///
+/// The first three fields partition [`Self::total_visible`]: private (whatever
+/// the migration or a later turn marked), then the public remainder split by
+/// whether the row records a provider at all. The unknown bucket is the one the
+/// backfill fails **open** on, and it is the largest of the three.
+/// `pub(crate)`, matching [`Self::privacy_notice_counts`], its only producer. A
+/// `pub` struct an external crate can name but never obtain is a wart; when the
+/// HTTP route that serves these numbers lands, both widen together.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PrivacyNoticeCounts {
+    /// Private to the fail-closed reader, and visible in History.
+    pub private_visible: i64,
+    /// Public, visible, and bound to a named provider — the migration read that
+    /// name and concluded public.
+    pub public_named_visible: i64,
+    /// Public, visible, and bound to NO provider. The migration could not tell,
+    /// and DR-10 says fail open. These are the conversations of genuinely
+    /// unknown provenance.
+    pub unknown_provider_visible: i64,
+    /// The denominator: user + scheduled sessions with at least one message.
+    pub total_visible: i64,
+}
+
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        use sqlx::Row;
+
+        Ok(SessionSummary {
+            id: row.try_get("id")?,
+            working_dir: row.try_get("working_dir")?,
+            name: row.try_get("name")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+            message_count: row.try_get("message_count")?,
+            parent_session_id: row.try_get("parent_session_id").ok().flatten(),
+            session_type: row.try_get("session_type").ok().flatten(),
+            privacy_tier: read_privacy_tier(row),
+        })
+    }
+}
+
 impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
@@ -2065,13 +2672,176 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
             diverged_from: row.try_get("diverged_from").ok().flatten(),
             // Tolerant read: SELECTs that omit the column (e.g. the session
             // list) yield None rather than erroring, mirroring `model_config`.
+            // The privacy tier below deliberately does NOT follow this
+            // convention — see `SessionClassification::from_stored`.
             branch_point_msg_uid: row.try_get("branch_point_msg_uid").ok().flatten(),
             parent_session_id: row.try_get("parent_session_id").ok().flatten(),
+            privacy_tier: read_privacy_tier(row),
+            privacy_reason: row.try_get("privacy_reason").ok().flatten(),
         })
     }
 }
 
+/// What [`SessionStorage::bind_provider_if_allowed`] did.
+///
+/// Three outcomes, because two of them are indistinguishable by `rows_affected`
+/// and they mean different things to a caller: a bind that the privacy ratchet
+/// refused is a 409 the user can act on, and a bind against an id that names no
+/// row is a bug or a stale client. A `bool` return collapses them, and the
+/// collapse runs in the dangerous direction — a mistyped id would be reported to
+/// the user as "this chat is private".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindOutcome {
+    Bound,
+    RefusedByPrivacy,
+    NoSuchSession,
+}
+
 impl SessionStorage {
+    /// See [`SessionManager::record_session_affiliation`]. One statement, so a
+    /// concurrent recorder cannot lose an institution between a read and a
+    /// write.
+    async fn record_session_affiliation(&self, session_id: &str, institution: &str) -> Result<()> {
+        let pool = self.pool().await?;
+        // DR-15 / AR-7: with the master opt-out off nothing is recorded, for the
+        // reason the tier ratchet stops — this column is monotone and
+        // re-enabling never revisits a row, so a ratchet that kept firing would
+        // be a deferred, permanent impact on a feature the user turned off.
+        if !crate::privacy::privacy_tiers_enabled() {
+            return Ok(());
+        }
+        // The `ORDER BY` is cosmetic and nothing may come to depend on it:
+        // SQLite does not formally guarantee that an aggregate consumes an
+        // ordered subquery in that order. It is here so the stored JSON is
+        // stable for a human reading the row; every reader
+        // (`SessionStorage::session_affiliations`) collects into a `BTreeSet`,
+        // so the set is the value and the sequence is not.
+        sqlx::query(
+            r#"
+            UPDATE sessions
+               SET session_affiliations = (
+                     SELECT json_group_array(value) FROM (
+                       SELECT DISTINCT value
+                         FROM json_each(COALESCE(NULLIF(session_affiliations, ''), '[]'))
+                       UNION
+                       SELECT ?2
+                       ORDER BY value
+                     )
+                   )
+             WHERE id = ?1
+            "#,
+        )
+        .bind(session_id)
+        .bind(institution)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// See [`SessionManager::session_affiliations`].
+    async fn session_affiliations(
+        &self,
+        session_id: &str,
+    ) -> Result<std::collections::BTreeSet<crate::privacy::affiliation::InstitutionId>> {
+        let pool = self.pool().await?;
+        let raw: Option<String> =
+            sqlx::query_scalar("SELECT session_affiliations FROM sessions WHERE id = ?1")
+                .bind(session_id)
+                .fetch_optional(pool)
+                .await?
+                .flatten();
+        let Some(raw) = raw.filter(|s| !s.is_empty()) else {
+            // NULL, absent or empty: this chat has touched no institution's
+            // extension, or predates the column. The Missing direction — a fact,
+            // not an unknown.
+            return Ok(Default::default());
+        };
+        let ids: Vec<String> = serde_json::from_str(&raw)?;
+        Ok(ids
+            .iter()
+            .map(|id| crate::privacy::affiliation::InstitutionId::new(id))
+            .collect())
+    }
+
+    /// Bind a provider, atomically refusing a public one on a private session
+    /// (issue #56, Gate A).
+    ///
+    /// The predicate is in the `WHERE`, not in Rust, so a concurrent ratchet
+    /// cannot interleave into "private session, public provider bound". The
+    /// natural implementation — `SELECT privacy_tier`, decide, `UPDATE` — has a
+    /// window between the read and the write that a ratchet fits inside, and
+    /// nothing about its shape says so.
+    ///
+    /// ⚠ **The test rendezvous belongs HERE, immediately before `.execute`, and
+    /// nowhere else.** Its contract is *"after every read this function
+    /// performs, before the statement that writes"*, and that is the only
+    /// position from which it can distinguish this implementation from the wrong
+    /// one. Called from `Agent::update_provider` instead — before this function
+    /// is even entered — a read-then-write helper passes: the forced ratchet
+    /// commits first and the helper's own read dutifully refuses. If a future
+    /// refactor gives this function a read of its own, the seam call moves down
+    /// below it; it never moves up.
+    ///
+    /// ⚠ `rows_affected == 0` is NOT the refusal on its own: an id that names no
+    /// row produces exactly the same zero. Returning `RefusedByPrivacy` there
+    /// would surface a stale or mistyped id as a 409 privacy refusal, and would
+    /// make Gate A's first test pass for the wrong reason against a stale
+    /// fixture id — the one way that test can lie. The two are distinguished
+    /// with a single follow-up read in the zero case, on a path that is already
+    /// an error.
+    pub(crate) async fn bind_provider_if_allowed(
+        &self,
+        session_id: &str,
+        provider_name: &str,
+        model_config_json: &str,
+        incoming_is_private: bool,
+    ) -> Result<BindOutcome> {
+        let pool = self.pool().await?;
+        // DR-15's master opt-out, read INSIDE the gate rather than through an
+        // `is_enabled()` wrapper, so a mid-session change is honoured and the
+        // opt-out is one auditable line rather than an absent gate.
+        //
+        // It is folded into the bound parameter rather than branching around the
+        // statement, so the toggle cannot change WHICH statement runs — the
+        // atomicity argument in this function's doc comment is about that one
+        // `UPDATE … WHERE`, and a second code path would need its own.
+        //
+        // A direct read, not a `CallCapability`: a provider bind is not a tool
+        // call and has no admitted capability to inherit.
+        let admits_anything = incoming_is_private || !crate::privacy::privacy_tiers_enabled();
+        let write = sqlx::query(
+            r#"
+            UPDATE sessions
+               SET provider_name = ?, model_config_json = ?, updated_at = datetime('now')
+             WHERE id = ?
+               AND (privacy_tier = 'public' OR ? = 1)
+            "#,
+        )
+        .bind(provider_name)
+        .bind(model_config_json)
+        .bind(session_id)
+        .bind(i64::from(admits_anything));
+        // ⚠ The last statement before the write, and test-only. Read the ⚠ in
+        //    this function's doc comment before moving it.
+        #[cfg(test)]
+        crate::agents::agent::seams::before_bind_write().await;
+        let res = write.execute(pool).await?;
+        if res.rows_affected() > 0 {
+            return Ok(BindOutcome::Bound);
+        }
+        // Zero rows: either the row is private and the provider is public, or
+        // there is no row with that id at all.
+        let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
+            .bind(session_id)
+            .fetch_one(pool)
+            .await?;
+        Ok(if exists {
+            BindOutcome::RefusedByPrivacy
+        } else {
+            BindOutcome::NoSuchSession
+        })
+    }
+
     fn create_pool(path: &Path) -> Pool<Sqlite> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).expect("Failed to create session database directory");
@@ -2113,7 +2883,14 @@ impl SessionStorage {
         self.pool.close().await;
     }
 
-    async fn pool(&self) -> Result<&Pool<Sqlite>> {
+    /// The migrated pool. `pub(crate)` rather than private because
+    /// [`crate::privacy::declassify`] owns the ONE statement in the tree that
+    /// lowers `privacy_tier`, and it deliberately does not go through
+    /// [`SessionUpdateBuilder`] — the builder's monotone `CASE WHEN` cannot
+    /// express a lowering, and giving it a way to would hand every caller in the
+    /// tree the same ability. Still crate-internal: no route, no MCP tool and no
+    /// CLI command can reach a raw connection through this.
+    pub(crate) async fn pool(&self) -> Result<&Pool<Sqlite>> {
         self.initialized
             .get_or_try_init(|| async {
                 let schema_exists = sqlx::query_scalar::<_, bool>(
@@ -2129,6 +2906,41 @@ impl SessionStorage {
                     Self::create_schema(&self.pool).await?;
                     if let Err(e) = Self::import_legacy(&self.pool, &self.session_dir).await {
                         warn!("Failed to import some legacy sessions: {}", e);
+                    }
+                    // ⚠ Issue #56 finding 10 — **the classification backfill must
+                    // run HERE too, and this branch is the reason it is not
+                    // enough to own the numbered arms.**
+                    //
+                    // `create_schema` stamps `CURRENT_SCHEMA_VERSION` before this
+                    // line, so `run_migrations` will never enter arm 19 or arm 20
+                    // on this database in any later process either. Every legacy
+                    // JSONL chat therefore arrived Public and stayed Public:
+                    // `import_legacy_session` binds `session.privacy_tier`, which
+                    // deserialises from a file written years before the column
+                    // existed and so takes `#[serde(default =
+                    // "SessionClassification::public")]`.
+                    //
+                    // The innocent path is not exotic — it is `sessions.db` being
+                    // lost or reset (a support instruction, a Reset App Data, a
+                    // machine move). The user's Ollama history comes back public,
+                    // silently, on a database that reports itself fully migrated.
+                    //
+                    // ⚠ Failure here must NOT be logged and forgotten, which is the
+                    // shape the rest of this branch uses. `create_schema` has
+                    // already stamped the counter at the top, so a swallowed
+                    // failure leaves imported rows public on a database that no
+                    // arm will ever re-enter — the same silent-public outcome, one
+                    // level down. It is also not worth aborting a first launch
+                    // over. So the counter is walked back below the repair arm and
+                    // the next launch retries there. `retreat_to_privacy_repair`
+                    // owns that, and says why it is safe.
+                    if let Err(e) = Self::backfill_privacy_from_recorded_provenance(&self.pool).await
+                    {
+                        warn!(
+                            "issue #56: the privacy backfill failed on the fresh-database import \
+                             path; imported legacy chats stay public until it succeeds: {e}"
+                        );
+                        Self::retreat_to_privacy_repair(&self.pool).await;
                     }
                 }
                 Ok::<(), anyhow::Error>(())
@@ -2185,6 +2997,9 @@ impl SessionStorage {
                 model_config_json TEXT,
                 diverged_from TEXT,
                 parent_session_id TEXT,
+                privacy_tier TEXT NOT NULL DEFAULT 'public',
+                privacy_reason TEXT,
+                session_affiliations TEXT,
                 external_key TEXT,
                 branch_point_msg_uid TEXT,
                 incarnation INTEGER NOT NULL DEFAULT 0
@@ -2219,6 +3034,18 @@ impl SessionStorage {
 
         // BR-7 externalized tool-result payloads (migration 16).
         Self::create_message_blobs_table(pool).await?;
+
+        // #56 declassification ledger (migration 18), created inline for fresh
+        // DBs. The privacy columns are already in the `sessions` DDL above; this
+        // is the other half of the same migration's shape.
+        Self::create_classification_audit_table(pool).await?;
+
+        // #56 Task 49 (DR-26): the user's cross-affiliation grants. Created here
+        // for a fresh database and by `ensure_privacy_schema` for every existing
+        // one; see the DDL's own comment for why it consumes no migration number.
+        sqlx::query(CROSS_AFFILIATION_GRANTS_DDL)
+            .execute(pool)
+            .await?;
 
         sqlx::query("CREATE INDEX idx_messages_session ON messages(session_id)")
             .execute(pool)
@@ -2360,8 +3187,9 @@ impl SessionStorage {
             total_tokens, input_tokens, output_tokens,
             accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
             schedule_id, workflow_json, user_workflow_values_json,
-            provider_name, model_config_json, diverged_from, parent_session_id, incarnation
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, random())
+            provider_name, model_config_json, diverged_from, parent_session_id,
+            privacy_tier, privacy_reason, incarnation
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, random())
         "#,
         )
         .bind(&session.id)
@@ -2385,6 +3213,8 @@ impl SessionStorage {
         .bind(model_config_json)
         .bind(&session.diverged_from)
         .bind(&session.parent_session_id)
+        .bind(session.privacy_tier.as_sql())
+        .bind(&session.privacy_reason)
         .execute(&mut *tx)
         .await?;
 
@@ -2450,6 +3280,7 @@ impl SessionStorage {
         Self::create_checkpoints_table(pool).await?;
         Self::ensure_message_identity_schema(pool).await?;
         Self::ensure_session_incarnation_schema(pool).await?;
+        Self::ensure_privacy_schema(pool).await?;
         Self::create_and_backfill_messages_fts(pool, false).await?;
         Self::create_message_blobs_table(pool).await?;
         Ok(())
@@ -2833,12 +3664,95 @@ impl SessionStorage {
                 .execute(pool)
                 .await?;
             }
+            18 => {
+                // Shape-guarded, unlike every arm above it, because migration
+                // numbers have collided across development branches before —
+                // the arm directly above this one is BR-71's, and it landed
+                // while issue #56 was still calling this number 17. A raw ALTER
+                // on a column another build already created is `duplicate
+                // column name`, which aborts startup.
+                Self::ensure_privacy_schema(pool).await?;
+            }
+            19 => {
+                // ⚠ **A SEPARATE arm from 18, and this is not tidiness.** The
+                // columns landed in 18 while this task was still being written,
+                // so every database that ran a build from that window — every
+                // developer's, and the operator's, whose `schema_version` records
+                // 18 applied on 2026-08-01 — already stands AT 18 and would never
+                // re-enter that arm. Folding the backfill in beside the columns
+                // therefore shipped a statement that could not run on any machine
+                // that had opened the branch: 1,486 chats stranded public, on the
+                // very machine the feature was measured against. That is issue
+                // #56's own O10 hazard (a migration number consumed by testers)
+                // recurring one arm later, and the fix is the same one the tree
+                // already applies to the columns — do not add new work to a
+                // number someone has already passed.
+                //
+                // `ensure_privacy_schema` is called again here, and it is not
+                // redundant: this arm must not assume 18 ran. A database that
+                // reached 18 by a route that skipped it (the same collision the
+                // helper exists for) would otherwise hit `no such column:
+                // privacy_tier` and abort startup. The helper is idempotent and
+                // shape-guarded, so the second call is free.
+                Self::ensure_privacy_schema(pool).await?;
+                // ...and the backfill. See the function's own comment for why a
+                // startup-repeating home would still be wrong even now that the
+                // statement is declassification-guarded. The counts it returns are
+                // logged inside it; nothing on this path branches on them.
+                let _ = Self::backfill_privacy_from_recorded_provenance(pool).await?;
+            }
+            20 => {
+                // ⚠ **The repair arm, and it exists because arm 19 already ran on
+                // the databases that matter most.**
+                //
+                // Arm 19 shipped a backfill that read exactly one column —
+                // `sessions.provider_name`, the LAST provider the row was bound
+                // to. A chat that ran its history on Ollama and was then switched
+                // to Claude for one formatting question reads `anthropic` there
+                // and was backfilled **public**, with a private transcript. That
+                // is issue #56 finding 9, and it is not a "going forward" problem:
+                // the rows are already on disk, on every database that has opened
+                // this branch — including the operator's, whose `schema_version`
+                // records 19 applied on 2026-08-03.
+                //
+                // Arm 19 cannot be edited to fix them. That is the O10 hazard this
+                // file already records twice: work added to a number a machine has
+                // passed runs on no machine that has passed it. So the widened
+                // backfill needs a number nobody has passed, which is this one.
+                //
+                // It is the SAME function as arm 19's, deliberately. A database
+                // arriving from ≤18 runs it twice in one ladder, and that is the
+                // point — the statements are idempotent (`AND privacy_tier =
+                // 'public'`) and declassification-guarded, so "ran twice" is a
+                // property this arm proves on every upgrade rather than a hazard.
+                // `the_repair_arm_reruns_the_backfill_without_undoing_a_declassification`
+                // is the behavioural check.
+                //
+                // `ensure_privacy_schema` first, for arm 19's reason: this arm must
+                // not assume any earlier arm ran.
+                Self::ensure_privacy_schema(pool).await?;
+                let _ = Self::backfill_privacy_from_recorded_provenance(pool).await?;
+            }
             _ => {
                 anyhow::bail!("Unknown migration version: {}", version);
             }
         }
 
         Ok(())
+    }
+
+    /// Whether `table` exists. Sibling of [`Self::table_has_column`]: a
+    /// `pragma_table_info` on a missing table returns zero rows, so the column
+    /// check alone cannot tell "no such table" from "no such column", and the
+    /// backfill's shape guards need both answers.
+    async fn table_exists(pool: &Pool<Sqlite>, table: &str) -> Result<bool> {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type='table' AND name = ?1)",
+        )
+        .bind(table)
+        .fetch_one(pool)
+        .await?;
+        Ok(exists)
     }
 
     async fn table_has_column(pool: &Pool<Sqlite>, table: &str, column: &str) -> Result<bool> {
@@ -2892,6 +3806,607 @@ impl SessionStorage {
         sqlx::query("UPDATE sessions SET incarnation = random() WHERE IFNULL(incarnation, 0) = 0")
             .execute(pool)
             .await?;
+        Ok(())
+    }
+
+    /// Issue #56's columns, added idempotently and **version-independently**.
+    ///
+    /// The precedent is [`Self::ensure_session_incarnation_schema`], and the
+    /// reason is the one `run_migrations` already records above the reconcile
+    /// calls: development builds have shipped overlapping migration numbers
+    /// before. Here it was not hypothetical — `feat/br71-workspace-control`
+    /// claimed `CURRENT_SCHEMA_VERSION = 17` with its own `17 =>` arm adding
+    /// `parent_session_id` while this work was still calling that number its
+    /// own, and it landed first. With this helper the arm number stops being
+    /// load-bearing and either merge order is safe.
+    ///
+    /// No backfill lives here. The backfill runs from the numbered arms and from
+    /// the fresh-database import, never per launch: a startup-repeating `WHERE
+    /// provider_name IN (..)` would re-privatise a session the user has just
+    /// declassified, because declassification deliberately leaves
+    /// `provider_name` untouched. That statement now also carries its own
+    /// declassification guard — which makes a re-run non-destructive and is
+    /// exactly why it must still not live here, since one guard between a
+    /// per-launch rewrite of every row and the user's declassifications is one
+    /// mechanism too few.
+    async fn ensure_privacy_schema(pool: &Pool<Sqlite>) -> Result<()> {
+        // BEGIN IMMEDIATE serializes the check-then-ALTER sequence across
+        // concurrently running Biorouter processes, exactly as
+        // `reconcile_usage_schema` does above. Without it two processes can both
+        // observe the same missing column before either adds it, and the loser
+        // aborts startup with `duplicate column name` — which is a migration
+        // failure, not a retryable one. The desktop daemon, a terminal
+        // `biorouter` and a scheduled job share this database, and the first
+        // launch after an upgrade is when they are likeliest to start together.
+        let mut connection = pool.acquire().await?;
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *connection)
+            .await?;
+        let result = Self::ensure_privacy_schema_locked(&mut connection).await;
+        match result {
+            Ok(()) => {
+                sqlx::query("COMMIT").execute(&mut *connection).await?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = sqlx::query("ROLLBACK").execute(&mut *connection).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn ensure_privacy_schema_locked(connection: &mut sqlx::SqliteConnection) -> Result<()> {
+        for (column, sql_type) in [
+            ("privacy_tier", "TEXT NOT NULL DEFAULT 'public'"),
+            ("privacy_reason", "TEXT"),
+            ("parent_session_id", "TEXT"),
+            // Issue #56 DR-26 / Task 50 Step 3. A JSON array of institution ids
+            // — the union of the institutions whose extensions this chat has
+            // touched. NULL on every row that predates it, which reads as the
+            // empty set: the same Missing-is-permissive direction the knowledge
+            // store's affiliations map takes, and the same one the tier
+            // migration took (AR-2).
+            ("session_affiliations", "TEXT"),
+        ] {
+            let exists: i32 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_table_info('sessions') WHERE name = ?1",
+            )
+            .bind(column)
+            .fetch_one(&mut *connection)
+            .await?;
+            if exists == 0 {
+                sqlx::query(&format!(
+                    "ALTER TABLE sessions ADD COLUMN {column} {sql_type}"
+                ))
+                .execute(&mut *connection)
+                .await?;
+            }
+        }
+
+        sqlx::query(CLASSIFICATION_AUDIT_DDL)
+            .execute(&mut *connection)
+            .await?;
+        // Task 49's grant store, in the same idempotent, version-independent,
+        // BEGIN IMMEDIATE-serialised place as the ledger above. A database that
+        // already stands at `CURRENT_SCHEMA_VERSION` reaches this and no numbered
+        // arm, which is the whole reason the table lives here.
+        sqlx::query(CROSS_AFFILIATION_GRANTS_DDL)
+            .execute(&mut *connection)
+            .await?;
+        Ok(())
+    }
+
+    /// The providers whose bound sessions the one-time backfill privatises.
+    ///
+    /// A **literal**, not a lookup through `providers::providers()`, and the
+    /// reason is not convenience. A migration classifies rows written by other
+    /// builds: a database carrying `versa_bedrock` sessions can be opened by a
+    /// binary compiled without the `aws-providers` feature, where that provider
+    /// is absent from the live registry entirely and a registry-derived list
+    /// would silently leave those rows public. The migration must also run
+    /// before any provider is constructed, and must not depend on the user's
+    /// config being readable.
+    ///
+    /// `the_backfilled_provider_set_is_every_provider_that_claims_private` is
+    /// what stops the two drifting apart.
+    const BACKFILL_PRIVATE_PROVIDERS: [&'static str; 4] =
+        ["llamacpp", "ollama", "versa_azure", "versa_bedrock"];
+
+    /// The backfill's `UPDATE`, composed rather than written out — and split out
+    /// here so that the one composed tier assignment in the tree has a name a
+    /// test can point at.
+    ///
+    /// ⚠ **Composition is how a tier assignment hides from the audits.**
+    /// `exactly_one_statement_in_the_tree_assigns_a_public_classification` (in
+    /// `privacy/declassify.rs`) matches one literal spelling, line by line, and
+    /// says of itself that a statement built from variables is invisible to it.
+    /// This is the tree's first runtime-composed `SET privacy_tier`, so it is the
+    /// first thing shaped like that bypass — benign, because it interpolates
+    /// [`SessionClassification::PRIVATE_SQL`] and raises rather than lowers, but
+    /// the shape is now precedent. `the_backfill_statement_raises_and_nothing_else`
+    /// pins the emitted text so the next edit to it has to be deliberate.
+    ///
+    /// It is composed at all because the provider list must stay a single source
+    /// of truth with [`Self::BACKFILL_PRIVATE_PROVIDERS`], which
+    /// `the_backfilled_provider_set_is_every_provider_that_claims_private` checks
+    /// against the shipped provider modules.
+    fn backfill_update_sql() -> String {
+        format!(
+            "UPDATE sessions \
+                SET privacy_tier = '{private}', \
+                    privacy_reason = 'backfill:' || provider_name \
+              WHERE provider_name IN ({list}) \
+                AND privacy_tier = '{public}' \
+                AND {not_declassified}",
+            private = SessionClassification::PRIVATE_SQL,
+            public = SessionClassification::PUBLIC_SQL,
+            list = Self::quoted_private_providers(),
+            not_declassified = Self::NOT_DECLASSIFIED_BY_USER,
+        )
+    }
+
+    /// [`Self::BACKFILL_PRIVATE_PROVIDERS`] as a SQL `IN` list, shared by the two
+    /// raising statements so a provider can never be in one and not the other.
+    fn quoted_private_providers() -> String {
+        Self::BACKFILL_PRIVATE_PROVIDERS
+            .iter()
+            .map(|name| format!("'{name}'"))
+            .collect::<Vec<_>>()
+            .join(",")
+    }
+
+    /// The declassification exclusion, as a correlated `NOT EXISTS` over the
+    /// append-only ledger.
+    ///
+    /// ⚠ **`AND privacy_tier = 'public'` is NOT this check, and reading it as
+    /// though it were is the bug that made the backfill a one-shot statement.**
+    /// A declassified row IS public — `declassify` lowers the tier and
+    /// deliberately leaves `provider_name` in place, because a public chat is
+    /// allowed to run a private model. So the tier guard admits exactly the rows
+    /// the user has just rescued, and a second run of the raising statement would
+    /// silently undo the one irreversible action the design gives them.
+    ///
+    /// Keyed on the **ledger**, not on `privacy_reason = 'declassified_by_user'`.
+    /// The reason column holds the *current* provenance and is overwritten by the
+    /// next raise, so a chat that was declassified and later re-raised by a real
+    /// turn no longer records the declassification anywhere else; the ledger row
+    /// is append-only and permanent. It is also the artefact §12.5 already
+    /// guarantees exists for every declassification, so this cannot drift from
+    /// what "the user declassified it" means.
+    ///
+    /// The consequence is the point: with this clause the backfill is safe to run
+    /// more than once, which is what lets arm 20 repair arm 19's rows at all.
+    /// `the_repair_arm_reruns_the_backfill_without_undoing_a_declassification`
+    /// is the behavioural proof, and it fails if this clause is deleted.
+    const NOT_DECLASSIFIED_BY_USER: &str = "NOT EXISTS (SELECT 1 FROM classification_audit \
+         ca WHERE ca.session_id = sessions.id AND ca.to_classification = 'public')";
+
+    /// The **turn-ledger** raise — issue #56 finding 9.
+    ///
+    /// ⚠ **`sessions.provider_name` is the last binding, not the history**, and
+    /// that residual used to be documented and left. The innocent path it costs:
+    /// a user runs a chat on Ollama, then switches to Claude for one formatting
+    /// question. `provider_name` reads `anthropic`, and the chat backfills
+    /// **public** with a private transcript sitting in it.
+    ///
+    /// `token_events` is the fix, and it is not a transcript scan — the residual
+    /// the design refused. It is a per-turn ledger the app has written since
+    /// migration 11: one append-only row per billed turn, carrying the
+    /// `session_id` and the `provider` that served it, from the same
+    /// `Provider::get_name()` string that `sessions.provider_name` is bound from.
+    /// A row there is the same fact the live ratchet fires on — *this session ran
+    /// a turn against this provider* — recorded before the ratchet existed.
+    ///
+    /// **The reason is `turn:<provider>`, not `backfill:<provider>`, and that is
+    /// a deliberate downgrade of the declassification control.** §12.4 grades on
+    /// what actually happened: `backfill:*` takes the strong (typed-phrase +
+    /// OS-password) control because the migration inferred a tier from a binding
+    /// and observed nothing, and `strong_confirmation_reason` says exactly that to
+    /// the user in those words. That sentence is FALSE for these rows — the ledger
+    /// is an observation of a turn, which is precisely what `turn:*` means and
+    /// what the live ratchet writes. Stamping `backfill:` here would show every
+    /// one of these users a reason that did not happen, which is the specific
+    /// falsehood `strong_confirmation_reason` exists to have stopped. And the
+    /// comparison that matters is not against `backfill:` but against the status
+    /// quo, which is **public with no control at all**: single-click-private is
+    /// strictly more protection than the row has today.
+    ///
+    /// The named provider is the EARLIEST *trustworthy* private-tier one in the
+    /// ledger, which is the turn that should have ratcheted the row had the
+    /// feature existed then.
+    ///
+    /// Deliberately a second statement rather than an `OR` on the first: the two
+    /// carry different provenance and different confirmation grades, and the
+    /// ordering (last-bound first) is what keeps [`BackfillCounts::private`] and
+    /// [`BackfillCounts::private_from_turn_history`] disjoint.
+    fn backfill_turn_history_update_sql() -> String {
+        let evidence = Self::TRUSTWORTHY_TURN_PROVIDER;
+        let list = Self::quoted_private_providers();
+        format!(
+            "UPDATE sessions \
+                SET privacy_tier = '{private}', \
+                    privacy_reason = 'turn:' || ( \
+                        SELECT te.provider FROM token_events te \
+                         WHERE te.session_id = sessions.id \
+                           AND te.provider IN ({list}) \
+                           AND {evidence} \
+                         ORDER BY te.ts ASC, te.id ASC LIMIT 1) \
+              WHERE privacy_tier = '{public}' \
+                AND EXISTS (SELECT 1 FROM token_events te \
+                             WHERE te.session_id = sessions.id \
+                               AND te.provider IN ({list}) \
+                               AND {evidence}) \
+                AND {not_declassified}",
+            private = SessionClassification::PRIVATE_SQL,
+            public = SessionClassification::PUBLIC_SQL,
+            not_declassified = Self::NOT_DECLASSIFIED_BY_USER,
+        )
+    }
+
+    /// Which `token_events` rows may be read as evidence of *which provider
+    /// served this turn*.
+    ///
+    /// ⚠ **Not every row's `provider` describes the call it sits on, and this is
+    /// the tree's own ruling rather than a new one.**
+    /// `reconcile_usage_schema_locked` runs on every startup and NULLs
+    /// `provider`/`model_id` on exactly the rows this predicate excludes, with the
+    /// reason written beside it: the old v11/v12 development migrations copied
+    /// each session's **final** model backward across its whole history, so
+    /// without a durable event identity (`event_key`) or a billed total there is
+    /// no evidence those values describe the original call.
+    ///
+    /// That is the SAME defect as finding 9 — a per-session last-provider value
+    /// masquerading as history — one table over. Reading those rows would have
+    /// re-imported the bug into its own fix, and on a first upgrade it would
+    /// actually happen: `run_migrations` walks the numbered arms **before** it
+    /// calls the reconcile, so on that one run the untrustworthy values are still
+    /// on disk when the backfill looks.
+    ///
+    /// Found by `the_repair_arm_reruns_the_backfill_without_undoing_a_declassification`
+    /// reporting one skipped row where two were expected — the fixture's own
+    /// ledger row had been scrubbed by the reconcile between the arm and the
+    /// assertion. `an_untrustworthy_ledger_row_does_not_classify_anything` is the
+    /// direct test.
+    const TRUSTWORTHY_TURN_PROVIDER: &str =
+        "(te.event_key IS NOT NULL OR te.billed_total_tokens IS NOT NULL)";
+
+    /// How many rows BOTH raising statements would have raised but skipped
+    /// because the user declassified them.
+    ///
+    /// Reporting only — but it is the number that distinguishes "the guard is
+    /// working" from "the guard matched nothing", and those are the same zero
+    /// everywhere else.
+    fn declassified_skipped_sql() -> String {
+        let evidence = Self::TRUSTWORTHY_TURN_PROVIDER;
+        let list = Self::quoted_private_providers();
+        format!(
+            "SELECT COUNT(*) FROM sessions \
+              WHERE privacy_tier = '{public}' \
+                AND (provider_name IN ({list}) \
+                     OR EXISTS (SELECT 1 FROM token_events te \
+                                 WHERE te.session_id = sessions.id \
+                                   AND te.provider IN ({list}) \
+                                   AND {evidence})) \
+                AND NOT ({not_declassified})",
+            public = SessionClassification::PUBLIC_SQL,
+            not_declassified = Self::NOT_DECLASSIFIED_BY_USER,
+        )
+    }
+
+    /// Issue #56 §15 — the classification backfill, from every provenance the
+    /// database actually records.
+    ///
+    /// ⚠ **It belongs to the numbered migration arms and to the fresh-database
+    /// import, and to nothing else.** [`Self::ensure_privacy_schema`] runs on
+    /// **every** startup, and that remains the wrong home even now that the
+    /// statements are declassification-guarded: the guard makes a re-run
+    /// *non-destructive*, it does not make a per-launch re-scan of every row a
+    /// thing this code should do, and one guard standing between a per-startup
+    /// statement and the user's declassifications is one mechanism too few.
+    /// `the_backfill_runs_from_the_migration_arms_and_the_import_and_nowhere_else`
+    /// pins the call sites.
+    ///
+    /// **Two evidence sources, in this order.**
+    ///
+    /// 1. [`Self::backfill_update_sql`] — the row's bound provider. What issue
+    ///    #56 shipped, unchanged apart from the declassification guard.
+    /// 2. [`Self::backfill_turn_history_update_sql`] — the `token_events` turn
+    ///    ledger. This is finding 9's fix: `provider_name` is the LAST binding,
+    ///    so a chat that ran on Ollama and was later switched to Claude read
+    ///    `anthropic` and backfilled public with a private transcript. The ledger
+    ///    still holds its Ollama turns. See that function for why those rows are
+    ///    stamped `turn:` rather than `backfill:`.
+    ///
+    /// The order is load-bearing for the counts, not for the outcome: the second
+    /// statement's `AND privacy_tier = 'public'` means it can only see rows the
+    /// first left alone, which is what makes the two counts disjoint.
+    ///
+    /// Still fails OPEN where it has nothing (DR-10). A fail-CLOSED backfill
+    /// (NULL provider plus at least one message ⇒ private) was rejected: a user
+    /// who has only ever used a commercial provider would find a large slice of
+    /// their history marked private on first launch, refused on the model they
+    /// normally use, with only an irreversible declassification as the exit, one
+    /// chat at a time.
+    ///
+    /// The residual, narrower than it was but still real: a session whose private
+    /// turns predate `token_events.provider` (migration 11) and which was later
+    /// rebound to a public provider records the private work in neither column,
+    /// and backfills public. There is no transcript scan and there will not be
+    /// one. `docs/security/privacy-tiers-migration.md` says this to the user.
+    ///
+    /// `AND privacy_tier = 'public'` is not redundant: a database that reached an
+    /// arm with the columns already present (BR-71's number collision is exactly
+    /// that case) can hold rows a running build already raised, and the ratchet
+    /// must never be walked backwards or re-stamped with a weaker provenance.
+    async fn backfill_privacy_from_recorded_provenance(
+        pool: &Pool<Sqlite>,
+    ) -> Result<BackfillCounts> {
+        // Shape-guarded for the same reason `ensure_privacy_schema` is: this arm
+        // must not assume an earlier arm ran. `provider_name` arrives in
+        // migration 6, so every database that walked the ladder has it — but a
+        // database that reaches here without it records no provider for any row,
+        // which is precisely the "unknown, so fail open" case. Backfilling
+        // nothing is the correct answer; aborting startup with `no such column`
+        // is not. `experimental_loop_v11_through_v14_shapes_upgrade_without_loss`
+        // and `pr13_v12_database_reconciles_usage_and_adds_loop_schema` are the
+        // two shapes that reach this branch.
+        if !Self::table_has_column(pool, "sessions", "provider_name").await? {
+            warn!(
+                "issue #56: skipping the privacy backfill — this database's `sessions` \
+                 table has no `provider_name`, so no row's tier can be inferred"
+            );
+            return Ok(BackfillCounts::default());
+        }
+
+        // ⚠ The declassification guard reads `classification_audit`, so BOTH
+        // statements below name a table that a database arriving from an early
+        // enough version has never had. `no such table` there is a failed
+        // startup, and — worse — the obvious repair (drop the guard when the
+        // table is missing) is the un-declassification bug wearing a fallback.
+        // Creating it is unconditionally correct instead: the DDL is
+        // `IF NOT EXISTS`, `ensure_privacy_schema` runs the identical statement
+        // on every launch anyway, and a database with no ledger has by
+        // construction recorded no declassification for the guard to miss.
+        sqlx::query(CLASSIFICATION_AUDIT_DDL).execute(pool).await?;
+
+        // The turn ledger is older still (`token_events` at migration 9, its
+        // `provider` column at 11, `event_key`/`billed_total_tokens` at 12-14),
+        // but a database that reaches here without it must lose the second
+        // evidence source, not the startup. All four columns are required, not
+        // just `provider`: without the two identity columns
+        // `TRUSTWORTHY_TURN_PROVIDER` cannot be evaluated, and dropping the
+        // predicate instead would read exactly the backward-copied values it
+        // exists to reject.
+        let turn_ledger = Self::table_exists(pool, "token_events").await?
+            && Self::table_has_column(pool, "token_events", "provider").await?
+            && Self::table_has_column(pool, "token_events", "event_key").await?
+            && Self::table_has_column(pool, "token_events", "billed_total_tokens").await?;
+        if !turn_ledger {
+            warn!(
+                "issue #56: this database has no usable turn ledger, so the backfill reads \
+                 only each row's bound provider — chats that switched providers may stay public"
+            );
+        }
+
+        let private = sqlx::query(&Self::backfill_update_sql())
+            .execute(pool)
+            .await?
+            .rows_affected() as i64;
+
+        let private_from_turn_history = if turn_ledger {
+            sqlx::query(&Self::backfill_turn_history_update_sql())
+                .execute(pool)
+                .await?
+                .rows_affected() as i64
+        } else {
+            0
+        };
+
+        // ── Everything below this line is REPORTING, and none of it may fail the
+        // migration. ────────────────────────────────────────────────────────────
+        //
+        // ⚠ The `UPDATE` has already committed by the time these run, but the
+        // version counter has not: `run_migrations` calls `update_schema_version`
+        // only after `apply_migration` returns `Ok`. So a `?` on a COUNT would
+        // leave the database backfilled and still numbered one below the arm —
+        // and the next launch would re-enter this arm and re-run a statement
+        // whose whole contract is that it runs once. The `AND privacy_tier =
+        // 'public'` guard means the re-run is not destructive today, but the
+        // one-shot property must not rest on a second mechanism, and none of
+        // these numbers is worth a failed startup: they feed a log line that
+        // nothing branches on.
+        let count = |sql: String| async move {
+            match sqlx::query_scalar::<_, i64>(&sql).fetch_one(pool).await {
+                Ok(value) => value,
+                Err(error) => {
+                    warn!(
+                        %error,
+                        "issue #56: a privacy-backfill report query failed; the backfill \
+                         itself already committed, so this is logged and not raised"
+                    );
+                    -1
+                }
+            }
+        };
+
+        // What the migration did, in the buckets a support conversation actually
+        // needs. `public_named`/`unknown_provider` plus the private rows partition
+        // the table; `backfilled_empty` cuts across it and is the gap between
+        // these numbers and the ones the user can see, since History hides
+        // message-less rows. `-1` in any of them means "the count failed", which
+        // is why they are `i64` and not `u64`.
+        let public_named = count(
+            "SELECT COUNT(*) FROM sessions \
+              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') <> ''"
+                .to_string(),
+        )
+        .await;
+        let unknown_provider = count(
+            "SELECT COUNT(*) FROM sessions \
+              WHERE IFNULL(privacy_tier, '') = 'public' AND IFNULL(provider_name, '') = ''"
+                .to_string(),
+        )
+        .await;
+        let empty = count(
+            "SELECT COUNT(*) FROM sessions s \
+              WHERE NOT EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)"
+                .to_string(),
+        )
+        .await;
+        // Rows the evidence pointed at and the guard held back. Zero on a machine
+        // that has never declassified anything, which is most of them — its value
+        // is that a NON-zero here is the only place the guard is visible at all.
+        let declassified_skipped = if turn_ledger {
+            count(Self::declassified_skipped_sql()).await
+        } else {
+            0
+        };
+
+        let visible = Self::privacy_notice_counts(pool)
+            .await
+            .unwrap_or_else(|error| {
+                warn!(
+                    %error,
+                    "issue #56: could not compute the day-one notice counts for the \
+                     migration log; the renderer computes its own from the session list"
+                );
+                PrivacyNoticeCounts::default()
+            });
+
+        info!(
+            backfilled_private = private,
+            backfilled_private_from_turn_history = private_from_turn_history,
+            backfilled_declassified_skipped = declassified_skipped,
+            backfilled_public_named = public_named,
+            backfilled_unknown_provider = unknown_provider,
+            backfilled_empty = empty,
+            notice_private_visible = visible.private_visible,
+            notice_public_named_visible = visible.public_named_visible,
+            notice_unknown_provider_visible = visible.unknown_provider_visible,
+            notice_total_visible = visible.total_visible,
+            "issue #56: privacy backfill from each session's bound provider and turn ledger"
+        );
+        Ok(BackfillCounts {
+            private,
+            private_from_turn_history,
+            declassified_skipped,
+            public_named,
+            unknown_provider,
+            empty,
+        })
+    }
+
+    /// Walk the recorded schema version back below the privacy repair arm, so the
+    /// next launch re-enters it.
+    ///
+    /// The one caller is the fresh-database import path, where `create_schema`
+    /// has already stamped `CURRENT_SCHEMA_VERSION` and a failed backfill would
+    /// otherwise strand imported chats public on a database that reports itself
+    /// fully migrated — no arm re-runs, and the failure is a log line nobody
+    /// reads. Walking the counter back converts it into a retry.
+    ///
+    /// Safe because arm 20 is `ensure_privacy_schema` + this backfill, and both
+    /// are idempotent: the columns are shape-guarded and the raising statements
+    /// are `AND privacy_tier = 'public'` plus the declassification guard. Deleting
+    /// only versions at or above the repair arm keeps every lower arm's record, so
+    /// no earlier migration re-runs.
+    ///
+    /// Best-effort by construction — it is already the recovery path, and a
+    /// failure here leaves exactly the state that not calling it would.
+    ///
+    /// ⚠ **The DELETE alone is not the rewind, and a version of this that stopped
+    /// there was written and caught by
+    /// `the_retreat_moves_the_counter_back_into_the_repair_arm`.** `create_schema`
+    /// records exactly ONE row, so deleting everything at or above the repair arm
+    /// empties the table — and `get_schema_version` then reads `MAX(version)` over
+    /// no rows and reports **0**. The next launch would replay the entire ladder
+    /// from migration 1 against a database that already has every table, which
+    /// aborts startup on `table … already exists`. Turning a mis-classification
+    /// into an unopenable database is not a recovery. The row below is what makes
+    /// the counter land ON the arm's predecessor instead of at the bottom.
+    async fn retreat_to_privacy_repair(pool: &Pool<Sqlite>) {
+        let below = PRIVACY_REPAIR_ARM - 1;
+        let rewind = async {
+            sqlx::query("DELETE FROM schema_version WHERE version >= ?1")
+                .bind(PRIVACY_REPAIR_ARM)
+                .execute(pool)
+                .await?;
+            // `OR IGNORE` because `version` is the primary key and a database
+            // that walked the ladder already records this number.
+            sqlx::query("INSERT OR IGNORE INTO schema_version (version) VALUES (?1)")
+                .bind(below)
+                .execute(pool)
+                .await?;
+            Ok::<(), sqlx::Error>(())
+        };
+        match rewind.await {
+            Ok(()) => warn!(
+                "issue #56: rewound the schema counter to v{below}; the next launch will \
+                 re-enter the privacy repair arm and retry the backfill"
+            ),
+            Err(error) => warn!(
+                %error,
+                "issue #56: could not rewind the schema counter — imported legacy chats may \
+                 stay classified public"
+            ),
+        }
+    }
+
+    /// The day-one notice's numbers (§15.5), computed from the user's own
+    /// database — never hardcoded, because the measured figures moved by a
+    /// factor of three in four days while this was being designed.
+    ///
+    /// The population is History's: `session_type IN ('user','scheduled')` with
+    /// at least one message. `EXISTS` rather than
+    /// `list_sessions_by_types`' `INNER JOIN … GROUP BY`, which selects the same
+    /// rows but has to materialise every session to count them.
+    ///
+    /// `IFNULL(privacy_tier, '') <> 'public'` mirrors
+    /// [`SessionClassification::from_stored`]: anything that is not exactly
+    /// `public` reads Private, so the notice counts what the badges in History
+    /// will actually show rather than what a permissive parse would.
+    pub(crate) async fn privacy_notice_counts(pool: &Pool<Sqlite>) -> Result<PrivacyNoticeCounts> {
+        let (private_visible, public_named_visible, unknown_provider_visible, total_visible) =
+            sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                // COALESCE because SUM over zero rows is NULL, not 0 — a fresh
+                // install would otherwise fail to decode into `i64` and take
+                // the migration down with it.
+                "SELECT
+                    COALESCE(SUM(CASE WHEN IFNULL(s.privacy_tier, '') <> 'public'
+                                      THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN IFNULL(s.privacy_tier, '') = 'public'
+                                       AND IFNULL(s.provider_name, '') <> ''
+                                      THEN 1 ELSE 0 END), 0),
+                    COALESCE(SUM(CASE WHEN IFNULL(s.privacy_tier, '') = 'public'
+                                       AND IFNULL(s.provider_name, '') = ''
+                                      THEN 1 ELSE 0 END), 0),
+                    COUNT(*)
+                   FROM sessions s
+                  WHERE s.session_type IN ('user', 'scheduled')
+                    AND EXISTS (SELECT 1 FROM messages m WHERE m.session_id = s.id)",
+            )
+            .fetch_one(pool)
+            .await?;
+
+        Ok(PrivacyNoticeCounts {
+            private_visible,
+            public_named_visible,
+            unknown_provider_visible,
+            total_visible,
+        })
+    }
+
+    /// The append-only declassification ledger (§12.5).
+    ///
+    /// Shared by `create_schema` and [`Self::ensure_privacy_schema`] rather than
+    /// living only in the reconcile, because the two schema paths are mutually
+    /// exclusive: a database with no `schema_version` table takes `create_schema`
+    /// and never reaches `run_migrations` in that process. Creating the table
+    /// only in the reconcile would leave a first-run install without it until
+    /// the *second* launch — and a declassification in between fails with
+    /// `no such table`.
+    async fn create_classification_audit_table(pool: &Pool<Sqlite>) -> Result<()> {
+        sqlx::query(CLASSIFICATION_AUDIT_DDL).execute(pool).await?;
         Ok(())
     }
 
@@ -3092,7 +4607,8 @@ impl SessionStorage {
                total_tokens, input_tokens, output_tokens,
                accumulated_total_tokens, accumulated_input_tokens, accumulated_output_tokens,
                schedule_id, workflow_json, user_workflow_values_json,
-               provider_name, model_config_json, diverged_from, branch_point_msg_uid, parent_session_id
+               provider_name, model_config_json, diverged_from, branch_point_msg_uid, parent_session_id,
+               privacy_tier, privacy_reason
         FROM sessions
         WHERE id = ?
     "#,
@@ -3339,6 +4855,77 @@ impl SessionStorage {
         add_update!(builder.branch_point_msg_uid, "branch_point_msg_uid");
         add_update!(builder.parent_session_id, "parent_session_id");
 
+        // THE load-bearing line of issue #56. Emitted as a CASE so the storage
+        // layer, not the caller, is what refuses a downgrade. Concurrency is
+        // safe in both orderings. `privacy_reason` is guarded by the same
+        // predicate, so a refused raise cannot rewrite the provenance the
+        // declassification dialog grades on (§12.4). Both right-hand sides read
+        // the row's pre-UPDATE `privacy_tier`, which is what makes the pair
+        // agree with each other.
+        //
+        // The predicate is "the row is exactly `public`", NOT "the row is not
+        // `private`", so that it is the same predicate
+        // `SessionClassification::from_stored` reads with. That reader fails
+        // closed: NULL, `PUBLIC` and anything else unrecognised all come back
+        // Private. Keying the SQL on `= 'private'` instead would leave every one
+        // of those rows — private to the whole Rust tree — assignable to a
+        // canonical `public` by any caller, which is the reversal this fragment
+        // exists to make impossible. A non-canonical value is preserved verbatim
+        // rather than canonicalised, so the anomaly stays visible; it reads
+        // Private either way.
+        //
+        // `privacy_reason` is not merely frozen alongside it: it accumulates by
+        // DOMINANCE, `mcp:*` over everything else. §12.4 grades the
+        // declassification confirmation on whether a private data source was
+        // ever reached (`mcp:*` ⇒ typed confirmation) or whether the session only
+        // ran a turn against a private endpoint (`turn:*` ⇒ single click with
+        // undo). Gate B raises at reply entry and Gate C on dispatch, and Gate C
+        // can only fire in a session already bound to a private provider — so
+        // `turn:*` always lands first and every `mcp:` event arrives at a row
+        // that is already private. A plainly frozen reason would hide every
+        // `mcp:` event that has ever happened. Last-write-wins is equally wrong
+        // in the other direction: the next ordinary turn would erase it. So an
+        // `mcp:` raise displaces a non-`mcp:` provenance, and nothing displaces
+        // an `mcp:` one. The vocabulary is `Session::privacy_reason`'s; SQLite's
+        // LIKE is ASCII-case-insensitive, which only ever grades a session more
+        // strictly.
+        //
+        // ⚠ Both dominance arms are guarded on the row being ALREADY non-public;
+        // the trailing `ELSE ?` writes the incoming reason unconditionally. That
+        // is right today, because on a public row there is no provenance worth
+        // keeping. It stops being right the moment §12.5 declassification starts
+        // leaving `declassified_by_user` in `privacy_reason` on a row it has just
+        // returned to `public` — a later `raise_privacy(Public, ..)` would then
+        // erase the record of the declassification, and
+        // `every_projection_that_builds_a_session_reads_the_column` already
+        // treats a reason on a public row as meaningful data. Whoever lands
+        // §12.5 declassification has to decide here whether the `ELSE` arm
+        // preserves a `declassified_by_user` provenance the way the `mcp:` arm
+        // preserves its own.
+        //
+        // (This note used to name Gate B's task as one of the deciders. Gate B
+        // has landed and correctly decided nothing: its turn ratchet raises a
+        // PUBLIC row to private with `turn:<provider>`, which is precisely the
+        // `ELSE` arm doing the right thing on a row with no provenance to keep.
+        // The trigger is declassification existing, not this arm acquiring
+        // another caller.)
+        if builder.privacy_raise.is_some() {
+            if !updates.is_empty() {
+                query.push_str(", ");
+            }
+            updates.push("privacy_tier");
+            query.push_str(
+                "privacy_tier = CASE WHEN IFNULL(privacy_tier, '') <> 'public' \
+                 THEN privacy_tier ELSE ? END, \
+                 privacy_reason = CASE \
+                 WHEN IFNULL(privacy_tier, '') <> 'public' \
+                 AND IFNULL(privacy_reason, '') NOT LIKE 'mcp:%' \
+                 AND ? LIKE 'mcp:%' THEN ? \
+                 WHEN IFNULL(privacy_tier, '') <> 'public' THEN privacy_reason \
+                 ELSE ? END",
+            );
+        }
+
         if updates.is_empty() {
             return Ok(());
         }
@@ -3420,6 +5007,15 @@ impl SessionStorage {
         }
         if let Some(parent_session_id) = builder.parent_session_id {
             q = q.bind(parent_session_id);
+        }
+        // Same relative position as the clause pair appended above: the tier's
+        // one placeholder, then the reason's three — the dominance test, the
+        // escalated value, and the value written when the row was assignable.
+        if let Some((to, reason)) = builder.privacy_raise {
+            q = q.bind(to.as_sql());
+            q = q.bind(reason.clone());
+            q = q.bind(reason.clone());
+            q = q.bind(reason);
         }
 
         let pool = self.pool().await?;
@@ -4262,10 +5858,42 @@ impl SessionStorage {
     }
 
     async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
+        self.list_sessions_by_types_maybe_empty(types, false).await
+    }
+
+    /// `list_sessions_by_types`, with the `messages` join selectable.
+    ///
+    /// ⚠ **`include_empty` exists because a subagent that produced nothing was
+    /// invisible.** The historical query INNER JOINs `messages`, so a row with no
+    /// message is not returned at all — and that is right for History (an
+    /// "Untitled chat" placeholder must not appear in the sidebar) but wrong for
+    /// `biorouter session list --subagents`, which is the **only** surface that
+    /// can show a subagent run at all. A child that was spawned and died before
+    /// its first message simply vanished there, so the one place a user could
+    /// have gone looking for it reported that it never existed.
+    ///
+    /// `COUNT(m.id)` ignores NULLs, so the LEFT JOIN still yields `message_count
+    /// = 0` rather than 1 — the same reasoning `list_session_summaries`'
+    /// `include_empty` already records.
+    ///
+    /// The historical entry point above delegates with `false`, byte for byte,
+    /// so the sidebar route (`biorouter-server`'s `/sessions`) and
+    /// `commands/term.rs` are unchanged and no caller outside this file had to
+    /// move.
+    async fn list_sessions_by_types_maybe_empty(
+        &self,
+        types: &[SessionType],
+        include_empty: bool,
+    ) -> Result<Vec<Session>> {
         if types.is_empty() {
             return Ok(Vec::new());
         }
 
+        let join = if include_empty {
+            "LEFT JOIN messages m ON s.id = m.session_id"
+        } else {
+            "INNER JOIN messages m ON s.id = m.session_id"
+        };
         let placeholders: String = types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let query = format!(
             r#"
@@ -4274,14 +5902,14 @@ impl SessionStorage {
                    s.accumulated_total_tokens, s.accumulated_input_tokens, s.accumulated_output_tokens,
                    s.schedule_id, s.workflow_json, s.user_workflow_values_json,
                    s.provider_name, s.model_config_json, s.diverged_from, s.parent_session_id,
+                   s.privacy_tier, s.privacy_reason,
                    COUNT(m.id) as message_count
             FROM sessions s
-            INNER JOIN messages m ON s.id = m.session_id
-            WHERE s.session_type IN ({})
+            {join}
+            WHERE s.session_type IN ({placeholders})
             GROUP BY s.id
             ORDER BY s.updated_at DESC
-            "#,
-            placeholders
+            "#
         );
 
         let mut q = sqlx::query_as::<_, Session>(&query);
@@ -4329,6 +5957,7 @@ impl SessionStorage {
                    s.updated_at,
                    s.parent_session_id,
                    s.session_type,
+                   s.privacy_tier,
                    COUNT(m.id) AS message_count
             FROM sessions s
             {join}
@@ -4923,8 +6552,26 @@ impl SessionStorage {
             )
             .await?;
 
+        // Parsed, but never authoritative for `public`. An imported transcript
+        // of unknown provenance is sensitive: unlike migration, there is no
+        // local evidence to reason from, so the imported field is read ONLY in
+        // the raising direction (issue #56 §9.3 B1).
+        //
+        // ⚠ On today's two-element lattice that max COLLAPSES — `Private` is the
+        // top, so the result is `Private` whatever the file said, and `imported`
+        // decides nothing. Review flagged this as arithmetic that reads live and
+        // is not, and it is written down rather than simplified away for one
+        // reason: `max` is what the rule ACTUALLY is ("only ever raise"), so a
+        // third tier above Private would be honoured here instead of silently
+        // floored to Private by a hardcoded variant. The discriminating half of
+        // the rule is therefore the one its test asserts — an imported
+        // `"public"` cannot lower the row — and not the "raised by it" half,
+        // which no value in this enum can exercise.
+        let imported = import.privacy_tier;
+
         let mut builder = session_manager
             .update(&session.id)
+            .raise_privacy(SessionClassification::Private.max(imported), "imported")
             .extension_data(import.extension_data)
             .total_tokens(import.total_tokens)
             .input_tokens(import.input_tokens)
@@ -4950,6 +6597,69 @@ impl SessionStorage {
         self.get_session(&session.id, true).await
     }
 
+    /// Create a session derived from `source`, carrying everything a branch must
+    /// inherit. The three copy paths (`copy_session`, `diverge_session_for_edit`,
+    /// `diverge_session`) each hand-rolled their own builder, and none of them
+    /// carried `provider_name`/`model_config`/`privacy_tier` — so a branch of a
+    /// private chat resolved through `restore_provider_from_session`'s
+    /// `Config::global()` fallback and ran private history on the user's default
+    /// public model, with no prompt (issue #56 §9.3 B1).
+    ///
+    /// Callers add only their own extras (`user_provided_name`, `diverged_from`,
+    /// `branch_point_msg_uid`) and their own conversation, so the carry-over
+    /// cannot be missed by one of them.
+    ///
+    /// ⚠ **`raise_privacy` is called unconditionally, and on a PUBLIC source
+    /// that writes a `privacy_reason` where the child previously had none.** The
+    /// tier is untouched — a public source raises a public child to public — but
+    /// the dominance `CASE` in [`SessionUpdateBuilder::apply`] guards both preserving
+    /// arms on the row being already non-public, so the trailing `ELSE` fires
+    /// and stamps `diverged:<parent>` on a public row. Harmless today:
+    /// `privacy_reason` is audit and UX only, never read by a gate, and the
+    /// value is true of the row it lands on.
+    ///
+    /// It stops being harmless at exactly the point that `apply`'s own note
+    /// names — when §12.5 declassification starts leaving `declassified_by_user`
+    /// in `privacy_reason` on a row it has just returned to public. A copy of a
+    /// declassified chat would then erase that provenance. Whoever lands
+    /// declassification has to decide there whether the `ELSE` arm preserves it
+    /// the way the `mcp:` arm preserves its own; this call site is the one that
+    /// will hit it, so it is named here as well as there.
+    async fn create_derived_session(
+        &self,
+        session_manager: &SessionManager,
+        source: &Session,
+        new_name: String,
+        reason: &str,
+    ) -> Result<Session> {
+        let new_session = self
+            .create_session(source.working_dir.clone(), new_name, source.session_type)
+            .await?;
+        let mut update = session_manager
+            .update(&new_session.id)
+            .extension_data(source.extension_data.clone())
+            .schedule_id(source.schedule_id.clone())
+            .workflow(source.workflow.clone())
+            .user_workflow_values(source.user_workflow_values.clone())
+            .raise_privacy(source.privacy_tier, reason);
+        // ⚠ The two provider setters take VALUES, not Options:
+        // `provider_name(impl Into<String>)` and `model_config(ModelConfig)`
+        // each wrap their argument as `Some(Some(v))`, because
+        // `Option<Option<T>>` is how this builder distinguishes "leave alone"
+        // from "set to NULL". Neither setter has an Option-taking variant, and
+        // passing `source.model_config.clone()` straight in is a type error. A source
+        // with no provider must leave the child's column untouched rather than
+        // writing NULL over the default.
+        if let Some(name) = source.provider_name.clone() {
+            update = update.provider_name(name);
+        }
+        if let Some(cfg) = source.model_config.clone() {
+            update = update.model_config(cfg);
+        }
+        update.apply().await?;
+        self.get_session(&new_session.id, false).await
+    }
+
     async fn copy_session(
         &self,
         session_manager: &SessionManager,
@@ -4959,24 +6669,16 @@ impl SessionStorage {
         let original_session = self.get_session(session_id, true).await?;
 
         let new_session = self
-            .create_session(
-                original_session.working_dir.clone(),
+            .create_derived_session(
+                session_manager,
+                &original_session,
                 new_name,
-                original_session.session_type,
+                &format!("diverged:{session_id}"),
             )
             .await?;
 
-        session_manager
-            .update(&new_session.id)
-            .extension_data(original_session.extension_data)
-            .schedule_id(original_session.schedule_id)
-            .workflow(original_session.workflow)
-            .user_workflow_values(original_session.user_workflow_values)
-            .apply()
-            .await?;
-
-        if let Some(conversation) = original_session.conversation {
-            self.replace_conversation(&new_session.id, &conversation)
+        if let Some(conversation) = original_session.conversation.as_ref() {
+            self.replace_conversation(&new_session.id, conversation)
                 .await?;
         }
 
@@ -4999,9 +6701,32 @@ impl SessionStorage {
                 .and_then(|message| message.id.clone())
         });
 
+        // The same carry-over `copy_session` performs, spelled here rather than
+        // delegated, so no copy path can quietly stop using the shared helper
+        // (`no_copy_path_hand_rolls_its_own_builder_any_more`).
+        //
+        // ⚠ This path used to call `copy_session`, which re-read the parent a
+        // second time. It now branches from the SINGLE `original` snapshot read
+        // above, so `branch_point` and the copied conversation can no longer
+        // disagree — a message appended to the parent between the two former
+        // reads used to land in the branch's conversation while sitting outside
+        // the branch point computed from the earlier read. The deliberate
+        // consequence is that such a message is no longer carried at all, which
+        // is the consistent reading of "branch the conversation the caller
+        // asked about".
         let new_session = self
-            .copy_session(session_manager, session_id, new_name.clone())
+            .create_derived_session(
+                session_manager,
+                &original,
+                new_name.clone(),
+                &format!("diverged:{session_id}"),
+            )
             .await?;
+
+        if let Some(conversation) = original.conversation.as_ref() {
+            self.replace_conversation(&new_session.id, conversation)
+                .await?;
+        }
 
         session_manager
             .update(&new_session.id)
@@ -5053,23 +6778,21 @@ impl SessionStorage {
                 .and_then(|m| m.id.clone())
         });
 
-        // Mint the branch session and copy the carry-over metadata (mirrors
-        // copy_session, but writes the *trimmed* conversation rather than the
-        // full one).
+        // Mint the branch session with the shared carry-over (same as
+        // copy_session, but this path writes the *trimmed* conversation rather
+        // than the full one). This is the path `POST /sessions/{id}/diverge`
+        // reaches — it does NOT go through `copy_session`.
         let new_session = self
-            .create_session(
-                original.working_dir.clone(),
+            .create_derived_session(
+                session_manager,
+                &original,
                 new_name.clone(),
-                original.session_type,
+                &format!("diverged:{session_id}"),
             )
             .await?;
 
         session_manager
             .update(&new_session.id)
-            .extension_data(original.extension_data)
-            .schedule_id(original.schedule_id)
-            .workflow(original.workflow)
-            .user_workflow_values(original.user_workflow_values)
             // Lock the computed/custom name (so the auto-namer never clobbers
             // the branch marker) and record the lineage pointer + divergence point.
             .user_provided_name(new_name)
@@ -5369,6 +7092,9 @@ impl SessionStorage {
         after_date: Option<chrono::DateTime<chrono::Utc>>,
         before_date: Option<chrono::DateTime<chrono::Utc>>,
         exclude_session_id: Option<String>,
+        // Issue #56 Gate D and DR-26 / Task 50 Step 3: both axes together — see
+        // `chat_history_search::SearchReach`.
+        reach: crate::session::chat_history_search::SearchReach,
     ) -> Result<crate::session::chat_history_search::ChatRecallResults> {
         use crate::session::chat_history_search::ChatHistorySearch;
 
@@ -5380,6 +7106,7 @@ impl SessionStorage {
             after_date,
             before_date,
             exclude_session_id,
+            reach,
         )
         .execute()
         .await
@@ -5937,6 +7664,270 @@ mod tests {
     use tempfile::TempDir;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    /// Issue #56 — the export gate, at every corner.
+    ///
+    /// ⚠ These drive the REAL decision path (`SessionManager::authorize_export`)
+    /// against a scratch store, never a re-derivation of the rule. The one thing
+    /// they cannot drive is the platform dialog: `authenticate_export` raises a
+    /// real Touch ID / polkit / Windows Hello prompt and there is no test seam
+    /// for it here, so the `Authorized` arm is reached with an
+    /// `ExportAuthorization` minted by `for_test` — which is exactly what
+    /// `privacy::declassify`'s own tests do with `SystemAuthorization`.
+    mod export_gate {
+        use super::*;
+        use crate::privacy::ProviderTier;
+
+        async fn private_chat(sm: &SessionManager) -> String {
+            let s = sm
+                .create_session(
+                    std::env::temp_dir(),
+                    "a cohort chat".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&s.id, &Message::user().with_text("patient MRN 12345"))
+                .await
+                .unwrap();
+            sm.update(&s.id)
+                .provider_name("versa_azure")
+                .raise_privacy(SessionClassification::Private, "mcp:ucsfomopagent")
+                .apply()
+                .await
+                .unwrap();
+            s.id
+        }
+
+        async fn public_chat(sm: &SessionManager) -> String {
+            let s = sm
+                .create_session(
+                    std::env::temp_dir(),
+                    "a public chat".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&s.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+            s.id
+        }
+
+        async fn export_rows(
+            sm: &SessionManager,
+            session_id: &str,
+        ) -> Vec<(String, String, String)> {
+            let pool = sm.storage.pool().await.unwrap();
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT from_classification, to_classification, reason FROM \
+                 classification_audit WHERE session_id = ?1 ORDER BY id",
+            )
+            .bind(session_id)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+        }
+
+        /// The headline: a public-capability caller cannot take a private
+        /// transcript out of the store, and nothing is recorded when it tries.
+        #[tokio::test]
+        async fn a_public_caller_may_not_export_a_private_chat() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Public, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::CapabilityRequired
+            );
+            assert!(
+                export_rows(&sm, &id).await.is_empty(),
+                "a refused export must leave no ledger row"
+            );
+        }
+
+        /// …and neither may a private-capability caller that the operating
+        /// system has not authenticated. The two proofs answer different
+        /// questions and neither substitutes for the other.
+        #[tokio::test]
+        async fn private_capability_alone_is_not_enough() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Private, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::SystemAuthenticationRequired
+            );
+            assert!(export_rows(&sm, &id).await.is_empty());
+        }
+
+        /// DR-20 point 4: an authentication covers the chats its dialog NAMED
+        /// and no others. A proof minted for a different chat is not a proof.
+        #[tokio::test]
+        async fn an_authorization_for_another_chat_does_not_cover_this_one() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+            let elsewhere = ExportAuthorization::for_test(&["20990101_000000".to_string()]);
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Private, Some(&elsewhere))
+                    .await
+                    .unwrap(),
+                ExportDecision::SystemAuthenticationRequired
+            );
+            assert!(export_rows(&sm, &id).await.is_empty());
+        }
+
+        /// The permitted path writes exactly one row — and the row says
+        /// `private → private`, because the ruling is that the chat STAYS
+        /// private. Anything that reads this table for "was declassified" keys
+        /// on `to_classification = 'public'`, so an export can never be
+        /// mistaken for one.
+        #[tokio::test]
+        async fn the_permitted_export_is_recorded_and_does_not_declassify() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+            let granted = ExportAuthorization::for_test(std::slice::from_ref(&id));
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Private, Some(&granted))
+                    .await
+                    .unwrap(),
+                ExportDecision::Authorized
+            );
+
+            let rows = export_rows(&sm, &id).await;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0],
+                (
+                    SessionClassification::PRIVATE_SQL.to_string(),
+                    SessionClassification::PRIVATE_SQL.to_string(),
+                    EXPORTED_BY_USER.to_string()
+                )
+            );
+
+            // The ratchet is untouched: exporting is not a way to declassify.
+            let row = sm.get_session(&id, false).await.unwrap();
+            assert_eq!(row.privacy_tier, SessionClassification::Private);
+            assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+        }
+
+        /// A public chat costs nothing: no prompt, no record, no copy. A gate
+        /// that fired on every export is one people route around.
+        #[tokio::test]
+        async fn a_public_chat_is_unrestricted_and_leaves_no_row() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = public_chat(&sm).await;
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Public, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::Unrestricted
+            );
+            assert!(export_rows(&sm, &id).await.is_empty());
+        }
+
+        /// An id that names nothing is answered as such rather than as a
+        /// refusal: there is no transcript to protect and no row to write.
+        #[tokio::test]
+        async fn an_unknown_session_is_reported_as_missing() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            assert_eq!(
+                sm.authorize_export("20990101_000000", ProviderTier::Private, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::SessionNotFound
+            );
+        }
+
+        /// The copy is about the FILE, not about the chat — the failure it
+        /// exists to prevent is the user believing the exported markdown
+        /// inherits the chat's protection.
+        #[test]
+        fn the_notice_says_the_file_is_not_protected_and_the_chat_is_unchanged() {
+            assert!(EXPORT_NOT_PROTECTED.contains("NOT protected"));
+            assert!(EXPORT_NOT_PROTECTED.contains("stays private"));
+            // …and it never claims the export changed the chat's tier.
+            assert!(!EXPORT_NOT_PROTECTED.contains("declassif"));
+        }
+    }
+
+    /// Issue #56 / BR-71: a subagent that produced nothing was invisible to the
+    /// one listing that can show subagent runs at all.
+    ///
+    /// The regression is in SQL, not in rendering: `list_sessions_by_types`
+    /// INNER JOINs `messages`, so a childless row is not returned. Both halves
+    /// are asserted, because an assertion on the new entry point alone would
+    /// pass just as well if the old one had been widened too — and widening it
+    /// would put "Untitled chat" placeholders back in the desktop sidebar.
+    #[tokio::test]
+    async fn an_empty_subagent_is_listed_only_by_the_include_empty_query() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+
+        let silent = sm
+            .create_session(
+                std::env::temp_dir(),
+                "a child that produced nothing".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let spoke = sm
+            .create_session(
+                std::env::temp_dir(),
+                "a child that spoke".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&spoke.id, &Message::user().with_text("i did some work"))
+            .await
+            .unwrap();
+
+        let historical: Vec<String> = sm
+            .list_sessions_by_types(&[SessionType::SubAgent])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(
+            historical,
+            vec![spoke.id.clone()],
+            "the sidebar query must keep hiding message-less rows"
+        );
+
+        let widened = sm
+            .list_sessions_by_types_including_empty(&[SessionType::SubAgent])
+            .await
+            .unwrap();
+        let ids: std::collections::BTreeSet<String> =
+            widened.iter().map(|s| s.id.clone()).collect();
+        assert!(
+            ids.contains(&silent.id),
+            "the childless subagent is still invisible: {ids:?}"
+        );
+        assert!(ids.contains(&spoke.id));
+        // `COUNT(m.id)` ignores NULLs, so the LEFT JOIN must report 0 rather
+        // than the 1 a naive count of joined rows would give.
+        let silent_row = widened.iter().find(|s| s.id == silent.id).unwrap();
+        assert_eq!(silent_row.message_count, 0);
+        let spoke_row = widened.iter().find(|s| s.id == spoke.id).unwrap();
+        assert_eq!(spoke_row.message_count, 1);
+    }
 
     // #44 — the atomic empty-chat-only working-dir update. The emptiness check
     // lives in the UPDATE's own WHERE clause, so "insert a message between the
@@ -9609,6 +11600,8 @@ mod tests {
             diverged_from: None,
             branch_point_msg_uid: None,
             parent_session_id: None,
+            privacy_tier: SessionClassification::Public,
+            privacy_reason: None,
         };
         SessionStorage::import_legacy_session(pool, &legacy)
             .await
@@ -9981,20 +11974,38 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            sm.search_chat_history("chemiosmosis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .len(),
+            sm.search_chat_history(
+                "chemiosmosis",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
+            .await
+            .unwrap()
+            .results
+            .len(),
             1,
             "a recovered message must be indexed for recall"
         );
         assert!(
-            sm.search_chat_history("photosynthesis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .is_empty(),
+            sm.search_chat_history(
+                "photosynthesis",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
+            .await
+            .unwrap()
+            .results
+            .is_empty(),
             "a compacted-away message must drop out of the index"
         );
     }
@@ -10002,11 +12013,20 @@ mod tests {
     // ── truncate_conversation ────────────────────────────────────────────────
 
     async fn fts_hits(sm: &SessionManager, term: &str) -> usize {
-        sm.search_chat_history(term, None, None, None, None)
-            .await
-            .unwrap()
-            .results
-            .len()
+        sm.search_chat_history(
+            term,
+            None,
+            None,
+            None,
+            None,
+            crate::session::chat_history_search::SearchReach::tier_only(
+                crate::privacy::ProviderTier::Private,
+            ),
+        )
+        .await
+        .unwrap()
+        .results
+        .len()
     }
 
     /// Rows in the recall mirror with no message behind them.
@@ -11319,7 +13339,16 @@ mod tests {
         .unwrap();
 
         let res = sm
-            .search_chat_history("quantum entanglement experiment", None, None, None, None)
+            .search_chat_history(
+                "quantum entanglement experiment",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
             .await
             .unwrap();
 
@@ -11346,7 +13375,16 @@ mod tests {
 
         // Would be a malformed MATCH expression if passed through unsanitized.
         let res = sm
-            .search_chat_history("CFTR AND (fibrosis*", None, None, None, None)
+            .search_chat_history(
+                "CFTR AND (fibrosis*",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
             .await
             .unwrap();
         assert_eq!(res.results.len(), 1);
@@ -11368,11 +13406,20 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            sm.search_chat_history("photosynthesis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .len(),
+            sm.search_chat_history(
+                "photosynthesis",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
+            .await
+            .unwrap()
+            .results
+            .len(),
             1
         );
 
@@ -11382,17 +13429,35 @@ mod tests {
 
         // Old term is gone, new term is present — index tracked the rewrite.
         assert!(sm
-            .search_chat_history("photosynthesis", None, None, None, None)
+            .search_chat_history(
+                "photosynthesis",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
             .await
             .unwrap()
             .results
             .is_empty());
         assert_eq!(
-            sm.search_chat_history("glycolysis", None, None, None, None)
-                .await
-                .unwrap()
-                .results
-                .len(),
+            sm.search_chat_history(
+                "glycolysis",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
+            .await
+            .unwrap()
+            .results
+            .len(),
             1
         );
     }
@@ -11459,7 +13524,16 @@ mod tests {
         // Opening the real manager migrates 8→16, including the FTS backfill.
         let sm = SessionManager::new(temp_dir.path().to_path_buf());
         let res = sm
-            .search_chat_history("mitochondria", None, None, None, None)
+            .search_chat_history(
+                "mitochondria",
+                None,
+                None,
+                None,
+                None,
+                crate::session::chat_history_search::SearchReach::tier_only(
+                    crate::privacy::ProviderTier::Private,
+                ),
+            )
             .await
             .unwrap();
         assert_eq!(res.results.len(), 1, "backfilled message is searchable");
@@ -11508,10 +13582,23 @@ mod tests {
             .await
             .unwrap();
 
-        let res = ChatHistorySearch::new(&pool, "ribosome", None, None, None, None)
-            .execute()
-            .await
-            .unwrap();
+        // Full reach: this fixture's hand-built schema predates `privacy_tier`
+        // entirely, which is the whole point — an un-migrated DB is what drives
+        // the `LIKE` fallback.
+        let res = ChatHistorySearch::new(
+            &pool,
+            "ribosome",
+            None,
+            None,
+            None,
+            None,
+            crate::session::chat_history_search::SearchReach::tier_only(
+                crate::privacy::ProviderTier::Private,
+            ),
+        )
+        .execute()
+        .await
+        .unwrap();
         assert_eq!(
             res.results.len(),
             1,
@@ -11574,6 +13661,1847 @@ mod tests {
 
         let reread = manager.get_session(&child.id, false).await.unwrap();
         assert_eq!(reread.parent_session_id, Some(parent.id));
+    }
+
+    // ---- Issue #56: the classification ratchet and its schema ---------------
+
+    /// A bare pool on an existing database file, bypassing `SessionStorage` so a
+    /// test can inspect (or damage) the schema the production path produced
+    /// without tripping the lazy migration in `SessionStorage::pool`.
+    async fn raw_pool(db: &Path) -> Pool<Sqlite> {
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(db)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn column_exists(db: &Path, table: &str, column: &str) -> bool {
+        let pool = raw_pool(db).await;
+        let found = SessionStorage::table_has_column(&pool, table, column)
+            .await
+            .unwrap();
+        pool.close().await;
+        found
+    }
+
+    async fn table_exists(db: &Path, table: &str) -> bool {
+        let pool = raw_pool(db).await;
+        let found = sqlx::query_scalar::<_, bool>(
+            "SELECT EXISTS (SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        found
+    }
+
+    /// Stamp the version counter, replacing whatever the ladder recorded.
+    /// `get_schema_version` reads `MAX(version)`, so the old rows have to go.
+    async fn force_schema_version(db: &Path, version: i32) {
+        let pool = raw_pool(db).await;
+        sqlx::query("DELETE FROM schema_version")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO schema_version (version) VALUES (?1)")
+            .bind(version)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+    }
+
+    /// A database whose `sessions` table is exactly the production shape MINUS
+    /// issue #56's additions — what a build that predates this task leaves on
+    /// disk. Derived from the real DDL and then cut back, rather than
+    /// hand-rolled: nine hand-rolled `CREATE TABLE sessions` fixtures already
+    /// live in this file and several are two columns wide, so a fixture DDL
+    /// cannot witness anything about the real schema. Returns the db path.
+    async fn build_pre_privacy_database(data_dir: &Path) -> PathBuf {
+        let storage = SessionStorage::create(data_dir).await.unwrap();
+        storage.close().await;
+
+        let db = data_dir.join(SESSIONS_FOLDER).join(DB_NAME);
+        let pool = raw_pool(&db).await;
+        for column in ["privacy_tier", "privacy_reason", "parent_session_id"] {
+            if SessionStorage::table_has_column(&pool, "sessions", column)
+                .await
+                .unwrap()
+            {
+                sqlx::query(&format!("ALTER TABLE sessions DROP COLUMN {column}"))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+        }
+        sqlx::query("DROP TABLE IF EXISTS classification_audit")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // A session that predates the migration, so the backfill the ADD COLUMN
+        // default performs is observable rather than inferred.
+        sqlx::query(
+            "INSERT INTO sessions (id, name, working_dir, session_type) VALUES ('old', 'an old chat', '/tmp', 'user')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+        db
+    }
+
+    #[tokio::test]
+    async fn a_fresh_database_defaults_every_session_public() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let s = manager
+            .create_session(temp.path().to_path_buf(), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        assert_eq!(s.privacy_tier, SessionClassification::Public);
+        assert_eq!(s.privacy_reason, None);
+        assert_eq!(s.parent_session_id, None);
+
+        // The audit table belongs to the fresh path too, and it has to be there
+        // in THIS process. `create_schema` runs once, on a database that has no
+        // `schema_version` table; the reconcile that also creates the table only
+        // runs on a database that already has one, i.e. from the *second* launch
+        // onwards. A first-run declassification would otherwise fail with
+        // `no such table: classification_audit`. Asserted without reopening
+        // through `SessionManager`, since reopening is exactly what would hide
+        // the bug.
+        let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        assert!(
+            table_exists(&db, "classification_audit").await,
+            "a freshly created database is missing classification_audit"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_ratchet_raises_and_no_caller_can_lower_it() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let s = manager
+            .create_session(temp.path().to_path_buf(), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        manager
+            .update(&s.id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .get_session(&s.id, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            SessionClassification::Private
+        );
+
+        // The whole audit surface for "can the ratchet be reversed" is this
+        // assertion plus one SQL fragment. The storage layer refuses, not the
+        // caller — whatever it passes.
+        manager
+            .update(&s.id)
+            .raise_privacy(SessionClassification::Public, "oops")
+            .apply()
+            .await
+            .unwrap();
+        let reread = manager.get_session(&s.id, false).await.unwrap();
+        assert_eq!(
+            reread.privacy_tier,
+            SessionClassification::Private,
+            "a Public write must be a no-op on a private row"
+        );
+        // The reason must not be rewritten by the refused write either, or the
+        // provenance the declassify dialog grades on (§12.4) is destroyed.
+        assert_eq!(reread.privacy_reason.as_deref(), Some("turn:versa_azure"));
+    }
+
+    #[tokio::test]
+    async fn a_stored_tier_the_reader_refuses_cannot_be_assigned_away() {
+        // `SessionClassification::from_stored` maps NULL, `PUBLIC`, and anything
+        // else it does not recognise to Private, deliberately and loudly. The SQL
+        // has to agree with it on the same predicate, or a row the entire Rust
+        // tree treats as private is still assignable to a canonical `public` by
+        // any caller — and that write is exactly the reversal the ratchet exists
+        // to make impossible. The rule is therefore "only an exactly-`public` row
+        // is assignable", not "a `private` row is frozen".
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let s = manager
+            .create_session(temp.path().to_path_buf(), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        // Damage the column the way a hand-edited database, a restored backup or
+        // a future writer that forgot `as_sql()` would.
+        let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let pool = raw_pool(&db).await;
+        sqlx::query(
+            "UPDATE sessions SET privacy_tier = 'PUBLIC', privacy_reason = 'turn:versa_azure' WHERE id = ?1",
+        )
+        .bind(&s.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        assert_eq!(
+            manager
+                .get_session(&s.id, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            SessionClassification::Private,
+            "the reader fails closed on a non-canonical value"
+        );
+
+        manager
+            .update(&s.id)
+            .raise_privacy(SessionClassification::Public, "oops")
+            .apply()
+            .await
+            .unwrap();
+
+        manager.close().await;
+        let pool = raw_pool(&db).await;
+        let (tier, reason): (String, Option<String>) =
+            sqlx::query_as("SELECT privacy_tier, privacy_reason FROM sessions WHERE id = ?1")
+                .bind(&s.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        pool.close().await;
+        assert_eq!(
+            tier, "PUBLIC",
+            "a value the reader refuses must not become one it accepts"
+        );
+        assert_eq!(reason.as_deref(), Some("turn:versa_azure"));
+    }
+
+    /// A session already raised by a turn, then reached into a private data
+    /// source. Both orderings live here because the pair is the whole property.
+    async fn reason_after(first: &str, second: &str) -> Option<String> {
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let s = manager
+            .create_session(temp.path().to_path_buf(), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        for reason in [first, second] {
+            manager
+                .update(&s.id)
+                .raise_privacy(SessionClassification::Private, reason)
+                .apply()
+                .await
+                .unwrap();
+        }
+        let row = manager.get_session(&s.id, false).await.unwrap();
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        row.privacy_reason
+    }
+
+    #[tokio::test]
+    async fn a_later_mcp_event_escalates_the_recorded_provenance() {
+        // §12.4 grades the declassification confirmation on whether a private
+        // data source was ever REACHED (`mcp:*`) or whether the session merely
+        // ran a turn against a private endpoint (`turn:*`) — typed confirmation
+        // versus single-click-with-undo. Gate B raises at reply entry and Gate C
+        // on dispatch, and Gate C can only fire in a session whose bound
+        // provider is already private, so `turn:*` ALWAYS lands first and every
+        // `mcp:` event arrives at a row that is already private. A reason frozen
+        // on the first raise therefore hides every `mcp:` event there has ever
+        // been, and an OMOP cohort session is offered the weak control.
+        assert_eq!(
+            reason_after("turn:versa_azure", "mcp:ucsfomopagent").await,
+            Some("mcp:ucsfomopagent".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_turn_does_not_erase_an_mcp_provenance() {
+        // The other ordering, and the reason this is dominance rather than
+        // last-write-wins: once a private data source has been reached, no
+        // number of ordinary turns afterwards may grade the session back down to
+        // "text was only sent to a private endpoint".
+        assert_eq!(
+            reason_after("mcp:ucsfomopagent", "turn:versa_azure").await,
+            Some("mcp:ucsfomopagent".to_string())
+        );
+        // And within the dominant class the first event still stands, so the
+        // provenance names the source that was actually reached first.
+        assert_eq!(
+            reason_after("mcp:ucsfomopagent", "mcp:cdwagent").await,
+            Some("mcp:ucsfomopagent".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn every_projection_that_builds_a_session_reads_the_column() {
+        // The fail-closed reader means a MISSED projection reads Private, so a
+        // test that only checks a private row passes a broken projection. Seed a
+        // known-PUBLIC row and assert each projection does not default it.
+        let temp = tempfile::TempDir::new().unwrap();
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        let s = manager
+            .create_session(temp.path().to_path_buf(), "s".into(), SessionType::User)
+            .await
+            .unwrap();
+        // Both listings INNER JOIN messages, so an empty session is invisible.
+        manager
+            .add_message(&s.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+
+        // `privacy_reason` needs its own sentinel, and it needs one on a row that
+        // is public. Its reader IS tolerant (`try_get(..).ok().flatten()`), so a
+        // projection that drops it hands back `None` and every assertion about
+        // the tier still passes — the exact silent shape the fail-closed tier
+        // read exists to avoid, one column to the right. A public row carrying a
+        // reason is not a contrivance either: it is what §12.5 leaves behind
+        // after a declassification (`declassified_by_user`), and the reason is
+        // the only remaining record of what the session had been. Seeded in SQL
+        // rather than through the builder so the projection test does not also
+        // depend on the ratchet's semantics.
+        let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+        let pool = raw_pool(&db).await;
+        sqlx::query("UPDATE sessions SET privacy_reason = 'declassified_by_user' WHERE id = ?1")
+            .bind(&s.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        let fetched = manager.get_session(&s.id, false).await.unwrap();
+        assert_eq!(
+            fetched.privacy_tier,
+            SessionClassification::Public,
+            "get_session"
+        );
+        assert_eq!(
+            fetched.privacy_reason.as_deref(),
+            Some("declassified_by_user"),
+            "get_session dropped privacy_reason"
+        );
+        let listed = manager
+            .list_sessions_by_types(&[SessionType::User])
+            .await
+            .unwrap();
+        let listed = listed.iter().find(|x| x.id == s.id).unwrap();
+        assert_eq!(
+            listed.privacy_tier,
+            SessionClassification::Public,
+            "list_sessions_by_types"
+        );
+        assert_eq!(
+            listed.privacy_reason.as_deref(),
+            Some("declassified_by_user"),
+            "list_sessions_by_types dropped privacy_reason"
+        );
+        // `SessionSummary` deliberately carries only the tier — the sidebar
+        // badges, it does not explain — so there is no reason to assert here.
+        let summaries = manager
+            .list_session_summaries(50, 0, false, false)
+            .await
+            .unwrap();
+        assert_eq!(
+            summaries
+                .iter()
+                .find(|x| x.id == s.id)
+                .unwrap()
+                .privacy_tier,
+            SessionClassification::Public,
+            "list_session_summaries"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_reconcile_adds_the_columns_even_when_the_version_says_it_already_ran() {
+        // O10. The plan wrote this against `CURRENT_SCHEMA_VERSION = 16` and a
+        // BR-71 branch that shipped its own `17 =>`. BR-71 has since LANDED —
+        // this tree already carries 17 and `parent_session_id` — so the hazard
+        // is the same one stated in the present tense: a database whose version
+        // counter already stands at (or past) the privacy arm's number would
+        // SKIP a numbered-arm-only implementation of this task entirely.
+        let temp = tempfile::TempDir::new().unwrap();
+        let db = build_pre_privacy_database(temp.path()).await;
+        force_schema_version(&db, CURRENT_SCHEMA_VERSION).await;
+        assert!(!column_exists(&db, "sessions", "privacy_tier").await);
+
+        let manager = SessionManager::new(temp.path().to_path_buf());
+        // The constructor is lazy: the schema work happens on the first pool
+        // acquisition, so the open has to be forced.
+        manager.list_sessions().await.unwrap();
+
+        assert!(column_exists(&db, "sessions", "privacy_tier").await);
+        assert!(column_exists(&db, "sessions", "privacy_reason").await);
+        assert!(column_exists(&db, "sessions", "parent_session_id").await);
+        assert!(table_exists(&db, "classification_audit").await);
+
+        // And the row that was already there is public, not NULL — an existing
+        // session is not retroactively private just because the column arrived.
+        manager.close().await;
+        let pool = raw_pool(&db).await;
+        let tier: String = sqlx::query_scalar("SELECT privacy_tier FROM sessions WHERE id = 'old'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+        assert_eq!(tier, SessionClassification::Public.as_sql());
+    }
+
+    #[tokio::test]
+    async fn a_competing_migrator_cannot_slip_between_the_shape_check_and_the_alter() {
+        // The desktop daemon, a terminal `biorouter` and a scheduled job all
+        // open the same database, and the first launch after an upgrade is
+        // exactly when they are most likely to start together. A bare
+        // check-then-ALTER lets both observe the same missing column before
+        // either adds it, and the loser aborts startup with `duplicate column
+        // name` — a migration failure, not a retryable one.
+        //
+        // Deterministic rather than a race: the competing migrator takes the
+        // write lock FIRST and holds it, so the reconcile under test is parked
+        // at a known point, and only then are the columns added under it. Where
+        // it parks is the whole property. Outside a transaction it parks at its
+        // ALTER, having already decided the column is missing, and resumes into
+        // a duplicate. Under BEGIN IMMEDIATE it parks before its shape check,
+        // and re-reads a `sessions` table that now has the columns.
+        let temp = tempfile::TempDir::new().unwrap();
+        let db = build_pre_privacy_database(temp.path()).await;
+
+        let competitor = raw_pool(&db).await;
+        let mut held = competitor.acquire().await.unwrap();
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *held)
+            .await
+            .unwrap();
+
+        let pool = SessionStorage::create_pool(&db);
+        let reconciling = pool.clone();
+        let reconcile =
+            tokio::spawn(async move { SessionStorage::ensure_privacy_schema(&reconciling).await });
+
+        // Long enough for the spawned reconcile to reach whichever statement
+        // blocks on the write lock; the pool's busy timeout is 5s, so it is
+        // still waiting rather than failing. A short sleep here can only produce
+        // a false pass, never a false failure.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        for (column, sql_type) in [
+            ("privacy_tier", "TEXT NOT NULL DEFAULT 'public'"),
+            ("privacy_reason", "TEXT"),
+            ("parent_session_id", "TEXT"),
+        ] {
+            sqlx::query(&format!(
+                "ALTER TABLE sessions ADD COLUMN {column} {sql_type}"
+            ))
+            .execute(&mut *held)
+            .await
+            .unwrap();
+        }
+        sqlx::query("COMMIT").execute(&mut *held).await.unwrap();
+        drop(held);
+        competitor.close().await;
+
+        reconcile
+            .await
+            .unwrap()
+            .expect("the reconcile must survive another process adding the columns under it");
+
+        pool.close().await;
+        assert!(column_exists(&db, "sessions", "privacy_tier").await);
+        assert!(column_exists(&db, "sessions", "privacy_reason").await);
+        assert!(table_exists(&db, "classification_audit").await);
+    }
+
+    /// Issue #56 §9.3 B1 — the three session-copy paths.
+    ///
+    /// Every one of them mints a fresh session and then hand-copies a chosen
+    /// subset of the parent's metadata onto it. None of them carried
+    /// `provider_name` / `model_config` / `privacy_tier`, so a branch of a
+    /// private chat resolved its provider through
+    /// `restore_provider_from_session`'s `Config::global()` fallback and ran
+    /// private history on the user's default *public* model, with no prompt.
+    mod derived_session_carry_over {
+        use super::*;
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum CopyPath {
+            Copy,
+            DivergeForEdit,
+            Diverge,
+        }
+
+        /// A private session bound to `provider`, carrying one complete
+        /// exchange so every path has history to carry over.
+        async fn private_session_on(provider: &str) -> (TempDir, SessionManager, Session) {
+            let temp = TempDir::new().unwrap();
+            let manager = SessionManager::new(temp.path().to_path_buf());
+            let parent = manager
+                .create_session(
+                    temp.path().to_path_buf(),
+                    "parent".into(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            manager
+                .add_message(&parent.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+            manager
+                .add_message(&parent.id, &Message::assistant().with_text("hi there"))
+                .await
+                .unwrap();
+            manager
+                .update(&parent.id)
+                .provider_name(provider)
+                .model_config(ModelConfig::new("gpt-4o").unwrap())
+                .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+                .apply()
+                .await
+                .unwrap();
+            let parent = manager.get_session(&parent.id, true).await.unwrap();
+            assert_eq!(parent.privacy_tier, SessionClassification::Private);
+            assert_eq!(parent.provider_name.as_deref(), Some(provider));
+            (temp, manager, parent)
+        }
+
+        async fn run_copy(
+            manager: &SessionManager,
+            path: CopyPath,
+            parent: &Session,
+        ) -> Result<Session> {
+            match path {
+                CopyPath::Copy => manager.copy_session(&parent.id, "child".into()).await,
+                // A timestamp beyond every stored message, so the edit path's
+                // truncation keeps the whole conversation and this test is
+                // about the carry-over and nothing else.
+                CopyPath::DivergeForEdit => {
+                    manager
+                        .diverge_session_for_edit(&parent.id, i64::MAX / 2)
+                        .await
+                }
+                CopyPath::Diverge => manager.diverge_session(&parent.id, None, None).await,
+            }
+        }
+
+        #[tokio::test]
+        async fn every_copy_path_carries_the_tier_and_the_provider() {
+            // A test on `copy_session` alone passes an implementation that
+            // misses the GUI path entirely — which is exactly how this bug
+            // shipped: `routes/session.rs`'s `POST /sessions/{id}/diverge`
+            // reaches `diverge_session`, and `diverge_session` does NOT call
+            // `copy_session`.
+            for path in [CopyPath::Copy, CopyPath::DivergeForEdit, CopyPath::Diverge] {
+                let (_temp, manager, parent) = private_session_on("versa_azure").await;
+                let child = run_copy(&manager, path, &parent).await.unwrap();
+                assert_eq!(
+                    child.privacy_tier,
+                    SessionClassification::Private,
+                    "{path:?}"
+                );
+                assert_eq!(
+                    child.provider_name.as_deref(),
+                    Some("versa_azure"),
+                    "{path:?}"
+                );
+                assert!(child.model_config.is_some(), "{path:?}");
+                let expected_reason = format!("diverged:{}", parent.id);
+                assert_eq!(
+                    child.privacy_reason.as_deref(),
+                    Some(expected_reason.as_str()),
+                    "{path:?}"
+                );
+            }
+        }
+
+        /// Export a real session and hand the JSON back to `import_session`,
+        /// with `privacy_tier` set to `tier` (or removed when `None`).
+        async fn import_json_with_tier(tier: Option<&str>) -> Session {
+            let temp = TempDir::new().unwrap();
+            let manager = SessionManager::new(temp.path().to_path_buf());
+            let source = manager
+                .create_session(temp.path().to_path_buf(), "src".into(), SessionType::User)
+                .await
+                .unwrap();
+            manager
+                .add_message(&source.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+            let exported = manager.export_session(&source.id).await.unwrap();
+
+            let mut value: serde_json::Value = serde_json::from_str(&exported).unwrap();
+            let object = value.as_object_mut().unwrap();
+            assert!(
+                object.contains_key("privacy_tier"),
+                "export must carry the field this test is about"
+            );
+            match tier {
+                Some(t) => {
+                    object.insert("privacy_tier".into(), serde_json::Value::from(t));
+                }
+                None => {
+                    object.remove("privacy_tier");
+                }
+            }
+            manager
+                .import_session(&serde_json::to_string(&value).unwrap())
+                .await
+                .unwrap()
+        }
+
+        /// ⚠ Only the THIRD assertion discriminates, and the name overstates the
+        /// rest — review found it and it is written down rather than renamed,
+        /// because Task 25's gate greps for this name verbatim and a rename
+        /// there would silently drop a carrier from the count.
+        ///
+        /// `import_session` raises to `Private.max(imported)`, and `Private` is
+        /// the top of a two-element lattice, so the first two rows would pass
+        /// against an implementation that ignored the file's field entirely. The
+        /// "only raised BY it" half of the name cannot be exercised until a tier
+        /// above Private exists. What the third row rules out is the dangerous
+        /// implementation — `raise_privacy(imported, …)`, which would let a
+        /// hand-edited export declare itself public and be believed.
+        #[tokio::test]
+        async fn an_import_with_no_tier_is_private_and_one_with_a_tier_is_only_raised_by_it() {
+            // Read the imported field ONLY in the raising direction — never as
+            // authority to set public. An imported transcript of unknown
+            // provenance is sensitive: unlike migration, there is no local
+            // evidence to reason from.
+            assert_eq!(
+                import_json_with_tier(None).await.privacy_tier,
+                SessionClassification::Private
+            );
+            assert_eq!(
+                import_json_with_tier(Some("private")).await.privacy_tier,
+                SessionClassification::Private
+            );
+            assert_eq!(
+                import_json_with_tier(Some("public")).await.privacy_tier,
+                SessionClassification::Private
+            );
+        }
+
+        /// The body of the LAST `fn <name>(` in `src`. The three copy paths each
+        /// appear twice in this file — a thin `SessionManager` wrapper first,
+        /// then the real `SessionStorage` implementation — and it is the second
+        /// one this test is about.
+        fn fn_body(src: &str, name: &str) -> String {
+            let needle = format!("fn {name}(");
+            let start = src
+                .rfind(&needle)
+                .unwrap_or_else(|| panic!("no `fn {name}(` in the file"));
+            // `get` rather than `&src[..]` throughout: clippy's `string_slice`
+            // refuses raw indexing into a `str`, and every offset here comes
+            // from a search on the same string, so `None` is unreachable.
+            let signature_onwards = src.get(start..).expect("rfind returns a char boundary");
+            let open = signature_onwards
+                .find('{')
+                .unwrap_or_else(|| panic!("no body for fn {name}"));
+            let body_onwards = signature_onwards
+                .get(open..)
+                .expect("find returns a char boundary");
+            let mut depth = 0usize;
+            for (offset, ch) in body_onwards.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return body_onwards
+                                .get(..offset + ch.len_utf8())
+                                .expect("char_indices yields char boundaries")
+                                .to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unbalanced braces in fn {name}");
+        }
+
+        #[test]
+        fn no_copy_path_hand_rolls_its_own_builder_any_more() {
+            // The enumeration test, aimed at the three functions that matter
+            // rather than at all 104 `create_session` call sites.
+            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            for f in [
+                "copy_session",
+                "diverge_session_for_edit",
+                "diverge_session",
+            ] {
+                let body = fn_body(&src, f);
+                assert!(
+                    body.contains("create_derived_session"),
+                    "{f} does not use the shared helper"
+                );
+                assert!(
+                    !body.contains(".extension_data("),
+                    "{f} still hand-rolls its carry-over"
+                );
+            }
+        }
+    }
+
+    /// Issue #56 Task 38 — the ONE-TIME backfill, and the numbers the day-one
+    /// notice quotes.
+    ///
+    /// The hazard the first test exists for: the backfill's `WHERE provider_name
+    /// IN (…)` is correct exactly once. `declassify` deliberately leaves
+    /// `provider_name` untouched (a public chat may run a private model), so the
+    /// same statement re-run on a later startup would silently undo the one
+    /// irreversible action the design gives the user. That is why it lives in
+    /// the numbered arm and not in `ensure_privacy_schema`, which runs on every
+    /// launch.
+    mod migration_backfill {
+        use super::*;
+
+        /// One seed row for [`pre_privacy_database_with`]. Ids are assigned in
+        /// order: `s1`, `s2`, …
+        #[derive(Clone, Copy)]
+        struct Seed {
+            provider: Option<&'static str>,
+            messages: usize,
+        }
+
+        fn session_on(provider: &'static str) -> Seed {
+            Seed {
+                provider: Some(provider),
+                messages: 0,
+            }
+        }
+
+        fn session_on_with_messages(provider: &'static str) -> Seed {
+            Seed {
+                provider: Some(provider),
+                messages: 1,
+            }
+        }
+
+        fn session_with_null_provider() -> Seed {
+            Seed {
+                provider: None,
+                messages: 0,
+            }
+        }
+
+        fn null_provider_with_messages() -> Seed {
+            Seed {
+                provider: None,
+                messages: 1,
+            }
+        }
+
+        /// A database one migration BELOW the backfill arm, holding `seeds`.
+        ///
+        /// Named for what it is rather than for a version number: the plan calls
+        /// this `migrated_v16_db_with`, but BR-71 landed `17 =>`
+        /// (`parent_session_id`) first and Task 6 took 18 for the columns, so the
+        /// backfill arm is 19 and "one below the arm under test" is the only
+        /// durable way to say this.
+        ///
+        /// ⚠ It leaves the counter at **18 with the privacy columns dropped** —
+        /// a database that has passed the columns arm without having its columns.
+        /// That is not a contrivance; it is exactly the state
+        /// `the_reconcile_adds_the_columns_even_when_the_version_says_it_already_ran`
+        /// exists for, and it is why arm 19 calls `ensure_privacy_schema` again
+        /// rather than assuming 18 ran. If that call is ever removed, every test
+        /// in this module fails with `no such column: privacy_tier`.
+        async fn pre_privacy_database_with(data_dir: &Path, seeds: &[Seed]) -> PathBuf {
+            let storage = SessionStorage::create(data_dir).await.unwrap();
+            storage.close().await;
+
+            let db = data_dir.join(SESSIONS_FOLDER).join(DB_NAME);
+            let pool = raw_pool(&db).await;
+            // `parent_session_id` is deliberately NOT dropped: it belongs to
+            // BR-71's arm, which every database down here has already applied.
+            for column in ["privacy_tier", "privacy_reason"] {
+                sqlx::query(&format!("ALTER TABLE sessions DROP COLUMN {column}"))
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+            }
+            sqlx::query("DROP TABLE IF EXISTS classification_audit")
+                .execute(&pool)
+                .await
+                .unwrap();
+
+            for (index, seed) in seeds.iter().enumerate() {
+                let id = format!("s{}", index + 1);
+                sqlx::query(
+                    "INSERT INTO sessions (id, name, working_dir, session_type, provider_name) \
+                     VALUES (?1, ?2, '/tmp', 'user', ?3)",
+                )
+                .bind(&id)
+                .bind(format!("chat {id}"))
+                .bind(seed.provider)
+                .execute(&pool)
+                .await
+                .unwrap();
+
+                for n in 0..seed.messages {
+                    sqlx::query(
+                        "INSERT INTO messages (session_id, role, content_json, created_timestamp) \
+                         VALUES (?1, 'user', '[]', ?2)",
+                    )
+                    .bind(&id)
+                    .bind(n as i64)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                }
+            }
+            pool.close().await;
+
+            // ⚠ `PRIVACY_BACKFILL_ARM - 1`, NOT `CURRENT_SCHEMA_VERSION - 1`.
+            // The doc above says "one below the backfill arm" and that used to be
+            // the same number; arm 20 (the repair) made them different, and a
+            // database left at 19 would skip the arm every test here is about
+            // while still passing several of them — arm 20 runs the same
+            // statements. Pinning the fixture to the arm keeps each test honest
+            // about which arm it exercised.
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM - 1).await;
+            db
+        }
+
+        fn data_dir_of(db: &Path) -> PathBuf {
+            db.parent().unwrap().parent().unwrap().to_path_buf()
+        }
+
+        /// A full application open: constructs the manager and forces the lazy
+        /// pool, which is what actually runs the migration ladder.
+        async fn open(db: &Path) {
+            let manager = SessionManager::new(data_dir_of(db));
+            manager.list_sessions().await.unwrap();
+            manager.close().await;
+        }
+
+        async fn row(db: &Path, id: &str) -> Session {
+            let manager = SessionManager::new(data_dir_of(db));
+            let session = manager.get_session(id, false).await.unwrap();
+            manager.close().await;
+            session
+        }
+
+        /// The real §12.6 writer, reached through the test-only door in
+        /// `privacy::declassify`.
+        ///
+        /// It cannot be called directly from here. `declassify` takes a
+        /// proof-of-user token, and
+        /// `the_proof_of_user_is_constructed_in_exactly_two_places` fails the
+        /// build for any file outside `declassify.rs` and the two door files
+        /// that so much as *names* that type — this file must therefore not name
+        /// it, which is why the call is one indirection away. (That audit is
+        /// whole-file and does not skip comments, and it caught this comment's
+        /// first draft.) Hand-rolled SQL is the other alternative and is worse:
+        /// a sibling audit permits exactly one tier-lowering `UPDATE` in the
+        /// entire tree, so a test copy would have to be composed at runtime to
+        /// slip past a security check in order to compile at all.
+        async fn declassify_via_user(db: &Path, id: &str) {
+            let manager = SessionManager::new(data_dir_of(db));
+            let outcome = crate::privacy::declassify::declassify_for_test(&manager, id)
+                .await
+                .unwrap();
+            manager.close().await;
+            assert_eq!(
+                outcome,
+                crate::privacy::declassify::DeclassifyOutcome::Declassified
+            );
+        }
+
+        async fn count_matching(db: &Path, predicate: &str) -> i64 {
+            let pool = raw_pool(db).await;
+            let count: i64 =
+                sqlx::query_scalar(&format!("SELECT COUNT(*) FROM sessions WHERE {predicate}"))
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            pool.close().await;
+            count
+        }
+
+        /// The stored tier, read WITHOUT opening a `SessionManager`.
+        ///
+        /// ⚠ `row()` opens the manager, and opening the manager runs the
+        /// migration ladder. Every "assert the fixture really is mis-classified
+        /// before the repair runs" check therefore has to read the database
+        /// directly — `row()` would silently apply the very arm under test and
+        /// then report the repaired value, turning the pre-condition into an
+        /// assertion that fails for the right-looking wrong reason.
+        async fn raw_tier(db: &Path, id: &str) -> String {
+            let pool = raw_pool(db).await;
+            let tier: String =
+                sqlx::query_scalar("SELECT privacy_tier FROM sessions WHERE id = ?1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            pool.close().await;
+            tier
+        }
+
+        async fn private_count(db: &Path) -> i64 {
+            count_matching(db, "IFNULL(privacy_tier, '') <> 'public'").await
+        }
+
+        async fn public_count(db: &Path) -> i64 {
+            count_matching(db, "IFNULL(privacy_tier, '') = 'public'").await
+        }
+
+        async fn notice_counts(db: &Path) -> PrivacyNoticeCounts {
+            let pool = raw_pool(db).await;
+            let counts = SessionStorage::privacy_notice_counts(&pool).await.unwrap();
+            pool.close().await;
+            counts
+        }
+
+        /// The source of one function in this file, brace-matched.
+        ///
+        /// ⚠ **Why the four log keys are asserted from the source rather than by
+        /// capturing the event, which is what the plan asked for.** A capture was
+        /// written first: a `tracing_subscriber` layer behind a thread-local
+        /// `set_default`, which is the textbook shape. It passed alone, passed
+        /// under `--test-threads=1`, and captured **nothing** from the migration
+        /// in the full parallel suite — while an `info!` emitted from the test
+        /// body two lines earlier was captured, on the same thread, at
+        /// `LevelFilter::TRACE`.
+        ///
+        /// The difference is that `Interest` is cached **per callsite,
+        /// process-globally**, and is computed the first time any thread reaches
+        /// that callsite. Every sibling test that opens a `SessionManager`
+        /// reaches the migration's `info!` with no subscriber installed, which
+        /// caches `Interest::never()`; from then on `event!` short-circuits
+        /// before it ever consults this thread's subscriber, and
+        /// `rebuild_interest_cache()` does not rescue it. A test built on that
+        /// reads a real, correctly-emitted log as absent, and its result depends
+        /// on which test won a race. Deterministically wrong is not an option
+        /// here, and neither is deleting the assertion — so the fact is split in
+        /// two and both halves are checked without touching global state:
+        /// [`the_backfill_reports_the_four_counts_it_logs`] pins the four
+        /// **values**, and the scan below pins that those four **names** are what
+        /// the function hands to `info!`.
+        fn fn_body(name: &str) -> String {
+            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            let start = src
+                .find(&format!("fn {name}("))
+                .unwrap_or_else(|| panic!("no `fn {name}(` in the file"));
+            let from_signature = src.get(start..).expect("find returns a char boundary");
+            let open = from_signature
+                .find('{')
+                .unwrap_or_else(|| panic!("no body for fn {name}"));
+            let from_body = from_signature
+                .get(open..)
+                .expect("find returns a char boundary");
+            let mut depth = 0usize;
+            for (offset, ch) in from_body.char_indices() {
+                match ch {
+                    '{' => depth += 1,
+                    '}' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            return from_body
+                                .get(..offset + ch.len_utf8())
+                                .expect("char_indices yields char boundaries")
+                                .to_string();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            panic!("unbalanced braces in fn {name}");
+        }
+
+        #[tokio::test]
+        async fn the_backfill_cannot_un_declassify() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(temp.path(), &[session_on("versa_azure")]).await;
+
+            open(&db).await; // the privacy migration runs, backfilling private
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Private
+            );
+
+            declassify_via_user(&db, "s1").await;
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Public
+            );
+            // Untouched, and that is exactly why the hazard exists.
+            assert_eq!(
+                row(&db, "s1").await.provider_name.as_deref(),
+                Some("versa_azure")
+            );
+
+            open(&db).await; // second launch
+
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Public,
+                "the backfill re-privatised a declassified session"
+            );
+            assert_eq!(
+                row(&db, "s1").await.privacy_reason.as_deref(),
+                Some("declassified_by_user")
+            );
+        }
+
+        /// The recovery the fresh-database branch falls back on, exercised
+        /// directly because the failure that triggers it cannot be provoked from
+        /// outside.
+        ///
+        /// ⚠ It is asserted through `get_schema_version`, not by counting rows.
+        /// That function reads `MAX(version)`, and `update_schema_version`
+        /// *appends* — so "walk the counter back" has to mean deleting the rows at
+        /// or above the arm, and a `DELETE … WHERE version = N` (or an UPDATE)
+        /// would leave the maximum untouched and rewind nothing at all, silently.
+        #[tokio::test]
+        async fn the_retreat_moves_the_counter_back_into_the_repair_arm() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let storage = SessionStorage::create(temp.path()).await.unwrap();
+            let db = temp.path().join(SESSIONS_FOLDER).join(DB_NAME);
+            assert_eq!(
+                SessionStorage::get_schema_version(&storage.pool)
+                    .await
+                    .unwrap(),
+                CURRENT_SCHEMA_VERSION,
+                "a fresh database must start stamped, or the rewind below is a no-op"
+            );
+
+            SessionStorage::retreat_to_privacy_repair(&storage.pool).await;
+
+            assert_eq!(
+                SessionStorage::get_schema_version(&storage.pool)
+                    .await
+                    .unwrap(),
+                PRIVACY_REPAIR_ARM - 1,
+                "the next launch would not re-enter the repair arm"
+            );
+            storage.close().await;
+
+            // …and a real open from there does re-enter it and stamps back up,
+            // rather than failing on an arm that assumes an earlier one ran.
+            open(&db).await;
+            let pool = raw_pool(&db).await;
+            assert_eq!(
+                SessionStorage::get_schema_version(&pool).await.unwrap(),
+                CURRENT_SCHEMA_VERSION
+            );
+            pool.close().await;
+        }
+
+        /// The six-provider fixture both count assertions read.
+        fn one_of_each() -> [Seed; 6] {
+            [
+                session_on("versa_azure"),
+                session_on("versa_bedrock"),
+                session_on("llamacpp"),
+                session_on("ollama"),
+                session_on("anthropic"),
+                session_with_null_provider(),
+            ]
+        }
+
+        #[tokio::test]
+        async fn the_backfill_marks_what_the_data_proves_and_nothing_else() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(temp.path(), &one_of_each()).await;
+
+            open(&db).await;
+
+            assert_eq!(private_count(&db).await, 4);
+            // NULL provider backfills PUBLIC — fail-open, by decision (DR-10).
+            assert_eq!(public_count(&db).await, 2);
+
+            // ...and the buckets are what `info!` is handed. See `fn_body` for
+            // why this is a scan and not a captured event.
+            let body = fn_body("backfill_privacy_from_recorded_provenance");
+            assert!(
+                body.contains("info!("),
+                "the backfill no longer logs anything"
+            );
+            for key in [
+                "backfilled_private",
+                "backfilled_private_from_turn_history",
+                "backfilled_declassified_skipped",
+                "backfilled_public_named",
+                "backfilled_unknown_provider",
+                "backfilled_empty",
+            ] {
+                assert!(
+                    body.contains(&format!("{key} =")),
+                    "{key} not logged by the backfill"
+                );
+            }
+        }
+
+        /// The values behind those names, on the same fixture.
+        ///
+        /// Driven through `ensure_privacy_schema` + the backfill directly rather
+        /// than through `open`, because the counts describe the state at the
+        /// moment the migration runs: a second call reports `private = 0`, having
+        /// nothing left to do, and `open` now walks two arms that both call it.
+        #[tokio::test]
+        async fn the_backfill_reports_the_four_counts_it_logs() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(temp.path(), &one_of_each()).await;
+
+            let pool = raw_pool(&db).await;
+            SessionStorage::ensure_privacy_schema(&pool).await.unwrap();
+            let counts = SessionStorage::backfill_privacy_from_recorded_provenance(&pool)
+                .await
+                .unwrap();
+            pool.close().await;
+
+            assert_eq!(counts.private, 4, "the four private-tier providers");
+            assert_eq!(
+                counts.private_from_turn_history, 0,
+                "this fixture writes no turn ledger, so the second source must find nothing"
+            );
+            assert_eq!(counts.declassified_skipped, 0);
+            assert_eq!(counts.public_named, 1, "anthropic");
+            assert_eq!(counts.unknown_provider, 1, "the NULL-provider row");
+            assert_eq!(counts.empty, 6, "none of the fixture rows has a message");
+        }
+
+        /// Append a turn to the per-turn ledger the way `apply_usage_event` does:
+        /// same table, same `provider` column (from the same `get_name()` string
+        /// `sessions.provider_name` is bound from), and — load-bearing — a durable
+        /// `event_key` and a `billed_total_tokens`.
+        ///
+        /// ⚠ **A fixture row without those two is not a weaker fixture, it is a
+        /// different one.** `reconcile_usage_schema_locked` runs on every startup
+        /// and NULLs `provider` on exactly the rows that have neither, so a row
+        /// written without them survives the migration arms, gets scrubbed by the
+        /// reconcile immediately afterwards, and reads as "this session never ran
+        /// that provider" for the rest of the test. That is how the trust
+        /// predicate was found; `an_untrustworthy_ledger_row_does_not_classify_anything`
+        /// keeps the other half of the behaviour pinned.
+        async fn record_turn(db: &Path, session_id: &str, provider: &str, ts: i64) {
+            record_turn_row(db, session_id, provider, ts, true).await;
+        }
+
+        async fn record_turn_row(
+            db: &Path,
+            session_id: &str,
+            provider: &str,
+            ts: i64,
+            durable: bool,
+        ) {
+            let pool = raw_pool(db).await;
+            let (event_key, billed) = if durable {
+                (Some(format!("{session_id}:{ts}")), Some(10_i64))
+            } else {
+                (None, None)
+            };
+            sqlx::query(
+                "INSERT INTO token_events \
+                     (session_id, ts, total_tokens, model_id, provider, event_key, \
+                      billed_total_tokens) \
+                 VALUES (?1, ?2, 10, 'm', ?3, ?4, ?5)",
+            )
+            .bind(session_id)
+            .bind(ts)
+            .bind(provider)
+            .bind(event_key)
+            .bind(billed)
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        /// The other half of the trust predicate, and it is about real data.
+        ///
+        /// The old v11/v12 development migrations copied each session's **final**
+        /// model backward over its whole history, which is finding 9's own defect
+        /// one table over: a per-session last-provider value wearing the shape of
+        /// per-turn history. `reconcile_usage_schema_locked` NULLs those rows'
+        /// `provider` for exactly that reason — but the numbered arms run
+        /// **before** the reconcile on the one upgrade that matters, so the
+        /// backfill would see them if it did not exclude them itself.
+        #[tokio::test]
+        async fn an_untrustworthy_ledger_row_does_not_classify_anything() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db =
+                pre_privacy_database_with(temp.path(), &[session_on_with_messages("anthropic")])
+                    .await;
+            // No `event_key`, no `billed_total_tokens` — a row the tree already
+            // says is not evidence of the call it sits on.
+            record_turn_row(&db, "s1", "ollama", 100, false).await;
+
+            open(&db).await;
+
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Public,
+                "a backward-copied provider value was read as observed turn history"
+            );
+
+            // …and the same row WITH a durable identity does classify, so the
+            // assertion above is about the identity columns and not about a
+            // predicate that matches nothing.
+            record_turn_row(&db, "s1", "ollama", 200, true).await;
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM).await;
+            open(&db).await;
+
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Private
+            );
+        }
+
+        /// Issue #56 finding 9 — **the innocent path, and it is asserted against a
+        /// row that already exists.**
+        ///
+        /// A user ran a chat on Ollama and then switched to Claude for one
+        /// formatting question. `sessions.provider_name` is the LAST binding, so
+        /// it reads `anthropic`, and arm 19's backfill left the chat **public**
+        /// with a private transcript in it.
+        ///
+        /// The fixture is deliberately the state that shipped, reconstructed
+        /// rather than assumed: arm 19's own statement is run directly, the row is
+        /// confirmed **public** through a raw read, the counter is then set to
+        /// `PRIVACY_BACKFILL_ARM`, and only THEN is the repair arm allowed to run.
+        /// A test that started from a pre-19 database would prove the fix works
+        /// going forward and prove nothing about the rows the finding is about —
+        /// which are already on disk, on every machine that has opened this
+        /// branch.
+        #[tokio::test]
+        async fn the_repair_arm_classifies_a_chat_that_switched_away_from_a_private_provider() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(
+                temp.path(),
+                &[
+                    session_on_with_messages("anthropic"), // s1: ran on Ollama first
+                    session_on_with_messages("anthropic"), // s2: only ever Claude
+                ],
+            )
+            .await;
+            record_turn(&db, "s1", "ollama", 100).await;
+            record_turn(&db, "s1", "anthropic", 200).await;
+            record_turn(&db, "s2", "anthropic", 100).await;
+
+            // Arm 19 only: the state on every machine that has opened this branch.
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM - 1).await;
+            {
+                let pool = raw_pool(&db).await;
+                SessionStorage::ensure_privacy_schema(&pool).await.unwrap();
+                sqlx::query(&SessionStorage::backfill_update_sql())
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+            }
+            assert_eq!(
+                raw_tier(&db, "s1").await,
+                SessionClassification::PUBLIC_SQL,
+                "the fixture must reproduce the mis-classification, or the repair below \
+                 proves nothing"
+            );
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM).await;
+
+            open(&db).await; // arm 20, the repair
+
+            let s1 = row(&db, "s1").await;
+            assert_eq!(
+                s1.privacy_tier,
+                SessionClassification::Private,
+                "a chat with Ollama turns in the ledger is still classified from its last \
+                 binding alone"
+            );
+            assert_eq!(
+                s1.privacy_reason.as_deref(),
+                Some("turn:ollama"),
+                "the ledger is an OBSERVED turn, so the provenance — and with it §12.4's \
+                 declassification grade — must say so"
+            );
+            // …and the grade that provenance buys is the one the live ratchet
+            // would have given the same fact. Read through the real predicate, not
+            // restated here.
+            assert!(
+                !crate::privacy::declassify::requires_typed_confirmation(
+                    s1.privacy_reason.as_deref()
+                ),
+                "an observed private turn is §12.4's weak control"
+            );
+            assert_eq!(
+                row(&db, "s2").await.privacy_tier,
+                SessionClassification::Public,
+                "a chat whose whole ledger is a public provider must not be swept up"
+            );
+        }
+
+        /// The repair arm re-runs the same statements a second time, and that is
+        /// only safe because of the declassification guard.
+        ///
+        /// ⚠ This is the test that makes arm 20 possible at all. Arm 19's backfill
+        /// was a one-shot statement precisely because `declassify` leaves
+        /// `provider_name` in place, so `AND privacy_tier = 'public'` admits every
+        /// row the user has just rescued. `the_backfill_cannot_un_declassify`
+        /// cannot see that: it opens the database twice, and on the second open
+        /// the statement does not run, so it passes whether the guard exists or
+        /// not. Here the statement is run **directly**, after a real
+        /// declassification, so deleting `NOT_DECLASSIFIED_BY_USER` fails it.
+        #[tokio::test]
+        async fn the_repair_arm_reruns_the_backfill_without_undoing_a_declassification() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(
+                temp.path(),
+                &[
+                    session_on_with_messages("ollama"),    // s1: declassified below
+                    session_on_with_messages("anthropic"), // s2: ledger says ollama
+                ],
+            )
+            .await;
+            record_turn(&db, "s2", "ollama", 100).await;
+
+            open(&db).await;
+            assert_eq!(
+                row(&db, "s1").await.privacy_tier,
+                SessionClassification::Private
+            );
+            declassify_via_user(&db, "s1").await;
+            declassify_via_user(&db, "s2").await;
+
+            // Not a second `open` — the arms have all run. This calls the
+            // statements the way arm 20 does, so the guard is the only thing
+            // standing between them and the two rescued rows.
+            let counts = {
+                let pool = raw_pool(&db).await;
+                let counts = SessionStorage::backfill_privacy_from_recorded_provenance(&pool)
+                    .await
+                    .unwrap();
+                pool.close().await;
+                counts
+            };
+
+            for id in ["s1", "s2"] {
+                let session = row(&db, id).await;
+                assert_eq!(
+                    session.privacy_tier,
+                    SessionClassification::Public,
+                    "{id}: the re-run re-privatised a session the user declassified"
+                );
+                assert_eq!(
+                    session.privacy_reason.as_deref(),
+                    Some("declassified_by_user"),
+                    "{id}: the re-run overwrote the declassification provenance"
+                );
+            }
+            assert_eq!(counts.private, 0);
+            assert_eq!(counts.private_from_turn_history, 0);
+            assert_eq!(
+                counts.declassified_skipped, 2,
+                "both rows matched the evidence and were held back by the guard — a 0 here \
+                 would mean the statements simply found nothing, which is a different fact"
+            );
+        }
+
+        /// Issue #56 finding 10 — **legacy JSONL import landed Public and skipped
+        /// the backfill entirely.**
+        ///
+        /// `create_schema` stamps `CURRENT_SCHEMA_VERSION` *before* `import_legacy`
+        /// runs, so no numbered arm ever sees the imported rows, and
+        /// `import_legacy_session` binds `session.privacy_tier`, which
+        /// deserialises from a file predating the column and takes
+        /// `#[serde(default = "SessionClassification::public")]`.
+        ///
+        /// The innocent path is a lost or reset `sessions.db`: every legacy chat
+        /// comes back public. This drives the real `SessionManager` open against a
+        /// real `.jsonl` on disk — the production path, not the helper.
+        #[tokio::test]
+        async fn legacy_jsonl_import_classifies_instead_of_landing_public() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let session_dir = temp.path().join(SESSIONS_FOLDER);
+            std::fs::create_dir_all(&session_dir).unwrap();
+            // Two legacy chats: one on Ollama, one on Claude. The metadata line is
+            // what a pre-privacy build wrote — no `privacy_tier` key at all.
+            for (name, provider) in [("20240101_120000", "ollama"), ("20240102_120000", "openai")] {
+                std::fs::write(
+                    session_dir.join(format!("{name}.jsonl")),
+                    format!(
+                        "{{\"id\":\"{name}\",\"description\":\"legacy\",\"working_dir\":\"/tmp\",\
+                          \"provider_name\":\"{provider}\",\"message_count\":1}}\n\
+                         {{\"id\":\"m1\",\"role\":\"user\",\"created\":1704110400,\
+                          \"content\":[{{\"type\":\"text\",\"text\":\"hello\"}}]}}\n"
+                    ),
+                )
+                .unwrap();
+            }
+
+            let db = session_dir.join(DB_NAME);
+            assert!(!db.exists(), "the import path requires a missing database");
+            open(&db).await;
+
+            let imported = row(&db, "20240101_120000").await;
+            assert_eq!(
+                imported.provider_name.as_deref(),
+                Some("ollama"),
+                "the import did not carry the provider through — the assertion below would \
+                 then pass or fail for an unrelated reason"
+            );
+            assert_eq!(
+                imported.privacy_tier,
+                SessionClassification::Private,
+                "a legacy Ollama chat came back Public after a database reset"
+            );
+            assert_eq!(imported.privacy_reason.as_deref(), Some("backfill:ollama"));
+            assert_eq!(
+                row(&db, "20240102_120000").await.privacy_tier,
+                SessionClassification::Public,
+                "fail-open (DR-10) still holds for a legacy chat on a public provider"
+            );
+        }
+
+        /// The other half of finding 10: a database a **buggy build** already
+        /// imported into. Those rows are on disk, public, on a database stamped
+        /// with the current version — nothing re-enters, so "correct going
+        /// forward" leaves exactly them.
+        ///
+        /// ⚠ The buggy build is **reproduced, not simulated by rewriting the row
+        /// afterwards.** `create_schema` + `import_legacy` with no backfill
+        /// between them is literally the old code path, called here as its two
+        /// halves. The obvious alternative — import through the fixed path, then
+        /// `UPDATE … SET privacy_tier = <public>` to undo it — would put a
+        /// runtime-composed tier-lowering statement in this file purely to get
+        /// past a security audit that permits exactly one, which is a shape this
+        /// module already refuses (see `declassify_via_user`).
+        #[tokio::test]
+        async fn a_database_a_buggy_build_imported_into_is_repaired_by_the_repair_arm() {
+            let temp = tempfile::TempDir::new().unwrap();
+            let session_dir = temp.path().join(SESSIONS_FOLDER);
+            std::fs::create_dir_all(&session_dir).unwrap();
+            std::fs::write(
+                session_dir.join("20240101_120000.jsonl"),
+                "{\"id\":\"20240101_120000\",\"description\":\"legacy\",\
+                  \"working_dir\":\"/tmp\",\"provider_name\":\"ollama\",\"message_count\":1}\n\
+                 {\"id\":\"m1\",\"role\":\"user\",\"created\":1704110400,\
+                  \"content\":[{\"type\":\"text\",\"text\":\"hello\"}]}\n",
+            )
+            .unwrap();
+
+            let db = session_dir.join(DB_NAME);
+            {
+                // The old fresh-database branch, exactly: schema (which stamps the
+                // counter), then the import, and nothing else.
+                let storage = SessionStorage::new(temp.path().to_path_buf());
+                SessionStorage::create_schema(&storage.pool).await.unwrap();
+                SessionStorage::import_legacy(&storage.pool, &storage.session_dir)
+                    .await
+                    .unwrap();
+                storage.close().await;
+            }
+            assert_eq!(
+                raw_tier(&db, "20240101_120000").await,
+                SessionClassification::PUBLIC_SQL,
+                "the fixture must reproduce the mis-classification, or the repair below \
+                 proves nothing"
+            );
+            // …and it is stamped, which is the reason nothing re-enters. Forced to
+            // the backfill arm because that is where such a database sits once the
+            // repair arm exists.
+            force_schema_version(&db, PRIVACY_BACKFILL_ARM).await;
+
+            open(&db).await; // arm 20
+
+            assert_eq!(
+                row(&db, "20240101_120000").await.privacy_tier,
+                SessionClassification::Private,
+                "the repair arm left a previously-imported legacy chat public"
+            );
+        }
+
+        #[tokio::test]
+        async fn the_notice_quotes_the_history_visible_count_not_the_raw_one() {
+            // `list_sessions_by_types` INNER JOINs messages, so empty sessions
+            // never appear. Measured on the operator's machine on 2026-08-03:
+            // 654 visible against 1,486 raw would-be-private rows.
+            let temp = tempfile::TempDir::new().unwrap();
+            let db = pre_privacy_database_with(
+                temp.path(),
+                &[
+                    session_on_with_messages("versa_azure"),
+                    session_on_with_messages("versa_azure"),
+                    session_on("llamacpp"), // empty: invisible in History
+                    session_on_with_messages("anthropic"),
+                    session_on_with_messages("anthropic"),
+                    session_on_with_messages("anthropic"),
+                    null_provider_with_messages(),
+                    null_provider_with_messages(),
+                ],
+            )
+            .await;
+
+            open(&db).await;
+
+            let counts = notice_counts(&db).await;
+            assert_eq!(
+                counts.private_visible, 2,
+                "quoted the raw row count instead of the visible one"
+            );
+            assert_eq!(counts.public_named_visible, 3);
+            assert_eq!(counts.unknown_provider_visible, 2);
+            assert_eq!(counts.total_visible, 7);
+        }
+
+        /// The production slice of this file: everything above the main test
+        /// module. This module's own helpers call the backfill directly and would
+        /// otherwise count as extra call sites.
+        ///
+        /// Cut at THIS module's header, not at the first `#[cfg(test)]` in the
+        /// file: there are six of those and the first sits near line 627, which
+        /// truncates the slice above every symbol these tests are about and turns
+        /// a `find` into the failure. (It did.)
+        fn production_source() -> String {
+            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            let cut = src
+                .find("\n#[cfg(test)]\nmod tests {")
+                .expect("this file's main test module moved");
+            src.get(..cut)
+                .expect("find returns a char boundary")
+                .to_string()
+        }
+
+        /// Every function reachable from `root` through a `Self::…(` call, as
+        /// `(name, body)` pairs including `root` itself.
+        ///
+        /// ⚠ **Why a transitive walk and not one `fn_body`.** Review found the
+        /// hole: `ensure_privacy_schema` is a 25-line `BEGIN IMMEDIATE` wrapper
+        /// and every column it adds lives in `ensure_privacy_schema_locked`, so a
+        /// scan of the wrapper alone reads none of the DDL. An `UPDATE sessions`
+        /// inlined into the `_locked` half would have added no call site and
+        /// appeared in no scanned body — it would have passed a guard whose whole
+        /// purpose is to police that function. A delegating wrapper is the
+        /// obvious shape for the next helper too, so naming one function was
+        /// never going to hold; the closure is the property.
+        ///
+        /// A name with no `fn <name>(` in the production slice is skipped rather
+        /// than fatal: `Self::CONST` and associated types appear in the same
+        /// syntactic position.
+        fn reachable_bodies(production: &str, root: &str) -> Vec<(String, String)> {
+            fn body_of(production: &str, name: &str) -> Option<String> {
+                let start = production.find(&format!("fn {name}("))?;
+                let from_signature = production.get(start..)?;
+                let open = from_signature.find('{')?;
+                let from_body = from_signature.get(open..)?;
+                let mut depth = 0usize;
+                for (offset, ch) in from_body.char_indices() {
+                    match ch {
+                        '{' => depth += 1,
+                        '}' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                return from_body.get(..offset + ch.len_utf8()).map(str::to_string);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+
+            let mut seen: std::collections::BTreeSet<String> = Default::default();
+            let mut out: Vec<(String, String)> = vec![];
+            let mut queue = vec![root.to_string()];
+            while let Some(name) = queue.pop() {
+                if !seen.insert(name.clone()) {
+                    continue;
+                }
+                let Some(body) = body_of(production, &name) else {
+                    continue;
+                };
+                for (index, _) in body.match_indices("Self::") {
+                    let Some(rest) = body.get(index + "Self::".len()..) else {
+                        continue;
+                    };
+                    let callee: String = rest
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    // `Self::CONST` and associated types share this shape; a
+                    // callee is followed by `(`. The identifier is ASCII by
+                    // construction (`is_alphanumeric` plus `_` over source
+                    // Rust), so `callee.len()` is a char boundary in `rest`.
+                    if callee.is_empty()
+                        || !rest.get(callee.len()..).is_some_and(|t| t.starts_with('('))
+                    {
+                        continue;
+                    }
+                    queue.push(callee);
+                }
+                out.push((name, body));
+            }
+            out
+        }
+
+        /// The plan's Step 5 gate, as a test rather than a shell command.
+        ///
+        /// It was written there as two `awk` ranges — "`UPDATE sessions` appears
+        /// once in the `17 =>` arm and zero times in `ensure_privacy_schema`" —
+        /// and it does not survive contact with this tree three times over. The
+        /// arm is **19**: BR-71 landed `17 =>` (`parent_session_id`) first, Task 6
+        /// took 18 for the columns, and the backfill needs a number no tester of
+        /// this branch has already passed. The statement lives in a named
+        /// function the arm calls, so a grep inside the arm's range correctly
+        /// reports zero. And scanning `ensure_privacy_schema` alone reads a
+        /// delegating wrapper, not the function holding the DDL.
+        ///
+        /// So the property is asserted directly, and it is the property that
+        /// matters: the backfill's production call sites are exactly the two
+        /// numbered arms and the fresh-database import, and **nothing reachable
+        /// from the per-startup reconcile** performs it or reaches it. Unlike the
+        /// shell gate this runs on every CI build, and it cannot pass vacuously —
+        /// every range is asserted non-empty first, which is the failure mode the
+        /// plan's own gate text warns about at length.
+        ///
+        /// ⚠ **The third call site is not a relaxation, it is finding 10.**
+        /// `create_schema` stamps `CURRENT_SCHEMA_VERSION` before `import_legacy`
+        /// runs, so the arms below can never see an imported legacy chat on the
+        /// database that imported it. Owning only the arms is precisely the gap
+        /// that let a reset `sessions.db` restore a user's whole Ollama history as
+        /// public. What must stay true is the *dangerous* half — not per startup —
+        /// and that is asserted separately below.
+        #[test]
+        fn the_backfill_runs_from_the_migration_arms_and_the_import_and_nowhere_else() {
+            let production = production_source();
+
+            let arm_body = |version: i32| -> String {
+                let header = format!("            {version} => {{");
+                let arm_start = production.find(&header).unwrap_or_else(|| {
+                    panic!("no `{version} => {{` arm at 12-space indentation, like arms 10..18")
+                });
+                let after_arm = production
+                    .get(arm_start..)
+                    .expect("find returns a char boundary");
+                let arm_len = after_arm
+                    .find("\n            }")
+                    .unwrap_or_else(|| panic!("the `{version} =>` arm does not close"));
+                let arm = after_arm.get(..arm_len).expect("find yields a boundary");
+                assert!(
+                    arm.lines().count() > 1,
+                    "the `{version} =>` arm range is empty — every assertion below would \
+                     pass vacuously"
+                );
+                arm.to_string()
+            };
+
+            // One definition, three calls. Anything else is a fourth door.
+            assert_eq!(
+                production
+                    .matches("backfill_privacy_from_recorded_provenance(")
+                    .count(),
+                4,
+                "expected exactly one definition and three production call sites of the backfill"
+            );
+            for version in [PRIVACY_BACKFILL_ARM, PRIVACY_REPAIR_ARM] {
+                assert!(
+                    arm_body(version).contains("Self::backfill_privacy_from_recorded_provenance("),
+                    "the `{version} =>` arm does not run the backfill"
+                );
+            }
+            // ...and the third is the fresh-database branch, identified by the
+            // call it sits beside rather than by a line number.
+            let pool_body = fn_body("pool");
+            assert!(
+                pool_body.contains("Self::import_legacy(")
+                    && pool_body.contains("Self::backfill_privacy_from_recorded_provenance("),
+                "the fresh-database branch imports legacy sessions without classifying them — \
+                 a reset `sessions.db` restores every legacy chat as public"
+            );
+
+            // ...and NOTHING the per-startup reconcile reaches performs it. This
+            // is the whole closure, not one function: see `reachable_bodies`.
+            let reconcile = reachable_bodies(&production, "reconcile_loop_schema");
+            let names: Vec<&str> = reconcile.iter().map(|(n, _)| n.as_str()).collect();
+            for required in [
+                "reconcile_loop_schema",
+                "ensure_privacy_schema",
+                // The half that actually holds the privacy DDL. Named
+                // explicitly, because it is the function the previous version of
+                // this gate silently failed to read.
+                "ensure_privacy_schema_locked",
+            ] {
+                assert!(
+                    names.contains(&required),
+                    "`{required}` is not in the per-startup reconcile's reachable set {names:?} \
+                     — the walk broke, and every assertion below would pass vacuously"
+                );
+            }
+
+            for (name, body) in &reconcile {
+                assert!(
+                    !body.contains("SET privacy_tier"),
+                    "`{name}` runs on every startup and assigns `privacy_tier`; a repeated \
+                     assignment re-privatises every session the user has declassified, because \
+                     declassification deliberately leaves `provider_name` in place"
+                );
+                assert!(
+                    !body.contains("backfill_privacy_from_recorded_provenance"),
+                    "`{name}` runs on every startup and reaches the backfill"
+                );
+            }
+        }
+
+        /// The one runtime-composed tier assignment in the tree, pinned.
+        ///
+        /// ⚠ **Composition is the shape that hides from the audits.**
+        /// `exactly_one_statement_in_the_tree_assigns_a_public_classification`
+        /// matches one literal spelling line by line and documents that a
+        /// statement built from variables is invisible to it. This is the first
+        /// `SET privacy_tier` in the tree that is composed at runtime, so it is
+        /// the first thing shaped like that bypass. It is benign — it raises, and
+        /// it interpolates the constants rather than free text — and this test is
+        /// what keeps it that way: the emitted statement is asserted whole, so
+        /// flipping the assigned tier, dropping the `AND privacy_tier = 'public'`
+        /// ratchet guard, or adding a provider without touching
+        /// `BACKFILL_PRIVATE_PROVIDERS` all fail here.
+        #[test]
+        fn the_backfill_statement_raises_and_nothing_else() {
+            let guard = "NOT EXISTS (SELECT 1 FROM classification_audit ca \
+                 WHERE ca.session_id = sessions.id AND ca.to_classification = 'public')";
+            assert_eq!(
+                SessionStorage::backfill_update_sql(),
+                format!(
+                    "UPDATE sessions \
+                        SET privacy_tier = 'private', \
+                            privacy_reason = 'backfill:' || provider_name \
+                      WHERE provider_name IN ('llamacpp','ollama','versa_azure','versa_bedrock') \
+                        AND privacy_tier = 'public' \
+                        AND {guard}"
+                )
+            );
+            // The turn-ledger statement, pinned for the same reasons — it is the
+            // second runtime-composed tier assignment in the tree, it raises, and
+            // it must carry both the ratchet guard and the declassification guard.
+            let evidence = "(te.event_key IS NOT NULL OR te.billed_total_tokens IS NOT NULL)";
+            assert_eq!(
+                SessionStorage::backfill_turn_history_update_sql(),
+                format!(
+                    "UPDATE sessions \
+                        SET privacy_tier = 'private', \
+                            privacy_reason = 'turn:' || ( \
+                                SELECT te.provider FROM token_events te \
+                                 WHERE te.session_id = sessions.id \
+                                   AND te.provider IN \
+                                   ('llamacpp','ollama','versa_azure','versa_bedrock') \
+                                   AND {evidence} \
+                                 ORDER BY te.ts ASC, te.id ASC LIMIT 1) \
+                      WHERE privacy_tier = 'public' \
+                        AND EXISTS (SELECT 1 FROM token_events te \
+                                     WHERE te.session_id = sessions.id \
+                                       AND te.provider IN \
+                                       ('llamacpp','ollama','versa_azure','versa_bedrock') \
+                                       AND {evidence}) \
+                        AND {guard}"
+                )
+            );
+            // ...and the two ends of the composition are what this file thinks
+            // they are, so the literals above cannot drift from the enum.
+            assert_eq!(SessionClassification::PRIVATE_SQL, "private");
+            assert_eq!(SessionClassification::PUBLIC_SQL, "public");
+        }
+
+        /// Neither raising statement may reach a row the user declassified.
+        ///
+        /// A structural companion to the behavioural test above it: that one
+        /// proves the guard works on a real declassified row, this one proves
+        /// nobody added a *third* raising statement without it. The guard is
+        /// invisible in the outcome when no declassification has happened, which
+        /// is every database in CI except the one test that makes one.
+        ///
+        /// ⚠ **The first block is not decoration.** The obvious form of this test
+        /// — `sql.contains(NOT_DECLASSIFIED_BY_USER)` alone — is a tautology
+        /// whenever the const itself is the thing that broke: rewriting it to
+        /// `"1 = 1"` leaves both statements still "containing the guard" and the
+        /// test green. That was written first, and the deliberate-break pass
+        /// caught it passing against a backfill that DID re-privatise a
+        /// declassified row. So the const's own shape is asserted before it is
+        /// used as a needle.
+        #[test]
+        fn every_raising_statement_carries_the_declassification_guard() {
+            let guard = SessionStorage::NOT_DECLASSIFIED_BY_USER;
+            for required in [
+                "NOT EXISTS",
+                "classification_audit",
+                "ca.session_id = sessions.id",
+                "ca.to_classification = 'public'",
+            ] {
+                assert!(
+                    guard.contains(required),
+                    "the guard no longer excludes rows the user declassified — it does not \
+                     mention `{required}`: {guard}"
+                );
+            }
+
+            for sql in [
+                SessionStorage::backfill_update_sql(),
+                SessionStorage::backfill_turn_history_update_sql(),
+            ] {
+                assert!(
+                    sql.contains("SET privacy_tier"),
+                    "the fixture is not a raising statement, so the assertion below is vacuous"
+                );
+                assert!(
+                    sql.contains(guard),
+                    "a raising statement without the declassification guard silently reverses \
+                     the one irreversible action the design gives the user: {sql}"
+                );
+            }
+        }
+
+        /// The backfill's provider list is a **literal** in SQL, because a
+        /// migration must classify rows written by builds other than the one
+        /// running it — including `versa_bedrock` rows on a build compiled
+        /// without the `aws-providers` feature, which is absent from the live
+        /// registry entirely. So it cannot be derived from
+        /// `providers::providers()`, and this is what stops it drifting: the set
+        /// of provider modules whose shipped metadata claims Private must be
+        /// exactly the set the migration privatises.
+        #[test]
+        fn the_backfilled_provider_set_is_every_provider_that_claims_private() {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/providers");
+            let mut declaring: Vec<String> = vec![];
+            let mut scanned = 0usize;
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                scanned += 1;
+                let src = std::fs::read_to_string(&path).unwrap();
+                if src.contains("with_tier(ProviderTier::Private)") {
+                    declaring.push(path.file_stem().unwrap().to_string_lossy().to_string());
+                }
+            }
+            assert!(
+                scanned >= 30,
+                "only {scanned} provider modules were scanned — a broken walk \
+                 reports the same empty set as a clean tree"
+            );
+            declaring.sort();
+            let mut backfilled: Vec<String> = SessionStorage::BACKFILL_PRIVATE_PROVIDERS
+                .iter()
+                .map(|name| (*name).to_string())
+                .collect();
+            backfilled.sort();
+            assert_eq!(
+                declaring, backfilled,
+                "a provider's shipped tier and the migration's provider list disagree"
+            );
+        }
     }
 }
 

@@ -41,7 +41,7 @@ table repeats it, so check that before treating a design as a description of shi
   a turn.
 - [Designs](designs/) — seven subsystem designs from the fix campaign, each stating how
   much of itself has shipped: the [command policy engine](designs/command-policy-engine.md)
-  (BR-21, replacing the evadable `THREAT_PATTERNS` regex table; slice 1 live),
+  (BR-21, which replaced the evadable `THREAT_PATTERNS` regex table, since deleted; slice 1 live),
   [cross-session memory](designs/cross-session-memory.md) (BR-17; FTS5 chat recall live,
   distillation and digest unbuilt),
   [OS-level tool sandboxing on Linux and Windows](designs/linux-and-windows-sandboxing.md)

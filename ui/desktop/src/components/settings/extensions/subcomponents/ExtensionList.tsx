@@ -2,6 +2,8 @@ import ExtensionItem from './ExtensionItem';
 import builtInExtensionsData from '../../../../built-in-extensions.json';
 import { ExtensionConfig } from '../../../../api';
 import { FixedExtensionEntry } from '../../../ConfigContext';
+import type { DefaultProvider } from '../ExtensionsSection';
+import type { RegistryLoad } from '../../../baam/registry';
 
 interface ExtensionListProps {
   extensions: FixedExtensionEntry[];
@@ -10,6 +12,14 @@ interface ExtensionListProps {
   isStatic?: boolean;
   disableConfiguration?: boolean;
   searchTerm?: string;
+  /**
+   * Pass-through only (issue #56, §14.5). Resolved once in `ExtensionsSection`
+   * — a per-row lookup would be one config read and one provider fetch per
+   * extension, on a screen that routinely lists twenty.
+   */
+  defaultProvider?: DefaultProvider | null;
+  /** Pass-through only, for the same reason (issue #56, §13.5). */
+  catalog?: RegistryLoad | null;
 }
 
 export default function ExtensionList({
@@ -19,6 +29,8 @@ export default function ExtensionList({
   isStatic,
   disableConfiguration: _disableConfiguration,
   searchTerm = '',
+  defaultProvider,
+  catalog,
 }: ExtensionListProps) {
   const matchesSearch = (extension: FixedExtensionEntry): boolean => {
     if (!searchTerm) return true;
@@ -62,6 +74,8 @@ export default function ExtensionList({
                 onToggle={onToggle}
                 onConfigure={onConfigure}
                 isStatic={isStatic}
+                defaultProvider={defaultProvider}
+                catalog={catalog}
               />
             ))}
           </div>
@@ -82,6 +96,8 @@ export default function ExtensionList({
                 onToggle={onToggle}
                 onConfigure={onConfigure}
                 isStatic={isStatic}
+                defaultProvider={defaultProvider}
+                catalog={catalog}
               />
             ))}
           </div>

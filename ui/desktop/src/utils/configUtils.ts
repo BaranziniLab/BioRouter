@@ -14,14 +14,6 @@ export const configLabels: Record<string, string> = {
   BIOROUTER_ALLOWLIST: 'Allow List',
   BIOROUTER_WORKFLOW_GITHUB_REPO: 'Workflow GitHub Repo',
 
-  // security settings
-  SECURITY_PROMPT_ENABLED: 'Prompt Injection Detection Enabled',
-  SECURITY_PROMPT_THRESHOLD: 'Prompt Injection Detection Threshold',
-  SECURITY_PROMPT_CLASSIFIER_ENABLED: 'ML-based Prompt Injection Detection Enabled',
-  SECURITY_PROMPT_CLASSIFIER_MODEL: 'ML-based Prompt Injection Detection Model',
-  SECURITY_PROMPT_CLASSIFIER_ENDPOINT: 'ML Classification Endpoint',
-  SECURITY_PROMPT_CLASSIFIER_TOKEN: 'ML Classification API Token',
-
   // openai
   OPENAI_API_KEY: 'OpenAI API Key',
   OPENAI_HOST: 'OpenAI Host',

@@ -1016,6 +1016,9 @@ mod tests {
             parent_working_dir: temp.path().to_path_buf(),
             extensions: vec![],
             max_turns: Some(3),
+            privacy_tier: crate::privacy::SessionClassification::Public,
+            dropped_private_extensions: Vec::new(),
+            dropped_cross_affiliation_extensions: Vec::new(),
         };
 
         // The sentinel: an agent nobody else owns, parked under the child's id.
@@ -1729,6 +1732,9 @@ mod tests {
             parent_working_dir: temp.path().to_path_buf(),
             extensions: vec![],
             max_turns: Some(3),
+            privacy_tier: crate::privacy::SessionClassification::Public,
+            dropped_private_extensions: Vec::new(),
+            dropped_cross_affiliation_extensions: Vec::new(),
         };
 
         let _result =
@@ -1929,6 +1935,9 @@ mod tests {
             parent_working_dir: temp.path().to_path_buf(),
             extensions: vec![],
             max_turns: Some(3),
+            privacy_tier: crate::privacy::SessionClassification::Public,
+            dropped_private_extensions: Vec::new(),
+            dropped_cross_affiliation_extensions: Vec::new(),
         };
         (config, workflow, task_config)
     }

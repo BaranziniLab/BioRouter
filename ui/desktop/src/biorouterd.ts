@@ -1,6 +1,7 @@
 import Electron from 'electron';
 import fs from 'node:fs';
 import { spawn, ChildProcess } from 'child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'net';
 import os from 'node:os';
 import path from 'node:path';
@@ -226,6 +227,30 @@ export interface BiorouterdResult {
   errorLog: string[];
 }
 
+/**
+ * The URL the `BIOROUTER_EXTERNAL_BACKEND` developer escape hatch points at.
+ *
+ * ⚠ It used to be the hard-coded string `http://127.0.0.1:3000`, which quietly
+ * ignored `BIOROUTER_EXTERNAL_PORT` — the variable this repo's own
+ * documentation calls "Backend port (default 3000)" and which `just
+ * debug-server` sets. So a developer who moved their daemon off 3000 had the app
+ * connect to 3000 anyway and report the backend as down, with nothing in the
+ * logs naming the port it actually tried.
+ *
+ * Only a well-formed positive port is honoured; anything else falls back to
+ * 3000 rather than composing a URL that cannot resolve.
+ */
+export const externalBackendUrlFromEnv = (env: Record<string, string | undefined>): string => {
+  const raw = (env.BIOROUTER_EXTERNAL_PORT ?? '').trim();
+  // ⚠ A whole-string digit match, not `parseInt`. `parseInt('12.5')` is 12 and
+  // `parseInt('80abc')` is 80, so a typo would be silently accepted as a
+  // *different* port — which is worse than the fallback, because the app would
+  // then report a backend as down at an address nobody typed.
+  const port = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  const valid = Number.isInteger(port) && port > 0 && port < 65536;
+  return `http://127.0.0.1:${valid ? port : 3000}`;
+};
+
 const connectToExternalBackend = (workingDir: string, url: string): BiorouterdResult => {
   log.info(`Using external biorouterd backend at ${url}`);
 
@@ -239,6 +264,12 @@ const connectToExternalBackend = (workingDir: string, url: string): BiorouterdRe
   return { baseUrl: url, workingDir, process: mockProcess, errorLog: [] };
 };
 
+// ⚠ Issue #56 DR-16: this interface gains NOTHING for the user-action key, and
+// that omission is the point. AR-11 measured a daemon's environment to be
+// recoverable in-process by any tool that reads a caller-named path
+// (`/proc/self/environ`) or, on macOS, by `sysctl(KERN_PROCARGS2)` — which is
+// not a path at all and which no sandbox profile can gate. A user-proof
+// delivered as an env var is a proof the model already holds. It goes on stdin.
 interface BiorouterProcessEnv {
   [key: string]: string | undefined;
 
@@ -252,9 +283,25 @@ interface BiorouterProcessEnv {
   BIOROUTER_DISABLE_KEYRING?: string;
 }
 
+/**
+ * SHA-256, hex. The daemon is handed this and never the key itself, so a tool
+ * that reads the daemon's heap recovers a value it cannot present.
+ */
+const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
+
 export interface StartBiorouterdOptions {
   app: App;
   serverSecret: string;
+  /**
+   * Issue #56 DR-16: the proof that a tier-raising request came from the person
+   * at the keyboard. Minted per launch by the Electron main process, which keeps
+   * the raw key and gives the daemon only its digest, on stdin.
+   *
+   * Optional because a caller that omits it is a caller with no user-proof, and
+   * that is a legitimate state — the daemon then refuses every raise, which is
+   * exactly what a hand-started `biorouterd agent` does too.
+   */
+  userActionKey?: string;
   dir: string;
   env?: Partial<BiorouterProcessEnv>;
   externalBiorouterd?: ExternalBiorouterdConfig;
@@ -263,7 +310,7 @@ export interface StartBiorouterdOptions {
 export const startBiorouterd = async (
   options: StartBiorouterdOptions
 ): Promise<BiorouterdResult> => {
-  const { app, serverSecret, dir: inputDir, env = {}, externalBiorouterd } = options;
+  const { app, serverSecret, userActionKey, dir: inputDir, env = {}, externalBiorouterd } = options;
   const isWindows = process.platform === 'win32';
   const homeDir = os.homedir();
   const dir = path.resolve(path.normalize(inputDir));
@@ -273,7 +320,7 @@ export const startBiorouterd = async (
   }
 
   if (process.env.BIOROUTER_EXTERNAL_BACKEND) {
-    return connectToExternalBackend(dir, 'http://127.0.0.1:3000');
+    return connectToExternalBackend(dir, externalBackendUrlFromEnv(process.env));
   }
 
   let biorouterdPath = getBiorouterdBinaryPath(app);
@@ -332,15 +379,31 @@ export const startBiorouterd = async (
   const spawnOptions = {
     cwd: dir,
     env: processEnv,
-    stdio: ['ignore', 'pipe', 'pipe'] as ['ignore', 'pipe', 'pipe'],
+    // stdin is a pipe (it used to be 'ignore') for one reason: issue #56's
+    // user-action digest is written down it and the pipe is closed immediately.
+    stdio: ['pipe', 'pipe', 'pipe'] as ['pipe', 'pipe', 'pipe'],
     windowsHide: true,
     detached: isWindows,
     shell: false,
   };
 
+  // Unchanged, and asserted to stay that way: argv sits in the same
+  // KERN_PROCARGS2 block as the environment and in /proc/<pid>/cmdline, so the
+  // user-action key may not travel here either.
   const safeArgs = ['agent'];
 
   const biorouterdProcess: ChildProcess = spawn(biorouterdPath, safeArgs, spawnOptions);
+
+  // Issue #56 DR-16. The DIGEST, never the key — the daemon compares a hash of
+  // what a caller presents, so what it stores authenticates nothing. Written
+  // and closed immediately: the daemon's read is bounded (2s) and a pipe whose
+  // writer never closes would stall its startup. After `end()` fd 0 is at EOF,
+  // so every process the daemon later spawns inherits a stdin that carries
+  // nothing.
+  if (userActionKey) {
+    biorouterdProcess.stdin?.write(sha256Hex(userActionKey) + '\n');
+  }
+  biorouterdProcess.stdin?.end();
 
   if (isWindows && biorouterdProcess.unref) {
     biorouterdProcess.unref();
@@ -405,6 +468,24 @@ export const startBiorouterd = async (
   });
 
   log.info(`Biorouterd server successfully started on port ${port}`);
+  // Issue #56. This daemon is deliberately unreachable from a terminal: the port
+  // above was chosen by the OS at launch and `serverSecret` is minted per
+  // launch, and neither is written anywhere a `biorouter` CLI could read it. So
+  // `biorouter session send/watch/attach/cancel` cannot talk to the app's
+  // daemon, by construction rather than by omission — and the CLI's own error
+  // (`session_watch.rs`'s NO_SECRET_KEY_HELP) names the External Backend
+  // setting as the supported way round it.
+  //
+  // Logged, at the one moment the values are both known, so that a support
+  // question about "why does the CLI say it cannot authenticate" is answerable
+  // from main.log without anyone having to rediscover this. The SECRET is never
+  // logged — only the fact that one exists.
+  log.info(
+    `This managed biorouterd is not reachable from a terminal: its port (${port}) is ephemeral ` +
+      'and its secret is per-launch. To drive sessions from the `biorouter` CLI, run your own ' +
+      'daemon with a fixed BIOROUTER_PORT and BIOROUTER_SERVER__SECRET_KEY and point the app at ' +
+      'it via Settings > Advanced > External Backend.'
+  );
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     workingDir: dir,

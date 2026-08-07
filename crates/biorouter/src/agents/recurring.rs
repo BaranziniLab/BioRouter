@@ -222,6 +222,13 @@ impl Agent {
             process_start_time: None,
             run_count: 0,
             max_runs,
+            // Issue #56 (§9.3 C2 / R5). `/loop` and `/schedule` are the two
+            // surfaces that DO have a creating chat, and each run resolves its
+            // provider from this session before falling back to the global
+            // default — so a recurring task started from a private chat keeps
+            // running on that chat's model instead of the user's commercial one.
+            creator_session_id: Some(session_id.to_string()),
+            last_error: None,
         };
         if let Err(e) = scheduler.add_scheduled_job(job, false).await {
             let _ = tokio::fs::remove_file(&path).await;
@@ -543,6 +550,8 @@ mod tests {
             process_start_time: None,
             run_count: 3,
             max_runs: Some(100),
+            creator_session_id: None,
+            last_error: None,
         };
         assert!(format_job_line(&job).contains("3/100 runs"));
 

@@ -45,8 +45,10 @@ use biorouter::guardrails::run_state::{PendingTool, RunState};
 use biorouter::model::ModelConfig;
 use biorouter::permission::permission_confirmation::PrincipalType;
 use biorouter::permission::{Permission, PermissionConfirmation};
-use biorouter::providers::base::Provider;
-use biorouter::providers::create as create_provider;
+// ⚠ Issue #56, DR-21. `biorouter::providers::create` is deliberately NOT
+// imported here: it lives inside `app_provider_bind`, so a new bind site cannot
+// construct a provider without coming through the guard. See that module's doc
+// comment.
 use biorouter::session::SessionType;
 use biorouter_mcp::agent_drafter::control::{
     ConsultRequest, StateWriteError, UiBridge, APP_PAYLOAD_MAX, CATALOG_VERSION,
@@ -765,11 +767,26 @@ fn valid_profile_count_is_zero(cfg: &AgentConfig) -> bool {
     cfg.orchestration.agents.is_empty()
 }
 
-fn capability_report(cfg: &AgentConfig) -> CapabilityReport {
+/// What this install can actually give **this** agent.
+///
+/// `caller` is issue #56's CP5 crossing: `biorouter-mcp` cannot depend on
+/// `biorouter`, so `Catalog::discover` takes that crate's own [`KbCaller`] and
+/// the `ProviderTier`/`ModelAffiliation` translation happens in [`caller_of`].
+/// An agent the barrier would refuse gets the base omitted from its catalog, so
+/// `missing_knowledge_base` reports one it may not reach exactly as it reports
+/// one that is not installed — which is the omission semantics the whole task
+/// chose, not a refusal that would itself confirm the base exists.
+///
+/// ⚠ **Audit finding 17.** This took the tier axis alone, so an app agent bound
+/// to a model covered by another institution's agreements was told its
+/// configured base was present — and `br.kb` (CP3, `handle_kb_frame` below)
+/// then refused every read of it. Same file, same capability, two questions.
+/// Both doors now take one [`KbCaller`] and ask `assert_reachable`.
+fn capability_report(cfg: &AgentConfig, caller: &KbCaller) -> CapabilityReport {
     // What this install actually has. Everything below is intersected against
     // it: we never arm a tool for a grant that cannot be satisfied, because
     // doing so is what made the app's first turn fail by construction.
-    let catalog = biorouter_mcp::agent_drafter::catalog::Catalog::discover();
+    let catalog = biorouter_mcp::agent_drafter::catalog::Catalog::discover(caller);
     let (granted_skills, missing_skills) = cfg
         .skills
         .iter()
@@ -804,23 +821,368 @@ fn capability_report(cfg: &AgentConfig) -> CapabilityReport {
     }
 }
 
+/// The **only** path from this file to `Agent::update_provider` (issue #56,
+/// DR-21).
+///
+/// DR-21 fixes an app session's capability tier **at session creation**: a bind
+/// that would raise it — a later manifest edit, a reconnect, a client frame — is
+/// refused, not silently honoured and not silently ignored. Three sites reach a
+/// live app session in-process and so never pass `POST /agent/update_provider`'s
+/// `X-User-Action` guard ([`configure_main_provider`],
+/// [`configure_worker_provider`], `ClientFrame::ModelSelect`), and the third
+/// arrives on `GET /apps/{id}/agent`, which `auth::is_public_app_get` exempts
+/// from secret-key auth **entirely** — so this guard is the only thing standing
+/// between an agent-authored page and a private bind.
+///
+/// Fixing three call sites leaves a fourth free to be written, so the barrier is
+/// structural rather than a comment or a grep someone can forget to run. Each
+/// code below follows from the visibility of the item named beside it, and the
+/// visibility is what to check if one of them ever stops holding — not a
+/// remembered compiler run:
+///
+///  * [`raw_bind`] is **private**, and is the one place in this file that names
+///    `Agent::update_provider`. Reaching it from `apps.rs` is `E0603`.
+///  * [`AppProvider`] holds its `Arc<dyn Provider>` in a **private field**, so
+///    the value the sites pass around cannot be unwrapped and handed straight to
+///    `Agent::update_provider` (`E0616`). Every provider-typed parameter in the
+///    app runtime is an `AppProvider` for exactly this reason. (Even *naming*
+///    the target type outside this module is `E0405` now: the `Provider` trait
+///    is no longer imported at file scope either.)
+///  * `biorouter::providers::create` is imported **here** rather than at file
+///    scope, so a bare `create(..)` outside this module is `E0425` and
+///    `app_provider_bind::create(..)` is `E0603`.
+///
+/// ⚠ **How far that actually reaches, stated plainly, because the first version
+/// of this comment overstated it.** The first two bullets are walls: an author
+/// who has a provider value in hand — every one in this file is an
+/// [`AppProvider`] — cannot bind it any other way, and cannot even spell the
+/// type of the thing `Agent::update_provider` wants. The third is a speed bump,
+/// not a wall: `create` is a `pub` item of another crate, so that `E0425` lasts
+/// exactly until someone adds one `use` line, and `Agent::update_provider` is a
+/// `pub` method of a foreign type, which nothing arranged inside this file can
+/// make unreachable. A determined author can still write a fourth bind site that
+/// compiles.
+///
+/// What holds that line is a test —
+/// `privacy_dr21::apps_rs_names_the_raw_bind_exactly_once_outside_its_tests`,
+/// which fails the moment a second `.update_provider(` appears in this file's
+/// production code and says what to do instead. Weaker than `E0603`, stronger
+/// than the comment Step 2 rules out: a new bind site does not have to be
+/// noticed in review.
+///
+/// ⚠ One related shape is a non-issue rather than a residual: `Agent::provider()`
+/// still hands back a bare `Arc<dyn Provider>`, so the provider a session is
+/// *already* running on can be re-bound. That is a no-op, not an escalation.
+mod app_provider_bind {
+    use super::{provider_is_private_for_app, ModelConfig};
+    use biorouter::agents::Agent;
+    use biorouter::privacy::refusal::PrivacyRefusal;
+    use biorouter::privacy::{raise_needs_user_action, ProviderTier};
+    use biorouter::providers::base::Provider;
+    // ⚠ NOT re-exported and NOT at file scope. See this module's doc comment.
+    use biorouter::providers::create;
+    use std::sync::Arc;
+
+    /// A provider the app runtime may hand to a session.
+    ///
+    /// The wrapper is the point: the inner handle is private to this module, so
+    /// the only thing `apps.rs` can do with one is give it back to
+    /// [`bind_app_provider`].
+    #[derive(Clone)]
+    pub(super) struct AppProvider(Arc<dyn Provider>);
+
+    impl AppProvider {
+        pub(super) fn name(&self) -> &str {
+            self.0.get_name()
+        }
+
+        /// The tier of the CONSTRUCTED instance, which is the authoritative
+        /// answer: it sees the endpoint the provider actually resolved, so a
+        /// `versa_*` pointed off the gateway or an `ollama` pointed off this
+        /// machine reads Public here even though its registry entry says
+        /// Private.
+        pub(super) fn tier(&self) -> ProviderTier {
+            self.0.tier()
+        }
+    }
+
+    /// The provider a routed turn displaced, on its way back.
+    ///
+    /// A distinct type, and not merely an [`AppProvider`], because
+    /// [`restore_bound_provider`] is the one bind that is **not** raise-checked.
+    /// Minting one is only possible through [`snapshot_for_route`], which reads
+    /// what the session is *already* running on — so a restore can never carry a
+    /// provider the session did not already have, and the exemption cannot be
+    /// borrowed by a new site to bind something else.
+    pub(super) struct RoutePrevious(AppProvider);
+
+    impl RoutePrevious {
+        pub(super) fn name(&self) -> &str {
+            self.0.name()
+        }
+    }
+
+    /// Why a bind did not happen.
+    ///
+    /// Two variants and not one `anyhow::Error`, because the callers owe the
+    /// page different things: DR-21's refusal is a permanent, explainable
+    /// decision that must stop the caller's fallback chain, while an ordinary
+    /// failure (a dead credential, Gate A refusing a public model on a private
+    /// row) is the pre-existing "try the next rung" case.
+    pub(super) enum AppBindError {
+        /// DR-21: this bind would raise the session's capability above the tier
+        /// it was created with.
+        TierFixed(PrivacyRefusal),
+        /// The bind itself failed — Gate A's own refusal, a database error, a
+        /// session that no longer exists.
+        Failed(anyhow::Error),
+    }
+
+    impl std::fmt::Display for AppBindError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::TierFixed(refusal) => write!(f, "{refusal}"),
+                Self::Failed(e) => write!(f, "{e}"),
+            }
+        }
+    }
+
+    /// Construct a provider for an app session. The only provider constructor
+    /// `apps.rs` can reach.
+    pub(super) async fn app_provider(
+        name: &str,
+        model: ModelConfig,
+    ) -> anyhow::Result<AppProvider> {
+        create(name, model).await.map(AppProvider)
+    }
+
+    /// What this agent is running on right now, if anything.
+    pub(super) async fn currently_bound(agent: &Agent) -> Option<AppProvider> {
+        agent.provider().await.ok().map(AppProvider)
+    }
+
+    /// Snapshot the provider a routed turn is about to displace, so it can be
+    /// put back afterwards. The only way to mint a [`RoutePrevious`].
+    pub(super) async fn snapshot_for_route(agent: &Agent) -> Option<RoutePrevious> {
+        currently_bound(agent).await.map(RoutePrevious)
+    }
+
+    /// Wrap a provider a test already holds.
+    ///
+    /// `#[cfg(test)]` on purpose: production code must reach [`AppProvider`]
+    /// through [`app_provider`] or [`currently_bound`], and a build-time
+    /// constructor taking any `Arc` would blunt the newtype into a formality.
+    /// It is still not a bypass — the result can only be fed back into
+    /// [`bind_app_provider`], which is the guard.
+    #[cfg(test)]
+    pub(super) fn adopt_for_test(provider: Arc<dyn Provider>) -> AppProvider {
+        AppProvider(provider)
+    }
+
+    /// ⚠ PRIVATE ON PURPOSE, and the reason this module exists. This is the one
+    /// place in `apps.rs` that names `Agent::update_provider`; naming it from
+    /// outside is an `E0603`. Reach it through [`bind_app_provider`] (guarded)
+    /// or [`restore_bound_provider`] (exempt, and it says why).
+    async fn raw_bind(
+        agent: &Agent,
+        provider: AppProvider,
+        session_id: &str,
+    ) -> anyhow::Result<()> {
+        agent.update_provider(provider.0, session_id).await
+    }
+
+    /// The capability this app session already carries, or `None` when it has
+    /// none yet — which is the one moment DR-21 leaves open, because a session
+    /// with no capability is being *created* rather than changed.
+    ///
+    /// The live binding first, because it is the constructed instance and so
+    /// sees endpoint demotions a name cannot. The session ROW second, and it is
+    /// not optional: an app agent is dropped from the LRU and rebuilt with
+    /// nothing bound on every daemon restart, and `AgentManager::default_provider`
+    /// has no production setter — so after a restart this row read is the
+    /// *dominant* path, and reading only the live binding would make "wait for a
+    /// restart, then reconnect" a working escalation. That is DR-22's own
+    /// *"only on restart is not a control"* reasoning applied to this gate.
+    ///
+    /// A row that cannot be read at all reports `Some(Public)`, not `None`: the
+    /// fail-safe direction is the one where an error refuses a raise rather than
+    /// granting one.
+    async fn established_capability(agent: &Agent, session_id: &str) -> Option<ProviderTier> {
+        if let Ok(bound) = agent.provider().await {
+            return Some(bound.tier());
+        }
+        let session = match agent
+            .config
+            .session_manager
+            .get_session(session_id, false)
+            .await
+        {
+            Ok(session) => session,
+            Err(_) => return Some(ProviderTier::Public),
+        };
+        let name = session
+            .provider_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())?;
+        Some(row_capability(name, session.model_config).await)
+    }
+
+    /// The tier of the provider a session ROW names — asked of a **constructed
+    /// instance**, never of the name alone.
+    ///
+    /// The name is not good enough here, and the gap runs in the direction that
+    /// *grants* capability. `ollama`'s registry entry is
+    /// `.with_tier(ProviderTier::Private)` unconditionally while its instance
+    /// `tier()` reads the resolved base URL, so an app session created on a
+    /// **remote** ollama is genuinely Public-capable but its row reads Private
+    /// by name. `raise_needs_user_action(Private, Private)` is false, so a later
+    /// bind to a genuinely private model would have been admitted — a restart
+    /// plus a manifest edit, which is exactly the channel DR-21 closes. The row
+    /// stores `model_config` beside `provider_name` (they are written together
+    /// by the one `UPDATE` in `bind_provider_if_allowed`), so the instance can
+    /// simply be rebuilt and asked.
+    ///
+    /// ⚠ Two fallbacks, in the order that keeps each one honest:
+    ///
+    ///  * If the row carries no model config, or the provider cannot be
+    ///    constructed, the name-keyed registry tier is all that is left. That is
+    ///    narrower than it sounds: the name is only wrong for providers whose
+    ///    tier is *endpoint-dependent*, and those are precisely the self-hosted
+    ///    ones that construct with no credential at all — so this fallback is
+    ///    reached almost only where the name is already the authoritative
+    ///    answer. Preferring a blanket Public here instead would strand an app
+    ///    created on a credentialed private provider (`versa_*`) the first time
+    ///    its credential is briefly unreadable.
+    ///  * An unregistered name gets `provider_is_private_for_app`'s own default,
+    ///    Public. Unknown must be the less privileged answer.
+    ///
+    /// The durable fix is to persist the bound provider's tier on the row, so
+    /// the capability a session was created with is a stored fact rather than a
+    /// re-derivation. That is a session-store schema change and squarely outside
+    /// this task; it is written down here so the next author does not have to
+    /// re-derive the reason.
+    async fn row_capability(name: &str, model: Option<ModelConfig>) -> ProviderTier {
+        if let Some(model) = model {
+            if let Ok(provider) = app_provider(name, model).await {
+                return provider.tier();
+            }
+        }
+        if provider_is_private_for_app(name).await {
+            ProviderTier::Private
+        } else {
+            ProviderTier::Public
+        }
+    }
+
+    /// DR-21. Bind a provider to an app session, refusing any bind that would
+    /// raise the session's capability above the tier it was created with.
+    ///
+    /// Only an **upward** bind is refused, which is `raise_needs_user_action`'s
+    /// own rule and DR-21's own operative sentence ("a manifest naming a *more
+    /// private* provider than the session already carries is refused"). Sideways
+    /// and downward binds are untouched — Gate A owns the downward direction and
+    /// still refuses a public model on a private row from inside [`raw_bind`].
+    ///
+    /// There is deliberately no user-proof branch and no per-manifest grant:
+    /// every caller here is agent-authored data, and a grant stored where the
+    /// agent writes is not a grant.
+    ///
+    /// DR-15's master opt-out is read INSIDE the gate, like every other #56
+    /// surface, so a mid-session change is honoured and the opt-out is one
+    /// auditable line rather than an absent gate.
+    ///
+    /// ⚠ **This check is read-then-write, and Gate A's is not.** Gate A stays
+    /// atomic — its predicate lives in the `UPDATE … WHERE` inside [`raw_bind`],
+    /// so no concurrent ratchet can interleave into "private session, public
+    /// provider bound". DR-21's read cannot join it there: the capability it
+    /// compares against is the *bound instance's* tier, which is not a column.
+    /// The window is therefore real but narrow, and every writer that could race
+    /// through it is serialized upstream: an app session's binds all originate on
+    /// that session's own socket loop, which handles one frame at a time, and
+    /// `configure_agent` runs once before the loop starts. Closing it properly
+    /// means persisting the created-with tier on the row — the same session-store
+    /// schema change [`row_capability`] names, and outside this task.
+    pub(super) async fn bind_app_provider(
+        agent: &Agent,
+        session_id: &str,
+        provider: AppProvider,
+    ) -> Result<(), AppBindError> {
+        if biorouter::privacy::privacy_tiers_enabled() {
+            if let Some(current) = established_capability(agent, session_id).await {
+                if raise_needs_user_action(current, provider.tier()) {
+                    return Err(AppBindError::TierFixed(
+                        PrivacyRefusal::AppSessionTierFixed {
+                            requested: provider.name().to_string(),
+                        },
+                    ));
+                }
+            }
+        }
+        raw_bind(agent, provider, session_id)
+            .await
+            .map_err(AppBindError::Failed)
+    }
+
+    /// Put an app session back on the provider a routed turn displaced.
+    ///
+    /// NOT raise-checked, and that is not an escape hatch: a [`RoutePrevious`]
+    /// can only have come from [`snapshot_for_route`], i.e. from what this very
+    /// session was running on when the route was applied, so its tier IS the
+    /// session's established capability and restoring it cannot raise anything.
+    /// Refusing it instead would strand a private app session on a route's
+    /// public model for every later turn — the failure
+    /// [`restore_route_provider`] exists to prevent.
+    pub(super) async fn restore_bound_provider(
+        agent: &Agent,
+        session_id: &str,
+        previous: RoutePrevious,
+    ) -> anyhow::Result<()> {
+        raw_bind(agent, previous.0, session_id).await
+    }
+}
+
 /// Configure the main agent's requested provider, falling back to the global
 /// provider so a missing app credential does not leave the agent unusable.
+///
+/// Issue #56, DR-21 — site (1) of three. `cfg.model` comes from the manifest,
+/// which `agent_drafter__declare_profiles` writes from tool arguments, so this
+/// bind carries a provider a **Public** model authored. It therefore goes
+/// through [`app_provider_bind::bind_app_provider`], which refuses any bind that
+/// would raise a live app session's capability.
+///
+/// ⚠ A DR-21 refusal returns immediately and does **not** fall through to the
+/// global default. A silent fallback to the public default passes every test
+/// that only checks "the private model did not bind", and is the failure mode
+/// this campaign has found four times: the caller must be able to tell a refusal
+/// from a bind that never happened.
 async fn configure_main_provider(
     agent: &biorouter::agents::Agent,
     session_id: &str,
     manifest: &Manifest,
     cfg: &AgentConfig,
-) {
+) -> Result<(), biorouter::privacy::refusal::PrivacyRefusal> {
     let mut provider_set = false;
     if let Some(sel) = cfg.model.as_ref() {
         if let (Some(provider), Some(model)) = (sel.provider.as_ref(), sel.model.as_ref()) {
             match ModelConfig::new(model) {
-                Ok(mc) => match create_provider(provider, mc).await {
-                    Ok(p) => match agent.update_provider(p, session_id).await {
-                        Ok(()) => provider_set = true,
-                        Err(e) => warn!(app = %manifest.id, "update_provider failed: {e}"),
-                    },
+                Ok(mc) => match app_provider_bind::app_provider(provider, mc).await {
+                    Ok(p) => {
+                        match app_provider_bind::bind_app_provider(agent, session_id, p).await {
+                            Ok(()) => provider_set = true,
+                            Err(app_provider_bind::AppBindError::TierFixed(refusal)) => {
+                                warn!(
+                                    event = "app_session_tier_fixed",
+                                    app = %manifest.id,
+                                    session = %session_id,
+                                    requested = %provider,
+                                    "{refusal}"
+                                );
+                                return Err(refusal);
+                            }
+                            Err(e) => warn!(app = %manifest.id, "update_provider failed: {e}"),
+                        }
+                    }
                     Err(e) => warn!(app = %manifest.id, "create provider {provider} failed: {e}"),
                 },
                 Err(e) => warn!(app = %manifest.id, "bad model config {model}: {e}"),
@@ -828,7 +1190,7 @@ async fn configure_main_provider(
         }
     }
     if provider_set {
-        return;
+        return Ok(());
     }
 
     let global = biorouter::config::Config::global();
@@ -836,27 +1198,35 @@ async fn configure_main_provider(
         global.get_biorouter_provider(),
         global.get_biorouter_model(),
     ) else {
-        return;
+        return Ok(());
     };
     let Ok(mc) = ModelConfig::new(&model) else {
-        return;
+        return Ok(());
     };
-    match create_provider(&provider, mc).await {
-        Ok(p) => {
-            if let Err(e) = agent.update_provider(p, session_id).await {
-                warn!(app = %manifest.id, "fallback update_provider failed: {e}");
-            } else {
-                info!(app = %manifest.id, "using global provider fallback ({provider})");
+    match app_provider_bind::app_provider(&provider, mc).await {
+        Ok(p) => match app_provider_bind::bind_app_provider(agent, session_id, p).await {
+            Ok(()) => info!(app = %manifest.id, "using global provider fallback ({provider})"),
+            Err(app_provider_bind::AppBindError::TierFixed(refusal)) => {
+                warn!(
+                    event = "app_session_tier_fixed",
+                    app = %manifest.id,
+                    session = %session_id,
+                    requested = %provider,
+                    "{refusal}"
+                );
+                return Err(refusal);
             }
-        }
+            Err(e) => warn!(app = %manifest.id, "fallback update_provider failed: {e}"),
+        },
         Err(e) => warn!(app = %manifest.id, "fallback provider {provider} failed: {e}"),
     }
+    Ok(())
 }
 
 async fn warn_invalid_model_routes(manifest: &Manifest, cfg: &AgentConfig) {
     // Provider-class violations and routes that cannot be constructed against
     // the user's config are disabled at session start and re-rejected at call time.
-    for (name, reason) in route_start_warnings(cfg) {
+    for (name, reason) in route_start_warnings(cfg).await {
         warn!(app = %manifest.id, route = %name, "model route disabled: {reason}");
     }
     for (name, route) in &cfg.orchestration.routes {
@@ -869,7 +1239,7 @@ async fn warn_invalid_model_routes(manifest: &Manifest, cfg: &AgentConfig) {
             .or_else(|| cfg.model.as_ref().and_then(|m| m.model.clone()))
             .unwrap_or_default();
         if let Ok(mc) = ModelConfig::new(&model) {
-            if let Err(e) = create_provider(provider, mc).await {
+            if let Err(e) = app_provider_bind::app_provider(provider, mc).await {
                 warn!(app = %manifest.id, route = %name, "model route provider \"{provider}\" is unconfigured/invalid: {e}");
             }
         }
@@ -1254,10 +1624,42 @@ async fn configure_agent(
     let Some(cfg) = manifest.agent.as_ref() else {
         return CapabilityReport::default();
     };
-    let mut report = capability_report(cfg);
-
-    configure_main_provider(agent, session_id, manifest, cfg).await;
+    // Issue #56, DR-21. A refused bind is surfaced, not swallowed: the page gets
+    // the same `model` error frame a bad route gets, so an app whose manifest was
+    // edited to name a more private model finds out it is still on the model it
+    // was created with instead of silently believing otherwise.
+    if let Err(refusal) = configure_main_provider(agent, session_id, manifest, cfg).await {
+        ui_bridge.emit_frame(json!({
+            "type": "model",
+            "ok": false,
+            "error": refusal.to_string(),
+        }));
+    }
     warn_invalid_model_routes(manifest, cfg).await;
+
+    // Issue #56. AFTER the bind, never before: `capability_report` used to run
+    // above `configure_main_provider`, so it read whatever provider the session
+    // held before the manifest's `model` was applied — and an app's manifest
+    // routinely names a different one. Both inversions are silent. A global-private
+    // install would hand a public manifest model the private catalog AND grant it
+    // the base below, arming its KB tools; a global-public install would strip a
+    // private manifest model of its own base for the whole session, for no reason
+    // the user can see.
+    //
+    // Reading the provider the agent ACTUALLY ended up with is also the only value
+    // that survives `configure_main_provider`'s fallbacks — the same rule the HTTP
+    // macro routes apply: the constructed instance, never the requested name.
+    //
+    // A dead or unbound provider resolves to Public + Unstated, the same
+    // fail-safe direction `caller_of` takes: unknown must be the less privileged
+    // answer, on BOTH axes.
+    //
+    // ⚠ Finding 17: through `caller_of`, so this reads the tier and the
+    // affiliation off ONE `provider()` resolution and hands CP5 the same value
+    // CP3 gets. Two separate reads here would let the catalogue be built from
+    // one model's tier and the barrier consulted with another's institution.
+    let caller = caller_of(agent).await;
+    let mut report = capability_report(cfg, &caller);
 
     configure_main_extensions(agent, manifest, cfg, &report).await;
 
@@ -1349,21 +1751,25 @@ impl ValidatedProfiles {
 }
 
 /// Validate an app's declared worker profiles (`orchestration.agents`) against the
-/// app's own grant (design §3.8). **Pure + synchronous** so it is unit-testable.
+/// app's own grant (design §3.8). Side-effect-free so it is unit-testable.
 ///
 /// A profile is DROPPED when it:
 /// - declares a capability category (files / data / compute / vault) the app
 ///   itself does not grant — a worker can never exceed the app's blast radius
 ///   (the comparison is conservative + presence-based); or
-/// - pins an External provider while the app holds a sensitive data source (the
-///   per-profile provider-class constraint, design §3.7); or
+/// - pins a public provider while the app holds a sensitive data source (the
+///   per-profile provider constraint, design §3.7); or
 /// - exceeds the [`MAX_PROFILES`] cap (the surplus, by sorted name).
 ///
 /// A kept profile is NORMALIZED: its `ui` capability is forced OFF unless the
 /// profile opts in AND the app grants ui (workers get no page control by default),
 /// and its own `orchestration` is cleared (workers never get sub-profiles — the
 /// `consult` depth is 1).
-fn validate_profiles(app: &AgentConfig) -> ValidatedProfiles {
+///
+/// ⚠ `async` since issue #56 only because the provider tier is read from the
+/// provider registry, which is initialised behind a `tokio::sync::OnceCell`.
+/// Nothing else here awaits.
+async fn validate_profiles(app: &AgentConfig) -> ValidatedProfiles {
     let mut out = ValidatedProfiles::empty();
 
     // Deterministic iteration so the cap keeps a stable subset.
@@ -1402,8 +1808,8 @@ fn validate_profiles(app: &AgentConfig) -> ValidatedProfiles {
             continue;
         }
 
-        // Per-profile provider-class constraint (design §3.7): a profile that pins
-        // an External provider cannot run for an app with a sensitive source.
+        // Per-profile provider constraint (design §3.7): a profile that pins a
+        // public provider cannot run for an app with a sensitive source.
         if let Some(provider) = profile
             .model
             .as_ref()
@@ -1411,12 +1817,11 @@ fn validate_profiles(app: &AgentConfig) -> ValidatedProfiles {
             .map(str::trim)
             .filter(|p| !p.is_empty())
         {
-            if app_has_sensitive_source(app) && provider_class(provider) == ProviderClass::External
-            {
+            if app_has_sensitive_source(app) && !provider_is_private_for_app(provider).await {
                 out.dropped.push((
                     name.clone(),
                     format!(
-                        "pins external provider \"{provider}\" for an app with a sensitive data source"
+                        "pins public provider \"{provider}\" for an app with a sensitive data source"
                     ),
                 ));
                 continue;
@@ -1477,29 +1882,116 @@ fn stamp_agent(mut frame: serde_json::Value, agent_name: Option<&str>) -> serde_
     frame
 }
 
+/// Bind a worker profile's provider: its own pin, else the MAIN agent's
+/// provider, else the global default.
+///
+/// Issue #56 (R5), the middle rung. There was no such rung: an unpinned profile
+/// fell straight through to `Config::global()`, so a worker under an app running
+/// on `versa_azure` ran on the user's *commercial* default — a different model,
+/// outside the institution, reading the same task. The app's own provider is the
+/// obvious inheritance and the one the user actually chose.
+///
+/// The §3.7 admission check now covers **every** rung, not just the explicit pin
+/// it used to inspect in `validate_profiles`: a sensitive app admits only a
+/// private provider, whichever rung supplied it. A worker that ends up with no
+/// provider is a worker whose turns fail loudly, which is the correct outcome —
+/// the alternative is one that quietly answers from a model the app is not
+/// allowed to use.
+///
+/// Issue #56, DR-21 — site (2) of three. A profile's `model` pin comes from the
+/// same agent-writable manifest as the main agent's, and reaches a **different**
+/// session (`build_worker` mints one per profile), so every rung below binds
+/// through [`app_provider_bind::bind_app_provider`]. A refusal returns rather
+/// than falling through to the next rung, for the reason
+/// [`configure_main_provider`] states: a silent fallback is indistinguishable
+/// from a refusal that never happened.
+///
+/// ⚠ **What that costs, stated because it is a choice and not an oversight.** A
+/// refusal at rung 1 does not degrade to rung 2 or 3 — it returns. For a durable
+/// worker session (`get_or_create_by_external_key`) that was already bound to a
+/// public model and whose profile is then edited to name a private one, the
+/// worker ends the call with **no provider at all** rather than on the model it
+/// had. That is the same shape as the §3.7 outcome two paragraphs up, and for
+/// the same reason: a worker that quietly keeps answering after its declared
+/// model was refused is the failure Step 3 case 3 names. Falling through would
+/// bind a *legal* provider, but it would also make a refusal and a bind-that-
+/// never-happened produce the identical observable, which is exactly what this
+/// campaign has been unable to tell apart four times.
 async fn configure_worker_provider(
     agent: &biorouter::agents::Agent,
     session_id: &str,
     manifest: &Manifest,
     profile_name: &str,
     cfg: &AgentConfig,
-) {
-    let mut provider_set = false;
+    main_provider: Option<&app_provider_bind::AppProvider>,
+) -> Result<(), biorouter::privacy::refusal::PrivacyRefusal> {
+    // The APP's sources as well as the profile's own. `cfg` here is the profile,
+    // and a profile need not re-declare what the app holds — reading only `cfg`
+    // would exempt every worker under a sensitive app from the check the app
+    // itself is subject to. `validate_profiles` asks the app, so this asks the
+    // app too, plus the profile in case it narrows to something sensitive the
+    // app's own block does not name.
+    let sensitive = manifest
+        .agent
+        .as_ref()
+        .is_some_and(app_has_sensitive_source)
+        || app_has_sensitive_source(cfg);
+    // The tier is read off the CONSTRUCTED instance, so an endpoint-demoted
+    // provider is caught here as well as at the name.
+    let admits = |p: &app_provider_bind::AppProvider| !sensitive || p.tier().is_private();
+
+    // DR-21's refusal, logged once and handed up. Repeated at three rungs, so it
+    // is a closure rather than three copies that could drift apart.
+    let refused = |refusal: biorouter::privacy::refusal::PrivacyRefusal| {
+        warn!(
+            event = "app_session_tier_fixed",
+            app = %manifest.id,
+            profile = %profile_name,
+            session = %session_id,
+            "{refusal}"
+        );
+        refusal
+    };
+
     if let Some(sel) = cfg.model.as_ref() {
         if let (Some(provider), Some(model)) = (sel.provider.as_ref(), sel.model.as_ref()) {
             if let Ok(mc) = ModelConfig::new(model) {
-                if let Ok(p) = create_provider(provider, mc).await {
-                    if agent.update_provider(p, session_id).await.is_ok() {
-                        provider_set = true;
+                if let Ok(p) = app_provider_bind::app_provider(provider, mc).await {
+                    if !admits(&p) {
+                        warn!(app = %manifest.id, profile = %profile_name, provider = %provider,
+                              "profile pins a public provider for an app with a sensitive data source; not bound");
                     } else {
-                        warn!(app = %manifest.id, profile = %profile_name, "worker update_provider failed");
+                        match app_provider_bind::bind_app_provider(agent, session_id, p).await {
+                            Ok(()) => return Ok(()),
+                            Err(app_provider_bind::AppBindError::TierFixed(refusal)) => {
+                                return Err(refused(refusal))
+                            }
+                            Err(e) => {
+                                warn!(app = %manifest.id, profile = %profile_name, "worker update_provider failed: {e}")
+                            }
+                        }
                     }
                 }
             }
         }
     }
-    if provider_set {
-        return;
+
+    // R5: inherit the app's own model before reaching for a global default.
+    if let Some(main) = main_provider {
+        if admits(main) {
+            match app_provider_bind::bind_app_provider(agent, session_id, main.clone()).await {
+                Ok(()) => return Ok(()),
+                Err(app_provider_bind::AppBindError::TierFixed(refusal)) => {
+                    return Err(refused(refusal))
+                }
+                Err(e) => {
+                    warn!(app = %manifest.id, profile = %profile_name, "worker could not inherit the app's provider: {e}")
+                }
+            }
+        } else {
+            warn!(app = %manifest.id, profile = %profile_name, provider = %main.name(),
+                  "the app's own provider is public and this app holds a sensitive data source; not inherited");
+        }
     }
 
     let global = biorouter::config::Config::global();
@@ -1507,13 +1999,28 @@ async fn configure_worker_provider(
         global.get_biorouter_provider(),
         global.get_biorouter_model(),
     ) else {
-        return;
+        return Ok(());
     };
     if let Ok(mc) = ModelConfig::new(&model) {
-        if let Ok(p) = create_provider(&provider, mc).await {
-            let _ = agent.update_provider(p, session_id).await;
+        if let Ok(p) = app_provider_bind::app_provider(&provider, mc).await {
+            if !admits(&p) {
+                warn!(app = %manifest.id, profile = %profile_name, provider = %provider,
+                      "the global default is a public provider and this app holds a sensitive data source; \
+                       this worker has no provider");
+                return Ok(());
+            }
+            match app_provider_bind::bind_app_provider(agent, session_id, p).await {
+                Ok(()) => {}
+                Err(app_provider_bind::AppBindError::TierFixed(refusal)) => {
+                    return Err(refused(refusal))
+                }
+                Err(e) => {
+                    warn!(app = %manifest.id, profile = %profile_name, "worker fallback update_provider failed: {e}")
+                }
+            }
         }
     }
+    Ok(())
 }
 
 async fn configure_worker_extensions(
@@ -1521,9 +2028,15 @@ async fn configure_worker_extensions(
     manifest: &Manifest,
     profile_name: &str,
     cfg: &AgentConfig,
+    // Issue #56 (CP5). What the profile RECEIVED, not what it named — the same
+    // value and the same reason as the main path's
+    // `report.granted_knowledge_base.is_some()` (`:918`). This read
+    // `cfg.knowledge_base.is_some()`, so a profile refused a private base was
+    // still handed the `kb_*` toolset scoped to nothing.
+    kb_granted: bool,
 ) {
     let mut extensions = cfg.extensions.clone();
-    if cfg.knowledge_base.is_some() && !extensions.iter().any(|e| e == "knowledge") {
+    if kb_granted && !extensions.iter().any(|e| e == "knowledge") {
         extensions.push("knowledge".to_string());
     }
     if !cfg.skills.is_empty() && !extensions.iter().any(|e| e == "skills") {
@@ -1541,6 +2054,7 @@ async fn configure_worker_extensions(
 /// gets **no** appcontrol unless the profile earned `ui` (in which case it shares
 /// the MAIN bridge so its panels land on the same page); the sandboxed
 /// data/files/compute/vault servers are main-only in v2.
+#[allow(clippy::too_many_arguments)]
 async fn configure_worker_agent(
     agent: &biorouter::agents::Agent,
     state: &AppState,
@@ -1549,15 +2063,77 @@ async fn configure_worker_agent(
     profile_name: &str,
     cfg: &AgentConfig,
     main_bridge: &UiBridge,
+    main_provider: Option<&app_provider_bind::AppProvider>,
 ) {
-    configure_worker_provider(agent, session_id, manifest, profile_name, cfg).await;
-    configure_worker_extensions(agent, manifest, profile_name, cfg).await;
+    // Issue #56, DR-21. Surfaced on the MAIN bridge (a worker has no page of its
+    // own) and stamped with the profile, so a refused worker reads as a refusal
+    // rather than as a worker that mysteriously has no model.
+    if let Err(refusal) = configure_worker_provider(
+        agent,
+        session_id,
+        manifest,
+        profile_name,
+        cfg,
+        main_provider,
+    )
+    .await
+    {
+        main_bridge.emit_frame(json!({
+            "type": "model",
+            "ok": false,
+            "agent": profile_name,
+            "error": refusal.to_string(),
+        }));
+    }
 
-    if let Some(kb) = cfg.knowledge_base.as_ref() {
-        // `session_id` here is the WORKER's own session (`build_worker` mints
-        // one per profile), not the app's main session — so the profile's
-        // declared base is this worker's write target, exactly as the main
-        // agent's declared base is the main session's.
+    // `session_id` here is the WORKER's own session (`build_worker` mints one
+    // per profile), not the app's main session — so the profile's declared base
+    // is this worker's write target, exactly as the main agent's declared base
+    // is the main session's.
+    //
+    // Issue #56 (CP5). Gated on the WORKER's OWN capability:
+    // `configure_worker_provider` ran one line up and may have bound a different
+    // tier than the main agent's. This path had no `capability_report` at all,
+    // and `grant_knowledge_base` is `include_kb(.., PrimaryUpdate::Set(kb))` —
+    // so a public worker profile naming a private base got that base un-hidden
+    // in its session AND pinned as its KB-less write target. Task 10C refuses
+    // the reads and Task 10B stamps the writes, so this is not a content
+    // crossing; it is the same "never arm a tool for a grant that cannot be
+    // satisfied" rule `capability_report` exists to enforce, plus a moved
+    // pointer.
+    //
+    // Resolved BEFORE `configure_worker_extensions`, which is the half review
+    // caught: that function auto-armed the `knowledge` toolset from
+    // `cfg.knowledge_base.is_some()` — what the profile NAMED — so a refused
+    // profile still got `kb_*` tools scoped to nothing. The main path has always
+    // read the granted value (`:918`); this is the worker path saying the same
+    // thing, which is why the decision has to be made above both consumers
+    // rather than beside the grant.
+    // A `match` and not `Option::filter`, because the capability read is `.await`
+    // and a closure cannot hold it — blocking on it here would park a tokio
+    // worker inside `Agent`'s own provider lock.
+    let granted_kb = match cfg.knowledge_base.as_ref() {
+        None => None,
+        Some(kb) => {
+            // Finding 17: the worker's WHOLE identity, off one `provider()`
+            // resolution — `caller_of` is the same reader `handle_kb_frame`'s
+            // mid-turn call site uses for this very agent, so the catalogue that
+            // decides whether to arm the profile's `kb_*` tools and the barrier
+            // that answers them cannot disagree.
+            let worker = caller_of(agent).await;
+            if biorouter_mcp::agent_drafter::catalog::Catalog::discover(&worker).has_kb(kb) {
+                Some(kb)
+            } else {
+                warn!(app = %manifest.id, profile = %profile_name, kb = %kb,
+                      "profile names a knowledge base that is not available to it");
+                None
+            }
+        }
+    };
+
+    configure_worker_extensions(agent, manifest, profile_name, cfg, granted_kb.is_some()).await;
+
+    if let Some(kb) = granted_kb {
         if let Err(e) = grant_knowledge_base(&state.knowledge_service, session_id, kb) {
             warn!(app = %manifest.id, profile = %profile_name, kb = %kb, "worker grant knowledge base failed: {e}");
         }
@@ -1629,6 +2205,7 @@ async fn configure_worker_agent(
 
 /// Build (session + agent + configure) a worker profile, caching nothing — the
 /// caller owns the cache. Returns `None` if the session/agent can't be created.
+#[allow(clippy::too_many_arguments)]
 async fn build_worker(
     state: &AppState,
     manifest: &Manifest,
@@ -1637,6 +2214,7 @@ async fn build_worker(
     client_id: Option<&str>,
     durable: bool,
     main_bridge: &UiBridge,
+    main_provider: Option<&app_provider_bind::AppProvider>,
 ) -> Option<WorkerHandle> {
     let cfg = valid.get(profile_name)?;
     let workdir = std::env::current_dir().unwrap_or_default();
@@ -1669,6 +2247,7 @@ async fn build_worker(
         profile_name,
         cfg,
         main_bridge,
+        main_provider,
     )
     .await;
     Some(WorkerHandle {
@@ -2052,6 +2631,9 @@ struct ConsultContext<'a> {
     valid: &'a std::collections::BTreeMap<String, AgentConfig>,
     worker_agents: &'a mut std::collections::HashMap<String, WorkerHandle>,
     main_bridge: &'a UiBridge,
+    /// R5 (issue #56): the app's own provider, which an unpinned worker profile
+    /// inherits before any global default is considered.
+    main_provider: Option<app_provider_bind::AppProvider>,
     client_id: Option<&'a str>,
     durable: bool,
     request: &'a ConsultRequest,
@@ -2065,6 +2647,7 @@ async fn run_consult(context: ConsultContext<'_>) -> serde_json::Value {
         valid,
         worker_agents,
         main_bridge,
+        main_provider,
         client_id,
         durable,
         request: req,
@@ -2098,6 +2681,7 @@ async fn run_consult(context: ConsultContext<'_>) -> serde_json::Value {
             client_id,
             durable,
             main_bridge,
+            main_provider.as_ref(),
         )
         .await
         {
@@ -2325,60 +2909,61 @@ fn conflicting_args(
     out
 }
 
-// ─────────────────────── br.model — routes + provider class ─────────────────
+// ─────────────────────── br.model — routes + provider tier ──────────────────
 
-/// Provider capability class (design §3.7). A **capability**, not a UI label:
-/// an app holding a sensitive data source (OMOP/CDW, or a writable knowledge
-/// base) may not route that data to an External provider.
+/// Whether `provider` is a **private** provider, in the one sense issue #56
+/// gives that word: the model runs inside the institution or on this machine.
 ///
-/// The classification is deliberately **heuristic + list-based** — provider
-/// names are not a closed vocabulary, so the lists capture the common cases and
-/// the substring rules (`"local"`, `"institution"`) catch obvious variants;
-/// everything unrecognised falls through to the safest-to-restrict class
-/// (External).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ProviderClass {
-    Local,
-    Institutional,
-    External,
+/// This replaces the app runtime's own three-way `Local`/`Institutional`/
+/// `External` taxonomy, which was a second, divergent classifier over the same
+/// question — and it was inverted where it mattered most. It matched by exact
+/// name plus the substrings `local` and `institution`, so `versa_azure` and
+/// `versa_bedrock`, the UCSF gateway providers, matched nothing and fell
+/// through to External, while bare `azure`, `bedrock`, `aws_bedrock`,
+/// `databricks` and `vertex` — public commercial endpoints, whatever their
+/// names suggest — were listed as institutional. A sensitive app was therefore
+/// blocked from the two providers it should have been *restricted to*, and
+/// allowed onto five it should not.
+///
+/// The value comes from the provider's own registry metadata
+/// (`Provider::metadata().tier`), which is where every other #56 surface reads
+/// it and what the settings grid shows, so there is exactly one place to change
+/// when a provider's tier changes. An unregistered name gets
+/// `ProviderTier::default()` — Public — which is fail-safe here in the same
+/// direction the old code was: unrecognised means "not trusted with a sensitive
+/// source".
+///
+/// ⚠ This is the **name-keyed** answer, and it is the only one available before
+/// a provider is constructed. It cannot see the endpoint-dependent demotions
+/// `Provider::tier()` applies to a live instance (a `versa_*` pointed off the
+/// gateway, an `ollama` pointed off this machine). Callers that hold a
+/// constructed provider must ask the instance instead — [`apply_route_for_turn`]
+/// does, on the provider it just built.
+///
+/// ⚠ The registry includes the user's own declarative providers, and
+/// `ProviderRegistry::entries` is a `HashMap` keyed by name — so a declared
+/// provider named `databricks` *replaces* the built-in entry and supplies the
+/// tier read here. That is deliberate rather than a leak: the whole point of
+/// reading one registry is that a provider the user defined answers about
+/// itself, the same way the settings grid describes it. The consequence to know
+/// is that `provider_tier_table` and `provider_tier_is_not_inverted_any_more`
+/// assert on the *shipped* built-ins, so a machine that shadows one of the names
+/// they list will fail them — correctly, because that name now means something
+/// else there.
+async fn provider_is_private_for_app(provider: &str) -> bool {
+    let wanted = provider.trim();
+    biorouter::providers::providers()
+        .await
+        .into_iter()
+        .find(|(metadata, _)| metadata.name.eq_ignore_ascii_case(wanted))
+        .map(|(metadata, _)| metadata.tier)
+        .unwrap_or_default()
+        .is_private()
 }
 
-/// Providers that run on the user's own machine / a bundled sidecar.
-const LOCAL_PROVIDERS: &[&str] = &[
-    "llamacpp", "ollama", "lmstudio", "llama", "localai", "gpt4all",
-];
-/// Providers fronting an institution's own tenant/gateway. Heuristic: an
-/// institution's Azure / Bedrock / Databricks / Vertex / SageMaker deployment
-/// keeps data inside its own contract, unlike a public commercial API.
-const INSTITUTIONAL_PROVIDERS: &[&str] = &[
-    "databricks",
-    "azure",
-    "azure_openai",
-    "azureopenai",
-    "bedrock",
-    "aws_bedrock",
-    "awsbedrock",
-    "sagemaker",
-    "vertex",
-    "vertexai",
-    "vertex_ai",
-    "google_vertex",
-];
-
-fn provider_class(provider: &str) -> ProviderClass {
-    let p = provider.trim().to_ascii_lowercase();
-    if p.contains("local") || LOCAL_PROVIDERS.iter().any(|x| p == *x) {
-        return ProviderClass::Local;
-    }
-    if p.contains("institution") || INSTITUTIONAL_PROVIDERS.iter().any(|x| p == *x) {
-        return ProviderClass::Institutional;
-    }
-    ProviderClass::External
-}
-
-/// True when the app holds a data source that must not leave a trusted provider
-/// class (design §3.7): an OMOP/CDW clinical source, or a `knowledge` source the
-/// app may WRITE (a poisoned/leaked write persists cross-session).
+/// True when the app holds a data source that must not leave a private provider
+/// (design §3.7): an OMOP/CDW clinical source, or a `knowledge` source the app
+/// may WRITE (a poisoned/leaked write persists cross-session).
 fn app_has_sensitive_source(cfg: &AgentConfig) -> bool {
     let Some(data) = cfg.capabilities.data.as_ref() else {
         return false;
@@ -2388,10 +2973,10 @@ fn app_has_sensitive_source(cfg: &AgentConfig) -> bool {
     })
 }
 
-/// Whether a resolved provider is allowed for this app: a sensitive app may not
-/// route to an External provider (design §3.7).
-fn provider_allowed_for_app(cfg: &AgentConfig, provider: &str) -> bool {
-    !(app_has_sensitive_source(cfg) && provider_class(provider) == ProviderClass::External)
+/// Whether a resolved provider is allowed for this app: a sensitive app may
+/// only run on a private provider (design §3.7, issue #56).
+async fn provider_allowed_for_app(cfg: &AgentConfig, provider: &str) -> bool {
+    !app_has_sensitive_source(cfg) || provider_is_private_for_app(provider).await
 }
 
 /// Resolve a named [`ModelRoute`](biorouter_mcp::agent_drafter::manifest::ModelRoute)
@@ -2399,7 +2984,7 @@ fn provider_allowed_for_app(cfg: &AgentConfig, provider: &str) -> bool {
 /// provider/model for any field the route leaves unset. Errors on an unknown
 /// route, an empty provider with no session default, or a provider-class
 /// violation.
-fn resolve_route(
+async fn resolve_route(
     cfg: &AgentConfig,
     route_name: &str,
     cur_provider: &str,
@@ -2418,9 +3003,9 @@ fn resolve_route(
             "route \"{route_name}\" has no provider and the session has none set"
         ));
     }
-    if !provider_allowed_for_app(cfg, &provider) {
+    if !provider_allowed_for_app(cfg, &provider).await {
         return Err(format!(
-            "route \"{route_name}\" resolves to external provider \"{provider}\", blocked because \
+            "route \"{route_name}\" resolves to public provider \"{provider}\", blocked because \
              this app holds a sensitive data source (OMOP/CDW or a writable knowledge base)"
         ));
     }
@@ -2429,10 +3014,10 @@ fn resolve_route(
 
 /// Session-start diagnostics for the manifest's declared routes (design §3.7):
 /// `(route_name, reason)` for each route that is dropped as unusable — currently
-/// an External provider on a sensitive app. Pure so it is unit-testable;
+/// a public provider on a sensitive app. Side-effect-free so it is unit-testable;
 /// `configure_agent` logs each via `tracing::warn` (the route stays in the
 /// manifest but is re-rejected at call time, so "dropped" = never resolvable).
-fn route_start_warnings(cfg: &AgentConfig) -> Vec<(String, String)> {
+async fn route_start_warnings(cfg: &AgentConfig) -> Vec<(String, String)> {
     let sensitive = app_has_sensitive_source(cfg);
     let mut out = Vec::new();
     for (name, route) in &cfg.orchestration.routes {
@@ -2442,10 +3027,10 @@ fn route_start_warnings(cfg: &AgentConfig) -> Vec<(String, String)> {
         if provider.is_empty() {
             continue;
         }
-        if sensitive && provider_class(provider) == ProviderClass::External {
+        if sensitive && !provider_is_private_for_app(provider).await {
             out.push((
                 name.clone(),
-                format!("external provider \"{provider}\" blocked for an app with a sensitive data source"),
+                format!("public provider \"{provider}\" blocked for an app with a sensitive data source"),
             ));
         }
     }
@@ -2457,18 +3042,27 @@ fn route_start_warnings(cfg: &AgentConfig) -> Vec<(String, String)> {
 /// a `model` frame (`ok:true`) so the UI shows which model answered — or a `model`
 /// error frame and no switch when the route is unknown / blocked / unavailable.
 /// Returns the PREVIOUS provider so the caller can restore it after the turn.
+///
+/// Issue #56, DR-21. A route is a manifest pin, which the app's agent can write,
+/// so binding one could raise a LIVE app session's capability with nothing
+/// proving a human — the sequence the plan used to narrate as "Gate A allows the
+/// bind → Gate B ratchets" and never authorised. It binds through
+/// [`app_provider_bind::bind_app_provider`] like the three named sites: not
+/// because Task 41's table lists it, but because that module is now the only
+/// path to `Agent::update_provider` in this file, and carving out an unguarded
+/// exception for a manifest-authored pin would reopen the channel by hand.
 async fn apply_route_for_turn(
     agent: &biorouter::agents::Agent,
     session_id: &str,
     cfg: &AgentConfig,
     route_name: &str,
     ui_bridge: &UiBridge,
-) -> Option<Arc<dyn Provider>> {
+) -> Option<app_provider_bind::RoutePrevious> {
     let (cur_provider, cur_model) = match agent.provider().await {
         Ok(p) => (p.get_name().to_string(), p.get_model_config().model_name),
         Err(_) => (String::new(), String::new()),
     };
-    let (provider, model) = match resolve_route(cfg, route_name, &cur_provider, &cur_model) {
+    let (provider, model) = match resolve_route(cfg, route_name, &cur_provider, &cur_model).await {
         Ok(pm) => pm,
         Err(e) => {
             ui_bridge.emit_frame(json!({"type":"model","ok":false,"route":route_name,"error":e}));
@@ -2485,20 +3079,56 @@ async fn apply_route_for_turn(
         }
     };
     // Snapshot the current provider to restore after the turn.
-    let prev = agent.provider().await.ok();
-    match create_provider(&provider, mc).await {
-        Ok(p) => match agent.update_provider(p, session_id).await {
-            Ok(()) => {
-                ui_bridge.emit_frame(
-                    json!({"type":"model","ok":true,"route":route_name,"provider":provider,"model":model}),
-                );
-                prev
+    let prev = app_provider_bind::snapshot_for_route(agent).await;
+    match app_provider_bind::app_provider(&provider, mc).await {
+        Ok(p) => {
+            // Issue #56. `resolve_route` above asked the name-keyed registry
+            // tier, which is all it has. THIS is the constructed instance, and
+            // `Provider::tier()` on it is the authoritative answer: it sees the
+            // endpoint the provider actually resolved, so a `versa_*` or an
+            // `ollama` pointed off the gateway / off this machine reads Public
+            // here even though its registry entry says Private. Re-ask before
+            // binding, or §3.7 is enforced against a name rather than a
+            // destination.
+            if app_has_sensitive_source(cfg) && !p.tier().is_private() {
+                ui_bridge.emit_frame(json!({
+                    "type":"model","ok":false,"route":route_name,
+                    "error": format!(
+                        "route \"{route_name}\" resolves to \"{provider}\", which is not a private \
+                         model as configured; blocked because this app holds a sensitive data source"
+                    ),
+                }));
+                return None;
             }
-            Err(e) => {
-                warn!("route {route_name}: update_provider failed: {e}");
-                None
+            match app_provider_bind::bind_app_provider(agent, session_id, p).await {
+                Ok(()) => {
+                    ui_bridge.emit_frame(
+                        json!({"type":"model","ok":true,"route":route_name,"provider":provider,"model":model}),
+                    );
+                    prev
+                }
+                // DR-21: refused, and said out loud on the same frame a blocked
+                // route already uses — not swallowed into a `warn!` the page
+                // never sees, and not retried on another rung.
+                Err(app_provider_bind::AppBindError::TierFixed(refusal)) => {
+                    warn!(
+                        event = "app_session_tier_fixed",
+                        session = %session_id,
+                        route = %route_name,
+                        "{refusal}"
+                    );
+                    ui_bridge.emit_frame(json!({
+                        "type":"model","ok":false,"route":route_name,
+                        "error": refusal.to_string(),
+                    }));
+                    None
+                }
+                Err(e) => {
+                    warn!("route {route_name}: update_provider failed: {e}");
+                    None
+                }
             }
-        },
+        }
         Err(e) => {
             ui_bridge.emit_frame(
                 json!({"type":"model","ok":false,"route":route_name,"error":format!("provider \"{provider}\" unavailable: {e}")}),
@@ -2506,6 +3136,79 @@ async fn apply_route_for_turn(
             None
         }
     }
+}
+
+/// Issue #56 (§9.3 H4). Put the session back on its pre-route provider after a
+/// routed turn — and say so when the barrier will not let it.
+///
+/// The restore used to be a bare `update_provider` call whose `Result` was
+/// thrown away with `let _ =`, and that discard became a trap the moment Gate B
+/// landed. A route pinned to a private model on a PUBLIC app session is a legal
+/// bind (Gate A only refuses the other direction), the turn then runs under a
+/// private provider, and Gate B's ratchet writes `privacy_tier = 'private'`.
+/// The restore of the public `prev` is now a public provider on a private row —
+/// exactly what Gate A exists to refuse. Discarded, that left the app session
+/// silently pinned to the route's provider for every later turn, with the user
+/// never told and no test that only checks the tier able to notice.
+///
+/// So: attempt it, and on a refusal LEAVE the route provider bound (the only
+/// safe outcome — the session's contents are private now), tell the page once,
+/// and log under a stable event name. Design §6.4 lists this transient switch as
+/// something that "does not raise" the classification; it is precisely what
+/// makes it ratchet, and this is the honest consequence rather than a pretence
+/// that it did not happen.
+///
+/// Issue #56, DR-21: this is the one bind in the app runtime that is **not**
+/// raise-checked, and [`app_provider_bind::restore_bound_provider`]'s doc says
+/// why — a [`app_provider_bind::RoutePrevious`] can only carry what this session
+/// was already running on, so putting it back cannot raise anything, while
+/// refusing it would strand the session on the route's model permanently.
+async fn restore_route_provider(
+    agent: &biorouter::agents::Agent,
+    session_id: &str,
+    prev: app_provider_bind::RoutePrevious,
+    ui_bridge: &UiBridge,
+) {
+    let previous = prev.name().to_string();
+    let Err(e) = app_provider_bind::restore_bound_provider(agent, session_id, prev).await else {
+        return;
+    };
+    if e.downcast_ref::<biorouter::privacy::refusal::PrivacyRefusal>()
+        .is_some()
+    {
+        warn!(
+            event = "app_route_restore_refused",
+            session = %session_id,
+            previous = %previous,
+            "this chat became private during a routed turn, so it stays on the route's model"
+        );
+        // `emit_frame` is the RAW send — unlike `UiBridge::emit` it stamps
+        // neither `type` nor `v`, so this envelope is built by hand. `v` is the
+        // shared `CATALOG_VERSION` rather than a literal `1`: the two agree
+        // today, and a literal would silently disagree the day the catalog
+        // bumps, leaving an SDK to feature-detect against a stale version.
+        //
+        // `timeoutMs: 0` is deliberate. `applyNotify` in `sdk.ts` defaults to
+        // 4000 ms, and a notice saying the chat is permanently on a different
+        // model is not something to show for four seconds — 0 is the SDK's
+        // sticky/click-to-dismiss shape.
+        ui_bridge.emit_frame(json!({
+            "type":"ui","cmd":"notify","level":"warn",
+            "message": format!(
+                "This chat is now private, so it cannot be switched back to \"{previous}\", \
+                 which is a public model. It stays on the route's private model."
+            ),
+            "timeoutMs": 0,
+            "v": CATALOG_VERSION,
+        }));
+        return;
+    }
+    warn!(
+        event = "app_route_restore_failed",
+        session = %session_id,
+        previous = %previous,
+        "restoring the pre-route model failed: {e}"
+    );
 }
 
 /// Build the `model_status` reply from the session's current provider/model.
@@ -2739,6 +3442,60 @@ fn cap_kb_result(mut v: serde_json::Value) -> serde_json::Value {
     v
 }
 
+/// Issue #56 (CP3) and DR-26 / Task 50. The capability of one agent, read off
+/// the provider it is actually bound to.
+///
+/// ⚠ Which agent is passed in is the whole decision. See the three
+/// `handle_kb_frame` call sites: the two between-turns ones read the app's main
+/// `agent`, and the mid-turn one reads `turn_agent` — a worker profile really
+/// can be on a different provider (`configure_worker_provider` builds one from
+/// the profile's own `cfg.model`), so both are in scope at the mid-turn site and
+/// the wrong one compiles.
+///
+/// Both axes come off **one** `provider()` resolution.
+///
+/// ⚠ **Two `provider()` calls would be the two-reads race `CallCapability`
+/// exists to prevent**, one layer down: an app's agent can be re-bound between
+/// them (`configure_worker_provider` builds a provider from a profile's own
+/// `cfg.model` mid-turn), so a tier from one model and an institution from
+/// another would decide one KB access together. They come out of the same
+/// `Arc`, in one expression, for the reason `ProviderCompleter::paired` does.
+///
+/// A dead or unbound provider resolves to Public + `None` — the same fail-safe
+/// direction `CallCapability::sample` takes: a provider that cannot be read is
+/// unknown, and unknown must be the *less* privileged answer on both axes.
+/// Takes `&Agent` rather than `&Arc<Agent>` so `configure_agent` and
+/// `configure_worker_agent` — which hold a borrow, not the `Arc` — can read the
+/// same value the socket loop's three `handle_kb_frame` sites do. `&Arc<Agent>`
+/// deref-coerces here, so those call sites are unchanged.
+async fn caller_of(agent: &biorouter::agents::Agent) -> KbCaller {
+    match agent.provider().await {
+        Ok(p) => KbCaller::new(
+            p.tier().is_private(),
+            biorouter::privacy::affiliation::caller_affiliation(p.affiliation()),
+        ),
+        Err(_) => KbCaller::restricted(),
+    }
+}
+
+// The capability of the agent whose KB access this is — the TURN's agent
+// mid-turn, the main agent between turns.
+//
+// One value rather than two parameters because the two axes are one caller's
+// identity: a signature that takes them separately invites a call site that
+// passes the turn agent's tier and the main agent's institution, and the wrong
+// one compiles.
+//
+// ⚠ AUDIT FINDING 17. This used to be a `struct KbCaller` local to this file,
+// holding `Option<ModelAffiliation>` and translated to `CallerAffiliation` at
+// each use. It is now `biorouter_mcp::knowledge::caller::KbCaller` — the same
+// carrier CP5's `Catalog::discover` takes — so the two doors this file opens
+// onto one capability (CP3's `br.kb` barrier and CP5's catalogue listing, which
+// asked the tier axis alone and named bases CP3 then refused) cannot be handed
+// different halves of a caller. The translation happens once, in `caller_of`,
+// where the provider is read.
+use biorouter_mcp::knowledge::caller::KbCaller;
+
 /// Emit a `kb_result` error frame (never kills the socket).
 fn emit_kb_error(ui_bridge: &UiBridge, req_id: &str, msg: &str) {
     ui_bridge.emit_frame(json!({ "type":"kb_result", "reqId": req_id, "error": msg }));
@@ -2754,6 +3511,9 @@ async fn handle_kb_frame(
     ui_bridge: &UiBridge,
     knowledge: &Arc<KnowledgeService>,
     cfg: Option<&AgentConfig>,
+    // Issue #56 (CP3) and DR-26 / Task 50. Both axes, sampled together — see
+    // [`KbCaller`] and the three call sites.
+    caller: KbCaller,
     op: &str,
     params: &serde_json::Value,
     req_id: &str,
@@ -2770,6 +3530,16 @@ async fn handle_kb_frame(
             return;
         }
     };
+    // Issue #56 (CP3), Task 10C. Immediately after the grant resolves and BEFORE
+    // the op dispatch, so one line covers the four reads (`run_kb_read`) and
+    // `ingest` together. The grant above is an integrity control over WHICH base
+    // — authored by the drafting model, which learned the ids from
+    // `discover_kbs` — and says nothing about which CALLER; `br.kb` never touches
+    // `KnowledgeServer`, so CP1 is blind to this whole surface.
+    if let Err(e) = caller.assert_reachable(knowledge.root(), &kb_id) {
+        emit_kb_error(ui_bridge, req_id, &e.to_string());
+        return;
+    }
     match op {
         "search" | "page" | "graph" | "history" => {
             match run_kb_read(knowledge, &kb_id, op, params).await {
@@ -2793,6 +3563,33 @@ async fn handle_kb_frame(
                          (design §3.4)"
                     ),
                 );
+                return;
+            }
+            // Issue #56. `resolve_kb_grant` above reads the app manifest, which
+            // the drafting model authored — an integrity control over WHICH
+            // base, not a privacy control over WHICH CALLER. The ratchet has to
+            // be here, and before the spawn: a raise that only lands on success
+            // leaves content in a base whose tier never moved.
+            //
+            // Task 10C's barrier is ABOVE the `match op`, not here — one line
+            // covering this arm and the four reads together. It matters at this
+            // choke point for one extra reason: `raise_unlocked` registers an
+            // ABSENT entry at the caller's tier, and a base with a directory but
+            // no entry reads private (decision 3), so a public write is the one
+            // path that could turn such a base explicitly public. That caller no
+            // longer reaches this line.
+            // Issue #56 DR-26 / Task 50 Step 1: both axes in one call under one
+            // lock — see `KnowledgeService::raise_tier_and_affiliation`. This
+            // site is the reason it is one method: it raised the affiliation
+            // FIRST and every other site raised the tier first, so a failure
+            // between the two left a *public* base carrying an owner here and a
+            // claimed base at public tier everywhere else.
+            if let Err(e) = knowledge.raise_tier_and_affiliation(
+                &kb_id,
+                caller.is_private(),
+                caller.affiliation(),
+            ) {
+                emit_kb_error(ui_bridge, req_id, &e.to_string());
                 return;
             }
             let input = match kb_ingest_input(params) {
@@ -3313,11 +4110,10 @@ async fn handle_agent_socket(
 
     // Validate declared worker profiles (design §3.8) up front, so the main
     // agent's `consult` tool can be armed and the survivors advertised in `ready`.
-    let valid_profiles = manifest
-        .agent
-        .as_ref()
-        .map(validate_profiles)
-        .unwrap_or_else(ValidatedProfiles::empty);
+    let valid_profiles = match manifest.agent.as_ref() {
+        Some(cfg) => validate_profiles(cfg).await,
+        None => ValidatedProfiles::empty(),
+    };
     for (name, reason) in &valid_profiles.dropped {
         warn!(app = %manifest.id, profile = %name, "worker profile dropped: {reason}");
     }
@@ -3568,6 +4364,10 @@ async fn handle_agent_socket(
                                         &ui_bridge,
                                         &state.knowledge_service,
                                         manifest.agent.as_ref(),
+                                        // Issue #56: no turn is running here, so
+                                        // there is no other agent to attribute
+                                        // this to — it is the main agent's.
+                                        caller_of(&agent).await,
                                         &op,
                                         &params,
                                         &req_id,
@@ -3600,7 +4400,7 @@ async fn handle_agent_socket(
         // A per-turn model route (design §3.4) may swap the provider for THIS
         // turn only; the switch happens just before `reply` (after the PII gate)
         // and the previous provider is restored afterwards.
-        let mut route_restore: Option<Arc<dyn Provider>> = None;
+        let mut route_restore: Option<app_provider_bind::RoutePrevious> = None;
         let mut selected_route: Option<String> = None;
         // Which worker profile (if any) this turn targets (design §3.8). Set by the
         // Prompt / Call arms; None ⇒ the main agent.
@@ -3687,24 +4487,55 @@ async fn handle_agent_socket(
             }
             ClientFrame::ModelSelect { provider, model } => {
                 // Live-switch the session's provider/model (BRSDK model surface).
+                //
+                // ⚠ Issue #56, DR-21 — site (3) of three, and the sharpest. This
+                // frame arrives on `GET /apps/{id}/agent`, which
+                // `is_public_app_get` exempts from secret-key auth, from a page
+                // whose TypeScript the model itself authored: a raise over a
+                // channel needing no credential at all. The socket does carry a
+                // `HeaderMap`, but an unauthenticated one, where a header proves
+                // nothing — so Task 18A's proof cannot be required here, and
+                // DR-21 does not ask for one: an app session's tier is fixed
+                // when it is created, and this frame arrives afterwards by
+                // definition. `bind_app_provider` is the ONLY thing standing
+                // between this frame and a private bind.
                 let model_name = model.unwrap_or_default();
                 let provider_name = provider.unwrap_or_default();
+                let mut refused: Option<String> = None;
                 let ok = if provider_name.is_empty() || model_name.is_empty() {
                     false
                 } else {
                     match ModelConfig::new(&model_name) {
-                        Ok(mc) => match create_provider(&provider_name, mc).await {
-                            Ok(p) => agent.update_provider(p, &session_id).await.is_ok(),
-                            Err(_) => false,
-                        },
+                        Ok(mc) => {
+                            match app_provider_bind::app_provider(&provider_name, mc).await {
+                                Ok(p) => match app_provider_bind::bind_app_provider(
+                                    &agent,
+                                    &session_id,
+                                    p,
+                                )
+                                .await
+                                {
+                                    Ok(()) => true,
+                                    // Refused, not ignored: `ok:false` alone
+                                    // reads to the page like an unavailable
+                                    // model, which is a different thing and
+                                    // invites a retry loop.
+                                    Err(e) => {
+                                        refused = Some(e.to_string());
+                                        false
+                                    }
+                                },
+                                Err(_) => false,
+                            }
+                        }
                         Err(_) => false,
                     }
                 };
-                let _ = send_json(
-                    &mut socket_tx,
-                    json!({"type":"model","ok": ok, "provider": provider_name, "model": model_name}),
-                )
-                .await;
+                let mut frame = json!({"type":"model","ok": ok, "provider": provider_name, "model": model_name});
+                if let Some(why) = refused {
+                    frame["error"] = json!(why);
+                }
+                let _ = send_json(&mut socket_tx, frame).await;
                 continue;
             }
             ClientFrame::Approve { .. } | ClientFrame::Reject { .. } => {
@@ -3793,6 +4624,10 @@ async fn handle_agent_socket(
                     &ui_bridge,
                     &state.knowledge_service,
                     manifest.agent.as_ref(),
+                    // Issue #56: this arm `continue`s BELOW, before `turn_agent`
+                    // is resolved — no turn has started, so this is the main
+                    // agent's access by definition.
+                    caller_of(&agent).await,
                     &op,
                     &params,
                     &req_id,
@@ -3840,6 +4675,15 @@ async fn handle_agent_socket(
                     client_id.as_deref(),
                     durable,
                     &ui_bridge,
+                    // R5: the app's own model is what an unpinned profile
+                    // inherits. `Agent::provider` can refuse under Gate B', in
+                    // which case there is nothing to inherit and the global
+                    // fallback stands.
+                    //
+                    // Read once, when this profile's worker is BUILT — the
+                    // `worker_agents` guard above means a later `/model` switch
+                    // does not reach a worker that already exists.
+                    app_provider_bind::currently_bound(&agent).await.as_ref(),
                 )
                 .await
                 {
@@ -4039,6 +4883,20 @@ async fn handle_agent_socket(
                                 valid: &valid_profiles.valid,
                                 worker_agents: &mut worker_agents,
                                 main_bridge: &ui_bridge,
+                                // R5: what an unpinned worker inherits, read at
+                                // consult time rather than captured at connect.
+                                //
+                                // ⚠ That buys less than it looks like. It is
+                                // only consumed on a profile's FIRST consult —
+                                // `run_consult` calls `build_worker` behind
+                                // `!worker_agents.contains_key(..)`, and that
+                                // map lives for the socket's lifetime. So a
+                                // profile first consulted after a `/model`
+                                // switch does inherit the new model; one built
+                                // before it keeps the old one until the page
+                                // reloads. Re-binding live workers on a model
+                                // switch is a separate change.
+                                main_provider: app_provider_bind::currently_bound(&agent).await,
                                 client_id: client_id.as_deref(),
                                 durable,
                                 request: &req,
@@ -4127,6 +4985,19 @@ async fn handle_agent_socket(
                                     &ui_bridge,
                                     &state.knowledge_service,
                                     manifest.agent.as_ref(),
+                                    // ⚠ Issue #56: `turn_agent`, NOT `agent`.
+                                    // This runs inside the turn loop, and a
+                                    // worker profile can be on a different
+                                    // provider with a different tier. Both are
+                                    // in scope and `agent` compiles, type-checks
+                                    // and passes every single-agent test — while
+                                    // attributing a worker's ingest to the main
+                                    // agent in both directions. The precedent is
+                                    // `handle_action_required`, four cases down
+                                    // this same `match`, which takes
+                                    // `&turn_agent` under the comment "Uses THIS
+                                    // turn's agent/session (main or worker)".
+                                    caller_of(&turn_agent).await,
                                     &op,
                                     &params,
                                     &req_id,
@@ -4347,9 +5218,11 @@ async fn handle_agent_socket(
         }
 
         // Restore the pre-route provider (design §3.4): a per-turn model route is
-        // scoped to THIS turn only, so the session returns to its default model.
+        // scoped to THIS turn only, so the session returns to its default model —
+        // unless the turn just ratcheted the session private, in which case the
+        // refusal is surfaced rather than discarded (issue #56, §9.3 H4).
         if let Some(prev) = route_restore.take() {
-            let _ = agent.update_provider(prev, &session_id).await;
+            restore_route_provider(&agent, &session_id, prev, &ui_bridge).await;
         }
 
         // End-of-turn is a persistence boundary: capture any shared-state doc the
@@ -7034,9 +7907,9 @@ mod tests {
 
     mod phase4 {
         use super::super::{
-            app_has_sensitive_source, cap_kb_result, kb_write_granted, provider_class,
+            app_has_sensitive_source, cap_kb_result, kb_write_granted, provider_is_private_for_app,
             resolve_kb_grant, resolve_route, route_start_warnings, run_kb_read, tool_figure_frame,
-            ui_resource_html, ProviderClass,
+            ui_resource_html, KbCaller,
         };
         use biorouter_mcp::agent_drafter::manifest::{
             Capabilities, DataCapability, DataSource, ModelRoute, Orchestration,
@@ -7197,30 +8070,53 @@ mod tests {
             assert!(small.get("truncated").is_none());
         }
 
-        // ── provider class + route validation ────────────────────────────────
+        // ── provider tier + route validation ─────────────────────────────────
 
-        #[test]
-        fn provider_class_table() {
-            for p in [
-                "llamacpp",
-                "ollama",
-                "lmstudio",
-                "my-local-model",
-                "LocalAI",
-            ] {
-                assert_eq!(provider_class(p), ProviderClass::Local, "{p}");
+        /// The app runtime's provider taxonomy, which is now issue #56's shared
+        /// tier rather than a second list of its own.
+        ///
+        /// The `versa_*` and `aws_bedrock` rows are the point. The classifier
+        /// this replaces matched by exact name plus the substrings `local` and
+        /// `institution`, and the table that guarded it never exercised a
+        /// `versa_*` name — which is why the inversion stayed green for so long.
+        /// `versa_azure` and `versa_bedrock`, the UCSF gateway providers, matched
+        /// nothing and fell through to "External" (blocked for a sensitive app),
+        /// while bare `azure`, `bedrock`, `aws_bedrock`, `databricks` and
+        /// `vertex` — public commercial endpoints — were listed "Institutional"
+        /// (allowed). Both directions were wrong, and both are asserted here.
+        #[tokio::test]
+        async fn provider_tier_table() {
+            // `versa_bedrock` is behind `biorouter`'s `aws-providers` feature,
+            // which this crate depends on with default features on — so it is
+            // always in the registry here. Asserted unconditionally rather than
+            // behind a `#[cfg(feature = ..)]` that names a feature THIS crate
+            // does not declare, which is always false and warns.
+            for p in ["llamacpp", "ollama", "versa_azure", "versa_bedrock"] {
+                assert!(provider_is_private_for_app(p).await, "{p}");
             }
+
             for p in [
+                "anthropic",
+                "openai",
+                "groq",
+                "mistral",
+                // The five the old list called institutional. A name that looks
+                // like an institution's tenant is not evidence of one: azure.rs
+                // ships the UCSF gateway as a PUBLIC provider's default, which
+                // is exactly why the tier is a property of the provider and not
+                // of its name.
                 "databricks",
                 "azure",
+                "azure_openai",
                 "aws_bedrock",
                 "vertex",
+                // Unregistered names fail SAFE — Public, so a sensitive app
+                // will not route to them.
+                "my-local-model",
                 "my-institution-gw",
+                "",
             ] {
-                assert_eq!(provider_class(p), ProviderClass::Institutional, "{p}");
-            }
-            for p in ["anthropic", "openai", "groq", "mistral"] {
-                assert_eq!(provider_class(p), ProviderClass::External, "{p}");
+                assert!(!provider_is_private_for_app(p).await, "{p}");
             }
         }
 
@@ -7275,8 +8171,8 @@ mod tests {
             )));
         }
 
-        #[test]
-        fn route_external_rejected_when_app_holds_omop() {
+        #[tokio::test]
+        async fn route_to_a_public_provider_rejected_when_app_holds_omop() {
             let omop = DataSource {
                 name: "omop".into(),
                 kind: "omop".into(),
@@ -7292,33 +8188,43 @@ mod tests {
                     ("local", Some("llamacpp"), Some("qwen")),
                 ],
             );
-            // External provider is rejected at call time.
-            let err = resolve_route(&cfg, "cloud", "llamacpp", "qwen").unwrap_err();
-            assert!(err.contains("external provider"), "{err}");
-            // Local provider is accepted.
-            let (p, m) = resolve_route(&cfg, "local", "llamacpp", "qwen").unwrap();
+            // A public provider is rejected at call time.
+            let err = resolve_route(&cfg, "cloud", "llamacpp", "qwen")
+                .await
+                .unwrap_err();
+            assert!(err.contains("public provider"), "{err}");
+            // A private provider is accepted.
+            let (p, m) = resolve_route(&cfg, "local", "llamacpp", "qwen")
+                .await
+                .unwrap();
             assert_eq!((p.as_str(), m.as_str()), ("llamacpp", "qwen"));
-            // And session-start validation flags the external route (only).
-            let warns = route_start_warnings(&cfg);
+            // And session-start validation flags the public route (only).
+            let warns = route_start_warnings(&cfg).await;
             assert_eq!(warns.len(), 1);
             assert_eq!(warns[0].0, "cloud");
         }
 
-        #[test]
-        fn route_external_allowed_when_app_not_sensitive() {
-            // No sensitive source ⇒ external providers are fine.
+        #[tokio::test]
+        async fn route_to_a_public_provider_allowed_when_app_not_sensitive() {
+            // No sensitive source ⇒ public providers are fine.
             let cfg = cfg_with_routes(vec![], &[("cloud", Some("anthropic"), Some("claude-x"))]);
-            assert!(resolve_route(&cfg, "cloud", "llamacpp", "qwen").is_ok());
-            assert!(route_start_warnings(&cfg).is_empty());
+            assert!(resolve_route(&cfg, "cloud", "llamacpp", "qwen")
+                .await
+                .is_ok());
+            assert!(route_start_warnings(&cfg).await.is_empty());
         }
 
-        #[test]
-        fn route_inherits_session_values_and_errors_on_unknown() {
+        #[tokio::test]
+        async fn route_inherits_session_values_and_errors_on_unknown() {
             let cfg = cfg_with_routes(vec![], &[("swap-model", None, Some("bigger"))]);
             // provider inherited from session, model from the route.
-            let (p, m) = resolve_route(&cfg, "swap-model", "anthropic", "small").unwrap();
+            let (p, m) = resolve_route(&cfg, "swap-model", "anthropic", "small")
+                .await
+                .unwrap();
             assert_eq!((p.as_str(), m.as_str()), ("anthropic", "bigger"));
-            assert!(resolve_route(&cfg, "nope", "anthropic", "small").is_err());
+            assert!(resolve_route(&cfg, "nope", "anthropic", "small")
+                .await
+                .is_err());
         }
 
         // ── ui:// resource → figure ──────────────────────────────────────────
@@ -7367,6 +8273,182 @@ mod tests {
         }
 
         // ── model_status shape ───────────────────────────────────────────────
+
+        // ── Issue #56, Task 10B: CP3 ────────────────────────────────────────
+
+        /// `br.kb ingest` never touches `KnowledgeServer`, so CP1 is blind to
+        /// it; `resolve_kb_grant` reads the app manifest, which the DRAFTING
+        /// MODEL authored — an integrity control over which base, not a privacy
+        /// control over which caller. The ratchet has to be here.
+        #[tokio::test]
+        async fn a_br_kb_ingest_from_a_private_app_session_ratchets_the_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kbx", "KBX", None).unwrap();
+            assert!(!biorouter_mcp::knowledge::tier::is_private(&root, "kbx"));
+
+            let cfg = cfg_with(vec![knowledge_src(&["kbx"], false)], Some("kbx"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (_rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(true, Default::default()),
+                "ingest",
+                &serde_json::json!({ "kb_id": "kbx", "text": "n=412" }),
+                "r1",
+            )
+            .await;
+
+            assert!(
+                biorouter_mcp::knowledge::tier::is_private(&root, "kbx"),
+                "a private app session's ingest did not ratchet the base"
+            );
+        }
+
+        /// The mirror: a public app session must not lower a base that a
+        /// private one already ratcheted.
+        #[tokio::test]
+        async fn a_public_br_kb_ingest_never_lowers_a_ratcheted_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kby", "KBY", None).unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&root, "kby", true).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["kby"], false)], Some("kby"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (_rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(false, Default::default()),
+                "ingest",
+                &serde_json::json!({ "kb_id": "kby", "text": "public note" }),
+                "r2",
+            )
+            .await;
+
+            assert!(
+                biorouter_mcp::knowledge::tier::is_private(&root, "kby"),
+                "a public app session lowered a ratcheted base"
+            );
+        }
+
+        // ── Issue #56, Task 10C: CP3 ────────────────────────────────────────
+
+        /// Drain the bridge's frames until a `kb_result` for `req` arrives.
+        async fn await_kb_result(
+            rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+            req: &str,
+        ) -> serde_json::Value {
+            for _ in 0..64 {
+                match tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await {
+                    Ok(Some(f)) => {
+                        if f["type"] == "kb_result" && f["reqId"] == req {
+                            return f;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            panic!("no kb_result for {req}");
+        }
+
+        /// CP3, and the reason a manifest grant is not a privacy control: the
+        /// app's manifest was authored by the DRAFTING MODEL, which learned the
+        /// base ids from `discover_kbs`. It is an integrity control over WHICH
+        /// base, never a control over WHICH CALLER.
+        #[tokio::test]
+        async fn br_kb_reads_are_refused_on_a_private_base_even_with_a_manifest_grant() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kbx", "KBX", None).unwrap();
+            std::fs::write(
+                root.join("kbx").join("knowledge").join("x.md"),
+                "# x\n\nSENTINEL-BODY\n",
+            )
+            .unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&root, "kbx", true).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["kbx"], false)], Some("kbx"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(false, Default::default()),
+                "search",
+                &serde_json::json!({ "kb_id": "kbx", "query": "SENTINEL" }),
+                "r1",
+            )
+            .await;
+
+            let f = await_kb_result(&mut rx, "r1").await;
+            assert!(
+                f["error"].as_str().unwrap_or_default().contains("private"),
+                "a public app session read a private base: {f}"
+            );
+            assert!(!f.to_string().contains("SENTINEL-BODY"), "{f}");
+
+            // The discrimination half: a PRIVATE caller reads the same base.
+            // Without it, "refuse everything" passes.
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(true, Default::default()),
+                "search",
+                &serde_json::json!({ "kb_id": "kbx", "query": "SENTINEL" }),
+                "r2",
+            )
+            .await;
+            let f = await_kb_result(&mut rx, "r2").await;
+            assert!(
+                f["error"].is_null(),
+                "a private app session was refused its own base: {f}"
+            );
+        }
+
+        /// CP3 covers `ingest` and the four reads together, because it sits
+        /// above the `match op`. This is the write half — and the arm that could
+        /// otherwise stamp a directory-but-no-entry base explicitly PUBLIC.
+        #[tokio::test]
+        async fn a_public_br_kb_ingest_is_refused_on_a_private_base() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let root = tmp.path().to_path_buf();
+            let svc = std::sync::Arc::new(KnowledgeService::new(root.clone()));
+            svc.create_base("kbz", "KBZ", None).unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&root, "kbz", true).unwrap();
+
+            let cfg = cfg_with(vec![knowledge_src(&["kbz"], false)], Some("kbz"));
+            let bridge = biorouter_mcp::agent_drafter::control::UiBridge::new();
+            let (mut rx, _tok) = bridge.attach();
+
+            super::super::handle_kb_frame(
+                &bridge,
+                &svc,
+                Some(&cfg),
+                KbCaller::new(false, Default::default()),
+                "ingest",
+                &serde_json::json!({ "kb_id": "kbz", "text": "n=412" }),
+                "r3",
+            )
+            .await;
+            let f = await_kb_result(&mut rx, "r3").await;
+            assert!(
+                f["error"].as_str().unwrap_or_default().contains("private"),
+                "a public app session ingested into a private base: {f}"
+            );
+        }
 
         #[test]
         fn model_status_frame_shape_is_stable() {
@@ -7444,8 +8526,8 @@ mod tests {
             })
         }
 
-        #[test]
-        fn over_privileged_profile_is_dropped() {
+        #[tokio::test]
+        async fn over_privileged_profile_is_dropped() {
             // App grants nothing; a profile asking for `files` exceeds the app.
             let app = app_with_profiles(
                 AgentConfig::default(),
@@ -7457,14 +8539,14 @@ mod tests {
                     },
                 )],
             );
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             assert!(v.valid.is_empty(), "over-privileged profile is dropped");
             assert_eq!(v.dropped.len(), 1);
             assert!(v.dropped[0].1.contains("files"), "{:?}", v.dropped);
         }
 
-        #[test]
-        fn subset_capability_is_kept() {
+        #[tokio::test]
+        async fn subset_capability_is_kept() {
             // App grants files; a profile also asking for files is within the app.
             let app = AgentConfig {
                 capabilities: files_cap(),
@@ -7480,13 +8562,13 @@ mod tests {
                     },
                 )],
             );
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             assert!(v.valid.contains_key("worker"));
             assert!(v.dropped.is_empty());
         }
 
-        #[test]
-        fn ui_is_forced_off_when_app_does_not_grant_it() {
+        #[tokio::test]
+        async fn ui_is_forced_off_when_app_does_not_grant_it() {
             // App disables ui; a profile (default ui.enabled == true) must not gain it.
             let app = AgentConfig {
                 capabilities: Capabilities {
@@ -7499,7 +8581,7 @@ mod tests {
                 ..Default::default()
             };
             let app = app_with_profiles(app, vec![("critic", AgentConfig::default())]);
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             let critic = v.valid.get("critic").expect("critic kept");
             assert!(
                 !critic.capabilities.ui.enabled,
@@ -7513,13 +8595,13 @@ mod tests {
         /// worker was handed `appcontrol` on the main bridge plus the "drive the
         /// page" system prompt. They were not drifting — they were instructed to
         /// seize the UI. This test used to assert that they got it.
-        #[test]
-        fn a_worker_does_not_get_the_ui_by_default() {
+        #[tokio::test]
+        async fn a_worker_does_not_get_the_ui_by_default() {
             let app = app_with_profiles(
                 AgentConfig::default(),
                 vec![("critic", AgentConfig::default())],
             );
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             assert!(
                 !v.valid.get("critic").unwrap().capabilities.ui.enabled,
                 "UI ownership is main-only unless the author explicitly opts a worker in"
@@ -7527,8 +8609,8 @@ mod tests {
         }
 
         /// A worker that genuinely should render can still say so.
-        #[test]
-        fn a_worker_gets_the_ui_when_it_explicitly_opts_in() {
+        #[tokio::test]
+        async fn a_worker_gets_the_ui_when_it_explicitly_opts_in() {
             let renderer = AgentConfig {
                 capabilities: Capabilities {
                     ui: biorouter_mcp::agent_drafter::manifest::UiCapability {
@@ -7540,13 +8622,13 @@ mod tests {
                 ..Default::default()
             };
             let app = app_with_profiles(AgentConfig::default(), vec![("renderer", renderer)]);
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             assert!(v.valid.get("renderer").unwrap().capabilities.ui.enabled);
         }
 
         /// An opt-in worker still cannot exceed the app's own grant.
-        #[test]
-        fn a_worker_opt_in_cannot_exceed_the_apps_grant() {
+        #[tokio::test]
+        async fn a_worker_opt_in_cannot_exceed_the_apps_grant() {
             let app_cfg = AgentConfig {
                 capabilities: Capabilities {
                     ui: biorouter_mcp::agent_drafter::manifest::UiCapability {
@@ -7568,7 +8650,7 @@ mod tests {
                 ..Default::default()
             };
             let app = app_with_profiles(app_cfg, vec![("renderer", renderer)]);
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             assert!(
                 !v.valid.get("renderer").unwrap().capabilities.ui.enabled,
                 "a text-only app's worker cannot opt into a UI the app itself denies"
@@ -7634,8 +8716,8 @@ mod tests {
             assert!(err.contains("ambiguous"), "{err}");
         }
 
-        #[test]
-        fn external_provider_dropped_for_sensitive_app() {
+        #[tokio::test]
+        async fn public_provider_dropped_for_sensitive_app() {
             let app = app_with_profiles(
                 omop_app(),
                 vec![
@@ -7655,20 +8737,17 @@ mod tests {
                     ),
                 ],
             );
-            let v = validate_profiles(&app);
-            assert!(
-                !v.valid.contains_key("external"),
-                "external provider dropped"
-            );
-            assert!(v.valid.contains_key("local"), "local provider kept");
+            let v = validate_profiles(&app).await;
+            assert!(!v.valid.contains_key("external"), "public provider dropped");
+            assert!(v.valid.contains_key("local"), "private provider kept");
             assert!(v
                 .dropped
                 .iter()
-                .any(|(n, r)| n == "external" && r.contains("external")));
+                .any(|(n, r)| n == "external" && r.contains("public provider")));
         }
 
-        #[test]
-        fn profiles_are_capped_and_orchestration_cleared() {
+        #[tokio::test]
+        async fn profiles_are_capped_and_orchestration_cleared() {
             let mut profiles = Vec::new();
             for i in 0..(MAX_PROFILES + 2) {
                 profiles.push((format!("p{i:02}"), AgentConfig::default()));
@@ -7678,7 +8757,7 @@ mod tests {
                 .map(|(n, c)| (n.as_str(), c.clone()))
                 .collect();
             let app = app_with_profiles(AgentConfig::default(), refs);
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             assert_eq!(v.valid.len(), MAX_PROFILES, "capped at the max");
             assert_eq!(v.dropped.len(), 2, "the surplus is dropped");
             // Sorted-by-name: the two highest names (p08, p09) are the surplus.
@@ -7688,8 +8767,8 @@ mod tests {
             assert!(v.valid.get("p00").unwrap().orchestration.agents.is_empty());
         }
 
-        #[test]
-        fn names_are_sorted() {
+        #[tokio::test]
+        async fn names_are_sorted() {
             let app = app_with_profiles(
                 AgentConfig::default(),
                 vec![
@@ -7698,7 +8777,7 @@ mod tests {
                     ("mu", AgentConfig::default()),
                 ],
             );
-            let v = validate_profiles(&app);
+            let v = validate_profiles(&app).await;
             assert_eq!(v.names(), vec!["alpha", "mu", "zeta"]);
         }
 
@@ -7751,6 +8830,1678 @@ mod tests {
             // Main turn → unchanged (no agent field), preserving back-compat.
             let plain = stamp_agent(base, None);
             assert!(plain.get("agent").is_none());
+        }
+    }
+
+    // ── Issue #56, Task 10D: CP5 at the app runtime ─────────────────────────
+
+    /// The capability the app's agents are scoped by, and **where** it is read.
+    ///
+    /// `capability_report` used to run above `configure_main_provider`, so it saw
+    /// whatever provider the session held *before* the manifest's own `model` was
+    /// bound — and an app's manifest routinely names a different one. Both
+    /// inversions are silent, so both are driven here.
+    mod privacy_capability {
+        use super::super::{configure_agent, configure_worker_agent};
+        use biorouter_mcp::agent_drafter::control::UiBridge;
+        use biorouter_mcp::agent_drafter::store::{
+            AgentConfig, ArtifactKind, Manifest, ModelSelection,
+        };
+        use biorouter_mcp::knowledge::service::KnowledgeService;
+        use std::sync::Arc;
+
+        /// A loopback Ollama is Private and a non-loopback one is Public
+        /// (`providers::self_hosted_tier`), so the PROVIDER NAME is `ollama` in
+        /// every row and only the host moves — an implementation keyed on the
+        /// provider name gives the same answer twice, and so does either
+        /// hardcoded literal.
+        ///
+        /// ⚠ The private host's port is **1**, not 11434: `is_loopback_host`
+        /// reads the host and ignores the port, and pointing a test at the real
+        /// Ollama port drives a live local model on any machine running one.
+        pub(super) const PRIVATE_HOST: &str = "http://127.0.0.1:1";
+        pub(super) const PUBLIC_HOST: &str = "http://ollama.invalid:11434";
+
+        /// Pin everything these rows depend on, and restore it on drop.
+        ///
+        /// `BIOROUTER_PROVIDER` names a provider that cannot be created, which is
+        /// what makes `configure_main_provider`'s global fallback (`:834-854`)
+        /// deterministic: without it the fallback would bind whatever the
+        /// developer has configured, at an unknown tier, and silently decide the
+        /// assertion.
+        pub(super) fn lock_env_for(
+            root: &std::path::Path,
+            host: &str,
+        ) -> env_lock::EnvGuard<'static> {
+            env_lock::lock_env([
+                (
+                    "BIOROUTER_PATH_ROOT",
+                    Some(root.to_string_lossy().into_owned()),
+                ),
+                ("OLLAMA_HOST", Some(host.to_string())),
+                ("OLLAMA_TIMEOUT", Some("1".to_string())),
+                ("BIOROUTER_LEAD_MODEL", None),
+                ("BIOROUTER_LEAD_PROVIDER", None),
+                (
+                    "BIOROUTER_PROVIDER",
+                    Some("no-such-provider-for-this-test".to_string()),
+                ),
+            ])
+        }
+
+        /// A provider bound to a fixed tier, standing in for "whatever this
+        /// session was already running on" before the manifest was applied.
+        #[derive(Clone)]
+        struct TierProvider(biorouter::privacy::ProviderTier);
+
+        #[async_trait::async_trait]
+        impl biorouter::providers::base::Provider for TierProvider {
+            fn metadata() -> biorouter::providers::base::ProviderMetadata {
+                biorouter::providers::base::ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                "tier-mock"
+            }
+            fn get_model_config(&self) -> biorouter::model::ModelConfig {
+                biorouter::model::ModelConfig::new("test-model").unwrap()
+            }
+            fn tier(&self) -> biorouter::privacy::ProviderTier {
+                self.0
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &biorouter::model::ModelConfig,
+                _system: &str,
+                _messages: &[biorouter::conversation::message::Message],
+                _tools: &[rmcp::model::Tool],
+            ) -> anyhow::Result<
+                (
+                    biorouter::conversation::message::Message,
+                    biorouter::providers::base::ProviderUsage,
+                ),
+                biorouter::providers::errors::ProviderError,
+            > {
+                Ok((
+                    biorouter::conversation::message::Message::assistant().with_text("ok"),
+                    biorouter::providers::base::ProviderUsage::new(
+                        "tier-mock".to_string(),
+                        biorouter::providers::base::Usage::default(),
+                    ),
+                ))
+            }
+        }
+
+        fn manifest_with(model: Option<ModelSelection>, kb: &str) -> Manifest {
+            Manifest {
+                id: "privacyapp".to_string(),
+                title: "Privacy App".to_string(),
+                description: String::new(),
+                kind: ArtifactKind::Agentic,
+                entry: "index.html".to_string(),
+                created_at: 0,
+                updated_at: 0,
+                agent: Some(AgentConfig {
+                    model,
+                    knowledge_base: Some(kb.to_string()),
+                    ..Default::default()
+                }),
+                width: None,
+                height: None,
+                built_at: None,
+                sdk_hash: None,
+                session_id: None,
+                surface: Default::default(),
+                theme: Default::default(),
+            }
+        }
+
+        fn ollama(model: &str) -> Option<ModelSelection> {
+            Some(ModelSelection {
+                provider: Some("ollama".to_string()),
+                model: Some(model.to_string()),
+                settings: None,
+            })
+        }
+
+        /// The write target `grant_knowledge_base` sets. This is the observable
+        /// that separates "granted" from "not granted": nothing is hidden by
+        /// default, so an un-granted base is *also* in the visible set and only
+        /// the primary pointer moves.
+        fn stored_primary(svc: &KnowledgeService, session: &str) -> Option<String> {
+            svc.get_primary_for_session(session).unwrap()
+        }
+
+        fn session_kb_ids(svc: &KnowledgeService, session: &str) -> Vec<String> {
+            svc.selection(Some(session)).unwrap().kb_ids
+        }
+
+        /// A knowledge root under `dir` holding one PRIVATE base, plus an
+        /// `AppState` whose service is rooted at it.
+        async fn state_with_private_omop(
+            dir: &tempfile::TempDir,
+        ) -> (Arc<crate::state::AppState>, std::path::PathBuf) {
+            let kroot = dir.path().join("config").join("knowledge");
+            let svc = KnowledgeService::new(kroot.clone());
+            svc.create_base("omop", "OMOP Cohort", None).unwrap();
+            biorouter_mcp::knowledge::tier::raise_unlocked(&kroot, "omop", true).unwrap();
+            let state = crate::state::AppState::new_with_knowledge_root(kroot.clone())
+                .await
+                .unwrap();
+            (state, kroot)
+        }
+
+        async fn agent_for(
+            state: &Arc<crate::state::AppState>,
+            name: &str,
+            dir: &std::path::Path,
+        ) -> (String, Arc<biorouter::agents::Agent>) {
+            let session = state
+                .session_manager()
+                .create_session(
+                    dir.to_path_buf(),
+                    name.to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            (session.id, agent)
+        }
+
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn the_app_capability_report_follows_the_manifests_provider_not_the_global_one() {
+            // Warm the process-global `SessionManager` against the REAL path root
+            // BEFORE the env lock relocates it — otherwise this test could be the
+            // one that creates the session database inside a `TempDir` that is
+            // then unlinked, breaking every sibling test in the binary.
+            let _warm = crate::state::AppState::new().await.unwrap();
+
+            // Both inversions, because each is silent on its own and a fix that
+            // hardcodes either literal passes one of them. In each row the agent
+            // is pre-bound to the OPPOSITE tier, which is what the report used to
+            // read at `:1257`.
+            for (host, manifest_is_private) in [(PUBLIC_HOST, false), (PRIVATE_HOST, true)] {
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+                let (state, kroot) = state_with_private_omop(&dir).await;
+                let svc = KnowledgeService::new(kroot.clone());
+
+                let label = if manifest_is_private { "priv" } else { "pub" };
+                let (session, agent) =
+                    agent_for(&state, &format!("privacy-report-{label}"), dir.path()).await;
+
+                // The tier the session held BEFORE the manifest was applied,
+                // deliberately chosen so that reading the provider two lines
+                // early gives the wrong answer in BOTH rows.
+                //
+                // For the PUBLIC-manifest row that is a pre-bound Private mock.
+                // For the PRIVATE-manifest row it is *nothing at all*, and that
+                // is DR-21 (Task 41) rather than a softened test: an app
+                // session's capability is fixed when the session is created, so
+                // pre-binding a public model and then letting the manifest raise
+                // it is the exact sequence DR-21 refuses — this row now measures
+                // that same bind at creation, where it is legal. The inversion is
+                // still detected, because an unbound agent reads as Public
+                // (`Agent::provider` errors and the caller's fail-safe is
+                // Public), so a `capability_report` computed before the bind
+                // still gets Public where the manifest is Private.
+                if !manifest_is_private {
+                    agent
+                        .update_provider(
+                            Arc::new(TierProvider(biorouter::privacy::ProviderTier::Private)),
+                            &session,
+                        )
+                        .await
+                        .unwrap();
+                }
+
+                let manifest = manifest_with(ollama("qwen3.5:4b"), "omop");
+                let bridge = UiBridge::new();
+                let report =
+                    configure_agent(&agent, &state, &session, &manifest, &bridge, false).await;
+
+                // The manifest's provider really did bind — otherwise the row
+                // measures the pre-bound mock and proves nothing.
+                assert_eq!(
+                    agent
+                        .provider()
+                        .await
+                        .map(|p| p.get_name().to_string())
+                        .ok(),
+                    Some("ollama".to_string()),
+                    "the manifest's model must be what the agent ends up on"
+                );
+
+                if manifest_is_private {
+                    assert_eq!(
+                        report.granted_knowledge_base.as_deref(),
+                        Some("omop"),
+                        "a private manifest model wrongly lost its own base"
+                    );
+                    assert_eq!(stored_primary(&svc, &session).as_deref(), Some("omop"));
+                } else {
+                    assert_eq!(
+                        report.granted_knowledge_base, None,
+                        "a public manifest model received the private catalog"
+                    );
+                    assert_eq!(report.missing_knowledge_base.as_deref(), Some("omop"));
+                    // And the grant really did not happen — the report is only a
+                    // claim.
+                    assert_ne!(stored_primary(&svc, &session).as_deref(), Some("omop"));
+                }
+            }
+        }
+
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_public_worker_profile_is_not_granted_a_private_base() {
+            // `configure_worker_agent` grants `cfg.knowledge_base` with no report
+            // between it and `configure_worker_provider`, and
+            // `grant_knowledge_base` is `include_kb(.., PrimaryUpdate::Set(kb))`
+            // — so the base is un-hidden in that worker's session AND made its
+            // KB-less write target.
+            let _warm = crate::state::AppState::new().await.unwrap();
+
+            let dir = tempfile::TempDir::new().unwrap();
+            // PUBLIC host: the worker's `ollama` model resolves Public. The main
+            // agent is made Private by a bound mock instead, so both tiers exist
+            // under one process-global host setting.
+            let _env = lock_env_for(dir.path(), PUBLIC_HOST);
+            let (state, kroot) = state_with_private_omop(&dir).await;
+            let svc = KnowledgeService::new(kroot.clone());
+
+            let (main_session, main_agent) =
+                agent_for(&state, "privacy-worker-main", dir.path()).await;
+            main_agent
+                .update_provider(
+                    Arc::new(TierProvider(biorouter::privacy::ProviderTier::Private)),
+                    &main_session,
+                )
+                .await
+                .unwrap();
+
+            // Main agent: no manifest model, so `configure_main_provider` leaves
+            // the private mock in place (the global fallback cannot create
+            // `no-such-provider-for-this-test`).
+            let main_manifest = manifest_with(None, "omop");
+            let bridge = UiBridge::new();
+            let report = configure_agent(
+                &main_agent,
+                &state,
+                &main_session,
+                &main_manifest,
+                &bridge,
+                false,
+            )
+            .await;
+            assert_eq!(
+                report.granted_knowledge_base.as_deref(),
+                Some("omop"),
+                "the PRIVATE main agent must keep its own base"
+            );
+            assert!(session_kb_ids(&svc, &main_session).contains(&"omop".to_string()));
+
+            // Worker profile: its own public `ollama` model.
+            let (worker_session, worker_agent) =
+                agent_for(&state, "privacy-worker-analyst", dir.path()).await;
+            let worker_cfg = AgentConfig {
+                model: ollama("qwen3.5:4b"),
+                knowledge_base: Some("omop".to_string()),
+                ..Default::default()
+            };
+            configure_worker_agent(
+                &worker_agent,
+                &state,
+                &worker_session,
+                &main_manifest,
+                "analyst",
+                &worker_cfg,
+                &bridge,
+                None,
+            )
+            .await;
+
+            assert_ne!(
+                stored_primary(&svc, &worker_session).as_deref(),
+                Some("omop"),
+                "a public worker profile was pinned to a private base as its \
+                 KB-less write target"
+            );
+
+            // …and the refusal is not merely a withheld grant: the toolset must
+            // not be armed either. `configure_worker_extensions` auto-pushed
+            // `knowledge` on `cfg.knowledge_base.is_some()` — what the profile
+            // NAMED — where the main path (`:918`) reads
+            // `report.granted_knowledge_base.is_some()`, what it RECEIVED. A
+            // refused worker was left holding `kb_*` tools scoped to nothing,
+            // which is the "never arm a tool for a grant that cannot be
+            // satisfied" rule the gate's own comment cites.
+            let refused = worker_agent
+                .extension_manager
+                .list_extensions()
+                .await
+                .unwrap_or_default();
+            assert!(
+                !refused.iter().any(|e| e == "knowledge"),
+                "a refused worker profile kept the knowledge toolset armed: {refused:?}"
+            );
+
+            // The counter-assertion, so "never arm knowledge" cannot pass: a
+            // PRIVATE worker profile naming the same base is granted it AND gets
+            // the toolset. `model: None` leaves the bound mock in place, because
+            // the global fallback provider does not exist in this test.
+            let (ok_session, ok_agent) =
+                agent_for(&state, "privacy-worker-trusted", dir.path()).await;
+            ok_agent
+                .update_provider(
+                    Arc::new(TierProvider(biorouter::privacy::ProviderTier::Private)),
+                    &ok_session,
+                )
+                .await
+                .unwrap();
+            configure_worker_agent(
+                &ok_agent,
+                &state,
+                &ok_session,
+                &main_manifest,
+                "trusted",
+                &AgentConfig {
+                    model: None,
+                    knowledge_base: Some("omop".to_string()),
+                    ..Default::default()
+                },
+                &bridge,
+                None,
+            )
+            .await;
+            assert!(
+                session_kb_ids(&svc, &ok_session).contains(&"omop".to_string()),
+                "a private worker profile lost its own base"
+            );
+            let granted = ok_agent
+                .extension_manager
+                .list_extensions()
+                .await
+                .unwrap_or_default();
+            assert!(
+                granted.iter().any(|e| e == "knowledge"),
+                "a granted worker profile did not get the knowledge toolset: {granted:?}"
+            );
+        }
+    }
+
+    // ── Issue #56, Task 24: the two shipped app features the gates break ─────
+
+    /// H4 (the per-turn route restore), R5 (an unpinned worker's provider), and
+    /// the app runtime's own provider taxonomy.
+    ///
+    /// These build an `Agent` directly over a `SessionManager` in a `TempDir`
+    /// rather than an `AppState`, deliberately: the sequences under test are
+    /// "bind, ratchet, re-bind" and "which provider does this agent end up
+    /// holding", and neither needs a socket, a knowledge root or the
+    /// process-global session store the `privacy_capability` module above has to
+    /// serialise around.
+    mod privacy_task24 {
+        use super::super::{
+            configure_worker_provider, provider_is_private_for_app, restore_route_provider,
+            CATALOG_VERSION,
+        };
+        use biorouter::agents::{Agent, AgentConfig as BrAgentConfig};
+        use biorouter::config::permission::PermissionManager;
+        use biorouter::config::BioRouterMode;
+        use biorouter::privacy::{ProviderTier, SessionClassification};
+        use biorouter::providers::base::Provider;
+        use biorouter::session::SessionManager;
+        use biorouter_mcp::agent_drafter::control::UiBridge;
+        use biorouter_mcp::agent_drafter::store::{AgentConfig, ArtifactKind, Manifest};
+        use std::sync::Arc;
+
+        /// A real `Provider` carrying a chosen name and tier. The gates read
+        /// `tier()`, `get_name()` and `get_model_config()`; nothing here ever
+        /// completes a turn.
+        struct Tiered {
+            name: &'static str,
+            tier: ProviderTier,
+        }
+
+        #[async_trait::async_trait]
+        impl Provider for Tiered {
+            fn metadata() -> biorouter::providers::base::ProviderMetadata {
+                biorouter::providers::base::ProviderMetadata::empty()
+            }
+            fn get_name(&self) -> &str {
+                self.name
+            }
+            fn get_model_config(&self) -> biorouter::model::ModelConfig {
+                biorouter::model::ModelConfig::new("test-model").unwrap()
+            }
+            fn tier(&self) -> ProviderTier {
+                self.tier
+            }
+            async fn complete_with_model(
+                &self,
+                _model_config: &biorouter::model::ModelConfig,
+                _system: &str,
+                _messages: &[biorouter::conversation::message::Message],
+                _tools: &[rmcp::model::Tool],
+            ) -> anyhow::Result<
+                (
+                    biorouter::conversation::message::Message,
+                    biorouter::providers::base::ProviderUsage,
+                ),
+                biorouter::providers::errors::ProviderError,
+            > {
+                Ok((
+                    biorouter::conversation::message::Message::assistant().with_text("ok"),
+                    biorouter::providers::base::ProviderUsage::new(
+                        self.name.to_string(),
+                        biorouter::providers::base::Usage::default(),
+                    ),
+                ))
+            }
+        }
+
+        pub(super) fn tiered(name: &'static str, tier: ProviderTier) -> Arc<dyn Provider> {
+            Arc::new(Tiered { name, tier })
+        }
+
+        pub(super) fn agent_over(
+            session_manager: Arc<SessionManager>,
+            dir: &std::path::Path,
+        ) -> Agent {
+            Agent::with_config(BrAgentConfig::new(
+                session_manager,
+                Arc::new(PermissionManager::new(dir.to_path_buf())),
+                None,
+                BioRouterMode::Auto,
+            ))
+        }
+
+        fn manifest() -> Manifest {
+            Manifest {
+                id: "task24app".to_string(),
+                title: "Task 24 App".to_string(),
+                description: String::new(),
+                kind: ArtifactKind::Agentic,
+                entry: "index.html".to_string(),
+                created_at: 0,
+                updated_at: 0,
+                agent: Some(AgentConfig::default()),
+                width: None,
+                height: None,
+                built_at: None,
+                sdk_hash: None,
+                session_id: None,
+                surface: Default::default(),
+                theme: Default::default(),
+            }
+        }
+
+        /// A span of this file's own source with its comment lines removed.
+        ///
+        /// The needle the two structural tests below look for is a function
+        /// CALL, and a doc or inline comment naming that same function would
+        /// satisfy `contains` with the real call deleted — an assertion that
+        /// satisfies itself while reading as a passing gate. Today the
+        /// `ModelSelect` arm's prose happens to say `bind_app_provider` without
+        /// a paren, so those tests are sound by luck; a reword to
+        /// `bind_app_provider(…)` would silently make them vacuous. Stripping
+        /// comments removes the luck.
+        pub(super) fn code_only(src: &str) -> String {
+            src.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        }
+
+        /// Every frame the bridge has emitted since `attach`.
+        pub(super) fn drain(
+            rx: &mut tokio::sync::mpsc::UnboundedReceiver<serde_json::Value>,
+        ) -> Vec<serde_json::Value> {
+            let mut out = Vec::new();
+            while let Ok(frame) = rx.try_recv() {
+                out.push(frame);
+            }
+            out
+        }
+
+        /// H4. A route pinned to a private model on a PUBLIC app session is a
+        /// legal bind; Gate B then ratchets the session private on that turn; and
+        /// the restore of the public `prev` is refused. That refusal used to be
+        /// discarded, leaving the session silently stuck on the route's provider
+        /// for every later turn.
+        #[tokio::test]
+        async fn a_route_that_ratchets_an_app_session_does_not_strand_it() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_manager
+                .create_session(
+                    dir.path().to_path_buf(),
+                    "app".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+
+            // The app session's own model: public.
+            agent
+                .update_provider(tiered("anthropic", ProviderTier::Public), &session.id)
+                .await
+                .unwrap();
+            // Snapshotted the way `apply_route_for_turn` snapshots it. DR-21
+            // (Task 41) made this the ONLY way to mint a `RoutePrevious`, which
+            // is what keeps the un-raise-checked restore below from being an
+            // escape hatch: it can only carry what the session was already on.
+            let prev = super::super::app_provider_bind::snapshot_for_route(&agent)
+                .await
+                .expect("the pre-route provider is bound");
+
+            // The route, applied for one turn. Bound directly rather than through
+            // `apply_route_for_turn`, because this test is about the RESTORE: the
+            // sequence it pins is "session ratcheted private mid-turn, public
+            // `prev` can no longer come back", and that is Gate A's refusal, not
+            // DR-21's.
+            agent
+                .update_provider(tiered("versa_azure", ProviderTier::Private), &session.id)
+                .await
+                .unwrap();
+            // ...and the turn that ran under it ratcheted the session.
+            session_manager
+                .update(&session.id)
+                .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+                .apply()
+                .await
+                .unwrap();
+
+            let bridge = UiBridge::new();
+            let (mut rx, _token) = bridge.attach();
+            restore_route_provider(&agent, &session.id, prev, &bridge).await;
+
+            let row = session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap();
+            assert_eq!(row.privacy_tier, SessionClassification::Private);
+            assert_eq!(
+                row.provider_name.as_deref(),
+                Some("versa_azure"),
+                "restore was refused, so the route provider must remain — deliberately, not silently"
+            );
+            let frames = drain(&mut rx);
+            let notice = frames
+                .iter()
+                .find(|f| f["cmd"] == "notify")
+                .unwrap_or_else(|| panic!("the user is told: {frames:?}"));
+            assert!(
+                notice["message"]
+                    .as_str()
+                    .is_some_and(|m| m.contains("private")),
+                "the notice says why: {notice}"
+            );
+            // `emit_frame` stamps nothing, so the envelope is asserted here.
+            assert_eq!(notice["type"], "ui", "{notice}");
+            assert_eq!(
+                notice["v"],
+                serde_json::json!(CATALOG_VERSION),
+                "the notice carries the shared catalog version, not a literal: {notice}"
+            );
+            // Sticky. `applyNotify` in `sdk.ts` defaults to 4000 ms, and a
+            // notice about a permanent model change must not auto-dismiss.
+            assert_eq!(
+                notice["timeoutMs"], 0,
+                "the notice must be click-to-dismiss, not a 4-second toast: {notice}"
+            );
+        }
+
+        /// Open question 26's requirement, now that DR-21 has answered it — and
+        /// no longer `#[ignore]`d.
+        ///
+        /// **The requirement, unchanged: agent-authored data may not raise a
+        /// LIVE app session's capability.** Four sites supply a provider from
+        /// something a public model can write — `configure_main_provider` and
+        /// `configure_worker_provider` (the manifest's `model`, which
+        /// `agent_drafter__declare_profiles` writes from tool arguments),
+        /// `apply_route_for_turn` (a manifest route pin), and
+        /// `ClientFrame::ModelSelect` (a frame from a page whose TypeScript the
+        /// model itself authored, on a route `is_public_app_get` exempts from
+        /// secret-key auth entirely).
+        ///
+        /// ⚠ **The assertion moved down a layer, and that is the ruling, not a
+        /// weakening.** It used to be made against `Agent::update_provider`,
+        /// because that is the call all four share. DR-21 does not put the guard
+        /// there: a raise on an ordinary chat is legal when the *user* asks for
+        /// it, and Task 18A's `X-User-Action` on `POST /agent/update_provider` is
+        /// where that proof is checked. Refusing every raise inside
+        /// `Agent::update_provider` would take the user's own model picker away
+        /// along with the model's — the posture DR-16 explicitly rejected. So the
+        /// guard is `app_provider_bind::bind_app_provider`, which is now the only
+        /// path from this file to that call, and this asserts there.
+        ///
+        /// ⚠ Do NOT satisfy it by inventing a grant mechanism. DR-19 says a
+        /// confirmation compiled into the source is a UX guard and not a human,
+        /// and a grant stored where the agent writes is not a grant — which rules
+        /// out both a confirmation phrase and a manifest boolean. DR-21 says the
+        /// same thing in its own words: a per-manifest grant is exactly the
+        /// scoped permission open question 25 floated, and inventing one here
+        /// would re-open the channel the ruling closes.
+        #[tokio::test]
+        async fn agent_authored_data_cannot_raise_a_live_app_sessions_capability() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_manager
+                .create_session(
+                    dir.path().to_path_buf(),
+                    "app".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+
+            // A LIVE app session, already bound to a public model. "Live" is the
+            // whole point: DR-21 fixes the tier a session was CREATED with, and
+            // this session was created public.
+            agent
+                .update_provider(tiered("anthropic", ProviderTier::Public), &session.id)
+                .await
+                .unwrap();
+
+            // The bind all four sites now end in, carrying nothing that proves a
+            // human — because on these paths there is nothing that could.
+            let raised = super::super::app_provider_bind::bind_app_provider(
+                &agent,
+                &session.id,
+                super::super::app_provider_bind::adopt_for_test(tiered(
+                    "versa_azure",
+                    ProviderTier::Private,
+                )),
+            )
+            .await;
+
+            assert!(
+                raised.is_err(),
+                "a public app session was raised to private capability by data the app's own \
+                 agent can write"
+            );
+            let row = session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap();
+            assert_eq!(
+                row.provider_name.as_deref(),
+                Some("anthropic"),
+                "the refused bind must not have been persisted"
+            );
+            assert_eq!(
+                row.privacy_tier,
+                SessionClassification::Public,
+                "no path may leave this session private-capable"
+            );
+        }
+
+        /// The taxonomy this task replaces was inverted on exactly the names the
+        /// feature exists for. Kept beside `provider_tier_table` because that
+        /// table is the broad sweep and this is the named regression.
+        #[tokio::test]
+        async fn provider_tier_is_not_inverted_any_more() {
+            assert!(provider_is_private_for_app("versa_azure").await);
+            assert!(provider_is_private_for_app("versa_bedrock").await);
+            assert!(provider_is_private_for_app("llamacpp").await);
+            assert!(!provider_is_private_for_app("aws_bedrock").await);
+            assert!(!provider_is_private_for_app("azure_openai").await);
+            assert!(!provider_is_private_for_app("databricks").await);
+        }
+
+        /// R5. An unpinned worker profile used to fall straight through to
+        /// `Config::global()`, so a worker under a `versa_azure` app answered on
+        /// the user's commercial default.
+        ///
+        /// ⚠ The app's provider is deliberately a name NO registered provider
+        /// and no user config can produce. Asserting on a real name — this test
+        /// asserted `"versa_azure"` — makes the test environment-dependent in
+        /// the direction that makes it vacuous: delete the inherit rung and rung
+        /// 3 runs `Config::global()`, which on the machine this was written on
+        /// *is* `versa_azure` with live credentials, so the test would have gone
+        /// green with the fix removed. (Measured: with the rung deleted the test
+        /// does not fail, it blocks in `create_provider` on the developer's
+        /// credential store.) A fabricated name can only have come from rung 2.
+        #[tokio::test]
+        async fn an_unpinned_worker_profile_inherits_the_main_agents_provider() {
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+
+            // The app itself, on a private model. Wrapped because DR-21 (Task 41)
+            // made `AppProvider` the only provider type the app runtime passes
+            // around — the newtype is what makes a fourth, unguarded bind site a
+            // compile error rather than a review miss.
+            let main_provider = super::super::app_provider_bind::adopt_for_test(tiered(
+                "task24-app-model",
+                ProviderTier::Private,
+            ));
+
+            // A worker profile with no `model` of its own.
+            let worker_agent = agent_over(session_manager.clone(), dir.path());
+            let worker_session = session_manager
+                .create_session(
+                    dir.path().to_path_buf(),
+                    "app:task24app:researcher".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+
+            configure_worker_provider(
+                &worker_agent,
+                &worker_session.id,
+                &manifest(),
+                "researcher",
+                &AgentConfig::default(),
+                Some(&main_provider),
+            )
+            .await
+            .expect("inheriting the app's model into a fresh worker session is not a raise");
+
+            assert_eq!(
+                worker_agent.provider().await.unwrap().get_name(),
+                "task24-app-model"
+            );
+        }
+
+        /// Step 3(d)'s closing instruction. `ClientFrame::ModelSelect` needs no
+        /// new code, because its bind goes through `Agent::update_provider` and
+        /// Gate A lives inside that call — "lock it in with a test rather than
+        /// adding one".
+        ///
+        /// It is the binding path where that matters most. `GET
+        /// /apps/{id}/agent` is exempt from secret-key auth (`auth.rs`
+        /// `is_public_app_get` matches the tail `["agent"]`), so a `ModelSelect`
+        /// frame arrives over an UNAUTHENTICATED socket and the bind gate is the
+        /// only thing standing between it and a provider swap on a private app
+        /// session. There is no route check to fall back on.
+        ///
+        /// Both halves are pinned, because a regression can satisfy either one
+        /// alone:
+        ///
+        /// 1. the arm really does bind through the guarded helper, which reaches
+        ///    `Agent::update_provider` and therefore Gate A. Gate B''s doc
+        ///    comment in `agent.rs` notes that `SharedProvider` is a clonable
+        ///    `Arc<Mutex<_>>` and that three production sites hold one and go
+        ///    straight to the binding; a refactor moving `ModelSelect` onto one
+        ///    of those would reopen the hole with every other test still green.
+        /// 2. that call really does refuse a public provider on a private row.
+        #[tokio::test]
+        async fn a_model_select_frame_cannot_move_a_private_app_session_to_a_public_model() {
+            // (1) The arm binds through the gate. Read off this file's own
+            // source: the property is structural — "this path goes through that
+            // call" — and the socket it lives on cannot be driven from a unit
+            // test without a live provider and a browser.
+            //
+            // The needle is split so it does not appear contiguously in this
+            // test's own text; otherwise deleting the real arm would leave
+            // `split_once` matching here instead.
+            let src = include_str!("apps.rs");
+            let needle = concat!("ClientFrame::ModelSel", "ect { provider, model } => {");
+            let arm = code_only(
+                src.split_once(needle)
+                    .expect("the ModelSelect arm still exists")
+                    .1
+                    .split_once("\n            ClientFrame::")
+                    .expect("...and is still followed by another frame arm")
+                    .0,
+            );
+            assert!(
+                arm.contains("bind_app_provider("),
+                "ModelSelect must bind through `app_provider_bind::bind_app_provider` — that is \
+                 the only path in this file to `Agent::update_provider`, which IS Gate A, and \
+                 this socket is exempt from secret-key auth, so nothing else guards it. The arm \
+                 reads:\n{arm}"
+            );
+
+            // (2) That call refuses a public provider on a private row.
+            let dir = tempfile::TempDir::new().unwrap();
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_manager
+                .create_session(
+                    dir.path().to_path_buf(),
+                    "app".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+            agent
+                .update_provider(tiered("task24-private", ProviderTier::Private), &session.id)
+                .await
+                .unwrap();
+            session_manager
+                .update(&session.id)
+                .raise_privacy(SessionClassification::Private, "turn:task24-private")
+                .apply()
+                .await
+                .unwrap();
+
+            // Exactly what the arm does with the frame's provider, and it is the
+            // `is_ok()` the arm reports back as `{"type":"model","ok":…}`.
+            let ok = agent
+                .update_provider(tiered("task24-public", ProviderTier::Public), &session.id)
+                .await
+                .is_ok();
+            assert!(
+                !ok,
+                "an unauthenticated ModelSelect must not move a private app session to a public model"
+            );
+            let row = session_manager
+                .get_session(&session.id, false)
+                .await
+                .unwrap();
+            assert_eq!(row.provider_name.as_deref(), Some("task24-private"));
+        }
+    }
+
+    // ── Issue #56, Task 41: DR-21, an app session's tier is fixed at creation ──
+
+    /// DR-21 answered open question 25/26: **an app session's capability tier is
+    /// decided at session creation and cannot be changed** by a later manifest
+    /// edit, a reconnect, or a client frame. A manifest naming a *more private*
+    /// provider than the session already carries is refused, not silently
+    /// honoured and not silently ignored.
+    ///
+    /// Three sites bind a provider to an app session in-process, never through
+    /// `POST /agent/update_provider` and so never past Task 18A's `X-User-Action`
+    /// guard. Each gets its own test, deliberately **not** one test parametrised
+    /// over a single code path: the point is that three separate call sites are
+    /// covered, and a parametrised test over the shared helper would pass with
+    /// two of them still unguarded.
+    ///
+    /// | Site | Reaches |
+    /// |---|---|
+    /// | `configure_main_provider` | the app's long-lived **main** session |
+    /// | `configure_worker_provider` | a per-profile **worker** session |
+    /// | `ClientFrame::ModelSelect` | the main session, over an **unauthenticated** route |
+    ///
+    /// The env lock is the same one `privacy_capability` uses and for the same
+    /// reason: `ollama` is Private on a loopback host and Public off it, so the
+    /// PROVIDER NAME is identical in every row and only the host moves — an
+    /// implementation keyed on the provider name gives the same answer twice.
+    /// `BIOROUTER_PROVIDER` names a provider that cannot be created, so
+    /// `configure_main_provider`'s global fallback is deterministic instead of
+    /// binding whatever the developer has configured.
+    mod privacy_dr21 {
+        use super::super::app_provider_bind;
+        use super::super::{
+            apply_route_for_turn, configure_agent, configure_main_provider, configure_worker_agent,
+            configure_worker_provider,
+        };
+        use super::privacy_capability::{lock_env_for, PRIVATE_HOST, PUBLIC_HOST};
+        use super::privacy_task24::{agent_over, code_only, drain, tiered};
+        use biorouter::privacy::{ProviderTier, SessionClassification};
+        use biorouter::session::session_manager::SessionType;
+        use biorouter::session::SessionManager;
+        use biorouter_mcp::agent_drafter::control::UiBridge;
+        use biorouter_mcp::agent_drafter::manifest::{ModelRoute, Orchestration};
+        use biorouter_mcp::agent_drafter::store::{
+            AgentConfig, ArtifactKind, Manifest, ModelSelection,
+        };
+        use std::sync::Arc;
+
+        fn ollama(model: &str) -> Option<ModelSelection> {
+            Some(ModelSelection {
+                provider: Some("ollama".to_string()),
+                model: Some(model.to_string()),
+                settings: None,
+            })
+        }
+
+        fn model_config(model: &str) -> biorouter::model::ModelConfig {
+            biorouter::model::ModelConfig::new(model).unwrap()
+        }
+
+        fn manifest_with_model(model: Option<ModelSelection>) -> Manifest {
+            Manifest {
+                id: "dr21app".to_string(),
+                title: "DR-21 App".to_string(),
+                description: String::new(),
+                kind: ArtifactKind::Agentic,
+                entry: "index.html".to_string(),
+                created_at: 0,
+                updated_at: 0,
+                agent: Some(AgentConfig {
+                    model,
+                    ..Default::default()
+                }),
+                width: None,
+                height: None,
+                built_at: None,
+                sdk_hash: None,
+                session_id: None,
+                surface: Default::default(),
+                theme: Default::default(),
+            }
+        }
+
+        async fn session_over(
+            session_manager: &Arc<SessionManager>,
+            dir: &std::path::Path,
+            name: &str,
+        ) -> String {
+            session_manager
+                .create_session(dir.to_path_buf(), name.to_string(), SessionType::User)
+                .await
+                .unwrap()
+                .id
+        }
+
+        /// Site 1. `configure_main_provider` reads `cfg.model` out of the
+        /// manifest, which `agent_drafter__declare_profiles` writes from tool
+        /// arguments — so a **Public** model authors the value this binds.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn configure_main_provider_cannot_raise_a_live_app_sessions_capability() {
+            // Warm the process-global `SessionManager` against the REAL path root
+            // BEFORE the env lock relocates it — otherwise this test could be the
+            // one that creates the session database inside a `TempDir` that is
+            // then unlinked, breaking every sibling test in the binary.
+            let _warm = crate::state::AppState::new().await.unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(dir.path(), PRIVATE_HOST);
+
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_over(&session_manager, dir.path(), "dr21-main").await;
+
+            // A LIVE app session, already running on a PUBLIC model. "Live" is the
+            // whole point: DR-21 fixes the tier a session was CREATED with, and
+            // this session was created public.
+            agent
+                .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                .await
+                .unwrap();
+
+            let manifest = manifest_with_model(ollama("qwen3.5:4b"));
+            let cfg = manifest.agent.clone().unwrap();
+            let outcome = configure_main_provider(&agent, &session, &manifest, &cfg).await;
+
+            // Refused, and REPORTED. An implementation that quietly kept the old
+            // provider — or quietly fell through to the global default — passes
+            // every assertion below, and that silence is the failure mode this
+            // campaign has found four times.
+            let refusal = outcome.expect_err("a refused bind must reach the caller as an error");
+            assert!(
+                refusal.to_string().contains("ollama"),
+                "the refusal names what the caller asked for: {refusal}"
+            );
+
+            assert_eq!(
+                agent
+                    .provider()
+                    .await
+                    .map(|p| p.get_name().to_string())
+                    .ok(),
+                Some("anthropic".to_string()),
+                "an agent-authored manifest raised a live public app session onto a private model"
+            );
+            let row = session_manager.get_session(&session, false).await.unwrap();
+            assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+            assert_eq!(
+                row.privacy_tier,
+                SessionClassification::Public,
+                "no path may leave this session private-capable"
+            );
+        }
+
+        /// Site 2. A worker profile's own `model` pin comes from the same
+        /// agent-writable manifest, and reaches a *different* session (each
+        /// profile gets its own, keyed `app:<id>:<client>:<profile>`).
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn configure_worker_provider_cannot_raise_a_live_worker_sessions_capability() {
+            let _warm = crate::state::AppState::new().await.unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(dir.path(), PRIVATE_HOST);
+
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_over(&session_manager, dir.path(), "dr21-worker").await;
+
+            agent
+                .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                .await
+                .unwrap();
+
+            // No sensitive data source, so §3.7's `admits` check passes and the
+            // ONLY thing that can refuse this bind is DR-21.
+            let manifest = manifest_with_model(None);
+            let profile = AgentConfig {
+                model: ollama("qwen3.5:4b"),
+                ..Default::default()
+            };
+            let outcome = configure_worker_provider(
+                &agent,
+                &session,
+                &manifest,
+                "researcher",
+                &profile,
+                None,
+            )
+            .await;
+
+            // Refused, and REPORTED — and the refusal must stop the rung chain
+            // rather than quietly dropping to the app's provider or the global
+            // default, which would look identical from the row alone.
+            let refusal = outcome.expect_err("a refused worker bind must reach the caller");
+            assert!(refusal.to_string().contains("ollama"), "{refusal}");
+
+            assert_eq!(
+                agent
+                    .provider()
+                    .await
+                    .map(|p| p.get_name().to_string())
+                    .ok(),
+                Some("anthropic".to_string()),
+                "an agent-authored worker profile raised a live public worker session onto a \
+                 private model"
+            );
+            let row = session_manager.get_session(&session, false).await.unwrap();
+            assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+            assert_eq!(row.privacy_tier, SessionClassification::Public);
+        }
+
+        /// Site 3, and the sharpest of the three. `ClientFrame::ModelSelect`
+        /// arrives on `GET /apps/{id}/agent`, which `is_public_app_get` exempts
+        /// from secret-key auth entirely — so the guarded bind is the *only*
+        /// thing standing between an agent-authored page and a private bind.
+        ///
+        /// Both halves are pinned, because a regression can satisfy either one
+        /// alone:
+        ///
+        /// 1. the arm really does bind through the guarded helper. The property
+        ///    is structural ("this path goes through that call") and the socket
+        ///    it lives on cannot be driven from a unit test without a live
+        ///    provider and a browser, so it is read off this file's own source —
+        ///    the technique the sibling
+        ///    `a_model_select_frame_cannot_move_a_private_app_session_to_a_public_model`
+        ///    uses for the opposite direction.
+        /// 2. that helper really does refuse a raise on a live app session.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_model_select_frame_cannot_raise_a_live_app_sessions_capability() {
+            // (1) The needle is split so it does not appear contiguously in this
+            // test's own text; otherwise deleting the real arm would leave
+            // `split_once` matching here instead.
+            let src = include_str!("apps.rs");
+            let needle = concat!("ClientFrame::ModelSel", "ect { provider, model } => {");
+            let arm = code_only(
+                src.split_once(needle)
+                    .expect("the ModelSelect arm still exists")
+                    .1
+                    .split_once("\n            ClientFrame::")
+                    .expect("...and is still followed by another frame arm")
+                    .0,
+            );
+            assert!(
+                arm.contains("bind_app_provider("),
+                "ModelSelect must bind through the DR-21-guarded helper: this socket is exempt \
+                 from secret-key auth, so a bare `update_provider` here is an unauthenticated \
+                 capability raise. The arm reads:\n{arm}"
+            );
+            // The FOURTH emission site. The other three are driven end-to-end by
+            // the frame tests below; this arm's frame is assembled inside the
+            // socket loop, which a unit test cannot drive without a live
+            // provider and a browser — so its "refused, not ignored" half is
+            // read off the source alongside the bind. `ok:false` on its own
+            // reads to the page as an unavailable model, which invites exactly
+            // the retry DR-21's wording exists to stop.
+            assert!(
+                arm.contains("frame[\"error\"]"),
+                "a refused ModelSelect must carry the refusal, not a bare `ok:false`. The arm \
+                 reads:\n{arm}"
+            );
+
+            // (2) …and that helper refuses the raise. Exactly what the arm does
+            // with the frame's provider, and it is the `ok` it reports back as
+            // `{"type":"model","ok":…}`.
+            let _warm = crate::state::AppState::new().await.unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(dir.path(), PRIVATE_HOST);
+
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_over(&session_manager, dir.path(), "dr21-modelselect").await;
+            agent
+                .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                .await
+                .unwrap();
+
+            let provider =
+                super::super::app_provider_bind::app_provider("ollama", model_config("qwen3.5:4b"))
+                    .await
+                    .expect("the frame's provider is constructible");
+            assert!(provider.tier().is_private(), "the fixture must be a raise");
+            let refused =
+                super::super::app_provider_bind::bind_app_provider(&agent, &session, provider)
+                    .await
+                    .expect_err("an unauthenticated frame must not raise a live app session");
+            // Refused, not ignored: the arm forwards this string to the page, so
+            // a refusal cannot read as "that model is unavailable".
+            assert!(refused.to_string().contains("ollama"), "{refused}");
+
+            assert_eq!(
+                agent
+                    .provider()
+                    .await
+                    .map(|p| p.get_name().to_string())
+                    .ok(),
+                Some("anthropic".to_string())
+            );
+            let row = session_manager.get_session(&session, false).await.unwrap();
+            assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+            assert_eq!(row.privacy_tier, SessionClassification::Public);
+        }
+
+        /// **Anti-vacuity.** Without this, an implementation that refuses every
+        /// app bind passes all three tests above and ships an app platform that
+        /// cannot use a local model at all.
+        ///
+        /// A session that carries no capability yet is being *created*, not
+        /// changed — so the manifest's private model binds, and that is the one
+        /// moment DR-21 leaves open.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn an_app_session_created_on_a_private_model_really_gets_it() {
+            let _warm = crate::state::AppState::new().await.unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(dir.path(), PRIVATE_HOST);
+
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+            let session = session_over(&session_manager, dir.path(), "dr21-fresh").await;
+
+            // Nothing bound and nothing on the row: this IS creation.
+            let manifest = manifest_with_model(ollama("qwen3.5:4b"));
+            let cfg = manifest.agent.clone().unwrap();
+            configure_main_provider(&agent, &session, &manifest, &cfg)
+                .await
+                .expect("a bind at session creation is not a raise and must succeed");
+
+            let bound = agent.provider().await.expect("the manifest's model bound");
+            assert_eq!(bound.get_name(), "ollama");
+            assert!(
+                bound.tier().is_private(),
+                "an app created on a local model must actually get it"
+            );
+            assert_eq!(
+                session_manager
+                    .get_session(&session, false)
+                    .await
+                    .unwrap()
+                    .provider_name
+                    .as_deref(),
+                Some("ollama")
+            );
+        }
+
+        /// **The row read, and the pair of rows is the point.**
+        ///
+        /// Every test above holds a LIVE binding, so each one stops at
+        /// `established_capability`'s first line and none of them ever reaches
+        /// the session row below it. That branch is not an edge case: an app
+        /// agent is rebuilt with **nothing bound** on every daemon restart and
+        /// on every LRU eviction, and `AgentManager::default_provider` has no
+        /// production setter at all — so after a restart the row read is the
+        /// *dominant* path, and deleting it makes "wait for a restart, then
+        /// reconnect" a working escalation. That is DR-22's own *"only on
+        /// restart is not a control"* reasoning, applied to this gate.
+        ///
+        /// `ollama` is the fixture because it is the one provider where the
+        /// NAME and the INSTANCE disagree: its registry entry is
+        /// `.with_tier(ProviderTier::Private)` unconditionally, while
+        /// `Provider::tier()` on a constructed instance reads the resolved base
+        /// URL. So the provider name is identical in both rows and only the host
+        /// moves:
+        ///
+        /// | Host | The session was created… | …so a later private bind is |
+        /// |---|---|---|
+        /// | loopback | private-capable | allowed — a rebind, not a raise |
+        /// | remote | public-capable | **refused** — exactly DR-21's raise |
+        ///
+        /// Each wrong implementation fails a different row. A **name-keyed** row
+        /// read answers Private twice and admits row 2's raise. A row read that
+        /// always answers Public refuses row 1 and strands every private app on
+        /// every restart. A **deleted** row read fails both. Only asking the
+        /// constructed instance passes both.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_restart_reads_the_rows_capability_off_the_instance_not_the_name() {
+            for (host, created_private) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+                let session = session_over(&session_manager, dir.path(), "dr21-restart").await;
+
+                // The session is CREATED on `ollama` — the one moment DR-21
+                // leaves open. The agent that did it is then dropped, which is
+                // what a restart or an eviction does.
+                {
+                    let creating = agent_over(session_manager.clone(), dir.path());
+                    let p = app_provider_bind::app_provider("ollama", model_config("qwen3.5:4b"))
+                        .await
+                        .expect("the fixture provider is constructible");
+                    assert_eq!(
+                        p.tier().is_private(),
+                        created_private,
+                        "fixture: `ollama` on {host} must be {} — if both rows agree, this test \
+                         cannot tell a name-keyed read from an instance-keyed one",
+                        if created_private { "private" } else { "public" }
+                    );
+                    app_provider_bind::bind_app_provider(&creating, &session, p)
+                        .await
+                        .map_err(|e| e.to_string())
+                        .expect("a bind at session creation is not a raise");
+                }
+
+                // …and this is the app coming back afterwards.
+                let restarted = agent_over(session_manager.clone(), dir.path());
+                assert!(
+                    restarted.provider().await.is_err(),
+                    "the fixture must have NOTHING live to read, or the row branch never runs"
+                );
+
+                let outcome = app_provider_bind::bind_app_provider(
+                    &restarted,
+                    &session,
+                    app_provider_bind::adopt_for_test(tiered("llamacpp", ProviderTier::Private)),
+                )
+                .await;
+                let row = session_manager.get_session(&session, false).await.unwrap();
+
+                if created_private {
+                    outcome.map_err(|e| e.to_string()).expect(
+                        "an app CREATED on a private model must be able to come back to one after \
+                         a restart — refusing here strands every private app on every restart",
+                    );
+                    assert_eq!(row.provider_name.as_deref(), Some("llamacpp"));
+                } else {
+                    let refusal = outcome.err().unwrap_or_else(|| {
+                        panic!(
+                            "a restart is not a way to raise a session created on a REMOTE \
+                             `ollama`: its registry entry says Private, its instance says Public, \
+                             and the session only ever carried Public"
+                        )
+                    });
+                    assert!(
+                        matches!(refusal, app_provider_bind::AppBindError::TierFixed(_)),
+                        "and it is DR-21's refusal, not an incidental bind failure: {refusal}"
+                    );
+                    assert!(refusal.to_string().contains("llamacpp"), "{refusal}");
+                    assert_eq!(
+                        row.provider_name.as_deref(),
+                        Some("ollama"),
+                        "the refused bind must not have been persisted"
+                    );
+                    assert_eq!(row.privacy_tier, SessionClassification::Public);
+                }
+            }
+        }
+
+        /// The fail-safe arm of the same read: a row that cannot be read **at
+        /// all** reports Public, so an error refuses a raise rather than
+        /// granting one.
+        ///
+        /// It must refuse as DR-21 and not merely fail later inside the bind:
+        /// an implementation that returns `None` here reaches `raw_bind`, whose
+        /// own "no such session" error is an `AppBindError::Failed` — which the
+        /// callers treat as *"try the next rung"* rather than *"stop"*.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_session_row_that_cannot_be_read_at_all_refuses_the_raise() {
+            let _warm = crate::state::AppState::new().await.unwrap();
+            let dir = tempfile::TempDir::new().unwrap();
+            let _env = lock_env_for(dir.path(), PRIVATE_HOST);
+
+            let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+            let agent = agent_over(session_manager.clone(), dir.path());
+
+            // Nothing bound, and no row under this id at all.
+            let outcome = app_provider_bind::bind_app_provider(
+                &agent,
+                "dr21-no-such-session",
+                app_provider_bind::adopt_for_test(tiered("llamacpp", ProviderTier::Private)),
+            )
+            .await;
+
+            let refusal = outcome.expect_err("an unreadable row must not grant a capability");
+            assert!(
+                matches!(refusal, app_provider_bind::AppBindError::TierFixed(_)),
+                "the fail-safe direction is DR-21's refusal, which stops the caller's rung chain; \
+                 a plain failure does not: {refusal}"
+            );
+        }
+
+        /// **Step 2's residual, held by the only mechanism that can hold it.**
+        ///
+        /// Three of Step 2's four barriers really are compile errors, and they
+        /// are the ones that matter to an author *reusing* what this file already
+        /// has: [`app_provider_bind::raw_bind`] is private (`E0603`),
+        /// `AppProvider` keeps its handle in a private field (`E0616`), and the
+        /// `Provider` trait is not imported at file scope, so even naming the
+        /// argument type is `E0405`. Every provider-typed parameter in the app
+        /// runtime is an `AppProvider`, so no value already in hand can be
+        /// unwrapped and bound.
+        ///
+        /// The fourth is softer than the commit that introduced it claimed.
+        /// `biorouter::providers::create` is a `pub` item of another crate, so
+        /// moving its import inside the module makes a bare `create(..)` an
+        /// `E0425` only until someone writes one `use` line — and
+        /// `Agent::update_provider` is a `pub` method of a foreign type, which
+        /// nothing arranged inside this file can make unreachable. A determined
+        /// author can still write a fourth bind site that compiles.
+        ///
+        /// So the line is held here. This is weaker than `E0603` and stronger
+        /// than the comment Step 2 rules out: a new bind site does not have to be
+        /// noticed in review, it fails a test that names what to do about it.
+        #[test]
+        fn apps_rs_names_the_raw_bind_exactly_once_outside_its_tests() {
+            let src = include_str!("apps.rs");
+            // Comments stripped: the prose above `app_provider_bind` names this
+            // very call, and counting it would make the assertion about the
+            // documentation rather than about the code.
+            let production = code_only(
+                src.split_once(concat!("\n#[cfg(te", "st)]\nmod tests {"))
+                    .expect("this file still has a test half to exclude")
+                    .0,
+            );
+            let sites: Vec<&str> = production
+                .lines()
+                .filter(|line| line.contains(".update_provider("))
+                .collect();
+            assert_eq!(
+                sites.len(),
+                1,
+                "`Agent::update_provider` must be named exactly ONCE in this file's production \
+                 code — inside the private `app_provider_bind::raw_bind`, which is what makes \
+                 every other path to it an E0603. A second occurrence is an app bind that skips \
+                 DR-21 entirely: route it through `app_provider_bind::bind_app_provider` instead. \
+                 Found:\n{sites:#?}"
+            );
+
+            // …and the one that remains is that private helper, rather than
+            // something new that merely happens to be the only one left.
+            let raw_bind = production
+                .split_once("    async fn raw_bind(")
+                .expect("`raw_bind` still exists")
+                .1
+                .split_once("\n    }")
+                .expect("...and still ends")
+                .0;
+            assert!(
+                raw_bind.contains(".update_provider("),
+                "the surviving call must be `raw_bind`'s own: {raw_bind}"
+            );
+        }
+
+        // ── "Refused, not ignored" — at the frame, not only at the `Result` ──
+        //
+        // The three tests above stop at the Rust `Result`. That is half of case
+        // 3: the caller RECEIVES the refusal there, but nothing yet pins that it
+        // SURFACES it. Delete all four `emit_frame` calls and every one of those
+        // tests still passes, while the page sees a model that silently never
+        // changed — which is the failure mode this campaign has found four
+        // times, one layer out.
+
+        /// A phrase unique to [`PrivacyRefusal::AppSessionTierFixed`]. Asserting
+        /// on it is what keeps these rows from being satisfied by *"that model
+        /// is unavailable"*, by a bad-route frame, or by Gate A's own refusal —
+        /// all of which are also `ok:false` on a `model` frame.
+        const DR21_PHRASE: &str = "no manifest field, frame or setting";
+
+        /// An `AppState`, a fresh session and its agent — what `configure_agent`
+        /// and `configure_worker_agent` need. The knowledge root is empty on
+        /// purpose: these rows are about the model frame, not a KB grant.
+        async fn state_session_agent(
+            dir: &std::path::Path,
+            name: &str,
+        ) -> (
+            Arc<crate::state::AppState>,
+            String,
+            Arc<biorouter::agents::Agent>,
+        ) {
+            let state = crate::state::AppState::new_with_knowledge_root(
+                dir.join("config").join("knowledge"),
+            )
+            .await
+            .unwrap();
+            let session = state
+                .session_manager()
+                .create_session(dir.to_path_buf(), name.to_string(), SessionType::User)
+                .await
+                .unwrap();
+            let agent = state.get_agent(session.id.clone()).await.unwrap();
+            (state, session.id, agent)
+        }
+
+        /// The `model` frame the page received, if any.
+        fn model_frame(frames: &[serde_json::Value]) -> Option<&serde_json::Value> {
+            frames.iter().find(|f| f["type"] == "model")
+        }
+
+        /// DR-21's refusal on a `model` frame, or a panic naming what arrived
+        /// instead. Deleting the `emit_frame` call this reads leaves nothing on
+        /// the bridge at all, which is the point.
+        fn refusal_frame(frames: &[serde_json::Value]) -> &serde_json::Value {
+            let frame = model_frame(frames)
+                .unwrap_or_else(|| panic!("the page must be told, on a model frame: {frames:?}"));
+            assert_eq!(frame["ok"].as_bool(), Some(false), "{frame}");
+            assert!(
+                frame["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains(DR21_PHRASE)),
+                "the frame must carry DR-21's own refusal, not a generic failure — \"unavailable\" \
+                 invites the retry this refusal exists to stop: {frame}"
+            );
+            frame
+        }
+
+        /// Site 1's refusal, as the page sees it. `configure_agent` is where the
+        /// `Result` becomes a frame, so an app whose manifest was edited to name
+        /// a more private model finds out it is still on the model it was created
+        /// with — instead of silently believing otherwise.
+        ///
+        /// Both hosts, because the frame must be a consequence of the refusal
+        /// and not of running at all: on the public host the very same manifest
+        /// is a legal bind and the page must get **no** error frame.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_refused_main_bind_reaches_the_page_as_a_model_error_frame() {
+            for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let (state, session, agent) =
+                    state_session_agent(dir.path(), "dr21-main-frame").await;
+                agent
+                    .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                    .await
+                    .unwrap();
+
+                let manifest = manifest_with_model(ollama("qwen3.5:4b"));
+                let bridge = UiBridge::new();
+                let (mut rx, _token) = bridge.attach();
+                let _report =
+                    configure_agent(&agent, &state, &session, &manifest, &bridge, false).await;
+
+                let frames = drain(&mut rx);
+                let bound = agent
+                    .provider()
+                    .await
+                    .map(|p| p.get_name().to_string())
+                    .ok();
+                if refused {
+                    refusal_frame(&frames);
+                    assert_eq!(
+                        bound,
+                        Some("anthropic".to_string()),
+                        "and the session really did not move"
+                    );
+                } else {
+                    assert!(
+                        model_frame(&frames).is_none(),
+                        "a legal bind must not report an error: {frames:?}"
+                    );
+                    assert_eq!(
+                        bound,
+                        Some("ollama".to_string()),
+                        "…and must actually happen"
+                    );
+                }
+            }
+        }
+
+        /// Site 2's refusal, on the MAIN bridge and stamped with the profile — a
+        /// worker has no page of its own, so an unstamped frame would read as the
+        /// app itself being refused.
+        ///
+        /// The main agent and session stand in for the worker's own pair (in
+        /// production `build_worker` mints one per profile); what this row pins
+        /// is the frame, and the refusal fires for the same reason either way.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_refused_worker_bind_reaches_the_page_stamped_with_the_profile() {
+            for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let (state, session, agent) =
+                    state_session_agent(dir.path(), "dr21-worker-frame").await;
+                agent
+                    .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                    .await
+                    .unwrap();
+
+                let manifest = manifest_with_model(None);
+                let profile = AgentConfig {
+                    model: ollama("qwen3.5:4b"),
+                    ..Default::default()
+                };
+                let bridge = UiBridge::new();
+                let (mut rx, _token) = bridge.attach();
+                configure_worker_agent(
+                    &agent,
+                    &state,
+                    &session,
+                    &manifest,
+                    "researcher",
+                    &profile,
+                    &bridge,
+                    None,
+                )
+                .await;
+
+                let frames = drain(&mut rx);
+                if refused {
+                    let frame = refusal_frame(&frames);
+                    assert_eq!(
+                        frame["agent"].as_str(),
+                        Some("researcher"),
+                        "an unstamped worker refusal reads as the app's own: {frame}"
+                    );
+                } else {
+                    assert!(
+                        model_frame(&frames).is_none(),
+                        "a legal worker bind must not report an error: {frames:?}"
+                    );
+                }
+            }
+        }
+
+        /// The **fourth** site, which Task 41's table does not list and which the
+        /// implementation guarded anyway: a manifest `orchestration.route` pin is
+        /// the same agent-authored channel as `cfg.model`, and once
+        /// `app_provider_bind` is the only path to the bind, carving out an
+        /// unguarded exception for it would reopen the channel by hand.
+        ///
+        /// It is also a behaviour change — a route pin that raises is now refused
+        /// rather than bound — so it gets a gate rather than an argument.
+        ///
+        /// The app holds no sensitive data source, so §3.7's own `ok:false`
+        /// cannot be what produces the refused frame; and `resolve_route`,
+        /// `ModelConfig::new` and `app_provider` all succeed on both rows, so
+        /// DR-21 is the only remaining source of a refusal. The public row is
+        /// what keeps routing usable: the same pin, on a host where it is not a
+        /// raise, still binds and still reports `ok:true`.
+        #[tokio::test]
+        #[serial_test::serial]
+        async fn a_manifest_route_pin_cannot_raise_a_live_app_session_and_says_so() {
+            for (host, refused) in [(PRIVATE_HOST, true), (PUBLIC_HOST, false)] {
+                let _warm = crate::state::AppState::new().await.unwrap();
+                let dir = tempfile::TempDir::new().unwrap();
+                let _env = lock_env_for(dir.path(), host);
+
+                let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+                let agent = agent_over(session_manager.clone(), dir.path());
+                let session = session_over(&session_manager, dir.path(), "dr21-route").await;
+                agent
+                    .update_provider(tiered("anthropic", ProviderTier::Public), &session)
+                    .await
+                    .unwrap();
+
+                let mut routes = std::collections::HashMap::new();
+                routes.insert(
+                    "deep".to_string(),
+                    ModelRoute {
+                        provider: Some("ollama".to_string()),
+                        model: Some("qwen3.5:4b".to_string()),
+                    },
+                );
+                let cfg = AgentConfig {
+                    orchestration: Orchestration {
+                        routes,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                };
+
+                let bridge = UiBridge::new();
+                let (mut rx, _token) = bridge.attach();
+                let prev = apply_route_for_turn(&agent, &session, &cfg, "deep", &bridge).await;
+                let frames = drain(&mut rx);
+                let row = session_manager.get_session(&session, false).await.unwrap();
+
+                if refused {
+                    assert!(
+                        prev.is_none(),
+                        "a route that never bound has nothing to restore, and a `prev` here would \
+                         make the caller restore a provider the turn never displaced"
+                    );
+                    let frame = refusal_frame(&frames);
+                    assert_eq!(frame["route"].as_str(), Some("deep"), "{frame}");
+                    assert_eq!(
+                        agent
+                            .provider()
+                            .await
+                            .map(|p| p.get_name().to_string())
+                            .ok(),
+                        Some("anthropic".to_string())
+                    );
+                    assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+                    assert_eq!(row.privacy_tier, SessionClassification::Public);
+                } else {
+                    assert!(
+                        prev.is_some(),
+                        "a route that DID bind must hand back what it displaced, or the session \
+                         never comes off the route"
+                    );
+                    let frame = model_frame(&frames)
+                        .unwrap_or_else(|| panic!("a bound route reports itself: {frames:?}"));
+                    assert_eq!(frame["ok"].as_bool(), Some(true), "{frame}");
+                    assert_eq!(row.provider_name.as_deref(), Some("ollama"));
+                }
+            }
         }
     }
 }

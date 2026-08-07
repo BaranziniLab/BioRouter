@@ -124,6 +124,35 @@ export type AddExtensionRequest = {
     session_id: string;
 };
 
+/**
+ * One institution, as a surface that has to *print* it needs it (issue #56,
+ * DR-26).
+ *
+ * Both halves travel, and neither is derivable from the other. The `id` is the
+ * normalised slug — what `registry.json` publishes, what `baam.html`'s
+ * `data-affiliation` carries, what every cross-affiliation warning prints and
+ * what a user quotes in a support conversation. The `display_name` is what the
+ * registry publishes for it, and is **absent** for an institution the registry
+ * does not know.
+ *
+ * ⚠ **An absent display name is not an error and must never render as
+ * nothing.** Task 47 rules that an affiliation naming an unpublished
+ * institution is a *mismatch* whose raw id is surfaced; dropping the row
+ * because it has no pretty name would make a real constraint disappear from the
+ * one surface a user can see it on. This mirrors `privacy::affiliation::label`,
+ * which falls back to the bare id for exactly that reason.
+ */
+export type AffiliationInstitution = {
+    /**
+     * The registry's published display name (`UCSF`), or `None`.
+     */
+    display_name?: string | null;
+    /**
+     * The normalised slug (`ucsf`).
+     */
+    id: string;
+};
+
 export type AgentInitializationError = {
     code: string;
     message: string;
@@ -349,6 +378,37 @@ export type CredibilityResponse = {
 export type CredibilityTier = 'peer_reviewed' | 'preprint' | 'book' | 'gray_lit' | 'web' | 'personal';
 
 /**
+ * Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data
+ * flow.
+ *
+ * ⚠ **There is no `affiliation` field, and there must not be one.** The grant is
+ * keyed on the affiliation of the model bound *right now*, read by the daemon
+ * from the same sample that produced the warning. A client-supplied institution
+ * would let a caller record an acceptance for a triple the user was never shown
+ * — which is the one thing this control exists to prevent.
+ */
+export type CrossAffiliationGrantRequest = {
+    /**
+     * The extension whose cross-institutional flow the user accepted. Any
+     * spelling the UI holds; it is `name_to_key`-normalised on both sides.
+     */
+    extension: string;
+    session_id: string;
+};
+
+/**
+ * What was accepted, echoed back so the caller can record the exact sentence the
+ * user was shown rather than a paraphrase of it.
+ */
+export type CrossAffiliationGrantResponse = {
+    /**
+     * The full statement, including the scope of the approval
+     * (`privacy::grant::GRANT_SCOPE_COPY`).
+     */
+    accepted: string;
+};
+
+/**
  * Content Security Policy metadata for MCP Apps
  * Specifies allowed domains for network connections and resource loading
  */
@@ -410,6 +470,25 @@ export type DeclarativeProviderConfig = {
     name: string;
     supports_streaming?: boolean | null;
     timeout_seconds?: number | null;
+};
+
+export type DeclassifySessionRequest = {
+    /**
+     * The last six characters of the session id, as the user typed them.
+     *
+     * Required when the chat's provenance is anything other than `turn:*` —
+     * see `biorouter::privacy::declassify::requires_typed_confirmation`, which
+     * is where the grading lives. The daemon re-derives the grade from the
+     * STORED provenance rather than trusting the client to say which control it
+     * showed, so a caller cannot claim the single-click path for a chat that
+     * reached a private data source.
+     */
+    confirmation?: string | null;
+};
+
+export type DeclassifySessionResponse = {
+    privacyTier: SessionClassification;
+    sessionId: string;
 };
 
 export type DecodeWorkflowRequest = {
@@ -805,6 +884,68 @@ export type InterruptRequest = {
 
 export type JsonObject = {
     [key: string]: unknown;
+};
+
+/**
+ * One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier
+ * (issue #56).
+ *
+ * The tier is **flattened alongside** the manifest rather than added to it,
+ * because `manifest.yaml` is the on-disk record and the tier lives in
+ * `.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next
+ * `manifest::save` and become a second, staler answer to a question the tier
+ * store already answers — and it would also appear on `kb_list_bases`, a
+ * model-facing tool whose payload Task 10D's metadata register governs.
+ *
+ * This route is user-facing: the renderer is the only caller, and Task 10C
+ * already removes private bases from the model's own listing entirely.
+ */
+export type KbListEntry = Manifest & {
+    tier: KbTier;
+};
+
+/**
+ * A knowledge base's privacy tier (issue #56, design §9.3 B4).
+ *
+ * The stored form is the lowercase word in `.kb-tiers`, and it is the same
+ * vocabulary [`crate::knowledge::tier`] compares against — one spelling, so the
+ * enum and the store cannot drift.
+ *
+ * ⚠ **This is a USER-FACING type, not a model-facing one.** Task 10D's metadata
+ * register governs what a model may learn about a base; nothing here is added
+ * to a `#[tool]` response. It travels on the HTTP surface the renderer reads
+ * (`GET /knowledge/bases`, `GET|POST /knowledge/bases/{id}/tier`) and nowhere
+ * else — in particular it is deliberately NOT a field on [`Manifest`], because
+ * `manifest.yaml` is the on-disk record and a second copy of the tier there
+ * would be a second answer to the question `.kb-tiers` already answers.
+ *
+ * The `bool` in `tier.rs` is unchanged and stays: `biorouter-mcp` cannot depend
+ * on `biorouter`, where `ProviderTier` lives, and the ratchet's argument is the
+ * CALLER's capability rather than a base's tier.
+ */
+export type KbTier = 'public' | 'private';
+
+export type KbTierResponse = {
+    /**
+     * RFC 3339, and set exactly when `reason` is.
+     */
+    changed_at?: string | null;
+    id: string;
+    /**
+     * What a publicize would release, counted from the tree at read time — not
+     * from anything the renderer already had. The confirmation states the blast
+     * radius rather than asking "are you sure", so these are the numbers it
+     * says out loud.
+     */
+    page_count: number;
+    raw_source_count: number;
+    /**
+     * `publicized_by_user` / `privatized_by_user`, or absent for a base whose
+     * tier only the ratchet has ever touched. A base the user released must
+     * never be indistinguishable from one that was always public.
+     */
+    reason?: string | null;
+    tier: KbTier;
 };
 
 export type KillJobResponse = {
@@ -1497,9 +1638,116 @@ export type PricingResponse = {
 
 export type PrincipalType = 'Extension' | 'Tool';
 
+/**
+ * The body of the 409 `/agent/update_provider` returns when a privacy boundary
+ * refused the bind (issue #56, Gate A).
+ *
+ * Typed rather than a bare string because the GUI does not merely report the
+ * refusal — it renders §14.4's repair card from it, and the card names both
+ * colliding tiers and offers the private models that would work. A plain-text
+ * 409 would leave the renderer parsing prose.
+ */
+export type PrivacyBarrierBody = {
+    /**
+     * The names of the providers a private chat *can* be switched to, so the
+     * card can offer the way forward rather than only the wall.
+     */
+    available_private_providers: Array<string>;
+    /**
+     * Discriminator the client switches on. Always `privacy_barrier`.
+     */
+    code: string;
+    provider_tier: ProviderTier;
+    session_classification: SessionClassification;
+};
+
+/**
+ * What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).
+ *
+ * ⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI
+ * dialog, the settings panel, the provider grid, the model chip, the CLI,
+ * `docs/` and the landing site; four hand-written copies drift within one
+ * release and the drifted one is always the one a user reads. One definition
+ * lives in `biorouter::privacy::disclosure` and the renderer renders what it is
+ * handed — a hardcoded English string in a component is the failure this shape
+ * exists to prevent, and it is invisible until the two disagree.
+ */
+export type PrivacyDisclosureResponse = {
+    /**
+     * Has the user acknowledged on this install? Once per install, not once per
+     * session — a dialog on every chat is a dialog nobody reads.
+     */
+    acknowledged: boolean;
+    /**
+     * The long form: the blocking dialog and the settings panel.
+     */
+    long: string;
+    /**
+     * The one-line form: the model chip's tooltip and the provider grid's
+     * Commercial section.
+     */
+    short: string;
+    /**
+     * The dialog heading, with `{provider}` still in it — the renderer
+     * substitutes the display name of the provider it is warning about, and so
+     * never has to know the English around it.
+     */
+    title_template: string;
+};
+
 export type ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context';
 
+/**
+ * DR-26's third axis for one provider **instance**, in the shape a UI can
+ * render (issue #56).
+ *
+ * ⚠ **Resolved from the instance, never from a name.** [`Self::of`] is the only
+ * constructor a caller should reach for, and it reads
+ * [`Provider::tier`] and [`Provider::affiliation`] off one `&dyn Provider` —
+ * the same two instance methods every gate reads. A `versa_* => ucsf` table
+ * would keep claiming the institution for a Versa module repointed at another
+ * host, which `tier()` has already demoted to Public: a private-looking
+ * institution chip on a public flow. Both Versa providers derive `ucsf` from
+ * the same gateway-host check that decides their tier
+ * (`providers::ucsf_gateway_affiliation`), so a repointed instance loses
+ * Private and `ucsf` **together**, and this type is what carries that pairing
+ * out to the UI.
+ *
+ * ⚠ **`Option<ProviderAffiliation>::None` is "public — no affiliation at all",
+ * and it is a fourth state distinct from all three
+ * [`ProviderAffiliationKind`]s.** See [`Self::resolved`] for the table.
+ */
+export type ProviderAffiliation = {
+    /**
+     * The covering institutions, ascending by id. Non-empty exactly for
+     * [`ProviderAffiliationKind::Institutions`], and **never** empty there:
+     * `InstitutionSet` cannot be constructed empty, for the reason its own doc
+     * records (an empty model set is a subset of every allowlist and so reaches
+     * every private extension).
+     */
+    institutions?: Array<AffiliationInstitution>;
+    kind: ProviderAffiliationKind;
+};
+
+/**
+ * Which of DR-26's three model-side affiliations this is.
+ *
+ * ⚠ **There is no `Public` variant, and that is the whole shape of the type.**
+ * A public model's affiliation is not a value here, it is the *absence* of a
+ * [`ProviderAffiliation`] — `Option::None` — exactly as
+ * [`ModelAffiliation`] has no public variant. Giving "public" a seat would
+ * invite a renderer to draw a chip for it, and a chip that says "no
+ * institution" on a public model reads as a *constraint* on a model that has
+ * none of the private tier's protections at all.
+ *
+ * A closed enum rather than a free string so a renderer can switch on it
+ * totally: a fourth affiliation must be a compile error at the badge, not a
+ * silently-unhandled branch that renders as the safest-looking of the three.
+ */
+export type ProviderAffiliationKind = 'local' | 'institutions' | 'unstated';
+
 export type ProviderDetails = {
+    affiliation?: ProviderAffiliation | null;
     is_configured: boolean;
     metadata: ProviderMetadata;
     name: string;
@@ -1544,7 +1792,28 @@ export type ProviderMetadata = {
      * The unique identifier for this provider
      */
     name: string;
+    /**
+     * Whether this provider's inference runs on the user's own machine — a
+     * bundled or self-hosted server — rather than on a remote service.
+     *
+     * Display only: it is what splits the private tier into the settings
+     * grid's "Local Models" and "Institutional Models" sections. It is **not**
+     * the privacy tier, and neither field is derivable from the other: a
+     * self-hosted server pointed off the machine is still `runs_locally` by
+     * type and Public by instance.
+     */
+    runs_locally?: boolean;
+    tier?: ProviderTier;
 };
+
+/**
+ * CAPABILITY — the least-privileged model currently bound to a session.
+ *
+ * Deliberately **not** `Ord`: `max` over this type is always a bug. A mixed
+ * lead/worker composite is `least(lead, worker)`, so a private lead with a
+ * public worker has **public** reach.
+ */
+export type ProviderTier = 'public' | 'private';
 
 export type ProviderType = 'Preferred' | 'Builtin' | 'Declarative' | 'Custom';
 
@@ -1786,10 +2055,33 @@ export type ScheduleWorkflowRequest = {
 };
 
 export type ScheduledJob = {
+    /**
+     * Issue #56 (§9.3 C2). The chat this schedule was created from, when there
+     * was one — `/loop` and `/schedule` always have one; a workflow scheduled
+     * from the CLI or the schedules route does not.
+     *
+     * A scheduled run resolves its provider from THIS session's recorded
+     * `provider_name` before falling back to the global default (see
+     * [`resolve_scheduled_provider`]). Without it a job created from a chat on
+     * a private model silently runs on the user's commercial default — R5 —
+     * and, once the design's §6.3 rule that a `Scheduled` session inherits its
+     * creator's classification lands, Gate A would refuse the bind on every
+     * tick forever.
+     */
+    creator_session_id?: string | null;
     cron: string;
     current_session_id?: string | null;
     currently_running?: boolean;
     id: string;
+    /**
+     * The last run's failure, kept ON THE JOB so the schedules UI can show it.
+     *
+     * A cron tick that returns `Err` used to leave nothing behind but a log
+     * line, and a scheduled run mints a fresh session each time, so there was
+     * no surface anywhere that a repeating job had been failing since the day
+     * it was created. Cleared by the next successful run.
+     */
+    last_error?: string | null;
     last_run?: string | null;
     /**
      * Optional cap on total firings. When `Some(n)`, the job auto-pauses once
@@ -1843,8 +2135,23 @@ export type Session = {
      * Id of the parent session that spawned this one as a subagent (BR-71).
      * Sibling of `diverged_from` (branch lineage): `diverged_from` records a
      * user fork; this records a delegation. `None` for non-subagent sessions.
+     * It is also what the §7 capability matrix's `L` axis reads (issue #56).
      */
     parent_session_id?: string | null;
+    /**
+     * Audit and UX only — never read by a gate. One of `turn:<provider>`,
+     * `mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,
+     * `backfill:<provider>`, `declassified_by_user`. §12.4 grades the
+     * declassification confirmation on whether it has ever been `mcp:*`.
+     *
+     * It therefore holds the **dominant** provenance, not the first or the
+     * latest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`
+     * reason and lets nothing displace an `mcp:` reason. Freezing it on the
+     * first raise would answer "has it ever been `mcp:*`" with a flat no, since
+     * Gate B's `turn:*` always lands before Gate C's `mcp:*`.
+     */
+    privacy_reason?: string | null;
+    privacy_tier?: SessionClassification;
     provider_name?: string | null;
     schedule_id?: string | null;
     session_type?: SessionType;
@@ -1861,6 +2168,15 @@ export type Session = {
     workflow?: Workflow | null;
     working_dir: string;
 };
+
+/**
+ * CLASSIFICATION — the most sensitive thing a session has ever touched.
+ *
+ * `Ord` is derived and `Public < Private`, so `max` is the accumulation and is
+ * spellable. Monotone in time; the storage layer refuses to lower it (see
+ * `SessionUpdateBuilder`'s `CASE WHEN` emission).
+ */
+export type SessionClassification = 'public' | 'private';
 
 export type SessionDisplayInfo = {
     accumulatedInputTokens?: number | null;
@@ -1918,6 +2234,7 @@ export type SessionSummary = {
      * BR-71: `sub_agent` rows are grouped under this parent in History.
      */
     parent_session_id?: string | null;
+    privacy_tier?: SessionClassification;
     /**
      * BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).
      */
@@ -1974,6 +2291,10 @@ export type SetActiveBody = {
 
 export type SetDefaultModelBody = {
     model?: ModelRef | null;
+};
+
+export type SetKbTierBody = {
+    tier: KbTier;
 };
 
 export type SetProviderRequest = {
@@ -2401,6 +2722,30 @@ export type UpdateWorkingDirRequest = {
 };
 
 export type UpsertConfigQuery = {
+    /**
+     * Issue #56 Task 30. The typed confirmation Settings → Privacy sends with a
+     * write to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.
+     *
+     * ⚠ **What this is and what it is not.** It is a **UX guard against an
+     * accidental or model-composed config write**, not an authorization
+     * boundary: the phrase is a fixed string in the shipped source, so a caller
+     * holding the daemon secret replays it. That is acceptable because
+     * `check_token` has no principal — the daemon cannot tell Settings →
+     * Privacy from any other loopback caller — and because the *authorization*
+     * on this route is `X-User-Action`, not the phrase. What the phrase buys is
+     * that the flip cannot be a side effect of an ordinary `/config/upsert`,
+     * which is the reachable path: a model *can* compose one of those through a
+     * tool.
+     *
+     * ⚠ **This comment used to justify the phrase by adding *"and a caller that
+     * already holds the secret can raise its own session to private capability
+     * anyway"*, citing AR-15. That is no longer true and is withdrawn** —
+     * AR-15 was retired on 2026-08-02 by DR-16 (commit `0757823f`), which made
+     * an upward provider bind require `X-User-Action`. Do not restore the
+     * argument: the guard does not need it, and a stale "we are already open
+     * here anyway" is how a weakened control gets waved through.
+     */
+    confirm?: string | null;
     is_secret: boolean;
     key: string;
     value: unknown;
@@ -2676,6 +3021,14 @@ export type AgentAddExtensionErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     */
+    403: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model
+     */
+    409: unknown;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -2687,7 +3040,7 @@ export type AgentAddExtensionErrors = {
 
 export type AgentAddExtensionResponses = {
     /**
-     * Extension added
+     * Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.
      */
     200: string;
 };
@@ -2755,6 +3108,45 @@ export type CancelTurnResponses = {
 };
 
 export type CancelTurnResponse2 = CancelTurnResponses[keyof CancelTurnResponses];
+
+export type AgentCrossAffiliationGrantData = {
+    body: CrossAffiliationGrantRequest;
+    path?: never;
+    query?: never;
+    url: '/agent/cross_affiliation_grant';
+};
+
+export type AgentCrossAffiliationGrantErrors = {
+    /**
+     * There is no cross-institutional mismatch to accept
+     */
+    400: unknown;
+    /**
+     * Unauthorized - invalid secret key
+     */
+    401: unknown;
+    /**
+     * Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow — or (DR-27) this machine's mixing policy is 'strict' and the operating system did not confirm the user
+     */
+    403: unknown;
+    /**
+     * That chat is not loaded in this daemon, so the model it is bound to cannot be read
+     */
+    424: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type AgentCrossAffiliationGrantResponses = {
+    /**
+     * The user's acceptance was recorded
+     */
+    200: CrossAffiliationGrantResponse;
+};
+
+export type AgentCrossAffiliationGrantResponse = AgentCrossAffiliationGrantResponses[keyof AgentCrossAffiliationGrantResponses];
 
 export type ListAppsData = {
     body?: never;
@@ -3065,6 +3457,10 @@ export type UpdateAgentProviderErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)
+     */
+    409: PrivacyBarrierBody;
+    /**
      * Agent not initialized
      */
     424: unknown;
@@ -3074,12 +3470,16 @@ export type UpdateAgentProviderErrors = {
     500: unknown;
 };
 
+export type UpdateAgentProviderError = UpdateAgentProviderErrors[keyof UpdateAgentProviderErrors];
+
 export type UpdateAgentProviderResponses = {
     /**
-     * Provider updated successfully
+     * Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when the bind crosses no institutional boundary, which is the normal case.
      */
-    200: unknown;
+    200: string;
 };
+
+export type UpdateAgentProviderResponse = UpdateAgentProviderResponses[keyof UpdateAgentProviderResponses];
 
 export type UpdateWorkingDirData = {
     body: UpdateWorkingDirRequest;
@@ -3097,6 +3497,10 @@ export type UpdateWorkingDirErrors = {
      * Unauthorized - invalid secret key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -3560,9 +3964,17 @@ export type RemoveConfigData = {
 
 export type RemoveConfigErrors = {
     /**
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed — and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
+     */
+    403: unknown;
+    /**
      * Configuration key not found
      */
     404: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user
+     */
+    409: unknown;
     /**
      * Internal server error
      */
@@ -3583,6 +3995,24 @@ export type SetConfigProviderData = {
     path?: never;
     query?: never;
     url: '/config/set_provider';
+};
+
+export type SetConfigProviderErrors = {
+    /**
+     * The provider could not be constructed
+     */
+    400: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56, DR-16): this route writes BIOROUTER_PROVIDER, which decides what privacy capability new chats start at, so it requires proof the request came from the user
+     */
+    409: unknown;
+};
+
+export type SetConfigProviderResponses = {
+    /**
+     * Default provider and model set
+     */
+    200: unknown;
 };
 
 export type GetSlashCommandsData = {
@@ -3609,6 +4039,18 @@ export type UpsertConfigData = {
 };
 
 export type UpsertConfigErrors = {
+    /**
+     * Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'
+     */
+    400: unknown;
+    /**
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation — or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
+     */
+    403: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode
+     */
+    409: unknown;
     /**
      * Internal server error
      */
@@ -3762,6 +4204,10 @@ export type SetActiveErrors = {
      * Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields
      */
     400: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
 };
 
 export type SetActiveResponses = {
@@ -3784,7 +4230,7 @@ export type ListBasesResponses = {
     /**
      * List of knowledge bases
      */
-    200: Array<Manifest>;
+    200: Array<KbListEntry>;
 };
 
 export type ListBasesResponse = ListBasesResponses[keyof ListBasesResponses];
@@ -4421,6 +4867,70 @@ export type ReclassifyResponses = {
 
 export type ReclassifyResponse = ReclassifyResponses[keyof ReclassifyResponses];
 
+export type GetKbTierData = {
+    body?: never;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/tier';
+};
+
+export type GetKbTierErrors = {
+    /**
+     * Not found
+     */
+    404: unknown;
+};
+
+export type GetKbTierResponses = {
+    /**
+     * The base's tier and what a publicize would release
+     */
+    200: KbTierResponse;
+};
+
+export type GetKbTierResponse = GetKbTierResponses[keyof GetKbTierResponses];
+
+export type SetKbTierData = {
+    body: SetKbTierBody;
+    path: {
+        /**
+         * Knowledge base ID
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/tier';
+};
+
+export type SetKbTierErrors = {
+    /**
+     * Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them — or this daemon holds no user-action key at all (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type SetKbTierResponses = {
+    /**
+     * The base's tier after the change
+     */
+    200: KbTierResponse;
+};
+
+export type SetKbTierResponse = SetKbTierResponses[keyof SetKbTierResponses];
+
 export type CheckModelData = {
     body: CheckModelBody;
     path?: never;
@@ -4667,6 +5177,47 @@ export type MemoryInventoryResponses = {
 
 export type MemoryInventoryResponse2 = MemoryInventoryResponses[keyof MemoryInventoryResponses];
 
+export type GetPrivacyDisclosureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/privacy/disclosure';
+};
+
+export type GetPrivacyDisclosureResponses = {
+    /**
+     * The one copy of the non-private-model disclosure, plus whether this install has acknowledged it
+     */
+    200: PrivacyDisclosureResponse;
+};
+
+export type GetPrivacyDisclosureResponse = GetPrivacyDisclosureResponses[keyof GetPrivacyDisclosureResponses];
+
+export type AckPrivacyDisclosureData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/privacy/disclosure/ack';
+};
+
+export type AckPrivacyDisclosureErrors = {
+    /**
+     * Refused: acknowledging the disclosure is a user act, and this request carried no proof it came from the user
+     */
+    403: unknown;
+    /**
+     * The acknowledgement could not be written
+     */
+    500: unknown;
+};
+
+export type AckPrivacyDisclosureResponses = {
+    /**
+     * Acknowledged
+     */
+    200: unknown;
+};
+
 export type ReplyData = {
     body: ChatRequest;
     path?: never;
@@ -4675,6 +5226,10 @@ export type ReplyData = {
 };
 
 export type ReplyErrors = {
+    /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
     /**
      * A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
      */
@@ -5293,6 +5848,10 @@ export type GetSessionErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session not found
      */
     404: unknown;
@@ -5310,6 +5869,50 @@ export type GetSessionResponses = {
 };
 
 export type GetSessionResponse = GetSessionResponses[keyof GetSessionResponses];
+
+export type DeclassifySessionData = {
+    body: DeclassifySessionRequest;
+    path: {
+        /**
+         * Unique identifier for the session to declassify
+         */
+        session_id: string;
+    };
+    query?: never;
+    url: '/sessions/{session_id}/declassify';
+};
+
+export type DeclassifySessionErrors = {
+    /**
+     * Bad request - invalid session id, or the typed confirmation did not match (body = plain text)
+     */
+    400: unknown;
+    /**
+     * Unauthorized - Invalid or missing API key
+     */
+    401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 §12.4): lowering a chat's classification is the user's decision, and the request carried no proof it came from them (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Session not found
+     */
+    404: unknown;
+    /**
+     * Internal server error
+     */
+    500: unknown;
+};
+
+export type DeclassifySessionResponses = {
+    /**
+     * The chat is public
+     */
+    200: DeclassifySessionResponse;
+};
+
+export type DeclassifySessionResponse2 = DeclassifySessionResponses[keyof DeclassifySessionResponses];
 
 export type DivergeSessionData = {
     body: DivergeSessionRequest;
@@ -5332,6 +5935,10 @@ export type DivergeSessionErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
     /**
      * Session not found
      */
@@ -5373,6 +5980,10 @@ export type EditMessageErrors = {
      */
     401: unknown;
     /**
+     * Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text)
+     */
+    403: unknown;
+    /**
      * Session or message not found
      */
     404: unknown;
@@ -5413,6 +6024,10 @@ export type ObserveSessionEventsErrors = {
      */
     401: unknown;
     /**
+     * Out of reach - a private or unreadable session named without the user-action proof
+     */
+    403: unknown;
+    /**
      * No such session
      */
     404: unknown;
@@ -5444,6 +6059,10 @@ export type ExportSessionErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Out of reach - a private or unreadable session named without the user-action proof
+     */
+    403: unknown;
     /**
      * Session not found
      */

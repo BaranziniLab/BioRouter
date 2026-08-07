@@ -5,6 +5,7 @@ mod export;
 mod input;
 pub mod markdown;
 pub mod output;
+pub mod privacy;
 mod prompt;
 mod stream_coalesce;
 mod task_execution_display;
@@ -53,6 +54,18 @@ use std::time::Instant;
 use tokio;
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
+
+/// Is this assistant message Gate B's turn refusal?
+///
+/// Keyed on [`biorouter::privacy::refusal::TURN_REFUSAL_MARKER`] — the constant
+/// that exists precisely so independent readers can tell a refusal from a
+/// completed turn — rather than on a phrase retyped here, which would go quietly
+/// false the first time the wording moved.
+pub(crate) fn is_privacy_turn_refusal(message: &Message) -> bool {
+    message
+        .as_concat_text()
+        .contains(biorouter::privacy::refusal::TURN_REFUSAL_MARKER)
+}
 
 /// Build the `biorouter://diverge` deeplink the CLI hands to the desktop app to
 /// open a diverged session in a fresh window. The session id and working dir
@@ -783,15 +796,24 @@ impl CliSession {
                     console::style(format!("Elapsed time: {}", elapsed_str)).dim()
                 );
             }
-            RunMode::Plan => {
-                let mut plan_messages = self.messages.clone();
-                plan_messages.push(Message::user().with_text(content));
-                let reasoner = get_reasoner().await?;
-                self.plan_with_reasoner_model(plan_messages, reasoner)
-                    .await?;
-            }
+            RunMode::Plan => self.plan(content).await?,
         }
         Ok(())
+    }
+
+    /// Run one plan-mode turn: the whole message list plus `content`, handed to
+    /// the planner provider.
+    ///
+    /// Issue #56 Gate H. This exists so that the *two* entry points into plan
+    /// mode — this `RunMode::Plan` arm and `/plan <text>` — share ONE
+    /// `get_reasoner` call. They were byte-identical five-line blocks, which
+    /// meant the barrier had two call sites and a test could only ever cover
+    /// one of them; the other could be changed to pass `Public` and stay green.
+    async fn plan(&mut self, content: &str) -> Result<()> {
+        let mut plan_messages = self.messages.clone();
+        plan_messages.push(Message::user().with_text(content));
+        let reasoner = get_reasoner(self.session_classification().await).await?;
+        self.plan_with_reasoner_model(plan_messages, reasoner).await
     }
 
     fn handle_toggle_theme(&self) {
@@ -878,11 +900,33 @@ impl CliSession {
             return Ok(());
         }
 
-        let mut plan_messages = self.messages.clone();
-        plan_messages.push(Message::user().with_text(&options.message_text));
+        self.plan(&options.message_text).await
+    }
 
-        let reasoner = get_reasoner().await?;
-        self.plan_with_reasoner_model(plan_messages, reasoner).await
+    /// Issue #56 Gate H. This chat's stored classification, read fresh from the
+    /// row rather than cached: plan mode is reached from the REPL between turns,
+    /// so anything sampled earlier could be arbitrarily stale.
+    ///
+    /// **Fails closed.** A row that cannot be read is not a licence to ship the
+    /// transcript elsewhere; the cost of the wrong answer here is that plan mode
+    /// asks for a private planner, and the cost of the other wrong answer is the
+    /// whole conversation.
+    async fn session_classification(&self) -> biorouter::privacy::SessionClassification {
+        match self
+            .agent
+            .config
+            .session_manager
+            .get_session(&self.session_id, false)
+            .await
+        {
+            Ok(session) => session.privacy_tier,
+            Err(e) => {
+                tracing::warn!(
+                    "could not read this session's privacy tier ({e}); treating it as private"
+                );
+                biorouter::privacy::SessionClassification::Private
+            }
+        }
     }
 
     /// Clear the conversation everywhere: the persisted SQLite conversation,
@@ -1346,6 +1390,22 @@ impl CliSession {
                                     emit_stream_event(&StreamEvent::Message { message: message.clone() });
                                 } else if !is_json_mode {
                                     output::render_message(&message, self.debug);
+                                }
+
+                                // Issue #56 Gate B, at the terminal. The daemon's
+                                // refusal is written for the desktop app: it names
+                                // "Settings → Models" and "the model chip in the
+                                // composer", neither of which exists here. Follow
+                                // it with the two commands that do. On stderr, so a
+                                // `--output-format json` stdout stays a document.
+                                if is_privacy_turn_refusal(&message) {
+                                    eprintln!(
+                                        "{}",
+                                        privacy::repair_block(
+                                            &self.session_id,
+                                            &privacy::available_private_models().await,
+                                        )
+                                    );
                                 }
                             }
                         }
@@ -2261,7 +2321,15 @@ fn session_store_error_hint(error_msg: &str, store: &ActiveSessionStore) -> Opti
     })
 }
 
-async fn get_reasoner() -> Result<Arc<dyn Provider>, anyhow::Error> {
+/// The planner provider for plan mode.
+///
+/// Issue #56 Gate H: `session` is the classification of the chat whose whole
+/// message list is about to be handed to this provider. It is a parameter rather
+/// than something read here because this function has no session — and it is not
+/// optional, so a future caller cannot forget it by omission.
+async fn get_reasoner(
+    session: biorouter::privacy::SessionClassification,
+) -> Result<Arc<dyn Provider>, anyhow::Error> {
     use biorouter::model::ModelConfig;
     use biorouter::providers::create;
 
@@ -2290,6 +2358,20 @@ async fn get_reasoner() -> Result<Arc<dyn Provider>, anyhow::Error> {
     let model_config =
         ModelConfig::new_with_context_env(model, Some("BIOROUTER_PLANNER_CONTEXT_LIMIT"))?;
     let reasoner = create(&provider, model_config).await?;
+
+    // Issue #56 Gate H. AFTER `create`, because the tier is a property of what
+    // this instance actually resolved and not of the name that was asked for —
+    // `create` can hand back a composite whose lead is somebody else entirely.
+    // Constructing a provider discloses nothing; `plan_with_reasoner_model`,
+    // which hands it the whole message list, is what would — and it is
+    // downstream of this `?` on the ONE path (`Session::plan`) that both plan
+    // entry points now share.
+    biorouter::privacy::assert_alt_provider_allowed(
+        "plan mode",
+        reasoner.as_ref(),
+        session,
+        "BIOROUTER_PLANNER_PROVIDER",
+    )?;
 
     Ok(reasoner)
 }
@@ -2423,6 +2505,120 @@ mod tests {
                  (format={output_format})"
             );
         }
+    }
+
+    /// Issue #56 Task 31. The CLI has to recognise Gate B's refusal to follow it
+    /// with a terminal repair, and it recognises it by the shared marker rather
+    /// than by a phrase retyped here.
+    #[test]
+    fn a_gate_b_refusal_is_recognised_by_its_marker_and_ordinary_replies_are_not() {
+        let session = biorouter::session::session_manager::Session {
+            provider_name: Some("anthropic".into()),
+            privacy_tier: biorouter::privacy::SessionClassification::Private,
+            ..Default::default()
+        };
+        let refusal =
+            Message::assistant().with_text(biorouter::privacy::refusal::turn_refusal(&session));
+        assert!(is_privacy_turn_refusal(&refusal));
+
+        assert!(!is_privacy_turn_refusal(
+            &Message::assistant().with_text("Sure — here is the analysis you asked for.")
+        ));
+        // Not merely "mentions privacy": an assistant that talks ABOUT the
+        // feature must not have a repair block stapled to its answer.
+        assert!(!is_privacy_turn_refusal(&Message::assistant().with_text(
+            "This chat is private, so only a private model may run in it."
+        )));
+    }
+
+    /// Issue #56 Gate H. CLI plan mode is a documented first-class feature and
+    /// a complete private→public transcript leak: `Session::plan` clones the
+    /// WHOLE message list and hands it to a provider built from
+    /// `BIOROUTER_PLANNER_PROVIDER` (or, failing that, the global default),
+    /// which the session row never records. Neither `Agent::update_provider`
+    /// nor `Agent::reply` is on that path, so Gates A–F are all blind to it.
+    ///
+    /// `handle_plan_mode` is driven here rather than `Session::plan` directly
+    /// because it is one of the two *entry points* a user reaches — and since
+    /// both of them (`/plan <text>` and a message typed while `RunMode::Plan`
+    /// is set) now funnel through the single `Session::plan`, driving either
+    /// one covers the barrier for both.
+    ///
+    /// The planner here is a REAL provider — an Ollama-engine instance pointed
+    /// at a host that is not this machine, which is exactly how `tier()` decides
+    /// Public — reached through `with_config_overrides` rather than by mutating
+    /// the process environment. The host is a `.invalid` name, so if the gate
+    /// ever stopped refusing, the completion that followed would fail to
+    /// resolve rather than reach anybody.
+    #[tokio::test]
+    async fn cli_plan_mode_refuses_to_ship_a_private_transcript_elsewhere() {
+        use biorouter::config::with_config_overrides;
+        use biorouter::privacy::SessionClassification;
+        use biorouter::session::SessionManager;
+        use std::collections::HashMap;
+
+        fn planner(host: &str) -> HashMap<String, String> {
+            HashMap::from([
+                (
+                    "BIOROUTER_PLANNER_PROVIDER".to_string(),
+                    "ollama".to_string(),
+                ),
+                ("BIOROUTER_PLANNER_MODEL".to_string(), "qwen3".to_string()),
+                ("OLLAMA_HOST".to_string(), host.to_string()),
+            ])
+        }
+        const OFF_MACHINE: &str = "https://api.example-saas.invalid";
+        const THIS_MACHINE: &str = "http://localhost:11434";
+
+        // The gate discriminates, in both directions, before anything else is
+        // asserted — otherwise a `get_reasoner` that refused unconditionally
+        // would pass the interesting half below.
+        assert_eq!(
+            with_config_overrides(
+                planner(OFF_MACHINE),
+                get_reasoner(SessionClassification::Public)
+            )
+            .await
+            .expect("a public chat may plan on a public model")
+            .tier(),
+            biorouter::privacy::ProviderTier::Public,
+        );
+        assert!(
+            with_config_overrides(
+                planner(THIS_MACHINE),
+                get_reasoner(SessionClassification::Private)
+            )
+            .await
+            .is_ok(),
+            "a private chat may plan on a private model"
+        );
+
+        let tmp = tempfile::tempdir().unwrap();
+        let sm = std::sync::Arc::new(SessionManager::new(tmp.path().to_path_buf()));
+        let mut session = test_cli_session(std::sync::Arc::clone(&sm), "text").await;
+        sm.update(&session.session_id)
+            .raise_privacy(SessionClassification::Private, "test:gate-h")
+            .apply()
+            .await
+            .expect("mark the chat private");
+
+        let err = with_config_overrides(
+            planner(OFF_MACHINE),
+            session.handle_plan_mode(input::PlanCommandOptions {
+                message_text: "summarise".to_string(),
+            }),
+        )
+        .await
+        .expect_err("plan mode must refuse to ship a private transcript to a public model");
+        let err = err.to_string();
+        assert!(
+            err.contains("BIOROUTER_PLANNER_PROVIDER"),
+            "the refusal has to name the knob that fixes it, got: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("private"),
+            "the refusal has to say why, got: {err}"
+        );
     }
 
     /// #31: a real session-store failure (here: the pool is closed, the same

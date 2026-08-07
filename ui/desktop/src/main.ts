@@ -100,6 +100,8 @@ import {
   wrapArtifactForBrowser,
 } from './utils/artifactSecurity';
 import { readGitArtifactTree } from './utils/artifactGit';
+import { recordExtensionProvenance } from './utils/extensionProvenance';
+import { fetchRegistryWithLastGood } from './utils/registryCache';
 import { readArtifactDirectoryTree } from './utils/artifactDirectory';
 import {
   diagnosticsArchiveBytes,
@@ -921,6 +923,44 @@ const getServerSecret = (settings: ReturnType<typeof loadSettings>): string => {
   return GENERATED_SECRET;
 };
 
+/**
+ * Issue #56 DR-16: the proof that a request to raise a chat's privacy
+ * capability came from the person at the keyboard rather than from the model.
+ *
+ * 32 random bytes per launch. The RAW key never leaves this process except
+ * across the IPC bridge to the renderer, which sends it as `X-User-Action` on
+ * the tier-raising calls; the daemon is handed only its SHA-256 digest, on
+ * stdin (see `biorouterd.ts`). Not the environment and not argv, because AR-11
+ * measured both to be recoverable in-process — which is why open question 23
+ * refuses an env-var escape hatch outright.
+ *
+ * ⚠ What this does NOT close: a caller who can read THIS process, or who can
+ * start their own `biorouterd` with a key they chose, is unaffected. Both are
+ * the same-machine-caller problem Open question 20 carries; neither is made
+ * worse here.
+ */
+const GENERATED_USER_ACTION_KEY = crypto.randomBytes(32).toString('hex');
+
+/**
+ * Deliberately public on the external-backend path: `just debug-server`
+ * publishes the digest of this same constant, so `just debug-ui` keeps working.
+ * It weakens nothing in the shipped app, whose key is 32 random bytes per
+ * launch. See Open question 23.
+ */
+const DEV_USER_ACTION_KEY = 'biorouter-dev-user-action';
+
+const getUserActionKey = (settings: ReturnType<typeof loadSettings>): string => {
+  // A backend the app did not start has whatever user-proof its launcher chose.
+  // Absent, this returns '' and every raise fails closed — the right default.
+  if (settings.externalBiorouterd?.enabled) {
+    return settings.externalBiorouterd.userActionKey ?? '';
+  }
+  if (process.env.BIOROUTER_EXTERNAL_BACKEND) {
+    return DEV_USER_ACTION_KEY;
+  }
+  return GENERATED_USER_ACTION_KEY;
+};
+
 let appConfig = {
   BIOROUTER_DEFAULT_PROVIDER: defaultProvider,
   BIOROUTER_DEFAULT_MODEL: defaultModel,
@@ -1019,6 +1059,7 @@ const createChat = async (
 
   const settings = loadSettings();
   const serverSecret = getServerSecret(settings);
+  const userActionKey = getUserActionKey(settings);
 
   // BR-54 Slice A: share ONE daemon across all windows (default). The daemon is
   // already a session-keyed singleton, so its spawn cwd is just a fallback —
@@ -1033,6 +1074,7 @@ const createChat = async (
     ? await getSharedBackend(startBiorouterd, {
         app,
         serverSecret,
+        userActionKey,
         dir: os.homedir(),
         env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
         externalBiorouterd: settings.externalBiorouterd,
@@ -1040,6 +1082,7 @@ const createChat = async (
     : await startBiorouterd({
         app,
         serverSecret,
+        userActionKey,
         dir: dir || os.homedir(),
         env: { BIOROUTER_PATH_ROOT: process.env.BIOROUTER_PATH_ROOT },
         externalBiorouterd: settings.externalBiorouterd,
@@ -1102,7 +1145,6 @@ const createChat = async (
           workflowDeeplink: workflowDeeplink,
           workflowParameters: workflowParameters,
           scheduledJobId: scheduledJobId,
-          SECURITY_ML_MODEL_MAPPING: process.env.SECURITY_ML_MODEL_MAPPING,
         }),
       ],
       partition: 'persist:biorouter',
@@ -2133,6 +2175,15 @@ ipcMain.handle('get-secret-key', () => {
   return getServerSecret(settings);
 });
 
+// Issue #56 DR-16. The renderer IS the user's surface, so it is the one holder
+// of the raw key besides this process. It attaches it to the three tier-raising
+// requests only — never as a default header on every request, which would make
+// the proof as ambient as the daemon secret it is meant to be stronger than.
+ipcMain.handle('get-user-action-key', () => {
+  const settings = loadSettings();
+  return getUserActionKey(settings);
+});
+
 ipcMain.handle('get-biorouterd-host-port', async (event) => {
   const windowId = BrowserWindow.fromWebContents(event.sender)?.id;
   if (!windowId) {
@@ -3049,18 +3100,34 @@ function isAllowedRegistryUrl(rawUrl: string): URL | null {
   }
 }
 
-ipcMain.handle('registry:fetch', async () => {
-  try {
-    const response = await fetch(REGISTRY_URL, {
-      headers: { 'User-Agent': 'Biorouter', Accept: 'application/json' },
-    });
-    if (!response.ok) return { error: `HTTP ${response.status}` };
-    const json = await response.json();
-    return { registry: json };
-  } catch (err) {
-    return { error: (err as Error).message };
-  }
-});
+/**
+ * The last document that both fetched and parsed. Written on every success and
+ * read on every failure, so an offline launch still shows the catalogue the
+ * machine last saw rather than the snapshot frozen at build time — which is what
+ * makes "an offline laptop can fail to learn a new private badge, but never
+ * loses one" true across restarts rather than only within a session.
+ */
+function registryCachePath(): string {
+  return path.join(app.getPath('userData'), 'registry-last-good.json');
+}
+
+// ⚠ The 10 s timeout, the validate-before-cache ordering and the stale replay
+// all live in `utils/registryCache` — Electron-free on purpose. This file
+// imports `electron` at the top level and therefore cannot be unit-tested, and
+// the renderer's tests stop at the IPC boundary; with the composition inline
+// here, an implementation that imported `registryCache` and never CALLED it
+// passed every test this feature has, and the timeout was checked only by
+// `grep -c AbortController`, which a comment satisfies. What is left below is
+// exactly the part that needs Electron: the path (`app`) and the warning
+// (`log`).
+
+ipcMain.handle('registry:fetch', () =>
+  fetchRegistryWithLastGood({
+    url: REGISTRY_URL,
+    cachePath: registryCachePath(),
+    onWriteError: (err) => log.warn('Could not write the last-good registry cache:', err),
+  })
+);
 
 // Download a registry asset (.zip skill bundle or .brxt extension) to a temp
 // file and return its local path, for reuse by the existing install flows.
@@ -3224,7 +3291,25 @@ function cryptographyBuiltFromSource(detail: string): boolean {
 
 ipcMain.handle(
   'brxt:install',
-  async (_event, { filePath, extensionName }: { filePath: string; extensionName: string }) => {
+  async (
+    _event,
+    {
+      filePath,
+      extensionName,
+      registrySource,
+    }: {
+      filePath: string;
+      extensionName: string;
+      /**
+       * Issue #56 Task 43 (DR-23). Present only for a marketplace install —
+       * the BAAM registry `id` and the URL the bundle came from. A `.brxt`
+       * dropped in by hand has neither, and correctly records nothing: the
+       * daemon then falls back to the config-name join, which is the behaviour
+       * that shipped before this task.
+       */
+      registrySource?: { registryId: string; sourceUrl?: string };
+    }
+  ) => {
     try {
       const installDir = path.join(
         os.homedir(),
@@ -3267,6 +3352,30 @@ ipcMain.handle(
           `exited with status ${uvResult.status}`;
         const hint = uvSyncHint(detail);
         throw new Error(`uv sync failed: ${detail}${hint ? `\n\nHint: ${hint}` : ''}`);
+      }
+
+      // Issue #56 Task 43 (DR-23). AFTER the bundle is on disk and its venv
+      // built, because a record for an install that then failed would claim a
+      // provenance no config entry has. Never fatal: losing the record costs
+      // the rename protection, whereas failing here costs the user the
+      // extension they just installed.
+      if (registrySource?.registryId) {
+        const recorded = recordExtensionProvenance({
+          extensionName,
+          registryId: registrySource.registryId,
+          // The rename-proof half: `installDir` is what the stdio config's
+          // `--directory` argument will point at, and a later rename of the
+          // config entry cannot move it without breaking the extension.
+          installDir,
+          sourceUrl: registrySource.sourceUrl,
+          bundlePath: filePath,
+        });
+        if (!recorded) {
+          log.warn(
+            `[brxt] could not record provenance for ${extensionName}; its privacy tier will ` +
+              `fall back to the config-name join and a local rename would lose it`
+          );
+        }
       }
 
       return { success: true, installDir };

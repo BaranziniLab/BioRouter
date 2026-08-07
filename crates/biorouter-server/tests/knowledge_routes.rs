@@ -2195,3 +2195,582 @@ async fn hiding_the_primary_promotes_for_an_inheriting_chat_too() {
         Some("alpha")
     );
 }
+
+/// Task 10C's scope line, asserted rather than described: the seven
+/// `/knowledge/*` read handlers and this export are the USER in the Knowledge
+/// view, not a model, and DR-14 governs what a MODEL can reach.
+///
+/// Driven through the route, because the defect would be a rule applied in the
+/// SERVICE and therefore to everyone. The handler is
+/// `export_brkb(State(svc), Path(id))` — it takes NO query parameters, calls
+/// `svc.export_brkb(&id)` and returns the archive as the response BODY with
+/// `Content-Disposition: attachment`. It never writes to disk. What the route
+/// can witness is the thing that matters: a location rule implemented one layer
+/// down, in `KnowledgeService::export_brkb`, would change this route too — the
+/// user would stop being able to download a private base from their own
+/// Knowledge view. So assert the bytes come back.
+#[tokio::test]
+async fn the_users_own_export_route_is_not_subject_to_the_models_location_rule() {
+    use axum::http::header;
+
+    let (_d, root, app) = build_test_router_with_root();
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "omop", "name": "Omop"})).unwrap();
+    let created = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 200);
+
+    biorouter_mcp::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+    let page = root.join("omop").join("knowledge").join("x.md");
+    std::fs::create_dir_all(page.parent().unwrap()).unwrap();
+    std::fs::write(&page, "SENTINEL-COHORT-N-412").unwrap();
+
+    let r = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/omop/export")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        r.status(),
+        200,
+        "the user's own export of a private base was refused"
+    );
+    assert_eq!(
+        r.headers()[header::CONTENT_TYPE],
+        "application/octet-stream"
+    );
+    let body = axum::body::to_bytes(r.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(body.to_vec())).unwrap();
+    let names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n.ends_with("knowledge/x.md")),
+        "the route returned {} bytes but not the archive",
+        body.len()
+    );
+    // …and nothing was relocated into the knowledge root as a side effect: the
+    // model's rule writes `<root>/.exports/`, and the user's route writes nothing.
+    assert!(!biorouter_mcp::knowledge::paths::model_export_dir(&root).exists());
+}
+
+// ── Issue #56, Task 10B: the caller-provenance matrix for the macro routes ───
+
+mod privacy_ratchet {
+    use super::{build_test_router_with_root, create_kb};
+    use axum::{body::Body, http::Request, Router};
+    use tower::ServiceExt;
+
+    /// Pin every variable these rows depend on, and restore them on drop.
+    ///
+    /// `env_lock` and not a hand-rolled guard plus `#[serial]`: `#[serial]`
+    /// serialises against other `#[serial]` tests only, while the ~39 others in
+    /// this binary run concurrently, and the rest of the workspace already
+    /// reaches for `env_lock`'s process-wide lock for exactly this. Two
+    /// mechanisms in one process do not compose.
+    ///
+    /// ⚠ `BIOROUTER_KNOWLEDGE_TEST_MODE` must be OFF: `build_completer`'s early
+    /// return hands back a `TestModeCompleter` and Public before any provider
+    /// exists, which would make both rows Public and the matrix vacuous.
+    ///
+    /// The PROVIDER NAME is `ollama` in both rows and only `OLLAMA_HOST` moves
+    /// — Task 5 makes a loopback Ollama Private and a non-loopback one Public —
+    /// so an implementation keyed on `body.model.provider` gives the same answer
+    /// twice and fails one row, and so does either hardcoded literal.
+    fn lock_env_for(host: &str) -> env_lock::EnvGuard<'static> {
+        env_lock::lock_env([
+            ("BIOROUTER_KNOWLEDGE_TEST_MODE", None),
+            ("BIOROUTER_LEAD_MODEL", None),
+            ("BIOROUTER_LEAD_PROVIDER", None),
+            ("OLLAMA_HOST", Some(host.to_string())),
+            ("OLLAMA_TIMEOUT", Some("1".to_string())),
+        ])
+    }
+
+    async fn post_json(app: &Router, uri: &str, body: serde_json::Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "{uri} must build a provider and start streaming"
+        );
+        // Drain the SSE body so the macro task gets to run to completion.
+        let _ = axum::body::to_bytes(res.into_body(), usize::MAX).await;
+    }
+
+    /// The macro raise happens inside a `tokio::spawn`ed task, so give it a
+    /// bounded chance to land rather than racing it.
+    async fn await_private(root: &std::path::Path, kb: &str) -> bool {
+        for _ in 0..200 {
+            if biorouter_mcp::knowledge::tier::is_private(root, kb) {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+        false
+    }
+
+    fn model(provider: &str, model: &str) -> serde_json::Value {
+        serde_json::json!({ "provider": provider, "model": model })
+    }
+
+    /// Builds one macro route's request body around a `ModelRef`.
+    type BodyFor = fn(serde_json::Value) -> serde_json::Value;
+
+    #[tokio::test]
+    // Kept alongside `lock_env_for`, which is what actually excludes the other
+    // tests in this binary: `#[serial]` costs nothing and still orders this
+    // against any future `#[serial]` test that touches the environment without
+    // taking the workspace lock.
+    #[serial_test::serial]
+    async fn each_macro_route_ratchets_from_the_provider_it_constructed_both_ways() {
+        // The gate a `grep -c caller_is_private` cannot be: every route reports
+        // NON-ZERO whether it passes the right value, a hardcoded `true`, or a
+        // hardcoded `false`. Both rows, per route — the PUBLIC row is the one
+        // the previous gate could not fail, and under-ratcheting is the
+        // direction that launders (a private transcript into a base that stays
+        // public).
+        //
+        // `ingest-conversation` is absent on purpose: it loads sessions from the
+        // process-global `SessionManager`, i.e. the developer's real session
+        // database. Its capability is the same `build_completer` value the three
+        // routes below pin, and it is covered structurally.
+        let routes: Vec<(&str, BodyFor)> = vec![
+            (
+                "ingest",
+                |m| serde_json::json!({ "source": {"text": "n=412", "title": "t"}, "model": m }),
+            ),
+            (
+                "query",
+                |m| serde_json::json!({ "question": "what is n?", "model": m }),
+            ),
+            (
+                "lint",
+                |m| serde_json::json!({ "autofix": true, "model": m }),
+            ),
+        ];
+
+        // ⚠ The private row's port is 1, not 11434: `is_loopback_host` reads the
+        // HOST, so any port is Private, and nothing can listen on 1 without
+        // root. Pointing it at the real Ollama port would make this row drive a
+        // live local model — several real sub-agent turns — on any developer
+        // machine that happens to be running one, which is how an earlier
+        // variant of this matrix came to sit for thirteen minutes.
+        for (route, body) in routes {
+            for (host, caller_is_private) in [
+                ("http://127.0.0.1:1", true),
+                ("http://ollama.invalid:11434", false),
+            ] {
+                let _env = lock_env_for(host);
+                let (_d, root, app) = build_test_router_with_root();
+                create_kb(app.clone(), "kb", "KB").await;
+                assert!(!biorouter_mcp::knowledge::tier::is_private(&root, "kb"));
+
+                post_json(
+                    &app,
+                    &format!("/bases/kb/{route}"),
+                    body(model("ollama", "qwen3.5:4b")),
+                )
+                .await;
+
+                if caller_is_private {
+                    assert!(
+                        await_private(&root, "kb").await,
+                        "{route} with a private model did not ratchet the base"
+                    );
+                } else {
+                    assert!(
+                        !biorouter_mcp::knowledge::tier::is_private(&root, "kb"),
+                        "{route} with a public model privatised the base"
+                    );
+                }
+            }
+        }
+    }
+
+    // ⚠ The other half of provenance — that `providers::create` intercepts
+    // `BIOROUTER_LEAD_MODEL` BEFORE the registry lookup, so the INSTANCE it
+    // returns need not be the requested name's provider — is asserted in
+    // `biorouter-cli`'s
+    // `the_cli_capability_follows_the_instance_not_the_name_the_user_typed`,
+    // which reads `build_completer`'s returned tier directly and runs no macro.
+    //
+    // It cannot be asserted here. These routes only expose the tier by running
+    // a macro, and a lead/worker composite whose lead is a public provider makes
+    // that macro issue a real request on a client with a 600-second timeout —
+    // the run this replaces sat there for thirteen minutes. What this file DOES
+    // pin is the property that matters at the route: the matrix above sends the
+    // SAME provider name (`ollama`) in both rows and varies only `OLLAMA_HOST`,
+    // so a route keyed on `body.model.provider` gives one answer twice and fails
+    // a row. That the tier and the completer come from one `Arc` is
+    // `the_completer_and_the_capability_come_from_the_same_provider`, and every
+    // production caller of `ProviderCompleter::new` is gone.
+
+    // ── Issue #56, Task 10C: the barrier at CP2, over HTTP ───────────────────
+
+    async fn post_json_raw(app: &Router, uri: &str, body: serde_json::Value) -> (u16, String) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(uri)
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).to_string())
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_public_model_macro_cannot_run_against_a_private_base_over_http() {
+        // ⚠ DEVIATION from the task text, recorded rather than hidden. The task
+        // writes this as `post_query(...)` against a bare root; there is no such
+        // helper, and the caller's capability is not a parameter of these routes
+        // — it is read off the provider `build_completer` constructs. So the
+        // PUBLIC caller is spelled the way the ratchet matrix above spells it: a
+        // non-loopback `OLLAMA_HOST`.
+        let _env = lock_env_for("http://ollama.invalid:11434");
+        let (_d, root, app) = build_test_router_with_root();
+        create_kb(app.clone(), "omop", "OMOP").await;
+        std::fs::write(
+            root.join("omop").join("knowledge").join("x.md"),
+            "# x\n\nSENTINEL-BODY\n",
+        )
+        .unwrap();
+        biorouter_mcp::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+
+        let (status, body) = post_json_raw(
+            &app,
+            "/bases/omop/query",
+            serde_json::json!({
+                "question": "what is n?",
+                "model": model("ollama", "qwen3.5:4b"),
+            }),
+        )
+        .await;
+        assert_eq!(
+            status, 409,
+            "a public model ran a macro on a private base: {body}"
+        );
+        assert!(body.contains("private"), "{body}");
+
+        // And the GUI's own read routes are untouched: the user is not a model.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/bases/omop/page?path=knowledge/x.md")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            res.status(),
+            200,
+            "the Knowledge view was locked out of the user's own notes"
+        );
+    }
+}
+
+/// Issue #56 DR-18 — `POST /knowledge/bases/{id}/tier`, the user's own
+/// publicize / privatize control.
+///
+/// ⚠ The keyless-daemon half of this lives in its OWN test binary,
+/// `tests/knowledge_tier_no_user_key.rs`. The installed digest is a process
+/// global (`OnceLock`), so "a daemon that was handed a key" and "a daemon that
+/// was not" are not both reachable inside one binary — the second
+/// `install_user_action_digest` is a no-op by construction. Same reason
+/// `knowledge_ingest_stream` is its own binary.
+mod tier_route {
+    use super::*;
+    use biorouter_mcp::knowledge::tier;
+
+    /// The server secret this binary's "daemon" was launched with.
+    const TEST_SECRET: &str = "task-29a-kb-tier-route-secret";
+    /// The raw user-action key the launcher would have minted.
+    const TEST_USER_ACTION_KEY: &str = "task-29a-kb-tier-user-action-key";
+
+    fn install_test_user_action_key() {
+        let digest: [u8; 32] =
+            <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
+        biorouter_server::auth::install_user_action_digest(Some(digest));
+    }
+
+    /// The knowledge router behind the SAME `check_token` layer
+    /// `commands::agent::run` installs in front of the real one. Layering it is
+    /// what makes the 401 arm mean anything: `router()` alone is unauthenticated,
+    /// so a test against it would assert that a route nobody guards lets everyone
+    /// through.
+    fn guarded_router() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let svc = Arc::new(biorouter_mcp::knowledge::service::KnowledgeService::new(
+            root.clone(),
+        ));
+        let router = biorouter_server::routes::knowledge::router(svc).layer(
+            axum::middleware::from_fn_with_state(
+                TEST_SECRET.to_string(),
+                biorouter_server::auth::check_token,
+            ),
+        );
+        (dir, root, router)
+    }
+
+    async fn post_tier(
+        app: &Router,
+        kb_id: &str,
+        tier: &str,
+        secret: Option<&str>,
+        user_action: Option<&str>,
+    ) -> (u16, String) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(format!("/bases/{kb_id}/tier"))
+            .header("content-type", "application/json");
+        if let Some(key) = secret {
+            builder = builder.header("X-Secret-Key", key);
+        }
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
+            .body(Body::from(
+                serde_json::to_vec(&serde_json::json!({ "tier": tier })).unwrap(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Create `omop` through the real route and ratchet it private, the state
+    /// every publicize test starts from.
+    async fn seed(root: &std::path::Path, app: &Router) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({ "id": "omop", "name": "OMOP" }))
+                            .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        tier::raise_unlocked(root, "omop", /* caller_is_private */ true).unwrap();
+    }
+
+    /// Identical to Task 29's `the_route_needs_more_than_the_secret_key`, and it
+    /// must stay identical: §9.3 A1 puts the secret inside any developer-enabled
+    /// agent shell, so `X-Secret-Key` alone is not a human.
+    #[tokio::test]
+    async fn the_tier_route_needs_more_than_the_secret_key() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+
+        let (status, _) = post_tier(&app, "omop", "public", None, None).await;
+        assert_eq!(status, 401);
+
+        let (status, body) = post_tier(&app, "omop", "public", Some(TEST_SECRET), None).await;
+        assert_eq!(
+            status, 403,
+            "a secret-key-only caller publicized a knowledge base"
+        );
+        assert!(
+            body.contains("Do not retry"),
+            "the refusal must foreclose the retry: {body}"
+        );
+        assert!(
+            tier::is_private(&root, "omop"),
+            "the refused call moved the tier anyway"
+        );
+
+        let (status, body) = post_tier(
+            &app,
+            "omop",
+            "public",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {body}");
+        assert!(!tier::is_private(&root, "omop"));
+    }
+
+    /// Both directions, not just the disclosing one. Privatizing needs no
+    /// confirmation *dialog*, but it is still not a thing a model may do —
+    /// admitting one direction without the proof is how the tool channel gets the
+    /// pointer back.
+    #[tokio::test]
+    async fn privatizing_needs_the_proof_too() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+        // Start from public, so "private" is a real change rather than a no-op.
+        let (status, _) = post_tier(
+            &app,
+            "omop",
+            "public",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200);
+
+        let (status, _) = post_tier(&app, "omop", "private", Some(TEST_SECRET), None).await;
+        assert_eq!(status, 403);
+        assert!(
+            !tier::is_private(&root, "omop"),
+            "an unproven caller privatized a base"
+        );
+
+        let (status, body) = post_tier(
+            &app,
+            "omop",
+            "private",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {body}");
+        assert!(tier::is_private(&root, "omop"));
+    }
+
+    /// The renderer cannot render a chip for a tier it was never told. The
+    /// listing carries it; `manifest.yaml` does not, and must not — the tier
+    /// lives in `.kb-tiers` and a second copy would be a second answer.
+    #[tokio::test]
+    async fn the_bases_listing_carries_the_tier_and_the_manifest_does_not() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/bases")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let listing: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(listing[0]["id"], "omop");
+        assert_eq!(listing[0]["tier"], "private");
+        // …and the manifest on disk is untouched by any of it.
+        let manifest = std::fs::read_to_string(root.join("omop").join("manifest.yaml")).unwrap();
+        assert!(
+            !manifest.contains("tier"),
+            "the tier was persisted into manifest.yaml: {manifest}"
+        );
+    }
+
+    /// The blast radius the publicize dialog names is computed from the tree, not
+    /// from whatever the renderer had lying around.
+    #[tokio::test]
+    async fn the_tier_read_reports_what_a_publicize_would_release() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        seed(&root, &app).await;
+        std::fs::write(
+            root.join("omop").join("knowledge").join("cohort.md"),
+            "# cohort\n\nn=412\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(root.join("omop").join("raw").join("s1")).unwrap();
+        std::fs::write(
+            root.join("omop").join("raw").join("s1").join("meta.yaml"),
+            "id: s1\n",
+        )
+        .unwrap();
+
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/bases/omop/tier")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(v["tier"], "private");
+        assert_eq!(v["page_count"], 1);
+        assert_eq!(v["raw_source_count"], 1);
+    }
+
+    /// A base that is not there is a 404, not a silent success that leaves the
+    /// user believing they released something.
+    #[tokio::test]
+    async fn an_unknown_base_is_not_publicized() {
+        install_test_user_action_key();
+        let (_d, _root, app) = guarded_router();
+        let (status, _) = post_tier(
+            &app,
+            "no-such-base",
+            "public",
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 404);
+    }
+}

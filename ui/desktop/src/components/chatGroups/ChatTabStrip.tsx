@@ -10,6 +10,8 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
+import type { SessionClassification } from '../../api';
 import { useTabDragReorder } from './useTabDragReorder';
 import { useChatTabDrag } from './ChatTabDragContext';
 import type { TabAnnotation } from './workspaceCommandPlanner';
@@ -48,6 +50,21 @@ export interface ChatTabStripProps {
    * default is what keeps `groups.tabAnnotations` being `undefined` a no-op there.
    */
   tabAnnotations?: Record<string, TabAnnotation>;
+  /**
+   * Privacy tier per SESSION id (issue #56, R10) — not per tab, and not a field
+   * on `ChatTab`.
+   *
+   * `ChatTab` is persisted by chatGroupsStorage, and a tier persisted with a tab
+   * is a tier that can be read back stale. The unsafe direction is the likely
+   * one: the tier only ever RISES during a session, so a cached `public` would
+   * leave a now-private chat unmarked. A session-keyed map recomputed from the
+   * live session list has no such state to go stale.
+   *
+   * Optional with a `{}` default, like `tabAnnotations`, so the four suites that
+   * mount this strip bare keep compiling untouched. An unknown session is
+   * unmarked — silence, never an assertion of Public.
+   */
+  privacyTiers?: Record<string, SessionClassification>;
   onSelect: (tabId: ChatTabId) => void;
   onClose: (tabId: ChatTabId) => void;
   onReorder: (draggedTabId: ChatTabId, targetTabId: ChatTabId) => void;
@@ -83,6 +100,7 @@ export function ChatTabStrip({
   groupActive = true,
   runningSessionIds,
   tabAnnotations = {},
+  privacyTiers = {},
   onSelect,
   onClose,
   onReorder,
@@ -364,6 +382,26 @@ export function ChatTabStrip({
                 }}
               >
                 <MessageSquare className="h-4 w-4 flex-none" />
+                {/* Its own class — deliberately NOT the running dot's, which is
+                    7px, --text-accent, animated, and `group-hover:hidden` so
+                    the close control can take its slot. A privacy marker that
+                    disappears exactly when you point at the tab is not a
+                    privacy marker, so this one has no animation and no hover
+                    rule. (The class name is spelled once, in the JSX below:
+                    this file's own gate counts the running dot's occurrences,
+                    and a comment quoting it reads as a third use.)
+
+                    It also sits at the OTHER END of the tab from the running
+                    dot — beside the leading glyph, inside the label button —
+                    so a running private chat shows both at once instead of the
+                    two fighting over one slot. */}
+                {privacyTiers[tab.sessionId] && (
+                  <PrivacyBadge
+                    tier={privacyTiers[tab.sessionId]}
+                    dense
+                    className="br-tab__privacy-dot"
+                  />
+                )}
                 <span className="br-tab__label">{tab.title}</span>
                 {tabAnnotations[tab.sessionId]?.badge === 'subagent' && (
                   <span className="ml-1 flex-none rounded bg-background-code px-1 text-[10px] text-text-subtle">

@@ -2,7 +2,7 @@
 
 import type { Client, Options as Options2, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AddExtensionData, AddExtensionErrors, AddExtensionResponses, AddRawSourceData, AddRawSourceErrors, AddRawSourceResponses, AgentAddExtensionData, AgentAddExtensionErrors, AgentAddExtensionResponses, AgentRemoveExtensionData, AgentRemoveExtensionErrors, AgentRemoveExtensionResponses, BackupConfigData, BackupConfigErrors, BackupConfigResponses, CallToolData, CallToolErrors, CallToolResponses, CancelActiveWorkData, CancelActiveWorkErrors, CancelActiveWorkResponses, CancelTurnData, CancelTurnErrors, CancelTurnResponses, CheckModelData, CheckModelErrors, CheckModelResponses, CheckProviderData, ConfirmToolActionData, ConfirmToolActionErrors, ConfirmToolActionResponses, CreateBaseData, CreateBaseResponses, CreateCustomProviderData, CreateCustomProviderErrors, CreateCustomProviderResponses, CreateScheduleData, CreateScheduleErrors, CreateScheduleResponses, CreateWorkflowData, CreateWorkflowErrors, CreateWorkflowResponses, DecodeWorkflowData, DecodeWorkflowErrors, DecodeWorkflowResponses, DeleteBaseData, DeleteBaseErrors, DeleteBaseResponses, DeleteScheduleData, DeleteScheduleErrors, DeleteScheduleResponses, DeleteSessionData, DeleteSessionErrors, DeleteSessionResponses, DeleteWorkflowData, DeleteWorkflowErrors, DeleteWorkflowResponses, DetectProviderData, DetectProviderResponses, DiagnosticsData, DiagnosticsErrors, DiagnosticsResponses, DivergeSessionData, DivergeSessionErrors, DivergeSessionResponses, EditMessageData, EditMessageErrors, EditMessageResponses, EncodeWorkflowData, EncodeWorkflowErrors, EncodeWorkflowResponses, ExportBrkbData, ExportBrkbErrors, ExportBrkbResponses, ExportSessionData, ExportSessionErrors, ExportSessionResponses, GetActiveData, GetActiveResponses, GetBaseData, GetBaseErrors, GetBaseResponses, GetCustomProviderData, GetCustomProviderErrors, GetCustomProviderResponses, GetDetectableProvidersData, GetDetectableProvidersResponses, GetExtensionsData, GetExtensionsErrors, GetExtensionsResponses, GetGraphData, GetGraphErrors, GetGraphResponses, GetLocationData, GetLocationErrors, GetLocationResponses, GetPageBodyData, GetPageBodyErrors, GetPageBodyResponses, GetPricingData, GetPricingResponses, GetProviderModelsData, GetProviderModelsErrors, GetProviderModelsResponses, GetSessionActivityData, GetSessionActivityErrors, GetSessionActivityResponses, GetSessionData, GetSessionErrors, GetSessionExtensionsData, GetSessionExtensionsErrors, GetSessionExtensionsResponses, GetSessionInsightsData, GetSessionInsightsErrors, GetSessionInsightsResponses, GetSessionResponses, GetSessionUsageData, GetSessionUsageErrors, GetSessionUsageResponses, GetSlashCommandsData, GetSlashCommandsResponses, GetToolsData, GetToolsErrors, GetToolsResponses, GetTunnelStatusData, GetTunnelStatusResponses, GetUsageReportData, GetUsageReportErrors, GetUsageReportResponses, GetUsageSummaryData, GetUsageSummaryErrors, GetUsageSummaryResponses, ImportBrkbData, ImportBrkbErrors, ImportBrkbResponses, ImportSessionData, ImportSessionErrors, ImportSessionResponses, IngestConversationData, IngestConversationErrors, IngestConversationResponses, IngestData, IngestErrors, IngestResponses, InitConfigData, InitConfigErrors, InitConfigResponses, InspectRunningJobData, InspectRunningJobErrors, InspectRunningJobResponses, InterruptData, InterruptErrors, InterruptResponses, KillRunningJobData, KillRunningJobResponses, LintData, LintErrors, LintResponses, ListActiveWorkData, ListActiveWorkResponses, ListAppsData, ListAppsErrors, ListAppsResponses, ListBasesData, ListBasesResponses, ListHistoryData, ListHistoryResponses, ListPagesData, ListPagesResponses, ListSchedulesData, ListSchedulesErrors, ListSchedulesResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListSidebarSessionsData, ListSidebarSessionsErrors, ListSidebarSessionsResponses, ListWorkflowsData, ListWorkflowsErrors, ListWorkflowsResponses, LlamacppDeleteData, LlamacppDeleteErrors, LlamacppDeleteResponses, LlamacppEnsureData, LlamacppEnsureErrors, LlamacppEnsureResponses, LlamacppStatusData, LlamacppStatusResponses, LlamacppStopData, LlamacppStopResponses, LlamacppWarmupData, LlamacppWarmupErrors, LlamacppWarmupResponses, McpUiProxyData, McpUiProxyResponses, MemoryDeleteCategoryData, MemoryDeleteCategoryErrors, MemoryDeleteCategoryResponses, MemoryDeleteEntryData, MemoryDeleteEntryErrors, MemoryDeleteEntryResponses, MemoryInventoryData, MemoryInventoryErrors, MemoryInventoryResponses, ObserveSessionEventsData, ObserveSessionEventsErrors, ObserveSessionEventsResponses, OverrideCredibilityData, OverrideCredibilityErrors, OverrideCredibilityResponses, ParseWorkflowData, ParseWorkflowErrors, ParseWorkflowResponses, PauseScheduleData, PauseScheduleErrors, PauseScheduleResponses, PreviewResetData, PreviewResetErrors, PreviewResetResponses, PreviewStateData, PreviewStateErrors, PreviewStateResponses, ProvidersData, ProvidersResponses, QueryKbData, QueryKbErrors, QueryKbResponses, ReadAllConfigData, ReadAllConfigResponses, ReadConfigData, ReadConfigErrors, ReadConfigResponses, ReadPageData, ReadPageErrors, ReadPageResponses, ReadResourceData, ReadResourceErrors, ReadResourceResponses, ReclassifyData, ReclassifyErrors, ReclassifyResponses, RecoverConfigData, RecoverConfigErrors, RecoverConfigResponses, RemoveConfigData, RemoveConfigErrors, RemoveConfigResponses, RemoveCustomProviderData, RemoveCustomProviderErrors, RemoveCustomProviderResponses, RemoveExtensionData, RemoveExtensionErrors, RemoveExtensionResponses, ReplyData, ReplyErrors, ReplyResponses, ResetAppDataData, ResetAppDataErrors, ResetAppDataResponses, RestartAgentData, RestartAgentErrors, RestartAgentResponses, RestoreStateData, RestoreStateErrors, RestoreStateResponses, ResumeAgentData, ResumeAgentErrors, ResumeAgentResponses, RunningSessionsData, RunningSessionsErrors, RunningSessionsResponses, RunNowHandlerData, RunNowHandlerErrors, RunNowHandlerResponses, SaveWorkflowData, SaveWorkflowErrors, SaveWorkflowResponses, ScanWorkflowData, ScanWorkflowResponses, ScheduleWorkflowData, ScheduleWorkflowErrors, ScheduleWorkflowResponses, SessionsHandlerData, SessionsHandlerErrors, SessionsHandlerResponses, SetActiveData, SetActiveErrors, SetActiveResponses, SetConfigProviderData, SetDefaultModelData, SetDefaultModelErrors, SetDefaultModelResponses, SetWorkflowSlashCommandData, SetWorkflowSlashCommandErrors, SetWorkflowSlashCommandResponses, StartAgentData, StartAgentErrors, StartAgentResponses, StartOpenrouterSetupData, StartOpenrouterSetupResponses, StartTetrateSetupData, StartTetrateSetupResponses, StartTunnelData, StartTunnelErrors, StartTunnelResponses, StatusData, StatusResponses, StopAgentData, StopAgentErrors, StopAgentResponses, StopTunnelData, StopTunnelErrors, StopTunnelResponses, SystemInfoData, SystemInfoResponses, UnpauseScheduleData, UnpauseScheduleErrors, UnpauseScheduleResponses, UpdateAgentProviderData, UpdateAgentProviderErrors, UpdateAgentProviderResponses, UpdateCustomProviderData, UpdateCustomProviderErrors, UpdateCustomProviderResponses, UpdateFromSessionData, UpdateFromSessionErrors, UpdateFromSessionResponses, UpdateScheduleData, UpdateScheduleErrors, UpdateScheduleResponses, UpdateSessionNameData, UpdateSessionNameErrors, UpdateSessionNameResponses, UpdateSessionUserWorkflowValuesData, UpdateSessionUserWorkflowValuesErrors, UpdateSessionUserWorkflowValuesResponses, UpdateWorkingDirData, UpdateWorkingDirErrors, UpdateWorkingDirResponses, UpsertConfigData, UpsertConfigErrors, UpsertConfigResponses, UpsertPermissionsData, UpsertPermissionsErrors, UpsertPermissionsResponses, ValidateConfigData, ValidateConfigErrors, ValidateConfigResponses, WorkflowToYamlData, WorkflowToYamlErrors, WorkflowToYamlResponses, WritePageData, WritePageErrors, WritePageResponses } from './types.gen';
+import type { AckPrivacyDisclosureData, AckPrivacyDisclosureErrors, AckPrivacyDisclosureResponses, AddExtensionData, AddExtensionErrors, AddExtensionResponses, AddRawSourceData, AddRawSourceErrors, AddRawSourceResponses, AgentAddExtensionData, AgentAddExtensionErrors, AgentAddExtensionResponses, AgentCrossAffiliationGrantData, AgentCrossAffiliationGrantErrors, AgentCrossAffiliationGrantResponses, AgentRemoveExtensionData, AgentRemoveExtensionErrors, AgentRemoveExtensionResponses, BackupConfigData, BackupConfigErrors, BackupConfigResponses, CallToolData, CallToolErrors, CallToolResponses, CancelActiveWorkData, CancelActiveWorkErrors, CancelActiveWorkResponses, CancelTurnData, CancelTurnErrors, CancelTurnResponses, CheckModelData, CheckModelErrors, CheckModelResponses, CheckProviderData, ConfirmToolActionData, ConfirmToolActionErrors, ConfirmToolActionResponses, CreateBaseData, CreateBaseResponses, CreateCustomProviderData, CreateCustomProviderErrors, CreateCustomProviderResponses, CreateScheduleData, CreateScheduleErrors, CreateScheduleResponses, CreateWorkflowData, CreateWorkflowErrors, CreateWorkflowResponses, DeclassifySessionData, DeclassifySessionErrors, DeclassifySessionResponses, DecodeWorkflowData, DecodeWorkflowErrors, DecodeWorkflowResponses, DeleteBaseData, DeleteBaseErrors, DeleteBaseResponses, DeleteScheduleData, DeleteScheduleErrors, DeleteScheduleResponses, DeleteSessionData, DeleteSessionErrors, DeleteSessionResponses, DeleteWorkflowData, DeleteWorkflowErrors, DeleteWorkflowResponses, DetectProviderData, DetectProviderResponses, DiagnosticsData, DiagnosticsErrors, DiagnosticsResponses, DivergeSessionData, DivergeSessionErrors, DivergeSessionResponses, EditMessageData, EditMessageErrors, EditMessageResponses, EncodeWorkflowData, EncodeWorkflowErrors, EncodeWorkflowResponses, ExportBrkbData, ExportBrkbErrors, ExportBrkbResponses, ExportSessionData, ExportSessionErrors, ExportSessionResponses, GetActiveData, GetActiveResponses, GetBaseData, GetBaseErrors, GetBaseResponses, GetCustomProviderData, GetCustomProviderErrors, GetCustomProviderResponses, GetDetectableProvidersData, GetDetectableProvidersResponses, GetExtensionsData, GetExtensionsErrors, GetExtensionsResponses, GetGraphData, GetGraphErrors, GetGraphResponses, GetKbTierData, GetKbTierErrors, GetKbTierResponses, GetLocationData, GetLocationErrors, GetLocationResponses, GetPageBodyData, GetPageBodyErrors, GetPageBodyResponses, GetPricingData, GetPricingResponses, GetPrivacyDisclosureData, GetPrivacyDisclosureResponses, GetProviderModelsData, GetProviderModelsErrors, GetProviderModelsResponses, GetSessionActivityData, GetSessionActivityErrors, GetSessionActivityResponses, GetSessionData, GetSessionErrors, GetSessionExtensionsData, GetSessionExtensionsErrors, GetSessionExtensionsResponses, GetSessionInsightsData, GetSessionInsightsErrors, GetSessionInsightsResponses, GetSessionResponses, GetSessionUsageData, GetSessionUsageErrors, GetSessionUsageResponses, GetSlashCommandsData, GetSlashCommandsResponses, GetToolsData, GetToolsErrors, GetToolsResponses, GetTunnelStatusData, GetTunnelStatusResponses, GetUsageReportData, GetUsageReportErrors, GetUsageReportResponses, GetUsageSummaryData, GetUsageSummaryErrors, GetUsageSummaryResponses, ImportBrkbData, ImportBrkbErrors, ImportBrkbResponses, ImportSessionData, ImportSessionErrors, ImportSessionResponses, IngestConversationData, IngestConversationErrors, IngestConversationResponses, IngestData, IngestErrors, IngestResponses, InitConfigData, InitConfigErrors, InitConfigResponses, InspectRunningJobData, InspectRunningJobErrors, InspectRunningJobResponses, InterruptData, InterruptErrors, InterruptResponses, KillRunningJobData, KillRunningJobResponses, LintData, LintErrors, LintResponses, ListActiveWorkData, ListActiveWorkResponses, ListAppsData, ListAppsErrors, ListAppsResponses, ListBasesData, ListBasesResponses, ListHistoryData, ListHistoryResponses, ListPagesData, ListPagesResponses, ListSchedulesData, ListSchedulesErrors, ListSchedulesResponses, ListSessionsData, ListSessionsErrors, ListSessionsResponses, ListSidebarSessionsData, ListSidebarSessionsErrors, ListSidebarSessionsResponses, ListWorkflowsData, ListWorkflowsErrors, ListWorkflowsResponses, LlamacppDeleteData, LlamacppDeleteErrors, LlamacppDeleteResponses, LlamacppEnsureData, LlamacppEnsureErrors, LlamacppEnsureResponses, LlamacppStatusData, LlamacppStatusResponses, LlamacppStopData, LlamacppStopResponses, LlamacppWarmupData, LlamacppWarmupErrors, LlamacppWarmupResponses, McpUiProxyData, McpUiProxyResponses, MemoryDeleteCategoryData, MemoryDeleteCategoryErrors, MemoryDeleteCategoryResponses, MemoryDeleteEntryData, MemoryDeleteEntryErrors, MemoryDeleteEntryResponses, MemoryInventoryData, MemoryInventoryErrors, MemoryInventoryResponses, ObserveSessionEventsData, ObserveSessionEventsErrors, ObserveSessionEventsResponses, OverrideCredibilityData, OverrideCredibilityErrors, OverrideCredibilityResponses, ParseWorkflowData, ParseWorkflowErrors, ParseWorkflowResponses, PauseScheduleData, PauseScheduleErrors, PauseScheduleResponses, PreviewResetData, PreviewResetErrors, PreviewResetResponses, PreviewStateData, PreviewStateErrors, PreviewStateResponses, ProvidersData, ProvidersResponses, QueryKbData, QueryKbErrors, QueryKbResponses, ReadAllConfigData, ReadAllConfigResponses, ReadConfigData, ReadConfigErrors, ReadConfigResponses, ReadPageData, ReadPageErrors, ReadPageResponses, ReadResourceData, ReadResourceErrors, ReadResourceResponses, ReclassifyData, ReclassifyErrors, ReclassifyResponses, RecoverConfigData, RecoverConfigErrors, RecoverConfigResponses, RemoveConfigData, RemoveConfigErrors, RemoveConfigResponses, RemoveCustomProviderData, RemoveCustomProviderErrors, RemoveCustomProviderResponses, RemoveExtensionData, RemoveExtensionErrors, RemoveExtensionResponses, ReplyData, ReplyErrors, ReplyResponses, ResetAppDataData, ResetAppDataErrors, ResetAppDataResponses, RestartAgentData, RestartAgentErrors, RestartAgentResponses, RestoreStateData, RestoreStateErrors, RestoreStateResponses, ResumeAgentData, ResumeAgentErrors, ResumeAgentResponses, RunningSessionsData, RunningSessionsErrors, RunningSessionsResponses, RunNowHandlerData, RunNowHandlerErrors, RunNowHandlerResponses, SaveWorkflowData, SaveWorkflowErrors, SaveWorkflowResponses, ScanWorkflowData, ScanWorkflowResponses, ScheduleWorkflowData, ScheduleWorkflowErrors, ScheduleWorkflowResponses, SessionsHandlerData, SessionsHandlerErrors, SessionsHandlerResponses, SetActiveData, SetActiveErrors, SetActiveResponses, SetConfigProviderData, SetConfigProviderErrors, SetConfigProviderResponses, SetDefaultModelData, SetDefaultModelErrors, SetDefaultModelResponses, SetKbTierData, SetKbTierErrors, SetKbTierResponses, SetWorkflowSlashCommandData, SetWorkflowSlashCommandErrors, SetWorkflowSlashCommandResponses, StartAgentData, StartAgentErrors, StartAgentResponses, StartOpenrouterSetupData, StartOpenrouterSetupResponses, StartTetrateSetupData, StartTetrateSetupResponses, StartTunnelData, StartTunnelErrors, StartTunnelResponses, StatusData, StatusResponses, StopAgentData, StopAgentErrors, StopAgentResponses, StopTunnelData, StopTunnelErrors, StopTunnelResponses, SystemInfoData, SystemInfoResponses, UnpauseScheduleData, UnpauseScheduleErrors, UnpauseScheduleResponses, UpdateAgentProviderData, UpdateAgentProviderErrors, UpdateAgentProviderResponses, UpdateCustomProviderData, UpdateCustomProviderErrors, UpdateCustomProviderResponses, UpdateFromSessionData, UpdateFromSessionErrors, UpdateFromSessionResponses, UpdateScheduleData, UpdateScheduleErrors, UpdateScheduleResponses, UpdateSessionNameData, UpdateSessionNameErrors, UpdateSessionNameResponses, UpdateSessionUserWorkflowValuesData, UpdateSessionUserWorkflowValuesErrors, UpdateSessionUserWorkflowValuesResponses, UpdateWorkingDirData, UpdateWorkingDirErrors, UpdateWorkingDirResponses, UpsertConfigData, UpsertConfigErrors, UpsertConfigResponses, UpsertPermissionsData, UpsertPermissionsErrors, UpsertPermissionsResponses, ValidateConfigData, ValidateConfigErrors, ValidateConfigResponses, WorkflowToYamlData, WorkflowToYamlErrors, WorkflowToYamlResponses, WritePageData, WritePageErrors, WritePageResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean> = Options2<TData, ThrowOnError> & {
     /**
@@ -84,6 +84,44 @@ export const callTool = <ThrowOnError extends boolean = false>(options: Options<
  */
 export const cancelTurn = <ThrowOnError extends boolean = false>(options: Options<CancelTurnData, ThrowOnError>) => (options.client ?? client).post<CancelTurnResponses, CancelTurnErrors, ThrowOnError>({
     url: '/agent/cancel',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Record the user's acceptance of one cross-institutional data flow (issue #56,
+ *
+ * DR-26 / Task 49).
+ *
+ * ⚠ **This route is a reversal of `/agent/add_extension`'s posture and the
+ * difference is the ruling, not an inconsistency.** That route refuses a private
+ * extension on a public session *outright*, with no user-proof branch, because
+ * attaching one is a raise the user cannot authorize either. A Private↔Private
+ * cross-institution flow is the opposite case: both endpoints are already
+ * private, the tier boundary is not being crossed, and DR-26 states explicitly
+ * that legitimate cross-institutional work under a real DUA exists and that the
+ * user may accept the stated risk. Blocking it outright is the design
+ * researchers route around by turning the feature off. So this route exists, and
+ * the tier refusal beside it is untouched.
+ *
+ * The grant is keyed on the **triple** (session, extension, model affiliation),
+ * where the affiliation is read by the daemon from the same sample that produced
+ * the warning — never from the request. Re-binding to a different institution's
+ * model changes the triple, so the acceptance does not carry over.
+ *
+ * ⚠ **The desktop surface is the accept control on the refusal itself** (Task
+ * 57): `CrossAffiliationAcceptCard` renders inside the failed tool call that
+ * carries `privacy::refusal::CROSS_AFFILIATION_ACCEPT_MARKER`, and posts here
+ * with the `X-User-Action` header this route requires. The generated client
+ * attaches no header of its own, so every caller must supply one — which is the
+ * point: a call without it is refused, and only a surface the user gestured at
+ * has one to send.
+ */
+export const agentCrossAffiliationGrant = <ThrowOnError extends boolean = false>(options: Options<AgentCrossAffiliationGrantData, ThrowOnError>) => (options.client ?? client).post<AgentCrossAffiliationGrantResponses, AgentCrossAffiliationGrantErrors, ThrowOnError>({
+    url: '/agent/cross_affiliation_grant',
     ...options,
     headers: {
         'Content-Type': 'application/json',
@@ -283,7 +321,7 @@ export const removeConfig = <ThrowOnError extends boolean = false>(options: Opti
     }
 });
 
-export const setConfigProvider = <ThrowOnError extends boolean = false>(options: Options<SetConfigProviderData, ThrowOnError>) => (options.client ?? client).post<unknown, unknown, ThrowOnError>({
+export const setConfigProvider = <ThrowOnError extends boolean = false>(options: Options<SetConfigProviderData, ThrowOnError>) => (options.client ?? client).post<SetConfigProviderResponses, SetConfigProviderErrors, ThrowOnError>({
     url: '/config/set_provider',
     ...options,
     headers: {
@@ -481,6 +519,47 @@ export const overrideCredibility = <ThrowOnError extends boolean = false>(option
 
 export const reclassify = <ThrowOnError extends boolean = false>(options: Options<ReclassifyData, ThrowOnError>) => (options.client ?? client).post<ReclassifyResponses, ReclassifyErrors, ThrowOnError>({ url: '/knowledge/bases/{id}/sources/{sid}/reclassify', ...options });
 
+/**
+ * Read a base's tier, its provenance, and what publicizing it would release.
+ *
+ * A plain read: it is the Knowledge view asking about the user's own base, and
+ * the barrier Task 10C installs is for model callers. No proof-of-user, because
+ * nothing is changed.
+ */
+export const getKbTier = <ThrowOnError extends boolean = false>(options: Options<GetKbTierData, ThrowOnError>) => (options.client ?? client).get<GetKbTierResponses, GetKbTierErrors, ThrowOnError>({ url: '/knowledge/bases/{id}/tier', ...options });
+
+/**
+ * Move a knowledge base's privacy tier, on the user's behalf (issue #56 DR-18).
+ *
+ * The ONLY route in the tree that can LOWER one. It is user-only (DR-16's
+ * `X-User-Action`, the same header and the same key Task 18A installs — not a
+ * second one), it works in both directions, and the change carries its
+ * provenance into `.kb-tiers` so a released base stays distinguishable from one
+ * that was always public.
+ *
+ * ⚠ **There is no `kb_set_tier` tool and there must never be one.** A model
+ * raises a tier as a side effect of writing (Task 10B, raise-only) and can do
+ * nothing else.
+ *
+ * ⚠ **The typed confirmation is not enforced here, and that is deliberate**,
+ * unlike `POST /sessions/{id}/declassify` where the daemon re-derives the grade.
+ * A session's grade depends on server state (its stored provenance), so a client
+ * could otherwise claim the weak control for a chat that no longer qualifies.
+ * A base's grade depends only on the DIRECTION, which the request itself states:
+ * a publicize with no phrase is exactly what the request says it wants, and the
+ * phrase's job — making the user check *which* base — is a property of the
+ * dialog, not a claim about server state. What the daemon enforces is the thing
+ * a client cannot fake: the proof that a human asked at all.
+ */
+export const setKbTier = <ThrowOnError extends boolean = false>(options: Options<SetKbTierData, ThrowOnError>) => (options.client ?? client).post<SetKbTierResponses, SetKbTierErrors, ThrowOnError>({
+    url: '/knowledge/bases/{id}/tier',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
 export const checkModel = <ThrowOnError extends boolean = false>(options: Options<CheckModelData, ThrowOnError>) => (options.client ?? client).post<CheckModelResponses, CheckModelErrors, ThrowOnError>({
     url: '/knowledge/check-model',
     ...options,
@@ -548,6 +627,29 @@ export const memoryInventory = <ThrowOnError extends boolean = false>(options?: 
     url: '/memory/inventory',
     ...options
 });
+
+/**
+ * The disclosure copy, and whether it has been acknowledged.
+ *
+ * ⚠ **Deliberately does NOT consult the master privacy switch.** DR-15 turns
+ * off gates, the ratchet and refusals; it does not turn off the truth, and with
+ * enforcement off the exposure is *larger*. Every other privacy route in this
+ * file reads the switch, which is exactly why wiring this one the same way is
+ * the plausible mistake.
+ */
+export const getPrivacyDisclosure = <ThrowOnError extends boolean = false>(options?: Options<GetPrivacyDisclosureData, ThrowOnError>) => (options?.client ?? client).get<GetPrivacyDisclosureResponses, unknown, ThrowOnError>({ url: '/privacy/disclosure', ...options });
+
+/**
+ * Record that the user has read the disclosure.
+ *
+ * ⚠ **DR-16's proof-of-user, unconditionally.** This is the one thing making
+ * DR-17's accepted risks acceptable, so a caller holding nothing but the daemon
+ * secret — which AR-11 measured to be recoverable from inside the daemon, i.e.
+ * the model — must not be able to acknowledge on the user's behalf. Unlike
+ * `upsert_config`'s guard this is NOT additionally gated on the master privacy
+ * switch: turning enforcement off must not hand the model the dismiss button.
+ */
+export const ackPrivacyDisclosure = <ThrowOnError extends boolean = false>(options?: Options<AckPrivacyDisclosureData, ThrowOnError>) => (options?.client ?? client).post<AckPrivacyDisclosureResponses, AckPrivacyDisclosureErrors, ThrowOnError>({ url: '/privacy/disclosure/ack', ...options });
 
 export const reply = <ThrowOnError extends boolean = false>(options: Options<ReplyData, ThrowOnError>) => (options.client ?? client).sse.post<ReplyResponses, ReplyErrors, ThrowOnError>({
     url: '/reply',
@@ -649,6 +751,24 @@ export const getSession = <ThrowOnError extends boolean = false>(options: Option
     security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
     url: '/sessions/{session_id}',
     ...options
+});
+
+/**
+ * Mark a private chat public (issue #56 §12.4/§12.5).
+ *
+ * The ONLY route in the tree that lowers a session's classification. It is
+ * user-only (DR-16's `X-User-Action`), it is graded on the chat's provenance,
+ * and every use leaves a row in `classification_audit` — a declassified session
+ * must never become indistinguishable from one that was always public.
+ */
+export const declassifySession = <ThrowOnError extends boolean = false>(options: Options<DeclassifySessionData, ThrowOnError>) => (options.client ?? client).post<DeclassifySessionResponses, DeclassifySessionErrors, ThrowOnError>({
+    security: [{ name: 'X-Secret-Key', type: 'apiKey' }],
+    url: '/sessions/{session_id}/declassify',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**

@@ -5,7 +5,7 @@
 //! paths before matching (`command.rs`), (b) emits a first-class
 //! `Allow | Ask | Deny` verdict with a per-rule justification (`rule.rs`), and
 //! (c) ships an always-on embedded baseline (`baseline.rs` /
-//! `baseline.policy.yaml`). The ML prompt-injection classifier is untouched.
+//! `baseline.policy.yaml`).
 //!
 //! Slice 1 loads the embedded baseline only (all `deny` rules). Tiered external
 //! files, the remaining `ask` rules, and the `SECURITY_COMMAND_POLICY` off/enforce

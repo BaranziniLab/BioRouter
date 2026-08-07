@@ -120,22 +120,48 @@ fn setup_logging_internal(
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use tempfile::TempDir;
 
-    fn setup_temp_home() -> TempDir {
-        let temp_dir = TempDir::new().unwrap();
-        if cfg!(windows) {
-            env::set_var("USERPROFILE", temp_dir.path());
-        } else {
-            env::set_var("HOME", temp_dir.path());
-        }
-        temp_dir
+    /// Pin the home directory to a scratch tree **and clear
+    /// `BIOROUTER_PATH_ROOT`**, under the workspace's process-wide environment
+    /// lock, for the rest of the enclosing test.
+    ///
+    /// `prepare_log_directory` resolves `BIOROUTER_PATH_ROOT` on every call, and
+    /// that variable is process-global. Since issue #56 this binary contains
+    /// tests that point it at a `TempDir` of their own
+    /// (`commands::knowledge::tests::privacy_tier`), so this test — which asserts
+    /// the DEFAULT state directory, the one whose path carries a `biorouter`
+    /// component — would intermittently resolve into their scratch root and fail
+    /// on exactly that assertion. Clearing the override is what makes the
+    /// assertion mean what it says; taking the same lock those tests take is what
+    /// stops the two interleaving. Setting the home variable under the lock too
+    /// closes the symmetric hazard, which this test previously wrote unguarded.
+    ///
+    /// ⚠ Deliberately NOT `scoped_state_dir!` from `biorouter`'s own logging
+    /// tests, which pins `BIOROUTER_PATH_ROOT` **to** a temp root. That is right
+    /// there — its assertions only look for `logs` and `cli` — and wrong here: a
+    /// temp root has no `biorouter` component, so pinning would turn this test
+    /// red rather than fix it.
+    ///
+    /// A macro rather than a function because `env_lock`'s guard borrows the
+    /// strings, so it cannot outlive a helper that owns them.
+    macro_rules! scoped_default_home {
+        ($temp:ident) => {
+            let $temp = TempDir::new().unwrap();
+            let home = $temp.path().to_string_lossy().into_owned();
+            let _guard = env_lock::lock_env([
+                (
+                    if cfg!(windows) { "USERPROFILE" } else { "HOME" },
+                    Some(home.as_str()),
+                ),
+                ("BIOROUTER_PATH_ROOT", None),
+            ]);
+        };
     }
 
     #[test]
     fn test_log_directory_creation() {
-        let _temp_dir = setup_temp_home();
+        scoped_default_home!(_temp_dir);
         let log_dir = biorouter::logging::prepare_log_directory("cli", true).unwrap();
         assert!(log_dir.exists());
         assert!(log_dir.is_dir());

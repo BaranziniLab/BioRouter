@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBSelectorPalette } from './KBSelectorPalette';
@@ -22,8 +22,8 @@ const state = vi.hoisted(() => ({
 vi.mock('../KnowledgeContext', () => ({
   useKnowledge: () => ({
     bases: [
-      { id: 'alpha', name: 'Alpha', color: '#cf6d47' },
-      { id: 'beta', name: 'Beta', color: '#b85a32' },
+      { id: 'alpha', name: 'Alpha', color: '#cf6d47', tier: 'private' },
+      { id: 'beta', name: 'Beta', color: '#b85a32', tier: 'public' },
     ],
     primaryKbId: state.primaryKbId,
     hiddenKbIds: ['beta'],
@@ -91,6 +91,19 @@ describe('KBSelectorPalette', () => {
   it('marks the primary', () => {
     render(<KBSelectorPalette onClose={mocks.onClose} />);
     expect(screen.getByText('Primary')).toBeInTheDocument();
+  });
+
+  // Issue #56 DR-18. The palette is the switch, so the tier has to be legible
+  // BEFORE the user switches — a badge only on the base you already chose tells
+  // you what you did, not what you are about to do.
+  it('the tier is visible in the palette before the user switches to a base', () => {
+    render(<KBSelectorPalette onClose={mocks.onClose} />);
+    const priv = screen.getByRole('option', { name: /Alpha/ });
+    const pub = screen.getByRole('option', { name: /Beta/ });
+    expect(within(priv).getByText(/Private/)).toBeInTheDocument();
+    // Public is the ordinary state and carries no badge, so the private one
+    // reads as a marking rather than as a label everything wears.
+    expect(within(pub).queryByText(/Private/)).toBeNull();
   });
 
   describe('following the default again', () => {

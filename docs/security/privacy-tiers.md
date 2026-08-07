@@ -3,10 +3,23 @@
 > **What this is.** The design for a privacy-tier system that keeps conversations touched by
 > private models or private data sources from ever reaching a model hosted outside the user's
 > institution. It classifies models, sessions, MCP extensions and knowledge bases, and enforces the
-> boundary at five choke points in the agent loop.
-> **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
-> anything else.** The general filesystem read-deny of §9.5 is **descoped for v1** and this document
-> no longer claims it. §17 still needs rulings.
+> boundary at choke points in the agent loop — the **five** gates A–E designed in §9.1, plus **three**
+> more (F, G, H) that implementation found this design had not named, for **eight** in the system that
+> shipped. They are enumerated in
+> [What shipped, and what did not](#what-shipped-and-what-did-not).
+> **Status:** **Implemented for v1** on the `feat/privacy-tiers` branch — not merged to `main` as
+> of 2026-08-05 — and **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)); read §1 before
+> anything else.** ⚠ **Every section below describes the design as it was written, not the running
+> system.** [What shipped, and what did not](#what-shipped-and-what-did-not) — immediately after
+> this header — is the only place in this document that says which is which, and it names three
+> things a reader would otherwise assume from §7 and §9. Read it first. The general filesystem
+> read-deny of §9.5 is **descoped for v1** and this document
+> no longer claims it. §17 still needs rulings. **§3's R17 (added 2026-08-02) governs the shape of
+> every control here, and [§3.1](#31-the-review-checklist--two-questions-every-control-answers-in-writing)
+> is the two-question checklist each one is reviewed against** — warn the user and let them proceed, never let an agent proceed at all —
+> and **R18 (added the same day) refines it for declassification**: an operating-system
+> authentication per operation, which is what lets an agent *ask* for one. ⚠ **§12 is amended in
+> three places by R18**; read the banners in §12.1, §12.2 and §12.6 before implementing any of it.
 > **Audience:** developers working on the agent loop, `biorouter-server`, the session store, and
 > the desktop GUI.
 
@@ -16,15 +29,191 @@
 > +200. Do **not** chase a line number from this document; the named **symbol** is the anchor. The
 > current positions are tabulated in
 > [the execution plan's drift table](privacy-tiers-execution-plan.md#read-this-before-you-chase-a-line-number),
-> which was re-verified at `9558c346` and confirmed unchanged at `89c1f026`. Three claims here are
-> also false about the tree: §9.3 A1 names a shell-command builder that has never existed, §9.3 B3
-> describes a global-memory mechanism issue #58 deleted, and §2.3 asserts a uniqueness that a second
-> code path contradicts. The execution plan's Task 1 is the task that corrects all three in place.
+> which was re-verified at `9558c346` and confirmed unchanged at `89c1f026`. Three claims here were
+> also false about the tree — §9.3 A1 named a shell-command builder that has never existed, §9.3 B3
+> described a global-memory mechanism issue #58 deleted, and §2.3 asserted a uniqueness that a second
+> code path contradicts. **All three were corrected in place on 2026-08-01** (execution plan Task 1),
+> along with §9.3 B4's ruling, §11.4's missing row, §15.1's migration numbering and §16's counts. The
+> anchors added by that pass were verified against the tree on that date; every *other* anchor in this
+> document remains historical.
 >
 > §9.3 B4's forced choice (ratchet knowledge bases, or declare them a public sink) has since been
 > **ruled** by the operator: *ratchet*. See the execution plan's
 > [Accepted risks](privacy-tiers-execution-plan.md#accepted-risks) for the costs that ruling
 > accepts, and its Tasks 10A–10C for the implementation.
+
+---
+
+## What shipped, and what did not
+
+Written at the close of implementation, 2026-08-05. Everything after this section is the design;
+this section is the ledger.
+
+### Shipped
+
+- **The two-lattice model (§4).** `ProviderTier` is capability, `SessionClassification` is
+  classification, and [`floor`](../../crates/biorouter/src/privacy/mod.rs) is the single crossing
+  between them. `crates/biorouter/src/privacy/`.
+- **The enforcement gates (§9), eight of them.** A — the bind, in `Agent::update_provider`. B — the
+  turn, at the top of `Agent::reply`, repair-first, and the site of the classification ratchet. C —
+  the dispatch, in `ExtensionManager::dispatch_tool_call`, plus its resource- and prompt-reading
+  siblings. D — `chatrecall`, as a SQL predicate in SEARCH and an explicit check in LOAD. E —
+  discovery, in `filter_tools`. F — the two extension channels that are not tool calls. G —
+  cross-session conversation ingest. H — the alternate-provider construction sites.
+- **The knowledge-base tier (DR-18).** A base takes the tier of the most sensitive session that has
+  written to it, the ratchet fires at four write choke points, the barrier refuses at the read ones,
+  and a refusal names what it refused rather than returning a silently short answer. The user can
+  publicize or privatize a base themselves, graded and audited.
+- **Declassification (§12), graded** — a `turn:*` chat keeps its single click; every other
+  provenance owes both the typed phrase and R18 / DR-20's operating-system authentication, and one
+  predicate decides both so they cannot drift apart. In the desktop app, and as
+  `biorouter session declassify <id>` in the CLI, which is the only surface that reaches a private
+  chat no listing shows.
+- **The master switch** (R7 / DR-15 / DR-22) in Settings → Privacy: one control that disables every
+  gate and the ratchet, behind a typed confirmation, stored in its own record beside `config.yaml`
+  rather than in it — because a switch an agent can edit with `text_editor` is not a switch.
+- **The badges** (§14) on every session, model and extension surface, and the **registry and
+  marketplace tiers** (§13).
+- **The migration and the day-one notice** (§15) — see
+  [what happens to your existing chats](privacy-tiers-migration.md).
+- **The non-private-model disclosure** — see
+  [data privacy and patient data](data-privacy-and-phi.md#what-a-non-private-model-can-reach). It is
+  the shipped mitigation for the first item under *Did not ship*, and it is shown whether or not
+  privacy tiers are enabled.
+- **An axis this document does not describe: institutional affiliation.** Ruled after this design was
+  written ([DR-26](privacy-tiers-execution-plan.md#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions),
+  plan Phase 6). Tier asks *how sensitive*; affiliation asks *whose*. A UCSF-hosted model reaching
+  another institution's private connector passes every gate above, because both endpoints are
+  Private — the affiliation axis is what refuses it, or warns and lets the user accept it. Do not
+  reason about §9 as though tier were the only axis.
+- **The cross-institution mixing policy (DR-27) and its accept control, in all three modes.** The
+  setting is `open` / `standard` / `strict`, stored in its own record beside `config.yaml` for the
+  master switch's reason, and *loosening* it costs the operating system's authentication while
+  tightening it is free. The user-facing half is one control, on the refusal itself: under
+  `standard` a press records the acceptance on the in-app proof alone; under `strict` the same
+  press additionally makes `POST /agent/cross_affiliation_grant` raise the system authentication,
+  and the card says so before the press rather than springing an unannounced dialog. Under `open`
+  no mismatch is raised, so there is nothing to accept and no control appears. ⚠ **`strict` is a
+  higher price for a yes, never the absence of one** — a build that withheld the control there
+  would restore the hard block DR-26 exists to prevent, for exactly the deployments careful enough
+  to choose `strict`.
+
+### Did not ship
+
+- **§9.5's general filesystem read-deny — both of DR-14's layers.** Descoped by
+  [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store);
+  plan Tasks 14A–14F are `DEFERRED`, not deleted. A public-capability chat with a shell can still
+  read ordinary files on this machine, including files an earlier private chat wrote outside
+  Biorouter's own storage. This is disclosed to the user rather than mechanised.
+- **§7's cross-session capability matrix: READ is wired on all seven workspace tools, WRITE is
+  wired on none.** ⚠ **This entry was false, and was rewritten against the tree on 2026-08-06.**
+  It used to claim that `crates/biorouter/src/privacy/visibility.rs` had **no production caller**
+  and that `workspace_list` and `workspace_read_conversation` *"do not consult `privacy_tier`"* —
+  and then to name those two tools as the whole of the exposure. Every part of that was wrong by
+  the time it was read: the predicates have callers, and the still-open set is neither those two
+  tools nor a set of that size. A security document that understates its coverage costs as much
+  trust as one that overstates it, so what follows is the state of the tree, symbol by symbol.
+
+  ⚠ **Re-verify before you rely on this.** This branch is under concurrent repair; between the
+  first and second reading of `workspace_extension.rs` while this entry was being written, three
+  tools moved from the *open* list to the *wired* one. Treat every claim here as timestamped
+  2026-08-06 and check the symbol, not the sentence.
+
+  **Wired — the READ half** (the handlers are all in
+  `crates/biorouter/src/agents/workspace_extension.rs`):
+  `workspace_read_conversation`, `workspace_open` *on an existing id*, `workspace_send_prompt`,
+  `workspace_set_tools`, `workspace_close` and `workspace_watch` (per named id, before it
+  subscribes) each call `refuse_unless_visible` before touching the target — a thin delegation to
+  `visibility::refuse_unless_readable`, which asks `visibility::may_read` against a metadata-only
+  row read; `workspace_list` drops rows with `visibility::appears_in_list`. The refusal
+  (`privacy::refusal::workspace_out_of_reach`) answers *private*, *unreadable* and *no such
+  conversation* in one sentence, so it cannot be walked as an oracle. Both extension-**enable**
+  doors on this surface — `workspace_set_tools { add_extensions }` and
+  `workspace_open { new: { extensions } }` — carry Gate F1 through
+  `refuse_gated_extension_enable`, resolved from the compiled baseline *before* the installed-set
+  lookup so that an uninstalled private extension and an installed one give the same sentence.
+
+  ⚠ **That sentence was true of one of the two doors when it was written.** `refuse_gated_extension_enable`
+  was a second, independent spelling of the gate `manage_extensions` already had
+  (`check_enable_allowed`) — same three arms, different words, and the **operator pin first**,
+  where the other put the tier arm first because issue #56's finding 13 had shown the pin to be
+  an install-state oracle. `workspace_set_tools` survived that ordering by accident (it asks with
+  no config entry, before the lookup); `workspace_open { new: { extensions } }` looks the entry up
+  first and so answered *"…is disabled in the Biorouter configuration (enabled: false)"* to a
+  public caller who may not have the connector at all. Closed 2026-08-06 by collapsing the two
+  functions into one — `privacy::refusal::extension_enable_refusal` — with a single clause order:
+  **tier arm, affiliation arm, then the operator pin**, both privacy arms above the one arm that
+  says anything about this machine. `check_enable_allowed` and `refuse_gated_extension_enable` are
+  now renderings of that one gate and decide nothing themselves; a source scan in each file fails
+  if either grows an arm of its own again. The user's HTTP enable door
+  (`POST /agent/add_extension`) keeps its own typed refusal and its own warn-and-proceed posture on
+  the other two arms — DR-26's user/agent asymmetry — but asks the same tier predicate,
+  `privacy::refusal::tier_refuses`, rather than a fourth hand-written copy of it.
+
+  `visibility::tests::the_matrix_has_production_callers` is the assertion that keeps the predicates
+  wired at all — it exists because "the mechanism is built, the entry point is never called" is a
+  failure this campaign shipped repeatedly, and no behavioural test can be written against a gate
+  that does not exist. ⚠ **It is a source scan of `workspace_extension.rs`, and it does not follow
+  the code it guards.** As of this writing the decision body has moved into `visibility.rs`, so
+  `may_read(` no longer appears in the production half of the file the scan reads, while
+  `appears_in_list(` still does. An anti-regression gate keyed on a file name goes quiet when the
+  thing it watches is refactored out of that file, and it cannot tell that case from the
+  regression it was written to catch. Whoever finishes that refactor owes the scan a new anchor.
+
+  **Still open:**
+
+  1. **§7's WRITE row is implemented nowhere, so every wired write enforces VIS only.**
+     `visibility::may_write`, `lineage_of`, `Lineage` and `requires_first_crossing_approval` have
+     **zero** production callers — a tree-wide search for each returns `visibility.rs` itself and
+     two doc comments. So R6's lineage floor (columns B, E and G, `✗ R6`) is unenforced: a public
+     caller may steer, re-tool and close a **public sibling it did not spawn**. And column D's
+     `✓!` first-crossing approval — the disclosure that is the entire reason a private→public
+     downgrade write is *permitted* rather than refused — never fires. `workspace_send_prompt` and
+     `workspace_set_tools` both say so in their own source: *"⚠ This enforces VIS only. §7's write
+     row is `may_write` … and the lineage half is not implemented anywhere"*.
+  2. **`workspace_open { new: … }` implements none of §8.2's spawn matrix.** §7's last row defers
+     that form to §8.2. The extension dimension is now gated (above), but the **model** dimension
+     is not: `open_new_session` creates the session through `WorkspaceServices::start_session`,
+     which takes no capability and binds the machine default provider, and then optionally seeds it
+     with a detached turn carrying prompt text the model wrote. §8.2's hard refusal (public parent,
+     private child) and its approval (private parent, public child) live in `subagent_tool.rs` and
+     are reached only by the `subagent` tool. This is the exact route DR-19's own refusal names —
+     *"they can start a new chat on it and give it the task directly"* — with the model, rather than
+     the user, taking it.
+  3. **DR-16's upward capability raise is HTTP-only.** `raise_needs_user_action` is called from
+     `routes/agent.rs` and `routes/apps.rs` and nowhere else, while
+     `workspace_set_tools { provider, model }` performs the same bind in-process through
+     `Agent::update_provider`. Gate A refuses the *downward* bind there, so a private chat cannot be
+     moved onto a public model; nothing on that path asks for the user proof DR-16 requires to move
+     a chat **up**. `workspace_set_tools` also has no self-target guard — only
+     `workspace_send_prompt` refuses `session_id == caller` — so the target may be the caller's own
+     conversation.
+
+  What is unchanged is the reasoning about the **instrument**: none of this is fixable with the
+  daemon's user-action proof, because a tool call is by definition the model and can never carry
+  proof of a human. That is why the wired half uses `may_read` — the caller's capability against
+  the target's classification — and it is recorded in full in
+  `crates/biorouter-server/src/routes/session_reach.rs`, whose module header carries an overlapping
+  still-open list and must be kept in step with this one.
+
+  Items 1–3 are instances of the pattern [§3.1](#31-the-review-checklist--two-questions-every-control-answers-in-writing)
+  exists to catch: each is the door a requester reaches for once a neighbouring one is shut.
+- **Every open question in §17.** They are open questions, not resolved ones, and several
+  (5 — institutional versus hosted Ollama; 9 — skills carry no classification) describe live
+  permissiveness in the shipped system.
+
+### What the verification does and does not prove
+
+The gates each carry unit and integration tests, the master switch has its own integration binaries
+— `privacy_toggle` in `crates/biorouter/tests/`, `privacy_toggle_config` in
+`crates/biorouter-server/tests/` and `privacy_toggle_export` in `crates/biorouter-mcp/tests/`, one
+per surface rather than one glob in one crate — and the enforcement points are held in place by
+repo-grep assertions that fail when a second call site appears. What this branch does **not** have
+is an independent adversarial review: 19% of its review verdicts came from a second model and 81%
+were self-review by the implementing model family. Weigh the design's claims accordingly, and see
+the execution plan's
+[Review provenance](privacy-tiers-execution-plan.md#review-provenance--what-evidence-this-branch-actually-has)
+for the measurement.
 
 ---
 
@@ -53,7 +242,7 @@ converse is unrestricted: a private model may read anything.
 The five gates sit on *tool calls*, and **that is where this design's guarantee ends.** A
 public-capability session also holds tools that run arbitrary commands and read arbitrary paths, and
 the private material is ordinary files on disk. §9.5 specifies a sixth control that would close that
-channel — a two-layer read-deny over four directories and one file. **It is descoped for v1 by
+channel — a two-layer read-deny over four directories and two files. **It is descoped for v1 by
 operator ruling, and this design does not claim it.**
 
 **So state the boundary plainly, because a reader must not infer a stronger one.** A public model
@@ -132,7 +321,20 @@ Each verified by reading the code, each fixed as a by-product of this design:
 2. **`chatrecall` LOAD mode has no filter of any kind** (`chatrecall_extension.rs:91-158`). Given
    any session id it calls `get_session(&sid, true)` and emits the session name, working
    directory, message count and six verbatim messages. It does not even carry SEARCH's
-   `exclude_session_id` guard. This is the only fully-open cross-session read in the product today.
+   `exclude_session_id` guard. This is **one of two** fully-open cross-session reads in the product
+   today. The other is `platform__ingest_conversation`
+   (`crates/biorouter/src/agents/knowledge_tool.rs:24-86`), which takes a caller-supplied
+   `session_ids` array (`:32-41`), loads each session's full conversation with
+   `get_session(sid, true)` (`:49`) and ingests it into a knowledge base — with no lineage,
+   ownership or tier check. It is dispatched at `agent.rs:3205`, *before* the extension-manager
+   fall-through at `:3339`, so Gate C never sees it; it is not an MCP tool, so Gate E cannot hide
+   it; and it never touches `chat_history_search.rs`, so Gate D never sees it. It is advertised
+   unconditionally (`agent.rs:3878-3883`, whose own comment reads "The conversation-ingestion tool
+   is always available on the platform extension") and its description tells the model outright to
+   "Pass `session_ids` to ingest specific (or multiple) sessions instead"
+   (`agents/platform_tools.rs:64-65`). Because a knowledge base is a machine-wide tree any session
+   may name (§9.3 B4), this is a one-call private→public laundering primitive, and it belongs at or
+   above LOAD in §19's order.
 3. **Three independent session-copy paths carry the conversation but not the provider.**
    `copy_session` (`session_manager.rs:4138-4168`), `diverge_session` (`:4204-4265` — the primary
    GUI diverge, and it does *not* call `copy_session`) and `import_session` (`:4096-4135`) each
@@ -169,12 +371,165 @@ Each verified by reading the code, each fixed as a by-product of this design:
 | R14 | The registry is trusted (only the Baranzini Lab can publish) and the classification ships on the landing site and in `registry.json`. |
 | **R15** | **Users are told what a non-private model can reach.** A model that is not HIPAA-compliant, not hosted on-premise and not local can read what is on the machine; the product says so, in the GUI, in the CLI and in the docs, from one shared copy. Added by [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), which is also what makes its accepted risks acceptable. |
 | **R16** | **A knowledge base is a first-class tiered object, and the *user* owns its tier.** It takes a tier at creation from the model that created it, ratchets on ingest, is unreadable and unwritable to a public-capability session when private — and the user, never a model, may publicize or privatize it. Added by [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
+| **R17** | **A warning for the user, a wall for the agent.** For every privacy- or security-sensitive operation in this design: an operation the **user explicitly initiates** is **warned about and then allowed if they insist** — never hard-blocked; the same operation **initiated automatically by an agent** is **never** permitted — it escalates to a human or it does not happen. Added by [DR-19](privacy-tiers-execution-plan.md#dr-19--a-warning-for-the-user-a-wall-for-the-agent). |
+| **R18** | **Declassification is gated by a system authentication, and that is what lets an agent ask.** Every declassification — one chat or a batch — is authorised by an **operating-system** prompt of the same class as the Keychain authorization at app start: raised **once per operation** (no session, no cached grant), naming the **exact** set it covers, with the password verified by the OS and **never** seen by BioRouter. Because the gate is the prompt and not the caller, **either the agent or the UI may initiate** — an agent may *ask*, precisely because it cannot *satisfy*. Added by [DR-20](privacy-tiers-execution-plan.md#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask). |
+
+⚠ **R18 refines R17; it does not repeal it.** R17's agent half — *never automatically* — is intact:
+an agent-initiated declassification **is** an escalation to a human, because the request is the
+agent's and the effect is the human's. The relaxation reaches **only** operations where an
+unforgeable human act stands between the request and the effect, and it is earned per operation
+rather than inherited. It does **not** reach the five gates of §9.1, the spawn-downgrade, the
+capability raises of DR-16, or any control a task merely *confirms* — a dialog is not a prompt. R18
+also retires the two proofs this document assumed and never defined (§12.1's *"one-shot token minted
+by the renderer over Electron IPC"*, and the execution plan's `secret_key_and_capability_token()`),
+and supersedes §12.6's *"No general bulk declassification"*.
+
+⚠ **R17 is the shape of R9 and of every user-only control here, stated once.** R9 (only the user may
+deprivatise a session) and R16 (only the user may move a base's tier) are **instances** of R17, not
+separate rules — as are DR-16's user-only tier raise and DR-18's user-only publicize / privatize.
+Read R17 first when designing any refusal, confirmation or override, and answer its question — *who
+can initiate this?* — for every control. A design that does not say is defective: an unstated
+initiator becomes whatever the implementer assumes, and the assumption that ships is the permissive
+one. [§3.1](#31-the-review-checklist--two-questions-every-control-answers-in-writing) turns that
+question into the two-item checklist a review must answer **in writing**.
+
+Both halves are load-bearing. A control that **walls the user** is one they route around — by
+turning the whole feature off (R7's master switch exists because that pressure is real) or by
+leaving the product — so it trades a narrow refusal for a machine-wide one and buys nothing. A
+control an **agent** can proceed past after a warning is not a control: there is nobody at the
+keyboard to decline it, and the model writes the next tool call. §14.6's *"warned rather than
+walled"* is R17's user half; §12.2's *"why no agent can invoke it"* is its agent half. **R15 is what
+makes the permissive half legitimate** — a user can only accept a risk that was stated to them —
+which is why R7's ⚠ holds: turning enforcement off must never turn the disclosure off with it.
+
+⚠ **R17 weakens no gate.** The five gates of §9.1 refuse a **model**; they are its agent half and
+stay hard refusals with no override. *"The user could have done this"* is never a reason to let a
+model do it.
 
 ⚠ **R8 is unchanged in words and narrowed in reach.** *"A public model must never reach a private
 session"* remains the invariant every gate is written against. What [DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descoped is the
 **filesystem** channel to that material, not the rule: a public model may not be *handed* a private
 session by BioRouter, and it may still read files on the machine it is running on. §1 states the
 boundary; R15 is why that is disclosed rather than implied.
+
+### 3.1 The review checklist — two questions every control answers in writing
+
+Every new control in this design — a gate, a refusal, a confirmation, an override, a filter — is
+reviewed against exactly two questions. Neither is answerable with a judgement; both are answered
+with an enumeration, in the control's own text, where the next reader finds it instead of
+re-deriving it.
+
+> **Q1 (R17 / [DR-19](privacy-tiers-execution-plan.md#dr-19--a-warning-for-the-user-a-wall-for-the-agent)). Who can initiate this?**
+> A user, an agent, or both — and what does the other party get instead? Silence is a defect, not a
+> gap: an unstated initiator becomes whatever the implementer assumes, and the assumption that
+> ships is the permissive one.
+>
+> **Q2 (added 2026-08-06). What will the user or the model do instead, and is that guarded?**
+> A control does not end the requester's attempt; it redirects it. Name every other entry point to
+> the same capability, and say for each whether it is guarded, by which named predicate, at which
+> call site.
+
+**Q2 exists because one pattern produced three separate leaks in a single audit:** *a refusal that
+closes one door pushes the requester through an adjacent open one.* All three were found by
+someone else's fix, not by the review of the control that did the refusing.
+
+| The control that refused | Where the requester goes next | Guarded when the audit found it |
+|---|---|---|
+| DR-19's spawn downgrade (`PrivacyRefusal::PublicChildOfPrivateParent`), whose text ends *"they can start a new chat on it and give it the task directly"* | `workspace_open { new: { prompt: … } }` — the model starts that chat itself and seeds it with a detached turn | **No**, and **still no**: `open_new_session` binds the machine default provider and asks nothing; §8.2 is enforced only in `subagent_tool.rs` |
+| Gate F1 (`check_enable_allowed`), refusing `manage_extensions` on a private extension | `workspace_set_tools { add_extensions: … }` and `workspace_open { new: { extensions: … } }`, which reached `ExtensionManager::add_extension` directly | **No.** F1 sat on the `manage_extensions` path alone. Closed 2026-08-06 by `refuse_gated_extension_enable` on both doors |
+| The global-memory consent gate (`security/global_memory.rs`), refusing `retrieve_memories(category="*", is_global=true)` | the **project-local** store — itself a cross-session channel, since local memories are inlined in full into every session opened in that directory (§19 item 2) | **No**, by a ruled scope boundary, and the refusal *points at it*: *"Local bulk retrieval (is_global=false) is unaffected."* |
+
+**The third row is why Q2 is worded the way it is.** The weaker question a reviewer reaches for
+first — *does this refusal's text advise a forbidden action?* — catches rows 1 and 2 and misses row
+3, because that refusal advises nothing: it states a **scope disclaimer**, which is good practice,
+accurate, and hands the model the pointer anyway. Nothing in the sentence is advice-shaped for a
+text scan to catch, and the requester needs no advice — it does the next obvious thing. Q2 is a
+question about the **space of available next actions**, not about the wording of the refusal, and
+it must be answered even for a control whose message names no alternative at all.
+
+How an answer is judged:
+
+- **An enumeration, or it is not an answer.** *"Considered"*, *"no other path"* and *"seems
+  covered"* are nods. The artifact Q2 produces is a list of sibling entry points with a verdict
+  each. *"Nothing else reaches this capability"* is acceptable **only** with the list that
+  establishes it — which, for every finding in this campaign, is where the missed path turned up.
+- **Both audiences, separately.** The user's next move matters as much as the model's, and they
+  differ. A control that walls a **user** is one they route around — by turning the whole feature
+  off (R7's master switch exists because that pressure is real) or by leaving the product. A
+  control that merely inconveniences a **model** is one it re-attempts through the next tool in its
+  list, without malice and usually within the same turn.
+- **A guard with no caller is not a guard.** If an answer cites a predicate, it must also cite the
+  production call site. This campaign has shipped **nine** correct, tested, entirely uncalled
+  guards; §7's own matrix was one of them, and the *"Did not ship"* entry above records both the
+  omission and the assertion (`the_matrix_has_production_callers`) that now holds it.
+- **"The model would not think of that" is not a verdict.** The model reads the refusal, the tool
+  list and the error text, and the next tool call is the cheapest thing in the loop. Treat every
+  advertised tool that touches the same data as a live path until it is shown gated.
+- **Q1 does not imply Q2.** A control can name its initiator perfectly and still leak: Q1 is about
+  who *starts* the operation, Q2 about what happens *after it is refused*. Every one of the three
+  rows above answers Q1 correctly.
+
+⚠ **Scope this to the capability, not to the module.** All three leaks crossed a file boundary, and
+two crossed a crate boundary. The sibling path is rarely next to the control — it is the other
+surface that reaches the same data, which is why the answer is written as a list of entry points
+rather than as a claim about the file the control lives in.
+
+**The form the answer takes**, so that a review can be checked for having done it rather than for
+having said it. Q2 is answered with this table and nothing shorter; a control whose section does
+not carry one has not answered Q2, whatever prose surrounds it.
+
+| Other entry point to the same capability | Reachable by | Guarded by | Where that guard is called |
+|---|---|---|---|
+| *(one row per surface — tool, HTTP route, CLI command, config key, file the agent can write)* | user / model / both | named predicate, or **nothing** | `file::symbol`, or **no caller** |
+
+A row reading *"nothing / no caller"* is a legitimate answer. It is a **finding**, recorded where
+the next reader meets it, which is the whole difference between this campaign's fixed leaks and its
+found ones. What is not legitimate is the absence of the row.
+
+### 3.1 Q2 answered for one capability: unloading an extension
+
+Kept here as the worked example, because it is the capability that produced the pattern twice —
+once as the leak (finding 14: `manage_extensions {disable}` ran `ExtensionManager::remove_extension`
+with no privacy decision in scope, so a chat on a public model could unload the clinical connector
+that Gate E will not show it, that Gate C refuses its every call into, and that — since finding 13
+— the catalogue will not even name) and once as the leak's own sibling. The first fix gated
+`manage_extensions` and named the workspace file out of scope; the workspace fix gated the two
+**enable** doors and did not look at the unload one. **One capability, two entrances, and the
+requester needed one line of the tool list to walk from the closed one to the open one.**
+
+| Other entry point to the same capability | Reachable by | Guarded by | Where that guard is called |
+|---|---|---|---|
+| `extensionmanager__manage_extensions {action:"disable"}` | model | `ExtensionManager::assert_extension_manageable` (= `assert_extension_reachable(&normalize(name), Some(admitted))`) | `agents/extension_manager_extension.rs::manage_extensions_impl` |
+| `workspace_set_tools {remove_extensions}` | model | the **same** predicate, called by name | `agents/workspace_extension.rs::handle_set_tools`, per name, before `apply_extension_changes` — **closed 2026-08-06; it was the open door** |
+| `POST /agent/remove_extension` | user, and any holder of the daemon secret (AR-11) | **nothing** | **no caller.** Deliberately off [the gated list](../../crates/biorouter-server/src/routes/session_reach.rs) — it is a *negative control* in `session_reach.rs::every_gated_route_resolves_the_tier_before_it_touches_the_session`, so gating it is an edit to that list and not a line in the handler. Its sibling `POST /agent/add_extension` **is** gated (`session_reach`), which is the same asymmetry one crate over. **Open, and stated: the residual of [#47](https://github.com/BaranziniLab/biorouter/issues/47)** |
+| `GET /agent/tools?session_id=` (the empty-`session_id` branch) | user, through Settings → Extensions → tool permissions | **nothing**, by ruling | `routes/agent.rs::get_tools` removes and re-adds one globally enabled extension on the permission-settings pseudo-session to list its tools. Task 16 keeps this surface unfiltered on purpose — it is the user's own administration view, not the model's context — and the pseudo-session is not a conversation |
+| The config path: `biorouter configure` and `biorouter extension remove` → `config::set_extension_enabled` / `config::remove_extension` | user at the keyboard | **nothing**, by ruling | `biorouter-cli/src/commands/configure.rs`, `commands/extension.rs`. These edit the operator's own file and unload nothing from a live agent. #42's pin is *read* out of that file by every gate above; a gate *on* it would be a gate on the user's own config, which R7's master switch already says is theirs |
+
+The enable half of the same capability is enumerated in §3's third row above and is now one
+predicate (`privacy::refusal::extension_enable_refusal`) behind three model-facing doors —
+`manage_extensions {enable}`, `workspace_set_tools {add_extensions}`,
+`workspace_open {new:{extensions}}` — with the user's HTTP door asking the same tier boolean under
+its own typed refusal. Two further **load** paths are deliberately ungated and belong in the
+enumeration rather than in a fix: `config::resolve_extensions_for_new_session` (a session starts
+holding the operator's enabled set; the tier is enforced downstream at Gates E and C, never by
+refusing to load) and the app/ACP paths (`routes/apps.rs`, `biorouter-acp/src/server.rs`), which
+attach an app's declared extensions to that app's own agent.
+
+The enumeration above is the complete set of production call sites that reach
+`ExtensionManager::remove_extension`, whether directly or through `Agent::remove_extension`. Two
+further matches for `.remove_extension(` in the tree are **not** this capability and are recorded
+so the next enumeration does not have to re-decide them: `PermissionManager::remove_extension`
+(`biorouter-cli/src/commands/configure.rs`, `config/permission.rs`) drops a *permission map* entry
+and touches no server — the census's standing lesson that a name match is not a call site.
+
+⚠ **Do not add a third spelling of the unload rule.** Both model-facing doors call
+`assert_extension_manageable`, which is `assert_extension_reachable` **verbatim** — so discovery
+and management answer with one function, and all three of its consequences hold at both doors: an
+unknown name reads Private and is refused (which is what stops the refusal being the install-state
+oracle finding 13 closed at the catalogue), the name is normalized to the key the executor removes
+under, and a model bound to another institution may *see* a mismatched connector but may not unload
+it. A hand-written `class.tier.is_private() && cap.tier() == Public` at a third door is how these
+two came apart.
 
 ---
 
@@ -336,15 +691,59 @@ does not come back defaulted.
 
 ### 5.3 MCP extensions
 
-`tier: ProviderTier` on `struct Extension`, stamped once at admission in `add_extension` (`:532`),
-`add_client` (`:737`) and `add_inprocess_server` (`:759`).
+**Not stored anywhere — re-derived per read.** This was originally
+`tier: ProviderTier` on `struct Extension`, stamped once at admission in `add_extension`,
+`add_client` and `add_inprocess_server`.
+[DR-23](privacy-tiers-execution-plan.md#dr-23--an-extensions-tier-is-re-derived-from-the-registry-never-stored-locally)
+deleted that field: three call sites had no record to read and re-classified from a bare name
+anyway (Gate F1, `/agent/add_extension`, the sub-agent spawn partition), so a stamped copy was one
+source of truth among four. Every gate now calls `classify_extension` at the point of decision.
 
-On the **record**, not on `ExtensionConfig`, for four reasons each grounded in the tree: it is the
-record `get_client_for_tool` already resolves to (`:1033-1040`); `ExtensionConfig` round-trips
-through user-writable `config.yaml`, which would make classification locally forgeable and
-contradict R11(i); a new field there costs seven match arms plus an OpenAPI cycle; and `pool_key`
-carries no session id, so one `ucsfomopagent` child process is shared across sessions — the badge
-cannot live on the process.
+It was on the **record** rather than on `ExtensionConfig`, and those reasons now argue for having no
+stored copy at all: `ExtensionConfig` round-trips through user-writable `config.yaml`, which would
+make classification locally forgeable and contradict R11(i); and `pool_key` carries no session id,
+so one `ucsfomopagent` child process is shared across sessions — the badge could not live on the
+process either.
+
+**What the resolver keys on.** The union of the config entry's own name and the BAAM registry `id`
+the install recorded in `<config dir>/extension-provenance.json` (`privacy::provenance`). Union
+rather than precedence, so a record can only ever *raise* a tier — forging one, corrupting the store
+or deleting it leaves the answer at least as restrictive as the config-name join alone. That is why
+the store needs no gated writer, and it is the same "raises and never lowers" rule §10.2 states for
+registry freshness.
+
+**Finding the record, when the name is exactly what changed.** The store is keyed by the config
+entry's name at install time, which is a direct hit in the normal case — including the case where
+the registry `id` and the installed name already disagree (`spokeagent-0.4.1` does so today). It is
+*not* a hit after a later rename, because a rename rewrites both the map key and the entry's `name`.
+So each record also carries the `install_dir` the bundle was unpacked into, and a lookup that misses
+by key falls back to matching that directory against the config's own arguments, whole and exactly
+— never by parsing for a `--directory` flag. The install directory is the link a rename cannot
+break: repointing it means relocating the server's code, not editing a label.
+
+**The honest limit, stated at its real height.** There are two ways past the install-directory join,
+and the cheaper one has to be named first or the bar reads higher than it is:
+
+1. **Rename the entry *and* remove its record.** The provenance store is an ordinary file in the
+   config directory, and [DR-17](privacy-tiers-execution-plan.md) descoped the filesystem barrier —
+   so `config.yaml` is agent-writable and so is its sibling. Delete or truncate
+   `extension-provenance.json` and the renamed entry falls back to the config-name join, which after
+   a rename answers Public. The stat-keyed cache picks the deletion up on the next lookup, so this
+   takes effect immediately rather than at the next restart. This is **two edits**, not one, and it
+   is the actual bar.
+2. **Repoint `args` at a copy of the directory.** Strictly harder — it means relocating the server's
+   code, not editing a label — and it is what the directory match is designed to cost.
+
+Neither is a regression: before DR-23 the rename *alone* sufficed, and both routes still only return
+the answer the config-name join would have given, never anything lower. Nor can either be closed
+here, because DR-23 forbids storing a tier — there is no retained value left to fall back on once
+the identity record is gone, and inventing one would recreate the locally-forgeable field DR-23
+deleted. The residual is asserted, not merely described:
+`the_residual_bar_is_a_rename_plus_removing_the_record` in `extension_manager.rs` pins it, so the
+next reader finds it in a test rather than discovering it.
+
+Callers that hold a config must therefore use `classify_extension_entry`; the name-only
+`classify_extension` cannot see the directory and is for callers that genuinely have only a name.
 
 ### 5.4 Knowledge bases
 
@@ -759,23 +1158,24 @@ and retried. One line, very easy to omit.
 These are **required work**, not follow-ups. Two of them would let a public model read private
 content on day one of shipping the gates as designed.
 
-**A1 (critical) — the daemon's auth secret is in the agent's own environment.** From any
-public-model session with `developer`:
+**A1 (critical) — the daemon's auth secret is an ambient bearer credential.** The original finding
+was that from any public-model session with `developer`:
 
 ```
 printenv BIOROUTER_SERVER__SECRET_KEY BIOROUTER_PORT
 curl -s -H "X-Secret-Key: $KEY" http://127.0.0.1:$PORT/sessions/<private-id>/export
 ```
 
-returns the private session's entire transcript as JSON. Verified: `ui/desktop/src/biorouterd.ts:134-135`
-puts `BIOROUTER_PORT` and `BIOROUTER_SERVER__SECRET_KEY` into `additionalEnv`, spread into
-`processEnv = {...process.env, ...additionalEnv}` at `:149-151`. `developer` is a `Builtin`, so
-`shell` runs in-process inside `biorouterd`, and `build_shell_command`
-(`crates/biorouter-mcp/src/developer/shell.rs:337-359`) sets `PATH`, `GIT_EDITOR` and friends but
-**never calls `env_clear()`**. Stdio extensions inherit too (`extension_manager.rs:598-608`:
-`command.args(args).envs(all_envs)`, no `env_clear`). `auth.rs:115-126` is a plain header equality;
-rate limiting is keyed on peer IP, which is `127.0.0.1`. `routes/session.rs:769/771/772` expose
-`GET /sessions/{id}`, `/export` and `POST /sessions/import`.
+returns the private session's entire transcript as JSON. **The `printenv` step no longer works** —
+see the status note below — but everything that made it worth reading still holds, so the finding
+stays. Verified: `ui/desktop/src/biorouterd.ts:305-306` puts `BIOROUTER_PORT` and
+`BIOROUTER_SERVER__SECRET_KEY` into `additionalEnv` (`:299`), spread into
+`processEnv = {...process.env, ...additionalEnv}` at `:320-322`, so the *daemon* still holds the
+secret in its own environment and every in-process code path can read it with `env::var`.
+`auth.rs:131-142` is a plain header equality; rate limiting is keyed on peer IP, which is
+`127.0.0.1`. `routes/session.rs:1076/1078/1079` expose `GET /sessions/{id}`, `/export` and
+`POST /sessions/import`. Possession of the string is still total authority over the daemon, and
+nothing distinguishes the renderer presenting it from anyone else.
 
 This defeats the design specifically: Gate D filters `chatrecall`'s SQL and this route never
 touches `chat_history_search.rs`; Gate B guards `Agent::reply` and this is a read. The
@@ -784,12 +1184,68 @@ the handler that does, and `GET /sessions` yields the session name the typed con
 It also falsifies the design's premise that `GET /sessions` need not be filtered because "this is
 the user's own UI, not a model."
 
-Three fixes, all needed: (1) `.env_remove("BIOROUTER_SERVER__SECRET_KEY")` in
-`build_shell_command` and in the stdio spawn — a live credential leak today, worth doing regardless
-of this design; (2) stop carrying the secret in the environment at all — pass it on a pipe/fd at
-startup, or a `0600` file the daemon reads and unlinks (`BIOROUTER_PORT` may stay); (3) bind
-declassify to a one-shot capability token minted by the renderer, not to `X-Secret-Key`, or R9's
-"only a human" property is documentation rather than mechanism.
+> **Closed for the tool-process paths (2026-07).** `strip_daemon_private_env`
+> (`crates/biorouter-sandbox/src/environment.rs:54`) removes BioRouter's daemon-private variables
+> from every child spawned on an agent's behalf, both the inherited copies and any the extension's
+> own manifest explicitly declares — `doomed_env_keys` (`:81-87`) chains `env::vars_os()` with the
+> command's own `get_envs()`. It is invoked last inside `prepare_child_environment`
+> (`extension_manager.rs:445`), which every stdio and inline-python extension spawn reaches through
+> `child_process_client` (`:448`, called at `:850` and `:920`), and inside `configure_shell_command`
+> (`developer/shell.rs:433`), which is the Developer server's `shell`. Landed in `b249a203` and
+> `8e7407fe` (issue #57). Fix (1) below is therefore **done**, and pinned by
+> `daemon_secret_never_reaches_an_extension_child` (`extension_manager.rs:3541`), which re-invokes
+> the test binary with the secret exported and spawns four real children through the real
+> `prepare_child_environment` — clean manifest and hostile, `None` working dir and `Some(..)` —
+> covering the inherited copy, a manifest that names a daemon-private key in its own `env_keys`, and
+> the `Some(&working_dir)` argument both production spawns actually pass.
+>
+> ⚠ **"Closed" means the child's own environment, not "the model cannot get the secret".** That is
+> the whole of what the strip does and the whole of what the test proves.
+> [AR-11](privacy-tiers-execution-plan.md#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+> measured two channels that survive it, because the *daemon* still holds the secret: on macOS a
+> child reads its parent's environment with `ps -Ewww -p $PPID` (under a hardened, notarized binary,
+> and under every sandbox profile that can be constructed, because `sysctl-read` is not gated), and
+> on Linux `computercontroller__cache view /proc/self/environ` returns it in-process. So a
+> tool-capable session can still obtain the secret; what it can no longer do is find it lying in its
+> own environment. Fix (2) is what closes those channels, and it is open.
+>
+> Fixes (2) and (3) remain open. (2) — stop carrying the secret in the environment at all — is
+> unaddressed and is the reason this finding is not simply deleted: the strip is a filter, a filter
+> is only as good as its key list, and AR-11's two channels do not care about the key list at all.
+> (3) — bind declassification to a proof the daemon never hands its own children, rather than to
+> `X-Secret-Key` — is designed as the `X-User-Action` digest in
+> [Task 18A](privacy-tiers-execution-plan.md#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has),
+> with the residual local-caller half carried by
+> [Open question 20](privacy-tiers-execution-plan.md#open-questions). ~~It is why Task 29's R9
+> property is "only a human *through the GUI*", not "only a human".~~
+>
+> ⚠ **(3) is CLOSED by [R18](#3-settled-requirements) / [DR-20](privacy-tiers-execution-plan.md#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask),
+> and closed by something stronger than the token this finding asked for.** The gate is an
+> **operating-system authentication**, so the property is no longer "only a human *through the GUI*"
+> — it is *only a human, on any surface*, including the CLI, which is why
+> [Task 31](privacy-tiers-execution-plan.md#task-31-the-cli-is-a-required-r10-surface)'s subcommand
+> is legitimate. The `X-User-Action` digest remains the **carrier** on the HTTP path — the Electron
+> main process presents it *after* the prompt it raised — and DR-20 states plainly what the daemon
+> can and cannot verify: that a process holding the per-launch key asserts an authentication
+> succeeded, never that a prompt occurred. Open question 20's local-caller residual is unchanged.
+
+Three fixes were called for. (1) **Done** — strip the daemon's credentials from every child spawned
+on an agent's behalf, on the extension spawn path as well as the shell one. (2) **Open** — stop
+carrying the secret in the environment at all: pass it on a pipe/fd at startup, or a `0600` file the
+daemon reads and unlinks (`BIOROUTER_PORT` may stay). This is what turns the guarantee from "we
+remembered to filter this name" into "there is nothing to filter"; the filter's key list
+(`is_daemon_private_env_key`, `environment.rs:36-50`) is deny-by-default only inside
+`BIOROUTER_SERVER__`/`GOOSE_SERVER__` and falls back to name-shaped markers elsewhere, so a future
+daemon-private variable named outside those prefixes and without a credential-shaped word in it
+would pass straight through. The same list is also only consulted for names that are valid UTF-8 —
+`doomed_env_keys` filters on `key.to_str().is_some_and(..)` (`environment.rs:85`), so a non-UTF-8
+key is never even offered to it. That is out of reach for any name BioRouter sets itself, but it is
+a second reason the guarantee is "we filter this list" rather than "there is nothing to filter".
+(3) ~~**Open**~~ **CLOSED by [R18](#3-settled-requirements)** — the original wording asked to bind
+declassify to a one-shot capability token minted by the renderer rather than to `X-Secret-Key`, *or
+R9's "only a human" property is documentation rather than mechanism*. That property is now mechanism,
+and by a stronger route than a token: an **operating-system authentication** per operation, with the
+`X-User-Action` digest as the HTTP carrier. See the ⚠ in the amendment banner above.
 
 **A2 — `sessions.db` is a plain file.** `sqlite3 <db> "select text from messages_fts"` returns
 every message of every session, no JSON parsing needed, because `messages_fts` is a **contentful**
@@ -838,16 +1294,33 @@ the CLI `/diverge`, and `biorouter-cli/src/commands/session.rs`. **Put the carry
 builders is three chances to miss one and the fail direction is open. Add a test enumerating every
 `create_session` call site.
 
-**B3 (critical) — `memory` auto-injects global memories into every session's system prompt.**
-`crates/biorouter-mcp/src/memory/mod.rs:207-247`: at server init, `retrieve_all(true)` (global) and
-`retrieve_all(false)` (local) are read, appended to the server instructions, and installed with
-`set_instructions`. A private session calls `remember_memory(is_global=true)` with a cohort count
-or a clinical finding; every subsequent session — including a public-model one — loads that text
-into its system prompt at startup. No tool call occurs, so Gates C and E never fire, and `memory`
-is a built-in so R11 makes it public. **This is a stronger channel than `chatrecall`, which Gate D
-was built for.** Fix in v1: either classify memory entries and filter `retrieve_all` by the
-session's capability tier at init, or refuse `memory__remember_memory` from a private-capability
-session with the Gate C machinery.
+**B3 (was critical; now a narrower channel) — `memory`'s global store.** Issues #58 and #63 both
+landed in this branch's base, and between them they closed the two channels this section was written
+about.
+
+*The prompt-injection half (#58).* `MemoryServer::new`
+(`crates/biorouter-mcp/src/memory/mod.rs:489`) calls `compose_instructions` (`:524`, defined at
+`:632`), and global memories are now **index-only**: the global half reads
+`category_names(true)` (`:641`) — which enumerates directory entries and *never opens a body*, so
+the bound holds by construction rather than by convention — and contributes only sorted **category
+names** under `GLOBAL_INDEX_HEADER` (`:342`), emitted at `:676`. Each name is validated as a label
+and rendered as a JSON string literal, i.e. as data, so it cannot forge a prompt line. The listing
+is further gated on `GlobalMemoryConsent`: a server with no consent path (`Unavailable`, `:642`)
+lists nothing at all.
+
+*The tool-call half (#63).* `retrieve_memories` (`:1200`) now calls
+`require_global_consent_path` (called at `:1205`, defined at `:815`) and then refuses
+`category == "*" && is_global` outright (`:1221-1234`), backed by a pre-dispatch gate in
+`crates/biorouter/src/security/global_memory.rs`. The whole store stays reachable one
+user-approved category at a time; it can no longer be drained in one call.
+
+*What remains for #56* is stated in the module's own doc comment (`:627-631`): **the line is drawn
+by _store_ — global vs local — not by the sensitivity of the session that wrote the entry.** Local
+memories are still inlined in full (`:691-703`), so a sensitive note a private session saved locally
+reaches the system prompt of every session later opened in that directory, with no tool call for
+Gate C or Gate E to see. The v1 fix is therefore not a `retrieve_all` filter and not a second
+consent prompt: it is to refuse `memory__remember_memory { is_global: true }` from a
+**private-capability** session, which needs no storage change and is the exact mirror of Gate C.
 
 **B4 — knowledge bases are an unclassified shared sink.** `knowledge` is a built-in ⇒ public.
 Storage is a global tree `~/.config/biorouter/knowledge/<kb-id>/`, and any session may name any KB.
@@ -855,10 +1328,53 @@ Gate C never fires, because both sessions are calling a public extension. **Corr
 reviewer's version:** the active-KB state is no longer purely global — `paths.rs:66-71` adds
 `.active-kb-sessions`, one file per session, with `.active-kb` as the primary fallback. So a public
 session does not silently *inherit* the private session's KB by default; it does still reach it by
-naming it. Ratchet a KB's classification on ingest (KB tier = max over ingesting sessions; a
-public-capability session may not read a private KB), or state plainly that KBs are a designed
-public sink and warn at ingest. "Follow-on" is too weak given the KB is the feature most likely to
-be used from a private OMOP session.
+naming it.
+
+**Ruled (operator, second review round): ratchet.** A knowledge base takes the tier of the most
+sensitive session that has ingested into it, and a public-capability session may not read a private
+KB. The read side is enforced at the seven entry points that accept an explicit `kb_id` and
+therefore bypass the visible-set logic — `kb_search` (`knowledge/server.rs:590-592`),
+`kb_search_raw_sources` (`:618-619`), `kb_export` (`:743`), and the four that route through
+`kb_id_or_primary`, whose doc comment states the bypass outright ("An explicit `kb_id` always wins
+and is never filtered against the session's set", `:308-311`): `kb_list_pages` (`:379`),
+`kb_read_page` (`:396`), `kb_get_graph` (`:482`) and `kb_list_history` (`:497`).
+
+⚠ **Those seven are the *model-facing* read surface, not the whole read surface.** The daemon's HTTP
+routes read a base by a caller-supplied path id with no visible-set filtering either — `GET
+/knowledge/bases/{id}/` `graph` (`routes/knowledge.rs:38` → `get_graph`), `location` (`:39` →
+`:496`), `page` (`:40` → `:822`), `pages` (`:41` → `:522`, and `pages/{*page_path}` at `:42-45` →
+`:543`), `history` (`:46`), `preview` (`:47`) and `export` (`:55` → `:1522`), plus the two raw-source
+handlers at `:1604`/`:1636`. Those are the GUI's own path and are user-driven rather than
+model-driven, so scoping the *tool* ratchet to the seven MCP entry points is the right call — but
+§9.3 A1 establishes that the daemon secret is an ambient bearer credential — no longer sitting in a
+tool child's own environment, but still held in the daemon's, and equal to full authority for
+anything that can read it.
+⚠ **This paragraph used to end with a second clause, citing
+[AR-15](privacy-tiers-execution-plan.md#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+for the claim that holding the secret also lets a caller raise its own session's capability. That
+clause is **withdrawn**, because the risk it cited is closed.** AR-15 was **retired** on 2026-08-02
+(DR-16, commit `0757823f`): binding a session to a private provider
+over HTTP now needs a proof that a human acted (`X-User-Action`, minted per launch by the desktop
+app and held by the daemon only as a digest) on top of the secret, so the secret alone raises
+nothing. **What the secret still buys is unchanged and is the point of this paragraph** — it reads
+these KB routes directly, and that is what makes the seven-tool ratchet a partial control.
+⚠ **Do not read that as "a tool cannot get it".** [AR-11](privacy-tiers-execution-plan.md#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+measured a child recovering its parent's environment with `ps -Ewww -p $PPID` on macOS and
+`/proc/self/environ` in-process on Linux, so a shell-capable session can still reach a KB through
+the HTTP side without touching any of the seven — which is why fix (2) of A1, not the strip, is what
+would close this. The implementing task must decide deliberately whether
+the HTTP routes carry the check too, and record the answer; it must not conclude from this paragraph
+that seven checks are the whole job.
+
+The tier lives in a machine-local sidecar beside `.active-kb` and `.hidden-kbs`, not in
+`manifest.yaml`, because the manifest travels inside the `.brkb` archive and an imported tier would
+be attacker-supplied.
+Existing knowledge bases migrate **public** (fail-open, DR-10) even if a private session fed them —
+an accepted cost, recorded as
+[AR-2](privacy-tiers-execution-plan.md#ar-2--every-knowledge-base-that-exists-today-starts-public-at-migration-even-if-a-private-session-fed-it). The way back out of the ratchet is
+**user-only**: DR-18 gives the user a publicize/privatize control (Task 29A), which is what resolved
+the original AR-1 — a base ratcheted by one private page is *not* unreadable for ever. No model can
+invoke it, in either direction.
 
 **B4.1 — the selection itself is content, so a public session sees a filtered view of it and its
 pointer can read `null`.** A knowledge base's **id and name are user-authored** and routinely name a
@@ -944,7 +1460,7 @@ holds).
 > ⛔ **DESCOPED for v1 by operator ruling ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)), 2026-07-30 — retained, not deleted.**
 > *"We don't have to enforce and encrypt every single step along the way. for now."* Everything in
 > §9.5 below specifies the **filesystem** channel and is not being built: Layer A (the argument
-> barrier), Layer B (the OS sandbox), the four roots and the `config.yaml` entry. The execution plan's
+> barrier), Layer B (the OS sandbox), the four roots and the two file entries. The execution plan's
 > Tasks 14A–14F carry the same banner and keep the measured platform analysis, which is the expensive
 > part and stays true.
 >
@@ -1033,7 +1549,7 @@ working on Windows.
 
 #### 9.5.2 The entries
 
-**Four roots**, and one file:
+**Four roots**, and two files:
 
 | Entry | Resolved by | Why |
 |---|---|---|
@@ -1041,15 +1557,24 @@ working on Windows.
 | `<config>/knowledge` | `knowledge::paths::knowledge_root()` | the tree the KB barrier gates |
 | `<config>/memory` | `memory::global_memory_dir()` | the global store §9.3 B3 is about |
 | `<config>/agent_drafter` | `agent_drafter::default_root()` | app source, `.vault/`, **and app ids** |
-| `<config>/config.yaml` | `Paths::config_dir()` + `CONFIG_YAML_NAME` | **the master switch itself.** §10.6's toggle is loaded from this file at startup, and it is an ordinary non-`SecretGuard` file: a public model can edit it and the next restart has privacy tiers off. Five tools can write it — `text_editor`, `shell`, `cache` **delete**, `kb_export`'s `dest_path` and `export_app`'s `target_dir` — so protecting one of them protects nothing |
+| `<config>/privacy-tiers.json` | `privacy::master_switch::path_for` | **the master switch itself.** §10.6's toggle is loaded from this record at startup, and it is an ordinary non-`SecretGuard` file: a public model can edit it and the next restart has privacy tiers off |
+| `<config>/config.yaml` | `Paths::config_dir()` + `CONFIG_YAML_NAME` | **hooks.** A planted `PermissionRequest` hook loads from here (§17 Q2) and is the one control that can bypass the spawn-downgrade approval. Five tools can write it — `text_editor`, `shell`, `cache` **delete**, `kb_export`'s `dest_path` and `export_app`'s `target_dir` — so protecting one of them protects nothing, and the same five reach every other entry in this table |
 
-Note the two different directories: the session store is under `data_dir`, the other four under
+⚠ **The switch's row moved, and an implementer working from this table must not harden the wrong
+file.** Before [DR-22](privacy-tiers-execution-plan.md#dr-22--the-master-switch-does-not-live-in-configyaml) the toggle
+lived in `config.yaml` and this table had one file entry, which is where that row's reasoning came
+from. Task 42 moved the value to `privacy-tiers.json` and *retired* the `config.yaml` key — it is
+read once at migration and ignored for ever after — so `config.yaml` is no longer a route to the
+switch, and `privacy-tiers.json` is. `config.yaml` stays in the table on its own merits, which are
+hooks.
+
+Note the two different directories: the session store is under `data_dir`, the other five under
 `config_dir`. A deny list written against one prefix misses most of them, and every test that
 relocates both with `BIOROUTER_PATH_ROOT` still passes.
 
 Two properties of the entry list, both learned the hard way:
 
-- **The `config.yaml` entry denies reads as well as writes,** because telling a read from a write
+- **The two file entries deny reads as well as writes,** because telling a read from a write
   means knowing which argument of which tool is a destination — the per-tool knowledge this design
   has just finished abandoning. The cost is stated in §16: a public chat cannot view `config.yaml`
   through a tool. The user can still open it.
@@ -1159,7 +1684,7 @@ public-capability chat loses the shell — which for a commercial model on a Win
 common configuration, and is a large part of why R7's opt-out is a master switch. A
 public-capability chat also cannot read its own history through the `biorouter` CLI (that reads the
 session store), cannot `cat` its own drafted app's source (that is the fourth root), and cannot view
-`config.yaml` through a tool (that is the fifth entry). All four are the control working as
+`config.yaml` through a tool (that is the sixth entry). All four are the control working as
 specified.
 
 #### 9.5.5 The second-order path, stated honestly
@@ -1295,16 +1820,44 @@ are: **the badge is a statement about provenance, not about the data behind the 
 **Publishing to BAAM is what grants a private badge.** `medcp` and `msbaseagent` both reach
 institutional data and are public *solely because they are unpublished*. Where and by whom that is
 revisited: **in the pull request that adds the card to `landing/baam.html`, by the Baranzini Lab
-reviewer** — and it is forced rather than remembered, because the `--check` gate makes it
-impossible to publish a card without the generated Rust const changing in the same commit, and the
-generator hard-fails when a card's description matches a clinical keyword list (`patient`,
-`clinical record`, `EHR`, `PHI`, `medical record`, `de-identified clinical`) with no `data-privacy`
-attribute present.
+reviewer.** Two mechanisms make that a build failure rather than a thing someone remembers, and one
+mechanism that used to be claimed here no longer exists.
+
+1. **The `--check` gate** (`node landing/scripts/build-registry.mjs --check`, run by CI and by
+   `just check-everything`) fails unless the three generated outputs are exactly what `baam.html`
+   generates — so a card cannot be published without `landing/registry.json` and the desktop
+   fallback changing in the same commit, and a *private* card cannot be published without
+   `crates/biorouter/src/privacy/registry_private.rs` changing too.
+2. **The private set is a closed list** (`EXPECTED_PRIVATE_EXTENSIONS` in
+   `landing/scripts/build-registry.mjs`, Task 54). The generator hard-fails unless the catalog's
+   private set is exactly `{cdwagent, ucsfomopagent}` with exactly the affiliation each is recorded
+   under — checked in all three directions, so an extra private card, a missing one, and a
+   re-affiliated one are each a named failure. A card therefore **cannot make itself private**:
+   doing so takes two edits, the list and the page, and the second is what makes somebody review the
+   first.
+
+⚠ **What neither mechanism covers, and what was given up to get here.** This section previously
+asserted a third: that the generator hard-fails when a card's description matches a clinical keyword
+list (`patient`, `clinical record`, `EHR`, `PHI`, `medical record`, `de-identified clinical`) with no
+`data-privacy` attribute. **That rule was deleted in Task 54** (operator ruling, 2026-08-04: *"the
+description don't matter"*). It inferred a security property from marketing prose and could only
+produce false failures — SPOKE describes diseases, and an imaging or literature tool can honestly say
+"patient" while touching nothing sensitive. Its one real use was the case this section is about: a
+future clinical extension whose author forgets to tag it. **The closed list does not catch that** —
+the set simply stays at two, and an untagged clinical card publishes as public. That case now rests
+entirely on the Baranzini Lab reviewer named above. If it needs mechanical cover later, the answer is
+an explicit field on the card, not a return to guessing from the description.
 
 **Two naming consequences, known rather than discovered:** a hand-installed extension *named*
 `ucsfomopagent` inherits the private badge (fail-closed, fine); and a genuinely private extension
-renamed locally becomes public — already the accepted direction under R11(ii), and unavoidable
-because the install records no provenance at all.
+renamed locally used to become public.
+
+The second is closed for marketplace installs by
+[DR-23](privacy-tiers-execution-plan.md#dr-23--an-extensions-tier-is-re-derived-from-the-registry-never-stored-locally):
+the install records the registry `id` and the install directory beside the config entry, and the
+resolver unions them with the name, so renaming the entry changes nothing. It remains open for the
+two cases that carry no registry id — an extension installed **before** that change, and a `.brxt`
+dropped in by hand from a local file — where the config-name join is still the only join available.
 
 **A mechanical scan of the 37-entry registry surfaces one candidate the ruling does not cover** and
 eight that hit a single signal: `ucsfhpcagent` (UCSF CHPC/SLURM job planning, account inspection,
@@ -1378,12 +1931,30 @@ off — was rejected because it silently privatises sessions the user believes a
 they would first learn of it as a refusal weeks later.
 
 Three hardening measures, because the failure mode is an agent disabling its own protection:
-(1) read it bypassing `Config::get_param`'s env branch, straight from the loaded values map, so no
-environment variable can turn protection off; (2) gate the key in `POST /config/upsert` so the flip
-must come from Settings → Privacy with its confirmation; (3) hold the authoritative value in daemon
-memory from startup — **not** SecretGuard, which cannot enforce this (§9.3 C1). Check *inside* the
-gate rather than in an `is_enabled()`, following the `SensitiveOpsInspector` pattern, so a
-mid-session change is honoured and the opt-out is one auditable line rather than an absent gate.
+(1) read it bypassing `Config::get_param`'s env branch, so no environment variable can turn
+protection off; (2) gate the key in `POST /config/upsert` so the flip must come from Settings →
+Privacy with its confirmation; (3) hold the authoritative value in daemon memory from startup —
+**not** SecretGuard, which cannot enforce this (§9.3 C1). Check *inside* the gate rather than in an
+`is_enabled()`, following the `SensitiveOpsInspector` pattern, so a mid-session change is honoured
+and the opt-out is one auditable line rather than an absent gate.
+
+**Where the answer is recorded, which is not `config.yaml` (DR-22).** The three measures above left
+one channel open: the value's home was a file, and the general filesystem barrier was descoped, so
+writing `BIOROUTER_PRIVACY_TIERS: off` into `config.yaml` by hand was still a **next-launch**
+disable — and "only on restart" is not a control, because daemons restart routinely and a model can
+wait. The value therefore lives in its own record, `privacy-tiers.json`, beside `config.yaml` in the
+configuration directory, written by nothing in the tree except the confirmed `/config/upsert` arm.
+`BIOROUTER_PRIVACY_TIERS` remains the name the switch is *addressed* by — the panel reads and writes
+it over `/config/read` and `/config/upsert`, and the daemon answers those from the live value — but
+as a `config.yaml` **key it is retired**: read once, at the first start-up after the upgrade, to
+carry an existing answer across, and removed and ignored from then on. Honouring it "for
+compatibility" would not be a kindness, it would be a second channel.
+
+⚠ **What this does not claim.** The record is an ordinary file, and the descoped filesystem barrier
+leaves it writable by an agent holding `developer__shell` exactly as it leaves the disclosure
+acknowledgement writable. What the move buys is that the documented key is inert and that the value
+has one writer; closing the file channel outright needs the barrier DR-17 deferred or an
+OS-authenticated store, and neither is in v1.
 
 Because it is now one predicate read by every gate, the test that matters is a **matrix**: each gate
 asserted in both toggle positions. A master toggle wired to three gates out of ten passes every
@@ -1456,6 +2027,7 @@ reads as a public caller, which is the safe direction.
 | `messages[].role`, `messages[].timestamp` | **CONTENT — withheld** | meaningful only attached to a withheld body; returning them buys nothing and invites reconstruction |
 | `s.description` → `session_description` | **CONTENT — withheld** | the LLM-generated session title, produced *from the conversation*. A summary of private text, not a label. The field most likely to be mislabelled as metadata, and the one that leaks most per byte. |
 | `s.working_dir` → `session_working_dir` | **CONTENT — withheld** | a filesystem path, but in this product it routinely names a cohort, a study or a patient population |
+| `ChatRecallResult.last_activity` (`session/chat_history_search.rs:14`, rendered at `chatrecall_extension.rs:219`) | **CONTENT-adjacent — withheld** | it is `max` over *matched* message timestamps (`:347-351`), so it dates the private message containing the search term, not the session. Under §11.4's own rule ("anything derived from a message body is content") it is message-derived. Moot once rows are filtered in SQL, but a reviewer checking the table for completeness must not find a hole. |
 | `s.id`, `s.created_at` | existence — may be revealed | acceptable per R13 — **and only safe because LOAD is gated independently.** The two decisions are coupled and must stay coupled. |
 | `total_matches`, `results.len()`, `total_messages_in_session` | existence — may be revealed | and nothing is needed: `total_matches` is summed *after* filtering, and `get_session_totals` counts only sessions already in the filtered set |
 
@@ -1482,6 +2054,17 @@ asserting `s.privacy_tier` appears in **both** builders.
 
 ## 12. Declassification
 
+> ⚠ **AMENDED in three places by [R18](#3-settled-requirements) / [DR-20](privacy-tiers-execution-plan.md#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02.**
+> The **authorization** is now an operating-system authentication prompt, raised once per operation
+> and naming the exact chats it covers. §12.1's *"one-shot token minted by the renderer over Electron
+> IPC"* is retired unbuilt; §12.2's *"no CLI subcommand can construct one"* is withdrawn; §12.6's
+> *"No general bulk declassification"* is superseded — a batch is now the general case. §12.3's
+> wording, §12.4's grading and §12.5's audit are **unchanged in substance**: the grading now governs
+> the in-app review step that precedes the prompt, because DR-20 admits no grading of the prompt
+> itself. The implementation is
+> [Task 29](privacy-tiers-execution-plan.md#task-29-declassification--the-system-authentication-the-batch-and-the-audit)
+> and [Task 31](privacy-tiers-execution-plan.md#task-31-the-cli-is-a-required-r10-surface).
+
 ### 12.1 Where it lives
 
 **History → the session's own row → overflow menu → "Make this chat public…"**, shown only when the
@@ -1489,10 +2072,15 @@ chat is private, and the identical control on the session-detail header, sharing
 `DeclassifySessionDialog` so the two entry points cannot diverge. Not in Settings. Not in the chat
 header. Not anywhere an agent can reach.
 
-Route: **`POST /sessions/{session_id}/declassify`**. Not under `/config/*`, not a tool, not
-reachable from any `workspace_*` handler or MCP server, and explicitly not added to the public-GET
-exemption list. **Per §9.3 A1, secret-key auth alone is not sufficient** — bind it to a one-shot
-token minted by the renderer over Electron IPC.
+Route: ~~**`POST /sessions/{session_id}/declassify`**~~ → **`POST /sessions/declassify`** under R18,
+taking `{ "session_ids": [...] }`, because a per-id route cannot express one authentication over N.
+Not under `/config/*`, not a tool, not reachable from any `workspace_*` handler or MCP server, and
+explicitly not added to the public-GET exemption list. **Per §9.3 A1, secret-key auth alone is not
+sufficient** — ~~bind it to a one-shot token minted by the renderer over Electron IPC~~. **R18
+supplies what that sentence assumed and never defined:** the Electron **main** process raises the OS
+prompt and makes the call itself, presenting the per-launch user-action key
+[DR-16](privacy-tiers-execution-plan.md#decisions-of-record) already requires — one proof of user,
+not two. The renderer never calls this route.
 
 **The same mechanism, for knowledge bases.** [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) adds a second user-only tier change —
 publicize / privatize a base (§5.4) — and it reuses this section's proof-of-user, this section's
@@ -1500,6 +2088,11 @@ dialog primitive and this section's "exactly one lowering writer in the tree" ru
 for one idea is how the two confirmations diverge**, so a `POST /knowledge/bases/{id}/tier` that
 accepts the secret key alone, or a `kb_set_tier` MCP tool, is the wrong implementation of §5.4 and
 not a shortcut. [Task 29A](privacy-tiers-execution-plan.md#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited).
+
+**This section is R17's agent half, and §12.3–§12.4 are its user half.** Declassification is the
+clearest instance of the pair: a model may never invoke it under any circumstances, and the user is
+never *refused* it — they are shown what they are about to expose, graded by how it became private,
+and then allowed to proceed. Neither half is negotiable independently of the other.
 
 ### 12.2 Why no agent can invoke it
 
@@ -1510,10 +2103,68 @@ pub struct UserConfirmation(());   // ZST; constructor is pub(in crate::…)
 pub async fn declassify(sm: &SessionManager, session_id: &str, ok: UserConfirmation) -> Result<()>
 ```
 
-`UserConfirmation`'s constructor is invoked in exactly one place — the HTTP handler, after it has
-matched the typed confirmation. No MCP server, no `ToolRouter`, no `workspace_*` handler, no CLI
-subcommand can construct one. "An agent cannot call this" is enforced by Rust's module privacy
-rather than by the route being undocumented.
+⚠ **Amended by R18.** `UserConfirmation` is no longer a ZST and its constructor is no longer the
+HTTP handler: it is a private-field newtype over the **authorised id set**, returned only by
+`privacy::system_auth::authenticate` after an approved OS prompt, and consumed **by value** — so a
+proof minted for one batch is not spendable on another and none is spendable twice. No MCP server,
+no `ToolRouter` and no `workspace_*` handler can construct one; **the CLI can**, and that is now
+correct, because what gates the operation is the prompt rather than the caller
+([Task 31](privacy-tiers-execution-plan.md#task-31-the-cli-is-a-required-r10-surface)). "An agent
+cannot *complete* this" is enforced by Rust's module privacy plus the operating system, rather than
+by the route being undocumented.
+
+> ⚠ **What actually landed differs from the paragraph above in shape, not in property** (Task 55,
+> which wired DR-20's prompt to the two operations that had been ruled to need it and had no caller).
+> Task 29 shipped before DR-20 was ruled, so `UserConfirmation` **stayed** a ZST carrying the
+> user-action half. The newtype over the authorised id set exists beside it as
+> **`declassify::SystemAuthorization`** — private field, no public constructor, neither `Clone` nor
+> `Copy`, returned only by `declassify::authenticate_declassification` after an approved prompt, and
+> checked per chat with `covers(id)`. There is no `privacy::system_auth::authenticate`: the prompt
+> lives in `declassify.rs` so that `system_auth` never has to name the proof-of-user, which
+> `the_proof_of_user_is_constructed_in_exactly_two_places` would otherwise fail.
+>
+> **Three residuals, recorded rather than left to be discovered.**
+>
+> **(a) Step 3's batch has no consumer.** The **route is still per-id** (`POST
+> /sessions/{id}/declassify`), so §12.1's `POST /sessions/declassify` taking `session_ids[]` is still
+> unbuilt; both real doors pass a one-element slice. A batch costs one prompt *in the mechanism* —
+> one `SystemAuthorization` covers the set it named, pinned by
+> `one_prompt_covers_a_batch_and_covers_only_the_chats_it_named` — but no HTTP surface and no UI
+> reaches it, so **today's product still costs one prompt per chat**. Read plainly: Step 3 shipped a
+> mechanism with no caller, which is structurally the same defect Task 55 exists to fix, one level
+> down. It is the safe version of it — the property is tested and the missing piece is a route, not a
+> gate — but it should not be read as "batch declassification now costs one prompt" in the product.
+>
+> **(b) The prompt is raised by the daemon**, not by the Electron main process as §12.1 describes.
+> That is Task 44's mechanism and it is what makes the CLI door work at all; the cost is that on
+> macOS the dialog is presented by `biorouterd` rather than by the app. ⚠ **Treat this as a shipping
+> risk, not a footnote.** If `LAContext.evaluatePolicy` cannot present a dialog from a background
+> helper — or presents one behind the app window — then every `mcp:*` chat becomes **undeclassifiable
+> from the desktop app**, and no test in the tree can see it, because tests reach the seam and never a
+> platform prompter. What *is* closed: the failure cannot read as success. `DeclassifySessionDialog`
+> calls the route with `throwOnError: true` and routes a rejection to `toastError`, covered by
+> `DeclassifySessionDialog.test.tsx`, and the 403's own sentence names the operating system as the
+> thing that did not confirm. What is **not** verified: whether the dialog appears at all on a
+> notarized macOS build, and whether that sentence survives the generated client into the toast body.
+> Both need a human at a real GUI.
+>
+> **(c) The master switch's prompt is agent-reachable.** `/config/upsert`'s privacy-tiers arm returns
+> before the `is_capability_key(&key) && !is_user_action(&headers)` gate below it, so disabling the
+> tiers takes the typed phrase and `is_secret == false` and **no `X-User-Action`**. (The task text's
+> premise that "the master switch demands `X-User-Action` alone" was never true of the code, before
+> this change or after it.) `PRIVACY_TIERS_DISABLE_PHRASE` is a public constant in shipped source, so
+> a tool call can compose the request. Net of Task 55 Step 2 this is strictly better — what used to
+> disable the tiers *silently* now needs an operating-system dialog that fails closed — but it does
+> introduce something that did not exist: **a hostile tool call can raise an OS authentication dialog
+> on demand**, which is a prompt-fatigue and social-engineering surface. Requiring the header looks
+> nearly free, because `ConfigContext.tsx` is the GUI's only path to `/config/upsert` and always
+> sends it; what stops it being free is `UserActionProof::NoKeyInstalled`. `just run-server`, a
+> hand-run `biorouterd` and every headless deployment hold no key and would be refused, and
+> `/config/upsert` is the **only** production writer of the switch record — so the requirement would
+> make the feature permanently un-disableable there, short of hand-writing `privacy-tiers.json` and
+> restarting. Refusing only `Unproven` while still allowing `NoKeyInstalled` is the shape that closes
+> it without that cost. Left for a ruling rather than taken inside a fixup, because it is a change to
+> an authorization boundary and not to Task 55's four steps.
 
 It is also **the only writer in the tree permitted to lower `privacy_tier`.** Every other write
 goes through the session update builder, whose emission is the monotone `CASE WHEN` and physically
@@ -1620,7 +2271,15 @@ If a private model later runs a turn on it, the ratchet fires again and the user
 again. That is deliberate — declassification is an assertion about the contents *as they stood*,
 not a permanent exemption.
 
-**No general bulk declassification.** One exception, extended from the original design per §16:
+⚠ **SUPERSEDED by R18: bulk is now the general case.** The operator ruled that *"each
+declassification action can declassify multiple chats (in batch) if the user so wants it"* — one
+system authentication may cover any set the user assembles, provided the set is **fixed before the
+prompt and named inside it**. What survives from the paragraph below is its *reasoning*, which
+became the general design: a batch is presented as a review list naming every chat, and it applies
+as **one transaction** or not at all. The `backfill:*` case is now an instance rather than the sole
+exception.
+
+~~**No general bulk declassification.**~~ One exception, extended from the original design per §16:
 sessions whose reason is `backfill:*` get one grouped dialog with a review-by-provider list,
 because a backfill is a **guess made by the system from the last-used provider**, not a user
 assertion about content — and `provider_name` records only the *last* provider, so the guess is
@@ -1658,10 +2317,16 @@ const extension_name = slugFromUrl(download).replace(/-v?\d+(\.\d+)*$/, '');
 ```
 
 plus both keys in the emitted object, plus **hard build failures** (the generator currently never
-fails): if `privacy` is neither value; if `privacy === 'private'` and `extension_name` is empty; and
-if a card's description matches the clinical keyword list with **no** `data-privacy` attribute
-present at all. That last one is the mechanism that forces the medcp/msbaseagent revisit at publish
-time rather than relying on someone remembering.
+fails): if `privacy` is neither value; and if `privacy === 'private'` and `extension_name` is empty.
+
+> **Amended 2026-08-04 (Task 54).** This section originally listed a third failure — a card whose
+> description matches a clinical keyword list with **no** `data-privacy` attribute — and called it
+> the mechanism that forces the medcp/msbaseagent revisit at publish time. **That rule was never
+> going to work and is not in the shipped generator.** It is replaced by a closed list,
+> `EXPECTED_PRIVATE_EXTENSIONS`, which fails the build unless the catalog's private set is exactly
+> `{cdwagent, ucsfomopagent}` with the affiliation each is recorded under. The closed list does *not*
+> cover the untagged-clinical-card case; see the ⚠ in [§10.4](#104-accepted-risks-stated-plainly)
+> for what that trades away and who now carries it.
 
 **The default matters more than the extraction.** Defaulting to `'public'` means an un-annotated
 card is public by construction, so R11(ii)'s fail-open direction is enforced by the tool rather
@@ -1894,6 +2559,15 @@ than omitting them. Omission is what produces "the OMOP tool is broken".
 
 ### 14.6 The opt-out surface, and warned-rather-than-walled
 
+**"Warned rather than walled" is R17's user half, and this section is where it is most visible.**
+Every control on this page states a consequence and then lets the user proceed; none of them refuses
+a person. The agent half is that **none of these surfaces may be reachable by a model** — the master
+toggle in particular, whose typed phrase is a UX guard against an accidental or model-composed
+config write and *not* a proof of a human, since a fixed string compiled into the source is
+replayable by anything holding the daemon secret. The proof of a human is the one
+[DR-16](privacy-tiers-execution-plan.md#decisions-of-record) requires, and there is exactly one of
+it.
+
 **Settings → Privacy**, one switch, **on** by default:
 
 > **Privacy tiers** — On
@@ -1952,11 +2626,19 @@ persistent nag. The badges carry the rest.
 
 ### 15.1 Schema
 
-`privacy_tier TEXT NOT NULL DEFAULT 'public'` and `privacy_reason TEXT`, added by the same
-`ALTER TABLE sessions ADD COLUMN` arm BR-71 Task 1 uses for `parent_session_id`.
-`CURRENT_SCHEMA_VERSION` is 16 and goes to 17 **once**. If this work lands first it takes 17 and
-BR-71 takes 18; co-landing is strongly preferred. `classification_audit` lands in the same
-migration.
+`privacy_tier TEXT NOT NULL DEFAULT 'public'` and `privacy_reason TEXT`, plus
+`classification_audit`, all in the same migration.
+
+**The migration number is not load-bearing, and must not become load-bearing** (execution plan
+O10). `main` is at `CURRENT_SCHEMA_VERSION = 16`. The BR-71 worktree
+(`feat/br71-workspace-control`) already has **17** with a written, working
+`17 => ALTER TABLE sessions ADD COLUMN parent_session_id TEXT`. Whoever merges second silently
+re-uses a number, and a database that already ran the other branch's 17 skips the second feature's
+arm entirely — the exact incident `run_migrations`' own comment records for v11–v14. So this work
+ships a **shape-guarded numbered arm plus an unconditional `ensure_privacy_schema`**, following the
+`ensure_session_incarnation_schema` precedent (called from `reconcile_loop_schema`, itself invoked
+*after* the version loop). With that, merge order is free in both directions and neither branch has
+to wait on the other.
 
 ### 15.2 Backfill — fails open, by decision
 
@@ -1994,7 +2676,7 @@ See §15.5 and §16 for what the backfill actually does to a real machine on day
 | Runtime read — column missing from a projection, unparseable value | fail **closed** (private, with `error!`) | a bug, not a decision. Every session shows a Private badge: immediately visible, immediately fixed, safe meanwhile. The tolerant `try_get(…).ok().flatten()` convention would silently read public, and `branch_point_msg_uid` already being absent from `list_sessions_by_types`'s projection is the live proof that a projection gets missed. |
 | Import of a session with no `privacy_tier` | fail **closed** (private) | an imported transcript of unknown provenance is treated as sensitive; unlike migration, there is no local evidence to reason from |
 | Unknown provider | Public | fail-**safe**, not fail-open: Public is the *less* privileged tier |
-| Unlisted extension | Public | fail-open, **operator ruling R11(ii)**, isolated to one function `classify_extension(name)` with one const and one comment naming the ruling, so reversing it later is a one-line change rather than an audit |
+| Unlisted extension | Public | fail-open, **operator ruling R11(ii)**, isolated to the final `ProviderTier::Public` of one function — `classify_extension_entry`, which `classify_extension(name)` now delegates to — with one const and one comment naming the ruling, so reversing it later is a one-line change rather than an audit |
 | Any gate's lookup fails | refuse | encoded as a refusal inside `Ok(...)`, never as `Err` |
 | NULL `parent_session_id` | `other` ⇒ read-only | safe for R6 |
 
@@ -2005,8 +2687,14 @@ and every session resolves its provider through `restore_provider_from_session` 
 passes Gate A. Where the backfilled tier and the stored provider disagree, Gate B's repair path
 rebinds from the row silently if it can.
 
-**Existing configs:** no migration. No key renamed, no extension entry rewritten, `config.yaml`
-untouched. The opt-out key is absent, which means the default (`on`). One sharp edge to pre-empt: a
+**Existing configs:** one migration, and it touches `config.yaml` only on the installs that set the
+opt-out. No key renamed, no extension entry rewritten.
+[DR-22](privacy-tiers-execution-plan.md#dr-22--the-master-switch-does-not-live-in-configyaml) moves
+the master switch out of `config.yaml` into `privacy-tiers.json`, so the first start after the
+upgrade records this install's answer there and removes `BIOROUTER_PRIVACY_TIERS` from `config.yaml`
+**if it was set** — carrying an existing `off` across rather than silently resetting it. An install
+that never set it, which is nearly all of them, gets the new record and its `config.yaml` is not
+written at all. Absent the key the answer is the default (`on`). One sharp edge to pre-empt: a
 user with `BIOROUTER_LEAD_MODEL` set to a public lead over a private worker now holds a **Public**
 composite, so their private sessions become unrunnable until they change it — hence the pre-flight
 warning in §14.6.
@@ -2019,8 +2707,9 @@ network. Nothing is uninstalled or disabled.
 **Sessions outside History:** `list_sessions` filters to `session_type IN ('user','scheduled')`
 (`session_manager.rs:3537`), so a private Hidden or Terminal session would be enforced forever with
 no GUI declassification surface. **Do not add a "System sessions" filter to History** — on this
-machine that would surface 511 hidden sessions (459 public, 52 private) into a user-facing list, a
-regression traded for an edge case. Use the CLI escape hatch instead (`biorouter session declassify
+machine that would surface **720** hidden sessions (668 public, 52 private) into a user-facing list,
+a regression traded for an edge case. (Re-measured 2026-08-01 alongside §16; the figure was 511 when
+this section was first written, and the bucket grows continuously — the argument only gets stronger.) Use the CLI escape hatch instead (`biorouter session declassify
 <id>`, §14.7), which works by id regardless of `session_type`.
 
 **Rollback:** downgrading the app leaves the columns in place and ignored, and
@@ -2029,9 +2718,10 @@ backfill; rolling forward re-runs nothing, since the migration is versioned.
 
 ### 15.5 Day one must be shown, not discovered
 
-1. The first-run notice states the **actual counts, computed from the user's own DB** — for example
-   *"934 of your 1,321 conversations are now marked private because they last ran on Versa or a
-   local model."*
+1. The first-run notice states the **actual counts, computed from the user's own DB**, over the same
+   population History shows — user + scheduled sessions with at least one message (§16) — for example
+   *"642 of your 2,587 conversations are now marked private because they last ran on Versa or a
+   local model."* Those are this machine's real figures on 2026-08-01; compute, never hardcode.
 2. Grouped declassification extends to **all** `backfill:*` reasons, not only `backfill:unknown`,
    with a review-by-provider list (§12.6).
 3. Run the backfill and show the counts **before** enforcement begins. One launch of "here is what
@@ -2055,13 +2745,24 @@ content):
 
 | session_type | would backfill private | public | NULL provider | total |
 |---|---:|---:|---:|---:|
-| **user** | **934** | 358 | 29 | **1,321** |
+| **user** | **963** | 588 | 2,831 | **4,382** |
 | scheduled | 121 | 76 | 0 | 197 |
-| hidden | 52 | 459 | 0 | 511 |
-| sub_agent | 11 | 33 | 0 | 44 |
+| hidden | 52 | 668 | 0 | 720 |
+| sub_agent | 42 | 33 | 0 | 75 |
 
-**934 of 1,321 user conversations — 70.7% — go private on first launch.** 848 of those are
-`versa_azure` (706) or `versa_bedrock` (142); 86 are `llamacpp` (48) or `ollama` (38).
+**963 of the 1,551 user conversations whose provider is known — 62.1% — go private on first
+launch.** 875 of those are `versa_azure` (733) or `versa_bedrock` (142); 88 are `llamacpp` (48) or
+`ollama` (40).
+
+> **Re-measured 2026-08-01, four days after the design was written, and the numbers moved a lot.**
+> The **NULL-provider** bucket for `user` sessions went from 29 to **2,831** — two orders of
+> magnitude — so the fail-open residual is far larger than first reported. Of those 2,831,
+> **1,509 have at least one message**: 1,509 real conversations of unknown provenance that backfill
+> **public**. Separately, History shows fewer rows than the raw counts imply, because
+> `list_sessions_by_types` uses `INNER JOIN messages m ON s.id = m.session_id`
+> (`session_manager.rs:4279`), so empty sessions never appear. The number the first-run notice must
+> quote is user+scheduled **with at least one message** — **2,587** on this machine today.
+> Re-measure at implementation time; this moved by a factor of three in four days.
 
 And it is not an accident of one machine. `ProviderGuard.tsx:177-186` orders the onboarding cards
 **Llama Server → Ollama → Institutional → Commercial** — three of the four first-run cards are
@@ -2130,10 +2831,14 @@ prediction stands for whatever the next narrowest reading of it turns out to be.
    from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from
    `.biorouter/hooks.yaml` in the working directory, both writable by an agent with `text_editor`.
    An operator wanting zero risk makes it a `Deny`.
-3. ~~**Does the R7 opt-out really stop at Gate C?**~~ **RULED — it stops nowhere.**
-   `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and both read-deny layers
-   (§10.6). The cost is that nothing is recorded while it is off and re-enabling does not
-   reclassify the gap; the typed confirmation states it.
+3. ~~**Does the R7 opt-out really stop at Gate C?**~~ **RULED — it stops nowhere.** Turning the
+   master switch off in Settings → Privacy disables every gate, the ratchet and both read-deny
+   layers (§10.6). The cost is that nothing is recorded while it is off and re-enabling does not
+   reclassify the gap; the typed confirmation states it. ⚠ The `BIOROUTER_PRIVACY_TIERS=off`
+   spelling this entry used to carry names **no channel that exists**: hardening measure (1)
+   bypasses `Config::get_param`'s environment branch, so the variable was never read, and
+   [DR-22](privacy-tiers-execution-plan.md#dr-22--the-master-switch-does-not-live-in-configyaml) retired
+   the `config.yaml` key it looked like. Settings → Privacy is the one door.
 4. **Is the first cross-tier write approval remembered per (caller, target) or per call?**
    Per-pair-per-session-lifetime was chosen because a confirmation on every steer of a public worker
    is miserable and would be clicked through.
@@ -2208,7 +2913,7 @@ effect next turn — a first-class, agent-callable path to attach a public model
 | P5 | **Gate D** — both chatrecall builders + the LOAD-mode check | today's most direct cross-session read path; LOAD has verified zero filtering |
 | P6 | `create_session` carries `privacy_tier` + `provider_name` + `model_config` for all three copy paths | a live laundering path, verified |
 | P7 | The generator's second and third outputs + `--check` | the badge cannot exist in Rust without it |
-| P8 | A1, B3 from §9.3 | the two findings that would let a public model read private content on day one |
+| P8 | A1, B3 from §9.3 | the two findings that would have let a public model read private content on day one; the scrubs named in each have since shipped (#57, #58, #63). **Neither finding is closed by that.** A1's fixes (2) and (3) are open, and AR-11 measures the secret still recoverable from the *parent* process on both platforms; B3's global-memory injection is gone, but local memories are still inlined in full, so a private session's local note reaches every later session in that directory |
 
 ### 18.2 Additions to named BR-71 tasks
 
@@ -2291,10 +2996,20 @@ re-plan of an approved, about-to-be-built feature does not get built.**
 
 ## 19. Suggested implementation order
 
-1. **`chatrecall` LOAD-mode guard.** Five lines. The only fully-open cross-session read in the
-   product today. Ship it on its own, ahead of everything.
-2. **A1 (secret scrubbing + secret off the environment)** and **B3 (memory tier filter)**. Both are
-   live leaks independent of this design.
+1. **`chatrecall` LOAD-mode guard, and the `platform__ingest_conversation` guard beside it.** One of
+   these is five lines; both are fully-open cross-session reads in the product today (§2.3 item 2),
+   and `ingest_conversation` is the worse of the pair because it *writes what it read* into a
+   machine-wide knowledge base. Ship the two together, on their own, ahead of everything.
+2. **A1's remaining half (the secret off the environment entirely)** and
+   **B3 (refuse a global `remember_memory` from a private-capability session)**. Both halves of A1's
+   scrub — shell and extension spawn — and both of B3's original channels have already shipped as
+   #57, #58 and #63, so **neither of the two original repros still works**. What is left of A1 is
+   not merely cosmetic hardening: AR-11 measures the secret still recoverable from the daemon's own
+   environment through the *parent* process (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ`
+   in-process on Linux), which no key list can filter, so taking the secret off the environment is
+   what turns the filter into a guarantee. And B3 keeps one live channel of its own — local
+   memories are still inlined in full into every session opened in that directory
+   ([open question 14](privacy-tiers-execution-plan.md#open-questions)).
 3. **P1 + P2 + P3 (types, Gate A, Gate B)** together with **the typed 409 and the `throwOnError`
    fix**, in one commit. Gate A without them ships as "Internal server error" over a green success
    toast.
@@ -2310,26 +3025,33 @@ re-plan of an approved, about-to-be-built feature does not get built.**
 
 ## 20. Claims verified against the tree, and corrections made
 
+Every anchor below was verified at `708390d8` and has since moved; see
+[the execution plan's drift table](privacy-tiers-execution-plan.md#read-this-before-you-chase-a-line-number).
+**The bare line numbers this section used to carry have been removed rather than re-verified**, because
+a stale number here is worse than none — it reads as a citation and is not one. What survives is the
+record of *what* was checked, anchored on the symbol, which is the only part that was ever durable.
+
 Verified by reading the code at `main` (708390d8) before writing: `CURRENT_SCHEMA_VERSION = 16`; the
 eight-field `ProviderMetadata`; `providerOrdering.ts`'s two `Set`s; `update_provider`'s
 swap-before-persist and its status as the **sole** writer of both `Agent::provider` and
 `sessions.provider_name`; `restore_provider_from_session`'s `Config::global()` fallback;
 `chatrecall` LOAD's complete absence of filtering; both `chat_history_search` builders' existing
-`INNER JOIN sessions s` and SQLite-applied `LIMIT ?`; every `extension_manager.rs` line anchor
-(`filter_tools:877`, `get_all_tools_cached:904`, `get_client_for_tool:1033`,
-`read_resource_tool:1043`, `read_resource:1116`, `get_ui_resources:1153`, `list_resources:1226`,
-`dispatch_tool_call:1288`, the SecretGuard comment at `:1351`, `list_prompts_from_extension:1428`,
-`list_prompts:1458`, `get_prompt:1505`, `add_extension:532`, `add_client:737`,
-`add_inprocess_server:759`, the `Extension` struct's six fields, the `Frontend` refusal at `:691`);
+`INNER JOIN sessions s` and SQLite-applied `LIMIT ?`; every `extension_manager.rs` symbol
+(`filter_tools`, `get_all_tools_cached`, `get_client_for_tool`, `read_resource_tool`,
+`read_resource`, `get_ui_resources`, `list_resources`, `dispatch_tool_call`, the SecretGuard
+comment, `list_prompts_from_extension`, `list_prompts`, `get_prompt`, `add_extension`, `add_client`,
+`add_inprocess_server`, the `Extension` struct's six fields, the `Frontend` refusal);
 `copy_session`/`diverge_session`/`import_session` each hand-rolling a builder that omits
 `provider_name`; `provider_class`'s exact-equality inversion; `routes/agent.rs`'s 500-only error
 mapping and its `call_tool` inspector bypass; `ClientFrame::ModelSelect`'s unchecked
 `update_provider`; `ModelAndProviderContext.tsx`'s missing `throwOnError` and its global
 `setConfigProvider` write; `CurrentModelContext` never being rendered; `memory/mod.rs`'s
-global-memory system-prompt injection; `DEFAULT_SECRET_PATTERNS`; the secret key in
+global-memory system-prompt injection (**since deleted by #58 — see §9.3 B3**);
+`DEFAULT_SECRET_PATTERNS`; the secret key in
 `biorouterd.ts`'s `additionalEnv` and the absence of `env_clear` in both `shell.rs` and the stdio
-spawn; `LeadWorkerProvider::get_name()` returning the lead's name; `factory.rs`'s
-`BIOROUTER_LEAD_MODEL` intercept; the `COALESCE` accumulation precedent at `session_manager.rs:2852`;
+spawn (**both since scrubbed by #57 — see §9.3 A1**);
+`LeadWorkerProvider::get_name()` returning the lead's name; `factory.rs`'s
+`BIOROUTER_LEAD_MODEL` intercept; the `COALESCE` accumulation precedent in `session_manager.rs`;
 the `messages_fts` contentful DDL; `registry.json` (version 1, 37 extensions, 129 skills, ten keys,
 no classification field, `spokeagent-0.4.1` the only version-suffixed id, `medcp` and `msbaseagent`
 absent); `medcp` enabled locally with `CLINICAL_RECORDS_*`; `baam.html`'s render functions and
@@ -2338,7 +3060,7 @@ absent); `medcp` enabled locally with `CLINICAL_RECORDS_*`; `baam.html`'s render
 global-config provider; the CLI plan-mode `get_reasoner` path; `apply_settings_overrides`'s
 name-only extension narrowing; BR-71's 44-task execution plan including Task 1's migration 17, Task
 10's confirmation reason string, and Task 17's `workspace_watch`; and the session-provider aggregate
-counts.
+counts (**re-measured 2026-08-01 — see §16**).
 
 **Corrections made to the input material:**
 
@@ -2348,8 +3070,8 @@ counts.
 | The public `azure` provider shares three config keys with `versa_azure` | The registry name is `azure_openai`, and its shipped `AZURE_OPENAI_ENDPOINT` **default is the UCSF gateway itself** (`azure.rs:204`). The demotion rule is unchanged, but the proposed UX copy ("a direct cloud account, even if your institution pays for it") would be inaccurate. Corrected in §14.5. |
 | The knowledge active-KB is a global file, so a public session inherits a private session's KB by default | `paths.rs:66-71` adds `.active-kb-sessions`, one file per session, with `.active-kb` as the primary fallback. The KB-as-shared-sink attack stands (any session may name any KB); the "inherits by default" framing does not. Corrected in §9.3 B4. |
 | The design's fix list covers `copy_session` | `diverge_session` (`:4204`) is the primary GUI diverge path and does **not** call `copy_session`; `import_session` (`:4096`) is a third. Corrected in §9.3 B1, and the fix moved onto `create_session`. |
-| History would gain a "System sessions" filter so Hidden sessions have a declassification path | That surfaces 511 hidden sessions on this machine into a user-facing list. Replaced with the CLI `declassify <id>` escape hatch. §15.4. |
-| Hidden sessions: 435 public / 52 private (487 total) | Re-measured: 459 public / 52 private (511 total). §16. |
+| History would gain a "System sessions" filter so Hidden sessions have a declassification path | That surfaces every Hidden session on this machine into a user-facing list — 511 when the objection was raised, 720 as of 2026-08-01 (see the row below). Replaced with the CLI `declassify <id>` escape hatch. §15.4. |
+| Hidden sessions: 435 public / 52 private (487 total) | Re-measured: 459 public / 52 private (511 total). Re-measured again 2026-08-01: 668 public / 52 private (720 total) — the point is that this bucket grows continuously, not that any one figure is right. §16. |
 | `provider_class` at `routes/apps.rs:2061-2098` | The function is at `:2089`; `:2061` is the start of its doc comment. |
 | `filterExtensions` at `baam.html:3906` | `:3909`. |
 | BR-71 is approved and about to be built | Its design doc's own status line reads *"Current — proposal only; nothing below is implemented"*, and issue #30 is open. The dependency argument is unaffected; the wording is. §18. |

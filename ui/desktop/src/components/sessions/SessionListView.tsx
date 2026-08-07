@@ -51,6 +51,8 @@ import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 import { EmptyState } from '../ui/empty-state';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import {
   getCachedSessionList,
   refreshSessionList,
@@ -353,6 +355,13 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
     // Import modal state
     const [showImportModal, setShowImportModal] = useState(false);
+
+    // Issue #56 §12.1: declassification is attached to the History ROW, not to
+    // the chat title menu. The dialog is mounted from here (rather than inside
+    // `SessionItem`) because `SessionItem` is declared in this component's body,
+    // so every re-render is a fresh component type and a dialog owned by a row
+    // would be torn down and remounted mid-interaction.
+    const [declassifyTarget, setDeclassifyTarget] = useState<Session | null>(null);
 
     // Search state for debouncing
     const [searchTerm, setSearchTerm] = useState('');
@@ -687,6 +696,30 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       [loadSessions]
     );
 
+    const handleDeclassifyClick = useCallback((session: Session) => {
+      setDeclassifyTarget(session);
+    }, []);
+
+    // The row is stale the moment the daemon answers: its badge and its
+    // overflow menu both key on `privacy_tier`. Patch the shared cache as well
+    // as this pane's list, exactly as the delete path does, so the sidebar's
+    // Recents and any second History pane stop badging it too.
+    const handleDeclassified = useCallback((sessionId: string) => {
+      const markPublic = (currentSessions: Session[]) =>
+        currentSessions.map((session) =>
+          session.id === sessionId
+            ? {
+                ...session,
+                privacy_tier: 'public' as const,
+                privacy_reason: 'declassified_by_user',
+              }
+            : session
+        );
+      updateCachedSessionList(markPublic);
+      setSessions(markPublic);
+      setDeclassifyTarget(null);
+    }, []);
+
     const handleOpenInNewWindow = useCallback((session: Session, e: React.MouseEvent) => {
       e.stopPropagation();
       window.electron.createChatWindow(
@@ -704,12 +737,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       onDeleteClick,
       onExportClick,
       onOpenInNewWindow,
+      onDeclassifyClick,
     }: {
       session: Session;
       onEditClick: (session: Session) => void;
       onDeleteClick: (session: Session) => void;
       onExportClick: (session: Session, e: React.MouseEvent) => void;
       onOpenInNewWindow: (session: Session, e: React.MouseEvent) => void;
+      onDeclassifyClick: (session: Session) => void;
     }) {
       const handleEditClick = useCallback(
         (e: React.MouseEvent) => {
@@ -789,7 +824,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
             aria-label={`Open session ${session.name}`}
           >
-            <h3 className="text-label truncate">{session.name}</h3>
+            {/* This row's SessionItem SHADOWS the exported
+                components/sessions/SessionItem.tsx — same name, different
+                component, both reachable from History. They are badged
+                identically and to the same rule (dense dot, Private only), or
+                the marker would depend on which of the two a surface happened
+                to mount. */}
+            <div className="flex min-w-0 items-center gap-1.5">
+              <h3 className="text-label truncate">{session.name}</h3>
+              {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
+            </div>
             {session.diverged_from && (
               <div className="flex items-center gap-2 mt-0.5 text-text-muted text-supporting min-w-0">
                 <GitBranch className="w-3 h-3 flex-shrink-0" />
@@ -923,6 +967,24 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                     <NewWindow className="w-4 h-4" />
                     Open in new window
                   </DropdownMenuItem>
+                  {/* Issue #56 §12.1. The row's own overflow menu, and the ONLY
+                      place declassification is offered besides the session
+                      page's action bar — deliberately not `SessionNamePill`'s
+                      title menu, which is one careless click from the chat
+                      title.
+
+                      Private rows only: a public chat has nothing to
+                      declassify. Before §3.10 folded every row action behind
+                      this one `⋯`, the tier gated the whole BUTTON, because a
+                      "More actions" trigger that opened a one-item menu — and
+                      an empty one on every public row — was worse than no
+                      trigger at all. The menu now always carries the open and
+                      delete items, so only the ITEM is gated. */}
+                  {session.privacy_tier === 'private' && (
+                    <DropdownMenuItem onSelect={() => onDeclassifyClick(session)}>
+                      Make this chat public
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuSeparator />
                   <DropdownMenuItem
                     variant="destructive"
@@ -1013,6 +1075,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                         onDeleteClick={handleDeleteSession}
                         onExportClick={handleExportSession}
                         onOpenInNewWindow={handleOpenInNewWindow}
+                        onDeclassifyClick={handleDeclassifyClick}
                       />
                       {/* One indented block for all of a parent's children, not
                           one wrapper each: a lone row inside its own wrapper is
@@ -1028,6 +1091,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                               onDeleteClick={handleDeleteSession}
                               onExportClick={handleExportSession}
                               onOpenInNewWindow={handleOpenInNewWindow}
+                              onDeclassifyClick={handleDeclassifyClick}
                             />
                           ))}
                         </div>
@@ -1146,6 +1210,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           onConfirm={handleConfirmDelete}
           onCancel={handleCancelDelete}
         />
+
+        {/* Mounted only while a row is targeted, so a closed dialog holds no
+            session and cannot arrive pre-satisfied by a previous row's phrase. */}
+        {declassifyTarget && (
+          <DeclassifySessionDialog
+            session={declassifyTarget}
+            onClose={() => setDeclassifyTarget(null)}
+            onDeclassified={handleDeclassified}
+          />
+        )}
       </>
     );
   }

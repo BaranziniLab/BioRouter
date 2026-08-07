@@ -13,8 +13,11 @@ import {
   llamacppWarmup,
   type LlamaCppModel,
   type LlamaCppStatusResponse,
+  type PrivacyBarrierBody,
 } from '../api';
 import { useConfig } from './ConfigContext';
+import { isUserActionRefusal, userActionHeaders } from '../utils/userAction';
+import { showCrossAffiliationNotice } from '../utils/crossAffiliationNotice';
 import {
   getModelDisplayName,
   getProviderDisplayName,
@@ -38,6 +41,22 @@ export const UNKNOWN_PROVIDER_MSG = 'Unknown provider in config -- please inspec
 // success
 const CHANGE_MODEL_TOAST_TITLE = 'Model changed';
 const SWITCH_MODEL_SUCCESS_MSG = 'Successfully switched models';
+
+/**
+ * Issue #56 DR-16. The one refusal in this feature addressed to the USER rather
+ * than to the model, and one the user should ordinarily never see: the model
+ * picker carries the proof, so this appears only on a backend the app did not
+ * start and which was therefore handed no user-action key (open question 23).
+ *
+ * It names that cause instead of accusing the person at the keyboard of being a
+ * model, and it says what still works — because most of the app does.
+ */
+export const NO_USER_PROOF_TOAST_TITLE = "Can't switch this chat to a private model";
+export const NO_USER_PROOF_TOAST_MSG =
+  'This chat is connected to a backend started outside the Biorouter app, which has no way to ' +
+  'confirm a request came from you. Chats already on a private model keep working, and ' +
+  'switching to a public model still works. To use a private model, open this chat in the ' +
+  'Biorouter app.';
 
 /**
  * Whether `currentModel`/`currentProvider` mean anything yet.
@@ -85,6 +104,39 @@ const formatContext = (tokens: number | undefined) =>
   typeof tokens === 'number' && tokens > 0 ? tokens.toLocaleString() : 'unknown';
 
 const errorMessage = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+/**
+ * Issue #56 Gate A. The 409 body, if this is one.
+ *
+ * Under `throwOnError: true` the generated @hey-api client throws the PARSED
+ * RESPONSE BODY rather than an `Error` (see `api/client/client.gen.ts`), so the
+ * typed barrier arrives here verbatim. Anything else — a network failure, a 500
+ * — falls through to the generic error toast.
+ */
+const privacyBarrierOf = (error: unknown): PrivacyBarrierBody | null =>
+  error && typeof error === 'object' && (error as { code?: unknown }).code === 'privacy_barrier'
+    ? (error as PrivacyBarrierBody)
+    : null;
+
+/**
+ * The Gate A refusal card (design §14.4): what happened, which two tiers
+ * collided, why the boundary exists, and the shortest way forward.
+ *
+ * It names the tier and the models only. Never the chat's title or working
+ * directory — a refusal must not carry conversation content.
+ */
+const privacyBarrierMessage = (barrier: PrivacyBarrierBody) => {
+  const lines = [
+    'This chat is private, so it can only run on a private model — its contents never reach a model hosted outside UCSF.',
+  ];
+  if (barrier.available_private_providers.length > 0) {
+    lines.push(`Available private models: ${barrier.available_private_providers.join(', ')}.`);
+  }
+  lines.push(
+    'To use a public model here, make this chat public first (History → this chat → Make public). That permanently exposes its contents and cannot be undone.'
+  );
+  return lines.join('\n');
+};
 
 const acceleratorMemoryLabel = (kind: string | undefined) =>
   kind === 'apple_unified' ? 'unified memory' : 'VRAM';
@@ -278,8 +330,19 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           }
         }
 
+        // Issue #56 DR-26. The bind's own answer, kept so the warning it carries
+        // can be shown once the switch has actually succeeded — `undefined` when
+        // this call was skipped because there is no chat to bind.
+        //
+        // ⚠ Typed `unknown`, matching what `showCrossAffiliationNotice` takes.
+        // The generated client declares this route's 200 as `unknown` (the
+        // OpenAPI `body = String` this handler now carries has not been
+        // regenerated into `src/api/` yet), and a narrower annotation here would
+        // have to be revised the moment it is — while the runtime check inside
+        // the presenter is what actually decides.
+        let boundNotice: unknown;
         if (sessionId) {
-          await updateAgentProvider({
+          const bound = await updateAgentProvider({
             body: {
               session_id: sessionId,
               provider: providerName,
@@ -287,7 +350,18 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
               context_limit: model.context_limit,
               request_params: model.request_params,
             },
+            // Issue #56 DR-16: THIS is the model picker, so this request is the
+            // user's act. Without the header the daemon cannot tell it from a
+            // model curling the same route and refuses every switch to a
+            // private model.
+            headers: await userActionHeaders(),
+            // Issue #56: without this the generated @hey-api client returns
+            // {error} instead of throwing, so a 409 privacy refusal is
+            // discarded, setConfigProvider rewrites the global default to the
+            // refused provider, and a green toast claims the switch worked.
+            throwOnError: true,
           });
+          boundNotice = bound.data;
         }
 
         phase = 'config';
@@ -296,6 +370,7 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             provider: providerName,
             model: modelName,
           },
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
 
@@ -308,9 +383,49 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
           title: CHANGE_MODEL_TOAST_TITLE,
           msg: `${SWITCH_MODEL_SUCCESS_MSG} -- using ${model.alias ?? modelName} from ${model.subtext ?? providerName}`,
         });
+        // Issue #56 DR-26 at the BIND surface. Binding a model covered by one
+        // institution's agreements into a chat holding another institution's
+        // connectors is a mismatch the daemon has detected since Task 48 and only
+        // ever logged — so the user got the success toast above and no statement
+        // at all until the first tool call was refused. The body is the daemon's
+        // own words, naming both institutions, and it is empty for every bind
+        // that crosses no boundary, which is nearly all of them.
+        //
+        // ⚠ **After the success toast and after the `return`-less path, not in
+        // place of them.** DR-26 warns; it does not refuse. The switch happened,
+        // it is reported as having happened, and this adds what the success toast
+        // cannot say. A refused switch never reaches here — it throws into the
+        // `catch` below, where the Gate A card explains a boundary that BLOCKED.
+        showCrossAffiliationNotice(boundNotice);
         return true;
       } catch (error) {
         console.error(`Failed to change model at ${phase} step -- ${modelName} ${providerName}`);
+        // A privacy refusal is not a failure to report — it is a boundary to
+        // explain. Rendered as the Gate A card rather than as a stack trace.
+        const barrier = privacyBarrierOf(error);
+        if (barrier) {
+          toastError({
+            title: `Can't switch this chat to ${model.alias ?? modelName}`,
+            msg: privacyBarrierMessage(barrier),
+            traceback: privacyBarrierMessage(barrier),
+          });
+          return false;
+        }
+        // Issue #56 DR-16. The daemon refused because the request carried no
+        // proof it came from the user — which on this path means the backend was
+        // started outside the app and has no user-action key at all, since the
+        // picker always sends the header. The refusal body is model-facing
+        // prose; falling through to the generic arm below would report a policy
+        // refusal as a provider failure with a raw error string, which is the
+        // failure mode the Gate A comment above exists to prevent.
+        if (isUserActionRefusal(error)) {
+          toastError({
+            title: NO_USER_PROOF_TOAST_TITLE,
+            msg: NO_USER_PROOF_TOAST_MSG,
+            traceback: errorMessage(error),
+          });
+          return false;
+        }
         toastError({
           title: `${providerName}/${modelName} failed`,
           msg: `${error}`,
@@ -332,6 +447,12 @@ export const ModelAndProviderProvider: React.FC<ModelAndProviderProviderProps> =
             provider: provider,
             model: model,
           },
+          // Issue #56 DR-16: `/config/set_provider` writes BIOROUTER_PROVIDER
+          // by construction and so is guarded unconditionally. This is the
+          // app's own first-run seeding of the bundled default — still a
+          // renderer act, and without the header it would 409 on every launch
+          // that has no provider configured yet.
+          headers: await userActionHeaders(),
           throwOnError: true,
         });
         // Same API-mediated write, same stale cache (#52).

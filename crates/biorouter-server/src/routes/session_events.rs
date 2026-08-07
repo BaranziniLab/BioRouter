@@ -170,6 +170,7 @@ pub(crate) async fn bus_lag_resync_frame(
     responses(
         (status = 200, description = "Read-only observer stream of the session's live events",
          body = MessageEvent, content_type = "text/event-stream"),
+        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof"),
         (status = 404, description = "No such session"),
         (status = 401, description = "Unauthorized - invalid secret key")
     )
@@ -177,7 +178,21 @@ pub(crate) async fn bus_lag_resync_frame(
 pub async fn observe_session_events(
     Path(session_id): Path<String>,
     State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
 ) -> axum::response::Response {
+    // Issue #56. This route is `GET /sessions/{session_id}` plus a live tail: the
+    // first frame it sends is the whole stored conversation. That sibling has
+    // been gated by `session_reach` since Task 58 and this one was not, which is
+    // the "unguarded sibling" defect exactly. The gate goes FIRST — ahead of the
+    // bus subscription as well as the store read, because a subscription that
+    // outlives a refusal is a side channel of its own.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+
     // Subscribe BEFORE the snapshot so no event falls in the gap between them.
     let mut rx = session_events::subscribe(&session_id);
 
@@ -435,12 +450,23 @@ mod tests {
         collected
     }
 
-    /// A watch on a session that does not exist is a 404, not an empty stream.
-    /// Note the ordering this is NOT allowed to change: `observe_session_events`
-    /// subscribes to the bus BEFORE calling `get_session`, deliberately, so the
-    /// 404 is produced after a subscription that is then dropped.
+    /// A watch on a session that does not exist is refused, not an empty stream
+    /// — and since this route joined the `session_reach` list it is refused as
+    /// **403, not 404**, for an unproven caller.
+    ///
+    /// ⚠ **That change is the control working, not a regression.** `Unreadable`
+    /// is refused identically to `Private` by design (`routes::session_reach`,
+    /// "the blast radius is wider than private chats"): a 404 here would answer
+    /// "no such chat" for ids that do not exist and 403 for ids that do, which is
+    /// precisely the per-id existence oracle the refusal is worded to close. A
+    /// caller holding the user-action proof still gets the honest 404, and
+    /// `session_reach`'s own tests hold that half.
+    ///
+    /// Note the ordering this is NOT allowed to change: the gate runs before
+    /// `observe_session_events` subscribes to the bus, and the subscription still
+    /// precedes `get_session` so no event falls between snapshot and stream.
     #[tokio::test]
-    async fn observing_an_unknown_session_is_404() {
+    async fn observing_an_unknown_session_is_refused() {
         use tower::ServiceExt;
         let state = crate::state::AppState::new().await.unwrap();
         let response = routes(state.clone())
@@ -451,6 +477,6 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::NOT_FOUND);
+        assert_eq!(response.status(), axum::http::StatusCode::FORBIDDEN);
     }
 }

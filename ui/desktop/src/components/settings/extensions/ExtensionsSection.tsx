@@ -20,9 +20,17 @@ import {
   shouldSuggestChatrecall,
 } from './chatrecallSuggestion';
 import { toastService } from '../../../toasts';
-import type { ExtensionConfig } from '../../../api/types.gen';
+import type { ExtensionConfig, ProviderTier } from '../../../api/types.gen';
 import { BrxtInstallModal } from '../../BrxtInstallModal';
 import BrowseExtensionsModal from '../../baam/BrowseExtensionsModal';
+import { catalogFreshnessLine, loadRegistry, type RegistryLoad } from '../../baam/registry';
+
+/** The global default provider, as the extension cards need to describe it. */
+export interface DefaultProvider {
+  /** Display name — the card names what it judged against. */
+  name: string;
+  tier: ProviderTier;
+}
 
 interface ExtensionSectionProps {
   deepLinkConfig?: ExtensionConfig;
@@ -45,7 +53,76 @@ export default function ExtensionsSection({
   onModalClose,
   searchTerm = '',
 }: ExtensionSectionProps) {
-  const { getExtensions, addExtension, removeExtension, extensionsList } = useConfig();
+  const { getExtensions, addExtension, removeExtension, extensionsList, read, getProviders } =
+    useConfig();
+  const [defaultProvider, setDefaultProvider] = useState<DefaultProvider | null>(null);
+
+  /**
+   * §14.5's third state, scoped to what Settings can honestly compute.
+   *
+   * ⚠ The design asks for a state "computed against the focused session". This
+   * screen has no session: a grep for `session` across `SettingsView.tsx` and
+   * this file returns nothing, and with tabs and splits there is no single
+   * focused chat once the user has navigated away from one. Inventing one here
+   * would be a fabricated answer to a real question.
+   *
+   * So Settings answers the question it *can* answer — will a newly created
+   * chat be able to call this? — by resolving the tier of the global default
+   * provider, and the card names that provider so the scope of the claim is
+   * visible. The per-chat answer lives in the composer's extension selector,
+   * which is already given the id of the chat it belongs to.
+   *
+   * (This file is greppped for that identifier and must keep returning zero
+   * hits — a fabricated "focused session" here is the wrong implementation the
+   * gate exists to catch, so do not name one even in a comment.)
+   */
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const name = (await read('BIOROUTER_PROVIDER', false)) as string | null;
+        if (!name) return;
+        const providers = await getProviders(false);
+        const match = providers.find((provider) => provider.name === name);
+        if (cancelled || !match?.metadata.tier) return;
+        setDefaultProvider({
+          name: match.metadata.display_name || match.name,
+          tier: match.metadata.tier,
+        });
+      } catch (error) {
+        // A tier nobody could read judges nothing — the cards simply say less.
+        console.warn('[ExtensionsSection] Failed to resolve the default provider tier:', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [read, getProviders]);
+  /**
+   * The marketplace catalogue, resolved once for the whole screen (issue #56
+   * §13.5). Each card needs to say where it came from — marketplace or a file —
+   * and that is a question only the catalogue answers; resolving it per row
+   * would be one IPC round-trip per extension on a screen that routinely lists
+   * twenty, which is exactly why `defaultProvider` above is passed through too.
+   */
+  const [catalog, setCatalog] = useState<RegistryLoad | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    loadRegistry()
+      .then((load) => {
+        if (!cancelled) setCatalog(load);
+      })
+      // `loadRegistry` documents that it never rejects, and it is hardened so
+      // that stays true against a hostile document — but this screen is not the
+      // right place to find out it was wrong. Without a handler the failure is
+      // an unhandled rejection and every §13.5 provenance line silently
+      // vanishes, which looks exactly like a slow load and never resolves.
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const [selectedExtension, setSelectedExtension] = useState<FixedExtensionEntry | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -272,12 +349,22 @@ export default function ExtensionsSection({
   return (
     <section id="extensions">
       <div className="">
+        {/* §10.2's staleness line. The provenance under every card below is only
+            as good as the catalogue it was read from, so how old that catalogue
+            is belongs on the same screen, once. */}
+        {catalog && catalogFreshnessLine(catalog) && (
+          <p className="text-xs text-text-subtle mb-3">
+            Marketplace catalogue · {catalogFreshnessLine(catalog)}
+          </p>
+        )}
         <ExtensionList
           extensions={extensions}
           onToggle={handleExtensionToggle}
           onConfigure={handleConfigureClick}
           disableConfiguration={disableConfiguration}
           searchTerm={searchTerm}
+          defaultProvider={defaultProvider}
+          catalog={catalog}
         />
 
         {!hideButtons && (

@@ -32,6 +32,8 @@ import { SearchView } from '../conversation/SearchView';
 import BackButton from '../ui/BackButton';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Message, Session } from '../../api';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { EmptyState } from '../ui/empty-state';
@@ -61,8 +63,17 @@ const SessionHeader: React.FC<{
   onBack: () => void;
   children: React.ReactNode;
   title: string;
+  /**
+   * Sits beside the title, NOT in the metadata row below it.
+   *
+   * The metadata row renders only once the conversation has loaded; the title
+   * renders immediately. A privacy marker that appears a beat after the page
+   * does is a marker you can miss by reading fast, which is precisely the
+   * failure R10 exists to prevent.
+   */
+  titleAdornment?: React.ReactNode;
   actionButtons?: React.ReactNode;
-}> = ({ onBack, children, title, actionButtons }) => {
+}> = ({ onBack, children, title, titleAdornment, actionButtons }) => {
   return (
     <div className="biorouter-page-header -mx-8 flex flex-col px-8 pb-8">
       <div className="flex items-center pt-0 mb-1">
@@ -70,7 +81,10 @@ const SessionHeader: React.FC<{
       </div>
       {/* §4.2 — `text-title` carries the 24/600/-0.01em the three utilities
           beside it were spelling out by hand. */}
-      <h1 className="text-title mb-4 pt-6">{title}</h1>
+      <div className="flex min-w-0 items-center gap-2 mb-4 pt-6">
+        <h1 className="text-title min-w-0 break-words">{title}</h1>
+        {titleAdornment}
+      </div>
       <div className="flex items-center">{children}</div>
       {actionButtons && <div className="flex items-center space-x-3 mt-4">{actionButtons}</div>}
     </div>
@@ -150,6 +164,13 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
   const [isSharing, setIsSharing] = useState(false);
   const [isCopied, setIsCopied] = useState(false);
   const [canShare, setCanShare] = useState(false);
+  // Issue #56 §12.1's second entry point. The session page is where a user goes
+  // to answer "what is in this chat?", so it is the other place the answer "no
+  // longer anything private" belongs. Same dialog as History's row menu, so the
+  // two cannot come to ask for different confirmations.
+  const [declassifyOpen, setDeclassifyOpen] = useState(false);
+  const [tier, setTier] = useState(session.privacy_tier);
+  useEffect(() => setTier(session.privacy_tier), [session.privacy_tier]);
 
   const messages = session.conversation || [];
   const billedTokenEstimate = billedSessionTokenEstimate(session);
@@ -270,6 +291,11 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         <Sparkles className="w-4 h-4" />
         Resume
       </Button>
+      {tier === 'private' && (
+        <Button onClick={() => setDeclassifyOpen(true)} size="sm" variant="outline">
+          Make public
+        </Button>
+      )}
     </>
   ) : null;
 
@@ -280,6 +306,13 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           <SessionHeader
             onBack={onBack}
             title={session.name}
+            // The full pill, not the dense dot: this page has room, and it is
+            // the surface a user opens to answer "what is in this chat?". It
+            // reads the LOCAL tier, so a declassification made from the button
+            // beside it clears the badge without waiting for a refetch — an
+            // action whose only visible effect arrives on the next page load
+            // reads as an action that did nothing.
+            titleAdornment={tier ? <PrivacyBadge tier={tier} /> : null}
             actionButtons={!isLoading ? actionButtons : null}
           >
             <div className="flex flex-col">
@@ -371,6 +404,17 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {declassifyOpen && (
+        <DeclassifySessionDialog
+          session={session}
+          onClose={() => setDeclassifyOpen(false)}
+          onDeclassified={() => {
+            setTier('public');
+            setDeclassifyOpen(false);
+          }}
+        />
+      )}
     </>
   );
 };

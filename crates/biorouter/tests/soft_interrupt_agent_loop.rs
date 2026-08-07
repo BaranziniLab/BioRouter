@@ -145,6 +145,8 @@ impl Provider for SteeringProvider {
             model_doc_link: String::new(),
             config_keys: vec![],
             allows_unlisted_models: false,
+            tier: Default::default(),
+            runs_locally: false,
         }
     }
 

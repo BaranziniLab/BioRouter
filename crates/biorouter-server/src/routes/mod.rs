@@ -48,6 +48,38 @@ pub(crate) fn secret_matches(candidate: &str, expected: &str) -> bool {
     diff == 0
 }
 
+/// The body of `signature`'s function in `src`: everything after the signature
+/// up to the next line that is a bare `}` at column 0 — which is
+/// `awk '/sig/,/^}/'` in Rust.
+///
+/// It is the ONE span a structural assertion about a handler is allowed to read.
+/// Several route facts in this crate cannot be asserted behaviourally —
+/// `AppState::new()` opens the developer's REAL session database — and the
+/// failure mode of a whole-file `contains` is that it finds the fact in the
+/// handler *next door*. A second copy of this extractor is how two scans start
+/// disagreeing about where a function ends, so there is one, and every test
+/// using it carries a negative control proving it did not over-read.
+///
+/// It lives here rather than in `auth.rs` beside the first scan that needed it,
+/// for the reason recorded on [`secret_matches`]: `auth` is a **lib-only**
+/// module and `src/routes/` is compiled into the `biorouterd` binary as well, so
+/// nothing under `src/routes/` can name `crate::auth`. A scan in a route module
+/// that reached for it there compiles for the lib and breaks the binary.
+///
+/// `split_once` rather than byte-index slicing so the whole thing is panic-free
+/// by construction (`clippy::string_slice`).
+///
+/// `#[cfg(test)]`, so it is absent from every shipped binary.
+#[cfg(test)]
+pub(crate) fn body_of<'a>(src: &'a str, signature: &str) -> &'a str {
+    let (_, from_signature) = src
+        .split_once(signature)
+        .unwrap_or_else(|| panic!("`{signature}` is not in this file"));
+    from_signature
+        .split_once("\n}\n")
+        .map_or(from_signature, |(body, _)| body)
+}
+
 #[cfg(test)]
 mod origin_tests {
     use super::is_local_origin;
@@ -92,6 +124,7 @@ pub mod reset;
 pub mod schedule;
 pub mod session;
 pub mod session_events;
+pub mod session_reach;
 pub mod setup;
 pub mod status;
 pub mod tunnel;
@@ -131,6 +164,19 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(session_events::routes(state.clone()))
         .nest(
             "/knowledge",
-            knowledge::router(state.knowledge_service.clone()),
+            // Issue #56 Task 58 / #47. `POST /knowledge/active` repoints a named
+            // chat's knowledge bases and its KB-less write target, so it is a
+            // session-addressing route and takes the same gate as the other
+            // four. It is layered rather than called from the handler because
+            // this router is state-typed on `Arc<KnowledgeService>` so that it
+            // can be tested without an `AppState` — see
+            // `session_reach::gate_knowledge_active`, which explains the choice
+            // and buffers the body only for the one route it gates.
+            knowledge::router(state.knowledge_service.clone()).layer(
+                axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    session_reach::gate_knowledge_active,
+                ),
+            ),
         )
 }

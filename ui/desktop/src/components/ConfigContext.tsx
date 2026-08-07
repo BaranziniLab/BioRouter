@@ -19,11 +19,13 @@ import {
   getProviderModels as apiGetProviderModels,
 } from '../api';
 import { syncBundledExtensions } from './settings/extensions';
+import { userActionHeaders } from '../utils/userAction';
 import {
   isCapabilityDefaultEnabled,
   shouldDefaultEnableAgentDrafter,
   shouldDefaultEnablePromotedCapability,
 } from './settings/capabilities/capabilities';
+import { PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './settings/privacy/privacyTiers';
 import type {
   ConfigResponse,
   UpsertConfigQuery,
@@ -46,7 +48,7 @@ interface ConfigContextType {
   providersList: ProviderDetails[];
   extensionsList: FixedExtensionEntry[];
   extensionWarnings: string[];
-  upsert: (key: string, value: unknown, is_secret: boolean) => Promise<void>;
+  upsert: (key: string, value: unknown, is_secret: boolean, confirm?: string) => Promise<void>;
   /**
    * Re-read the whole config from the daemon.
    *
@@ -163,14 +165,28 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
   }, [reloadConfig]);
 
   const upsert = useCallback(
-    async (key: string, value: unknown, isSecret: boolean = false) => {
+    async (key: string, value: unknown, isSecret: boolean = false, confirm?: string) => {
       const query: UpsertConfigQuery = {
         key: key,
         value: value,
         is_secret: isSecret,
+        // Issue #56 Task 30: the typed confirmation Settings > Privacy sends
+        // with a write to `BIOROUTER_PRIVACY_TIERS`. Absent for every other
+        // caller, which is the whole point — the daemon refuses a bare upsert of
+        // that key, so a model composing an ordinary config write cannot flip
+        // the master switch.
+        ...(confirm === undefined ? {} : { confirm }),
       };
       await upsertConfig({
         body: query,
+        // Issue #56 DR-16: this is the GUI's ONLY path to `/config/upsert`, and
+        // real settings screens write capability keys through it —
+        // BIOROUTER_LEAD_MODEL / BIOROUTER_LEAD_PROVIDER from Lead/Worker
+        // settings, OLLAMA_HOST and LLAMACPP_EXTERNAL_HOST from the provider
+        // forms. Those are the user editing their own settings; the daemon
+        // guards the same four keys against a model curling the route, and
+        // without this header it could not tell the two apart.
+        headers: await userActionHeaders(),
       });
       await reloadConfigAfterWrite();
     },
@@ -190,6 +206,12 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       const query: ConfigKeyQuery = { key: key, is_secret: is_secret };
       await removeConfig({
         body: query,
+        // Issue #56 DR-16: the same guard as `upsert`, because a DELETE of a
+        // capability key restores its default and `OLLAMA_HOST`'s default is
+        // loopback — i.e. Private. This is the GUI's only path to
+        // `/config/remove`, and clearing a provider's host from the provider
+        // form comes through here.
+        headers: await userActionHeaders(),
       });
       await reloadConfigAfterWrite();
     },
@@ -441,3 +463,25 @@ export const useConfig = () => {
   }
   return context;
 };
+
+/**
+ * Whether the daemon is enforcing privacy tiers (issue #56, DR-15).
+ *
+ * Read off the config cache rather than fetched, because the caller is
+ * `PrivacyBadge` and there are a dozen of those on a session list. The cache is
+ * refreshed on mount and after every write, including Settings → Privacy's own,
+ * so a flip repaints every badge in the app on the next render.
+ *
+ * ⚠ **Returns `true` — enforcing — outside a `ConfigProvider`, rather than
+ * throwing.** Same shape as `useResolvedTheme`, and for a sharper reason: the
+ * fallback decides what a badge SAYS. A hook that threw would make the badge
+ * unmountable outside the provider; one that fell back to `false` would print
+ * "enforcement off" on a machine that is enforcing, which is the same class of
+ * false statement DR-15 rejects the unchanged pill for. The safe fallback is the
+ * one that claims nothing.
+ */
+export function usePrivacyTiersEnabled(): boolean {
+  const context = useContext(ConfigContext);
+  if (context === undefined) return true;
+  return privacyTiersEnabledFromConfig(context.config[PRIVACY_TIERS_KEY]);
+}

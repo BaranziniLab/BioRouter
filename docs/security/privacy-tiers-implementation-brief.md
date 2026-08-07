@@ -6,10 +6,13 @@
 > [`privacy-tiers.md`](privacy-tiers.md) (the design) or
 > [`privacy-tiers-execution-plan.md`](privacy-tiers-execution-plan.md) (the fifty-one task units) —
 > it tells you how to use them and where they are known to be wrong.
-> **Status:** Proposed — **narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)).**
-> The plan it fronts has failed four independent adversarial review rounds and is expected to change
-> again during implementation. Read [the brief is subject to change](#the-brief-is-subject-to-change)
-> before anything else.
+> **Status:** **Executed** — the work this brief fronts is implemented for v1 on the
+> `feat/privacy-tiers` branch, not merged to `main` as of 2026-08-05. It is retained as the record of
+> which enforcement approaches are dead and why. **Narrowed by operator ruling on 2026-07-30 ([DR-17](privacy-tiers-execution-plan.md#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) and [DR-18](privacy-tiers-execution-plan.md#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)).**
+> The plan it fronts had failed four independent adversarial review rounds before implementation
+> began, and did change during it. Read [the brief is subject to change](#the-brief-is-subject-to-change)
+> before anything else, and see the design's
+> [What shipped, and what did not](privacy-tiers.md#what-shipped-and-what-did-not) for the outcome.
 >
 > ⚠ **Stage 3 is descoped.** The general filesystem barrier — the stage that failed review three times —
 > is out of scope for v1; its tasks are marked `DEFERRED` in the plan and kept intact. Two new task
@@ -417,8 +420,15 @@ ships**. A blanket refusal would break the product's own remediation advice, so 
 distinguish the **user's** act from the **model's** — which no HTTP route can do without something
 that proves a human acted.
 
-Recorded as AR-15, ruled on as **DR-16**, and ⚠ **DR-16 still has no task written for it**; see
-[Stage 4](#stage-4--the-master-toggle-the-user-only-tier-raise-and-the-ui) and open questions 23–24.
+Recorded as [AR-15](privacy-tiers-execution-plan.md#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials),
+ruled on as **DR-16**, and ✅ **built and shipped** — Task 18A, commit `0757823f`, 2026-08-02. An
+upward provider bind over HTTP now needs `X-User-Action` as well as the daemon secret, and **AR-15 is
+retired**: it is the one accepted risk in this campaign that an implementation, rather than a scope
+ruling, took off the list. (An earlier revision of this line said *"DR-16 still has no task written
+for it"*; that was true when it was written and is not now.) See
+[Stage 4](#stage-4--the-master-toggle-the-user-only-tier-raise-and-the-ui) and open questions 23–24,
+which are the residuals — a daemon started with no key refuses every raise including the human's, and
+the CLI has no proof at all.
 
 ### Individually killed approaches
 
@@ -863,7 +873,11 @@ What the checking pass will verify. Pre-empt it.
    copy is asserted **identically in both columns** (DR-15: propagating a stamp is not classifying).
 8. **The accepted risks are still the accepted risks.** AR-1 through AR-15 are rulings, not bug
    reports. A PR that closes one silently has changed a decision; a PR that *widens* one has introduced
-   a defect. Either way it must say so.
+   a defect. Either way it must say so. ⚠ **And a risk that has been closed must stop being described
+   as open** — AR-1, AR-6, AR-9, AR-10 and AR-15 are all off the list now, each carrying a
+   RESOLVED / RETIRED marker naming what closed it. A security document that overstates a weakness is
+   wrong in the same way one that understates it is: it spends the reader's trust in the entries that
+   are accurate.
 9. **Commit hygiene.** Conventional commits, no `Co-Authored-By` trailers, one commit per task, nothing
    pushed.
 10. **Docs.** Anything new under `docs/` carries the context header, sentence-case headings, a

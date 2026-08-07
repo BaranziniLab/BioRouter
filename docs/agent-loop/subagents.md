@@ -370,6 +370,42 @@ The following operations are blocked to ensure subagents remain focused on their
 
 > **Note.** Subagents can browse extensions for suggestions but cannot enable them to avoid modifying the parent session.
 
+### A child cannot change the privacy tier
+
+A subagent is a session of its own, so delegation would otherwise be a way around the
+[privacy tier](../security/privacy-tiers.md) of the chat that delegated. It is not: **a spawn cannot
+change the tier in either direction.**
+
+| Parent chat | Child asks for | What happens |
+|---|---|---|
+| Public | a public model | Runs. The child is public. |
+| Public | a private model | **Refused.** A public chat cannot mint a private helper — that would be a way for a public conversation to reach private data through a proxy. |
+| Private | a private model | Runs. The child starts private in its own right — its classification is derived from its own model, not copied from the parent — and the reason is recorded as `inherited:<parent id>` so the lineage is auditable. |
+| Private | a public model | **Refused.** The task prompt a private chat writes is itself private context, so handing it to an externally hosted model is the leak the tier exists to stop. |
+
+Two consequences worth knowing before you write a prompt that delegates:
+
+- **The child's tier is decided by its own model, not its parent's.** A private parent's child is
+  private because the only model it is allowed to run on is a private one — not because privacy is
+  inherited by lineage. That is also why a private parent cannot read another chat *through* a
+  public child: the child is judged on its own capability.
+- **A public child silently loses private extensions, and is told so.** If the parent's extension
+  set contains a private data extension (UCSF OMOP, CDW), a public-capability child is created
+  without it rather than being refused, and the result the parent gets back names what was dropped.
+  A child you asked for `extensions: []` loses nothing and is told nothing — silence there would
+  read as a claim that something was removed. The same applies to an extension belonging to a
+  different institution than the child's model.
+
+If a spawn is refused, the fix is not to retry: switch the chat you are delegating *from*, or start
+a new chat on the model you want the work done on.
+
+Every *check* above is off when privacy tiers are off (Settings → Privacy): no spawn is refused for
+a tier reason and no extension is dropped for one. **The tier itself still propagates, though** — a
+child born to a private parent is still stamped private, permanently, because that stamp is column
+propagation rather than a check. It is deliberately outside the switch: a spawn that laundered a
+private parent's mark to public while the feature was off would write that permanently, and
+re-enabling the feature never revisits an existing row.
+
 ## Related documentation
 
 - [Workspace Control extension](../extensions/built-in/workspace.md) — the extension that advertises the spawn tool, plus the cross-session tools this page's migration table points at.
@@ -377,4 +413,5 @@ The following operations are blocked to ensure subagents remain focused on their
 - [Workflows](../workflows/README.md) — how to author the workflow files a subagent can be configured from.
 - [Workflow schema reference](../workflows/workflow-schema-reference.md) — every field available in a workflow file, including where workflows are discovered.
 - [Permission modes](../security/permission-modes.md) — which modes allow autonomous subagent dispatch and which disable it.
+- [Privacy tiers](../security/privacy-tiers.md) — why a spawn cannot change a chat's privacy tier in either direction, and what a public child loses from its inherited extension set.
 - [Environment variables](../configuration/environment-variables.md) — `BIOROUTER_SUBAGENT_MAX_TURNS` and the other session-management settings.

@@ -259,8 +259,8 @@ spelling is accepted as an alias.
 - **PermissionRequest `allow`** auto-approves a call that would otherwise prompt the
   user — useful for trusted commands in trusted projects. It covers approvals the
   *permission mode* raised, which is nearly all of them. It does **not** cover the
-  small fixed set of approvals BioRouter raises whatever your mode — a
-  prompt-injection finding, an Auto-mode write to a credential store, a global
+  small fixed set of approvals BioRouter raises whatever your mode — a command
+  policy `ask`, an Auto-mode write to a credential store, a global
   (machine-wide) memory read or write, a managed-policy `ask`. Those exist
   precisely because no automated grant should answer them, and a hook is an
   automated grant: an `allow` on one is logged and dropped, and the card is shown

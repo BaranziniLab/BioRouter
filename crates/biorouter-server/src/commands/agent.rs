@@ -27,10 +27,84 @@ async fn shutdown_signal() {
     let _ = tokio::signal::ctrl_c().await;
 }
 
+/// Read the launcher's SHA-256 user-action digest off stdin, as one hex line
+/// (issue #56, DR-16).
+///
+/// The pipe is at EOF once this returns, so every process the daemon later
+/// spawns inherits an fd 0 that carries nothing: the digest is not re-readable
+/// by a child, and the raw key was never there to begin with.
+///
+/// It must **never block a hand-started daemon**, so it is guarded twice.
+async fn read_user_action_digest() -> Option<[u8; 32]> {
+    use std::io::IsTerminal;
+    // (1) A terminal is a human at a prompt, not a launcher with a key. Reading
+    //     it would hang `just run-server` forever waiting for a line.
+    if std::io::stdin().is_terminal() {
+        return None;
+    }
+    // (2) And a pipe whose writer never closes would hang just as hard, so the
+    //     read is bounded. 2s is far longer than a local `write` + `end`.
+    //
+    //     On a PLAIN OS THREAD rather than `spawn_blocking`, because a blocking
+    //     read cannot be cancelled: on the timeout path the reader stays parked
+    //     in `read_line`, holding `stdin().lock()`, for the life of the process.
+    //     A tokio runtime waits for started blocking tasks when it drops, so a
+    //     launcher that opens the pipe and never closes it would convert this
+    //     bound from a 2s delay at startup into a hang at SHUTDOWN — the exact
+    //     case this guard exists for. A detached thread is not the runtime's to
+    //     wait on.
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let read = std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line)
+            .ok()
+            .map(|_| line);
+        // The receiver is gone on the timeout path; nothing to report to.
+        let _ = tx.send(read);
+    });
+    let line = tokio::time::timeout(std::time::Duration::from_secs(2), rx)
+        .await
+        .ok()?
+        .ok()??;
+    let bytes = hex::decode(line.trim()).ok()?;
+    <[u8; 32]>::try_from(bytes.as_slice()).ok()
+}
+
 pub async fn run() -> Result<()> {
     crate::logging::setup_logging(Some("biorouterd"))?;
 
     let settings = configuration::Settings::new()?;
+
+    // Issue #56 Task 30, hardening measure (3): the master privacy switch is
+    // read ONCE, here, and the authoritative value then lives in daemon memory
+    // for the life of the process. The FIRST of the toggle's exactly two
+    // writers; the second is `/config/upsert`'s gated arm, which is the channel
+    // Settings > Privacy uses.
+    //
+    // ⚠ Task 42 (DR-22): the value comes from `privacy-tiers.json` beside
+    // `config.yaml`, NOT from `config.yaml` itself — a key in that file was a
+    // next-launch disable for anything that could write files. This call also
+    // runs the one-time migration that carries a pre-DR-22 key across and
+    // retires it, which is why it must stay before anything that could serve a
+    // request.
+    //
+    // It is deliberately not read through `Config::get_param`, whose middle
+    // branch resolves an environment variable: the agent holds
+    // `developer__shell`, so an env-readable value would make
+    // `BIOROUTER_PRIVACY_TIERS=off biorouterd` — or a line in the user's shell
+    // profile — a one-token disable of the control the agent is subject to. See
+    // `biorouter::privacy::load_privacy_tiers_from_config`.
+    //
+    // Before `AppState::new()` and before any route is mounted, so no request
+    // can be served against the fail-safe default when the user turned the
+    // feature off, and none against `off` when they did not.
+    biorouter::privacy::load_privacy_tiers_from_config();
+    // Issue #56 Task 52 (DR-27), and here for the same three reasons: it reads
+    // its own record beside `config.yaml` rather than the agent-writable file,
+    // it is never resolved through an environment variable, and it lands before
+    // any route is mounted so no request is served against `standard` on a
+    // machine whose user chose `strict`.
+    biorouter::privacy::load_mixing_policy_from_record();
 
     let secret_key = std::env::var("BIOROUTER_SERVER__SECRET_KEY").unwrap_or_else(|_| {
         let bytes: [u8; 16] = rand::random();
@@ -40,6 +114,21 @@ pub async fn run() -> Result<()> {
         );
         key
     });
+
+    // Issue #56 DR-16. The proof-of-user, minted by whoever launched this
+    // daemon and handed over on **stdin** — never in the environment and never
+    // on argv, because AR-11 measured both to be recoverable in-process by any
+    // tool that reads a caller-named path (`/proc/self/environ`) or, on macOS,
+    // by `sysctl(KERN_PROCARGS2)`, which is not a path at all and which no
+    // sandbox profile can gate.
+    let user_action_digest = read_user_action_digest().await;
+    if user_action_digest.is_none() {
+        tracing::warn!(
+            "no user-action key on stdin: this daemon will refuse every request that raises a \
+             session's privacy capability, including one made by the person at the keyboard"
+        );
+    }
+    biorouter_server::auth::install_user_action_digest(user_action_digest);
 
     let app_state = state::AppState::new().await?;
 

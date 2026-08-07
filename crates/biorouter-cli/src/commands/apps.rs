@@ -285,6 +285,15 @@ async fn ensure_daemon(port: u16) -> Result<Daemon> {
     let mut child = tokio::process::Command::new(&bin)
         .arg("agent")
         .env("BIOROUTER_PORT", port.to_string())
+        // Issue #56 DR-16: `biorouterd agent` now reads one line off stdin at
+        // startup (the launcher's user-action digest). `Command` INHERITS fd 0,
+        // so without this the spawned daemon would consume a line of the CLI's
+        // own stdin whenever that stdin is not a terminal — stealing input meant
+        // for `biorouter`, or adding a 2s stall to daemon startup if the pipe is
+        // open and idle. `/dev/null` is not a terminal and is instantly at EOF,
+        // so the daemon reads nothing, installs no digest, and fails closed —
+        // which is correct for a launcher that mints no key.
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()

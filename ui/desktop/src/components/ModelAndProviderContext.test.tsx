@@ -2,6 +2,7 @@
  * @vitest-environment jsdom
  */
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ModelAndProviderProvider, useModelAndProvider } from './ModelAndProviderContext';
 import type Model from './settings/models/modelInterface';
@@ -37,6 +38,20 @@ vi.mock('./ConfigContext', () => ({
     refreshConfig: mocks.refreshConfig,
   }),
 }));
+
+/**
+ * Issue #56 DR-16. The model picker is the USER's act, and the daemon cannot
+ * tell it from a model curling the same route unless the request carries
+ * `X-User-Action`. Without this bridge the harness would exercise the
+ * fail-closed path (no header) and the assertions below would pin nothing about
+ * the one property the picker depends on.
+ */
+const USER_ACTION_KEY = 'user-action-key-under-test';
+const userActionHeader = { 'X-User-Action': USER_ACTION_KEY };
+Object.defineProperty(window, 'electron', {
+  writable: true,
+  value: { getUserActionKey: async () => USER_ACTION_KEY },
+});
 
 const llamaModel: Model = {
   name: 'qwen3.6',
@@ -112,6 +127,59 @@ function SwitchHarness() {
 function StatusHarness() {
   const { modelConfigStatus, currentProvider } = useModelAndProvider();
   return <div data-testid="status">{`${modelConfigStatus}:${currentProvider ?? 'none'}`}</div>;
+}
+
+const publicModel: Model = {
+  name: 'claude-opus-4',
+  provider: 'anthropic',
+  alias: 'Claude Opus',
+  subtext: 'Anthropic',
+  context_limit: 200000,
+};
+
+const privacyBarrier409 = {
+  code: 'privacy_barrier',
+  session_classification: 'private',
+  provider_tier: 'public',
+  available_private_providers: [],
+};
+
+/**
+ * The generated @hey-api client's own error semantics, reproduced (see
+ * `api/client/client.gen.ts`): a non-2xx RETURNS `{error: <parsed body>}` and
+ * only THROWS when the caller passed `throwOnError`.
+ *
+ * A mock that rejects unconditionally would pass against the shipped bug — the
+ * refusal would arrive at the catch arm no matter what the call site asked for,
+ * and the missing `throwOnError` is the bug. This mock is what makes the test
+ * discriminate.
+ */
+const clientRejecting = (body: unknown) => async (options?: { throwOnError?: boolean }) => {
+  if (options?.throwOnError) {
+    throw body;
+  }
+  return { error: body };
+};
+
+/**
+ * A harness that reports what `changeModel` returned, so the refusal path can be
+ * asserted on the boolean the callers branch on rather than on a rendered toast
+ * alone.
+ */
+function SessionSwitchHarness() {
+  const { changeModel } = useModelAndProvider();
+  const [result, setResult] = useState<string>('pending');
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => void changeModel('sess-1', publicModel).then((ok) => setResult(String(ok)))}
+      >
+        Switch this chat
+      </button>
+      <div data-testid="change-result">{result}</div>
+    </>
+  );
 }
 
 function renderHarness() {
@@ -191,6 +259,9 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
           provider: 'llamacpp',
           model: llamaModel.name,
         },
+        // Issue #56 DR-16: `/config/set_provider` writes BIOROUTER_PROVIDER and
+        // is guarded unconditionally, so the picker must prove it is the user.
+        headers: userActionHeader,
         throwOnError: true,
       });
     });
@@ -243,6 +314,146 @@ describe('ModelAndProviderProvider Llama Server warm-up', () => {
     await waitFor(() => expect(mocks.toastSuccess).toHaveBeenCalled());
     expect(mocks.toastError).not.toHaveBeenCalledWith(
       expect.objectContaining({ title: expect.stringContaining('llamacpp') })
+    );
+  });
+});
+
+// Issue #56 Gate A. `updateAgentProvider` was called WITHOUT `throwOnError`,
+// so the generated client returned `{error}` instead of throwing: a 409 privacy
+// refusal was discarded, `setConfigProvider` rewrote the global default to the
+// refused provider (P4), and a green toast claimed the switch worked while the
+// session was still bound to the private model.
+describe('ModelAndProviderProvider privacy barrier', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
+    mocks.updateAgentProvider.mockImplementation(clientRejecting(privacyBarrier409));
+  });
+
+  it('asks the generated client to throw, or the refusal is discarded', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(mocks.updateAgentProvider).toHaveBeenCalled());
+    expect(mocks.updateAgentProvider).toHaveBeenCalledWith(
+      expect.objectContaining({ throwOnError: true })
+    );
+  });
+
+  it('does not report success when the session bind is refused', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    // P4: the global default must not be rewritten by a refused per-session bind.
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: expect.stringContaining("Can't switch this chat"),
+      })
+    );
+  });
+});
+
+// Issue #56 DR-16. A backend the app did not start was handed no user-action
+// key, so it refuses the picker's own raise. That refusal arrives as a PLAIN
+// STRING (not the typed Gate A body), so `privacyBarrierOf` returns null and the
+// refusal used to fall through to the generic arm — reporting a policy decision
+// as "anthropic/claude-opus-4 failed" with the model-facing prose as the
+// message, which is the exact failure the Gate A comment three lines above it
+// exists to prevent.
+describe('ModelAndProviderProvider user-proof refusal', () => {
+  // The real 409 body, verbatim from `PrivacyRefusal::TierRaiseNeedsUser`
+  // (crates/biorouter/src/privacy/refusal.rs). Typed out rather than assembled
+  // from the marker constant, because a fixture built from the thing under test
+  // would pass however the two drift; the Rust side has its own test that the
+  // marker survives a reword.
+  const tierRaiseNeedsUser409 =
+    "Switching this chat to a private model is the user's decision, not yours. The request to " +
+    "switch it to 'llamacpp' did not come from the model picker, so the chat is unchanged and " +
+    'still on its current model. Do not retry — the same call will be refused again. If this ' +
+    'task genuinely needs a private model, stop and ask the user to switch this chat to a ' +
+    'private model first — in the desktop app under Settings > Models, or with the model chip ' +
+    'in the composer.';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.read.mockImplementation(async (key: string) => {
+      if (key === 'BIOROUTER_MODEL') return 'gpt-5.5';
+      if (key === 'BIOROUTER_PROVIDER') return 'versa_azure';
+      return null;
+    });
+    mocks.getProviders.mockResolvedValue([]);
+    mocks.setConfigProvider.mockResolvedValue(undefined);
+    mocks.refreshConfig.mockResolvedValue(undefined);
+    mocks.updateAgentProvider.mockImplementation(clientRejecting(tierRaiseNeedsUser409));
+  });
+
+  it('explains the backend, instead of reporting the refusal as a provider failure', async () => {
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(mocks.toastSuccess).not.toHaveBeenCalled();
+    // The global default must not be rewritten by a refused per-session bind.
+    expect(mocks.setConfigProvider).not.toHaveBeenCalled();
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        title: "Can't switch this chat to a private model",
+        msg: expect.stringContaining('started outside the Biorouter app'),
+      })
+    );
+    // Not the generic arm: the model-facing prose is not a user-facing message,
+    // and the title must not read as a broken provider.
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('failed') })
+    );
+  });
+
+  it('still reports an ordinary failure of the same route as a failure', async () => {
+    // The discriminator is the marker, not "the body happens to be a string":
+    // a 500 from `/agent/update_provider` also carries plain text, and telling
+    // the user their backend has no user-action key would be a confident lie.
+    mocks.updateAgentProvider.mockImplementation(
+      clientRejecting('Failed to create anthropic provider: no API key configured')
+    );
+    render(
+      <ModelAndProviderProvider>
+        <SessionSwitchHarness />
+      </ModelAndProviderProvider>
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Switch this chat' }));
+
+    await waitFor(() => expect(screen.getByTestId('change-result')).toHaveTextContent('false'));
+    expect(mocks.toastError).toHaveBeenCalledWith(
+      expect.objectContaining({ title: expect.stringContaining('failed') })
+    );
+    expect(mocks.toastError).not.toHaveBeenCalledWith(
+      expect.objectContaining({ title: "Can't switch this chat to a private model" })
     );
   });
 });

@@ -32,6 +32,7 @@ use crate::config::BioRouterMode;
 use crate::conversation::message::Message;
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::formats::openai::{create_request, get_usage, response_to_message};
 use crate::utils::safe_truncate;
 
@@ -488,10 +489,38 @@ impl Provider for LlamaCppProvider {
             ],
         )
         .with_unlisted_models()
+        // The managed sidecar runs here, so a default install is Private. An
+        // instance pointed at an external host says so itself, below.
+        .with_tier(ProviderTier::Private)
+        .with_local_compute()
     }
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn tier(&self) -> ProviderTier {
+        match &self.external_base {
+            // No external host: this is the managed sidecar, which
+            // `llamacpp_sidecar` binds to loopback and reasserts loopback-last
+            // on the command line even when a host is injected.
+            None => ProviderTier::Private,
+            // LLAMACPP_EXTERNAL_HOST is user-writable and needs no auth, so the
+            // same rule as ollama applies: loopback or nothing.
+            Some(base) => crate::providers::self_hosted_tier(base),
+        }
+    }
+
+    /// DR-26: `Local`, following the **same branch** as the tier above rather
+    /// than a new rule — the managed sidecar runs here by construction, and an
+    /// injected `LLAMACPP_EXTERNAL_HOST` is Local only while it is loopback. A
+    /// remote host gets no affiliation rather than inheriting `Local`'s blanket
+    /// permission over every private extension.
+    fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        match &self.external_base {
+            None => Some(crate::privacy::affiliation::ModelAffiliation::Local),
+            Some(base) => crate::providers::self_hosted_affiliation(base),
+        }
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -635,6 +664,107 @@ impl Provider for LlamaCppProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A provider wired the way `from_env` builds one, minus the global config
+    /// lookup — `from_env` reads `LLAMACPP_EXTERNAL_HOST` from the developer's
+    /// real config, so a test that went through it would assert Private on one
+    /// machine and fail on a colleague's that legitimately points at a lab box.
+    fn provider_with_external_base(external_base: Option<&str>) -> LlamaCppProvider {
+        LlamaCppProvider {
+            model: ModelConfig::new_or_fail(default_model_name()).with_context_limit(Some(4096)),
+            external_base: external_base.map(str::to_string),
+            client: tokio::sync::Mutex::new(None),
+            live_context_limit: AtomicUsize::new(0),
+            request_timeout: Duration::from_secs(LLAMACPP_TIMEOUT),
+            startup_timeout: Duration::from_secs(LLAMACPP_STARTUP_TIMEOUT),
+            name: "llamacpp".to_string(),
+        }
+    }
+
+    /// Task 5 rule 1, **wired** — all three arms, none of them environmental.
+    ///
+    /// `external_base: None` is the managed sidecar, which is spawned by this
+    /// process and bound to loopback, so it is the one case that is Private
+    /// without a URL to inspect. Every other case is a host `LLAMACPP_EXTERNAL_HOST`
+    /// supplied: setting it bypasses the sidecar and sends the full prompt to an
+    /// unmanaged endpoint with **no auth**, so anything but loopback is Public.
+    #[test]
+    fn tier_is_private_only_while_inference_stays_on_this_machine() {
+        assert_eq!(
+            provider_with_external_base(None).tier(),
+            ProviderTier::Private,
+            "the bundled sidecar is the default install and runs here"
+        );
+        assert_eq!(
+            LlamaCppProvider::metadata().tier,
+            ProviderTier::Private,
+            "so the type-level claim agrees with it"
+        );
+
+        for loopback in [
+            "http://localhost:11543/",
+            "http://127.0.0.1:11543/",
+            "http://[::1]:11543/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(loopback)).tier(),
+                ProviderTier::Private,
+                "{loopback}"
+            );
+        }
+        for remote in [
+            "http://gpu.lab.ucsf.edu:11543/",
+            "https://api.example-saas.com/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(remote)).tier(),
+                ProviderTier::Public,
+                "{remote}"
+            );
+        }
+    }
+
+    /// DR-26 (Task 46), **wired** — all three arms, following the same branch
+    /// as the tier above rather than a new rule.
+    ///
+    /// The remote arm is the one that matters: `Local` is the *most* permissive
+    /// affiliation in DR-26's model, reaching every private extension because no
+    /// transfer occurs at all. An implementation that answered `Local` for any
+    /// `llamacpp` — the obvious one, since the provider is "the local models
+    /// one" — would hand that blanket permission to an unmanaged lab box the
+    /// user pointed `LLAMACPP_EXTERNAL_HOST` at, with no auth in between.
+    #[test]
+    fn affiliation_is_local_only_while_inference_stays_on_this_machine() {
+        use crate::privacy::affiliation::ModelAffiliation;
+
+        assert_eq!(
+            provider_with_external_base(None).affiliation(),
+            Some(ModelAffiliation::Local),
+            "the bundled sidecar is the default install and runs here"
+        );
+
+        for loopback in [
+            "http://localhost:11543/",
+            "http://127.0.0.1:11543/",
+            "http://[::1]:11543/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(loopback)).affiliation(),
+                Some(ModelAffiliation::Local),
+                "{loopback}"
+            );
+        }
+        for remote in [
+            "http://gpu.lab.ucsf.edu:11543/",
+            "https://api.example-saas.com/",
+        ] {
+            assert_eq!(
+                provider_with_external_base(Some(remote)).affiliation(),
+                None,
+                "{remote} must not inherit Local's blanket permission"
+            );
+        }
+    }
 
     #[test]
     fn default_model_is_memory_tiered_and_in_catalog() {

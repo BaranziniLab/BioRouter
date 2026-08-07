@@ -19,14 +19,36 @@ import {
   isBuiltInExtension,
 } from '../settings/extensions/subcomponents/ExtensionList';
 import { ExtensionConfig, getSessionExtensions } from '../../api';
+import type { SessionClassification } from '../../api/types.gen';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
+import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
 import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
+
+/** §14.5's reason, in the composer's own words. Public model → private tool. */
+const PAIRING_REFUSED_REASON =
+  'Unavailable in this chat — a private extension needs a private model';
 
 interface BottomMenuExtensionSelectionProps {
   sessionId: string | null;
+  /**
+   * The focused chat's privacy tier (issue #56, §14.5).
+   *
+   * This component is where the *true* per-session pairing state belongs,
+   * because it is the only extension surface that already knows which chat it
+   * is looking at. Settings has no session awareness at all, and with tabs and
+   * splits "the focused session" is undefined once the user navigates away from
+   * chat — so Settings judges against the global default provider instead and
+   * says so, and only this surface answers "will it work *here*".
+   *
+   * `undefined` means unresolved, not public: see `extensionPairingRefused`.
+   */
+  privacyTier?: SessionClassification;
 }
 
-export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionSelectionProps) => {
+export const BottomMenuExtensionSelection = ({
+  sessionId,
+  privacyTier,
+}: BottomMenuExtensionSelectionProps) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
@@ -215,22 +237,35 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
     return [...filteredExtensions].sort((a, b) => a.name.localeCompare(b.name));
   }, [filteredExtensions]);
 
+  /**
+   * The rows "Enable all" may actually act on.
+   *
+   * A refused pairing is rendered but not toggleable, so it must not be counted
+   * in the bulk label either — otherwise "Enable all (4)" enables three and
+   * leaves the fourth looking broken, which is the failure this state exists to
+   * remove.
+   */
+  const toggleableExtensions = useMemo(
+    () => sortedExtensions.filter((ext) => !extensionPairingRefused(ext.name, privacyTier)),
+    [sortedExtensions, privacyTier]
+  );
+
   const activeCount = useMemo(() => {
     return extensionsList.filter((ext) => ext.enabled).length;
   }, [extensionsList]);
 
   const visibleEnabledCount = useMemo(
-    () => sortedExtensions.filter((ext) => ext.enabled).length,
-    [sortedExtensions]
+    () => toggleableExtensions.filter((ext) => ext.enabled).length,
+    [toggleableExtensions]
   );
 
   const handleBulkToggle = useCallback(async () => {
-    if (bulkInFlight || pendingExtensionNames.size > 0 || sortedExtensions.length === 0) {
+    if (bulkInFlight || pendingExtensionNames.size > 0 || toggleableExtensions.length === 0) {
       return;
     }
 
     const targetEnabled = visibleEnabledCount === 0;
-    const targets = sortedExtensions.filter((ext) => ext.enabled !== targetEnabled);
+    const targets = toggleableExtensions.filter((ext) => ext.enabled !== targetEnabled);
     if (targets.length === 0) {
       return;
     }
@@ -294,7 +329,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
   }, [
     bulkInFlight,
     pendingExtensionNames.size,
-    sortedExtensions,
+    toggleableExtensions,
     visibleEnabledCount,
     isHubView,
     sessionId,
@@ -348,7 +383,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
             bare underlined text link it used to be. */}
         <div className="flex items-center justify-between gap-2">
           <DropdownMenuLabel>Extensions</DropdownMenuLabel>
-          {sortedExtensions.length > 0 && (
+          {toggleableExtensions.length > 0 && (
             <button
               type="button"
               onClick={handleBulkToggle}
@@ -356,7 +391,7 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
               className="mr-2 shrink-0 cursor-pointer rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-medium hover:text-text-default disabled:cursor-not-allowed disabled:opacity-50"
             >
               {visibleEnabledCount === 0
-                ? `Enable all (${sortedExtensions.length})`
+                ? `Enable all (${toggleableExtensions.length})`
                 : `Disable all (${visibleEnabledCount})`}
             </button>
           )}
@@ -368,7 +403,21 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
             </div>
           ) : (
             sortedExtensions.map((ext) => {
-              const rowDisabled = bulkInFlight;
+              // §14.5, and the reason it is a *state* rather than an omission:
+              // dropping the row is what produces "the OMOP tool is broken".
+              // Gate C is invisible in the GUI by construction — it returns
+              // `ErrorData` from inside `dispatch_tool_call`, so it never
+              // enters `PermissionCheckResult`, produces no approval card and
+              // records no denial. Nothing else in this app will ever tell the
+              // user why the tool did nothing.
+              //
+              // The row stays in the list and carries `aria-disabled="true"` —
+              // Radix derives that attribute from `disabled` below, which is
+              // why the string appears nowhere else in this file. Filtering the
+              // row out instead would satisfy every other assertion here and
+              // reintroduce the exact silence this state removes.
+              const pairingRefused = extensionPairingRefused(ext.name, privacyTier);
+              const rowDisabled = bulkInFlight || pairingRefused;
               return (
                 <DropdownMenuCheckboxItem
                   key={ext.name}
@@ -381,15 +430,26 @@ export const BottomMenuExtensionSelection = ({ sessionId }: BottomMenuExtensionS
                   // --radius-md, 13/18, --background-medium hover) — this call site
                   // adds only the toggle layout and the in-flight cursor.
                   className={`justify-between hover:bg-background-medium ${
-                    rowDisabled ? 'cursor-wait opacity-70' : 'cursor-pointer'
+                    pairingRefused
+                      ? 'h-auto cursor-not-allowed items-start py-1.5 opacity-70'
+                      : rowDisabled
+                        ? 'cursor-wait opacity-70'
+                        : 'cursor-pointer'
                   }`}
-                  title={ext.description || ext.name}
+                  title={pairingRefused ? PAIRING_REFUSED_REASON : ext.description || ext.name}
                 >
-                  <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                    <div className="font-medium text-text-default truncate">
-                      {formatExtensionName(ext.name)}
+                  <div className="flex min-w-0 flex-col gap-0.5 pr-2">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <div className="font-medium text-text-default truncate">
+                        {formatExtensionName(ext.name)}
+                      </div>
+                      {isBuiltInExtension(ext) && <BuiltInBadge />}
                     </div>
-                    {isBuiltInExtension(ext) && <BuiltInBadge />}
+                    {pairingRefused && (
+                      <div className="text-[11px] leading-4 text-text-muted">
+                        Unavailable in this chat (public model)
+                      </div>
+                    )}
                   </div>
                   <div className="pointer-events-none" aria-hidden="true">
                     <Switch

@@ -21,6 +21,15 @@ export interface ScheduledJob {
   paused?: boolean;
   current_session_id?: string | null;
   process_start_time?: string | null;
+  /**
+   * The last run's failure, or null once a run succeeds (issue #56).
+   *
+   * A cron tick that returned `Err` used to leave nothing behind but a log
+   * line, and a scheduled run mints a fresh session each time — so a job that
+   * had been failing since the day it was created had no surface anywhere the
+   * user could see. Rendered by `SchedulesView` and `ScheduleDetailView`.
+   */
+  last_error?: string | null;
 }
 
 export interface ScheduleSession {

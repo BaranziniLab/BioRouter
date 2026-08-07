@@ -3,6 +3,7 @@ use super::errors::ProviderError;
 use super::retry::{ProviderRetry, RetryConfig};
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::utils::RequestLog;
 use anyhow::Result;
 use async_trait::async_trait;
@@ -69,6 +70,12 @@ pub struct VersaBedrockProvider {
     retry_config: RetryConfig,
     #[serde(skip)]
     name: String,
+    /// The endpoint this instance resolved at construction. `tier()` reads it,
+    /// never the provider's name — the last fallback in the chain below is
+    /// `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which `bedrock.rs` sets
+    /// process-globally with `std::env::set_var`.
+    #[serde(skip)]
+    resolved_endpoint: String,
 }
 
 impl VersaBedrockProvider {
@@ -137,7 +144,7 @@ impl VersaBedrockProvider {
         let mut loader = aws_config::defaults(aws_config::BehaviorVersion::latest())
             .credentials_provider(credentials)
             .region(aws_config::Region::new(region))
-            .endpoint_url(endpoint_url);
+            .endpoint_url(endpoint_url.clone());
         // Bound a hung/stalled endpoint so a turn can't wait forever (see
         // `bedrock_timeout_config`). Without this, a proxy that accepts the
         // connection but never answers freezes the agent with no error.
@@ -161,6 +168,7 @@ impl VersaBedrockProvider {
             model,
             retry_config,
             name: Self::metadata().name,
+            resolved_endpoint: endpoint_url,
         })
     }
 
@@ -292,10 +300,24 @@ impl Provider for VersaBedrockProvider {
             ],
         )
         .with_unlisted_models()
+        // The shipped endpoint is the UCSF gateway, so a default install is
+        // Private. An instance that resolved elsewhere says so itself, below.
+        .with_tier(ProviderTier::Private)
     }
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn tier(&self) -> ProviderTier {
+        crate::providers::ucsf_gateway_tier(&self.resolved_endpoint)
+    }
+
+    /// DR-26: `Institution("ucsf")` — decided by the **same** resolved endpoint
+    /// as the tier above, through the same host check, so the two can never
+    /// disagree about a repointed instance.
+    fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        crate::providers::ucsf_gateway_affiliation(&self.resolved_endpoint)
     }
 
     fn retry_config(&self) -> RetryConfig {
@@ -383,5 +405,91 @@ impl Provider for VersaBedrockProvider {
 
     fn supports_streaming(&self) -> bool {
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A provider wired the way `from_env` builds one, minus the credential and
+    /// global-config lookups — `from_env` needs UCSF-issued secrets, so it
+    /// cannot run here. Everything below is a pure function of
+    /// `resolved_endpoint`, and the client is built through the same
+    /// `aws_config` loader production uses so the struct literal cannot drift
+    /// from a real one.
+    async fn provider_at(endpoint: &str) -> VersaBedrockProvider {
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .credentials_provider(Credentials::new(
+                "test-access-key",
+                "test-secret-key",
+                None,
+                None,
+                "VersaBedrockTest",
+            ))
+            .region(aws_config::Region::new(VERSA_BEDROCK_DEFAULT_REGION))
+            .endpoint_url(endpoint.to_string())
+            .load()
+            .await;
+
+        VersaBedrockProvider {
+            client: Client::new(&sdk_config),
+            model: ModelConfig::new_or_fail(VERSA_BEDROCK_DEFAULT_MODEL),
+            retry_config: RetryConfig::default(),
+            name: "versa_bedrock".to_string(),
+            resolved_endpoint: endpoint.to_string(),
+        }
+    }
+
+    /// Task 5 rule 2, **wired** — not just the predicate behind it.
+    ///
+    /// `providers::ucsf_gateway_tier` is unit-tested on its own in
+    /// `tier_tests.rs`, but a test of the predicate alone cannot see whether
+    /// this provider calls it, or hands it the right field. Replace the body of
+    /// `tier()` with an unconditional `Private` and every one of those tests
+    /// still passes. This one does not — and the demotion matters most here,
+    /// because the last fallback in `from_env`'s endpoint chain is
+    /// `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which `bedrock.rs` sets
+    /// **process-globally** with `std::env::set_var`.
+    #[tokio::test]
+    async fn tier_follows_the_endpoint_this_instance_resolved() {
+        let shipped = provider_at(VERSA_BEDROCK_DEFAULT_ENDPOINT).await;
+        assert_eq!(shipped.tier(), ProviderTier::Private);
+
+        let elsewhere = provider_at("https://bedrock-runtime.us-west-2.amazonaws.com").await;
+        // Same name, same metadata, same everything a name-keyed rule can see.
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            VersaBedrockProvider::metadata().tier,
+            ProviderTier::Private,
+            "the type-level claim is still Private; only the instance demotes"
+        );
+        assert_eq!(elsewhere.tier(), ProviderTier::Public);
+    }
+
+    /// DR-26 (Task 46) rule, **wired** — the same argument as the tier test
+    /// above, for the third axis, and it matters most here: the last fallback in
+    /// `from_env`'s endpoint chain is `AWS_ENDPOINT_URL_BEDROCK_RUNTIME`, which
+    /// `bedrock.rs` sets **process-globally** with `std::env::set_var`. An
+    /// affiliation keyed on the provider's name would keep claiming `ucsf` for
+    /// an instance that another provider's construction had already repointed at
+    /// a plain AWS region.
+    #[tokio::test]
+    async fn affiliation_follows_the_endpoint_this_instance_resolved() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+
+        let shipped = provider_at(VERSA_BEDROCK_DEFAULT_ENDPOINT).await;
+        assert_eq!(
+            shipped.affiliation(),
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf")))
+        );
+
+        let elsewhere = provider_at("https://bedrock-runtime.us-west-2.amazonaws.com").await;
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            elsewhere.affiliation(),
+            None,
+            "an instance that lost Private must lose `ucsf` with it"
+        );
     }
 }

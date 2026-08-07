@@ -152,7 +152,6 @@ export default function ConfigSettings() {
           key === 'extensions' ||
           key === 'BIOROUTER_TELEMETRY_ENABLED' ||
           key === 'tunnel_auto_start' ||
-          key.startsWith('SECURITY_PROMPT') ||
           key.includes('_KEY') ||
           key.includes('_TOKEN')
         ) {

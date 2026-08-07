@@ -1867,6 +1867,20 @@
   animation: br-tab-pulse 1.8s var(--ease-out) infinite;
 }
 
+/* Private: a still dot beside the tab's leading glyph (issue #56, R10).
+   Deliberately NOT `.br-tab__dot` above, which means "running" — it pulses in
+   --text-accent and is `group-hover:hidden` so the close control can take its
+   slot. A privacy marker that vanishes the moment you point at the tab is not a
+   privacy marker, and a second meaning painted in the running dot's colour and
+   rhythm would make both unreadable. This one is static, inked from the badge
+   component's own token, and never hidden — so a running private chat shows
+   both marks at once. Only the geometry it cannot get from a utility class
+   lives here; the colour and size stay with the badge component. */
+.br-tab__privacy-dot {
+  flex: none;
+  animation: none;
+}
+
 @keyframes br-tab-pulse {
   0%,
   100% {

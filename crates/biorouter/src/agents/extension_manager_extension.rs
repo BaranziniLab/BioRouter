@@ -81,47 +81,71 @@ pub struct ExtensionManagerClient {
     context: PlatformExtensionContext,
 }
 
-/// Gate for the `manage_extensions` enable path (#42): an extension whose
-/// **persisted** config entry carries `enabled: false` was turned off by the
-/// operator, and the agent must not silently re-enable it — that would defeat
-/// the pinned tool environment the operator set up (benchmarking, safety).
-/// The refusal tells the model to ask the user instead; `/ext:` and the
-/// GUI/config remain the user-explicit escape hatches.
+/// The `manage_extensions` enable door: ask the shared enable gate, then resolve
+/// the config to load.
 ///
-/// `persisted` is the provenance signal (`extension_entry_is_persisted`):
+/// ⚠ **Every refusal this function can give comes from
+/// [`refusal::extension_enable_refusal`], which is the WHOLE of Gate F1 plus
+/// #42's operator pin, in one clause order.** It used to hand-write the tier arm
+/// here — `class.tier.is_private() && caller == ProviderTier::Public`, with its
+/// own sentence — while the workspace's two enable doors expressed the same rule
+/// through `refusal::privacy_refusal` and asked the operator pin *first*. Two
+/// spellings, two orders; the workspace order reopened at `workspace_open
+/// {new:{extensions}}` the exact install-state oracle finding 13 had just closed
+/// here. There is now one function, called from all three doors. If a fourth
+/// enable door appears, give it this one — do not write a fifth arm here.
+///
+/// `persisted` is #42's provenance signal (`extension_entry_is_persisted`):
 /// `get_extension_entry_by_name` reads the post-injection map, where an
 /// absent platform extension is injected with its default — so a default-off
 /// one (e.g. `chatrecall`) shows up as `enabled: false` without any operator
 /// ever writing that. Only an entry actually present in the on-disk config
-/// counts as operator-disabled; injected defaults stay agent-enableable.
+/// counts as operator-disabled; injected defaults stay agent-enableable. It is a
+/// parameter rather than a lookup so this whole path stays pure: testable with no
+/// global config, no registry and no live extension.
+///
+/// `cap` is handed on WHOLE — both axes and DR-15's master opt-out off one
+/// sample — rather than collapsed at the call site, so the toggle half of the
+/// decision has a subject a test can hold and Task 30's structural inventory can
+/// name a single `(file, fn)` pair for this row.
+///
+/// ⚠ **The not-found branch is BELOW the gate, and that is finding 13.**
+/// "Extension 'ucsfomopagent' not found" tells a public model what this machine
+/// has installed — the same secret the sibling finding stopped the catalogue
+/// printing outright. Asking the gate first collapses every private name a public
+/// caller can ask about onto one refusal, whether it is installed,
+/// configured-off, or absent entirely. Nothing is lost in the other direction: a
+/// PRIVATE caller reaches this branch exactly as before, and so does a public
+/// caller asking about a public extension — which is every case it was written
+/// for.
+///
+/// [`refusal::extension_enable_refusal`]: crate::privacy::refusal::extension_enable_refusal
 fn check_enable_allowed(
     entry: Option<ExtensionEntry>,
     persisted: bool,
     extension_name: &str,
+    cap: crate::privacy::CallCapability,
 ) -> Result<ExtensionConfig, ErrorData> {
-    match entry {
-        None => Err(ErrorData::new(
+    if let Some(err) = crate::privacy::refusal::extension_enable_refusal(
+        cap,
+        extension_name,
+        entry.as_ref(),
+        persisted,
+    ) {
+        return Err(err);
+    }
+
+    let Some(entry) = entry else {
+        return Err(ErrorData::new(
             ErrorCode::RESOURCE_NOT_FOUND,
             format!(
                 "Extension '{}' not found. Please check the extension name and try again.",
                 extension_name
             ),
             None,
-        )),
-        Some(entry) if !entry.enabled && persisted => Err(ErrorData::new(
-            ErrorCode::INVALID_REQUEST,
-            format!(
-                "Extension '{}' is disabled in the Biorouter configuration (enabled: false). \
-                 The operator turned it off deliberately, so do not enable it yourself. \
-                 If it is needed for this task, ask the user to re-enable it — in the desktop \
-                 app under Settings > Extensions, with `biorouter configure`, or by editing \
-                 the extension's entry in config.yaml.",
-                extension_name
-            ),
-            None,
-        )),
-        Some(entry) => Ok(entry.config),
-    }
+        ));
+    };
+    Ok(entry.config)
 }
 
 impl ExtensionManagerClient {
@@ -168,12 +192,24 @@ impl ExtensionManagerClient {
         Ok(Self { info, context })
     }
 
+    /// `admitted` is the capability THIS tool call was admitted on, taken
+    /// straight off its `McpMeta` and threaded into Gate E's catalogue filter
+    /// (issue #56, finding 13). The manager must not sample its own, for the
+    /// reason every other handler in this file gives: the read would happen
+    /// inside the driven future, an unbounded wall-clock gap past admission, and
+    /// a fresh one there is what would let a Public-admitted call read a private
+    /// connector's name and marketplace description out of the catalogue after
+    /// the user switched models mid-turn.
     async fn handle_search_available_extensions(
         &self,
+        admitted: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
         if let Some(weak_ref) = &self.context.extension_manager {
             if let Some(extension_manager) = weak_ref.upgrade() {
-                match extension_manager.search_available_extensions().await {
+                match extension_manager
+                    .search_available_extensions(admitted)
+                    .await
+                {
                     Ok(content) => Ok(content),
                     Err(e) => Err(ExtensionManagerToolError::OperationFailed {
                         message: format!("Failed to search available extensions: {}", e.message),
@@ -187,9 +223,16 @@ impl ExtensionManagerClient {
         }
     }
 
+    /// `cap` is the capability THIS tool call was admitted on, taken straight
+    /// off its `McpMeta` — never re-sampled here, for the reason
+    /// [`crate::privacy::CallCapability`] exists: enabling an extension runs
+    /// inside the driven future, an unbounded wall-clock gap past admission,
+    /// and a fresh read there is what would let a Public-admitted call spawn a
+    /// private server after the user switched models mid-turn.
     async fn handle_manage_extensions(
         &self,
         arguments: Option<JsonObject>,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
         let arguments = arguments.ok_or(ExtensionManagerToolError::MissingParameter {
             param_name: "arguments".to_string(),
@@ -199,7 +242,7 @@ impl ExtensionManagerClient {
             serde_json::from_value(serde_json::Value::Object(arguments))?;
 
         match self
-            .manage_extensions_impl(params.action, params.extension_name)
+            .manage_extensions_impl(params.action, params.extension_name, cap)
             .await
         {
             Ok(content) => Ok(content),
@@ -213,6 +256,7 @@ impl ExtensionManagerClient {
         &self,
         action: ManageExtensionAction,
         extension_name: String,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ErrorData> {
         let extension_manager = self
             .context
@@ -228,6 +272,23 @@ impl ExtensionManagerClient {
             })?;
 
         if action == ManageExtensionAction::Disable {
+            // Issue #56 Gate F1, the DISABLE half (finding 14). This branch used
+            // to return before any privacy decision existed on the path: `cap`
+            // was in scope, and `remove_extension` ran without consulting it. A
+            // chat on a public model could therefore unload the clinical
+            // connector — a server Gate E keeps out of that model's tool list
+            // entirely, refuses every call into, and (since finding 13) will not
+            // even name in the catalogue. Being unable to see a connector while
+            // being able to unload it is the disagreement this closes.
+            //
+            // The gate is `assert_extension_manageable`, which is
+            // `assert_extension_reachable` verbatim, so discovery and management
+            // answer with one function rather than two rules — including the
+            // inverted unknown-name default that keeps this refusal from being
+            // the existence oracle the leak next door was.
+            extension_manager
+                .assert_extension_manageable(&extension_name, cap)
+                .await?;
             return extension_manager
                 .remove_extension(&extension_name)
                 .await
@@ -244,7 +305,11 @@ impl ExtensionManagerClient {
         let persisted = entry
             .as_ref()
             .is_some_and(|entry| extension_entry_is_persisted(&entry.config.name()));
-        let config = check_enable_allowed(entry, persisted, &extension_name)?;
+        // The capability is handed to Gate F1 WHOLE — both axes, one sample.
+        // The collapse DR-15's opt-out performs lives inside
+        // `check_enable_allowed`, so the toggle half of this decision has a
+        // subject a test can hold; doing it here left it with none.
+        let config = check_enable_allowed(entry, persisted, &extension_name, cap)?;
 
         extension_manager
             .add_extension(config)
@@ -258,9 +323,16 @@ impl ExtensionManagerClient {
             .map_err(|e| ErrorData::new(ErrorCode::INTERNAL_ERROR, e.to_string(), None))
     }
 
+    /// `admitted` is the capability THIS tool call was admitted on, taken
+    /// straight off its `McpMeta` and threaded into Gate C's sibling guard
+    /// (issue #56). The manager must not sample its own: this runs inside the
+    /// driven future, an unbounded wall-clock gap past admission, and a fresh
+    /// read there is what would let a Public-admitted call list a private
+    /// extension's resources after the user switched models mid-turn.
     async fn handle_list_resources(
         &self,
         arguments: Option<JsonObject>,
+        admitted: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
         if let Some(weak_ref) = &self.context.extension_manager {
             if let Some(extension_manager) = weak_ref.upgrade() {
@@ -269,7 +341,11 @@ impl ExtensionManagerClient {
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
                 match extension_manager
-                    .list_resources(params, tokio_util::sync::CancellationToken::default())
+                    .list_resources(
+                        params,
+                        Some(admitted),
+                        tokio_util::sync::CancellationToken::default(),
+                    )
                     .await
                 {
                     Ok(content) => Ok(content),
@@ -285,9 +361,13 @@ impl ExtensionManagerClient {
         }
     }
 
+    /// `admitted`: see [`Self::handle_list_resources`]. `read_resource` with no
+    /// `extension_name` fans out over every installed extension, so the value
+    /// threaded here decides which servers this call is allowed to probe.
     async fn handle_read_resource(
         &self,
         arguments: Option<JsonObject>,
+        admitted: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, ExtensionManagerToolError> {
         if let Some(weak_ref) = &self.context.extension_manager {
             if let Some(extension_manager) = weak_ref.upgrade() {
@@ -296,7 +376,11 @@ impl ExtensionManagerClient {
                     .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
 
                 match extension_manager
-                    .read_resource_tool(params, tokio_util::sync::CancellationToken::default())
+                    .read_resource_tool(
+                        params,
+                        Some(admitted),
+                        tokio_util::sync::CancellationToken::default(),
+                    )
                     .await
                 {
                     Ok(content) => Ok(content),
@@ -457,16 +541,34 @@ impl McpClientTrait for ExtensionManagerClient {
         &self,
         name: &str,
         arguments: Option<JsonObject>,
-        _meta: McpMeta,
+        meta: McpMeta,
         _cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, Error> {
         let result = match name {
+            // Issue #56 Gate E, finding 13: the CATALOGUE is a discovery
+            // surface, so it carries the admitted capability exactly as the
+            // three below do. It reaches no server, which is why Task 15 left it
+            // out of Gate C's siblings — but naming a private connector and its
+            // marketplace blurb to a public model is the disclosure Gate E
+            // exists to prevent, arriving through a different door.
             SEARCH_AVAILABLE_EXTENSIONS_TOOL_NAME => {
-                self.handle_search_available_extensions().await
+                self.handle_search_available_extensions(meta.capability)
+                    .await
             }
-            MANAGE_EXTENSIONS_TOOL_NAME => self.handle_manage_extensions(arguments).await,
-            LIST_RESOURCES_TOOL_NAME => self.handle_list_resources(arguments).await,
-            READ_RESOURCE_TOOL_NAME => self.handle_read_resource(arguments).await,
+            // Issue #56 Gate F1: enabling an extension SPAWNS its server, so it
+            // carries the admitted capability for the same reason the two reads
+            // below do.
+            MANAGE_EXTENSIONS_TOOL_NAME => {
+                self.handle_manage_extensions(arguments, meta.capability)
+                    .await
+            }
+            // Issue #56: these two reach an MCP server, so they carry the
+            // capability this call was ADMITTED on into Gate C's sibling guard
+            // rather than letting the manager sample a newer one.
+            LIST_RESOURCES_TOOL_NAME => {
+                self.handle_list_resources(arguments, meta.capability).await
+            }
+            READ_RESOURCE_TOOL_NAME => self.handle_read_resource(arguments, meta.capability).await,
             _ => Err(ExtensionManagerToolError::UnknownTool {
                 tool_name: name.to_string(),
             }),
@@ -518,6 +620,17 @@ impl McpClientTrait for ExtensionManagerClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::privacy::CallCapability;
+    // The production half of this file no longer names a tier: every arm of the
+    // enable decision moved into `refusal::extension_enable_refusal`, so the
+    // import lives with the tests that still state one.
+    use crate::privacy::ProviderTier;
+
+    /// The capability a public caller carries with the feature ON — the pair
+    /// every pre-#56 test in this module was implicitly written against.
+    fn public_enforcing() -> CallCapability {
+        CallCapability::for_test(ProviderTier::Public, true)
+    }
 
     fn entry(enabled: bool) -> ExtensionEntry {
         ExtensionEntry {
@@ -535,7 +648,7 @@ mod tests {
 
     #[test]
     fn enable_of_unknown_extension_is_not_found() {
-        let err = check_enable_allowed(None, false, "ghost").unwrap_err();
+        let err = check_enable_allowed(None, false, "ghost", public_enforcing()).unwrap_err();
         assert_eq!(err.code, ErrorCode::RESOURCE_NOT_FOUND);
         assert!(err.message.contains("not found"), "{}", err.message);
     }
@@ -545,7 +658,8 @@ mod tests {
         // #42: `enabled: false` written into config.yaml must be a dependable
         // pin — the agent may not silently re-enable what the operator turned
         // off. `persisted: true` = the entry exists in the on-disk config.
-        let err = check_enable_allowed(Some(entry(false)), true, "developer").unwrap_err();
+        let err = check_enable_allowed(Some(entry(false)), true, "developer", public_enforcing())
+            .unwrap_err();
         assert_eq!(err.code, ErrorCode::INVALID_REQUEST);
         assert!(err.message.contains("disabled"), "{}", err.message);
         assert!(
@@ -567,13 +681,604 @@ mod tests {
         // carries `enabled: false` without any operator writing it. That is
         // not an operator pin, so the agent enable flow must stay open.
         let config =
-            check_enable_allowed(Some(entry(false)), false, "chatrecall").expect("allowed");
+            check_enable_allowed(Some(entry(false)), false, "chatrecall", public_enforcing())
+                .expect("allowed");
         assert_eq!(config.name(), "developer");
     }
 
     #[test]
     fn enable_of_config_enabled_extension_passes_the_config_through() {
-        let config = check_enable_allowed(Some(entry(true)), true, "developer").expect("allowed");
+        let config = check_enable_allowed(Some(entry(true)), true, "developer", public_enforcing())
+            .expect("allowed");
         assert_eq!(config.name(), "developer");
+    }
+
+    /// The same entry shape as [`entry`], but under an arbitrary name and
+    /// always enabled — the tier is resolved from the NAME the model asked
+    /// for, never from the config record, so this fixture only has to carry a
+    /// name that is not itself a refusal for some other reason.
+    fn entry_for(name: &str) -> ExtensionEntry {
+        ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::Builtin {
+                name: name.to_string(),
+                display_name: None,
+                description: "fixture".to_string(),
+                timeout: None,
+                bundled: Some(true),
+                available_tools: vec![],
+            },
+        }
+    }
+
+    /// Gate F1 (#56): `extensionmanager__manage_extensions` is not a tool call
+    /// into a private server — it is the call that SPAWNS one. Enabling
+    /// `ucsfomopagent` pulls its `CLINICAL_RECORDS_*` secrets out of the
+    /// keychain and opens a session to the UCSF CDW; being refused afterwards,
+    /// at the first tool call, is already too late.
+    #[test]
+    fn a_public_caller_may_not_enable_a_private_extension() {
+        use ProviderTier::{Private, Public};
+        // Pure, like its four siblings above, so it needs no global config.
+        let e = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test(Public, true),
+        )
+        .unwrap_err();
+        assert!(e.message.contains("marketplace"), "{}", e.message);
+        assert!(e.message.contains("private"), "{}", e.message);
+        check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test(Private, true),
+        )
+        .expect("a private caller may enable it");
+        check_enable_allowed(
+            Some(entry_for("developer")),
+            false,
+            "developer",
+            CallCapability::for_test(Public, true),
+        )
+        .expect("public extensions are unaffected");
+    }
+
+    /// Task 30's matrix ROW 11, asserted where the gate lives.
+    ///
+    /// ⚠ **Why this row is here and not in `crates/biorouter/tests/privacy_toggle.rs`
+    /// with the other seventeen.** Gate F1 is an ON-THE-TOOL-CALL-PATH gate: the
+    /// master toggle reaches it through the [`CallCapability`] that
+    /// `Agent::dispatch_tool_call` already sampled, never through a second read
+    /// of the global. So the OFF column of this row is *by construction* a
+    /// capability whose `enforced` is false — and the only constructor for one
+    /// is `CallCapability::for_test`, which is `#[cfg(test)] pub(crate)` and
+    /// therefore invisible to an integration binary. Driving it end-to-end
+    /// instead would mean writing `ucsfomopagent` into the developer's real
+    /// `config.yaml`, because `get_extension_entry_by_name` reads the global
+    /// config: the ON column would otherwise stop at "not found" and never
+    /// reach the arm this row is about.
+    ///
+    /// That `CallCapability::sample` itself reads the master toggle is asserted
+    /// end-to-end by the matrix's rows 3, 4/5 and 7, which flip the global and
+    /// watch a real dispatch change its answer. This row is the other half: the
+    /// gate honours what the sample handed it.
+    #[test]
+    fn the_master_toggle_silences_gate_f1() {
+        use ProviderTier::Public;
+        // ON — the shipped default: a public model may not spawn the clinical
+        // connector's process.
+        assert!(check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test(Public, true),
+        )
+        .is_err());
+        // OFF — DR-15: nothing is refused. The SAME public caller may enable it.
+        let config = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test(Public, false),
+        )
+        .expect("with privacy tiers off, nothing is refused");
+        assert_eq!(config.name(), "ucsfomopagent");
+        // …and the toggle silences GATE F1 ONLY. #42's operator pin is not a
+        // privacy control and must survive the master switch being off, or
+        // turning privacy tiers off would quietly hand the agent the power to
+        // re-enable everything the operator disabled.
+        let err = check_enable_allowed(
+            Some(entry(false)),
+            true,
+            "developer",
+            CallCapability::for_test(Public, false),
+        )
+        .unwrap_err();
+        assert!(err.message.contains("operator"), "{}", err.message);
+    }
+
+    /// **Task 43 / DR-23's gate, Step 3.1 — the Gate F1 arm.**
+    ///
+    /// F1 fires BEFORE the extension is spawned, off the name the model asked
+    /// for. Enabling a private connector is not a call into it, it is the call
+    /// that SPAWNS it — pulling its credentials out of the keychain and opening
+    /// the session — so a rename that got past this gate would already have
+    /// disclosed something by the time Gate C looked.
+    ///
+    /// Both the name asked for and the entry's own `name` are the renamed one;
+    /// the `--directory` argument is the only surviving link to the install.
+    #[test]
+    fn a_renamed_private_extension_is_still_refused_by_gate_f1() {
+        let install_dir = "/home/researcher/.config/biorouter/extensions/UCSFOMOPAgent";
+        crate::privacy::provenance::insert_test_record_at(
+            "f1-omop-as-installed",
+            "ucsfomopagent",
+            Some(install_dir),
+        );
+        let renamed = ExtensionEntry {
+            enabled: true,
+            config: ExtensionConfig::Stdio {
+                name: "f1-mystuff".to_string(),
+                description: "renamed by hand in config.yaml".to_string(),
+                cmd: "uv".to_string(),
+                args: vec![
+                    "run".to_string(),
+                    "--directory".to_string(),
+                    install_dir.to_string(),
+                    "server.py".to_string(),
+                ],
+                envs: crate::agents::extension::Envs::default(),
+                env_keys: vec![],
+                timeout: Some(300),
+                bundled: None,
+                available_tools: vec![],
+            },
+        };
+        assert_eq!(
+            crate::privacy::classify_extension("f1-mystuff"),
+            ProviderTier::Public,
+            "the fixture only discriminates if the NAME alone reads public"
+        );
+
+        let err = check_enable_allowed(Some(renamed), false, "f1-mystuff", public_enforcing())
+            .expect_err("renaming the config entry must not let a public model spawn it");
+        assert!(err.message.contains("private extension"), "{}", err.message);
+    }
+
+    /// The capability a session bound to `institution`'s private model carries.
+    fn bound_to(institution: &str) -> CallCapability {
+        CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            true,
+            Some(crate::privacy::affiliation::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new(institution),
+            )),
+        )
+    }
+
+    /// **Task 48, surface 5 — extension enablement.** Bind and enablement are
+    /// the same mismatch found from opposite ends; this is the end where the
+    /// model is already bound and the extension arrives.
+    ///
+    /// ⚠ **The agent is refused rather than warned, and that is DR-26's
+    /// user/agent asymmetry rather than an inconsistency with the bind
+    /// surface.** A user who insists may proceed past a warning; an agent never
+    /// clears one automatically — it escalates to the user or the call does not
+    /// happen. `extensionmanager__manage_extensions` is the agent's enable path,
+    /// so the call does not happen. The USER's enable path is
+    /// `/agent/add_extension`, which warns and proceeds.
+    ///
+    /// Enabling is also the earliest point at which this can be caught:
+    /// spawning `ucsfomopagent` pulls its `CLINICAL_RECORDS_*` secrets out of
+    /// the keychain and opens a session to the UCSF CDW, which is a disclosure
+    /// no later refusal takes back.
+    #[test]
+    fn an_agent_may_not_enable_an_extension_its_model_is_affiliation_incompatible_with() {
+        let err = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            bound_to("stanford"),
+        )
+        .expect_err("a Stanford-covered model may not spawn a UCSF connector");
+        let expected = bound_to("stanford")
+            .cross_affiliation_warning(
+                "ucsfomopagent",
+                &crate::privacy::resolve_extension("ucsfomopagent", None),
+            )
+            .expect("the fixture only discriminates if this pair really mismatches");
+        assert!(err.message.contains(&expected), "{}", err.message);
+    }
+
+    /// The same call on a LOCAL private model is allowed — `Local` is DR-26's
+    /// most permissive affiliation, not a peer of the institutions.
+    #[test]
+    fn a_local_model_may_enable_every_private_extension() {
+        let config = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            CallCapability::for_test_affiliated(
+                ProviderTier::Private,
+                true,
+                Some(crate::privacy::affiliation::ModelAffiliation::Local),
+            ),
+        )
+        .expect("a local model discloses nothing, so nothing needs papering");
+        assert_eq!(config.name(), "ucsfomopagent");
+    }
+
+    /// **Finding 13's ordering consequence, on the enable path.**
+    ///
+    /// Gate F1 now runs above the not-found branch. A public caller asking to
+    /// enable a private connector this machine does not have gets the tier
+    /// refusal, not `not found` — so the two answers no longer tell it which
+    /// private connectors are installed here. That is the same secret the
+    /// catalogue fix stopped printing outright one function away.
+    #[test]
+    fn a_public_caller_cannot_tell_an_absent_private_extension_from_an_installed_one() {
+        let absent =
+            check_enable_allowed(None, false, "ucsfomopagent", public_enforcing()).unwrap_err();
+        let installed = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            public_enforcing(),
+        )
+        .unwrap_err();
+        assert_eq!(absent.code, installed.code);
+        assert_eq!(absent.message, installed.message);
+        assert!(
+            absent.message.contains("private extension"),
+            "{}",
+            absent.message
+        );
+        assert_ne!(
+            absent.code,
+            ErrorCode::RESOURCE_NOT_FOUND,
+            "`not found` for a private name is an install-state oracle"
+        );
+
+        // The operator pin is the other install-state answer, and it is behind
+        // the same gate now. #42's refusal must still be what a PUBLIC extension
+        // gets, or the reorder swallowed it.
+        let pinned =
+            check_enable_allowed(Some(entry(false)), true, "developer", public_enforcing())
+                .unwrap_err();
+        assert!(pinned.message.contains("operator"), "{}", pinned.message);
+        // …and a name that is public and absent still says so, which is what
+        // keeps `enable_of_unknown_extension_is_not_found` a live assertion
+        // rather than one the reorder made unreachable.
+        assert_eq!(
+            check_enable_allowed(None, false, "ghost", public_enforcing())
+                .unwrap_err()
+                .code,
+            ErrorCode::RESOURCE_NOT_FOUND
+        );
+    }
+
+    /// **The oracle, asserted at this door against EVERY install state — the
+    /// gate for the seam finding 4's fix left between the two enable doors.**
+    ///
+    /// The test above compares two states (absent, installed). The third is the
+    /// one the workspace's copy of this gate got wrong: an extension that is
+    /// installed *and pinned off by the operator*. That copy asked #42's pin
+    /// first, so `workspace_open {new:{extensions}}` answered "…is disabled in
+    /// the Biorouter configuration (enabled: false)" to a public caller who may
+    /// not have the connector at all — an install-state oracle, reopened one
+    /// function away from where finding 13 had just closed it. Both doors now
+    /// call `refusal::extension_enable_refusal`, so this asserts the property at
+    /// the shared gate through this door and its twin asserts it through the
+    /// other two.
+    ///
+    /// The last two assertions are what stop the fix being "refuse everything":
+    /// a caller who MAY have the extension still meets the pin, and a public
+    /// caller still meets it for a public extension.
+    #[test]
+    fn no_install_state_reaches_a_caller_who_may_not_enable_the_extension() {
+        const NAME: &str = "ucsfomopagent";
+        let pinned_off = || {
+            let mut e = entry_for(NAME);
+            e.enabled = false;
+            e
+        };
+
+        let absent = check_enable_allowed(None, false, NAME, public_enforcing()).unwrap_err();
+        let installed =
+            check_enable_allowed(Some(entry_for(NAME)), false, NAME, public_enforcing())
+                .unwrap_err();
+        let pinned =
+            check_enable_allowed(Some(pinned_off()), true, NAME, public_enforcing()).unwrap_err();
+
+        for (state, err) in [
+            ("installed and enabled", &installed),
+            ("installed and pinned off by the operator", &pinned),
+        ] {
+            assert_eq!(
+                (absent.code, absent.message.to_string()),
+                (err.code, err.message.to_string()),
+                "the refusal tells a public caller that the private connector is {state}"
+            );
+        }
+        assert!(
+            absent.message.contains("private extension"),
+            "{}",
+            absent.message
+        );
+        for leak in ["enabled: false", "not found", "operator"] {
+            assert!(
+                !absent.message.contains(leak),
+                "the refusal a caller who may not see this connector gets names local \
+                 state (`{leak}`): {}",
+                absent.message
+            );
+        }
+
+        // …and the pin is not swallowed. A caller ENTITLED to the connector still
+        // meets #42, which is the half a reorder breaks silently.
+        let entitled = check_enable_allowed(
+            Some(pinned_off()),
+            true,
+            NAME,
+            CallCapability::for_test(ProviderTier::Private, true),
+        )
+        .unwrap_err();
+        assert!(
+            entitled.message.contains("operator"),
+            "{}",
+            entitled.message
+        );
+        // Same for a public caller and a PUBLIC extension — every case #42 was
+        // written for.
+        let public_pin =
+            check_enable_allowed(Some(entry(false)), true, "developer", public_enforcing())
+                .unwrap_err();
+        assert!(
+            public_pin.message.contains("operator"),
+            "{}",
+            public_pin.message
+        );
+    }
+
+    /// A PRIVATE caller reaches every branch the reorder moved past, unchanged.
+    #[test]
+    fn the_reorder_does_not_touch_a_private_callers_answers() {
+        use ProviderTier::Private;
+        let cap = CallCapability::for_test(Private, true);
+        assert_eq!(
+            check_enable_allowed(None, false, "ucsfomopagent", cap)
+                .unwrap_err()
+                .code,
+            ErrorCode::RESOURCE_NOT_FOUND,
+            "a private caller is still told when a private extension is absent"
+        );
+        let pinned = check_enable_allowed(Some(entry(false)), true, "developer", cap).unwrap_err();
+        assert!(pinned.message.contains("operator"), "{}", pinned.message);
+    }
+
+    /// DR-15's master opt-out reaches the affiliation arm through the same
+    /// capability, not through a second read of the global.
+    #[test]
+    fn the_master_toggle_silences_the_affiliation_arm_of_the_enable_gate() {
+        let cap = CallCapability::for_test_affiliated(
+            ProviderTier::Private,
+            false,
+            Some(crate::privacy::affiliation::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new("stanford"),
+            )),
+        );
+        let config = check_enable_allowed(
+            Some(entry_for("ucsfomopagent")),
+            false,
+            "ucsfomopagent",
+            cap,
+        )
+        .expect("with privacy tiers off, nothing is refused");
+        assert_eq!(config.name(), "ucsfomopagent");
+    }
+
+    // ----------------------------------------------------------------------
+    // Issue #56 findings 13 and 14, WIRING. Nine guards in this campaign shipped
+    // correct, tested and called by nothing, so each new gate is asserted twice:
+    // once through the real `call_tool` entry point (below), and once
+    // structurally against this file's production text
+    // (`both_new_gates_have_production_callers`), because a behavioural test can
+    // be satisfied by a helper the tool dispatch does not actually reach.
+    // ----------------------------------------------------------------------
+
+    /// A live `ExtensionManagerClient` over a real `ExtensionManager`, reached
+    /// exactly as `configure_agent` builds it.
+    fn a_live_tool_client() -> (
+        tempfile::TempDir,
+        std::sync::Arc<crate::agents::extension_manager::ExtensionManager>,
+        ExtensionManagerClient,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let em = std::sync::Arc::new(
+            crate::agents::extension_manager::ExtensionManager::new_without_provider(
+                dir.path().to_path_buf(),
+            ),
+        );
+        let context = PlatformExtensionContext {
+            extension_manager: Some(std::sync::Arc::downgrade(&em)),
+            session_manager: em.get_context().session_manager.clone(),
+        };
+        let client = ExtensionManagerClient::new(context).expect("the platform client builds");
+        (dir, em, client)
+    }
+
+    async fn disable(client: &ExtensionManagerClient, name: &str, cap: CallCapability) -> String {
+        let result = client
+            .call_tool(
+                MANAGE_EXTENSIONS_TOOL_NAME,
+                Some(
+                    serde_json::json!({ "action": "disable", "extension_name": name })
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                ),
+                McpMeta::new("session-under-test", cap),
+                CancellationToken::default(),
+            )
+            .await
+            .expect("the platform client always answers, error or not");
+        // The handler reports refusals as `is_error` content rather than a
+        // transport error, so the text is where the verdict is.
+        result
+            .content
+            .iter()
+            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// **Finding 14, through the production tool call.** `manage_extensions
+    /// {disable}` returned before any privacy decision existed on the path:
+    /// `cap` was already a parameter, and this branch simply never read it.
+    #[tokio::test]
+    async fn a_public_chat_may_not_disable_a_private_extension_through_the_tool() {
+        let (_dir, em, client) = a_live_tool_client();
+
+        let refused = disable(
+            &client,
+            "ucsfomopagent",
+            CallCapability::for_test(ProviderTier::Public, true),
+        )
+        .await;
+        assert!(
+            refused.contains("private extension"),
+            "a public chat dropped the clinical connector: {refused}"
+        );
+
+        // The SAME call on a private model succeeds, or the test is passing
+        // against a tool that refuses everything.
+        let allowed = disable(
+            &client,
+            "ucsfomopagent",
+            CallCapability::for_test(ProviderTier::Private, true),
+        )
+        .await;
+        assert!(allowed.contains("disabled successfully"), "{allowed}");
+
+        // …and a public chat keeps every public extension it could disable
+        // before, or the gate is a blanket refusal wearing a tier's clothes.
+        //
+        // `developer` has to be really installed for this half to mean
+        // anything: the gate inherits `assert_extension_reachable`'s inverted
+        // unknown-name default, so an absent name refuses whatever its tier
+        // would have been, and a fixture that skipped the load would assert the
+        // oracle rather than the permit.
+        let target = crate::agents::extension_manager::resolve_bundled_extension("developer")
+            .expect("`developer` is a bundled extension");
+        em.add_extension(target.into_config("under test".to_string()))
+            .await
+            .expect("the developer builtin loads");
+        let public_ext = disable(
+            &client,
+            "developer",
+            CallCapability::for_test(ProviderTier::Public, true),
+        )
+        .await;
+        assert!(public_ext.contains("disabled successfully"), "{public_ext}");
+    }
+
+    /// DR-15's master opt-out reaches the disable gate through the capability.
+    #[tokio::test]
+    async fn the_master_toggle_silences_the_disable_gate() {
+        let (_dir, _em, client) = a_live_tool_client();
+        let text = disable(
+            &client,
+            "ucsfomopagent",
+            CallCapability::for_test(ProviderTier::Public, false),
+        )
+        .await;
+        assert!(
+            text.contains("disabled successfully"),
+            "with privacy tiers off nothing is refused: {text}"
+        );
+    }
+
+    /// ⚠ **A guard with no caller is the failure mode this campaign has shipped
+    /// nine times.** Both gates added for findings 13 and 14 are asserted here
+    /// against this file's PRODUCTION text — the tool-dispatch `match` arm and
+    /// the disable branch — so a later refactor that keeps the gates compiling
+    /// while routing around them fails loudly.
+    ///
+    /// The behavioural tests above cannot substitute: they call the gate, and a
+    /// gate can be called by a test while the dispatch arm no longer reaches it.
+    #[test]
+    fn both_new_gates_have_production_callers() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/agents/extension_manager_extension.rs");
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the audit could not read {}: {e}", path.display()));
+        assert!(
+            src.len() > 10_000,
+            "the audit read {} bytes — a truncated read reports the same absence \
+             as a removed call site",
+            src.len()
+        );
+        // Production only. `mod tests` in this file sits below an unindented
+        // `#[cfg(test)]`, and the assertions in this very function would
+        // otherwise satisfy themselves.
+        let production = src
+            .split("\n#[cfg(test)]")
+            .next()
+            .expect("split always yields a first element");
+        assert!(
+            production.len() < src.len(),
+            "the production/test split found no `#[cfg(test)]` boundary, so this \
+             function is asserting against its own source"
+        );
+        let calls = |needle: &str| {
+            production
+                .lines()
+                .any(|l| !l.trim_start().starts_with("//") && l.contains(needle))
+        };
+        assert!(
+            calls("self.handle_search_available_extensions(meta.capability)"),
+            "finding 13's catalogue filter has no production caller: the \
+             `search_available_extensions` dispatch arm no longer threads the \
+             admitted capability"
+        );
+        assert!(
+            calls(".assert_extension_manageable(&extension_name, cap)"),
+            "finding 14's disable gate has no production caller: \
+             `manage_extensions {{disable}}` no longer asks it"
+        );
+
+        // The seam: this door's enable gate is the SHARED one, and this file
+        // holds no second spelling of it. A behavioural test cannot see the
+        // difference — a local re-derivation that happens to agree today passes
+        // every assertion above — and agreeing-today is exactly what the two
+        // copies did until one of them was reordered.
+        assert!(
+            calls("crate::privacy::refusal::extension_enable_refusal("),
+            "the `manage_extensions` enable door no longer asks the shared enable \
+             gate. Its arms (tier, affiliation, operator pin) and their ORDER are \
+             the workspace doors' too; a copy here is how the two drifted apart \
+             the first time"
+        );
+        // `extension_entry_is_persisted` is deliberately NOT in this list: the
+        // gate takes `persisted` as an argument precisely so it stays pure, and
+        // asking that helper is this door's job. What must not come back is an
+        // arm of the DECISION.
+        //
+        // ⚠ **The list is shared, and that is the fix.** This scan used to carry
+        // its own literal naming only the idiom THIS file's history produced
+        // (`class.tier.is_private()` / `ASK_THE_USER_TO_SWITCH`), while
+        // `workspace_extension.rs`'s scan carried a different literal naming
+        // only ITS idiom (`resolve_extension(` / `privacy_refusal(` / the
+        // affiliation helpers). Two files, two lists, one rule — so a
+        // re-derivation written in the other file's vocabulary satisfied both
+        // scans and neither reported anything. The guard against duplicating a
+        // rule had been duplicated. One const, read by both, in
+        // `workspace_extension::tests::ENABLE_GATE_RESPELLINGS`.
+        crate::agents::workspace_extension::tests::asserts_no_respellings(
+            production,
+            "extension_manager_extension.rs",
+        );
     }
 }

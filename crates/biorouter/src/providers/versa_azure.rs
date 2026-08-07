@@ -17,6 +17,7 @@ use super::utils::{
 };
 use crate::conversation::message::Message;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::utils::RequestLog;
 use rmcp::model::Tool;
 
@@ -58,6 +59,10 @@ pub struct VersaAzureProvider {
     api_version: String,
     model: ModelConfig,
     name: String,
+    /// The endpoint this instance resolved at construction. `tier()` reads it,
+    /// never the provider's name — the three `AZURE_OPENAI_*` keys are shared
+    /// with the public `azure_openai` provider and are user-writable.
+    resolved_endpoint: String,
 }
 
 impl Serialize for VersaAzureProvider {
@@ -122,7 +127,10 @@ impl VersaAzureProvider {
         })?;
 
         let auth_provider = VersaAzureAuthProvider { auth };
-        let api_client = ApiClient::new(endpoint, AuthMethod::Custom(Box::new(auth_provider)))?;
+        let api_client = ApiClient::new(
+            endpoint.clone(),
+            AuthMethod::Custom(Box::new(auth_provider)),
+        )?;
 
         Ok(Self {
             api_client,
@@ -130,6 +138,7 @@ impl VersaAzureProvider {
             api_version,
             model,
             name: Self::metadata().name,
+            resolved_endpoint: endpoint,
         })
     }
 
@@ -201,10 +210,24 @@ impl Provider for VersaAzureProvider {
             ],
         )
         .with_unlisted_models()
+        // The shipped endpoint is the UCSF gateway, so a default install is
+        // Private. An instance that resolved elsewhere says so itself, below.
+        .with_tier(ProviderTier::Private)
     }
 
     fn get_name(&self) -> &str {
         &self.name
+    }
+
+    fn tier(&self) -> ProviderTier {
+        crate::providers::ucsf_gateway_tier(&self.resolved_endpoint)
+    }
+
+    /// DR-26: `Institution("ucsf")` — decided by the **same** resolved endpoint
+    /// as the tier above, through the same host check, so the two can never
+    /// disagree about a repointed instance.
+    fn affiliation(&self) -> Option<crate::privacy::affiliation::ModelAffiliation> {
+        crate::providers::ucsf_gateway_affiliation(&self.resolved_endpoint)
     }
 
     fn get_model_config(&self) -> ModelConfig {
@@ -306,7 +329,67 @@ mod tests {
             api_version: VERSA_AZURE_API_VERSION.to_string(),
             model: ModelConfig::new_or_fail(VERSA_AZURE_DEPLOYMENT),
             name: "versa_azure".to_string(),
+            resolved_endpoint: VERSA_AZURE_ENDPOINT.to_string(),
         }
+    }
+
+    /// Task 5 rule 2, **wired** — not just the predicate behind it.
+    ///
+    /// `providers::ucsf_gateway_tier` is unit-tested on its own in
+    /// `tier_tests.rs`, but a test of the predicate alone cannot see whether
+    /// this provider calls it, or hands it the right field. Replace the body of
+    /// `tier()` with an unconditional `Private`, or point it at a field that is
+    /// not the resolved endpoint, and every one of those tests still passes.
+    /// This one does not: the three `AZURE_OPENAI_*` keys are shared with the
+    /// public `azure_openai` provider, so a `tier()` that ignores the endpoint
+    /// hands a private badge to a provider posting transcripts wherever the
+    /// user's config points.
+    #[test]
+    fn tier_follows_the_endpoint_this_instance_resolved() {
+        let shipped = test_provider();
+        assert_eq!(shipped.resolved_endpoint, VERSA_AZURE_ENDPOINT);
+        assert_eq!(shipped.tier(), ProviderTier::Private);
+
+        let mut elsewhere = test_provider();
+        elsewhere.resolved_endpoint = "https://evil.example.com/general".to_string();
+        // Same name, same metadata, same everything a name-keyed rule can see.
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            VersaAzureProvider::metadata().tier,
+            ProviderTier::Private,
+            "the type-level claim is still Private; only the instance demotes"
+        );
+        assert_eq!(elsewhere.tier(), ProviderTier::Public);
+    }
+
+    /// DR-26 (Task 46) rule, **wired** — the same argument as the tier test
+    /// above, for the third axis.
+    ///
+    /// `providers::ucsf_gateway_affiliation` is unit-tested on its own in
+    /// `affiliation_tests.rs`, but that cannot see whether this provider calls
+    /// it or hands it the right field. Returning an unconditional
+    /// `Institution("ucsf")` here — or keying it on `get_name()`, which is the
+    /// obvious implementation — passes every one of those tests and hands a UCSF
+    /// badge to an instance posting prompts wherever the user's shared
+    /// `AZURE_OPENAI_ENDPOINT` points.
+    #[test]
+    fn affiliation_follows_the_endpoint_this_instance_resolved() {
+        use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+
+        let shipped = test_provider();
+        assert_eq!(
+            shipped.affiliation(),
+            Some(ModelAffiliation::institution(InstitutionId::new("ucsf")))
+        );
+
+        let mut elsewhere = test_provider();
+        elsewhere.resolved_endpoint = "https://evil.example.com/general".to_string();
+        assert_eq!(elsewhere.get_name(), shipped.get_name());
+        assert_eq!(
+            elsewhere.affiliation(),
+            None,
+            "an instance that lost Private must lose `ucsf` with it"
+        );
     }
 
     /// The regression this file exists for: `stream()` must build a *streaming*

@@ -32,32 +32,142 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use super::apps::{configured_port, daemon_ok, DAEMON_HOST};
 use super::session_grouping::{listed_session_types, SessionRow};
 
-/// The daemon's secret, or an actionable error. `biorouterd` generates a random
-/// key when this is unset (`commands/agent.rs:35`), in which case no client can
-/// authenticate — say so instead of surfacing a bare 401.
-fn secret_key() -> Result<String> {
-    std::env::var("BIOROUTER_SERVER__SECRET_KEY").map_err(|_| {
-        anyhow!(
-            "BIOROUTER_SERVER__SECRET_KEY is not set, so this command cannot authenticate \
-             with the daemon.\nStart the daemon with a known key and reuse it here:\n  \
-             BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent\n  \
-             BIOROUTER_SERVER__SECRET_KEY=<key> biorouter sessions watch <id>"
-        )
+/// The header the daemon's reach gate reads the caller's capability from.
+///
+/// ⚠ **Spelled here and asserted from the other side.** The daemon's copy is
+/// `biorouter_server::routes::session_reach::CALLER_PROVIDER_HEADER`, and
+/// `the_cli_sends_the_capability_header_this_gate_reads` over there reads *this
+/// file* and fails the build if the two ever diverge. The CLI cannot import the
+/// constant — it carries no dependency on `biorouter-server`, deliberately, and
+/// no HTTP client either — so the agreement is held by a test rather than by the
+/// type system, and the test reads the source rather than grepping for a name.
+pub(crate) const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
+
+/// Everything a daemon request must carry: the shared secret, and **the
+/// capability this terminal is running under**.
+///
+/// ⚠ **One type instead of a `&str` secret, so the capability cannot be
+/// forgotten at one door.** Every session-addressing command here goes through
+/// [`daemon_auth`] and then through one of the two request builders below, and
+/// both builders take this struct — so there is no way to compose a request that
+/// authenticates but does not state its capability. The alternative (a second
+/// argument threaded through six call sites) is exactly the shape that ships a
+/// gate wired at three doors of four.
+#[derive(Clone)]
+pub(crate) struct DaemonAuth {
+    secret: String,
+    /// The provider name, or empty for an install with no configured provider.
+    /// Empty means the header is omitted entirely, which the daemon resolves to
+    /// the public tier — the same answer, stated by saying nothing rather than
+    /// by saying something meaningless.
+    caller_provider: String,
+}
+
+/// The daemon's secret plus this process's capability, or an actionable error.
+///
+/// `biorouterd` generates a random key when `BIOROUTER_SERVER__SECRET_KEY` is
+/// unset (`commands/agent.rs:35`), in which case no client can authenticate —
+/// and, since Task 58's reach gate, the desktop app is a *particularly* common
+/// case of that: it mints a per-launch random secret and binds an ephemeral
+/// port, neither of which is readable from a terminal. So the error names that
+/// case explicitly instead of leaving the user to discover it from a 401 or a
+/// connection refusal.
+pub(crate) async fn daemon_auth() -> Result<DaemonAuth> {
+    let secret = std::env::var("BIOROUTER_SERVER__SECRET_KEY")
+        .map_err(|_| anyhow!("{}", NO_SECRET_KEY_HELP))?;
+    // Issue #56: the CLI's capability. Resolved once per command, from the
+    // provider this terminal is configured for, and stated on every request the
+    // command makes.
+    let caller_provider = crate::session::privacy::configured_provider_name().unwrap_or_default();
+    Ok(DaemonAuth {
+        secret,
+        caller_provider,
     })
 }
 
-pub(crate) fn build_get_request(path: &str, host: &str, secret: &str) -> String {
+impl DaemonAuth {
+    /// The two headers every request carries, already CRLF-terminated.
+    ///
+    /// Composed in one place so a request cannot state its secret without also
+    /// stating its capability.
+    fn headers(&self) -> String {
+        let mut out = format!("X-Secret-Key: {}\r\n", self.secret);
+        if !self.caller_provider.is_empty() {
+            out.push_str(CALLER_PROVIDER_HEADER);
+            out.push_str(": ");
+            out.push_str(&self.caller_provider);
+            out.push_str("\r\n");
+        }
+        out
+    }
+
+    /// The same pair, for tests. `#[cfg(test)]`, so it is absent from every
+    /// shipped binary — a production caller must go through [`daemon_auth`],
+    /// which is what resolves the capability.
+    #[cfg(test)]
+    pub(crate) fn for_test(secret: &str, caller_provider: &str) -> Self {
+        Self {
+            secret: secret.to_string(),
+            caller_provider: caller_provider.to_string(),
+        }
+    }
+}
+
+/// What a user is told when no daemon secret is reachable.
+///
+/// ⚠ **The desktop app is named first, because it is the case that actually
+/// happens.** `ui/desktop/src/biorouterd.ts` starts the bundled daemon on an
+/// *ephemeral* port with a *per-launch random* secret, and hands neither to
+/// anything outside the Electron main process — so with the app open, every one
+/// of these commands fails, and the old message sent the user hunting for an
+/// environment variable that would never have helped. The supported path is the
+/// app's External Backend setting: the user runs the daemon themselves, with a
+/// secret and a port they chose, and points the app at it. Both halves of that
+/// are spelled out because a message that says "use the External Backend
+/// setting" without saying what to run is a message that cannot be followed.
+pub(crate) const NO_SECRET_KEY_HELP: &str =
+    "BIOROUTER_SERVER__SECRET_KEY is not set, so this command cannot authenticate with the \
+     daemon.\n\nIf the Biorouter desktop app is running: its daemon is deliberately \
+     unreachable from a terminal — it binds a random port and mints a new secret every launch, \
+     and neither is published. Point the app at a daemon you control instead:\n  \
+     1. Start one yourself, with a port and a secret you choose:\n       \
+     BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent\n  \
+     2. In the app: Settings > Advanced > External Backend, enable it and set the URL to \
+     http://127.0.0.1:3000\n  3. Re-run this command in a shell that exports the same two \
+     values:\n       BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session \
+     watch <id>\n\nWithout the app, step 1 and step 3 alone are enough.";
+
+/// What a user is told when nothing is listening where this client looked.
+///
+/// ⚠ **It names the port it actually tried, and the reason the desktop app does
+/// not satisfy it.** `configured_port()` reads `BIOROUTER_PORT` and otherwise
+/// assumes 3000, while the app's own daemon binds a port the OS chose — so "the
+/// app is open, why is there no daemon" is the question this message has to
+/// answer, and a bare "start one" does not.
+pub(crate) fn no_daemon_at(port: u16) -> String {
     format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nX-Secret-Key: {secret}\r\n\
-         Accept: text/event-stream\r\nConnection: close\r\n\r\n"
+        "no Biorouter daemon is listening on {DAEMON_HOST}:{port}. The desktop app's own \
+         daemon does not count: it binds a port the operating system chooses at launch, so it \
+         is never on {port} except by coincidence. Start one you control, and point the app at \
+         it with Settings > Advanced > External Backend:\n  \
+         BIOROUTER_PORT={port} BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent"
     )
 }
 
-pub(crate) fn build_post_request(path: &str, host: &str, secret: &str, body: &str) -> String {
+pub(crate) fn build_get_request(path: &str, host: &str, auth: &DaemonAuth) -> String {
     format!(
-        "POST {path} HTTP/1.1\r\nHost: {host}\r\nX-Secret-Key: {secret}\r\n\
+        "GET {path} HTTP/1.1\r\nHost: {host}\r\n{}\
+         Accept: text/event-stream\r\nConnection: close\r\n\r\n",
+        auth.headers()
+    )
+}
+
+pub(crate) fn build_post_request(path: &str, host: &str, auth: &DaemonAuth, body: &str) -> String {
+    format!(
+        "POST {path} HTTP/1.1\r\nHost: {host}\r\n{}\
          Content-Type: application/json\r\nContent-Length: {}\r\n\
          Accept: text/event-stream\r\nConnection: close\r\n\r\n{body}",
+        auth.headers(),
         body.len()
     )
 }
@@ -455,12 +565,12 @@ fn print_frames(
 /// Deliberately a one-shot read rather than `stream_frames`: the response is a
 /// single JSON object, not SSE.
 pub async fn running_session_ids() -> Result<std::collections::HashSet<String>> {
-    let secret = secret_key()?;
+    let auth = daemon_auth().await?;
     let port = configured_port();
     if !daemon_ok(DAEMON_HOST, port).await {
         return Err(anyhow!(
-            "no Biorouter daemon is listening on {DAEMON_HOST}:{port}, so turn \
-             liveness is not knowable from here"
+            "{} (so turn liveness is not knowable from here)",
+            no_daemon_at(port)
         ));
     }
     // ⚠ A DEADLINE, unlike `handle_session_watch`'s deliberately unbounded SSE
@@ -471,7 +581,7 @@ pub async fn running_session_ids() -> Result<std::collections::HashSet<String>> 
     let raw = tokio::time::timeout(std::time::Duration::from_secs(5), async {
         let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
         stream
-            .write_all(build_get_request("/sessions/running", DAEMON_HOST, &secret).as_bytes())
+            .write_all(build_get_request("/sessions/running", DAEMON_HOST, &auth).as_bytes())
             .await?;
 
         let mut raw = Vec::new();
@@ -547,15 +657,12 @@ fn json_object(body: &str) -> Option<serde_json::Value> {
 /// answer with a single JSON object rather than an SSE stream — and because a
 /// request made from inside an interactive loop must not be able to hang it,
 /// hence the deadline (as in `running_session_ids`).
-async fn post_json(path: &str, body: &str, secret: &str) -> Result<(u16, String)> {
+async fn post_json(path: &str, body: &str, auth: &DaemonAuth) -> Result<(u16, String)> {
     let port = configured_port();
     if !daemon_ok(DAEMON_HOST, port).await {
-        return Err(anyhow!(
-            "no Biorouter daemon is listening on {DAEMON_HOST}:{port}. \
-             Start one: BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent"
-        ));
+        return Err(anyhow!("{}", no_daemon_at(port)));
     }
-    let request = build_post_request(path, DAEMON_HOST, secret, body);
+    let request = build_post_request(path, DAEMON_HOST, auth, body);
     let raw = tokio::time::timeout(std::time::Duration::from_secs(10), async {
         let mut stream = tokio::net::TcpStream::connect(format!("{DAEMON_HOST}:{port}")).await?;
         stream.write_all(request.as_bytes()).await?;
@@ -585,13 +692,13 @@ async fn post_json(path: &str, body: &str, secret: &str) -> Result<(u16, String)
 
 /// `biorouter sessions watch <id>` — read-only observation of a live session.
 pub async fn handle_session_watch(session_id: &str, follow: bool) -> Result<()> {
-    let secret = secret_key()?;
+    let auth = daemon_auth().await?;
     eprintln!("watching session {session_id} (ctrl-c to stop)");
     stream_frames(
         build_get_request(
             &format!("/sessions/{session_id}/events"),
             DAEMON_HOST,
-            &secret,
+            &auth,
         ),
         !follow,
         Render::Lines,
@@ -621,15 +728,10 @@ fn reply_body(session_id: &str, text: &str) -> String {
 /// `biorouter sessions send <id> <text>` — inject a turn and, unless
 /// `--no-wait`, watch it to completion.
 pub async fn handle_session_send(session_id: &str, text: &str, wait: bool) -> Result<()> {
-    let secret = secret_key()?;
+    let auth = daemon_auth().await?;
     // `/reply` streams the turn back, so a send that waits is one request.
     stream_frames(
-        build_post_request(
-            "/reply",
-            DAEMON_HOST,
-            &secret,
-            &reply_body(session_id, text),
-        ),
+        build_post_request("/reply", DAEMON_HOST, &auth, &reply_body(session_id, text)),
         wait,
         Render::Lines,
     )
@@ -830,9 +932,9 @@ impl ReplyWindow {
 
 /// Queue `text` into the turn already running. 202 names the turn that took it,
 /// so the caller can print something real; 409 means that turn has ended.
-async fn post_interrupt(session_id: &str, text: &str, secret: &str) -> Result<SteerOutcome> {
+async fn post_interrupt(session_id: &str, text: &str, auth: &DaemonAuth) -> Result<SteerOutcome> {
     let body = serde_json::json!({ "session_id": session_id, "text": text }).to_string();
-    match post_json("/interrupt", &body, secret).await? {
+    match post_json("/interrupt", &body, auth).await? {
         (202, body) => Ok(SteerOutcome::Queued {
             turn_id: json_object(&body)
                 .as_ref()
@@ -872,10 +974,10 @@ async fn post_interrupt(session_id: &str, text: &str, secret: &str) -> Result<St
 async fn post_reply_quiet(
     session_id: &str,
     text: &str,
-    secret: &str,
+    auth: &DaemonAuth,
     window: Arc<ReplyWindow>,
 ) -> Result<TurnOutcome> {
-    let request = build_post_request("/reply", DAEMON_HOST, secret, &reply_body(session_id, text));
+    let request = build_post_request("/reply", DAEMON_HOST, auth, &reply_body(session_id, text));
     let (status_tx, status_rx) = tokio::sync::oneshot::channel();
     // Opened from before the request rather than from the 200: erring towards
     // warning about a turn that does not exist is harmless, erring the other way
@@ -963,12 +1065,12 @@ where
 async fn deliver(
     session_id: &str,
     text: &str,
-    secret: &str,
+    auth: &DaemonAuth,
     window: &Arc<ReplyWindow>,
 ) -> Result<Delivered> {
     run_ladder(
-        move || post_interrupt(session_id, text, secret),
-        move || post_reply_quiet(session_id, text, secret, window.clone()),
+        move || post_interrupt(session_id, text, auth),
+        move || post_reply_quiet(session_id, text, auth, window.clone()),
     )
     .await
 }
@@ -1100,8 +1202,16 @@ async fn resolve_attach_target(
     // `listed_session_types(true)` rather than an open-coded array: a subagent
     // row is filtered out in SQL, so the query itself has to widen.
     let session_manager = SessionManager::instance();
+    // ⚠ `…_including_empty`, and this door needs it MORE than the listing does.
+    // The historical query INNER JOINs `messages`, so a subagent that has not
+    // produced a message yet is not returned — and a child that was spawned a
+    // second ago and is running RIGHT NOW is precisely that row. `attach --of
+    // <parent>` exists to join a run while it is happening, so the query that
+    // could not see a just-started child could not see the case the command is
+    // for. It reported "no running subagent of <parent>", which reads as "the
+    // run already finished".
     let sessions = session_manager
-        .list_sessions_by_types(listed_session_types(true))
+        .list_sessions_by_types_including_empty(listed_session_types(true))
         .await?;
     let rows: Vec<SessionRow> = sessions
         .iter()
@@ -1134,13 +1244,13 @@ async fn resolve_attach_target(
 /// same turn.
 fn spawn_delivery_worker(
     session_id: String,
-    secret: String,
+    auth: DaemonAuth,
     window: Arc<ReplyWindow>,
 ) -> tokio::sync::mpsc::Sender<String> {
     let (send_tx, mut send_rx) = tokio::sync::mpsc::channel::<String>(SEND_QUEUE);
     tokio::spawn(async move {
         while let Some(text) = send_rx.recv().await {
-            match deliver(&session_id, &text, &secret, &window).await {
+            match deliver(&session_id, &text, &auth, &window).await {
                 Ok(Delivered::Steered { turn_id }) => println!("[steered turn {turn_id}]"),
                 // Both halves are announced from the socket itself — the start
                 // at the 200 in `post_reply_quiet`, the end when its holder
@@ -1172,9 +1282,10 @@ pub async fn handle_session_attach(
     of: Option<String>,
     read_only: bool,
 ) -> Result<()> {
-    // The secret first: `--of` needs the daemon to answer, and failing on a
-    // missing key with the actionable message beats failing on a lookup.
-    let secret = secret_key()?;
+    // The daemon credentials first: `--of` needs the daemon to answer, and
+    // failing on a missing key with the actionable message beats failing on a
+    // lookup.
+    let auth = daemon_auth().await?;
     let session_id = resolve_attach_target(session_id, name, of).await?;
 
     if read_only {
@@ -1197,7 +1308,7 @@ pub async fn handle_session_attach(
     // spinning on a closed channel.
     let _line_tx = line_tx;
 
-    let send_tx = spawn_delivery_worker(session_id.clone(), secret.clone(), window.clone());
+    let send_tx = spawn_delivery_worker(session_id.clone(), auth.clone(), window.clone());
 
     // The observer stream, exactly as `watch --follow`, except that its first
     // frame is rendered as a transcript. It is READ-ONLY: its task in the daemon
@@ -1207,7 +1318,7 @@ pub async fn handle_session_attach(
         build_get_request(
             &format!("/sessions/{session_id}/events"),
             DAEMON_HOST,
-            &secret,
+            &auth,
         ),
         false,
         Render::JoinThenLines,
@@ -1314,9 +1425,9 @@ pub(crate) fn render_cancel(response: &serde_json::Value) -> Result<String> {
 /// `workspace_close scope:"turn"` is the agent's version of the same act, and
 /// `POST /agent/cancel` is the route the GUI's Stop button already uses.
 pub async fn handle_session_cancel(session_id: &str) -> Result<()> {
-    let secret = secret_key()?;
+    let auth = daemon_auth().await?;
     let body = serde_json::json!({ "session_id": session_id }).to_string();
-    let (code, body) = post_json("/agent/cancel", &body, &secret).await?;
+    let (code, body) = post_json("/agent/cancel", &body, &auth).await?;
     if code != 200 {
         return Err(anyhow!(
             "the daemon refused the cancel: HTTP {code}\n\
@@ -1429,15 +1540,105 @@ mod tests {
 
     #[test]
     fn requests_are_well_formed_http_with_the_secret_header() {
-        let get = build_get_request("/sessions/abc/events", "127.0.0.1", "s3cret");
+        let auth = DaemonAuth::for_test("s3cret", "versa_azure");
+        let get = build_get_request("/sessions/abc/events", "127.0.0.1", &auth);
         assert!(get.starts_with("GET /sessions/abc/events HTTP/1.1\r\n"));
         assert!(get.contains("X-Secret-Key: s3cret\r\n"));
         assert!(get.contains("Accept: text/event-stream\r\n"));
 
-        let post = build_post_request("/reply", "127.0.0.1", "s3cret", "{\"a\":1}");
+        let post = build_post_request("/reply", "127.0.0.1", &auth, "{\"a\":1}");
         assert!(post.starts_with("POST /reply HTTP/1.1\r\n"));
         assert!(post.contains("Content-Length: 7\r\n"));
         assert!(post.ends_with("\r\n\r\n{\"a\":1}"));
+    }
+
+    /// Issue #56 — **every** daemon request states the capability this terminal
+    /// is running under, on both verbs.
+    ///
+    /// The gate on the other side is `caller capability >= target
+    /// classification`; a request that authenticates but never says what it is
+    /// running is a public-capability caller, and `session send/watch/attach`
+    /// into a private chat is refused. Both builders are asserted because
+    /// `watch` is a GET and `send`/`attach` are POSTs, and a header put on one
+    /// of them leaves half the surface refused.
+    #[test]
+    fn every_daemon_request_states_the_callers_capability() {
+        let auth = DaemonAuth::for_test("s3cret", "versa_azure");
+        let expected = format!("{CALLER_PROVIDER_HEADER}: versa_azure\r\n");
+        assert!(
+            build_get_request("/sessions/abc/events", "127.0.0.1", &auth).contains(&expected),
+            "watch does not state its capability"
+        );
+        assert!(
+            build_post_request("/reply", "127.0.0.1", &auth, "{}").contains(&expected),
+            "send/attach do not state their capability"
+        );
+    }
+
+    /// An install with no configured provider omits the header rather than
+    /// sending an empty one.
+    ///
+    /// The daemon resolves an absent header and an unknown name to the same
+    /// answer (public), so this is not a security property — it is the
+    /// difference between saying nothing and saying something meaningless, and
+    /// a header whose value is the empty string is the shape that makes a
+    /// proxy, a log or a future parser guess.
+    #[test]
+    fn an_unconfigured_install_omits_the_capability_header() {
+        let auth = DaemonAuth::for_test("s3cret", "");
+        let get = build_get_request("/sessions/abc/events", "127.0.0.1", &auth);
+        assert!(get.contains("X-Secret-Key: s3cret\r\n"));
+        assert!(
+            !get.contains(CALLER_PROVIDER_HEADER),
+            "an empty capability was sent as a header: {get}"
+        );
+        assert!(!build_post_request("/reply", "127.0.0.1", &auth, "{}")
+            .contains(CALLER_PROVIDER_HEADER));
+    }
+
+    /// The "no secret" message must send the user somewhere that works.
+    ///
+    /// The case that actually happens is the desktop app: it starts the bundled
+    /// daemon on an ephemeral port with a per-launch random secret and publishes
+    /// neither, so with the app open every one of these commands fails. A
+    /// message that only said "set BIOROUTER_SERVER__SECRET_KEY" sent people
+    /// hunting for a value that does not exist anywhere they can read.
+    #[test]
+    fn the_missing_secret_message_names_the_supported_path_and_the_commands() {
+        for fragment in [
+            // the diagnosis
+            "desktop app",
+            "random port",
+            // the supported path, by the name it has in Settings
+            "External Backend",
+            // and the two commands that make it work, in full
+            "BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent",
+            "http://127.0.0.1:3000",
+        ] {
+            assert!(
+                NO_SECRET_KEY_HELP.contains(fragment),
+                "the missing-secret help no longer says `{fragment}`:\n{NO_SECRET_KEY_HELP}"
+            );
+        }
+        // …and it names a command that really exists. `biorouter sessions watch`
+        // was printed here for a year and was never a registered command.
+        assert!(NO_SECRET_KEY_HELP.contains("biorouter session watch <id>"));
+    }
+
+    /// The "nothing is listening" message names the port it tried and says why
+    /// the running desktop app is not the answer.
+    ///
+    /// `configured_port()` assumes 3000 while the app's daemon binds whatever
+    /// the OS gave it, so "the app is open, why is there no daemon" is the
+    /// question this message exists to answer.
+    #[test]
+    fn the_no_daemon_message_names_the_port_and_why_the_app_does_not_count() {
+        let text = no_daemon_at(3456);
+        assert!(text.contains("127.0.0.1:3456"), "{text}");
+        assert!(text.contains("desktop app"), "{text}");
+        assert!(text.contains("External Backend"), "{text}");
+        // The command it prints uses the port it just reported, not a literal.
+        assert!(text.contains("BIOROUTER_PORT=3456 "), "{text}");
     }
 
     #[test]

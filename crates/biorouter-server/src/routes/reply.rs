@@ -1348,6 +1348,10 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
                                       replayed from `from_seq` and then followed live",
          body = MessageEvent,
          content_type = "text/event-stream"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent — an unproven caller \
+                                      is told the same thing for both) and the request carried no \
+                                      proof it came from the user (body = plain text)"),
         (status = 409, description = "A DIFFERENT turn is already in flight for this session, or \
                                       the supplied `conversation_so_far` is missing messages the \
                                       server holds (nothing was written; re-read the session \
@@ -1358,8 +1362,33 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
 )]
 pub async fn reply(
     State(state): State<Arc<AppState>>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(mut request): Json<ChatRequest>,
 ) -> axum::response::Response {
+    // Issue #56 Task 58 / #47. FIRST — before the turn lock, before the
+    // telemetry, before anything at all reads or writes this session.
+    //
+    // `session_id` is a request parameter, not a credential, and `check_token`
+    // compares one machine-wide bearer that AR-11 measured to be recoverable by
+    // the agent. This route runs an agent turn, WITH TOOLS, in whatever session
+    // the body names, so it strictly dominates every other session-addressing
+    // route: a caller who can run a turn in a session can already do anything
+    // that session can do. See `routes::session_reach`.
+    //
+    // Before the turn lock specifically, because the lock's own 409 tells an
+    // unproven caller whether the chat it named is busy — which is exactly the
+    // kind of disclosure the refusal is worded to withhold.
+    if let Err(refusal) = crate::routes::session_reach::session_reach(
+        state.session_manager(),
+        &request.session_id,
+        &headers,
+    )
+    .await
+    {
+        return refusal.into_response();
+    }
+
     // Turn *duration* is the runner's (`emit_completion_metrics`); this handler
     // only reports that a session was started, at request entry.
     tracing::info!(
@@ -3648,6 +3677,29 @@ mod tests {
         use biorouter::conversation::message::Message;
         use tower::ServiceExt;
 
+        /// Issue #56 Task 58 / #47. Why every `/reply` request below now carries
+        /// a proof-of-user header.
+        ///
+        /// `/reply` resolves the named session's tier before it does anything
+        /// else, and a session the store has never heard of is answered exactly
+        /// as a private one is — that indistinguishability is the whole point of
+        /// the gate (`routes::session_reach`), because a refusal that told an
+        /// unproven caller "no such chat" would enumerate the machine's private
+        /// chats one id at a time.
+        ///
+        /// Every test in this module names a session that was never created
+        /// (`test-session`, `busy-session`, `retry-session`, …), so each one is
+        /// an `Unreadable` target and each one is refused without the header.
+        /// Carrying it puts them back to asserting exactly what they were
+        /// written to assert — the BR-33 turn lock and BR-62's idempotency
+        /// semantics — rather than the barrier, which has its own tests. This is
+        /// the same key `routes::session::diverge_tests` installs, deliberately:
+        /// the digest lives in a process-global `OnceLock`, so a second key here
+        /// would turn whichever module ran second into a wall of 403s.
+        use crate::routes::session::diverge_tests::{
+            install_test_user_action_key, TEST_USER_ACTION_KEY,
+        };
+
         /// Begin a turn with a throwaway token and no idempotency key.
         fn begin_turn(
             state: &AppState,
@@ -3658,6 +3710,7 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_reply_endpoint() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
 
             let app = routes(state);
@@ -3667,6 +3720,7 @@ mod tests {
                 .method("POST")
                 .header("content-type", "application/json")
                 .header("x-secret-key", "test-secret")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
                 .body(Body::from(
                     serde_json::to_string(&ChatRequest {
                         user_message: Message::user().with_text("test message"),
@@ -3689,6 +3743,7 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_reply_rejects_concurrent_turn() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
 
             // Simulate a turn already in flight for this session. The guard owns
@@ -3703,6 +3758,7 @@ mod tests {
                 .method("POST")
                 .header("content-type", "application/json")
                 .header("x-secret-key", "test-secret")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
                 .body(Body::from(
                     serde_json::to_string(&ChatRequest {
                         user_message: Message::user().with_text("second message"),
@@ -3725,6 +3781,7 @@ mod tests {
 
         #[tokio::test(flavor = "multi_thread")]
         async fn test_reply_allows_new_turn_after_guard_dropped() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
 
             // A turn that has ended (guard dropped) must not block the next one.
@@ -3739,6 +3796,7 @@ mod tests {
                 .method("POST")
                 .header("content-type", "application/json")
                 .header("x-secret-key", "test-secret")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
                 .body(Body::from(
                     serde_json::to_string(&ChatRequest {
                         user_message: Message::user().with_text("fresh message"),
@@ -3900,6 +3958,7 @@ mod tests {
                 .method("POST")
                 .header("content-type", "application/json")
                 .header("x-secret-key", "test-secret")
+                .header("X-User-Action", TEST_USER_ACTION_KEY)
                 .body(Body::from(
                     serde_json::to_string(&ChatRequest {
                         user_message: Message::user().with_text("hello"),
@@ -3959,6 +4018,7 @@ mod tests {
         /// stream — 200, not 409 — and no second turn starts.
         #[tokio::test(flavor = "multi_thread")]
         async fn test_reply_attaches_a_reposted_turn_id() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
             let guard = state
                 .try_begin_turn_idempotent(
@@ -3992,6 +4052,7 @@ mod tests {
         /// conflict, not a retry.
         #[tokio::test(flavor = "multi_thread")]
         async fn test_reply_reports_a_different_turn_id_as_a_real_conflict() {
+            install_test_user_action_key();
             let state = AppState::new().await.unwrap();
             let _guard = state
                 .try_begin_turn_idempotent(

@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use crate::config::BioRouterMode;
 use crate::conversation::message::{Message, ToolRequest};
 use crate::security::policy::{Decision, PolicyEngine};
-use crate::security::{SecurityManager, SecurityResult};
+use crate::security::SecurityManager;
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 
 /// This inspector's name, as it appears on an [`InspectionResult`]. Named so
@@ -12,11 +12,10 @@ use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspector};
 /// from it. Also the key `get_security_finding_id_from_results` matches on.
 pub const SECURITY_INSPECTOR_NAME: &str = "security";
 
-/// Security inspector that governs tool calls with three layers:
+/// Security inspector that governs tool calls with two layers:
 ///   1. the always-on, non-bypassable catastrophic-command denylist (BR-20),
 ///   2. the auditable command policy engine (BR-21) — argv-parsed, path-
-///      canonicalized, `Allow | Ask | Deny` verdicts from declarative rules,
-///   3. the optional ML/pattern prompt-injection scan (gated on config).
+///      canonicalized, `Allow | Ask | Deny` verdicts from declarative rules.
 pub struct SecurityInspector {
     security_manager: SecurityManager,
     policy_engine: PolicyEngine,
@@ -27,38 +26,6 @@ impl SecurityInspector {
         Self {
             security_manager: SecurityManager::new(),
             policy_engine: PolicyEngine::load(),
-        }
-    }
-
-    /// Convert SecurityResult to InspectionResult
-    fn convert_security_result(
-        &self,
-        security_result: &SecurityResult,
-        tool_request_id: String,
-    ) -> InspectionResult {
-        let action = if security_result.is_malicious && security_result.should_ask_user {
-            // High confidence threat - require user approval with warning
-            InspectionAction::RequireApproval(Some(format!(
-                "🔒 Security Alert: This tool call has been flagged as potentially dangerous.\n\
-                Confidence: {:.1}%\n\
-                Explanation: {}\n\
-                Finding ID: {}",
-                security_result.confidence * 100.0,
-                security_result.explanation,
-                security_result.finding_id
-            )))
-        } else {
-            // Either not malicious, or below threshold (already logged) - allow
-            InspectionAction::Allow
-        };
-
-        InspectionResult {
-            tool_request_id,
-            action,
-            reason: security_result.explanation.clone(),
-            confidence: security_result.confidence,
-            inspector_name: self.name().to_string(),
-            finding_id: Some(security_result.finding_id.clone()),
         }
     }
 }
@@ -76,14 +43,14 @@ impl ToolInspector for SecurityInspector {
     async fn inspect(
         &self,
         tool_requests: &[ToolRequest],
-        messages: &[Message],
+        _messages: &[Message],
         _biorouter_mode: BioRouterMode,
         session: &crate::session::Session,
     ) -> Result<Vec<InspectionResult>> {
         let mut inspection_results = Vec::new();
 
         // 1. Always-on catastrophic-command denylist (non-bypassable). This runs
-        //    regardless of `SECURITY_PROMPT_ENABLED` or permission mode, so a
+        //    regardless of config or permission mode, so a
         //    handful of unrecoverable commands are hard-blocked even in Auto mode.
         //    It is the floor beneath the policy engine: a Deny here can never be
         //    overridden, even by a future admin-tier `allow` rule.
@@ -146,8 +113,6 @@ impl ToolInspector for SecurityInspector {
                     ))),
                 };
 
-                // A policy verdict pre-empts the ML scan for this request so a
-                // call is never both policy-handled and ML-escalated.
                 handled.insert(tool_request.id.clone());
                 inspection_results.push(InspectionResult {
                     tool_request_id: tool_request.id.clone(),
@@ -160,37 +125,13 @@ impl ToolInspector for SecurityInspector {
             }
         }
 
-        // 3. Optional prompt-injection / dangerous-command scan (asks, does not
-        //    hard-block). Gated on config and skipped for already handled
-        //    requests so a call is never both denied and escalated for approval.
-        if self
-            .security_manager
-            .is_prompt_injection_detection_enabled()
-        {
-            let security_results = self
-                .security_manager
-                .analyze_tool_requests(tool_requests, messages)
-                .await?;
-
-            // The SecurityManager already correlates tool requests and results.
-            inspection_results.extend(
-                security_results
-                    .into_iter()
-                    .filter(|r| !handled.contains(&r.tool_request_id))
-                    .map(|security_result| {
-                        let tool_request_id = security_result.tool_request_id.clone();
-                        self.convert_security_result(&security_result, tool_request_id)
-                    }),
-            );
-        }
-
         Ok(inspection_results)
     }
 
     fn is_enabled(&self) -> bool {
         // Always enabled: the catastrophic-command denylist must run in every
-        // mode. The optional prompt-injection scan is gated separately inside
-        // `inspect` on `SECURITY_PROMPT_ENABLED`.
+        // mode. The policy engine has its own gate (`SECURITY_COMMAND_POLICY`)
+        // inside `inspect`.
         true
     }
 }
@@ -223,7 +164,7 @@ mod tests {
     }
 
     /// A catastrophic command is hard-blocked (Deny) even in Auto mode, and the
-    /// error names the rule — regardless of `SECURITY_PROMPT_ENABLED`.
+    /// error names the rule — regardless of any config flag.
     #[tokio::test]
     async fn test_catastrophic_command_hard_blocked_in_auto_mode() {
         let inspector = SecurityInspector::new();
@@ -257,8 +198,7 @@ mod tests {
         );
     }
 
-    /// A legitimate near-miss is not blocked (and, with the scanner off by
-    /// default, produces no results at all).
+    /// A legitimate near-miss is not blocked by the floor.
     #[tokio::test]
     async fn test_benign_command_not_blocked() {
         let inspector = SecurityInspector::new();
@@ -283,8 +223,7 @@ mod tests {
     }
 
     /// A system-directory operation outside the BR-20 floor is denied by the
-    /// policy engine, with a `POL-` finding — independent of
-    /// `SECURITY_PROMPT_ENABLED`, even in Auto.
+    /// policy engine, with a `POL-` finding — even in Auto.
     #[tokio::test]
     async fn test_policy_engine_denies_system_dir_operation() {
         let inspector = SecurityInspector::new();

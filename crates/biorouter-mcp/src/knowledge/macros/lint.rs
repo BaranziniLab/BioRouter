@@ -4,14 +4,14 @@
 //! Part B: `lint(svc, args)` — calls `scan`, optionally runs a sub-agent to fix issues.
 
 use crate::knowledge::{
-    git::GitRepo,
+    git::{GitRepo, Txn},
     paths, raw,
     service::KnowledgeService,
     store::{logical_path, split_frontmatter},
     subagent::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
-        loop_::{Completer, SubAgent, SubAgentBounds},
+        loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
         procedures::LINT_PROCEDURE,
     },
     types::ChangeKind,
@@ -194,6 +194,14 @@ fn resolve_wiki_link(pages: &HashMap<String, String>, target: &str) -> Option<St
 
 pub struct LintArgs {
     pub kb_id: String,
+    /// The capability of the model this macro will run (issue #56). Required,
+    /// so every production caller is a compile error rather than an omission.
+    pub caller_is_private: bool,
+    /// Whose agreements cover that model — DR-26's third axis (issue #56, Task
+    /// 50). Required for the same reason `caller_is_private` is: an omission
+    /// must be a compile error. `Unstated` is its `Default`, so a caller that
+    /// cannot determine one fails closed.
+    pub caller_affiliation: crate::knowledge::affiliation::CallerAffiliation,
     pub completer: Option<Box<dyn Completer>>,
     pub autofix: bool,
     pub bounds: SubAgentBounds,
@@ -216,6 +224,23 @@ pub struct LintResult {
 
 pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> {
     let _lock = svc.lock_kb(&args.kb_id).await?;
+    // Issue #56. Before the sub-agent, not after: an autofix that fails halfway
+    // has already written pages. Task 10C (CP2) puts the barrier on the line
+    // above — a lint's `scan` reads every page, and an autofix rewrites them.
+    crate::knowledge::tier::assert_reachable(
+        svc.root(),
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
+    // Issue #56, both axes in one call under one lock — see
+    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
+    // two.
+    svc.raise_tier_and_affiliation(
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the
@@ -271,6 +296,20 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         .run(&user, &dispatch, cancel_ref, args.event_sink.as_ref())
         .await;
 
+    settle_autofix(svc, &args.kb_id, &repo, &txn, report, agent_result)
+}
+
+/// The autofix transaction's three endings — commit, abort-and-report,
+/// abort-and-fail — split out of [`lint`] so that function stays under
+/// `clippy::too_many_lines` (issue #56, review round 5). No behaviour change.
+fn settle_autofix(
+    svc: &KnowledgeService,
+    kb_id: &str,
+    repo: &GitRepo,
+    txn: &Txn,
+    report: LintReport,
+    agent_result: Result<SubAgentResult>,
+) -> Result<LintResult> {
     match agent_result {
         Ok(r)
             if matches!(
@@ -293,23 +332,23 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
             // the Knowledge change-log drawer as work that never happened, and
             // a `commit_sha` callers read as proof of it. Same false success as
             // issue #71, one macro over.
-            let fixed = match repo.txn_wrote_knowledge_pages(&txn) {
+            let fixed = match repo.txn_wrote_knowledge_pages(txn) {
                 Ok(fixed) => fixed,
                 Err(e) => {
-                    let _ = repo.abort_txn(&txn);
+                    let _ = repo.abort_txn(txn);
                     return Err(e.context("checking whether the lint fixed anything"));
                 }
             };
             if !fixed {
-                let _ = repo.abort_txn(&txn);
+                let _ = repo.abort_txn(txn);
                 return Ok(LintResult {
                     report,
                     commit_sha: None,
                     fixes_applied,
                 });
             }
-            let sha = repo.commit_txn(&txn, ChangeKind::Lint, "lint autofix", None)?;
-            svc.rebuild_graph_cache(&args.kb_id)?;
+            let sha = repo.commit_txn(txn, ChangeKind::Lint, "lint autofix", None)?;
+            svc.rebuild_graph_cache(kb_id)?;
             Ok(LintResult {
                 report,
                 commit_sha: Some(sha),
@@ -317,7 +356,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
             })
         }
         Ok(r) => {
-            let _ = repo.abort_txn(&txn);
+            let _ = repo.abort_txn(txn);
             anyhow::bail!(
                 "lint sub-agent aborted: reason={:?}, final={}",
                 r.reason,
@@ -325,7 +364,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
             )
         }
         Err(e) => {
-            let _ = repo.abort_txn(&txn);
+            let _ = repo.abort_txn(txn);
             Err(e)
         }
     }
@@ -479,6 +518,8 @@ mod tests {
             &svc,
             LintArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 completer: None,
                 autofix: false,
                 bounds: SubAgentBounds::default(),
@@ -545,6 +586,8 @@ mod tests {
             &svc,
             LintArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 completer: Some(Box::new(NothingToFix)),
                 autofix: true,
                 bounds: SubAgentBounds::default(),
@@ -566,6 +609,37 @@ mod tests {
         assert!(
             !log.iter().any(|e| e.kind == ChangeKind::Lint),
             "no lint commit may appear in the change log; log: {log:?}"
+        );
+    }
+
+    // ── Issue #56, Task 10B: CP2 ────────────────────────────────────────────
+
+    /// The raise runs at the macro entry, before anything is scanned or fixed —
+    /// so a lint that never reaches its autofix has still stamped the base.
+    #[tokio::test]
+    async fn the_lint_macro_ratchets_at_its_entry() {
+        let (dir, svc) = fresh_svc();
+        let root = dir.path().to_path_buf();
+        assert!(!crate::knowledge::tier::is_private(&root, "k"));
+
+        let _ = lint(
+            &svc,
+            LintArgs {
+                kb_id: "k".into(),
+                caller_is_private: true,
+                caller_affiliation: Default::default(),
+                completer: None,
+                autofix: false,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await;
+
+        assert!(
+            crate::knowledge::tier::is_private(&root, "k"),
+            "the lint macro did not raise at its entry"
         );
     }
 }

@@ -14,6 +14,12 @@ vi.mock('../../api', () => ({
 vi.mock('../../toasts', () => ({
   toastError: vi.fn(),
 }));
+// Issue #56 Task 58 / #47: `/agent/update_working_dir` names a chat, and
+// repointing a private one needs the proof-of-user. The assertion below names
+// the header rather than tolerating whatever is there.
+vi.mock('../../utils/userAction', () => ({
+  userActionHeaders: async () => ({ 'X-User-Action': 'test-key' }),
+}));
 
 import { DirSwitcher, workingDirLabel, deriveWorkingDirLocked } from './DirSwitcher';
 import { ChatState } from '../../types/chatState';
@@ -153,6 +159,7 @@ describe('DirSwitcher while the chat is empty', () => {
     // an error object on a 409 and the failure path would never run.
     await waitFor(() =>
       expect(updateWorkingDir).toHaveBeenCalledWith({
+        headers: { 'X-User-Action': 'test-key' },
         body: { session_id: 'session-1', working_dir: CHOSEN_DIR },
         throwOnError: true,
       })

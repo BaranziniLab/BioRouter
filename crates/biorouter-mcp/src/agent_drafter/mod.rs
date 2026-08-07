@@ -27,6 +27,7 @@ pub mod validate;
 pub mod vault;
 
 use crate::developer::shell::strip_daemon_private_env_std;
+use crate::knowledge::caller::KbCaller;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use indoc::formatdoc;
 use rmcp::{
@@ -1076,6 +1077,14 @@ fn persist_created_app(
     kind: ArtifactKind,
     archetype: Archetype,
     use_starter: bool,
+    // Issue #56 (CP5). The catalog this write boundary validates against is the
+    // one the CALLER may see, so a public session cannot save an app scoped to a
+    // private base and cannot learn the base exists from the rejection.
+    //
+    // ⚠ Finding 17: BOTH axes, as one value. This was a bare `caller_is_private`
+    // and the catalogue below asked the tier axis alone — see
+    // `Catalog::discover`.
+    caller: &KbCaller,
 ) -> Result<(), ErrorData> {
     if let Some(theme) = p.theme.take() {
         manifest.theme = theme.into_config();
@@ -1087,7 +1096,7 @@ fn persist_created_app(
     }
 
     let agent = created_agent_config(&mut p)?;
-    let catalog = catalog::Catalog::discover();
+    let catalog = catalog::Catalog::discover(caller);
     validate::check_all(
         agent.knowledge_base.as_deref(),
         &agent.skills,
@@ -1391,6 +1400,11 @@ fn stage_full_payload(
     manifest: &Manifest,
     target: &std::path::Path,
     include: Option<&serde_json::Value>,
+    // Issue #56 (CP4). The capability of the session that asked for the export —
+    // BOTH axes as one value (issue #56 DR-26 / Task 50, and finding 17's
+    // lesson): a signature that took them separately let one call site pass one
+    // caller's tier and another's institution, and the wrong one compiles.
+    caller: &KbCaller,
 ) -> StagedPayload {
     let agent = manifest.agent.clone().unwrap_or_default();
 
@@ -1420,6 +1434,19 @@ fn stage_full_payload(
             Some(svc) => {
                 let kdir = payload_dir.join("knowledge");
                 for kb in &kb_ids {
+                    // Issue #56 (CP4), Task 10C. `export_brkb` writes the WHOLE
+                    // base into the payload, and `kb_ids` comes from the
+                    // model-supplied `include.knowledge_bases` — a strictly
+                    // wider `kb_export` that never touches `KnowledgeServer`, so
+                    // CP1 cannot see it. Skip-and-note rather than fail the
+                    // export, matching `search_visible_bases`: the rest of the
+                    // payload is still useful and the user is told what was left
+                    // out.
+                    if let Err(e) = caller.assert_reachable(svc.root(), kb) {
+                        out.notes
+                            .push(format!("skipped knowledge base '{kb}': {e}"));
+                        continue;
+                    }
                     match svc.export_brkb(kb) {
                         Ok(bytes) => {
                             let fname = format!("{kb}.brkb");
@@ -1519,6 +1546,44 @@ fn build_export_json(
     })
 }
 
+/// The assistant-facing summary `export_app` returns, split out of
+/// `export_app_inner` so that function stays under `clippy::too_many_lines`
+/// (issue #56, review round 5). No behaviour change.
+fn export_summary(
+    id: &str,
+    mode: &str,
+    target: &Path,
+    scaffold_files: usize,
+    staged: &StagedPayload,
+    wrote_manifest: bool,
+    notes: &[String],
+) -> String {
+    let mut msg = format!(
+        "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
+         To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
+         That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
+         no npm install, no build step.",
+        id,
+        target.display(),
+        scaffold_files
+    );
+    if mode == "full" {
+        msg.push_str(&format!(
+            "\nPayload: {} knowledge base(s), {} skill(s), {} external extension reference(s).",
+            staged.knowledge_bases.len(),
+            staged.skills.len(),
+            staged.extensions.len()
+        ));
+    }
+    if wrote_manifest {
+        msg.push_str(" Wrote export.json (audit manifest).");
+    }
+    for n in notes {
+        msg.push_str(&format!("\n- {n}"));
+    }
+    msg
+}
+
 /// Stage the current-platform `biorouterd` under `payload/bin/` for a fat
 /// export. Returns the `export.json` record on success (or `None` → thin), plus
 /// a note either way.
@@ -1565,10 +1630,84 @@ fn stage_current_daemon(target: &std::path::Path) -> (Option<serde_json::Value>,
     }
 }
 
+/// Issue #56 (CP4/CP5). `export_app`, `configure_app` and `update_app` gained a
+/// `RequestContext` so they can read the caller's capability; the unit tests
+/// below drive their bodies without fabricating one, and are all public-caller
+/// cases. This is the same split `create_app` / `create_app_inner` already uses,
+/// named so the caller's tier is legible at each call site rather than hidden in
+/// a default.
+///
+/// The tests that need a *private* caller — or that need to prove the TOOL reads
+/// the right value rather than that the body honours it — go through the router
+/// instead (`privacy_catalog::call_drafter_tool_as`).
+#[cfg(test)]
+impl AgentDrafterServer {
+    async fn export_app_public(
+        &self,
+        params: Parameters<ExportAppParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.export_app_inner(params.0, &KbCaller::restricted())
+            .await
+    }
+
+    async fn configure_app_public(
+        &self,
+        params: Parameters<ConfigureAppParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.configure_app_inner(params.0, &KbCaller::restricted())
+            .await
+    }
+
+    async fn update_app_public(
+        &self,
+        params: Parameters<UpdateAppParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.update_app_inner(params.0, &KbCaller::restricted())
+            .await
+    }
+}
+
 #[tool_router(router = tool_router)]
 impl AgentDrafterServer {
     pub fn new() -> Self {
         Self::with_root(default_root())
+    }
+
+    /// The caller's capability, from the request meta (issue #56, CP5).
+    ///
+    /// Delegates to [`crate::knowledge::tier::caller_is_private`] rather than
+    /// re-reading the key, so CP4 and CP5 cannot drift from CP1 — the same reason
+    /// `KnowledgeServer::caller_is_private` delegates. A second spelling of
+    /// `biorouter-capability-tier` compiles, passes every drafter test, and
+    /// silently stops matching the day the key changes.
+    fn caller_is_private(context: &RequestContext<RoleServer>) -> bool {
+        crate::knowledge::tier::caller_is_private(&context.meta)
+    }
+
+    /// The caller's **affiliation**, from the same request meta (issue #56,
+    /// DR-26 / Task 50). Delegates for the reason above: CP4 and CP1 must read
+    /// one key with one reader.
+    fn caller_affiliation(
+        context: &RequestContext<RoleServer>,
+    ) -> crate::knowledge::affiliation::CallerAffiliation {
+        crate::knowledge::affiliation::caller_affiliation(&context.meta)
+    }
+
+    /// Both axes of the caller's identity, off ONE request meta at one instant
+    /// (issue #56 DR-26; audit finding 17).
+    ///
+    /// ⚠ **The only value CP4 and CP5 may take.** They used to take the tier
+    /// alone (CP5) or the two axes as separate arguments (CP4), which is how a
+    /// listing and a barrier over the same capability came to ask different
+    /// questions. `KbCaller` cannot express half a caller, so a future filter
+    /// cannot silently drop an axis — there is no narrower thing to pass. The
+    /// twin of `KnowledgeServer::CallerIdentity::from_context`, and it fails
+    /// closed on both fields for the same reason.
+    fn caller(context: &RequestContext<RoleServer>) -> KbCaller {
+        KbCaller::new(
+            Self::caller_is_private(context),
+            Self::caller_affiliation(context),
+        )
     }
 
     /// The chat session id carried in a tool call's request meta, if present.
@@ -1980,14 +2119,21 @@ impl AgentDrafterServer {
         // Record the chat session this app was built in, so the GUI can reopen
         // that conversation to keep iterating. (Absent in headless/CLI calls
         // that don't carry session meta.)
-        self.create_app_inner(params.0, Self::session_id_from_context(&context))
-            .await
+        self.create_app_inner(
+            params.0,
+            Self::session_id_from_context(&context),
+            &Self::caller(&context),
+        )
+        .await
     }
 
     async fn create_app_inner(
         &self,
         p: CreateAppParams,
         session_id: Option<String>,
+        // Issue #56 (CP5). Threaded beside `session_id` rather than defaulted, so
+        // the caller's identity is legible at each call site.
+        caller: &KbCaller,
     ) -> Result<CallToolResult, ErrorData> {
         if p.title.trim().is_empty() {
             return Err(err(ErrorCode::INVALID_PARAMS, "title must not be empty"));
@@ -2010,7 +2156,15 @@ impl AgentDrafterServer {
         .map_err(internal)?;
         manifest.session_id = session_id.clone();
 
-        persist_created_app(&store, &mut manifest, p, kind, archetype, use_starter)?;
+        persist_created_app(
+            &store,
+            &mut manifest,
+            p,
+            kind,
+            archetype,
+            use_starter,
+            caller,
+        )?;
 
         let arch_note = if kind == ArtifactKind::Agentic {
             format!(" [{} archetype]", archetype.as_str())
@@ -2033,8 +2187,20 @@ impl AgentDrafterServer {
     pub async fn configure_app(
         &self,
         params: Parameters<ConfigureAppParams>,
+        // Issue #56 (CP5). `validate::check_all` below renders the catalog's kb
+        // ids into the rejection this tool hands back to the model, so a
+        // deliberately-invalid call was an enumeration oracle.
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let p = params.0;
+        self.configure_app_inner(params.0, &Self::caller(&context))
+            .await
+    }
+
+    async fn configure_app_inner(
+        &self,
+        p: ConfigureAppParams,
+        caller: &KbCaller,
+    ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         let mut manifest = store
             .load_manifest(&p.id)
@@ -2067,8 +2233,9 @@ impl AgentDrafterServer {
 
         // An id that does not exist here cannot be saved. The catalog is what
         // makes this checkable; the error names what IS installed so the retry is
-        // grounded rather than another guess.
-        let catalog = catalog::Catalog::discover();
+        // grounded rather than another guess — and, since issue #56, what is
+        // installed *and reachable by this caller*.
+        let catalog = catalog::Catalog::discover(caller);
         validate::check_all(
             agent.knowledge_base.as_deref(),
             &agent.skills,
@@ -2130,8 +2297,19 @@ impl AgentDrafterServer {
     pub async fn update_app(
         &self,
         params: Parameters<UpdateAppParams>,
+        // Issue #56 (CP5). The `manifest.json` path re-runs the same write-boundary
+        // check as `configure_app`, and renders the same list.
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let p = params.0;
+        self.update_app_inner(params.0, &Self::caller(&context))
+            .await
+    }
+
+    async fn update_app_inner(
+        &self,
+        p: UpdateAppParams,
+        caller: &KbCaller,
+    ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         let mut manifest = store
             .load_manifest(&p.id)
@@ -2199,7 +2377,7 @@ impl AgentDrafterServer {
             // Same write-boundary rule as create/configure: a manifest cannot name
             // a knowledge base, skill, or extension that does not exist here.
             if let Some(agent) = parsed.agent.as_ref() {
-                let catalog = catalog::Catalog::discover();
+                let catalog = catalog::Catalog::discover(caller);
                 validate::check_all(
                     agent.knowledge_base.as_deref(),
                     &agent.skills,
@@ -2501,6 +2679,10 @@ impl AgentDrafterServer {
     pub async fn declare_profiles(
         &self,
         params: Parameters<DeclareProfilesParams>,
+        // Issue #56 (CP5). A worker profile validates against a catalog too; it
+        // renders skill ids today, and the capability is read here so that stays
+        // true the day a profile gains a knowledge base of its own.
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         let p = params.0;
         let store = self.store();
@@ -2508,7 +2690,7 @@ impl AgentDrafterServer {
             .load_manifest(&p.id)
             .map_err(|_| err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)))?;
 
-        let catalog = catalog::Catalog::discover();
+        let catalog = catalog::Catalog::discover(&Self::caller(&context));
         let mut profiles: std::collections::HashMap<String, store::AgentConfig> =
             std::collections::HashMap::new();
 
@@ -2623,8 +2805,16 @@ impl AgentDrafterServer {
                        the id unset and record it in `requires` instead; wanting an absent \
                        capability is legal and is reported honestly to the user."
     )]
-    pub async fn list_platform_catalog(&self) -> Result<CallToolResult, ErrorData> {
-        let catalog = catalog::Catalog::discover();
+    pub async fn list_platform_catalog(
+        &self,
+        // Issue #56 (CP5). This tool serialised `Catalog::discover()` whole, so
+        // it handed the model `{id, name}` for every knowledge base on the
+        // machine with no arguments at all — and its own description tells the
+        // model to call it before `configure_app`, so it ran on every
+        // app-building turn.
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let catalog = catalog::Catalog::discover(&Self::caller(&context));
         let json = serde_json::to_string_pretty(&catalog).map_err(internal)?;
         Ok(CallToolResult::success(vec![Content::text(json)]))
     }
@@ -2739,8 +2929,27 @@ impl AgentDrafterServer {
     pub async fn export_app(
         &self,
         params: Parameters<ExportAppParams>,
+        context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let p = params.0;
+        // Issue #56 (CP4). Read through the SHARED reader that CP1 uses, so the
+        // two sides cannot spell the meta key differently. Task 10D gave this
+        // file its own one-line `Self::caller_is_private` delegate for CP5's four
+        // tools; this call went through `knowledge::tier` directly, which left
+        // two spellings of the same read in one file — routed through the
+        // delegate so there is exactly one.
+        //
+        // Split into an `_inner` exactly like `create_app`/`create_app_inner`
+        // above: the eight unit tests below drive the body without fabricating a
+        // `RequestContext`, and the capability still enters at the one seam.
+        self.export_app_inner(params.0, &Self::caller(&context))
+            .await
+    }
+
+    async fn export_app_inner(
+        &self,
+        p: ExportAppParams,
+        caller: &KbCaller,
+    ) -> Result<CallToolResult, ErrorData> {
         let store = self.store();
         if !store.exists(&p.id) {
             return Err(err(ErrorCode::INVALID_PARAMS, format!("no app '{}'", p.id)));
@@ -2787,7 +2996,7 @@ impl AgentDrafterServer {
         let manifest = store.load_manifest(&p.id).map_err(internal)?;
 
         let staged = if mode == "full" {
-            stage_full_payload(&manifest, &target, p.include.as_ref())
+            stage_full_payload(&manifest, &target, p.include.as_ref(), caller)
         } else {
             StagedPayload::empty()
         };
@@ -2830,32 +3039,17 @@ impl AgentDrafterServer {
             false
         };
 
-        // ── Result summary ─────────────────────────────────────────────────
-        let mut msg = format!(
-            "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
-             To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
-             That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
-             no npm install, no build step.",
-            p.id,
-            target.display(),
-            scaffold.len()
-        );
-        if mode == "full" {
-            msg.push_str(&format!(
-                "\nPayload: {} knowledge base(s), {} skill(s), {} external extension reference(s).",
-                staged.knowledge_bases.len(),
-                staged.skills.len(),
-                staged.extensions.len()
-            ));
-        }
-        if wrote_manifest {
-            msg.push_str(" Wrote export.json (audit manifest).");
-        }
-        for n in &notes {
-            msg.push_str(&format!("\n- {n}"));
-        }
-
-        Ok(CallToolResult::success(vec![Content::text(msg)]))
+        Ok(CallToolResult::success(vec![Content::text(
+            export_summary(
+                &p.id,
+                mode,
+                &target,
+                scaffold.len(),
+                &staged,
+                wrote_manifest,
+                &notes,
+            ),
+        )]))
     }
 
     #[tool(
@@ -2903,6 +3097,21 @@ mod tests {
     use rmcp::model::RawContent;
     use tempfile::TempDir;
 
+    /// A caller the KB barrier clears on both axes: private tier, LOCAL model.
+    ///
+    /// ⚠ `Local` and not `Unstated`. `Unstated` is DR-26's restrictive value —
+    /// it mismatches every base an institution claims — so a test that meant
+    /// "a private caller may reach a private base" and reached for it would
+    /// assert the opposite of what it says. `Local` transfers nothing, so it
+    /// clears every base, which is the pre-DR-26 meaning of `caller_is_private
+    /// = true` these fixtures were written against.
+    fn private_test_caller() -> KbCaller {
+        KbCaller::new(
+            true,
+            crate::knowledge::affiliation::CallerAffiliation::Local,
+        )
+    }
+
     #[test]
     fn agent_drafter_children_strip_daemon_credentials_only() {
         let mut command = std::process::Command::new("node");
@@ -2937,12 +3146,19 @@ mod tests {
     /// Under the write-boundary rule (Wave 1) an id that is not installed cannot be
     /// saved, which is correct for real authoring and wrong for these fixtures.
     ///
-    /// This is process-global, which is safe **only** because no test in this
-    /// binary asserts that a rejection happens; those live in the separate
-    /// `tests/catalog_write_boundary.rs` integration binary, which runs in its own
-    /// process with strictness on (the default).
-    fn relax_catalog_strictness() {
-        std::env::set_var("BIOROUTER_APPS_CATALOG_STRICT", "0");
+    /// The returned guard must be BOUND for the test's duration
+    /// (`let _strict = relax_catalog_strictness();`).
+    ///
+    /// This was a bare `set_var` that was never restored, which was safe only
+    /// while no test in this binary asserted that a rejection *happens*. Issue
+    /// #56's CP5 tests do exactly that — they read the kb list a rejection
+    /// renders — and three of this helper's callers are not `#[serial]`, so a
+    /// leaked `0` from any of them would silently make those tests vacuous.
+    /// `env_lock` takes the same process-wide lock the CP5 tests take, so the two
+    /// families cannot interleave, and restores the variable even from a
+    /// panicking test.
+    fn relax_catalog_strictness() -> env_lock::EnvGuard<'static> {
+        env_lock::lock_env([("BIOROUTER_APPS_CATALOG_STRICT", Some("0".to_string()))])
     }
 
     fn server() -> (TempDir, AgentDrafterServer) {
@@ -3002,7 +3218,10 @@ mod tests {
         let mut p = create("Dashboard", None);
         p.system_prompt = Some("You analyze data.".into());
         p.extensions = vec!["autovisualiser".into()];
-        let res = s.create_app_inner(p, None).await.unwrap();
+        let res = s
+            .create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
         assert!(has_ui_resource(&res));
         assert!(s.store().read_file("dashboard", "src/main.ts").is_ok());
         assert!(s.store().read_file("dashboard", "src/sdk.ts").is_ok());
@@ -3022,21 +3241,29 @@ mod tests {
     async fn create_app_records_session_id_when_present() {
         let (_d, s) = server();
         // Agentic app carries the session id through the agent-config save path.
-        s.create_app_inner(create("Sessioned", None), Some("sess-123".into()))
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Sessioned", None),
+            Some("sess-123".into()),
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         let m = s.store().load_manifest("sessioned").unwrap();
         assert_eq!(m.session_id.as_deref(), Some("sess-123"));
 
         // Static app gets the id too (re-saved after the initial create).
-        s.create_app_inner(create("StaticOne", Some("static")), Some("sess-999".into()))
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("StaticOne", Some("static")),
+            Some("sess-999".into()),
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         let sm = s.store().load_manifest("staticone").unwrap();
         assert_eq!(sm.session_id.as_deref(), Some("sess-999"));
 
         // No session meta (headless/CLI) leaves it unset.
-        s.create_app_inner(create("NoSession", None), None)
+        s.create_app_inner(create("NoSession", None), None, &KbCaller::restricted())
             .await
             .unwrap();
         assert_eq!(
@@ -3055,7 +3282,9 @@ mod tests {
             tokens: None,
         });
 
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let manifest = s.store().load_manifest("midnight-static").unwrap();
         assert_eq!(manifest.theme.resolved_pack(), "midnight");
@@ -3063,12 +3292,12 @@ mod tests {
 
     #[tokio::test]
     async fn configure_app_sets_model_and_extensions() {
-        relax_catalog_strictness();
+        let _strict = relax_catalog_strictness();
         let (_d, s) = server();
-        s.create_app_inner(create("Cfg", Some("static")), None)
+        s.create_app_inner(create("Cfg", Some("static")), None, &KbCaller::restricted())
             .await
             .unwrap();
-        s.configure_app(Parameters(ConfigureAppParams {
+        s.configure_app_public(Parameters(ConfigureAppParams {
             id: "cfg".into(),
             system_prompt: Some("Be terse.".into()),
             greeting: None,
@@ -3103,12 +3332,12 @@ mod tests {
 
     #[tokio::test]
     async fn configure_app_sets_advanced_agent_design_fields() {
-        relax_catalog_strictness();
+        let _strict = relax_catalog_strictness();
         let (_d, s) = server();
-        s.create_app_inner(create("Harnessed", None), None)
+        s.create_app_inner(create("Harnessed", None), None, &KbCaller::restricted())
             .await
             .unwrap();
-        s.configure_app(Parameters(ConfigureAppParams {
+        s.configure_app_public(Parameters(ConfigureAppParams {
             id: "harnessed".into(),
             system_prompt: Some("Use the visible workflow and cite each step.".into()),
             greeting: None,
@@ -3214,12 +3443,20 @@ mod tests {
     #[tokio::test]
     async fn creates_static_and_agentic_kinds_with_expected_defaults() {
         let (_d, s) = server();
-        s.create_app_inner(create("Plain Widget", Some("static")), None)
-            .await
-            .unwrap();
-        s.create_app_inner(create("Agent Workspace", Some("agentic")), None)
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Plain Widget", Some("static")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
+        s.create_app_inner(
+            create("Agent Workspace", Some("agentic")),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
 
         let static_manifest = s.store().load_manifest("plain-widget").unwrap();
         assert_eq!(static_manifest.kind, ArtifactKind::Static);
@@ -3235,7 +3472,7 @@ mod tests {
 
     #[tokio::test]
     async fn custom_layout_and_workflow_prompt_build_and_pass_launch_harness() {
-        relax_catalog_strictness();
+        let _strict = relax_catalog_strictness();
         let (_d, s) = server();
         let mut p = create("Cohort Review Console", None);
         p.id = Some("cohort-review-console".into());
@@ -3294,8 +3531,10 @@ run.addEventListener("click", async () => {
             .into(),
         }];
 
-        s.create_app_inner(p, None).await.unwrap();
-        s.configure_app(Parameters(ConfigureAppParams {
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+        s.configure_app_public(Parameters(ConfigureAppParams {
             id: "cohort-review-console".into(),
             system_prompt: None,
             greeting: Some("Choose a cohort and run the review.".into()),
@@ -3365,9 +3604,13 @@ run.addEventListener("click", async () => {
         use std::collections::HashMap;
 
         let (_d, s) = server();
-        s.create_app_inner(create("Advanced Agent", None), None)
-            .await
-            .unwrap();
+        s.create_app_inner(
+            create("Advanced Agent", None),
+            None,
+            &KbCaller::restricted(),
+        )
+        .await
+        .unwrap();
         let mut manifest = s.store().load_manifest("advanced-agent").unwrap();
         let agent = manifest.agent.as_mut().unwrap();
 
@@ -3445,7 +3688,7 @@ run.addEventListener("click", async () => {
         agent.orchestration.sub_agents = sub_agents;
         agent.orchestration.workflows = workflows;
 
-        s.update_app(Parameters(UpdateAppParams {
+        s.update_app_public(Parameters(UpdateAppParams {
             id: "advanced-agent".into(),
             path: Some("manifest.json".into()),
             content: Some(serde_json::to_string_pretty(&manifest).unwrap()),
@@ -3491,13 +3734,13 @@ run.addEventListener("click", async () => {
     #[tokio::test]
     async fn manifest_update_rejects_invalid_json_and_id_mismatch() {
         let (_d, s) = server();
-        s.create_app_inner(create("Manifest Safe", None), None)
+        s.create_app_inner(create("Manifest Safe", None), None, &KbCaller::restricted())
             .await
             .unwrap();
         let original = s.store().load_manifest("manifest-safe").unwrap();
 
         assert!(s
-            .update_app(Parameters(UpdateAppParams {
+            .update_app_public(Parameters(UpdateAppParams {
                 id: "manifest-safe".into(),
                 path: Some("manifest.json".into()),
                 content: Some("{ not json".into()),
@@ -3510,7 +3753,7 @@ run.addEventListener("click", async () => {
         let mut wrong_id = original.clone();
         wrong_id.id = "other-app".into();
         assert!(s
-            .update_app(Parameters(UpdateAppParams {
+            .update_app_public(Parameters(UpdateAppParams {
                 id: "manifest-safe".into(),
                 path: Some("manifest.json".into()),
                 content: Some(serde_json::to_string_pretty(&wrong_id).unwrap()),
@@ -3541,7 +3784,9 @@ br.run("hello", "#missing");
 "##
             .into(),
         }];
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let build = s
             .build_app(Parameters(AppIdParams {
@@ -3562,7 +3807,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         assert!(s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "broken-harness".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
@@ -3575,9 +3820,12 @@ br.run("hello", "#missing");
     #[tokio::test]
     async fn create_rejects_empty_title_and_bad_kind() {
         let (_d, s) = server();
-        assert!(s.create_app_inner(create("  ", None), None).await.is_err());
         assert!(s
-            .create_app_inner(create("X", Some("bogus")), None)
+            .create_app_inner(create("  ", None), None, &KbCaller::restricted())
+            .await
+            .is_err());
+        assert!(s
+            .create_app_inner(create("X", Some("bogus")), None, &KbCaller::restricted())
             .await
             .is_err());
     }
@@ -3587,9 +3835,11 @@ br.run("hello", "#missing");
         let (_d, s) = server();
         let mut p = create("Edit Me", None);
         p.html = Some("<html><body>ORIGINAL</body></html>".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
-        s.update_app(Parameters(UpdateAppParams {
+        s.update_app_public(Parameters(UpdateAppParams {
             id: "edit-me".into(),
             path: Some("src/main.ts".into()),
             content: Some("import './sdk'; console.log(1);".into()),
@@ -3601,7 +3851,7 @@ br.run("hello", "#missing");
         assert_eq!(s.store().load_manifest("edit-me").unwrap().built_at, None);
 
         let res = s
-            .update_app(Parameters(UpdateAppParams {
+            .update_app_public(Parameters(UpdateAppParams {
                 id: "edit-me".into(),
                 path: None,
                 content: None,
@@ -3621,7 +3871,7 @@ br.run("hello", "#missing");
     #[tokio::test]
     async fn build_then_launch_returns_url() {
         let (_d, s) = server();
-        s.create_app_inner(create("Launchy", None), None)
+        s.create_app_inner(create("Launchy", None), None, &KbCaller::restricted())
             .await
             .unwrap();
         let res = s
@@ -3651,7 +3901,9 @@ br.run("hello", "#missing");
     #[tokio::test]
     async fn list_read_delete() {
         let (_d, s) = server();
-        s.create_app_inner(create("One", None), None).await.unwrap();
+        s.create_app_inner(create("One", None), None, &KbCaller::restricted())
+            .await
+            .unwrap();
         let all = s
             .list_apps(Parameters(ListAppsParams { kind: None }))
             .await
@@ -3680,11 +3932,13 @@ br.run("hello", "#missing");
         let mut p = create("Exporter", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "exporter".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 endpoint: None,
@@ -3742,13 +3996,15 @@ br.run("hello", "#missing");
         let (_d, s) = server();
         let mut p = create("Vaulted", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
         let vault_dir = s.store().artifact_dir("vaulted").unwrap().join(".vault");
         std::fs::create_dir_all(&vault_dir).unwrap();
         std::fs::write(vault_dir.join("API_KEY.enc"), "sealed-bytes").unwrap();
 
         let out = TempDir::new().unwrap();
-        s.export_app(Parameters(ExportAppParams {
+        s.export_app_public(Parameters(ExportAppParams {
             id: "vaulted".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             endpoint: None,
@@ -3766,7 +4022,7 @@ br.run("hello", "#missing");
     async fn export_rejects_missing_app() {
         let (_d, s) = server();
         assert!(s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "ghost".into(),
                 target_dir: "/tmp/x".into(),
                 endpoint: None,
@@ -3800,10 +4056,12 @@ br.run("hello", "#missing");
         let mut p = create("Launcher", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let out = TempDir::new().unwrap();
-        s.export_app(Parameters(ExportAppParams {
+        s.export_app_public(Parameters(ExportAppParams {
             id: "launcher".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             mode: Some("launcher".into()),
@@ -3830,7 +4088,7 @@ br.run("hello", "#missing");
     #[tokio::test]
     #[serial_test::serial]
     async fn export_full_mode_stages_payload_and_writes_export_json() {
-        relax_catalog_strictness();
+        let _strict = relax_catalog_strictness();
         // Fake knowledge store with one KB directory the brkb exporter can walk.
         let kroot = TempDir::new().unwrap();
         let kb_dir = kroot.path().join("ms-cohort").join("knowledge");
@@ -3852,7 +4110,9 @@ br.run("hello", "#missing");
         p.skills = vec!["ggplot".into()];
         // developer is builtin (travels with the daemon); spokeagent is external.
         p.extensions = vec!["developer".into(), "spokeagent".into()];
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         // Give the app a vault to prove full mode still excludes it.
         let vault = s.store().artifact_dir("cohort").unwrap().join(".vault");
@@ -3861,7 +4121,7 @@ br.run("hello", "#missing");
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "cohort".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 mode: Some("full".into()),
@@ -3915,7 +4175,7 @@ br.run("hello", "#missing");
     #[tokio::test]
     #[serial_test::serial]
     async fn export_full_mode_skips_missing_kb() {
-        relax_catalog_strictness();
+        let _strict = relax_catalog_strictness();
         let kroot = TempDir::new().unwrap(); // empty store — no such KB
         let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
 
@@ -3924,11 +4184,13 @@ br.run("hello", "#missing");
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
         p.knowledge_base = Some("does-not-exist".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "ghostkb".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 mode: Some("full".into()),
@@ -3947,12 +4209,94 @@ br.run("hello", "#missing");
         assert!(text_of(&res).contains("skipped knowledge base 'does-not-exist'"));
     }
 
+    /// Issue #56 (CP4). `export_brkb` writes the WHOLE base into the payload,
+    /// and `kb_ids` comes from the model-supplied `include.knowledge_bases` — a
+    /// strictly wider `kb_export` with no id gate anywhere before this task.
+    /// Skip-and-note rather than hard-fail, matching `search_visible_bases`: the
+    /// rest of the export is still useful and the user is told why.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn export_app_leaves_a_private_knowledge_base_out_of_the_payload() {
+        let _strict = relax_catalog_strictness();
+        let kroot = TempDir::new().unwrap();
+        // Real bases, not hand-made directories: `create_base` registers each id
+        // PUBLIC, and a base with a directory but no tier entry would read
+        // private by inference (decision 3) and make this test pass vacuously.
+        let ksvc = crate::knowledge::service::KnowledgeService::new(kroot.path().to_path_buf());
+        ksvc.create_base("pub-kb", "Public KB", None).unwrap();
+        ksvc.create_base("priv-kb", "OMOP Cohort", None).unwrap();
+        crate::knowledge::tier::raise_unlocked(kroot.path(), "priv-kb", true).unwrap();
+
+        let _kg = EnvGuard::set("BIOROUTER_KNOWLEDGE_DIR", kroot.path());
+
+        let (_d, s) = server();
+        let mut p = create("Payload", None);
+        p.html = Some("<html><head></head><body>hi</body></html>".into());
+        p.system_prompt = Some("help".into());
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
+
+        let include = serde_json::json!({ "knowledge_bases": ["pub-kb", "priv-kb"] });
+
+        // A PUBLIC caller gets the public base and a note naming what was left out.
+        let out = TempDir::new().unwrap();
+        let res = s
+            .export_app_inner(
+                ExportAppParams {
+                    id: "payload".into(),
+                    target_dir: out.path().to_string_lossy().to_string(),
+                    mode: Some("full".into()),
+                    include: Some(include.clone()),
+                    ..Default::default()
+                },
+                &KbCaller::restricted(),
+            )
+            .await
+            .unwrap();
+
+        let ej: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(out.path().join("export.json")).unwrap())
+                .unwrap();
+        let ids: Vec<&str> = ej["knowledge_bases"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|k| k["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["pub-kb"]);
+        let text = text_of(&res);
+        assert!(
+            text.contains("priv-kb") && text.contains("private"),
+            "the export must say what it left out and why: {text}"
+        );
+        assert!(!out.path().join("payload/knowledge/priv-kb.brkb").exists());
+        assert!(out.path().join("payload/knowledge/pub-kb.brkb").exists());
+
+        // A PRIVATE caller still gets both, or "no leak" is satisfied by
+        // "the export stages nothing".
+        let out2 = TempDir::new().unwrap();
+        s.export_app_inner(
+            ExportAppParams {
+                id: "payload".into(),
+                target_dir: out2.path().to_string_lossy().to_string(),
+                mode: Some("full".into()),
+                include: Some(include),
+                ..Default::default()
+            },
+            &private_test_caller(),
+        )
+        .await
+        .unwrap();
+        assert!(out2.path().join("payload/knowledge/priv-kb.brkb").exists());
+    }
+
     /// An explicit empty `include.knowledge_bases` selects nothing even when the
     /// agent config references a KB (per-item opt-out).
     #[tokio::test]
     #[serial_test::serial]
     async fn export_full_mode_explicit_empty_include_selects_none() {
-        relax_catalog_strictness();
+        let _strict = relax_catalog_strictness();
         let kroot = TempDir::new().unwrap();
         std::fs::create_dir_all(kroot.path().join("kb1").join("knowledge")).unwrap();
         std::fs::write(kroot.path().join("kb1").join("knowledge").join("i.md"), "x").unwrap();
@@ -3963,10 +4307,12 @@ br.run("hello", "#missing");
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
         p.knowledge_base = Some("kb1".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let out = TempDir::new().unwrap();
-        s.export_app(Parameters(ExportAppParams {
+        s.export_app_public(Parameters(ExportAppParams {
             id: "opt-out".into(),
             target_dir: out.path().to_string_lossy().to_string(),
             mode: Some("full".into()),
@@ -3997,11 +4343,13 @@ br.run("hello", "#missing");
         let mut p = create("Fat", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "fat".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 bundle_daemon: Some("current".into()),
@@ -4047,11 +4395,13 @@ br.run("hello", "#missing");
         let mut p = create("NoDaemon", None);
         p.html = Some("<html><head></head><body>hi</body></html>".into());
         p.system_prompt = Some("help".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let out = TempDir::new().unwrap();
         let res = s
-            .export_app(Parameters(ExportAppParams {
+            .export_app_public(Parameters(ExportAppParams {
                 id: "nodaemon".into(),
                 target_dir: out.path().to_string_lossy().to_string(),
                 bundle_daemon: Some("current".into()),
@@ -4090,7 +4440,9 @@ br.run("hello", "#missing");
             let mut p = create("Starter", None);
             p.id = Some(id.clone());
             p.archetype = Some(arch.to_string());
-            s.create_app_inner(p, None).await.unwrap();
+            s.create_app_inner(p, None, &KbCaller::restricted())
+                .await
+                .unwrap();
 
             let index = s.store().read_file(&id, "index.html").unwrap();
             let main = s.store().read_file(&id, "src/main.ts").unwrap();
@@ -4152,7 +4504,9 @@ br.run("hello", "#missing");
         let mut p = create("Trial metrics dashboard", None);
         p.id = Some("override".into());
         p.archetype = Some("canvas".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let index = s.store().read_file("override", "index.html").unwrap();
         assert!(index.contains("Canvas"));
@@ -4165,7 +4519,10 @@ br.run("hello", "#missing");
         // A bogus archetype is a clean INVALID_PARAMS, not a panic.
         let mut bad = create("X", None);
         bad.archetype = Some("spaceship".into());
-        assert!(s.create_app_inner(bad, None).await.is_err());
+        assert!(s
+            .create_app_inner(bad, None, &KbCaller::restricted())
+            .await
+            .is_err());
     }
 
     #[tokio::test]
@@ -4173,7 +4530,9 @@ br.run("hello", "#missing");
         let (_d, s) = server();
         let mut p = create("Support assistant", None);
         p.id = Some("chatty".into());
-        s.create_app_inner(p, None).await.unwrap();
+        s.create_app_inner(p, None, &KbCaller::restricted())
+            .await
+            .unwrap();
 
         let index = s.store().read_file("chatty", "index.html").unwrap();
         assert!(index.contains("data-br-chat"), "chat keeps the chat card");
@@ -4193,7 +4552,9 @@ br.run("hello", "#missing");
         let mut c = create("Simulation", None);
         c.id = Some("sim".into());
         c.archetype = Some("canvas".into());
-        s.create_app_inner(c, None).await.unwrap();
+        s.create_app_inner(c, None, &KbCaller::restricted())
+            .await
+            .unwrap();
         let cm = s.store().load_manifest("sim").unwrap();
         assert!(cm.surface.components.iter().any(|c| c.name == "scene"));
         assert!(cm.surface.actions.iter().any(|a| a.name == "move_avatar"));
@@ -4208,7 +4569,9 @@ br.run("hello", "#missing");
         let mut e = create("Graph tool", None);
         e.id = Some("graph".into());
         e.archetype = Some("explorer".into());
-        s.create_app_inner(e, None).await.unwrap();
+        s.create_app_inner(e, None, &KbCaller::restricted())
+            .await
+            .unwrap();
         let em = s.store().load_manifest("graph").unwrap();
         assert!(em.surface.actions.iter().any(|a| a.name == "focus_node"));
         assert!(em
@@ -4226,7 +4589,9 @@ br.run("hello", "#missing");
             path: "src/main.ts".into(),
             content: "import { createApp } from \"./sdk\";\ncreateApp();\n".into(),
         }];
-        s.create_app_inner(byo, None).await.unwrap();
+        s.create_app_inner(byo, None, &KbCaller::restricted())
+            .await
+            .unwrap();
         assert!(
             s.store().load_manifest("byo").unwrap().surface.is_empty(),
             "no surface when the caller supplies their own main.ts"
@@ -4375,6 +4740,390 @@ br.run("hello", "#missing");
                      environment the smoke harness needs to boot a browser:\n{child_env}"
                 );
             }
+        }
+    }
+
+    // ── Issue #56, Task 10D: CP5, the metadata surface ──────────────────────
+
+    /// Every drafter tool that can hand a knowledge base's **id or name** to the
+    /// model, driven through the router with a capability-carrying request meta.
+    ///
+    /// Tasks 10B and 10C stop base *content*. They do not stop the id and the
+    /// name, and `list_platform_catalog` handed both over for every base on the
+    /// machine with no arguments at all — while its own description tells the
+    /// model to call it before `configure_app`.
+    mod privacy_catalog {
+        use super::*;
+        use crate::agent_drafter::catalog::drafter_catalog_root_with_kbs;
+        use crate::knowledge::tier;
+        use serde_json::json;
+
+        /// The capability a probe drives a call with. An enum, not a `bool`, so
+        /// the call sites read `Public` / `Private` and cannot be transposed
+        /// silently — the same choice `knowledge::server`'s tests made.
+        #[derive(Clone, Copy, PartialEq, Debug)]
+        enum Caller {
+            Public,
+            Private,
+        }
+        use Caller::{Private, Public};
+
+        impl Caller {
+            fn is_private(self) -> bool {
+                matches!(self, Caller::Private)
+            }
+        }
+
+        /// A drafter server over a temp app store, pointed at a sandboxed
+        /// knowledge root holding `kbs`.
+        ///
+        /// All four values are returned because all four must outlive the
+        /// assertions: the `EnvGuard` is what makes `Catalog::discover` read this
+        /// root at all, and either `TempDir` dropping unlinks a tree under it.
+        fn drafter_at_root_with_kbs(
+            kbs: &[&str],
+        ) -> (
+            AgentDrafterServer,
+            std::path::PathBuf,
+            TempDir,
+            tempfile::TempDir,
+            env_lock::EnvGuard<'static>,
+        ) {
+            let (kdir, kroot, env) = drafter_catalog_root_with_kbs(kbs);
+            let apps = TempDir::new().unwrap();
+            let srv = AgentDrafterServer::with_root(apps.path().to_path_buf());
+            (srv, kroot, apps, kdir, env)
+        }
+
+        /// Drive a drafter tool BY NAME with a request whose meta carries the
+        /// caller's capability.
+        ///
+        /// By name, and not by calling the `#[tool]` function: fourteen of the
+        /// eighteen tools take no `RequestContext` at all, so the universal probe
+        /// below could not express "as a public caller" for them any other way —
+        /// and calling `Catalog::discover(false)` directly would prove the filter
+        /// works while saying nothing about whether the TOOL passes the right
+        /// argument, which is the whole of the bug.
+        ///
+        /// A `RequestContext` needs a live `Peer`, which only `serve_directly`
+        /// mints; mirrors `knowledge::server`'s `call_tool_as`.
+        async fn call_drafter_tool_as(
+            srv: &AgentDrafterServer,
+            name: &str,
+            args: serde_json::Value,
+            caller: Caller,
+        ) -> Result<CallToolResult, ErrorData> {
+            use tokio::io::AsyncReadExt as _;
+
+            let (mut client, server_side) = tokio::io::duplex(64 * 1024);
+            tokio::spawn(async move {
+                let mut buffer = [0_u8; 8192];
+                while client.read(&mut buffer).await.unwrap_or(0) != 0 {}
+            });
+            let running = rmcp::service::serve_directly(srv.clone(), server_side, None);
+            let mut meta = rmcp::model::Meta::new();
+            meta.0.insert(
+                crate::knowledge::tier::CAPABILITY_TIER_META_KEY.to_string(),
+                serde_json::Value::String(
+                    crate::knowledge::tier::capability_meta_value(caller.is_private()).to_string(),
+                ),
+            );
+            let context = RequestContext {
+                ct: Default::default(),
+                id: rmcp::model::NumberOrString::Number(1),
+                meta,
+                extensions: Default::default(),
+                peer: running.peer().clone(),
+            };
+            let request = rmcp::model::CallToolRequestParams {
+                name: name.to_string().into(),
+                arguments: args.as_object().cloned(),
+                task: None,
+                meta: None,
+            };
+            let out = ServerHandler::call_tool(srv, request, context).await;
+            drop(running);
+            out
+        }
+
+        /// Everything a call said, whether it answered or refused — one string,
+        /// so a leak assertion cannot be satisfied by the payload moving from the
+        /// success branch to the error branch. The drafter's leaks are in
+        /// `INVALID_PARAMS` messages, so the error branch is the important half.
+        fn rendered(out: &Result<CallToolResult, ErrorData>) -> String {
+            match out {
+                Ok(r) => r
+                    .content
+                    .iter()
+                    .filter_map(|c| match &c.raw {
+                        RawContent::Text(t) => Some(t.text.clone()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                Err(e) => e.message.to_string(),
+            }
+        }
+
+        #[tokio::test]
+        async fn list_platform_catalog_is_scoped_to_the_calling_sessions_capability() {
+            let (srv, root, _apps, _kdir, _env) = drafter_at_root_with_kbs(&["default", "omop"]);
+            tier::raise_unlocked(&root, "omop", true).unwrap();
+
+            let public =
+                call_drafter_tool_as(&srv, "list_platform_catalog", json!({}), Public).await;
+            assert!(!rendered(&public).contains("omop"), "{}", rendered(&public));
+            assert!(
+                rendered(&public).contains("default"),
+                "the public bases went too: {}",
+                rendered(&public)
+            );
+            let private =
+                call_drafter_tool_as(&srv, "list_platform_catalog", json!({}), Private).await;
+            assert!(rendered(&private).contains("omop"));
+        }
+
+        #[tokio::test]
+        async fn every_drafter_tool_that_builds_a_catalog_scopes_it() {
+            // Parameterised, for the same reason 10B/10C parameterise over all
+            // nineteen `kb_*` tools: fixing the tool whose NAME says "catalog"
+            // leaves the validators enumerating the same list through their
+            // error strings, which is the surface a model reads on every
+            // rejected `configure_app`.
+            let (srv, root, _apps, _kdir, _env) = drafter_at_root_with_kbs(&["default", "omop"]);
+            tier::raise_unlocked(&root, "omop", true).unwrap();
+
+            // A real app for the four id-addressing tools to reach validation on.
+            let mut seed = create("Probe", None);
+            seed.system_prompt = Some("help".into());
+            seed.html = Some("<html><head></head><body>hi</body></html>".into());
+            srv.create_app_inner(seed, None, &KbCaller::restricted())
+                .await
+                .unwrap();
+            let manifest_json = srv.store().read_file("probe", "manifest.json").unwrap();
+            let mut manifest: serde_json::Value = serde_json::from_str(&manifest_json).unwrap();
+            manifest["agent"]["knowledge_base"] = json!("br.kb");
+
+            // `br.kb` is the client API namespace the 100-app test drive really
+            // configured, so every row below is the live rejection path.
+            let rows: Vec<(&str, serde_json::Value)> = vec![
+                ("list_platform_catalog", json!({})),
+                (
+                    "create_app",
+                    json!({ "title": "Second", "knowledge_base": "br.kb" }),
+                ),
+                (
+                    "configure_app",
+                    json!({ "id": "probe", "knowledge_base": "br.kb" }),
+                ),
+                (
+                    "update_app",
+                    json!({
+                        "id": "probe",
+                        "path": "manifest.json",
+                        "content": serde_json::to_string(&manifest).unwrap(),
+                    }),
+                ),
+                // `declare_profiles` renders SKILL ids, not KB ids, so this row
+                // cannot fail today — it is here because it CONSTRUCTS a catalog
+                // (`:2544`), which is what makes it able to name a base the day
+                // anyone adds a KB field to a worker profile. A row that goes red
+                // then is the point.
+                (
+                    "declare_profiles",
+                    json!({
+                        "id": "probe",
+                        "agents": [{
+                            "key": "analyst",
+                            "system_prompt": "analyse",
+                            "skills": ["no-such-skill"],
+                        }],
+                    }),
+                ),
+            ];
+
+            for (tool, args) in rows {
+                let out = call_drafter_tool_as(&srv, tool, args, Public).await;
+                assert!(
+                    !rendered(&out).contains("omop"),
+                    "{tool} leaked a private base id: {}",
+                    rendered(&out)
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn every_drafter_tool_that_can_name_a_base_is_in_the_register() {
+            // The register, as a test rather than only as a table: no drafter
+            // tool may produce a base id it was not given. Universal over the
+            // WHOLE router, not over a hand-picked list — the leak this task
+            // exists to close was a tool nobody had enumerated. Arguments name
+            // only a base that does not exist here, so a hit is volunteering and
+            // not echoing, and every validator takes its ENUMERATING branch.
+            let (srv, root, _apps, _kdir, _env) =
+                drafter_at_root_with_kbs(&["default", "omop-cohort-412"]);
+            tier::raise_unlocked(&root, "omop-cohort-412", true).unwrap();
+
+            // REAL apps for the id-addressing tools to address. Review caught
+            // this fixture pointing every one of them at `no-such-app`, which
+            // made sixteen of the eighteen rows bail at `no app 'no-such-app'`
+            // before any catalog existed — a pass no implementation could fail.
+            // See `benign_args_for` for what each row now reaches.
+            seed_app(&srv, "probe", "Probe").await;
+            seed_app(&srv, "disposable", "Disposable").await;
+            let exports = TempDir::new().unwrap();
+            let probe_manifest = srv.store().read_file("probe", "manifest.json").unwrap();
+
+            for tool in AgentDrafterServer::tool_router().list_all() {
+                let args = benign_args_for(&tool.name, exports.path(), &probe_manifest);
+                let out = call_drafter_tool_as(&srv, &tool.name, args, Public).await;
+                let said = rendered(&out);
+                assert!(
+                    !said.contains("omop-cohort-412"),
+                    "{} volunteered a private base id — add it to the metadata register \
+                     or scope it: {said}",
+                    tool.name,
+                );
+
+                // The fixture polices ITSELF, because the way this test failed
+                // review was not a wrong assertion but an inert one: pointed at
+                // `no-such-app`, sixteen of eighteen rows never reached a line
+                // that could leak, and the docstring still claimed the whole
+                // router. A row that stops at the "no app" guard proves nothing,
+                // so only the three that must not spawn a process may.
+                let held = said.contains("no app '");
+                assert_eq!(
+                    held,
+                    HELD_AT_THE_ID_GUARD.contains(&tool.name.as_ref()),
+                    "{} is in the wrong half of the fixture (held at the id guard: \
+                     {held}). Point it at the seeded `probe` app so its row asserts \
+                     something, or add it to HELD_AT_THE_ID_GUARD with the reason: \
+                     {said}",
+                    tool.name,
+                );
+            }
+
+            // …and a private caller still sees it, so the assertion above cannot
+            // be satisfied by a router that answers nothing.
+            let out = call_drafter_tool_as(&srv, "list_platform_catalog", json!({}), Private).await;
+            assert!(rendered(&out).contains("omop-cohort-412"));
+        }
+
+        /// A real app for the register probe to address, so an id-addressing
+        /// tool reaches its body instead of its "no app" guard.
+        async fn seed_app(srv: &AgentDrafterServer, id: &str, title: &str) {
+            let mut p = create(title, None);
+            p.id = Some(id.to_string());
+            // Agentic, because `persist_created_app` returns before the catalog
+            // for any other kind (`:1088`) — a static seed would leave the very
+            // tools this fixture exists to reach unable to build one.
+            p.system_prompt = Some("help".into());
+            p.html = Some("<html><head></head><body>hi</body></html>".into());
+            srv.create_app_inner(p, None, &KbCaller::restricted())
+                .await
+                .unwrap();
+        }
+
+        /// An id no base on this machine has.
+        ///
+        /// Naming the PUBLIC base — which this fixture did until review — routes
+        /// every row down its SUCCESS path, where no validator ever renders a
+        /// list. The drafter's leak lives in the rejection strings
+        /// (`validate.rs:33/:42/:52`), so the probe has to be rejected to reach
+        /// it. It is also not the private id, so a hit is still volunteering
+        /// rather than echoing. `br.kb` is the client API namespace the 100-app
+        /// test drive really configured, so this is the live mistake.
+        const ABSENT_KB: &str = "br.kb";
+
+        /// The only rows allowed to stop at their `no app '<id>'` guard, because
+        /// reaching their bodies means spawning a process this test must not
+        /// spawn. Asserted in both directions, so neither half can drift.
+        const HELD_AT_THE_ID_GUARD: [&str; 3] = ["build_app", "launch_app", "smoke_app"];
+
+        /// Arguments that drive each tool as deep into its body as it can go
+        /// without spawning a process or destroying the fixture.
+        ///
+        /// **Every id-addressing tool is pointed at a REAL app.** Each one's
+        /// first statement is `load_manifest` / `store.exists` / `artifact_dir`
+        /// and returns `no app '<id>'` on an unknown id — so the previous
+        /// `"no-such-app"` meant sixteen of eighteen rows asserted only that
+        /// `no app 'no-such-app'` does not contain a private base id. That is
+        /// precisely the leak shape this task closes: `configure_app` (`:2168`),
+        /// `update_app` (`:2310`) and `declare_profiles` (`:2623`) all build
+        /// their catalog AFTER the manifest loads.
+        ///
+        /// **Three rows stay at the id guard, named with the reason:**
+        /// `build_app` and `launch_app` run esbuild — and `find_esbuild` falls
+        /// back to `npx --yes esbuild`, which DOWNLOADS — and `smoke_app` boots
+        /// a browser. None of the three constructs a `Catalog` (the six
+        /// production `Catalog::discover` sites are `create_app`,
+        /// `configure_app`, `update_app`, `declare_profiles`,
+        /// `list_platform_catalog` and `routes/apps.rs`), so what the register
+        /// covers for them is the shallow row — stated here rather than implied
+        /// by a docstring that claims the whole router.
+        ///
+        /// `delete_app` gets its OWN app, so it cannot destroy the shared
+        /// fixture whatever order `list_all()` returns; `export_app` gets a real
+        /// temp `target_dir`, so it writes into the fixture instead of at `/`;
+        /// `create_app` gets its own id for the same ordering reason.
+        fn benign_args_for(
+            tool: &str,
+            export_root: &std::path::Path,
+            probe_manifest: &str,
+        ) -> serde_json::Value {
+            match tool {
+                "list_platform_catalog" | "list_apps" => json!({}),
+                "create_app" => json!({
+                    "title": "Register Probe",
+                    "id": "register-probe",
+                    "system_prompt": "help",
+                    "knowledge_base": ABSENT_KB,
+                }),
+                "build_app" | "launch_app" | "smoke_app" => json!({ "id": "no-such-app" }),
+                "delete_app" => json!({ "id": "disposable" }),
+                "export_app" => json!({
+                    "id": "probe",
+                    "target_dir": export_root.join("out").to_string_lossy(),
+                }),
+                // The `manifest.json` branch is the one that re-runs the
+                // write-boundary check, so this row carries a real manifest
+                // naming `ABSENT_KB` rather than the fallback's `"x"` — without
+                // it `update_app` writes a file and never reaches `:2310`.
+                "update_app" => json!({
+                    "id": "probe",
+                    "path": "manifest.json",
+                    "content": manifest_naming_kb(probe_manifest, ABSENT_KB),
+                }),
+                _ => json!({
+                    "id": "probe",
+                    "knowledge_base": ABSENT_KB,
+                    // A profile with an unresolvable skill, so `declare_profiles`
+                    // reaches `validate::check_all` and renders a list; an empty
+                    // `agents` skips the loop entirely.
+                    "agents": [{
+                        "key": "analyst",
+                        "system_prompt": "analyse",
+                        "skills": ["no-such-skill"],
+                    }],
+                    "routes": [],
+                    // `surface` and `theme` are REQUIRED fields, not defaulted —
+                    // without them `declare_surface` and `set_theme` fail at
+                    // param decode, which is shallower still than the id guard.
+                    "surface": {},
+                    "theme": { "pack": "parchment" },
+                    "path": "index.html",
+                    "content": "x",
+                }),
+            }
+        }
+
+        /// The probe app's own manifest, re-pointed at `kb`, so `update_app`'s
+        /// manifest branch validates a knowledge base instead of failing to
+        /// parse.
+        fn manifest_naming_kb(manifest_json: &str, kb: &str) -> String {
+            let mut m: serde_json::Value = serde_json::from_str(manifest_json).unwrap();
+            m["agent"]["knowledge_base"] = json!(kb);
+            serde_json::to_string(&m).unwrap()
         }
     }
 }

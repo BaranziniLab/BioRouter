@@ -1,4 +1,6 @@
+pub mod affiliation;
 pub mod brkb;
+pub mod caller;
 pub mod convert;
 pub mod credibility;
 pub mod git;
@@ -15,6 +17,8 @@ pub mod source_paths;
 pub mod store;
 pub mod subagent;
 pub mod test_mode;
+pub mod tier;
+pub mod tier_user;
 pub mod types;
 
 pub use server::KnowledgeServer;

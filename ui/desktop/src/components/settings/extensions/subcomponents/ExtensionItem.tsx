@@ -4,13 +4,28 @@ import { Switch } from '../../../ui/switch';
 import { Settings } from '../../../icons/app-icons';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import BuiltInBadge from '../../../ui/BuiltInBadge';
+import { PrivacyBadge } from '../../../ui/PrivacyBadge';
 import { getSubtitle, getFriendlyTitle, isBuiltInExtension } from './ExtensionList';
+import { classifyExtension, extensionPairingRefused } from '../extensionPrivacy';
+import type { DefaultProvider } from '../ExtensionsSection';
+import { extensionProvenance, type RegistryLoad } from '../../../baam/registry';
 
 interface ExtensionItemProps {
   extension: FixedExtensionEntry;
   onToggle: (extension: FixedExtensionEntry) => Promise<boolean | void> | void;
   onConfigure?: (extension: FixedExtensionEntry) => void;
   isStatic?: boolean;
+  /**
+   * The global default provider (issue #56, §14.5) — the only tier this screen
+   * can honestly judge against, since Settings has no session.
+   */
+  defaultProvider?: DefaultProvider | null;
+  /**
+   * The marketplace catalogue (issue #56, §13.5), resolved once by
+   * `ExtensionsSection`. `null` until it has loaded — the card simply says less
+   * until then, rather than guessing a provenance and correcting itself.
+   */
+  catalog?: RegistryLoad | null;
 }
 
 export default function ExtensionItem({
@@ -18,6 +33,8 @@ export default function ExtensionItem({
   onToggle,
   onConfigure,
   isStatic,
+  defaultProvider,
+  catalog,
 }: ExtensionItemProps) {
   const [visuallyEnabled, setVisuallyEnabled] = useState(extension.enabled);
   const [isToggling, setIsToggling] = useState(false);
@@ -47,6 +64,59 @@ export default function ExtensionItem({
   const editable =
     !isStatic && (extension.type === 'builtin' || !('bundled' in extension && extension.bundled));
 
+  /**
+   * §14.5's third state. A static badge describes a property of the extension;
+   * what the user needs is a property of the *pairing*, because `config.yaml`
+   * enables extensions globally and there is no per-session enablement — so
+   * "Enabled" here and "absent from every chat" are both true at once, and only
+   * one of them is on screen.
+   *
+   * The scope is stated out loud. This card cannot see a chat, so it judges the
+   * default provider and names it; the composer's selector answers the
+   * per-chat question.
+   */
+  const pairingNotice =
+    defaultProvider && extensionPairingRefused(extension.name, defaultProvider.tier)
+      ? `${extension.enabled ? 'Enabled · u' : 'U'}navailable in new chats (default model is public) — judged against your default provider, ${defaultProvider.name}`
+      : null;
+
+  /**
+   * §13.5's strings. **How** an extension got here is the thing a user cannot
+   * otherwise see, and it is what decides the badge: an extension installed from
+   * a file is Public under R11(ii) because the install records no provenance at
+   * all, and nothing on this card said so.
+   *
+   * A built-in gets its own sentence rather than one of the two marketplace
+   * ones, which would both be false statements: it is not published on BAAM and
+   * it was not installed from a file. Saying nothing was the previous answer and
+   * left the row that most obviously ships with the app as the only row that
+   * would not say where it came from — and `BuiltInBadge` beside the title says
+   * *that it is built in*, not what any model may do with it, which is the half
+   * §13.5 exists to state.
+   *
+   * The built-in sentence needs no catalogue, so it renders immediately; the two
+   * marketplace ones wait for the load, because "published" is a claim only the
+   * catalogue can back.
+   */
+  const builtIn = isBuiltInExtension(extension);
+  const provenance = builtIn
+    ? 'Public — built into Biorouter, not on the marketplace. Any model can call it.'
+    : catalog
+      ? extensionProvenance(catalog.registry, extension.name)
+      : null;
+
+  /**
+   * §13.5's other half: *a badge* plus provenance, on every card. The sentence
+   * is the explanation; the pill is what survives being skimmed, and a user
+   * scanning twenty rows for the one that is Private reads pills.
+   *
+   * `classifyExtension`, deliberately the same call `extensionPairingRefused`
+   * above makes, so one card can never show a Public badge beside an
+   * "unavailable in new chats" notice that only a Private extension earns. It
+   * also needs no catalogue, so the badge does not appear a beat after the row.
+   */
+  const tier = classifyExtension(extension.name);
+
   return (
     <div
       id={`extension-${kebabCase(extension.name)}`}
@@ -57,12 +127,15 @@ export default function ExtensionItem({
           <p className="text-sm font-medium text-text-default leading-snug">
             {getFriendlyTitle(extension)}
           </p>
-          {isBuiltInExtension(extension) && <BuiltInBadge />}
+          {builtIn && <BuiltInBadge />}
+          <PrivacyBadge tier={tier} />
         </div>
         {description && (
           <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{description}</p>
         )}
         {command && <p className="text-xs font-mono text-text-muted mt-0.5 truncate">{command}</p>}
+        {provenance && <p className="text-xs text-text-subtle mt-1">{provenance}</p>}
+        {pairingNotice && <p className="text-xs text-text-muted mt-1">{pairingNotice}</p>}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {editable && (

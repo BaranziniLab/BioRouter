@@ -306,6 +306,86 @@ mod tests {
                 }
             }
         }
+
+        /// Issue #56 (R5), the third schedule-creating surface.
+        ///
+        /// `/loop` and `/schedule` record the chat that made them, so
+        /// `resolve_scheduled_provider` can run the job on that chat's model
+        /// instead of the user's commercial default. The agent's own
+        /// `schedule_management` tool did not, so a schedule an agent creates on
+        /// the user's behalf *from a private chat* still fell through to
+        /// `Config::global()` — the exact hole the rest of the task closes.
+        ///
+        /// ⚠ The id comes from `dispatch_tool_call`'s own `session` argument,
+        /// NOT from `session_context::current_session_id()`. That task-local is
+        /// scoped around a *scheduled* run (`scheduler.rs`) and a *subagent* run
+        /// (`subagent_handler.rs`) and nowhere else — in particular not around
+        /// `Agent::reply` on the ordinary chat path — so it reads `None` in
+        /// precisely the case this closes. The dispatcher has the real session
+        /// in hand; that is the honest source.
+        #[tokio::test]
+        async fn an_agent_created_schedule_records_the_chat_that_asked_for_it() {
+            use rmcp::model::CallToolRequestParams;
+
+            let temp_dir = TempDir::new().unwrap();
+            let data_dir = temp_dir.path().to_path_buf();
+            let session_manager = Arc::new(SessionManager::new(data_dir.clone()));
+            let permission_manager = Arc::new(PermissionManager::new(data_dir.clone()));
+            let mock_scheduler = Arc::new(MockScheduler::new());
+            let agent = Agent::with_config(AgentConfig::new(
+                session_manager.clone(),
+                permission_manager,
+                Some(mock_scheduler.clone()),
+                BioRouterMode::Auto,
+            ));
+
+            let session = session_manager
+                .create_session(
+                    data_dir.clone(),
+                    "the chat that asked".to_string(),
+                    biorouter::session::session_manager::SessionType::User,
+                )
+                .await
+                .unwrap();
+
+            let workflow_path = data_dir.join("nightly.yaml");
+            std::fs::write(
+                &workflow_path,
+                "title: Nightly\ndescription: A nightly job\nprompt: do the thing\n",
+            )
+            .unwrap();
+
+            let (_id, result) = agent
+                .dispatch_tool_call(
+                    CallToolRequestParams {
+                        task: None,
+                        meta: None,
+                        name: PLATFORM_MANAGE_SCHEDULE_TOOL_NAME.into(),
+                        arguments: serde_json::json!({
+                            "action": "create",
+                            "workflow_path": workflow_path.to_str().unwrap(),
+                            "cron_expression": "0 0 1 * * *",
+                        })
+                        .as_object()
+                        .cloned(),
+                    },
+                    "req-1".to_string(),
+                    None,
+                    &session,
+                )
+                .await;
+            // `ToolCallResult` is not `Debug`; the error side is what matters.
+            assert!(result.is_ok(), "{:?}", result.as_ref().err());
+
+            let jobs = mock_scheduler.list_scheduled_jobs().await;
+            assert_eq!(jobs.len(), 1, "{jobs:?}");
+            assert_eq!(
+                jobs[0].creator_session_id.as_deref(),
+                Some(session.id.as_str()),
+                "the schedule must remember the chat it was created from, or its runs fall back \
+                 to the global default and leave a private chat's work on a public model"
+            );
+        }
     }
 
     #[cfg(test)]
@@ -455,6 +535,8 @@ mod tests {
                     model_doc_link: "".to_string(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 
@@ -640,6 +722,8 @@ mod tests {
                     model_doc_link: "".to_string(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 
@@ -804,6 +888,8 @@ mod tests {
                     model_doc_link: String::new(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 
@@ -1218,6 +1304,8 @@ mod tests {
                     model_doc_link: String::new(),
                     config_keys: vec![],
                     allows_unlisted_models: false,
+                    tier: Default::default(),
+                    runs_locally: false,
                 }
             }
 

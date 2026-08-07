@@ -12,7 +12,7 @@ use biorouter::config::ExtensionEntry;
 use biorouter::config::{Config, ConfigError};
 use biorouter::model::ModelConfig;
 use biorouter::providers::auto_detect::{detect_provider_from_api_key, detectable_providers};
-use biorouter::providers::base::{ProviderMetadata, ProviderType};
+use biorouter::providers::base::{ProviderAffiliation, ProviderMetadata, ProviderType};
 use biorouter::providers::create_with_default_model;
 use biorouter::providers::errors::ProviderError;
 use biorouter::providers::pricing::{resolved_provider_model_pricing, ProviderModelPricing};
@@ -20,8 +20,11 @@ use biorouter::providers::providers as get_providers;
 use biorouter::providers::{retry_operation, RetryConfig};
 use biorouter::{
     agents::execute_commands, agents::ExtensionConfig, config::permission::PermissionLevel,
-    slash_commands,
+    privacy::PrivacyRefusal, slash_commands,
 };
+// Issue #56 DR-16. The LIB path, not `crate::auth` — see the note on the same
+// import in `routes::agent`.
+use biorouter_server::auth::is_user_action;
 use http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -48,6 +51,29 @@ pub struct UpsertConfigQuery {
     pub key: String,
     pub value: Value,
     pub is_secret: bool,
+    /// Issue #56 Task 30. The typed confirmation Settings → Privacy sends with a
+    /// write to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.
+    ///
+    /// ⚠ **What this is and what it is not.** It is a **UX guard against an
+    /// accidental or model-composed config write**, not an authorization
+    /// boundary: the phrase is a fixed string in the shipped source, so a caller
+    /// holding the daemon secret replays it. That is acceptable because
+    /// `check_token` has no principal — the daemon cannot tell Settings →
+    /// Privacy from any other loopback caller — and because the *authorization*
+    /// on this route is `X-User-Action`, not the phrase. What the phrase buys is
+    /// that the flip cannot be a side effect of an ordinary `/config/upsert`,
+    /// which is the reachable path: a model *can* compose one of those through a
+    /// tool.
+    ///
+    /// ⚠ **This comment used to justify the phrase by adding *"and a caller that
+    /// already holds the secret can raise its own session to private capability
+    /// anyway"*, citing AR-15. That is no longer true and is withdrawn** —
+    /// AR-15 was retired on 2026-08-02 by DR-16 (commit `0757823f`), which made
+    /// an upward provider bind require `X-User-Action`. Do not restore the
+    /// argument: the guard does not need it, and a stale "we are already open
+    /// here anyway" is how a weakened control gets waved through.
+    #[serde(default)]
+    pub confirm: Option<String>,
 }
 
 #[derive(Deserialize, Serialize, ToSchema)]
@@ -67,6 +93,21 @@ pub struct ProviderDetails {
     pub metadata: ProviderMetadata,
     pub is_configured: bool,
     pub provider_type: ProviderType,
+    /// DR-26's third axis for this provider, resolved from a live **instance**
+    /// (issue #56). `None` = a public provider, which has no affiliation at all,
+    /// or one this daemon could not resolve — see [`resolve_provider_affiliation`].
+    ///
+    /// ⚠ **Here rather than on [`ProviderMetadata`], deliberately.** That struct
+    /// is documented top to bottom as the *type-level* claim — its own `tier`
+    /// field carries the warning "do not hang a badge on this field", because a
+    /// re-pointed `ollama` still ships `Private` there while its instance
+    /// resolves Public. Affiliation is the opposite kind of value: DR-26 requires
+    /// it come off the instance, so that a Versa module repointed elsewhere loses
+    /// Private and `ucsf` together. Putting an instance-resolved field inside a
+    /// type-level struct is how the next reader comes to believe the tier beside
+    /// it is instance-resolved too.
+    #[serde(default)]
+    pub affiliation: Option<ProviderAffiliation>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -177,19 +218,306 @@ pub struct DetectableProvidersResponse {
     request_body = UpsertConfigQuery,
     responses(
         (status = 200, description = "Configuration value upserted successfully", body = String),
+        (status = 400, description = "Refused (issue #56, DR-27): \
+                                      `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', \
+                                      'standard' or 'strict'"),
+        (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
+                                      switch and may only be written from Settings > Privacy, \
+                                      with its typed confirmation — or (issue #56, DR-27) \
+                                      relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system \
+                                      authentication that did not happen"),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
+                                      decides what privacy capability new chats start at, so \
+                                      writing it requires proof the request came from the user. \
+                                      Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is \
+                                      user-only in every mode"),
         (status = 500, description = "Internal server error")
     )
 )]
 pub async fn upsert_config(
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
     Json(query): Json<UpsertConfigQuery>,
-) -> Result<Json<Value>, StatusCode> {
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // Issue #56 Task 30, hardening measure (2). The master switch is the ONE key
+    // this route will not write as an ordinary config value.
+    //
+    // ⚠ These two arms look contradictory and are not. `/config/upsert` MUST be
+    // one of the toggle's two writers — it is the channel Settings > Privacy
+    // uses — and a BARE upsert of this key MUST be refused. What separates them
+    // is the confirmation field, which is what the panel sends and what a tool
+    // call composing an ordinary config write does not.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        // Exact comparison, deliberately: a case-insensitive or trimmed match
+        // would let "disable privacy tiers" through, and the phrase exists to be
+        // typed rather than guessed.
+        if query.confirm.as_deref() != Some(biorouter::privacy::PRIVACY_TIERS_DISABLE_PHRASE) {
+            return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
+        }
+        // ⚠ And never into the SECRET store. `config.set(.., is_secret)` routes a
+        // secret to the OS credential store, which the start-up loader does not
+        // read — so a confirmed secret write would set this process's atomic to
+        // `off` and then silently revert to `on` at the next launch, with the
+        // panel showing whichever of the two it last read. Unreachable from the
+        // panel, which always sends `false`; refused here so that stays a
+        // property of the daemon rather than of one caller.
+        if query.is_secret {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!(
+                    "'{}' is the master privacy switch and cannot be stored as a secret: the \
+                     daemon reads it from its own record in the configuration directory at \
+                     start-up and would not see a value written to the credential store.",
+                    query.key
+                ),
+            ));
+        }
+    }
+    // Issue #56 DR-16, open question 24. `/config/upsert` writes ANY key, and a
+    // handful of them decide what capability the next session comes up with —
+    // `restore_provider_from_session` falls back to the config provider, so a
+    // write here is a tier raise with no `/agent/update_provider` call at all.
+    // DR-14 already makes config.yaml a filesystem deny root for the same
+    // reason; this is the HTTP channel to the same file.
+    //
+    // Key-scoped, NOT blanket: the GUI writes config on nearly every settings
+    // interaction, and a rule that fires constantly is a rule people route
+    // around.
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: an HTTP config write is not a tool call and has no
+    // admitted capability to inherit.
+    if biorouter::privacy::privacy_tiers_enabled()
+        && biorouter::privacy::is_capability_key(&query.key)
+        && !is_user_action(&headers)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: query.key.clone(),
+            }
+            .to_string(),
+        ));
+    }
+
     let config = Config::global();
+
+    // Issue #56 Task 42, DR-22. The master switch does NOT go through
+    // `config.set` — its home is its own record beside `config.yaml`, and this
+    // route is the only thing in the tree that writes it.
+    //
+    // ⚠ **A copy left in `config.yaml` would defeat the move.** Task 30 closed
+    // the HTTP channel to this key, but DR-17 descoped the filesystem barrier
+    // that DR-14 had put around `config.yaml`, so writing the key into that file
+    // by hand stayed a next-launch disable — and "only on restart" is not a
+    // control, because daemons restart routinely and a model can wait. Writing
+    // the value here and *also* persisting it there would keep both files
+    // agreeing today and hand the retired key its meaning back tomorrow.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        // Parsed through the same function the loader uses, so the running
+        // daemon and the next start-up can never disagree about what was asked
+        // for.
+        let on = biorouter::privacy::privacy_tiers_value_is_on(&query.value).unwrap_or(true);
+
+        // Issue #56 DR-20 / Task 55 Step 2. Turning the whole tier system off is
+        // at least as consequential as declassifying one chat, so it takes the
+        // same operating-system authentication — raised HERE, immediately before
+        // the write, so every other refusal this handler can make is already
+        // past and the user is not asked for a password to be told afterwards
+        // that the request was malformed.
+        //
+        // ⚠ **Only the OFF direction.** Re-enabling protection is the safe
+        // direction, and gating it would mean an `Unavailable` prompter — every
+        // headless host, and every Linux install until the packaging ships the
+        // polkit action — strands a machine with the feature disabled and no way
+        // to turn it back on. That is the same asymmetry Task 55 Step 1 applies
+        // to a `turn:*` chat: spend the cost where the consequence is.
+        if !on {
+            let prompter = biorouter::privacy::system_auth::prompter();
+            let request = biorouter::privacy::system_auth::AuthRequest::about(
+                MASTER_SWITCH_AUTH_REASON,
+                MASTER_SWITCH_AUTH_SUBJECT,
+            );
+            let outcome = prompter.authenticate(&request).await;
+            if let Some(refusal) = biorouter::privacy::system_auth::refusal_for(outcome, prompter) {
+                // Nothing has been written at this point — not the record, not
+                // the live atomic — so the feature is left exactly as it was, in
+                // the enforcing direction.
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!("{MASTER_SWITCH_AUTH_REFUSED} {refusal}"),
+                ));
+            }
+        }
+
+        return match biorouter::privacy::master_switch::write_for(config, on) {
+            Ok(()) => {
+                // Hardening measure (3): the authoritative value lives in daemon
+                // memory, so the write to disk is not enough — this is the
+                // SECOND of the toggle's two writers (the first is start-up's
+                // `load_privacy_tiers_from_config`).
+                biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(on);
+                Ok(Json(Value::String(format!("Upserted key {}", query.key))))
+            }
+            // The live value is deliberately NOT moved when the record could not
+            // be written: a switch that flips for this process and reverts at the
+            // next launch is the divergence Task 30's measure (3) exists to
+            // prevent, and the user would be told it worked.
+            Err(e) => Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "Failed to record the master privacy switch: {e}. The setting was not \
+                     changed."
+                ),
+            )),
+        };
+    }
+
+    // Issue #56 Task 52, DR-27. The cross-institution mixing policy — the second
+    // setting that does NOT go through `config.set`, and for DR-22's reason
+    // verbatim: DR-17 left `config.yaml` agent-writable, so a security control
+    // stored there is one a public model can set to `open` and have obeyed at the
+    // next launch. Its home is its own record beside `config.yaml`, and this
+    // route is the only thing in the tree that writes it.
+    if biorouter::privacy::mixing::is_mixing_policy_key(&query.key) {
+        return upsert_mixing_policy(config, &query, &headers).await;
+    }
+
     let result = config.set(&query.key, &query.value, query.is_secret);
 
     match result {
         Ok(_) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
-        Err(_) => Err(StatusCode::INTERNAL_SERVER_ERROR),
+        Err(_) => Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to upsert key {}", query.key),
+        )),
     }
+}
+
+/// The mixing-policy arm of [`upsert_config`], split out so that handler stays
+/// under `clippy::too_many_lines` (issue #56, review round 5). No behaviour
+/// change: the guards below run in the order they were written in, and the
+/// caller reaches this only for `BIOROUTER_PRIVACY_MIXING_POLICY`.
+async fn upsert_mixing_policy(
+    config: &'static Config,
+    query: &UpsertConfigQuery,
+    headers: &http::HeaderMap,
+) -> Result<Json<Value>, (StatusCode, String)> {
+    // Never into the SECRET store, for the master switch's reason: the
+    // credential store is not what the resolver reads, so a secret write
+    // would move this process's cached value and silently revert at the next
+    // launch.
+    if query.is_secret {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "'{}' is the cross-institution mixing policy and cannot be stored as a \
+                 secret: the daemon reads it from its own record in the configuration \
+                 directory and would not see a value written to the credential store.",
+                query.key
+            ),
+        ));
+    }
+    // DR-19 / DR-27: user-only, in every mode, and NOT conditioned on the
+    // master switch being on. Gating this guard on another control's state
+    // is the coupling that lets one disabled control disable a second.
+    if !is_user_action(headers) {
+        return Err((StatusCode::CONFLICT, MIXING_POLICY_NEEDS_USER.to_string()));
+    }
+    // An unrecognised mode is refused, never resolved to a default: the two
+    // wrong answers fail in opposite directions, so there is no safe guess.
+    let Some(policy) = biorouter::privacy::mixing::mixing_policy_value(&query.value) else {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            MIXING_POLICY_UNKNOWN_MODE.to_string(),
+        ));
+    };
+    // The direction guard lives inside `set_policy`: loosening raises DR-24's
+    // system prompt, tightening raises nothing. Deciding it here would put a
+    // second reading of DR-27's ratchet in a route handler.
+    match biorouter::privacy::mixing::set_policy(
+        config,
+        policy,
+        &biorouter::privacy::mixing::UserMixingPolicyChange::from_user_action(),
+    )
+    .await
+    {
+        Ok(()) => Ok(Json(Value::String(format!("Upserted key {}", query.key)))),
+        // Nothing was written on this arm, so the machine is left in the mode
+        // it was already in — which is the stricter of the two.
+        Err(refused @ biorouter::privacy::mixing::SetPolicyError::Refused(_)) => Err((
+            StatusCode::FORBIDDEN,
+            format!("{MIXING_POLICY_AUTH_REFUSED} {refused}"),
+        )),
+        Err(failed) => Err((StatusCode::INTERNAL_SERVER_ERROR, failed.to_string())),
+    }
+}
+
+/// What the operating system shows above the password field when the user turns
+/// the tier system off (issue #56 DR-20 point 4, Task 55 Step 2).
+///
+/// It states the CONSEQUENCE, not the setting's name. "Change BIOROUTER_PRIVACY_TIERS"
+/// is a sentence only the person who wrote the code can act on; a user
+/// authorising a system-level change is owed the sentence that tells them what
+/// stops happening.
+const MASTER_SWITCH_AUTH_REASON: &str =
+    "Turn off Biorouter's privacy tiers, so private chats stop being protected.";
+
+/// What the prompt names where a declassification would name its chats.
+///
+/// ⚠ **Not a session id, and never compared with one.** The master switch has no
+/// rows to name and mints no authorisation — the outcome is consumed in the same
+/// function that raises the prompt — so there is nothing for a stray id to be
+/// matched against. It exists because DR-20 point 4 requires the dialog to say
+/// what it authorises, and "the whole install" is a thing to say.
+const MASTER_SWITCH_AUTH_SUBJECT: &str = "every private chat on this machine";
+
+/// What `/config/upsert` says when the system authentication for a disable did
+/// not happen. The prompter's own sentence is appended, because "you pressed
+/// Cancel" and "this machine has no way to raise the prompt" need different
+/// advice and only the prompter knows which it was.
+const MASTER_SWITCH_AUTH_REFUSED: &str =
+    "Turning off Biorouter's privacy tiers needs your operating system to confirm it is you. \
+     That did not happen, and the setting was not changed.";
+
+/// What the mixing policy says to a caller that presented no proof of a human
+/// (issue #56 Task 52, DR-27 / DR-19).
+///
+/// It is the model-facing half of the ruling and says the two things a model
+/// needs: that this is not its decision, and what to do instead. It forecloses
+/// the retry, because a model that reads a refusal as transient loops on it.
+const MIXING_POLICY_NEEDS_USER: &str =
+    "Biorouter's cross-institution mixing policy is a setting only the person at the keyboard may \
+     change, and this request carried no proof it came from them. Nothing was changed. Do not \
+     retry — the same call will be refused again, and no setting, hook or permission mode changes \
+     it. Tell the user what you need and let them decide.";
+
+/// …and when the value is not one of the three modes.
+///
+/// Naming all three, because the caller cannot act on "invalid value" and a
+/// setting with a closed vocabulary can afford to state it.
+const MIXING_POLICY_UNKNOWN_MODE: &str =
+    "The cross-institution mixing policy is one of 'open', 'standard' or 'strict'. Nothing was \
+     changed.";
+
+/// …and when the system authentication a LOOSENING needs did not happen.
+///
+/// The prompter's own sentence is appended, because "you pressed Cancel" and
+/// "this machine has no way to raise the prompt" need different advice and only
+/// the prompter knows which it was — the same shape
+/// [`MASTER_SWITCH_AUTH_REFUSED`] has.
+const MIXING_POLICY_AUTH_REFUSED: &str =
+    "Relaxing Biorouter's cross-institution mixing policy needs your operating system to confirm \
+     it is you. That did not happen, and the setting was not changed. Tightening it needs no \
+     confirmation at all.";
+
+/// The one sentence both verbs refuse the master switch with. One copy, so the
+/// two channels cannot drift into saying different things about the same rule.
+fn master_switch_refusal(key: &str) -> String {
+    format!(
+        "'{key}' is the master privacy switch. It cannot be written or removed as an ordinary \
+         configuration value: change it in Settings > Privacy, which asks the user to type the \
+         confirmation phrase and explains what turning it off exposes."
+    )
 }
 
 #[utoipa::path(
@@ -198,11 +526,90 @@ pub async fn upsert_config(
     request_body = ConfigKeyQuery,
     responses(
         (status = 200, description = "Configuration value removed successfully", body = String),
+        (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
+                                      switch and may only be changed from Settings > Privacy, \
+                                      never removed — and (issue #56, DR-27) \
+                                      `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"),
         (status = 404, description = "Configuration key not found"),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
+                                      decides what privacy capability new chats start at, and a \
+                                      delete restores its default, so it requires proof the \
+                                      request came from the user"),
         (status = 500, description = "Internal server error")
     )
 )]
-pub async fn remove_config(Json(query): Json<ConfigKeyQuery>) -> Result<Json<String>, StatusCode> {
+pub async fn remove_config(
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
+    Json(query): Json<ConfigKeyQuery>,
+) -> Result<Json<String>, (StatusCode, String)> {
+    // Issue #56 Task 30, hardening measure (2) — the same predicate `upsert_config`
+    // applies, because "one predicate, both verbs" is the argument DR-16 already
+    // made for the capability keys and it holds here for the same reason.
+    //
+    // Refused OUTRIGHT rather than taking the confirmation phrase: a delete of
+    // this key removes it from disk, so the next start-up reads *absent* and
+    // resolves to ON while the running daemon keeps whatever its atomic held.
+    // Both halves of that divergence are in the safe direction, and there is no
+    // legitimate caller — Settings > Privacy writes 'on' or 'off' and never
+    // deletes — so the honest answer is "not through this verb", which leaves
+    // exactly one way for the value to change and one place to look for it.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
+    }
+    // Issue #56 Task 52, DR-27 — "one predicate, every verb", the argument
+    // `is_privacy_tiers_key` already makes. A rule that holds for `/config/upsert`
+    // and not for `/config/remove` is a door with one lock, and a delete of this
+    // key is not the absence of a write: it is a way to ask for the default back
+    // without proving a human or facing the direction guard. It is refused
+    // outright rather than gated, because there is no legitimate caller — the
+    // panel writes one of the three modes and never deletes.
+    if biorouter::privacy::mixing::is_mixing_policy_key(&query.key) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            format!(
+                "'{}' is the cross-institution mixing policy and cannot be removed as an \
+                 ordinary configuration value: set it to 'open', 'standard' or 'strict' from \
+                 Settings > Privacy, which is the one door that proves a human and asks the \
+                 operating system before it relaxes anything.",
+                query.key
+            ),
+        ));
+    }
+    // Issue #56 DR-16. The FIFTH channel to the capability keys, and the one the
+    // task's own four-channel enumeration missed.
+    //
+    // A delete is not the absence of a write, it is a write of the DEFAULT.
+    // `OLLAMA_HOST` falls back to `localhost` (`providers/ollama.rs`) and
+    // `self_hosted_tier` maps loopback to Private, so deleting it moves `ollama`
+    // from Public to Private by exactly the mechanism `upsert_config`'s guard
+    // exists to block. `LLAMACPP_EXTERNAL_HOST` is the same shape, and deleting
+    // `BIOROUTER_LEAD_MODEL` / `BIOROUTER_LEAD_PROVIDER` collapses the
+    // lead/worker pair whose tier is the `least()` of two halves — which can
+    // only move the result upward.
+    //
+    // Guarded with the SAME predicate as `upsert_config`, not with the subset
+    // that can demonstrably raise: the plan exempted this route on an argument
+    // about `BIOROUTER_PROVIDER` alone (delete it and
+    // `restore_provider_from_session` finds no provider at all, which is a
+    // failure rather than a raise), and an argument that holds for one key in
+    // five is not a rule. One predicate, both verbs.
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: an HTTP config write is not a tool call and has no
+    // admitted capability to inherit.
+    if biorouter::privacy::privacy_tiers_enabled()
+        && biorouter::privacy::is_capability_key(&query.key)
+        && !is_user_action(&headers)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: query.key.clone(),
+            }
+            .to_string(),
+        ));
+    }
+
     let config = Config::global();
 
     let result = if query.is_secret {
@@ -213,7 +620,10 @@ pub async fn remove_config(Json(query): Json<ConfigKeyQuery>) -> Result<Json<Str
 
     match result {
         Ok(_) => Ok(Json(format!("Removed key {}", query.key))),
-        Err(_) => Err(StatusCode::NOT_FOUND),
+        Err(_) => Err((
+            StatusCode::NOT_FOUND,
+            format!("Configuration key {} not found", query.key),
+        )),
     }
 }
 
@@ -250,6 +660,21 @@ pub async fn read_config(
         return Ok(Json(ConfigValueResponse::Value(
             serde_json::to_value(limits).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
         )));
+    }
+
+    // Issue #56 Task 42, DR-22.
+    if biorouter::privacy::is_privacy_tiers_key(&query.key) {
+        return Ok(Json(ConfigValueResponse::Value(privacy_tiers_wire_value())));
+    }
+
+    // Issue #56 Task 52, DR-27 — and this arm is not optional. The value is not
+    // in `config.yaml`, so without it `config.get` answers `NotFound` → `null`,
+    // and a panel that just wrote 'strict' would render "no mode set". Telling
+    // the user something false about the control they have just used is the
+    // failure `privacy_tiers_value_is_on`'s doc names, and it costs one branch to
+    // avoid.
+    if biorouter::privacy::mixing::is_mixing_policy_key(&query.key) {
+        return Ok(Json(ConfigValueResponse::Value(mixing_policy_wire_value())));
     }
 
     let config = Config::global();
@@ -345,11 +770,119 @@ pub async fn remove_extension(Path(name): Path<String>) -> Result<Json<String>, 
 pub async fn read_all_config() -> Result<Json<ConfigResponse>, StatusCode> {
     let config = Config::global();
 
-    let values = config
+    let mut values = config
         .all_values()
         .map_err(|_| StatusCode::UNPROCESSABLE_ENTITY)?;
 
+    // Issue #56 Task 42, DR-22.
+    values.insert(
+        biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY.to_string(),
+        privacy_tiers_wire_value(),
+    );
+    // Issue #56 Task 52, DR-27 — both read paths, for the reason the single-key
+    // one gives: the value is not in `config.yaml`, so a bulk read that skipped
+    // it would report the setting as absent on every machine.
+    values.insert(
+        biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY.to_string(),
+        mixing_policy_wire_value(),
+    );
+
     Ok(Json(ConfigResponse { config: values }))
+}
+
+/// The mixing policy as the two config READ paths report it (issue #56, DR-27).
+///
+/// ⚠ **The LIVE value, the same one every gate reads — never a second read of
+/// the record.** A panel showing the file while the daemon enforces its cached
+/// value is Task 30's hardening measure (3) seen from the reading end: the user
+/// is told what will apply after the next restart rather than what is applying
+/// now, and only one of those is the control they just used.
+///
+/// A string, because that is what the panel writes back and what
+/// [`biorouter::privacy::mixing::MixingPolicy::parse`] round-trips.
+fn mixing_policy_wire_value() -> Value {
+    Value::String(biorouter::privacy::mixing::policy().as_str().to_string())
+}
+
+/// The master switch as the two config READ paths report it (issue #56, DR-22).
+///
+/// ⚠ **Sourced from the live value, and it overrides whatever `config.yaml`
+/// holds.** DR-22 moved the switch's home out of that file; the key can still
+/// appear there — a hand edit, a restored backup, an install that predates the
+/// migration — and it means nothing. Passing such a value through to the
+/// renderer would paint Settings → Privacy and every badge in the app with a
+/// state the daemon is not in, which is precisely the failure
+/// `privacy_tiers_value_is_on`'s own doc-comment refuses: telling the user
+/// something false about the control they just used.
+///
+/// The live atomic rather than the record on disk, because the atomic is what
+/// every gate actually consults (Task 30's hardening measure (3)) — the panel
+/// must report what is enforcing, not what will enforce after the next restart.
+///
+/// A string rather than a bool because that is what the panel writes back and
+/// what both value parsers — Rust's and `privacyTiers.ts`'s — round-trip.
+fn privacy_tiers_wire_value() -> Value {
+    Value::String(
+        if biorouter::privacy::privacy_tiers_enabled() {
+            "on"
+        } else {
+            "off"
+        }
+        .to_string(),
+    )
+}
+
+/// How long one provider gets to construct itself before its affiliation is
+/// given up on.
+///
+/// Construction is supposed to be config reads, but it is not guaranteed to be:
+/// `bedrock.rs` runs the AWS default credential chain, which can reach for IMDS
+/// and sit on a connect timeout. A listing route may not inherit that. Giving up
+/// costs a badge (`None`, rendered as nothing) and never a claim.
+const AFFILIATION_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// DR-26's third axis for one provider, taken off a live instance (issue #56).
+///
+/// ⚠ **It builds the provider through `providers::create` — the same function
+/// `POST /agent/update_provider` calls before reading `new_provider.affiliation()`
+/// for the grant lookup.** That is the point: this route must answer with the
+/// affiliation of the instance that *would be bound*, not with a claim derived
+/// from the provider's name. A name-keyed table (`versa_* => ucsf`) would keep
+/// claiming the institution for a module repointed at another host, which
+/// `tier()` has already demoted to Public. `create` also applies the lead/worker
+/// interception, so with `BIOROUTER_LEAD_MODEL` set each row reports the
+/// **composite's** affiliation — the meet of the pair, which is what binding that
+/// row would actually give the chat.
+///
+/// ⚠ **`None` here means "nothing to show", and it is deliberately the answer to
+/// three different questions**: the provider is public (the honest answer — a
+/// public model has no third axis), its model config is unusable, or it could
+/// not be constructed. The renderer draws nothing for all three, which is the
+/// only safe collapse available: an unresolvable provider must not be *given* an
+/// affiliation, and the one state that would be lost by drawing nothing —
+/// `Unstated`, a private model that names no institution — is reachable only
+/// when construction SUCCEEDED, so it is never confused with a failure here.
+///
+/// ⚠ **Only for a configured provider.** An unconfigured one cannot be
+/// constructed (its keys are missing) and cannot be bound to a chat, so building
+/// it would buy nothing and would run every provider module's constructor —
+/// including the ones with process-global side effects — on a plain GET.
+async fn resolve_provider_affiliation(metadata: &ProviderMetadata) -> Option<ProviderAffiliation> {
+    let model = ModelConfig::new(&metadata.default_model).ok()?;
+    let created = tokio::time::timeout(
+        AFFILIATION_RESOLVE_TIMEOUT,
+        biorouter::providers::create(&metadata.name, model),
+    )
+    .await
+    .inspect_err(|_| {
+        tracing::warn!(
+            provider = %metadata.name,
+            "timed out resolving provider affiliation; the row will show none"
+        );
+    })
+    .ok()?
+    .ok()?;
+    ProviderAffiliation::of(created.as_ref())
 }
 
 #[utoipa::path(
@@ -361,19 +894,31 @@ pub async fn read_all_config() -> Result<Json<ConfigResponse>, StatusCode> {
 )]
 pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, StatusCode> {
     let providers = get_providers().await;
-    let providers_response: Vec<ProviderDetails> = providers
-        .into_iter()
-        .map(|(metadata, provider_type)| {
-            let is_configured = check_provider_configured(&metadata, provider_type);
+    // Concurrently, because each row may construct a provider and a serial pass
+    // would add every constructor's latency together on a route the settings
+    // grid blocks on.
+    let providers_response: Vec<ProviderDetails> =
+        futures::future::join_all(providers.into_iter().map(
+            |(metadata, provider_type)| async move {
+                let is_configured = check_provider_configured(&metadata, provider_type);
+                // Issue #56, DR-26. Resolved from the instance, never from the name
+                // — see `resolve_provider_affiliation`.
+                let affiliation = if is_configured {
+                    resolve_provider_affiliation(&metadata).await
+                } else {
+                    None
+                };
 
-            ProviderDetails {
-                name: metadata.name.clone(),
-                metadata,
-                is_configured,
-                provider_type,
-            }
-        })
-        .collect();
+                ProviderDetails {
+                    name: metadata.name.clone(),
+                    metadata,
+                    is_configured,
+                    provider_type,
+                    affiliation,
+                }
+            },
+        ))
+        .await;
 
     Ok(Json(providers_response))
 }
@@ -872,10 +1417,34 @@ pub async fn check_provider(
     post,
     path = "/config/set_provider",
     request_body = SetProviderRequest,
+    responses(
+        (status = 200, description = "Default provider and model set"),
+        (status = 400, description = "The provider could not be constructed"),
+        (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): this \
+                                      route writes BIOROUTER_PROVIDER, which decides what \
+                                      privacy capability new chats start at, so it requires \
+                                      proof the request came from the user"),
+    )
 )]
 pub async fn set_config_provider(
+    // Before `Json`, which consumes the body and must be last.
+    headers: http::HeaderMap,
     Json(SetProviderRequest { provider, model }): Json<SetProviderRequest>,
 ) -> Result<(), (StatusCode, String)> {
+    // Issue #56 DR-16. Unconditional on the KEY, unlike `upsert_config`'s
+    // key-scoped guard — this route writes BIOROUTER_PROVIDER by construction,
+    // so there is no tier-irrelevant call to exempt — but still subject to
+    // DR-15's master opt-out, read here inside the gate.
+    if biorouter::privacy::privacy_tiers_enabled() && !is_user_action(&headers) {
+        return Err((
+            StatusCode::CONFLICT,
+            PrivacyRefusal::CapabilityConfigNeedsUser {
+                key: "BIOROUTER_PROVIDER".to_string(),
+            }
+            .to_string(),
+        ));
+    }
+
     create_with_default_model(&provider)
         .await
         .and_then(|_| {
@@ -889,9 +1458,96 @@ pub async fn set_config_provider(
     Ok(())
 }
 
+/// What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).
+///
+/// ⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI
+/// dialog, the settings panel, the provider grid, the model chip, the CLI,
+/// `docs/` and the landing site; four hand-written copies drift within one
+/// release and the drifted one is always the one a user reads. One definition
+/// lives in `biorouter::privacy::disclosure` and the renderer renders what it is
+/// handed — a hardcoded English string in a component is the failure this shape
+/// exists to prevent, and it is invisible until the two disagree.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PrivacyDisclosureResponse {
+    /// The dialog heading, with `{provider}` still in it — the renderer
+    /// substitutes the display name of the provider it is warning about, and so
+    /// never has to know the English around it.
+    pub title_template: String,
+    /// The long form: the blocking dialog and the settings panel.
+    pub long: String,
+    /// The one-line form: the model chip's tooltip and the provider grid's
+    /// Commercial section.
+    pub short: String,
+    /// Has the user acknowledged on this install? Once per install, not once per
+    /// session — a dialog on every chat is a dialog nobody reads.
+    pub acknowledged: bool,
+}
+
+/// The disclosure copy, and whether it has been acknowledged.
+///
+/// ⚠ **Deliberately does NOT consult the master privacy switch.** DR-15 turns
+/// off gates, the ratchet and refusals; it does not turn off the truth, and with
+/// enforcement off the exposure is *larger*. Every other privacy route in this
+/// file reads the switch, which is exactly why wiring this one the same way is
+/// the plausible mistake.
+#[utoipa::path(
+    get,
+    path = "/privacy/disclosure",
+    responses(
+        (status = 200, description = "The one copy of the non-private-model disclosure, plus \
+                                      whether this install has acknowledged it",
+         body = PrivacyDisclosureResponse),
+    )
+)]
+pub async fn get_privacy_disclosure() -> Json<PrivacyDisclosureResponse> {
+    use biorouter::privacy::disclosure;
+    Json(PrivacyDisclosureResponse {
+        title_template: disclosure::COPY_TITLE_TEMPLATE.to_string(),
+        long: disclosure::COPY_LONG.to_string(),
+        short: disclosure::COPY_SHORT.to_string(),
+        acknowledged: disclosure::is_acknowledged(),
+    })
+}
+
+/// Record that the user has read the disclosure.
+///
+/// ⚠ **DR-16's proof-of-user, unconditionally.** This is the one thing making
+/// DR-17's accepted risks acceptable, so a caller holding nothing but the daemon
+/// secret — which AR-11 measured to be recoverable from inside the daemon, i.e.
+/// the model — must not be able to acknowledge on the user's behalf. Unlike
+/// `upsert_config`'s guard this is NOT additionally gated on the master privacy
+/// switch: turning enforcement off must not hand the model the dismiss button.
+#[utoipa::path(
+    post,
+    path = "/privacy/disclosure/ack",
+    responses(
+        (status = 200, description = "Acknowledged"),
+        (status = 403, description = "Refused: acknowledging the disclosure is a user act, and \
+                                      this request carried no proof it came from the user"),
+        (status = 500, description = "The acknowledgement could not be written"),
+    )
+)]
+pub async fn ack_privacy_disclosure(headers: http::HeaderMap) -> Result<(), (StatusCode, String)> {
+    if !is_user_action(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "Acknowledging the non-private-model disclosure is a user action. This request \
+             carried no proof that it came from the person at the keyboard."
+                .to_string(),
+        ));
+    }
+    biorouter::privacy::disclosure::record_acknowledgement()
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+}
+
 pub fn routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/config", get(read_all_config))
+        // Issue #56 DR-17 req. 3. Beside the master-switch routes because the
+        // panel that shows the switch also shows this, and NOT behind the switch
+        // for the reason each handler's doc comment gives.
+        .route("/privacy/disclosure", get(get_privacy_disclosure))
+        .route("/privacy/disclosure/ack", post(ack_privacy_disclosure))
         .route("/config/upsert", post(upsert_config))
         .route("/config/remove", post(remove_config))
         .route("/config/read", post(read_config))
@@ -994,5 +1650,167 @@ mod tests {
         assert_eq!(actual.output_token_cost, expected.output_token_cost);
         assert_eq!(actual.cache_read_cost, expected.cache_read_cost);
         assert_eq!(actual.cache_write_cost, expected.cache_write_cost);
+    }
+}
+
+/// Task 30A (issue #56, DR-17 requirement 3): `GET /privacy/disclosure` and
+/// `POST /privacy/disclosure/ack`.
+///
+/// ⚠ **Handlers, not `oneshot` over a `Router`.** These two routes take no
+/// `AppState`, and building one opens the developer's REAL session database
+/// (`routes::agent::working_dir_lock_tests`). Calling the handlers directly is
+/// how the rest of this file's tests reach `read_config` and
+/// `get_detectable_providers`, and it exercises the same guard the router would.
+#[cfg(test)]
+mod affiliation_wire_tests {
+    //! What `GET /config/providers` actually puts on the wire for DR-26's third
+    //! axis (issue #56).
+    //!
+    //! The mapping itself is pinned in `providers::base::affiliation_view_tests`,
+    //! where it lives. These assert the two things only this route can get
+    //! wrong: which key the field arrives under, and that "no affiliation" is a
+    //! rendered `null` rather than a silently missing key — the renderer's
+    //! `readProviderAffiliation` reads `row.affiliation`, and a key that moved
+    //! would make every badge disappear with nothing failing.
+
+    use super::*;
+    use biorouter::providers::base::{ProviderAffiliation, ProviderAffiliationKind};
+
+    fn row(affiliation: Option<ProviderAffiliation>) -> ProviderDetails {
+        ProviderDetails {
+            name: "versa_azure".to_string(),
+            metadata: ProviderMetadata::empty(),
+            is_configured: true,
+            provider_type: ProviderType::Builtin,
+            affiliation,
+        }
+    }
+
+    /// ⚠ **Beside the metadata, not inside it.** `ProviderMetadata` is the
+    /// type-level claim — its own `tier` field carries "do not hang a badge on
+    /// this field" — and this value is instance-resolved. A renderer that read
+    /// `row.metadata.affiliation` would find nothing, so the two must not be
+    /// allowed to swap silently.
+    #[test]
+    fn the_affiliation_travels_beside_the_metadata_not_inside_it() {
+        let json = serde_json::to_value(row(Some(ProviderAffiliation {
+            kind: ProviderAffiliationKind::Institutions,
+            institutions: vec![biorouter::providers::base::AffiliationInstitution {
+                id: "ucsf".to_string(),
+                display_name: Some("UCSF".to_string()),
+            }],
+        })))
+        .expect("a provider row serialises");
+
+        assert_eq!(json["affiliation"]["kind"], "institutions");
+        assert_eq!(json["affiliation"]["institutions"][0]["id"], "ucsf");
+        assert_eq!(
+            json["affiliation"]["institutions"][0]["display_name"],
+            "UCSF"
+        );
+        assert!(
+            json["metadata"].get("affiliation").is_none(),
+            "the type-level metadata must not carry an instance-resolved value"
+        );
+    }
+
+    /// A public provider has no affiliation at all, and the key is present and
+    /// `null` rather than absent — the renderer treats both the same, but an
+    /// absent key is indistinguishable from a daemon that predates the field,
+    /// and this route is the one that knows the difference.
+    #[test]
+    fn a_provider_with_no_affiliation_serialises_an_explicit_null() {
+        let json = serde_json::to_value(row(None)).expect("a provider row serialises");
+        assert!(json.as_object().unwrap().contains_key("affiliation"));
+        assert!(json["affiliation"].is_null());
+    }
+
+    /// A row from a daemon that predates the field still deserialises — the
+    /// `#[serde(default)]` that makes the addition non-breaking for any client
+    /// or test fixture round-tripping this type.
+    #[test]
+    fn a_row_without_the_field_still_reads() {
+        let parsed: ProviderDetails = serde_json::from_value(serde_json::json!({
+            "name": "openai",
+            "metadata": serde_json::to_value(ProviderMetadata::empty()).unwrap(),
+            "is_configured": false,
+            "provider_type": "Builtin",
+        }))
+        .expect("a row predating the field is still a row");
+        assert!(parsed.affiliation.is_none());
+    }
+}
+
+#[cfg(test)]
+mod privacy_disclosure_tests {
+    use super::*;
+    use crate::routes::session::diverge_tests::{
+        install_test_user_action_key, TEST_USER_ACTION_KEY,
+    };
+    use serial_test::serial;
+
+    /// A request holding the daemon secret and, optionally, DR-16's proof of
+    /// user. `None` is the caller AR-11/AR-15 establish is indistinguishable
+    /// from the model.
+    fn headers_with(user_action: Option<&str>) -> http::HeaderMap {
+        let mut headers = http::HeaderMap::new();
+        headers.insert("X-Secret-Key", "test".parse().unwrap());
+        if let Some(key) = user_action {
+            headers.insert("X-User-Action", key.parse().unwrap());
+        }
+        headers
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn the_acknowledgement_is_recorded_once_and_is_not_agent_writable() {
+        // Its own config root, or this test writes the acknowledgement into the
+        // developer's real `~/.config/biorouter` and every later run of it
+        // starts already-acknowledged.
+        let dir = tempfile::TempDir::new().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(dir.path().to_str().expect("utf-8 temp path")),
+        )]);
+        install_test_user_action_key();
+
+        // Once per install, not once per session: a dialog on every chat is
+        // clicked through, which is exactly the outcome this task exists to
+        // avoid.
+        assert!(!get_privacy_disclosure().await.0.acknowledged);
+
+        // And it is a USER act. A model that could acknowledge on the user's
+        // behalf would silently remove the only thing making DR-17's accepted
+        // risks acceptable.
+        let refused = ack_privacy_disclosure(headers_with(None))
+            .await
+            .expect_err("a caller holding only the daemon secret must be refused");
+        assert_eq!(refused.0, StatusCode::FORBIDDEN);
+        assert!(!get_privacy_disclosure().await.0.acknowledged);
+
+        ack_privacy_disclosure(headers_with(Some(TEST_USER_ACTION_KEY)))
+            .await
+            .expect("the user's own acknowledgement is recorded");
+        assert!(get_privacy_disclosure().await.0.acknowledged);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn the_route_serves_the_one_copy_rather_than_a_second_one() {
+        // The renderer holds no English of its own; this is the wire it gets it
+        // over. Compared against the constants themselves, so a second copy
+        // written into this handler fails here rather than in a screenshot.
+        let dir = tempfile::TempDir::new().unwrap();
+        let _env = env_lock::lock_env([(
+            "BIOROUTER_PATH_ROOT",
+            Some(dir.path().to_str().expect("utf-8 temp path")),
+        )]);
+        let served = get_privacy_disclosure().await.0;
+        assert_eq!(served.long, biorouter::privacy::disclosure::COPY_LONG);
+        assert_eq!(served.short, biorouter::privacy::disclosure::COPY_SHORT);
+        assert_eq!(
+            served.title_template,
+            biorouter::privacy::disclosure::COPY_TITLE_TEMPLATE
+        );
     }
 }

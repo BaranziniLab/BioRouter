@@ -171,6 +171,40 @@ fn truncate_block(s: &str, max: usize) -> String {
 /// the caller already controls.
 pub struct ConversationIngestArgs {
     pub kb_id: String,
+    /// The capability of whoever is asking (issue #56). Added by Task 10B
+    /// because `ingest_conversation` must have something to put in
+    /// `IngestArgs.caller_is_private`; **Task 11 adds the refusal that consumes
+    /// it**, and the two are deliberately separate — this task plumbs, Task 11
+    /// gates, exactly as 10B/10C split for the KB choke points.
+    ///
+    /// Required and non-`Option`, so all three production constructors (the
+    /// platform tool, `POST /ingest-conversation`, the CLI) are a compile error
+    /// rather than an omission. A hardcoded `false` here would reproduce
+    /// verbatim the failure this task exists to prevent: every file would
+    /// report a non-zero `caller_is_private` count while ratcheting nothing.
+    pub caller_capability: crate::privacy::ProviderTier,
+    /// Whose agreements cover that same provider — DR-26's third axis (issue
+    /// #56, Task 50 Step 3). Required and non-defaulted for the reason above:
+    /// a cross-session ingest carries one chat's content into a knowledge base,
+    /// so the digesting model's institution is what the base ends up owned by.
+    ///
+    /// `None` is a public model (for which affiliation never applies) or a
+    /// private one that states nothing; both read
+    /// `CallerAffiliation::Unstated` on the far side of the crate boundary,
+    /// which is the restrictive answer.
+    pub caller_affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+    /// The store the selected chats' **institutional** affiliations are read
+    /// from (issue #56, DR-26 / Task 50 Step 3).
+    ///
+    /// ⚠ **The manager rather than a caller-supplied map, deliberately.** A
+    /// `HashMap<session_id, institutions>` filled in by each of the three
+    /// production constructors is the enumeration trap this campaign has already
+    /// lost to three times: a caller that passes an empty map disables the gate
+    /// for its whole surface, silently and with the build green. `Session` does
+    /// not carry the column — it is a published OpenAPI type and widening it is
+    /// a wire change — so the guard does its own lookup instead, and there is
+    /// nothing for a caller to under-fill.
+    pub session_manager: std::sync::Arc<crate::session::SessionManager>,
     pub sessions: Vec<Session>,
     pub completer: Box<dyn Completer>,
     pub focus: Option<String>,
@@ -179,16 +213,141 @@ pub struct ConversationIngestArgs {
     pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
 }
 
+/// What an ingest of other sessions' conversations produced, plus how many were
+/// refused by Gate G.
+///
+/// ⚠ NOT a `refused` field on [`IngestResult`]. That type lives in
+/// `biorouter-mcp` (`knowledge/macros/ingest.rs`), derives
+/// `Serialize`/`Deserialize`, and is the payload of the SSE macro routes — a
+/// field there is a wire change to three routes that have nothing to do with
+/// Gate G, in a crate this change touches no file of. All three callers of
+/// [`ingest_conversation`] are already being edited here, so changing its
+/// RETURN type is the cheaper edit and the honest one.
+///
+/// `#[serde(flatten)]` keeps the `/knowledge/bases/{id}/ingest-conversation`
+/// SSE result payload byte-identical to what the GUI already parses, and simply
+/// adds `refused` beside it.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ConversationIngestResult {
+    #[serde(flatten)]
+    pub ingested: IngestResult,
+    /// How many of the requested sessions the barrier refused. A count and
+    /// nothing else — §11.4 classifies a session's id, title and working
+    /// directory as content, and this product's titles are LLM-generated from
+    /// the conversation itself.
+    #[serde(default)]
+    pub refused: usize,
+}
+
+/// Names no session, no title and no working directory — §11.4 classifies all
+/// three as content, and a session title in this product is LLM-generated from
+/// the conversation itself.
+pub const REFUSED_ALL_PRIVATE: &str = "\
+Those chats are private: they were created under a model hosted inside the institution, so only a \
+private model may read them. This session is running on a public model. Ask the user to switch this \
+chat to a private model and try again.";
+
+/// Issue #56 DR-26 / Task 50 Step 3. Every selected chat crossed an
+/// institutional boundary this model's agreements do not cover.
+///
+/// Names no session, no title and no working directory, for the reason
+/// [`REFUSED_ALL_PRIVATE`] does not. It names no institution either — unlike the
+/// chat-recall refusal, this one covers a *set* of chats that may have touched
+/// several, and DR-26's "specific enough to act on" is met by the action it
+/// states rather than by an enumeration the model cannot map back to a chat.
+pub const REFUSED_ALL_CROSS_INSTITUTIONAL: &str = "Those chats reached extensions belonging to an institution whose agreements do not cover the model this ingest would run on. Compliance does not transfer between institutions: a model approved at one has no permission over another's data unless a BAA, DUA or IRB approval covers this specific flow. Ask the user to run this ingest on a model covered by that institution's agreements, or to select different chats.";
+
+/// Gate G's predicate, and the **one** place `visible_to` is consulted for a
+/// conversation ingest (issue #56).
+fn readable(caller: crate::privacy::ProviderTier, session: &Session) -> bool {
+    // DR-15's master opt-out, read INSIDE the gate. A direct read, not a
+    // `CallCapability`: an ingest is not a tool dispatch and has no admitted
+    // capability to inherit — the CLI and the HTTP route both arrive here with
+    // nothing but a tier.
+    //
+    // It is folded in HERE rather than at each of the two callers so both
+    // `ingest_conversation` (the barrier a `grep` counts) and
+    // `refuses_every_session` (the same question one layer up, for the route's
+    // status code) answer identically. `visible_to` itself stays PURE — a
+    // toggle read there would be a second read on `chatrecall`'s tool-call path.
+    !crate::privacy::privacy_tiers_enabled()
+        || crate::privacy::visible_to(caller, session.privacy_tier)
+}
+
+/// Would Gate G refuse **every** one of these sessions?
+///
+/// The barrier itself is inside [`ingest_conversation`] — that is what covers
+/// the CLI and every non-HTTP caller, and it is the check a `grep` counts. This
+/// is the same question asked one layer up so the HTTP route can answer with a
+/// real status code instead of an SSE stream that opens and immediately dies;
+/// exactly the role `assert_macro_target_reachable` plays for Task 10C's
+/// barrier. It re-uses [`readable`], so there is no second spelling of the rule.
+pub fn refuses_every_session(caller: crate::privacy::ProviderTier, sessions: &[Session]) -> bool {
+    !sessions.is_empty() && !sessions.iter().any(|s| readable(caller, s))
+}
+
 /// Render the selected session(s) and ingest them into `kb_id` as one source,
 /// reusing the standard knowledge ingest macro.
 pub async fn ingest_conversation(
     svc: &KnowledgeService,
     args: ConversationIngestArgs,
-) -> anyhow::Result<IngestResult> {
+) -> anyhow::Result<ConversationIngestResult> {
     if args.sessions.is_empty() {
         anyhow::bail!("no conversations selected for ingestion");
     }
-    let rendered = render_conversations(&args.sessions);
+
+    // Issue #56 Gate G. Per session, not once: `sessions` is a caller-supplied
+    // LIST, and a single up-front check on the first element admits the rest.
+    // Placed before `render_conversations` so no refused transcript is ever
+    // rendered into a buffer, even one that is then dropped.
+    let caller = args.caller_capability;
+    let (allowed, refused): (Vec<Session>, Vec<Session>) =
+        args.sessions.into_iter().partition(|s| readable(caller, s));
+    if allowed.is_empty() && !refused.is_empty() {
+        anyhow::bail!("{}", REFUSED_ALL_PRIVATE);
+    }
+    let mut refused = refused.len();
+
+    // Issue #56 DR-26 / Task 50 Step 3, on the line below Gate G and inside the
+    // same guard. Per session, for the reason Gate G is per session: `sessions`
+    // is a caller-supplied LIST, and one up-front check admits the rest.
+    //
+    // ⚠ **Both endpoints are private here.** A chat that queried the UCSF OMOP
+    // connector holds UCSF's data in its transcript, and digesting it writes
+    // that transcript into a knowledge base through whatever model this ingest
+    // runs on. Every tier gate says yes; only the third axis refuses.
+    //
+    // ⚠ **An unreadable answer refuses that chat rather than admitting it.**
+    // DR-26's discipline for unknown is restrictive — the same direction
+    // `KbAffiliation::Unknown` takes — and this is the arm a `.unwrap_or_default()`
+    // would quietly invert.
+    let mut compatible = Vec::with_capacity(allowed.len());
+    for session in allowed {
+        let owners = args.session_manager.session_affiliations(&session.id).await;
+        let refuse = match owners {
+            Ok(owners) => {
+                !crate::privacy::affiliation::owners_compatible(args.caller_affiliation, &owners)
+            }
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "could not read a chat's institutional affiliations; refusing to digest it"
+                );
+                true
+            }
+        };
+        if refuse && crate::privacy::privacy_tiers_enabled() {
+            refused += 1;
+        } else {
+            compatible.push(session);
+        }
+    }
+    if compatible.is_empty() && refused > 0 {
+        anyhow::bail!("{}", REFUSED_ALL_CROSS_INSTITUTIONAL);
+    }
+    let allowed = compatible;
+
+    let rendered = render_conversations(&allowed);
     if rendered.rendered_messages == 0 {
         anyhow::bail!("selected conversation(s) contain no digestible content");
     }
@@ -200,10 +359,19 @@ pub async fn ingest_conversation(
                 .to_string(),
         )
     });
-    ingest(
+    let ingested = ingest(
         svc,
         IngestArgs {
             kb_id: args.kb_id,
+            // Issue #56. The ProviderTier -> bool crossing, and the only one:
+            // `IngestArgs` lives in biorouter-mcp, which cannot name
+            // ProviderTier. This same value drove the refusal above.
+            caller_is_private: caller.is_private(),
+            // Issue #56 DR-26 / Task 50: the third axis makes the same
+            // crossing, through the one translation that owns the vocabulary.
+            caller_affiliation: crate::privacy::affiliation::caller_affiliation(
+                args.caller_affiliation,
+            ),
             source: SourceInput::Text {
                 text: rendered.markdown,
                 title: Some(format!("Conversation — {}", rendered.title)),
@@ -215,7 +383,8 @@ pub async fn ingest_conversation(
             cancel: args.cancel,
         },
     )
-    .await
+    .await?;
+    Ok(ConversationIngestResult { ingested, refused })
 }
 
 #[cfg(test)]
@@ -226,6 +395,27 @@ mod tests {
     use crate::session::session_manager::{Session, SessionType};
     use rmcp::model::{CallToolRequestParams, CallToolResult, Content};
     use std::path::PathBuf;
+
+    /// A session manager over a throwaway store, for the affiliation lookup the
+    /// guard performs. These fixtures' sessions have no row in it, which reads
+    /// as "no institution touched" — the Missing direction, and what every
+    /// assertion here is about the TIER axis needs.
+    ///
+    /// Returns the `TempDir` alongside the manager, which holds a pool over a
+    /// file inside it: bind BOTH (`let (_dir, sm) = …`) or the store is unlinked
+    /// while the pool is open. It was `std::mem::forget(dir)` — correct in that
+    /// the directory outlived the manager, but it outlived the whole test binary
+    /// too, leaving one temp tree on disk per call.
+    fn empty_session_manager() -> (
+        tempfile::TempDir,
+        std::sync::Arc<crate::session::SessionManager>,
+    ) {
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        (dir, sm)
+    }
 
     fn base_session() -> Session {
         Session {
@@ -253,6 +443,8 @@ mod tests {
             diverged_from: None,
             branch_point_msg_uid: None,
             parent_session_id: None,
+            privacy_tier: crate::privacy::SessionClassification::Public,
+            privacy_reason: None,
         }
     }
 
@@ -353,10 +545,14 @@ mod tests {
             Message::assistant().with_text("Noted."),
         ]));
 
+        let (_sm_dir, sm) = empty_session_manager();
         let err = ingest_conversation(
             &svc,
             ConversationIngestArgs {
                 kb_id: "soul".into(),
+                caller_capability: crate::privacy::ProviderTier::Public,
+                caller_affiliation: None,
+                session_manager: sm,
                 sessions: vec![session],
                 completer: Box::new(SilentCompleter),
                 focus: None,
@@ -382,5 +578,377 @@ mod tests {
                 .unwrap_or(true),
             "no Soul page may exist after a failed Meditation"
         );
+    }
+
+    // ── Issue #56, Gate G: cross-session conversation ingest ────────────────
+    //
+    // `platform__ingest_conversation` is dispatched inside `agent.rs` BEFORE the
+    // extension-manager fall-through, so it is not an MCP tool and `filter_tools`
+    // cannot hide it; it never touches `chat_history_search.rs` either. Gates C,
+    // D and E all miss it by construction. Its sink is worse than its source: a
+    // knowledge base is a machine-wide tree any session may name.
+
+    use crate::privacy::{ProviderTier, SessionClassification};
+
+    fn session_with(
+        id: &str,
+        tier: SessionClassification,
+        text: &str,
+    ) -> crate::session::session_manager::Session {
+        let mut s = base_session();
+        s.id = id.to_string();
+        s.name = format!("chat {id}");
+        s.privacy_tier = tier;
+        s.conversation = Some(Conversation::new_unvalidated(vec![
+            Message::user().with_text(text),
+            Message::assistant().with_text("Noted."),
+        ]));
+        s
+    }
+
+    /// A completer that writes one knowledge page and then stops — enough for
+    /// the ingest macro to commit, so the ALLOWED direction of every row below
+    /// is a real success and not merely "a different error".
+    struct WritingCompleter {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl WritingCompleter {
+        fn new() -> Self {
+            Self {
+                calls: std::sync::atomic::AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Completer for WritingCompleter {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[biorouter_mcp::knowledge::subagent::loop_::LlmMessage],
+            _tools: &[rmcp::model::Tool],
+        ) -> anyhow::Result<biorouter_mcp::knowledge::subagent::loop_::LlmReply> {
+            use biorouter_mcp::knowledge::subagent::loop_::{LlmReply, LlmToolCall};
+            let n = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if n == 0 {
+                return Ok(LlmReply {
+                    text: String::new(),
+                    tool_calls: vec![LlmToolCall {
+                        id: "req-1".into(),
+                        name: "kb_write_page".into(),
+                        args: serde_json::json!({
+                            "path": "knowledge/sources/chat.md",
+                            "content": "---\ntitle: Chat\nkind: source\n---\n\nA digest.",
+                            "commit_message": "add chat digest"
+                        }),
+                    }],
+                });
+            }
+            Ok(LlmReply {
+                text: "Done.".into(),
+                tool_calls: Vec::new(),
+            })
+        }
+    }
+
+    /// Every byte under a knowledge root, so "the barrier wrote nothing" is an
+    /// assertion about the tree and not about a return value. The sink is a
+    /// machine-wide directory every other session can read, so a refusal that
+    /// still wrote is not a refusal.
+    fn tree_snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+        fn walk(dir: &std::path::Path, base: &std::path::Path, out: &mut Vec<(String, Vec<u8>)>) {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                return;
+            };
+            for e in entries.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    walk(&p, base, out);
+                } else if let Ok(bytes) = std::fs::read(&p) {
+                    let rel = p
+                        .strip_prefix(base)
+                        .unwrap_or(&p)
+                        .to_string_lossy()
+                        .into_owned();
+                    out.push((rel, bytes));
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(root, root, &mut out);
+        out.sort();
+        out
+    }
+
+    fn kb_service() -> (tempfile::TempDir, KnowledgeService) {
+        let tmp = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("default", "Default", None).unwrap();
+        (tmp, svc)
+    }
+
+    #[tokio::test]
+    async fn ingesting_another_sessions_conversation_obeys_the_barrier() {
+        let (tmp, svc) = kb_service();
+        let private = session_with("other", SessionClassification::Private, "PHI cohort notes");
+
+        let before = tree_snapshot(tmp.path());
+        let (_sm_dir, sm) = empty_session_manager();
+        let err = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
+                session_manager: sm,
+                sessions: vec![private],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a public model read another session's private transcript")
+        .to_string();
+
+        assert!(err.contains("private"), "must explain: {err}");
+        assert!(
+            !err.contains("PHI cohort notes"),
+            "leaked content into the result: {err}"
+        );
+        assert!(
+            !err.contains("other") && !err.contains("chat other"),
+            "the refusal named the session (§11.4 classifies id/title as content): {err}"
+        );
+        // The strong half: a refusal that still wrote is not a refusal.
+        assert_eq!(
+            tree_snapshot(tmp.path()),
+            before,
+            "knowledge base was modified"
+        );
+    }
+
+    #[tokio::test]
+    async fn ingesting_your_own_private_conversation_ratchets_the_knowledge_base() {
+        // ⚠ The default (no `session_ids`) is the current session, and that call
+        // is the overwhelmingly common one — it must keep working. What it must
+        // NOT do is leave a private transcript in a base that stays public.
+        let (tmp, svc) = kb_service();
+        assert!(
+            !crate::knowledge::tier::is_private(tmp.path(), "default"),
+            "fixture precondition"
+        );
+
+        let (_sm_dir, sm) = empty_session_manager();
+        let out = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Private,
+                caller_affiliation: None,
+                session_manager: sm,
+                sessions: vec![session_with(
+                    "mine",
+                    SessionClassification::Private,
+                    "my own notes",
+                )],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect("a private model was refused its own private chat");
+
+        assert_eq!(out.refused, 0);
+        assert!(!out.ingested.commit_sha.is_empty());
+        // The base now carries the tier of the sessions that fed it, so a public
+        // model can no longer read it back — the laundering path is closed.
+        assert!(
+            crate::knowledge::tier::is_private(tmp.path(), "default"),
+            "a private transcript landed in a base that stayed public"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_public_session_may_still_ingest_its_own_conversation() {
+        // The other half of "must not regress": the ratchet is `max`, not `set`,
+        // so a public chat ingesting itself leaves a public base public.
+        let (tmp, svc) = kb_service();
+        let (_sm_dir, sm) = empty_session_manager();
+        let out = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
+                session_manager: sm,
+                sessions: vec![session_with(
+                    "mine",
+                    SessionClassification::Public,
+                    "weekly notes",
+                )],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect("a public chat may always ingest itself");
+
+        assert_eq!(out.refused, 0);
+        assert!(!crate::knowledge::tier::is_private(tmp.path(), "default"));
+    }
+
+    #[tokio::test]
+    async fn a_mixed_request_drops_the_private_chats_and_keeps_the_rest() {
+        // Per session, not once: `sessions` is a caller-supplied LIST, and a
+        // single up-front check on the first element admits the rest.
+        let (tmp, svc) = kb_service();
+        let (_sm_dir, sm) = empty_session_manager();
+        let out = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Public,
+                caller_affiliation: None,
+                session_manager: sm,
+                sessions: vec![
+                    session_with("pub", SessionClassification::Public, "PUBLIC-SENTINEL"),
+                    session_with("priv", SessionClassification::Private, "PHI cohort notes"),
+                ],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect("the public chat in the list is still ingestible");
+
+        assert_eq!(out.refused, 1, "the private chat must be refused");
+        // And the refused transcript reached no byte of the tree — `raw/` holds
+        // the rendered markdown verbatim, so this is the honest place to look.
+        let written = tree_snapshot(tmp.path())
+            .into_iter()
+            .map(|(_, b)| String::from_utf8_lossy(&b).into_owned())
+            .collect::<String>();
+        assert!(
+            written.contains("PUBLIC-SENTINEL"),
+            "the allowed transcript was dropped too"
+        );
+        assert!(
+            !written.contains("PHI cohort notes"),
+            "the refused transcript was rendered into the knowledge base"
+        );
+    }
+
+    /// Issue #56 DR-26 / Task 50 Step 3, at the cross-session ingest surface.
+    ///
+    /// ⚠ **Both endpoints are private**, so Gate G's tier check permits and only
+    /// the third axis refuses. A chat that queried the UCSF OMOP connector holds
+    /// UCSF's data in its transcript, and digesting it writes that transcript
+    /// into a knowledge base through whatever model this ingest runs on.
+    ///
+    /// The affiliations are read from a REAL session manager, through the same
+    /// lookup production uses, because the whole point of putting the manager on
+    /// the args is that no caller can under-fill it.
+    #[tokio::test]
+    async fn a_foreign_institutions_model_may_not_digest_a_chat_that_reached_it() {
+        let (tmp, svc) = kb_service();
+        let before = tree_snapshot(tmp.path());
+
+        let dir = tempfile::tempdir().unwrap();
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(
+            dir.path().to_path_buf(),
+        ));
+        let row = sm
+            .create_session(
+                std::path::PathBuf::from("/data/phi"),
+                "ucsf work".into(),
+                crate::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.record_session_affiliation(
+            &row.id,
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        )
+        .await
+        .unwrap();
+
+        let ucsf_chat = || {
+            let mut s = session_with("x", SessionClassification::Private, "PHI cohort notes");
+            s.id = row.id.clone();
+            s
+        };
+        let stanford = Some(crate::privacy::affiliation::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("stanford"),
+        ));
+
+        let err = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Private,
+                caller_affiliation: stanford,
+                // ⚠ The REAL manager built above, the one holding `ucsf` for
+                // this chat. An `empty_session_manager()` here reads "no
+                // institution touched" and the refusal below never fires.
+                session_manager: sm.clone(),
+                sessions: vec![ucsf_chat()],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect_err("a Stanford-covered model digested a chat that reached UCSF")
+        .to_string();
+        assert!(err.contains("Compliance does not transfer"), "{err}");
+        assert!(
+            !err.contains("PHI cohort notes") && !err.contains("ucsf work"),
+            "the refusal carried content: {err}"
+        );
+        assert_eq!(
+            tree_snapshot(tmp.path()),
+            before,
+            "a refused ingest still wrote into the knowledge base"
+        );
+
+        // UCSF's own model digests it — or the gate is just "refuse everyone".
+        let ucsf = Some(crate::privacy::affiliation::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        ));
+        let out = ingest_conversation(
+            &svc,
+            ConversationIngestArgs {
+                kb_id: "default".into(),
+                caller_capability: ProviderTier::Private,
+                caller_affiliation: ucsf,
+                // The same real manager: the positive control is only a control
+                // if it is answered from the same store the refusal was.
+                session_manager: sm,
+                sessions: vec![ucsf_chat()],
+                completer: Box::new(WritingCompleter::new()),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .expect("the institution's own model may digest its own chat");
+        assert_eq!(out.refused, 0);
     }
 }

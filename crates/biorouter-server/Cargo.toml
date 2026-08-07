@@ -42,6 +42,9 @@ tokio-tungstenite = { version = "0.28.0", features = ["rustls-tls-native-roots"]
 url = "2.5.7"
 rand = "0.9.2"
 hex = "0.4.3"
+# Issue #56 DR-16: the daemon holds the SHA-256 DIGEST of the user-action key,
+# never the key. Same 0.10 line the other two crates already pin.
+sha2 = "0.10"
 socket2 = "0.6.1"
 fs2 = "0.4.3"
 rustls = { version = "0.23", features = ["ring"] }
@@ -76,3 +79,14 @@ env-lock = { workspace = true }
 wiremock = { workspace = true }
 zip = "8.6.0"
 serial_test = { workspace = true }
+# Issue #56 DR-20 / Task 55. This crate's routes raise the OS authentication
+# prompt — `POST /sessions/{id}/declassify` and `/config/upsert`'s master-switch
+# arm — so its TESTS would type a real password on every run without a stand-in.
+#
+# ⚠ `[dev-dependencies]` and nowhere else. Under `resolver = "2"` that unifies
+# the feature into a test build and NOT into `cargo build`, which is the whole
+# reason the seam is reachable here and absent from the shipped daemon. Moving
+# this line into `[dependencies]` ships the bypass, and
+# `privacy::system_auth::tests::the_test_seam_cannot_be_compiled_into_a_shipped_profile`
+# is what turns that into a red build rather than a silent one.
+biorouter = { path = "../biorouter", features = ["privacy-test-auth"] }

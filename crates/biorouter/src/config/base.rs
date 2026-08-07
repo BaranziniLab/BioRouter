@@ -752,6 +752,22 @@ impl Config {
     /// - The key doesn't exist in either environment or config file
     /// - The value cannot be deserialized into the requested type
     /// - There is an error reading the config file
+    ///
+    /// ⚠ **Issue #56: `BIOROUTER_PRIVACY_TIERS` must never be read through this
+    /// function**, and there is no exception list here because the rule is
+    /// enforced from the other end — [`crate::privacy::load_privacy_tiers_from_config`]
+    /// reads [`crate::privacy::master_switch`]'s own record instead, and a Task
+    /// 30 gate greps this function's name out of it. The middle branch below
+    /// resolves an environment variable, and the agent holds `developer__shell`:
+    /// if the master privacy switch were env-readable then
+    /// `BIOROUTER_PRIVACY_TIERS=off biorouterd`, or one line in the user's shell
+    /// profile, would be a one-token disable of the control the agent is subject
+    /// to.
+    ///
+    /// The single surviving read of that key out of `config.yaml` — Task 42's
+    /// one-time migration — reads [`Self::all_values`] for the same reason, so
+    /// the environment cannot reach it on the one start-up where it still
+    /// matters.
     pub fn get_param<T: for<'de> Deserialize<'de>>(&self, key: &str) -> Result<T, ConfigError> {
         let env_key = key.to_uppercase();
         // A task-local override (set during provider auto-detection) wins over

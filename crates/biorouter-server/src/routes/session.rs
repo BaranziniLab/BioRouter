@@ -14,12 +14,17 @@ use axum::{
 };
 use biorouter::agents::ExtensionConfig;
 use biorouter::conversation::message::Message;
+use biorouter::privacy::declassify::{
+    authenticate_declassification, declassify, DeclassifyOutcome, UserConfirmation,
+};
+use biorouter::privacy::SessionClassification;
 use biorouter::session::extension_data::ExtensionState;
 use biorouter::session::session_manager::{
     ActivityWindow, ModelUsageRow, SessionInsights, TruncateOutcome,
 };
 use biorouter::session::{EnabledExtensionsState, Session, SessionSummary, SessionType};
 use biorouter::workflow::Workflow;
+use biorouter_server::auth::is_user_action;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -35,6 +40,81 @@ pub struct SessionListResponse {
 
 const DEFAULT_SIDEBAR_SESSION_LIMIT: u32 = 10;
 const MAX_SIDEBAR_SESSION_LIMIT: u32 = 50;
+
+/// Issue #56 DR-19. What both copy handlers say when the SOURCE chat is private
+/// and the request carried no proof it came from the person at the keyboard.
+///
+/// Deliberately **not** a [`biorouter::privacy::PrivacyRefusal`] variant: every
+/// one of those ends on `ASK_THE_USER_TO_SWITCH` ("ask the user to switch this
+/// chat to a private model first"), and that is the wrong way out of this one —
+/// the chat is already private, and the refused act is a copy rather than a
+/// model bind. §14.4's content rule still holds: it names the boundary and
+/// nothing about the chat, no id, no title, no working directory.
+///
+/// It ends by foreclosing the retry for the same reason every refusal in this
+/// feature does — a model that reads a refusal as transient loops on it.
+const COPY_OF_PRIVATE_NEEDS_USER: &str =
+    "This chat is private, and branching it creates a new chat that inherits its private model — \
+     so only the person at the keyboard may do it, and this request carried no proof it came \
+     from them. Nothing was branched and this chat is unchanged. Do not retry; the same call \
+     will be refused again. If this task genuinely needs the branch, stop and ask the user to \
+     branch the chat from the chat window.";
+
+/// The substring the RENDERER keys on to tell [`COPY_OF_PRIVATE_NEEDS_USER`]
+/// from any other plain-text failure of the same route.
+///
+/// A substring is all it has: under `throwOnError` the generated client throws
+/// the parsed BODY rather than the response, so the 403 never reaches the catch
+/// arm, and a 500 from this route carries plain text too. Without the match the
+/// hook falls to `err instanceof Error ? err.message : …` — and a thrown string
+/// is not an `Error`, so the whole refusal was replaced by "Could not branch
+/// this conversation", which names neither the cause nor the way out.
+///
+/// Deliberately NOT `USER_ACTION_REFUSAL_MARKER`. That one marks the model
+/// picker's refusal, whose remedy is "switch this chat's model"; this one's is
+/// "branch it from the chat window". One toast answering for both would send the
+/// user somewhere that cannot help.
+///
+/// ⚠ Mirrored verbatim in `ui/desktop/src/utils/userAction.ts`, and pinned by
+/// `the_copy_refusal_carries_the_marker_the_renderer_keys_on`. The message above
+/// is model-facing prose and gets reworded; the marker is the contract.
+///
+/// `#[cfg(test)]` because the only Rust readers are tests: production emits the
+/// whole message and the substring match happens in the renderer. The contract is
+/// no weaker for it — the test is what fails if a reword drops the marker, and it
+/// is the reword this guards against, not the const.
+///
+/// `pub(super)` so a refusal in a SIBLING route can assert it does not carry this
+/// marker (issue #56 Task 49's grant route does). A second copy of the string for
+/// that purpose would be a second marker in every practical sense: the one that
+/// gets reworded and the one that does not.
+#[cfg(test)]
+pub(super) const COPY_OF_PRIVATE_REFUSAL_MARKER: &str = "only the person at the keyboard may do it";
+
+/// Issue #56 DR-19's **second** read: did the copy that just ran mint a
+/// private-capability session for a request that proved no human?
+///
+/// Both copy handlers gate on the SOURCE's tier before calling into
+/// `SessionManager`, which then reads the source again inside the copy. Gate
+/// B's turn ratchet can raise the source between those two reads, so a
+/// header-less request that passed the gate on a public row can copy a
+/// now-private one — and `create_derived_session` carries `provider_name` and
+/// `model_config`, so the child is not labelled private, it is *bound* to a
+/// private provider with nothing downstream ever seeing a raise. That is
+/// exactly the mint DR-19 blocks, arrived at through the back of the gate.
+///
+/// The window is two database reads wide and takes racing a turn in the source
+/// chat, so it is not the likely path. It is closed anyway because the answer
+/// costs nothing: the tier the child was born with is already in hand, so the
+/// gate can be applied to the thing it is actually about (the capability that
+/// now exists) rather than only to the evidence that predicted it.
+///
+/// The pre-check stays in front of the copy — it is what keeps the ordinary
+/// refusal from doing the work of a full conversation copy first — and this is
+/// the one that decides.
+fn minted_capability_without_proof(child: SessionClassification, had_user_action: bool) -> bool {
+    child == SessionClassification::Private && !had_user_action
+}
 
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct SidebarSessionsQuery {
@@ -333,6 +413,10 @@ async fn list_sidebar_sessions(
     responses(
         (status = 200, description = "Session history retrieved successfully", body = Session),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      the named chat is private (or absent — an unproven caller \
+                                      is told the same thing for both) and the request carried no \
+                                      proof it came from the user (body = plain text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -344,17 +428,29 @@ async fn list_sidebar_sessions(
 async fn get_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<Json<Session>, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Syntax only, and deliberately ahead of the gate: an id this rejects cannot
+    // name a session on any machine, so answering it discloses nothing about
+    // THIS one. Everything below here is about the store.
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
-    let session = state
-        .session_manager()
-        .get_session(&session_id, true)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    // Issue #56 Task 58 / #47. Before the transcript read — this route's whole
+    // output is the conversation, so a gate placed after it would have already
+    // loaded what it is refusing. `session_id` is a request parameter, not a
+    // credential; see `routes::session_reach`.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    let Ok(session) = state.session_manager().get_session(&session_id, true).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
 
-    Ok(Json(session))
+    Json(session).into_response()
 }
 #[utoipa::path(
     get,
@@ -661,6 +757,7 @@ async fn delete_session(
     responses(
         (status = 200, description = "Session exported successfully", body = String),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Out of reach - a private or unreadable session named without the user-action proof"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -672,17 +769,28 @@ async fn delete_session(
 async fn export_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
-) -> Result<Json<String>, StatusCode> {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    // Syntax only, and deliberately ahead of the gate — see `get_session`.
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return StatusCode::BAD_REQUEST.into_response();
     }
-    let exported = state
-        .session_manager()
-        .export_session(&session_id)
-        .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+    // `SessionManager::export_session` is `get_session(id, true)` followed by
+    // `to_string_pretty`: byte for byte the payload `GET /sessions/{id}` returns,
+    // and that route has been gated since Task 58. An unguarded sibling of a
+    // guarded read is the defect this campaign keeps shipping, so the gate goes
+    // here too, before the transcript is loaded.
+    if let Err(refusal) =
+        crate::routes::session_reach::session_reach(state.session_manager(), &session_id, &headers)
+            .await
+    {
+        return refusal.into_response();
+    }
+    let Ok(exported) = state.session_manager().export_session(&session_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
 
-    Ok(Json(exported))
+    Json(exported).into_response()
 }
 
 #[utoipa::path(
@@ -737,6 +845,10 @@ async fn import_session(
         (status = 200, description = "Session prepared for editing - frontend should submit the edited message", body = EditMessageResponse),
         (status = 400, description = "Bad request - invalid session id"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 DR-19): \
+                                      `editType: diverge` on a private chat branches it into a \
+                                      new chat that inherits its private model, and the request \
+                                      carried no proof it came from the user (body = plain text)"),
         (status = 404, description = "Session or message not found"),
         (status = 409, description = "A turn is in flight for this session, or a supplied \
                                       `expectedMessageIds` is missing messages the server holds \
@@ -751,6 +863,8 @@ async fn import_session(
 async fn edit_message(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<EditMessageRequest>,
 ) -> Response {
     if !is_valid_session_id(&session_id) {
@@ -759,14 +873,53 @@ async fn edit_message(
     let manager = state.session_manager();
     match request.edit_type {
         EditType::Diverge => {
+            // Issue #56 DR-19. The second of the two HTTP copy handlers, and the
+            // one a gate written against `/diverge` alone would miss.
+            // `diverge_session_for_edit` performs the same carry-over, so it
+            // mints a session already bound to the source's private provider —
+            // see `diverge_session` below for why nothing downstream ever sees
+            // that as a raise.
+            //
+            // A CONDITION on the SOURCE's tier, not an unconditional refusal.
+            // Fails closed on a source that cannot be read: a session we cannot
+            // classify is not one we can prove is public, and the copy below
+            // would fail on the same read anyway.
+            let source_is_private = manager
+                .get_session(&session_id, false)
+                .await
+                .map(|session| session.privacy_tier == SessionClassification::Private)
+                .unwrap_or(true);
+            let had_user_action = is_user_action(&headers);
+            if source_is_private && !had_user_action {
+                return (StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response();
+            }
             match manager
                 .diverge_session_for_edit(&session_id, request.timestamp)
                 .await
             {
-                Ok(new_session) => Json(EditMessageResponse {
-                    session_id: new_session.id,
-                })
-                .into_response(),
+                Ok(new_session) => {
+                    // The gate again, on the capability that now exists rather
+                    // than on the read that predicted it — see
+                    // `minted_capability_without_proof`. This arm is the second
+                    // copy handler, so it takes the second read as well; a fix
+                    // applied to `/diverge` alone would leave the same window
+                    // open here, which is the omission shape that shipped last
+                    // time.
+                    if minted_capability_without_proof(new_session.privacy_tier, had_user_action) {
+                        if let Err(e) = manager.delete_session(&new_session.id).await {
+                            tracing::error!(
+                                session_id = %new_session.id,
+                                error = %e,
+                                "dr19_unproven_branch_not_removed",
+                            );
+                        }
+                        return (StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response();
+                    }
+                    Json(EditMessageResponse {
+                        session_id: new_session.id,
+                    })
+                    .into_response()
+                }
                 Err(e) => {
                     tracing::error!("Failed to diverge session for message edit: {}", e);
                     StatusCode::INTERNAL_SERVER_ERROR.into_response()
@@ -958,6 +1111,10 @@ async fn edit_in_place(
         (status = 200, description = "Session diverged successfully", body = DivergeSessionResponse),
         (status = 400, description = "Bad request - Invalid session id or name too long"),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 DR-19): the \
+                                      source chat is private, so the branch would inherit its \
+                                      private model, and the request carried no proof it came \
+                                      from the user (body = plain text)"),
         (status = 404, description = "Session not found"),
         (status = 500, description = "Internal server error")
     ),
@@ -969,10 +1126,12 @@ async fn edit_in_place(
 async fn diverge_session(
     State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
     Json(request): Json<DivergeSessionRequest>,
-) -> Result<Json<DivergeSessionResponse>, StatusCode> {
+) -> Result<Json<DivergeSessionResponse>, Response> {
     if !is_valid_session_id(&session_id) {
-        return Err(StatusCode::BAD_REQUEST);
+        return Err(StatusCode::BAD_REQUEST.into_response());
     }
     let manager = state.session_manager();
 
@@ -980,15 +1139,37 @@ async fn diverge_session(
     // name; too long → reject).
     if let Some(ref n) = request.name {
         if !n.trim().is_empty() && n.trim().chars().count() > MAX_NAME_LENGTH {
-            return Err(StatusCode::BAD_REQUEST);
+            return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
 
     // A missing source session is a clean 404 (rather than a 500 from the copy).
-    manager
+    let source = manager
         .get_session(&session_id, false)
         .await
-        .map_err(|_| StatusCode::NOT_FOUND)?;
+        .map_err(|_| StatusCode::NOT_FOUND.into_response())?;
+
+    // Issue #56 DR-19. The branch inherits `provider_name` and `model_config`,
+    // not just the tier (`create_derived_session`) — so branching a private chat
+    // does not copy a label, it MINTS a new session already bound to a private
+    // provider. DR-16 guards raises on sessions that already exist
+    // (`raise_needs_user_action` compares a live agent's bound provider against
+    // a requested one), so a session born private passes no gate at all: it
+    // never calls `POST /agent/update_provider`, and every gate downstream then
+    // reads it as legitimately private. This route sits behind `check_token`
+    // alone, which AR-11 and AR-15 between them establish is not a proof of a
+    // human.
+    //
+    // A CONDITION on the SOURCE's tier, never an unconditional refusal:
+    // branching a public chat mints no capability, and a gate that fires on
+    // every branch of every chat is one people route around. The proof is Task
+    // 18A's `X-User-Action`, reused — one proof of user in this feature, not
+    // two — and the renderer holds the key, so the person at the keyboard
+    // clicks Diverge and it works.
+    let had_user_action = is_user_action(&headers);
+    if source.privacy_tier == SessionClassification::Private && !had_user_action {
+        return Err((StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response());
+    }
 
     // diverge_session does the placeholder-aware, sibling-numbered naming,
     // records the lineage pointer + divergence point, and trims the branch to end at
@@ -1005,8 +1186,25 @@ async fn diverge_session(
         .await
         .map_err(|e| {
             tracing::error!("Failed to diverge session {}: {}", session_id, e);
-            StatusCode::INTERNAL_SERVER_ERROR
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
         })?;
+
+    // The gate again, on the capability that now exists rather than on the read
+    // that predicted it. Reached only when the source was raised between the two
+    // reads — see `minted_capability_without_proof`.
+    if minted_capability_without_proof(new_session.privacy_tier, had_user_action) {
+        if let Err(e) = manager.delete_session(&new_session.id).await {
+            // Loud, and still refused: the caller gets nothing back either way,
+            // but a row that survives this is a private-capability session no
+            // human authorised, and the only trace of it would be this line.
+            tracing::error!(
+                session_id = %new_session.id,
+                error = %e,
+                "dr19_unproven_branch_not_removed",
+            );
+        }
+        return Err((StatusCode::FORBIDDEN, COPY_OF_PRIVATE_NEEDS_USER).into_response());
+    }
 
     Ok(Json(DivergeSessionResponse {
         session_id: new_session.id,
@@ -1014,6 +1212,218 @@ async fn diverge_session(
         name: new_session.name,
         diverged_from: new_session.diverged_from,
     }))
+}
+
+/// Issue #56 §12.4. What `POST /sessions/{id}/declassify` says to a caller
+/// holding nothing but the daemon secret.
+///
+/// §9.3 A1: that secret is reachable from any developer-enabled agent shell, so
+/// `X-Secret-Key` alone is not a human (AR-11/AR-15). Declassification is the one
+/// operation in this feature that *reverses* the ratchet, so it is the last
+/// place an unproven caller may be given the benefit of the doubt.
+///
+/// §14.4's content rule applies as it does to every other refusal: it names the
+/// boundary and nothing about the chat, and it forecloses the retry, because a
+/// model that reads a refusal as transient loops on it.
+///
+/// ⚠ It deliberately carries NEITHER of the two markers the renderer keys on —
+/// not `USER_ACTION_REFUSAL_MARKER` ("is the user's decision, not yours"), whose
+/// toast says *switch this chat's model*, and not
+/// `COPY_OF_PRIVATE_REFUSAL_MARKER` ("only the person at the keyboard may do
+/// it"), whose toast says *branch it from the chat window*. Both would send the
+/// user somewhere that cannot help, so the wording steps around them; pinned by
+/// [`declassify_tests::the_refusals_say_different_things`].
+const DECLASSIFY_NEEDS_USER: &str =
+    "Marking a private chat public is a decision only the person at the keyboard can make, and \
+     this request carried no proof it came from them. Nothing was changed. Do not retry; the \
+     same call will be refused again. If this chat no longer holds anything private, stop and \
+     ask the user to mark it public from the chat history.";
+
+/// What `POST /sessions/{id}/declassify` says when the typed confirmation does
+/// not match. Human-facing: the only caller that reaches it is the renderer's
+/// own dialog, and only if its phrase check and the daemon's disagree.
+const DECLASSIFY_CONFIRMATION_MISMATCH: &str =
+    "The confirmation did not match the last six characters of this chat's id. Nothing was \
+     changed.";
+
+/// Issue #56 DR-20, Task 55. What the route says when the system authentication
+/// did not happen. The prompter's own sentence is appended, because "you pressed
+/// Cancel" and "this machine has no way to raise the prompt" need different
+/// advice and only the prompter knows which it was.
+///
+/// ⚠ It carries neither renderer marker, for the same reason
+/// [`DECLASSIFY_NEEDS_USER`] does not: the model picker's toast says *switch
+/// this chat's model* and the copy handler's says *branch it from the chat
+/// window*, and neither marks a chat public.
+///
+/// ⚠ **It says what the RECORD says, not what the conversation did.** It used to
+/// open "This chat reached a private data source", which is §12.4's rationale
+/// for the strong control and is false for two of the provenances that reach it:
+/// a `backfill:*` chat was marked by the one-time migration from the model it
+/// was last bound to, and an `imported` chat arrived already marked. On day one
+/// `backfill:*` is most of the private rows on a machine with history.
+///
+/// This route deliberately does not read the row — grading here would be a
+/// check-then-act, and the comment in the handler says why — so it has no
+/// provenance to name and uses the catch-all clause from
+/// `biorouter::privacy::declassify::strong_confirmation_reason`, which is the
+/// one statement true of every chat that reaches this arm. The CLI and the
+/// desktop dialog, which do hold the provenance, say the specific one.
+/// `the_system_auth_refusal_claims_only_what_the_record_says` pins the link.
+const DECLASSIFY_SYSTEM_AUTH_REFUSED: &str =
+    "This chat does not record an observed turn on a private model as the reason it is private, \
+     so marking it public needs your operating system to confirm it is you. That did not happen, \
+     and nothing was changed.";
+
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclassifySessionRequest {
+    /// The last six characters of the session id, as the user typed them.
+    ///
+    /// Required when the chat's provenance is anything other than `turn:*` —
+    /// see `biorouter::privacy::declassify::requires_typed_confirmation`, which
+    /// is where the grading lives. The daemon re-derives the grade from the
+    /// STORED provenance rather than trusting the client to say which control it
+    /// showed, so a caller cannot claim the single-click path for a chat that
+    /// reached a private data source.
+    #[serde(default)]
+    pub confirmation: Option<String>,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeclassifySessionResponse {
+    pub session_id: String,
+    /// The tier after the call. Always `public` on a 200 — including the
+    /// already-public case, which is a success rather than a conflict so a
+    /// double-clicked confirm button does not surface an error. That holds on
+    /// BOTH graded paths: an already-public row is answered before the
+    /// confirmation is consulted, so the second single-click request is not
+    /// refused over a phrase that path never showed the user (the first call
+    /// rewrites the provenance to `declassified_by_user`, which grades onto the
+    /// typed control).
+    pub privacy_tier: SessionClassification,
+}
+
+/// Mark a private chat public (issue #56 §12.4/§12.5).
+///
+/// The ONLY route in the tree that lowers a session's classification. It is
+/// user-only (DR-16's `X-User-Action`), it is graded on the chat's provenance,
+/// and every use leaves a row in `classification_audit` — a declassified session
+/// must never become indistinguishable from one that was always public.
+#[utoipa::path(
+    post,
+    path = "/sessions/{session_id}/declassify",
+    request_body = DeclassifySessionRequest,
+    params(
+        ("session_id" = String, Path, description = "Unique identifier for the session to declassify")
+    ),
+    responses(
+        (status = 200, description = "The chat is public", body = DeclassifySessionResponse),
+        (status = 400, description = "Bad request - invalid session id, or the typed confirmation \
+                                      did not match (body = plain text)"),
+        (status = 401, description = "Unauthorized - Invalid or missing API key"),
+        (status = 403, description = "Refused by a privacy boundary (issue #56 §12.4): lowering a \
+                                      chat's classification is the user's decision, and the \
+                                      request carried no proof it came from them (body = plain \
+                                      text)"),
+        (status = 404, description = "Session not found"),
+        (status = 500, description = "Internal server error")
+    ),
+    security(
+        ("api_key" = [])
+    ),
+    tag = "Session Management"
+)]
+async fn declassify_session(
+    State(state): State<Arc<AppState>>,
+    Path(session_id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: axum::http::HeaderMap,
+    Json(request): Json<DeclassifySessionRequest>,
+) -> Result<Json<DeclassifySessionResponse>, Response> {
+    if !is_valid_session_id(&session_id) {
+        return Err(StatusCode::BAD_REQUEST.into_response());
+    }
+
+    // FIRST, before the row is even read. An unproven caller learns nothing
+    // about which ids exist, and the refusal cannot be told apart from one for a
+    // session that is already public.
+    if !is_user_action(&headers) {
+        return Err((StatusCode::FORBIDDEN, DECLASSIFY_NEEDS_USER).into_response());
+    }
+
+    // §12.4's grade is NOT decided here. The confirmation is handed to the
+    // writer, which derives the grade from the provenance its own transaction
+    // reads — so a chat that reaches an MCP data source between this request
+    // arriving and the row being written cannot be declassified on the
+    // single-click control it has stopped qualifying for. Reading the row here
+    // to grade it would be a check-then-act, and would also cost a second
+    // round-trip to say what the transaction is about to read anyway.
+    //
+    // The construction below is this file's only construction of the
+    // proof-of-user, pinned by
+    // `privacy::declassify::tests::the_proof_of_user_is_constructed_in_exactly_two_places`
+    // — the other being `biorouter session declassify <id>` (issue #56 Task 31),
+    // which is the only surface that can reach a private chat no listing shows.
+    // ONE construction for a request that may call the writer twice: the proof
+    // is borrowed, so the probe below and the write that follows it spend the
+    // same human action rather than minting a second one.
+    let ok = UserConfirmation::from_typed_confirmation();
+    let manager = state.session_manager();
+    let confirmation = request.confirmation.as_deref();
+
+    // Issue #56 DR-20, Task 55. The FIRST call is a probe and writes nothing:
+    // it finds the row, takes §12.4's grade from the provenance inside its own
+    // transaction, and checks the typed phrase. Only if all of that passes does
+    // it answer `SystemAuthenticationRequired`, and only then is the user asked
+    // for their password — so a mistyped phrase is answered by a form field
+    // rather than by an operating-system dialog the user had to satisfy first,
+    // and a `turn:*` chat (which never reaches this arm) keeps its single click
+    // with no prompt at all.
+    let mut outcome = declassify(manager, &session_id, confirmation, None, &ok).await;
+    if matches!(outcome, Ok(DeclassifyOutcome::SystemAuthenticationRequired)) {
+        match authenticate_declassification(std::slice::from_ref(&session_id)).await {
+            Ok(granted) => {
+                outcome = declassify(manager, &session_id, confirmation, Some(&granted), &ok).await;
+            }
+            Err(refusal) => {
+                return Err((
+                    StatusCode::FORBIDDEN,
+                    format!("{DECLASSIFY_SYSTEM_AUTH_REFUSED} {refusal}"),
+                )
+                    .into_response());
+            }
+        }
+    }
+
+    match outcome {
+        Ok(DeclassifyOutcome::SessionNotFound) => Err(StatusCode::NOT_FOUND.into_response()),
+        Ok(DeclassifyOutcome::ConfirmationRequired) => {
+            Err((StatusCode::BAD_REQUEST, DECLASSIFY_CONFIRMATION_MISMATCH).into_response())
+        }
+        // Unreachable through the branch above, which either supplies an
+        // authorisation naming exactly this id or returns. Answered rather than
+        // collapsed into the 500 arm because the honest reading of it is "the
+        // authentication did not cover this chat", which is a refusal and not a
+        // daemon fault — and because an outcome that lowers nothing must never
+        // be reported as a success.
+        Ok(DeclassifyOutcome::SystemAuthenticationRequired) => Err((
+            StatusCode::FORBIDDEN,
+            DECLASSIFY_SYSTEM_AUTH_REFUSED.to_string(),
+        )
+            .into_response()),
+        Ok(DeclassifyOutcome::Declassified) | Ok(DeclassifyOutcome::AlreadyPublic) => {
+            Ok(Json(DeclassifySessionResponse {
+                session_id,
+                privacy_tier: SessionClassification::Public,
+            }))
+        }
+        Err(e) => {
+            tracing::error!("Failed to declassify session {}: {}", session_id, e);
+            Err(StatusCode::INTERNAL_SERVER_ERROR.into_response())
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -1107,14 +1517,23 @@ pub fn routes(state: Arc<AppState>) -> Router {
         .route("/sessions/{session_id}/edit_message", post(edit_message))
         .route("/sessions/{session_id}/diverge", post(diverge_session))
         .route(
+            "/sessions/{session_id}/declassify",
+            post(declassify_session),
+        )
+        .route(
             "/sessions/{session_id}/extensions",
             get(get_session_extensions),
         )
         .with_state(state)
 }
 
+// `pub(crate)` for [`install_test_user_action_key`] alone: the digest lives in a
+// process-global `OnceLock` shared by every test in this binary, so a second
+// module that installed its own key would turn whichever ran second into a wall
+// of 403s reported as policy results. Task 30A's disclosure-ack test is that
+// second module and takes this one instead.
 #[cfg(test)]
-mod diverge_tests {
+pub(crate) mod diverge_tests {
     use super::*;
     use axum::body::{to_bytes, Body};
     use axum::http::Request;
@@ -1124,16 +1543,59 @@ mod diverge_tests {
     use std::path::PathBuf;
     use tower::ServiceExt;
 
-    async fn post_diverge(
+    /// The user-action key this test binary's "daemon" was launched with.
+    ///
+    /// Issue #56 DR-16 keeps the digest in a process-global `OnceLock` that
+    /// `commands::agent` fills from stdin, so a route test that wants the
+    /// *authorised* arm has to install one. Nothing else in this crate installs
+    /// a digest — `auth::tests` exercises the pure `user_action_matches` — and
+    /// [`install_test_user_action_key`] asserts the install took rather than
+    /// letting a second installer turn every positive arm below into a silent
+    /// 403.
+    ///
+    /// `pub(super)` so [`super::declassify_tests`] installs the SAME key rather
+    /// than a second one: the digest lives in a `OnceLock`, so whichever module
+    /// ran first would win and every authorised arm in the other would report a
+    /// 403 as though it were a policy result.
+    pub(crate) const TEST_USER_ACTION_KEY: &str = "task-22-diverge-route-user-action-key";
+
+    pub(crate) fn install_test_user_action_key() {
+        let digest: [u8; 32] =
+            <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
+        biorouter_server::auth::install_user_action_digest(Some(digest));
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            "X-User-Action",
+            TEST_USER_ACTION_KEY.parse().expect("a header-safe key"),
+        );
+        assert!(
+            biorouter_server::auth::is_user_action(&headers),
+            "the user-action digest this test installs did not take — something else in this \
+             test binary installed a different one first, and every authorised arm below would \
+             otherwise report a 403 as a policy result"
+        );
+    }
+
+    /// `POST /sessions/{id}/diverge`, optionally carrying DR-16's proof-of-user
+    /// header. `user_action: None` is a request holding nothing but the daemon
+    /// secret — the caller AR-11/AR-15 establish is indistinguishable from the
+    /// model.
+    async fn post_diverge_with(
         state: Arc<AppState>,
         session_id: &str,
         body: serde_json::Value,
+        user_action: Option<&str>,
     ) -> (axum::http::StatusCode, serde_json::Value) {
         let app = routes(state);
-        let req = Request::builder()
+        let mut builder = Request::builder()
             .method("POST")
             .uri(format!("/sessions/{session_id}/diverge"))
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
             .body(Body::from(serde_json::to_vec(&body).unwrap()))
             .unwrap();
         let res = app.oneshot(req).await.unwrap();
@@ -1141,6 +1603,42 @@ mod diverge_tests {
         let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
         let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
         (status, json)
+    }
+
+    /// `POST /sessions/{id}/edit_message`, same header treatment. The edit route
+    /// has its own test module below; this copy exists because the DR-19 gate is
+    /// one requirement across BOTH copy handlers, and a test that reached only
+    /// `/diverge` would miss exactly the half that shipped broken last time.
+    async fn post_edit_message_with(
+        state: Arc<AppState>,
+        session_id: &str,
+        body: serde_json::Value,
+        user_action: Option<&str>,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        let app = routes(state);
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(format!("/sessions/{session_id}/edit_message"))
+            .header("content-type", "application/json");
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        let json = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, json)
+    }
+
+    async fn post_diverge(
+        state: Arc<AppState>,
+        session_id: &str,
+        body: serde_json::Value,
+    ) -> (axum::http::StatusCode, serde_json::Value) {
+        post_diverge_with(state, session_id, body, None).await
     }
 
     fn user_msg(text: &str) -> Message {
@@ -1553,6 +2051,367 @@ mod diverge_tests {
         // Cleanup so we don't pollute the shared session store.
         manager.delete_session(&new_id).await.unwrap();
         manager.delete_session(&original.id).await.unwrap();
+    }
+
+    /// Issue #56 §9.3 B1, at the route that actually ships it. The storage-level
+    /// loop in `session::session_manager::tests::derived_session_carry_over`
+    /// covers all three copy paths; this one pins the specific claim that the
+    /// GUI's Diverge button — `POST /sessions/{id}/diverge` — is one of them, so
+    /// a branch of a private chat can never be resumed against the user's
+    /// default public model through `restore_provider_from_session`'s
+    /// `Config::global()` fallback.
+    ///
+    /// It carries DR-19's `X-User-Action` because the SOURCE is private and this
+    /// route now asks who is calling before it mints a private-capability
+    /// branch. That is the *authorised* arm; the refusal arm, and the public
+    /// source that needs no proof at all, are
+    /// [`diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not`].
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn diverging_a_private_session_through_the_route_keeps_it_private() {
+        use biorouter::model::ModelConfig;
+        use biorouter::privacy::SessionClassification;
+
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+
+        let original = manager
+            .create_session(
+                PathBuf::from("/tmp/diverge_route_privacy"),
+                "Private Original".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .add_message(&original.id, &user_msg("patient MRN 12345"))
+            .await
+            .unwrap();
+        manager
+            .add_message(&original.id, &Message::assistant().with_text("noted"))
+            .await
+            .unwrap();
+        manager
+            .update(&original.id)
+            .provider_name("versa_azure")
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+
+        let (status, json) = post_diverge_with(
+            state.clone(),
+            &original.id,
+            serde_json::json!({}),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        let new_id = json["sessionId"].as_str().unwrap().to_string();
+
+        let branch = manager.get_session(&new_id, false).await.unwrap();
+        assert_eq!(
+            branch.privacy_tier,
+            SessionClassification::Private,
+            "the GUI diverge route dropped the tier"
+        );
+        assert_eq!(
+            branch.provider_name.as_deref(),
+            Some("versa_azure"),
+            "the GUI diverge route dropped the bound provider"
+        );
+        assert!(
+            branch.model_config.is_some(),
+            "the GUI diverge route dropped the model config"
+        );
+        assert_eq!(
+            branch.privacy_reason.as_deref(),
+            Some(format!("diverged:{}", original.id).as_str())
+        );
+
+        manager.delete_session(&new_id).await.unwrap();
+        manager.delete_session(&original.id).await.unwrap();
+    }
+
+    /// One source session for the DR-19 gate test: a complete exchange, under a
+    /// name derived from its own id so the sibling branch index is deterministic
+    /// against the shared session store. Returns `(id, base_name)`.
+    async fn seed_dr19_source(
+        manager: &biorouter::session::session_manager::SessionManager,
+        label: &str,
+    ) -> (String, String) {
+        let session = manager
+            .create_session(
+                PathBuf::from("/tmp/diverge_route_dr19"),
+                "placeholder".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        let base = format!("{label} {}", session.id);
+        manager
+            .update(&session.id)
+            .user_provided_name(base.clone())
+            .apply()
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &user_msg("patient MRN 12345"))
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &Message::assistant().with_text("noted"))
+            .await
+            .unwrap();
+        (session.id, base)
+    }
+
+    /// Issue #56 DR-19, the other half of the carry-over above.
+    ///
+    /// The copy carries `provider_name` and `model_config`, not just the tier —
+    /// so diverging a private chat does not copy a *label*, it **mints a new
+    /// session already bound to a private provider**. DR-16 guards raises on
+    /// sessions that ALREADY exist (`raise_needs_user_action` compares a live
+    /// agent's bound provider against a requested one), so a session born
+    /// private passes no gate at all: it never calls `/agent/update_provider`,
+    /// and every gate downstream then reads it as legitimately private. The
+    /// route sits behind `check_token`, which AR-11 and AR-15 between them
+    /// establish is not a proof of a human — so on the unamended implementation
+    /// a caller holding nothing but the daemon secret could hand itself
+    /// private capability by branching a private chat.
+    ///
+    /// A CONDITION on the SOURCE's tier, never an unconditional refusal: a
+    /// public source mints no capability, and a gate that fires on every branch
+    /// of every chat is one people route around (DR-19's user half). And the
+    /// proof is Task 18A's `X-User-Action`, reused — there is exactly one proof
+    /// of user in this feature and this is not a second.
+    ///
+    /// Both handlers, not just the one the GUI's Diverge button uses:
+    /// `/edit_message` reaches `diverge_session_for_edit`, which performs the
+    /// same carry-over, and a test written against `/diverge` alone would miss
+    /// it — the same omission shape as `copy_session`-only coverage.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not() {
+        use biorouter::model::ModelConfig;
+        use biorouter::privacy::SessionClassification;
+
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+
+        let (private_id, private_base) = seed_dr19_source(manager, "DR19 Private").await;
+        let (public_id, _public_base) = seed_dr19_source(manager, "DR19 Public").await;
+
+        manager
+            .update(&private_id)
+            .provider_name("versa_azure")
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+
+        // 1. A private source, with nothing but the daemon secret: refused.
+        let (status, _) =
+            post_diverge_with(state.clone(), &private_id, serde_json::json!({}), None).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::FORBIDDEN,
+            "a secret-key-only caller minted itself a private-capability session"
+        );
+
+        // 2. The same request, carrying the user's proof: allowed. The branch
+        // index is what shows the refusal above branched NOTHING — had it
+        // created a session, this one would be `(branch 2)`.
+        let (status, json) = post_diverge_with(
+            state.clone(),
+            &private_id,
+            serde_json::json!({}),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "got {json}");
+        let diverge_branch = json["sessionId"].as_str().unwrap().to_string();
+        assert_eq!(
+            json["name"].as_str().unwrap(),
+            format!("{private_base} (branch 1)"),
+            "the refused diverge branched something anyway"
+        );
+        assert_eq!(
+            manager
+                .get_session(&diverge_branch, false)
+                .await
+                .unwrap()
+                .privacy_tier,
+            SessionClassification::Private
+        );
+
+        // 3. A PUBLIC source needs no proof: copying a public chat mints no
+        // capability, and a gate that fires on every branch is one people route
+        // around.
+        let (status, json) =
+            post_diverge_with(state.clone(), &public_id, serde_json::json!({}), None).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "the gate is a wall in front of the user, not a condition: {json}"
+        );
+        let public_branch = json["sessionId"].as_str().unwrap().to_string();
+
+        // 4. `/edit_message`'s diverge arm is the second copy handler and takes
+        // the same gate. `i64::MAX / 2` is past every message, so the branch
+        // carries the whole conversation and this stays a test about the gate.
+        let edit_body = serde_json::json!({
+            "timestamp": i64::MAX / 2,
+            "editType": "diverge",
+        });
+        let (status, _) =
+            post_edit_message_with(state.clone(), &private_id, edit_body.clone(), None).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::FORBIDDEN,
+            "the edit_message copy path is ungated"
+        );
+
+        let (status, json) = post_edit_message_with(
+            state.clone(),
+            &private_id,
+            edit_body,
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, axum::http::StatusCode::OK, "got {json}");
+        let edit_branch = json["sessionId"].as_str().unwrap().to_string();
+        assert_ne!(edit_branch, private_id);
+        assert_eq!(
+            manager.get_session(&edit_branch, false).await.unwrap().name,
+            format!("{private_base} (branch 2)"),
+            "the refused edit_message diverge branched something anyway"
+        );
+
+        for id in [
+            diverge_branch,
+            public_branch,
+            edit_branch,
+            private_id,
+            public_id,
+        ] {
+            manager.delete_session(&id).await.unwrap();
+        }
+    }
+
+    /// Issue #56 DR-19. The renderer cannot read the 403: under `throwOnError`
+    /// the generated client throws the parsed BODY, so the status never reaches
+    /// the catch arm and a substring is all there is to go on. A reword that
+    /// dropped the marker would put every refused branch back on the generic
+    /// "Could not branch this conversation" with nothing failing.
+    #[test]
+    fn the_copy_refusal_carries_the_marker_the_renderer_keys_on() {
+        assert!(
+            COPY_OF_PRIVATE_NEEDS_USER.contains(COPY_OF_PRIVATE_REFUSAL_MARKER),
+            "the renderer cannot tell this refusal from a 500: {COPY_OF_PRIVATE_NEEDS_USER}"
+        );
+        // And deliberately NOT the model picker's marker. The two refusals are
+        // different acts with different remedies — one is "switch this chat's
+        // model", the other is "branch this chat" — and a toast that answered
+        // for both would tell the user to do the wrong thing.
+        assert!(
+            !COPY_OF_PRIVATE_NEEDS_USER
+                .contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+            "the copy refusal is claiming to be the model picker's refusal"
+        );
+    }
+
+    /// Issue #56 DR-19, the window the gate above leaves open.
+    ///
+    /// The gate reads the SOURCE's tier; `diverge_session*` then reads the
+    /// source again inside the copy. Between those two reads Gate B's turn
+    /// ratchet can raise the source — so a request that passed the gate on a
+    /// public row walks out holding a private-capability child that no human
+    /// ever proved. Two database reads wide and it takes racing a turn in the
+    /// source chat, so it is not the likely path; "unlikely" is simply not the
+    /// standard a capability gate is held to, and the tier the CHILD was born
+    /// with is already in hand — `create_derived_session` copies it.
+    ///
+    /// The decision is a pure function so it can be pinned at every corner
+    /// rather than only at the corner a race happens to produce.
+    #[test]
+    fn a_child_born_private_without_proof_is_undone() {
+        use biorouter::privacy::SessionClassification::{Private, Public};
+
+        assert!(
+            minted_capability_without_proof(Private, false),
+            "this is the race: the source went private between the gate and the copy"
+        );
+        assert!(
+            !minted_capability_without_proof(Private, true),
+            "the user's own branch of their own private chat is the supported act"
+        );
+        assert!(
+            !minted_capability_without_proof(Public, false),
+            "branching a public chat mints no capability and needs no proof — a gate \
+             that fires on every branch is one people route around"
+        );
+        assert!(!minted_capability_without_proof(Public, true));
+    }
+
+    /// The body of the FIRST `fn <name>(` in `src`. Both handlers are defined
+    /// well above this test module, so the first hit is the real one and not
+    /// the literal in the test below.
+    fn fn_body(src: &str, signature: &str) -> String {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("no `{signature}` in the file"));
+        let onwards = src.get(start..).expect("find returns a char boundary");
+        let open = onwards
+            .find('{')
+            .unwrap_or_else(|| panic!("no body for {signature}"));
+        let body = onwards.get(open..).expect("find returns a char boundary");
+        let mut depth = 0usize;
+        for (offset, ch) in body.char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return body
+                            .get(..offset + ch.len_utf8())
+                            .expect("char_indices yields char boundaries")
+                            .to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces in {signature}");
+    }
+
+    /// Both copy handlers, not one. `/edit_message`'s diverge arm performs the
+    /// same carry-over and a gate written against `/diverge` alone would miss
+    /// exactly the half that shipped broken last time — which is the omission
+    /// shape this whole task exists to close. A race is not drivable from a
+    /// route test, so the structural assertion is what stands in for it.
+    #[test]
+    fn both_copy_handlers_take_the_second_read() {
+        let src = std::fs::read_to_string("src/routes/session.rs").unwrap();
+        for signature in ["async fn diverge_session(", "async fn edit_message("] {
+            assert!(
+                fn_body(&src, signature).contains("minted_capability_without_proof"),
+                "{signature} gates on the source it read before the copy and never \
+                 re-checks the child it minted"
+            );
+        }
+        // The negative control, without which `fn_body` returning the whole file
+        // — or the wrong function — would satisfy the loop above vacuously.
+        // `edit_in_place` truncates the LIVE session and copies nothing, so it
+        // mints no capability and must not be carrying this gate.
+        assert!(
+            !fn_body(&src, "async fn edit_in_place(").contains("minted_capability_without_proof"),
+            "fn_body is not returning one function's body"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2157,6 +3016,430 @@ mod edit_message_tests {
         assert!(null.expected_message_ids.is_none());
     }
 }
+
+/// Issue #56 §12.4/§12.5 — `POST /sessions/{id}/declassify`.
+#[cfg(test)]
+mod declassify_tests {
+    use super::diverge_tests::{install_test_user_action_key, TEST_USER_ACTION_KEY};
+    use super::*;
+    use axum::body::{to_bytes, Body};
+    use axum::http::{Request, StatusCode};
+    use biorouter::conversation::message::Message;
+    use biorouter::model::ModelConfig;
+    // The phrase lives beside the grading it belongs to, in the writer's module:
+    // the daemon's check now happens inside the writing transaction, so the
+    // route has nothing left to derive it for. Its own unit tests moved with it.
+    use biorouter::privacy::declassify::confirmation_phrase;
+    use biorouter::session::SessionType;
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use tower::ServiceExt;
+
+    /// The server secret this test binary's "daemon" was launched with. Unlike
+    /// the user-action digest it is not a process global — `check_token` takes it
+    /// as layer state — so it can simply be a constant.
+    const TEST_SECRET: &str = "task-29-declassify-route-secret";
+
+    /// `POST /sessions/{id}/declassify` through the SAME `check_token` layer
+    /// `commands::agent::run` installs in front of the real router.
+    ///
+    /// Layering it here rather than calling `routes(state)` bare is what makes
+    /// the 401 arm mean anything: `routes()` alone is unauthenticated, so a test
+    /// against it would assert that a route nobody is guarding lets everyone
+    /// through.
+    async fn post_declassify(
+        state: Arc<AppState>,
+        session_id: &str,
+        body: serde_json::Value,
+        secret: Option<&str>,
+        user_action: Option<&str>,
+    ) -> (StatusCode, String) {
+        let app = routes(state).layer(axum::middleware::from_fn_with_state(
+            TEST_SECRET.to_string(),
+            biorouter_server::auth::check_token,
+        ));
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(format!("/sessions/{session_id}/declassify"))
+            .header("content-type", "application/json");
+        if let Some(key) = secret {
+            builder = builder.header("X-Secret-Key", key);
+        }
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let res = app.oneshot(req).await.unwrap();
+        let status = res.status();
+        let bytes = to_bytes(res.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Arm DR-20's system-authentication seam for the next prompt.
+    ///
+    /// ⚠ **This compiles only because `biorouter` is a `[dev-dependency]` of
+    /// this crate with `privacy-test-auth` on.** Dropping that dev-dependency
+    /// stops this line compiling — a loud failure — rather than leaving a test
+    /// suite that asks the developer for their password on every run. Moving it
+    /// into `[dependencies]` would ship the bypass, which
+    /// `privacy::system_auth::tests::the_test_seam_cannot_be_compiled_into_a_shipped_profile`
+    /// turns red.
+    fn arm_the_system_prompt(outcome: biorouter::privacy::system_auth::AuthOutcome) {
+        biorouter::privacy::system_auth_seam::reset();
+        biorouter::privacy::system_auth_seam::answer_next_prompt(outcome);
+    }
+
+    /// A private session with one message, `versa_azure` bound, and `reason` as
+    /// its recorded provenance.
+    async fn seed_private(
+        manager: &biorouter::session::session_manager::SessionManager,
+        reason: &str,
+    ) -> String {
+        let session = manager
+            .create_session(
+                PathBuf::from("/tmp/declassify_route"),
+                "Declassify Source".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        manager
+            .add_message(&session.id, &Message::user().with_text("patient MRN 12345"))
+            .await
+            .unwrap();
+        manager
+            .update(&session.id)
+            .provider_name("versa_azure")
+            .model_config(ModelConfig::new("gpt-4o").unwrap())
+            .raise_privacy(SessionClassification::Private, reason)
+            .apply()
+            .await
+            .unwrap();
+        session.id
+    }
+
+    /// §9.3 A1: the secret is reachable from any developer-enabled agent shell,
+    /// so `X-Secret-Key` alone is not a human.
+    ///
+    /// Note that a test asserting the route is not in the public-GET exemption
+    /// list would be VACUOUSLY true — `is_public_app_get` only matches GETs under
+    /// `/apps/{id}` with an explicit tail allowlist, and can never match a POST
+    /// under `/sessions`. The assertion that carries weight is this one: the same
+    /// request, three credential sets, three different answers.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn the_route_needs_more_than_the_secret_key() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        // `turn:*`, so §12.4 grades this chat onto the single-click control and
+        // the credential is the only variable under test.
+        let id = seed_private(manager, "turn:versa_azure").await;
+
+        let (status, _) =
+            post_declassify(state.clone(), &id, serde_json::json!({}), None, None).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let (status, body) = post_declassify(
+            state.clone(),
+            &id,
+            serde_json::json!({}),
+            Some(TEST_SECRET),
+            None,
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "a secret-key-only caller lowered a chat's classification"
+        );
+        assert!(
+            body.contains("Do not retry"),
+            "the refusal must foreclose the retry: {body}"
+        );
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().privacy_tier,
+            SessionClassification::Private,
+            "the refused call changed the row anyway"
+        );
+
+        let (status, body) = post_declassify(
+            state.clone(),
+            &id,
+            serde_json::json!({}),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "got {body}");
+        let after = manager.get_session(&id, false).await.unwrap();
+        assert_eq!(after.privacy_tier, SessionClassification::Public);
+        assert_eq!(
+            after.privacy_reason.as_deref(),
+            Some("declassified_by_user")
+        );
+
+        manager.delete_session(&id).await.unwrap();
+    }
+
+    /// §12.4's graded confirmation, enforced by the DAEMON and not merely by the
+    /// dialog. A client that renders the single-click control for a chat that
+    /// reached a private data source — or a caller that skips the renderer
+    /// entirely — gets the same answer the dialog would have insisted on.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn an_mcp_chat_needs_the_typed_phrase_and_a_turn_only_chat_does_not() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        let id = seed_private(manager, "mcp:ucsfomopagent").await;
+        let phrase = confirmation_phrase(&id);
+
+        // No phrase: refused, and the row is untouched.
+        let (status, _) = post_declassify(
+            state.clone(),
+            &id,
+            serde_json::json!({}),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // The WRONG phrase — the same length, drawn from the same id — is refused
+        // too, so this cannot pass merely because something was typed.
+        let wrong: String = phrase.chars().rev().collect();
+        if wrong != phrase {
+            let (status, _) = post_declassify(
+                state.clone(),
+                &id,
+                serde_json::json!({ "confirmation": wrong }),
+                Some(TEST_SECRET),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST);
+        }
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().privacy_tier,
+            SessionClassification::Private
+        );
+
+        // Since Task 55 the strong control also needs DR-20's system
+        // authentication, so the phrase alone no longer writes.
+        arm_the_system_prompt(biorouter::privacy::system_auth::AuthOutcome::Approved);
+        let (status, body) = post_declassify(
+            state.clone(),
+            &id,
+            serde_json::json!({ "confirmation": phrase }),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "got {body}");
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().privacy_tier,
+            SessionClassification::Public
+        );
+
+        manager.delete_session(&id).await.unwrap();
+    }
+
+    /// Issue #56 DR-20 / Task 55. The route asks the operating system as well as
+    /// the two things it already asked for, and a refusal there leaves the chat
+    /// private with nothing in the ledger.
+    ///
+    /// ⚠ **The failure worth testing is a route that reports success because the
+    /// request was well-formed.** So every assertion below checks the *row*
+    /// after the answer, not only the status code.
+    ///
+    /// The "and writes no audit row" half of Task 55 Step 4 is asserted at the
+    /// writer — `privacy::declassify::tests::a_chat_that_reached_a_private_data_source_needs_the_password_as_well_as_the_phrase`
+    /// — because `SessionStorage::pool` is `pub(crate)` and this crate has no
+    /// SQL access at all. That is the right place for it: the writer is the only
+    /// statement in the tree that inserts into `classification_audit`, pinned by
+    /// `exactly_one_statement_in_the_tree_assigns_a_public_classification`, so a
+    /// route cannot write a ledger row without going through the function that
+    /// test covers.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_refused_system_authentication_leaves_the_chat_private_and_writes_no_audit_row() {
+        use biorouter::privacy::system_auth::AuthOutcome;
+
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        let id = seed_private(manager, "mcp:ucsfomopagent").await;
+        let phrase = confirmation_phrase(&id);
+
+        // Both the user's "no" and a platform with no prompter at all. The
+        // second is DR-24's stated posture and is the state of every Linux
+        // install until the packaging ships the polkit action, so it has to
+        // refuse rather than fall through.
+        for outcome in [AuthOutcome::Denied, AuthOutcome::Unavailable] {
+            arm_the_system_prompt(outcome);
+            let (status, body) = post_declassify(
+                state.clone(),
+                &id,
+                serde_json::json!({ "confirmation": phrase }),
+                Some(TEST_SECRET),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{outcome:?}: {body}");
+            let after = manager.get_session(&id, false).await.unwrap();
+            assert_eq!(
+                after.privacy_tier,
+                SessionClassification::Private,
+                "{outcome:?} declassified the chat anyway"
+            );
+            assert_eq!(
+                after.privacy_reason.as_deref(),
+                Some("mcp:ucsfomopagent"),
+                "{outcome:?} rewrote the provenance of a chat it did not declassify"
+            );
+        }
+
+        // The prompt names the chat it authorises (DR-20 point 4) — a dialog
+        // that said "BioRouter wants to make changes" would satisfy the letter
+        // of the ruling and defeat its purpose.
+        assert_eq!(
+            biorouter::privacy::system_auth_seam::last_request()
+                .expect("the prompter was reached")
+                .session_ids,
+            vec![id.clone()]
+        );
+
+        arm_the_system_prompt(AuthOutcome::Approved);
+        let (status, body) = post_declassify(
+            state.clone(),
+            &id,
+            serde_json::json!({ "confirmation": phrase }),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "got {body}");
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().privacy_tier,
+            SessionClassification::Public
+        );
+
+        manager.delete_session(&id).await.unwrap();
+    }
+
+    /// The idempotency `DeclassifySessionResponse` documents, on the path that
+    /// actually needs it.
+    ///
+    /// That doc promises the already-public case is a 200 "so a double-clicked
+    /// confirm button does not surface an error". It was only true on the typed
+    /// path, which resends its phrase: a successful call rewrites the provenance
+    /// to `declassified_by_user`, which `requires_typed_confirmation` grades onto
+    /// the STRONG control, so the second of two single-click requests arrived
+    /// carrying no confirmation, was refused at the phrase check over a field
+    /// the user was never shown, and never reached the already-public arm at
+    /// all. An already-public row is a no-op, so it is answered before the
+    /// confirmation is consulted — there is nothing to confirm.
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn a_second_single_click_confirm_is_a_success_not_a_refusal() {
+        install_test_user_action_key();
+        let state = AppState::new().await.unwrap();
+        let manager = state.session_manager();
+        let id = seed_private(manager, "turn:versa_azure").await;
+
+        for attempt in 1..=2 {
+            let (status, body) = post_declassify(
+                state.clone(),
+                &id,
+                serde_json::json!({}),
+                Some(TEST_SECRET),
+                Some(TEST_USER_ACTION_KEY),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "attempt {attempt} answered {body}");
+        }
+        assert_eq!(
+            manager.get_session(&id, false).await.unwrap().privacy_tier,
+            SessionClassification::Public
+        );
+
+        manager.delete_session(&id).await.unwrap();
+    }
+
+    /// The two refusals this route can emit are distinguishable from each other
+    /// and from the two the renderer already keys on.
+    ///
+    /// Borrowing either marker would fire a toast whose remedy is wrong here:
+    /// the model picker's says *switch this chat's model*, the copy handler's
+    /// says *branch it from the chat window*, and neither marks a chat public.
+    #[test]
+    fn the_refusals_say_different_things() {
+        let all = [
+            DECLASSIFY_NEEDS_USER,
+            DECLASSIFY_CONFIRMATION_MISMATCH,
+            DECLASSIFY_SYSTEM_AUTH_REFUSED,
+        ];
+        for (i, one) in all.iter().enumerate() {
+            for other in &all[i + 1..] {
+                assert_ne!(one, other, "two of this route's refusals are the same text");
+            }
+        }
+        for message in all {
+            assert!(
+                !message.contains(biorouter::privacy::refusal::USER_ACTION_REFUSAL_MARKER),
+                "this refusal is claiming to be the model picker's: {message}"
+            );
+            assert!(
+                !message.contains(COPY_OF_PRIVATE_REFUSAL_MARKER),
+                "this refusal is claiming to be the copy handler's: {message}"
+            );
+        }
+        // The model-facing one forecloses the retry; the human-facing one has no
+        // model audience and does not need to.
+        assert!(DECLASSIFY_NEEDS_USER.contains("Do not retry"));
+    }
+
+    /// This route's refusal may not tell a chat why it is private, because it
+    /// deliberately never read the row.
+    ///
+    /// It shipped opening "This chat reached a private data source", which is
+    /// §12.4's rationale for the strong control and not a fact about every chat
+    /// that reaches this arm: `backfill:*` — most of the private rows on day one
+    /// — was marked from the bound provider, and `imported` arrived marked. The
+    /// only honest sentence here is the catch-all clause the grading module
+    /// hands an unrecognised provenance, and this is what stops the two from
+    /// drifting apart in different crates.
+    #[test]
+    fn the_system_auth_refusal_claims_only_what_the_record_says() {
+        let catch_all = biorouter::privacy::declassify::strong_confirmation_reason(None)
+            .expect("an absent provenance owes the strong control, so it has a clause");
+        assert!(
+            DECLASSIFY_SYSTEM_AUTH_REFUSED.contains(catch_all),
+            "this route's refusal ({DECLASSIFY_SYSTEM_AUTH_REFUSED}) no longer says what the \
+             grading module says about a chat whose provenance is unknown ({catch_all})"
+        );
+
+        // The specific claim it must not make, taken from the grading module
+        // rather than typed out here, so a reworded clause is still caught.
+        let only_true_of_mcp =
+            biorouter::privacy::declassify::strong_confirmation_reason(Some("mcp:ucsfomopagent"))
+                .expect("an `mcp:*` chat owes the strong control");
+        assert_ne!(
+            only_true_of_mcp, catch_all,
+            "the grading module has collapsed its clauses into one, so this route cannot tell \
+             the honest sentence from the false one"
+        );
+        assert!(
+            !DECLASSIFY_SYSTEM_AUTH_REFUSED.contains(only_true_of_mcp),
+            "this route never read the row, so it cannot say {only_true_of_mcp:?} — it is false \
+             for `backfill:*` and `imported`, which dominate day one"
+        );
+    }
+}
+
 
 /// Deleting a chat stops its turn.
 ///

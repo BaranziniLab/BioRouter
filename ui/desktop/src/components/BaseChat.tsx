@@ -37,6 +37,7 @@ import { isRunningState } from '../hooks/chatStreamStore';
 import { useNavigation } from '../hooks/useNavigation';
 import { WorkflowHeader } from './WorkflowHeader';
 import { WorkflowWarningModal } from './ui/WorkflowWarningModal';
+import { NonPrivateModelDisclosureGate } from './privacy/NonPrivateModelDisclosureGate';
 import { scanWorkflow } from '../workflow';
 import { useCostTracking } from '../hooks/useCostTracking';
 import { useDiverge } from '../hooks/useDiverge';
@@ -63,6 +64,7 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { useTerminalDock } from '../contexts/TerminalDockContext';
 import { SessionNamePill } from './SessionNamePill';
+import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
@@ -950,6 +952,10 @@ function BaseChatContent({
   const [searchParams] = useSearchParams();
   const scrollRef = useRef<ScrollAreaHandle>(null);
   const { extensionsList, getProviders } = useConfig();
+  // Issue #56, DR-26. The bound model's institution, for the pill beside the
+  // tier badge. Resolved by the daemon from a live instance, so a Versa module
+  // repointed elsewhere loses Private and `ucsf` together.
+  const boundAffiliation = useBoundAffiliation();
   // Per-session vision capability. The global ModelAndProviderContext tracks
   // the user's default model, but each chat session (especially with several
   // open at once) can be bound to a different provider/model. Look up vision support
@@ -2183,6 +2189,12 @@ function BaseChatContent({
                       onRename={handleRename}
                       onDiverge={handleTitleDiverge}
                       canDiverge={canDivergeSession}
+                      // Undefined until the session loads — the pill stays
+                      // silent rather than asserting Public (issue #56).
+                      privacyTier={session?.privacy_tier}
+                      // DR-26's third axis. Null for a public model — which has
+                      // no affiliation — and null until the provider row loads.
+                      affiliation={boundAffiliation}
                       className="w-fit max-w-[min(520px,calc(100%-16px))]"
                     />
                   </div>
@@ -2369,6 +2381,33 @@ function BaseChatContent({
           />
         )}
       </MainPanelLayout>
+
+      {/*
+        Issue #56, DR-17 requirement 3 — the one-time disclosure of what a
+        non-private model can reach, shown before the first turn on it. Once it
+        is up it is modal and nothing can be sent behind it; the gate's own doc
+        comment states exactly how far "before" reaches and why it stops there.
+
+        ⚠ `session?.provider_name`, never `session?.privacy_tier`. The tier is
+        the chat's ratcheted CLASSIFICATION and starts `public` on every fresh
+        chat, including one bound to Versa; a gate keyed on it would put a
+        "this model is not hosted by your institution" dialog over the one
+        provider this feature exists to make safe to use.
+
+        ⚠ It is NOT behind the master privacy switch. DR-15 turns off gates, the
+        ratchet and refusals; it does not turn off the truth, and with
+        enforcement off the exposure is larger, not smaller.
+
+        ⚠ This is the SECOND of two mounts, and on its own it was too late.
+        `session` is filled from `/agent/resume`, so on a fresh install there is
+        no row, no `provider_name` and no dialog until the first turn has already
+        gone out — a receipt. `App.tsx` mounts an `AppNonPrivateModelDisclosureGate`
+        keyed on the CONFIGURED provider, which lands before any chat exists;
+        this mount stays because a chat's own picker can bind a public provider
+        on a machine whose default is private. `useSoleDisclosurePresenter`
+        keeps the two to one dialog.
+      */}
+      <NonPrivateModelDisclosureGate providerName={session?.provider_name} />
 
       {workflow && (
         <WorkflowWarningModal

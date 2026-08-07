@@ -26,6 +26,12 @@ import { useIsMobile } from '../../hooks/use-mobile';
 import { useSidebar } from '../ui/sidebar';
 import { SIDEBAR_COMPACT_TITLE_WIDTH } from '../Layout/TitlebarControls';
 import { setFocusedChatSession } from '../../utils/extensionErrorUtils';
+import {
+  getCachedSessionList,
+  preloadSessionList,
+  subscribeSessionList,
+} from '../../utils/sessionListCache';
+import type { SessionClassification } from '../../api';
 
 interface ChatGroupsShellProps {
   /** Mirrors the focused chat up to App's hubChat, so AppSidebar's recents
@@ -64,9 +70,85 @@ function renderLayout(
   return renderBranch(layout, path, children);
 }
 
+/**
+ * Privacy tier per session id, for the tab strips (issue #56, R10).
+ *
+ * Reads the shared session-list cache and asks it to fill itself. The earlier
+ * version of this comment claimed AppSidebar warmed the cache "at module
+ * scope"; it does not. `preloadSessionList` lives inside AppSidebar's
+ * `preloadHome()`, wired to `onFocus`/`onPointerEnter` on the Home nav entry,
+ * so it fires only if the user points at Home. What actually warmed the cache
+ * on a normal launch was the Hub index route mounting `SessionsInsights`, which
+ * calls `refreshSessionList()` — an incidental side effect of an unrelated
+ * screen, and absent in a window that opens straight onto a chat. So the strip
+ * warms it here: `preloadSessionList()` returns early when the cache is
+ * non-null and swallows its own errors, costing one fetch on a cold start.
+ *
+ * In jsdom, where the module is mocked or the fetch fails, the cache stays null
+ * and every tab is simply unmarked — silence, never an assertion of Public.
+ *
+ * ⚠ What re-emits through `subscribeSessionList` is narrower than it looks.
+ * Any `emitChange` reaches this hook — a completed `refreshSessionList`, the
+ * name-channel patch, `updateCachedSessionList` (SessionListView's rename and
+ * delete), `clearSessionListCache`. But `notifySessionListChanged`, the signal
+ * whose own doc-comment says "call after create, diverge, delete or import",
+ * has exactly ONE production caller: `useDiverge.ts`. Create and import do not
+ * announce, so this cache learns of them only when some list surface mounts.
+ *
+ * ⚠ A stale cache fails in the UNSAFE direction, not the safe one. The tier is
+ * a permanent ratchet server-side (`crates/biorouter/src/privacy/mod.rs`) — it
+ * only ever rises public → private — so a cached `public`, or a session the
+ * cache has never seen, leaves a now-private chat with no dot. There is no
+ * failure mode in which this over-marks. `ChatTabStrip`'s `privacyTiers` prop
+ * doc states the same thing, and the two must not drift apart again.
+ *
+ * ⚠ KNOWN GAP, not covered by this task. The header pill is NOT live either:
+ * BaseChat's `session` is the snapshot `chatStreamStore` sets once in
+ * `loadSession`, patched afterwards only for `name`/`user_set_name` and
+ * `user_workflow_values`. `privacy_tier` is never re-read on the turn path, and
+ * the post-load `getSession` polls exist for auto-naming and copy only the
+ * name. So a chat that ratchets to Private DURING its life shows no marker on
+ * either chat-side surface — tab dot or header pill — until something reloads
+ * it. History rows and the sidebar rail, which read freshly-fetched lists, are
+ * correct. Closing this needs the escalation to announce itself from the
+ * provider-bind path; nothing in the current plan wires that.
+ */
+function useSessionPrivacyTiers(): Record<string, SessionClassification> {
+  const [tiers, setTiers] = useState<Record<string, SessionClassification>>({});
+
+  useEffect(() => {
+    const read = () => {
+      const next: Record<string, SessionClassification> = {};
+      for (const session of getCachedSessionList() ?? []) {
+        if (session.privacy_tier) next[session.id] = session.privacy_tier;
+      }
+      // Identity-stable when nothing changed, so a list refresh that touched
+      // no tier does not re-render every strip in every pane.
+      setTiers((prev) => {
+        const prevKeys = Object.keys(prev);
+        const same =
+          prevKeys.length === Object.keys(next).length &&
+          prevKeys.every((id) => prev[id] === next[id]);
+        return same ? prev : next;
+      });
+    };
+    read();
+    // Subscribe BEFORE asking for the fetch. `preloadSessionList` is async but
+    // makes no such promise, and a cache that resolved between `read()` and the
+    // subscription would emit to nobody and leave the strip unmarked until the
+    // next unrelated change.
+    const unsubscribe = subscribeSessionList(read);
+    preloadSessionList();
+    return unsubscribe;
+  }, []);
+
+  return tiers;
+}
+
 export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
   const groups = useChatGroups();
   const terminalDock = useTerminalDock();
+  const privacyTiers = useSessionPrivacyTiers();
 
   const isMobile = useIsMobile();
   const { state: sidebarState } = useSidebar();
@@ -535,6 +617,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         groupActive={isActiveGroup}
         runningSessionIds={groups.runningSessionIds}
         tabAnnotations={groups.tabAnnotations}
+        privacyTiers={privacyTiers}
         // The MERGE caret. It cannot come from `dragOverTabId` like the local
         // one does: while a cross-window drag is in flight this window receives
         // no pointer events at all, so its own drag state is empty and the caret

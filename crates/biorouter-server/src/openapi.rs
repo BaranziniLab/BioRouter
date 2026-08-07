@@ -8,6 +8,7 @@ use biorouter::config::ExtensionEntry;
 use biorouter::conversation::Conversation;
 use biorouter::model::ModelConfig;
 use biorouter::permission::permission_confirmation::PrincipalType;
+use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::providers::base::{ConfigKey, ModelInfo, ProviderMetadata, ProviderType};
 use biorouter::session::{
     ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionType,
@@ -390,6 +391,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::config_management::check_provider,
         super::routes::config_management::set_config_provider,
         super::routes::config_management::get_pricing,
+        super::routes::config_management::get_privacy_disclosure,
+        super::routes::config_management::ack_privacy_disclosure,
         super::routes::agent::start_agent,
         super::routes::agent::resume_agent,
         super::routes::agent::stop_agent,
@@ -401,6 +404,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::agent::list_apps,
         super::routes::agent::update_from_session,
         super::routes::agent::agent_add_extension,
+        super::routes::agent::agent_cross_affiliation_grant,
         super::routes::agent::agent_remove_extension,
         super::routes::agent::update_agent_provider,
         super::routes::action_required::confirm_tool_action,
@@ -421,6 +425,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::session::update_session_user_workflow_values,
         super::routes::session::edit_message,
         super::routes::session::diverge_session,
+        super::routes::session::declassify_session,
         super::routes::session::get_session_extensions,
         super::routes::session::running_sessions,
         super::routes::usage::get_usage_report,
@@ -464,6 +469,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::list_bases,
         super::routes::knowledge::create_base,
         super::routes::knowledge::get_base,
+        super::routes::knowledge::get_kb_tier,
+        super::routes::knowledge::set_kb_tier,
         super::routes::knowledge::set_default_model,
         super::routes::knowledge::delete_base,
         super::routes::knowledge::get_graph,
@@ -495,9 +502,20 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::config_management::DetectProviderResponse,
         super::routes::config_management::DetectableProvider,
         super::routes::config_management::DetectableProvidersResponse,
+        super::routes::config_management::PrivacyDisclosureResponse,
         super::routes::config_management::ConfigResponse,
         super::routes::config_management::ProvidersResponse,
         super::routes::config_management::ProviderDetails,
+        // `ProviderDetails.affiliation` is `Option<ProviderAffiliation>`, and
+        // utoipa does NOT register nested types transitively — it emits a `$ref`
+        // to a component that was never added. The spec then still generates
+        // (the Rust side is happy), and the failure lands on the *client*
+        // generator: `Missing $ref pointer "#/components/schemas/
+        // ProviderAffiliation"`, which reads like a tooling bug rather than a
+        // missing line here. All three levels of the tree need naming.
+        biorouter::providers::base::ProviderAffiliation,
+        biorouter::providers::base::ProviderAffiliationKind,
+        biorouter::providers::base::AffiliationInstitution,
         super::routes::config_management::SlashCommandsResponse,
         super::routes::config_management::SlashCommand,
         super::routes::config_management::CommandType,
@@ -521,6 +539,13 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::session::SessionListResponse,
         super::routes::session::SidebarSessionListResponse,
         biorouter::session::SessionSummary,
+        // #56: `Session::privacy_tier` and `SessionSummary::privacy_tier`.
+        // utoipa emits a `$ref` for a nested `ToSchema`, so without the
+        // component registered both schemas point at a definition that is not
+        // in the document and the generated TS client has no
+        // `SessionClassification` union for the sidebar badge to switch on.
+        // Same reason `ProviderTier` is registered below.
+        SessionClassification,
         super::routes::session::UpdateSessionNameRequest,
         super::routes::session::UpdateSessionUserWorkflowValuesRequest,
         super::routes::session::UpdateSessionUserWorkflowValuesResponse,
@@ -529,6 +554,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::session::EditMessageResponse,
         super::routes::session::DivergeSessionRequest,
         super::routes::session::DivergeSessionResponse,
+        super::routes::session::DeclassifySessionRequest,
+        super::routes::session::DeclassifySessionResponse,
         super::routes::session::SessionExtensionsResponse,
         super::routes::session::RunningSessionsResponse,
         super::routes::reset::ResetCategory,
@@ -581,6 +608,10 @@ impl utoipa::Modify for ApiKeySecurity {
         JsonObjectSchema,
         RoleSchema,
         ProviderMetadata,
+        // #56: `ProviderMetadata::tier`. Without the component registered the
+        // generated TS client has no `ProviderTier` union for the renderer's
+        // grouping to switch on.
+        ProviderTier,
         ProviderType,
         LoadedProvider,
         ProviderEngine,
@@ -659,6 +690,12 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::agents::types::RetryConfig,
         biorouter::agents::types::SuccessCheck,
         super::routes::agent::UpdateProviderRequest,
+        // #56 Gate A: the typed body of `/agent/update_provider`'s 409. utoipa
+        // emits a `$ref` for a response `body =`, so without the component
+        // registered the document points at a definition it does not contain
+        // and the generated TS client has no `PrivacyBarrierBody` for the
+        // renderer's repair card to switch on.
+        super::routes::agent::PrivacyBarrierBody,
         super::routes::agent::GetToolsQuery,
         super::routes::agent::ReadResourceRequest,
         super::routes::agent::ReadResourceResponse,
@@ -673,6 +710,8 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::agent::UpdateWorkingDirRequest,
         super::routes::agent::UpdateFromSessionRequest,
         super::routes::agent::AddExtensionRequest,
+        super::routes::agent::CrossAffiliationGrantRequest,
+        super::routes::agent::CrossAffiliationGrantResponse,
         super::routes::agent::RemoveExtensionRequest,
         super::routes::agent::ResumeAgentResponse,
         super::routes::agent::ActiveTurnRef,
@@ -747,6 +786,11 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::CheckModelResponse,
         super::routes::knowledge::SetActiveBody,
         super::routes::knowledge::ActiveKbResponse,
+        // Issue #56 DR-18: the knowledge-base tier and the user's control over it.
+        biorouter_mcp::knowledge::types::KbTier,
+        super::routes::knowledge::KbListEntry,
+        super::routes::knowledge::SetKbTierBody,
+        super::routes::knowledge::KbTierResponse,
     ))
 )]
 pub struct ApiDoc;

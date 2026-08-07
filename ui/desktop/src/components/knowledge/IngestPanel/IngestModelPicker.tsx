@@ -215,6 +215,14 @@ export function IngestModelPicker({
             <div className="space-y-6">
               {sections.map((section) => (
                 <section key={section.key} className="space-y-3">
+                  {/* ⚠ The heading and the accent below come from
+                      `providerOrdering.ts` and must keep coming from there.
+                      This is a third model-selection surface that the design's
+                      §14.2 table never lists, and for a long time it was the
+                      ONLY consumer of the group's label field — the settings
+                      grid printed its own literals. Inline the words here and
+                      the knowledge picker will quietly go on using the old
+                      taxonomy after every other screen has been relabelled. */}
                   <div className="flex items-center gap-2 px-1 text-caps text-text-muted">
                     <span className={`h-1.5 w-1.5 rounded-full ${section.accentClassName}`} />
                     {section.label}

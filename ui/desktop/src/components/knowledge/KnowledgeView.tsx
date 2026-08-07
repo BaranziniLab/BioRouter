@@ -6,6 +6,7 @@ import { IngestPanel } from './IngestPanel/IngestPanel';
 import { KnowledgeGraphPanel } from './graph/KnowledgeGraphPanel';
 import { ChangeLogDrawer } from './changelog/ChangeLogDrawer';
 import { useKnowledge } from './KnowledgeContext';
+import { KbTierPanel } from './KbTierControl';
 import { ReadableContent } from '../Layout/ReadableContent';
 
 export default function KnowledgeView() {
@@ -17,7 +18,7 @@ function KnowledgeViewInner() {
   const [changeLogOpen, setChangeLogOpen] = useState(false);
   const [previewSha, setPreviewSha] = useState<string | null>(null);
   const [compactView, setCompactView] = useState<'digest' | 'graph'>('graph');
-  const { refresh } = useKnowledge();
+  const { refresh, primaryKb } = useKnowledge();
 
   // The KnowledgeProvider only fetches the base list once at app start, so a
   // knowledge base created elsewhere (e.g. via chat / the knowledge MCP tools)
@@ -94,8 +95,16 @@ function KnowledgeViewInner() {
             role="tabpanel"
             className={`${compactView === 'digest' ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default lg:flex lg:h-full`}
           >
-            <div className="hidden p-4 lg:block">
+            <div className="hidden flex-col gap-3 p-4 lg:flex">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
+              {/* Issue #56 DR-18. Beside the base it acts on, in the KB header —
+                  not in a settings page, where a user reading a private base
+                  would never meet it. */}
+              {primaryKb && (
+                <KbTierPanel
+                  kb={{ id: primaryKb.id, name: primaryKb.name, tier: primaryKb.tier }}
+                />
+              )}
             </div>
             <div className="min-h-0 flex-1 overflow-y-auto lg:border-t lg:border-border-subtle">
               <IngestPanel />

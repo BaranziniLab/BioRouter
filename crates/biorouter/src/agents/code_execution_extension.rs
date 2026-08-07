@@ -1426,7 +1426,22 @@ impl CodeExecutionClient {
         Ok(Self { info, context })
     }
 
-    async fn get_tool_infos(&self) -> Vec<ToolInfo> {
+    /// The importable-module catalogue.
+    ///
+    /// Issue #56 Gate E: this is a discovery surface — `search_modules` and
+    /// `read_module` serve tool names, signatures and descriptions out of it —
+    /// so a private extension is absent from it under a public model, exactly as
+    /// it is absent from the system prompt.
+    ///
+    /// `admitted` is `Some` for every path that runs INSIDE a tool call, and
+    /// that is not an optimisation: it is the rule this file's own comment
+    /// states, that "a script's tool call inherits the script's permission". A
+    /// resample here would let a model switch mid-turn and change what a running
+    /// script can import. `get_moim` is the one caller with nothing to inherit.
+    async fn get_tool_infos(
+        &self,
+        admitted: Option<crate::privacy::CallCapability>,
+    ) -> Vec<ToolInfo> {
         let Some(manager) = self
             .context
             .extension_manager
@@ -1436,7 +1451,10 @@ impl CodeExecutionClient {
             return Vec::new();
         };
 
-        match manager.get_prefixed_tools_excluding(EXTENSION_NAME).await {
+        match manager
+            .get_prefixed_tools_excluding(EXTENSION_NAME, admitted)
+            .await
+        {
             Ok(tools) if !tools.is_empty() => {
                 tools.iter().filter_map(ToolInfo::from_mcp_tool).collect()
             }
@@ -1447,6 +1465,7 @@ impl CodeExecutionClient {
     async fn handle_execute_code(
         &self,
         session_id: &str,
+        cap: crate::privacy::CallCapability,
         arguments: Option<JsonObject>,
         cancellation_token: CancellationToken,
     ) -> Result<CallToolResult, String> {
@@ -1457,11 +1476,17 @@ impl CodeExecutionClient {
             .ok_or("Missing required parameter: code")?
             .to_string();
 
-        let tools = self.get_tool_infos().await;
+        let tools = self.get_tool_infos(Some(cap)).await;
         let collected_artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let tool_handler = tokio::spawn(Self::run_tool_handler(
             session_id.to_string(),
+            // Issue #56: the capability this `execute_code` call was admitted
+            // on, carried down to every sub-call the script makes. The bridge
+            // holds a `Weak<ExtensionManager>` and no provider handle, so there
+            // is nothing here it could sample even if it wanted to — which is
+            // the point: a script's tool call inherits the script's permission.
+            cap,
             call_rx,
             self.context.extension_manager.clone(),
             Arc::clone(&collected_artifacts),
@@ -1530,6 +1555,7 @@ impl CodeExecutionClient {
     async fn handle_read_module(
         &self,
         arguments: Option<JsonObject>,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, String> {
         let path = arguments
             .as_ref()
@@ -1537,7 +1563,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_str())
             .ok_or("Missing required parameter: module_path")?;
 
-        let tools = self.get_tool_infos().await;
+        let tools = self.get_tool_infos(Some(cap)).await;
         let parts: Vec<&str> = path.trim_start_matches('/').split('/').collect();
 
         match parts.as_slice() {
@@ -1573,6 +1599,7 @@ impl CodeExecutionClient {
     async fn handle_search_modules(
         &self,
         arguments: Option<JsonObject>,
+        cap: crate::privacy::CallCapability,
     ) -> Result<Vec<Content>, String> {
         let terms = arguments
             .as_ref()
@@ -1607,7 +1634,7 @@ impl CodeExecutionClient {
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
 
-        let tools = self.get_tool_infos().await;
+        let tools = self.get_tool_infos(Some(cap)).await;
         Self::handle_search(&tools, &terms_vec, use_regex)
     }
 
@@ -1843,8 +1870,10 @@ impl CodeExecutionClient {
     /// content, so `user_error` is the sole verbatim text a record may keep, and
     /// `failure_kind` names the failure class for the sanitized placeholder when
     /// the tool produced none.
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_sub_call(
         session_id: &str,
+        cap: crate::privacy::CallCapability,
         tool_name: &str,
         arguments: &str,
         extension_manager: Option<&std::sync::Weak<crate::agents::ExtensionManager>>,
@@ -1865,7 +1894,7 @@ impl CodeExecutionClient {
             meta: None,
         };
         match manager
-            .dispatch_tool_call(session_id, tool_call, cancellation_token.clone())
+            .dispatch_tool_call(session_id, tool_call, cap, cancellation_token.clone())
             .await
         {
             Ok(dispatch_result) => match dispatch_result.result.await {
@@ -1891,6 +1920,7 @@ impl CodeExecutionClient {
 
     async fn run_tool_handler(
         session_id: String,
+        cap: crate::privacy::CallCapability,
         mut call_rx: mpsc::UnboundedReceiver<ToolCallRequest>,
         extension_manager: Option<std::sync::Weak<crate::agents::ExtensionManager>>,
         collected_artifacts: Arc<Mutex<CollectedArtifacts>>,
@@ -1953,6 +1983,7 @@ impl CodeExecutionClient {
             }
             let (result, mut failure_kind, user_error) = Self::dispatch_sub_call(
                 &session_id,
+                cap,
                 &tool_name,
                 &arguments,
                 extension_manager.as_ref(),
@@ -2174,15 +2205,22 @@ impl McpClientTrait for CodeExecutionClient {
     ) -> Result<CallToolResult, Error> {
         if name == "execute_code" {
             return Ok(self
-                .handle_execute_code(&meta.session_id, arguments, cancellation_token)
+                .handle_execute_code(
+                    &meta.session_id,
+                    meta.capability,
+                    arguments,
+                    cancellation_token,
+                )
                 .await
                 .unwrap_or_else(|error| {
                     CallToolResult::error(vec![Content::text(format!("Error: {error}"))])
                 }));
         }
         let content = match name {
-            "read_module" => self.handle_read_module(arguments).await,
-            "search_modules" => self.handle_search_modules(arguments).await,
+            // Issue #56 Gate E: these two ARE the discovery surface, so they see
+            // the world the capability this call was admitted on may see.
+            "read_module" => self.handle_read_module(arguments, meta.capability).await,
+            "search_modules" => self.handle_search_modules(arguments, meta.capability).await,
             _ => Err(format!("Unknown tool: {name}")),
         };
 
@@ -2199,7 +2237,9 @@ impl McpClientTrait for CodeExecutionClient {
     }
 
     async fn get_moim(&self, _session_id: &str) -> Option<String> {
-        let tools = self.get_tool_infos().await;
+        // The one catalogue read with no admitted call to inherit from: MOIM is
+        // assembled for the prompt, not inside a tool call, so it samples.
+        let tools = self.get_tool_infos(None).await;
         if tools.is_empty() {
             return None;
         }
@@ -2260,7 +2300,10 @@ mod tests {
             .call_tool(
                 "execute_code",
                 Some(args),
-                McpMeta::new("test-session-id"),
+                McpMeta::new(
+                    "test-session-id",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2297,7 +2340,10 @@ mod tests {
             .call_tool(
                 "execute_code",
                 Some(args),
-                McpMeta::new("test-session-id"),
+                McpMeta::new(
+                    "test-session-id",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 CancellationToken::new(),
             )
             .await
@@ -2367,7 +2413,10 @@ mod tests {
             .call_tool(
                 "execute_code",
                 Some(args),
-                McpMeta::new("cancelled-session"),
+                McpMeta::new(
+                    "cancelled-session",
+                    crate::privacy::CallCapability::for_test_restricted(),
+                ),
                 cancellation,
             )
             .await
@@ -2770,6 +2819,7 @@ mod tests {
         let token = CancellationToken::new();
         let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
             "cancel-session".to_string(),
+            crate::privacy::CallCapability::for_test_restricted(),
             call_rx,
             None,
             Arc::clone(&collected),
@@ -2790,6 +2840,7 @@ mod tests {
         let (call_tx, call_rx) = mpsc::unbounded_channel();
         let handler = tokio::spawn(CodeExecutionClient::run_tool_handler(
             "telemetry-session".to_string(),
+            crate::privacy::CallCapability::for_test_restricted(),
             call_rx,
             None,
             Arc::clone(&collected),
@@ -2865,7 +2916,12 @@ mod tests {
             Value::String("nonexistent".to_string()),
         );
 
-        let result = client.handle_read_module(Some(args)).await;
+        let result = client
+            .handle_read_module(
+                Some(args),
+                crate::privacy::CallCapability::for_test_restricted(),
+            )
+            .await;
         assert!(result.is_err());
     }
 
@@ -3611,5 +3667,96 @@ mod tests {
             "Bracket notation should work: {:?}",
             result.err()
         );
+    }
+}
+
+#[cfg(test)]
+mod gate_c_bridge_tests {
+    //! Issue #56 Gate C, path 3 of the four that converge on
+    //! `ExtensionManager::dispatch_tool_call`.
+    //!
+    //! The `execute_code` bridge re-enters the **ExtensionManager's** dispatch
+    //! from inside a running tool — not the Agent's — so it carries no
+    //! `ToolInspector` and an inspector-shaped Gate C would be invisible to it.
+    //! It lives here rather than beside the other three paths
+    //! (`agents::agent::gate_c_dispatch_tests`) only because
+    //! `dispatch_sub_call` is private to this module.
+
+    use super::*;
+
+    async fn manager_with_the_private_extension(
+        dir: &std::path::Path,
+    ) -> Arc<crate::agents::ExtensionManager> {
+        let manager = Arc::new(crate::agents::ExtensionManager::new(
+            Arc::new(Mutex::new(None)),
+            Arc::new(crate::session::SessionManager::new(dir.to_path_buf())),
+        ));
+        manager
+            .add_inprocess_server(
+                "ucsfomopagent",
+                biorouter_mcp::datasql::server::DataSqlServer::new(std::collections::HashMap::new()),
+            )
+            .await
+            .expect("inject the private extension");
+        manager
+    }
+
+    #[tokio::test]
+    async fn the_execute_code_bridge_cannot_reach_a_private_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_the_private_extension(dir.path()).await;
+        let weak = Arc::downgrade(&manager);
+        let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
+
+        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+            "gate-c",
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Public, true),
+            "ucsfomopagent__data_sources",
+            "{}",
+            Some(&weak),
+            &artifacts,
+            &CancellationToken::default(),
+        )
+        .await;
+
+        assert_eq!(kind, "dispatch_error");
+        let text =
+            result.expect_err("a script must not reach a private extension from a public model");
+        // The WHOLE refusal: `Tool '…' not found` also names the extension, so
+        // asserting on the name alone would pass on a fixture that never loaded
+        // it.
+        let refusal = crate::privacy::refusal::privacy_refusal(
+            "ucsfomopagent",
+            crate::privacy::ProviderTier::Private,
+            crate::privacy::ProviderTier::Public,
+        )
+        .expect("the pure refusal")
+        .message
+        .to_string();
+        assert!(text.contains(&refusal), "{text}");
+        assert!(!text.contains("The user has declined"), "{text}");
+    }
+
+    /// The other direction: the bridge is not simply broken for this extension.
+    #[tokio::test]
+    async fn a_private_script_still_reaches_it_through_the_bridge() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = manager_with_the_private_extension(dir.path()).await;
+        let weak = Arc::downgrade(&manager);
+        let artifacts = Arc::new(Mutex::new(CollectedArtifacts::default()));
+
+        let (result, kind, _user) = CodeExecutionClient::dispatch_sub_call(
+            "gate-c",
+            crate::privacy::CallCapability::for_test(crate::privacy::ProviderTier::Private, true),
+            "ucsfomopagent__data_sources",
+            "{}",
+            Some(&weak),
+            &artifacts,
+            &CancellationToken::default(),
+        )
+        .await;
+
+        assert_ne!(kind, "dispatch_error", "{result:?}");
+        result.expect("a private model may call a private extension from a script");
     }
 }

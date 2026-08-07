@@ -1467,15 +1467,17 @@ biorouter session --with-streamable-http-extension "https://my-mcp-server.exampl
 
 <h2>Extension agents in the marketplace</h2>
 <p>BAAM features a set of extension agents that connect BioRouter to specialized data and services. Each installs as a <code>.brxt</code> bundle. Several are UCSF connectors that need institutional credentials.</p>
+<p>The <em>Privacy</em> column is the extension's tier: the same one BAAM shows as a badge on the card, and the one Biorouter enforces at runtime while privacy tiers are on. With them on, an agent marked Private reaches institution-governed data and its tools are refused in a chat bound to a public model; a Public one is not held back by the tier, though it still has to be installed, enabled, and permitted like any other extension. Turning privacy tiers off in <strong>Settings &rarr; Privacy</strong> removes that enforcement without changing any tier below.</p>
+<p>The tier comes from the marketplace registry that ships with the app, not from anything a <code>.brxt</code> bundle says about itself, so an extension cannot declare its own. It is resolved by the name the extension is installed under, so renaming one locally does change which tier it resolves to. Every agent the registry tags Private is listed below; the Public rows are a selection, not the whole marketplace. The table is checked against the registry by Biorouter's own check suite and again when this site deploys, rather than maintained by hand. See <a href="#vaulting" onclick="showDoc('vaulting');return false;">Vaulting &amp; security</a> for what a non-private model can and cannot reach.</p>
 <div class="doc-table-scroll"><table class="doc-table">
-  <thead><tr><th>Agent</th><th>What it connects</th><th>Credentials</th></tr></thead>
+  <thead><tr><th>Agent</th><th>Privacy</th><th>What it connects</th><th>Credentials</th></tr></thead>
   <tbody>
-    <tr><td><strong>SPOKEAgent</strong></td><td>Cypher queries on the SPOKE biomedical knowledge graph (diseases, genes, proteins, drugs, pathways).</td><td><code>SPOKEAGENT_PASSCODE</code> from the UCSF wiki credentials page.</td></tr>
-    <tr><td><strong>UCSFOMOPAgent</strong></td><td>Natural-language SQL over the UCSF OMOP de-identified clinical database (read-only).</td><td>UCSF credentials.</td></tr>
-    <tr><td><strong>CDWAgent</strong></td><td>Multimodal access to the UCSF Clinical Data Warehouse: cohorts, labs, imaging, notes and NLP (read-only).</td><td>UCSF network credentials (<code>CAMPUS\username</code>).</td></tr>
-    <tr><td><strong>PlaywrightAgent</strong></td><td>Browser automation: navigate pages, extract content, and fill forms. No vision model needed.</td><td>None. Requires Node.js.</td></tr>
-    <tr><td><strong>CodeGraphAgent</strong></td><td>A pre-indexed code knowledge graph across 23 languages ("who calls X?", "what breaks if I change Z?").</td><td>None.</td></tr>
-    <tr><td><strong>BiorOffice</strong></td><td>Create, read, and edit Word, Excel, and PowerPoint files from chat.</td><td>None. No Microsoft Office install needed.</td></tr>
+    <tr><td><strong>SPOKEAgent</strong></td><td>Public</td><td>Cypher queries on the SPOKE biomedical knowledge graph (diseases, genes, proteins, drugs, pathways).</td><td><code>SPOKEAGENT_PASSCODE</code> from the UCSF wiki credentials page.</td></tr>
+    <tr><td><strong>UCSFOMOPAgent</strong></td><td>Private</td><td>Natural-language SQL over the UCSF OMOP de-identified clinical database (read-only).</td><td>UCSF credentials.</td></tr>
+    <tr><td><strong>CDWAgent</strong></td><td>Private</td><td>Multimodal access to the UCSF Clinical Data Warehouse: cohorts, labs, imaging, notes and NLP (read-only).</td><td>UCSF network credentials (<code>CAMPUS\username</code>).</td></tr>
+    <tr><td><strong>PlaywrightAgent</strong></td><td>Public</td><td>Browser automation: navigate pages, extract content, and fill forms. No vision model needed.</td><td>None. Requires Node.js.</td></tr>
+    <tr><td><strong>CodeGraphAgent</strong></td><td>Public</td><td>A pre-indexed code knowledge graph across 23 languages ("who calls X?", "what breaks if I change Z?").</td><td>None.</td></tr>
+    <tr><td><strong>BiorOffice</strong></td><td>Public</td><td>Create, read, and edit Word, Excel, and PowerPoint files from chat.</td><td>None. No Microsoft Office install needed.</td></tr>
   </tbody>
 </table></div>
 
@@ -2238,6 +2240,17 @@ biorouter schedule delete &lt;job-id&gt;</code></pre>
 <div class="alert alert-warning">
   <strong>Patient data, PHI, and other regulated data.</strong> For clinical records, genomic data linked to individuals, or anything subject to HIPAA or institutional governance, use <strong>only institution-managed services or fully local models</strong>. Do not use personal commercial API accounts. De-identify before inputting data unless you have explicit authorization and a compliant pathway, provide only the data the task needs, and do not share sessions that contain sensitive information. UCSF data-use agreements change, so confirm with UCSF IT Security or your compliance office before a session touches regulated data. The Biorouter team cannot speak to the status of institutional agreements.
 </div>
+
+<h3>What a non-private model can reach</h3>
+<p>Biorouter shows this the first time you bind a commercial model, and keeps it in front of you afterwards on the model chip, in Settings &rarr; Privacy, and above the Commercial section of the provider grid. It is shown whether or not privacy tiers are enabled: turning the feature off removes the enforcement, not the exposure.</p>
+<div class="alert alert-warning">
+  <p><strong>{Provider} is not hosted by your institution.</strong></p>
+  <p>It is not HIPAA-compliant, is not hosted on-premise, and does not run on this machine. It can read <strong>files on this computer</strong> &mdash; anything a chat on this model can reach, it can send there: the contents of your working directory, and whatever a command you approve prints.</p>
+  <p>Biorouter does stop three things: this model cannot read another chat&rsquo;s transcript, cannot read a knowledge base marked private, and cannot use the private data extensions (UCSF OMOP, CDW) or switch this chat to a private model to reach them.</p>
+  <p>It <strong>does not</strong> stop it reading ordinary files on this computer through the shell &mdash; including files an earlier private chat wrote outside Biorouter&rsquo;s own storage. If the work involves patient data, use a local model or an institutional one.</p>
+</div>
+<p>The one-line form, on the model chip and in <code>biorouter configure</code>: &ldquo;Not HIPAA-compliant, not on-premise, not local &mdash; this model can read files on this computer. Private chats and private knowledge bases stay out of its reach.&rdquo;</p>
+<p>These are the exact words of <code>COPY_LONG</code> and <code>COPY_SHORT</code> in <code>crates/biorouter/src/privacy/disclosure.rs</code>, the single definition every surface renders. Quote them; do not paraphrase them.</p>
 
 <h2>Shell sandboxing</h2>
 <p>Beyond the permission mode, Biorouter can wrap shell commands in an OS-level sandbox that confines writes to the working directory and the temp directory and denies outbound network by default. It is <strong>opt-in</strong> through the <code>BIOROUTER_SHELL_SANDBOX</code> variable and off unless you set it.</p>

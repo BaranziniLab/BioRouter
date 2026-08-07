@@ -402,10 +402,18 @@ impl KnowledgeService {
     }
 
     pub fn new(root: PathBuf) -> Self {
-        Self {
+        let svc = Self {
             root,
             locks: Arc::new(DashMap::new()),
+        };
+        // Issue #56. Best-effort: `new` is infallible and a failure here must
+        // not stop the app from opening. A root that never migrates reads every
+        // base PUBLIC (the file is absent ⇒ "not migrated"), which is AR-2's
+        // accepted direction, not a new one.
+        if let Err(e) = svc.ensure_tiers_migrated() {
+            tracing::warn!("knowledge: could not migrate kb tiers: {e:#}");
         }
+        svc
     }
 
     pub fn new_default() -> Result<Self> {
@@ -428,6 +436,101 @@ impl KnowledgeService {
         FileLockGuard::acquire(&self.root_lock_path())
     }
 
+    /// Take the root lock and raise `kb_id` on **both** of issue #56's axes: to
+    /// the caller's tier, and to the set of institutions whose content it holds
+    /// (DR-26 / Task 50 Step 1).
+    ///
+    /// For callers OUTSIDE this module. Inside it — `create_base`,
+    /// `import_brkb`, `delete_base` — the lock is already held, so those call
+    /// `tier::*_unlocked` directly (through [`Self::stamp_new_base_unlocked`],
+    /// which is this function's unlocked twin). Calling this from there
+    /// deadlocks.
+    ///
+    /// ⚠ **One method rather than two that callers are asked to pair.** It was
+    /// two, and review found the consequences: the five production call sites
+    /// paired them by convention, in two different orders (so a failure between
+    /// them left a *public* base carrying an owner at one site and a claimed
+    /// base at public tier at another), each taking and releasing the root lock
+    /// separately. And a caller that raised only the tier would put an
+    /// institution's content into a base no institution is recorded as owning —
+    /// which reads as unclaimed and is therefore reachable from every other
+    /// institution's model. Neither is expressible now: there is one call, one
+    /// lock, one order.
+    pub fn raise_tier_and_affiliation(
+        &self,
+        kb_id: &str,
+        caller_is_private: bool,
+        caller: &crate::knowledge::affiliation::CallerAffiliation,
+    ) -> Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)?;
+        crate::knowledge::tier::raise_affiliation_unlocked(&self.root, kb_id, caller)
+    }
+
+    /// Stamp a brand-new base on **both** of issue #56's axes, inside a root
+    /// lock the caller already holds.
+    ///
+    /// ⚠ **The pairing is this function, not a convention.** `create_base_as`
+    /// and `import_brkb` are the two tools whose subject id is minted by the
+    /// call, so neither can go through the `call_tool` seam that pairs the two
+    /// raises for the other seventeen — and neither is visible to
+    /// `server::tests::every_tool_that_ratchets_the_tier_also_records_the_callers_institution`,
+    /// which is parameterised over a base that already exists. Task 50 shipped
+    /// with both of them raising the tier alone: the affiliation axis was
+    /// laundered by `kb_export` + `kb_import`, both endpoints Private, no gate
+    /// crossed. One function that does both is what stops that from being
+    /// re-introduced by someone reading only one of the call sites.
+    fn stamp_new_base_unlocked(
+        &self,
+        kb_id: &str,
+        caller_is_private: bool,
+        owners: std::collections::BTreeSet<String>,
+    ) -> Result<()> {
+        crate::knowledge::tier::raise_unlocked(&self.root, kb_id, caller_is_private)?;
+        crate::knowledge::tier::add_owners_unlocked(&self.root, kb_id, owners)
+    }
+
+    /// Take the root lock and SET `kb_id`'s tier on the user's behalf (issue #56
+    /// DR-18) — the one call in the tree that can lower one.
+    ///
+    /// It sits beside [`Self::raise_tier`] and shares its lock discipline and its
+    /// deadlock rule: never call it from `create_base` / `import_brkb` /
+    /// `delete_base`, which are already inside `lock_root()`.
+    ///
+    /// The `&UserKbTierChange` is a proof-of-user with a private field. This
+    /// wrapper can accept one and cannot make one — the only construction site
+    /// in the tree is the HTTP handler behind the user-action header, pinned by
+    /// `tier_user::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
+    pub fn set_tier_by_user(
+        &self,
+        kb_id: &str,
+        tier: crate::knowledge::types::KbTier,
+        ok: &crate::knowledge::tier_user::UserKbTierChange,
+    ) -> Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier_user::set_unlocked(&self.root, kb_id, tier, ok)
+    }
+
+    /// The mirror of [`Self::raise_tier`], for a base that has gone away.
+    pub fn forget_tier(&self, kb_id: &str) -> Result<()> {
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::forget_unlocked(&self.root, kb_id)
+    }
+
+    /// Idempotent, and cheap on the common path: it stats `.kb-tiers` BEFORE
+    /// taking the lock and returns immediately when it exists, so the ~90
+    /// `KnowledgeService::new` calls in the test suite do not each `flock`.
+    fn ensure_tiers_migrated(&self) -> Result<()> {
+        if crate::knowledge::paths::kb_tiers_path(&self.root).exists() {
+            return Ok(());
+        }
+        if !self.root.exists() {
+            return Ok(()); // no bases yet; the first create_base registers
+        }
+        let _lock = self.lock_root()?;
+        crate::knowledge::tier::ensure_migrated_unlocked(&self.root)
+    }
+
     /// Acquire an exclusive lock for `kb_id`. Held until the returned guard is dropped.
     /// Used by macros to serialize concurrent writers against the same KB.
     pub async fn lock_kb(&self, kb_id: &str) -> Result<KnowledgeWriteGuard> {
@@ -444,7 +547,43 @@ impl KnowledgeService {
         })
     }
 
+    /// Create a base on behalf of the user (no model involved), so it is born
+    /// PUBLIC and unclaimed. Model-facing callers use [`Self::create_base_as`]
+    /// instead.
     pub fn create_base(&self, id: &str, name: &str, color: Option<&str>) -> Result<Manifest> {
+        self.create_base_as(
+            id,
+            name,
+            color,
+            false,
+            &crate::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
+    }
+
+    /// Create a base and stamp it with the creating session's tier, both inside
+    /// **one** root-lock transaction (issue #56).
+    ///
+    /// `create_base` + a separate `raise_tier` would be two transactions with a
+    /// window between them in which a lock-free `is_private` reader sees a
+    /// private session's brand-new base as PUBLIC, and in which a failing raise
+    /// returns `Err` to the caller while a PUBLIC base persists on disk. That is
+    /// the same reasoning that keeps `import_brkb`'s stamp inside its own single
+    /// store write, applied to the other tool whose subject id does not exist
+    /// before the call.
+    ///
+    /// `caller_affiliation` is stamped in the same transaction and for the same
+    /// reason (issue #56 DR-26 / Task 50): the tier is decided **at creation**,
+    /// not at the first ingest (DR-18(b)), and a base born in a UCSF chat that
+    /// recorded no owner would read as unclaimed — reachable from every other
+    /// institution's model — until something happened to write into it.
+    pub fn create_base_as(
+        &self,
+        id: &str,
+        name: &str,
+        color: Option<&str>,
+        caller_is_private: bool,
+        caller_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
+    ) -> Result<Manifest> {
         let _lock = self.lock_root()?;
         paths::validate_kb_id(id)?;
         let kb_root = paths::kb_root(&self.root, id);
@@ -489,6 +628,20 @@ impl KnowledgeService {
             },
         )?;
         self.rebuild_graph_cache(id)?;
+        // Issue #56, decision (5a). A base with no entry reads PRIVATE
+        // (unknown provenance), so an unregistered base would lock its own
+        // creator out. `raise_unlocked` registers an absent id at the caller's
+        // tier and can never lower an existing entry, so it subsumes
+        // `register_public_if_absent_unlocked` for the `false` case that the
+        // ~90 user-facing `create_base` call sites take. Inside the root lock,
+        // so the `_unlocked` twin is the one that must be called — and in the
+        // SAME transaction as the directory, so there is no window in which a
+        // private session's new base reads PUBLIC.
+        self.stamp_new_base_unlocked(
+            id,
+            caller_is_private,
+            crate::knowledge::affiliation::contributed_owners(caller_affiliation),
+        )?;
         Ok(m)
     }
 
@@ -499,15 +652,66 @@ impl KnowledgeService {
             anyhow::bail!("kb '{kb_id}' not found");
         }
         let mut buf = std::io::Cursor::new(Vec::new());
-        crate::knowledge::brkb::export(&kb_root, &mut buf)?;
+        // Issue #56, decision (2a): the archive carries a raise-only provenance
+        // marker. No barrier here — this is the USER's download path too
+        // (`GET /knowledge/bases/{id}/export`), and DR-14 governs what a MODEL
+        // can reach. The model-facing location rule lives in `kb_export`.
+        let is_private = crate::knowledge::tier::is_private(&self.root, kb_id);
+        // Issue #56 DR-26 / Task 50: the archive carries the owners too, or an
+        // export is a way to strip them. `Unknown` — an unreadable store — is
+        // the one case with nothing honest to write: the archive grammar has no
+        // "unknown ownership" value, and inventing one that fails OPEN is
+        // exactly the inversion Step 0's migration warning names. Refuse
+        // instead. The same machine cannot write any knowledge base either
+        // (`load_for_write` bails on an unreadable store), so this is a broken
+        // store surfacing at one more place rather than a new failure mode.
+        let owners = match crate::knowledge::tier::affiliation(&self.root, kb_id).owners() {
+            Some(owners) => owners.clone(),
+            None => anyhow::bail!(
+                "cannot export '{kb_id}': the knowledge-base classification store is unreadable, \
+                 so whose content this base holds cannot be established and the archive would \
+                 claim it belongs to nobody. Repair or remove {}",
+                crate::knowledge::paths::kb_tiers_path(&self.root).display()
+            ),
+        };
+        crate::knowledge::brkb::export(&kb_root, &mut buf, is_private, &owners)?;
         Ok(buf.into_inner())
     }
 
-    pub fn import_brkb(&self, zip_bytes: &[u8]) -> Result<String> {
+    /// `importer_is_private` is the tier of whoever asked for the import. The
+    /// new base ends up at `max(archive marker, importer)` — the marker can only
+    /// raise, never lower (issue #56, decision 2a).
+    ///
+    /// On DR-26's third axis the new base's owners are the **union** of what the
+    /// archive carried and the importer's own institution, which is the same
+    /// disjunction the tier takes one axis over:
+    ///
+    /// * The archive's owners, because the content is theirs and an export must
+    ///   not be a way to strip a claim.
+    /// * The importer's, because importing is an act by that institution's
+    ///   session — the same reason a private importer privatises what it
+    ///   imports.
+    ///
+    /// So a Stanford chat importing a UCSF archive lands a base owned by both,
+    /// which `affiliation::reachable` puts out of reach of *both* their models.
+    /// That is over-restrictive only in the case DR-26 exists to stop, and the
+    /// innocent case (UCSF importing its own archive) is a no-op.
+    pub fn import_brkb(
+        &self,
+        zip_bytes: &[u8],
+        importer_is_private: bool,
+        importer_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
+    ) -> Result<String> {
         let _lock = self.lock_root()?;
         std::fs::create_dir_all(&self.root)?;
         let cursor = std::io::Cursor::new(zip_bytes);
-        let new_id = crate::knowledge::brkb::import(cursor, &self.root)?;
+        let imported = crate::knowledge::brkb::import(cursor, &self.root)?;
+        let new_id = imported.id;
+        let provenance_private = imported.provenance_private;
+        let mut owners = imported.owners;
+        owners.extend(crate::knowledge::affiliation::contributed_owners(
+            importer_affiliation,
+        ));
         // Register in the top-level manifest.
         let path = paths::kb_root(&self.root, &new_id);
         crate::knowledge::registry::register(
@@ -516,6 +720,23 @@ impl KnowledgeService {
                 id: new_id.clone(),
                 path,
             },
+        )?;
+        // Issue #56. ONE store write, not a register followed by a raise.
+        // `raise_unlocked` registers an absent id at the caller's tier
+        // (`raise_is_monotone_and_registers_an_absent_base_at_the_callers_tier`),
+        // so the pair was redundant — and it was worse than redundant: each call
+        // ends in its own `save`, and `is_private` is deliberately lock-free, so
+        // a reader landing between the two renames would have seen a base whose
+        // private content was already fully extracted on disk classified PUBLIC.
+        // With a single write the reader sees either the pre-import state (a
+        // directory with no entry, which reads private) or the final tier.
+        //
+        // The floor is a disjunction, never the marker alone: a hostile archive
+        // claiming "public" must not lower a private importer's base.
+        self.stamp_new_base_unlocked(
+            &new_id,
+            provenance_private.unwrap_or(false) || importer_is_private,
+            owners,
         )?;
         Ok(new_id)
     }
@@ -679,6 +900,9 @@ impl KnowledgeService {
         }
         self.rewrite_session_primary_refs_unlocked(id, None)?;
         self.rewrite_hidden_refs_unlocked(id, None)?;
+        // Issue #56: drop the tier with the base, so a later base reusing the
+        // id is classified by its own creator. Inside the root lock.
+        crate::knowledge::tier::forget_unlocked(&self.root, id)?;
 
         Ok(())
     }
@@ -1848,6 +2072,62 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svc = KnowledgeService::new(dir.path().to_path_buf());
         (dir, svc)
+    }
+
+    /// Issue #56 DR-26 / Task 50, and the regression that made it necessary.
+    ///
+    /// This module is the whole production surface of the tier ratchet: every
+    /// other caller in the tree goes through `KnowledgeService::raise_tier` or is
+    /// a test. Task 50 shipped with three `raise_unlocked` call sites here and an
+    /// affiliation twin on only one, so `kb_create_base` and `kb_import` moved
+    /// the tier and left the base reading UNCLAIMED — which
+    /// `affiliation::reachable` treats as permissive for every private model. A
+    /// UCSF chat could export a base it owns and any other institution's chat
+    /// could import the archive and read it, both endpoints Private, no gate
+    /// crossed.
+    ///
+    /// ⚠ **A tripwire over one spelling, not a proof** — the same shape as
+    /// `tier_user::tests::exactly_one_writer_outside_the_ratchet_saves_the_tier_store`.
+    /// What it reliably catches is the realistic case: a third ratchet path
+    /// added here that stamps the tier and forgets the third axis. The two
+    /// permitted sites are [`KnowledgeService::raise_tier_and_affiliation`] (for
+    /// a base that already exists) and [`KnowledgeService::stamp_new_base_unlocked`]
+    /// (for one this call is minting); each does both raises itself, so there is
+    /// no third function that could do one.
+    #[test]
+    fn the_tier_ratchet_has_no_production_call_site_that_skips_the_affiliation() {
+        let this =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/knowledge/service.rs");
+        let src = std::fs::read_to_string(&this)
+            .unwrap_or_else(|e| panic!("the audit could not read {}: {e}", this.display()));
+        // Composed, so the audit does not match itself.
+        let needle = concat!("tier::", "raise_unlocked(");
+        let sites: Vec<&str> = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//") && l.contains(needle))
+            .collect();
+        assert_eq!(
+            sites.len(),
+            2,
+            "the tier ratchet is called {} times in service.rs, not 2. Every \
+             production raise must be paired with the affiliation raise in the \
+             same function: use `stamp_new_base_unlocked` for a base this call \
+             is minting, or `raise_tier_and_affiliation` for one that already \
+             exists. Sites found: {sites:#?}",
+            sites.len()
+        );
+        assert_eq!(
+            src.matches(concat!("tier::", "add_owners_unlocked("))
+                .count()
+                + src
+                    .matches(concat!("tier::", "raise_affiliation_unlocked("))
+                    .count(),
+            2,
+            "the affiliation ratchet is reached from somewhere new. It must be \
+             reached from exactly the two functions the tier ratchet is, and \
+             from the same line of each: `raise_tier_and_affiliation` and \
+             `stamp_new_base_unlocked`."
+        );
     }
 
     #[test]
@@ -3231,5 +3511,45 @@ mod tests {
         assert!(!svc.migrate_schema_if_needed("k").unwrap());
         // Third call too.
         assert!(!svc.migrate_schema_if_needed("k").unwrap());
+    }
+
+    #[tokio::test]
+    async fn registering_a_tier_from_inside_the_root_lock_does_not_deadlock() {
+        // The whole of decision (5b), as a test that TIMES OUT rather than fails
+        // if the `_unlocked` convention is broken — a deadlock does not assert,
+        // it waits. `create_base` holds `lock_root()`; a `tier::raise` that
+        // acquires it again blocks forever and the daemon stops answering on the
+        // very first knowledge call, while every tier.rs unit test still passes
+        // because they call the store on a bare root no service is holding.
+        let d = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(d.path().to_path_buf());
+        let done = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                svc.create_base("k", "K", None)?; // registers, inside the lock
+                                                  // the wrapper: takes the lock itself, once, for both axes
+                svc.raise_tier_and_affiliation(
+                    "k",
+                    true,
+                    &crate::knowledge::affiliation::CallerAffiliation::Institution(
+                        "ucsf".to_string(),
+                    ),
+                )?;
+                svc.delete_base("k") // forgets, inside the lock
+            }),
+        )
+        .await
+        .expect("create_base / raise_tier / delete_base deadlocked on the root lock");
+        done.unwrap().unwrap();
+    }
+
+    #[test]
+    fn a_base_created_by_any_surface_is_registered_public_rather_than_unknown() {
+        // Decision (5a). Without the registration, decision (3) reads a freshly
+        // created base as PRIVATE and Task 10C locks the user out of a base they
+        // just made from the CLI or the Knowledge view.
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        assert!(!crate::knowledge::tier::is_private(svc.root(), "k"));
     }
 }

@@ -27,6 +27,12 @@ vi.mock('../../ConfigContext', () => ({
     removeExtension: mocks.removeExtension,
     getExtensions: mocks.getExtensions,
   }),
+  // Every card now carries a `PrivacyBadge` (issue #56 §13.5), and the badge
+  // reads the master switch off this same context. It throws rather than
+  // defaulting when a mock omits this — see the warning in `ui/PrivacyBadge.tsx`,
+  // which is the deliberate trade against a prop nine call sites would have to
+  // remember to pass.
+  usePrivacyTiersEnabled: () => true,
 }));
 
 // `./index` re-exports the real extension-manager calls, which would hit the daemon.

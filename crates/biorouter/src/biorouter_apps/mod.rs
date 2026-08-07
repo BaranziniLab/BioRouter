@@ -138,7 +138,15 @@ pub async fn fetch_mcp_apps(
 
     for (extension_name, resource) in ui_resources {
         match extension_manager
-            .read_resource(&resource.uri, &extension_name, CancellationToken::default())
+            // Issue #56: the apps' UI-resource sweep is not a tool call, so it
+            // has no admitted capability to inherit (`None`) and Gate C's
+            // sibling guard reads the session's bound model itself.
+            .read_resource(
+                &resource.uri,
+                &extension_name,
+                None,
+                CancellationToken::default(),
+            )
             .await
         {
             Ok(read_result) => {

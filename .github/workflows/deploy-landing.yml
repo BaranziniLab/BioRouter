@@ -31,7 +31,58 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # This workflow used to run zero checks, so a push to landing/ could publish a
+  # registry the shipped app does not enforce — retagging an extension Public on
+  # the site while the compiled-in private set still calls it private, or the
+  # reverse. The deploy is now gated on the same two registry assertions
+  # `just check-everything` runs, so the published catalog and the app that
+  # enforces it can never be shipped out of agreement.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Use Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      # The mutant suite first, then the checker it grades. Order matters: the
+      # live `--check` below passes against a `checkDocsPrivacy` rewritten to
+      # `return []`, so on its own it cannot tell "the table agrees" from "the
+      # check stopped asking". The suite is what refuses the second reading.
+      - name: Check the docs privacy checker still catches what it must
+        run: node --test landing/scripts/check-docs-privacy.test.mjs
+
+      - name: Check the BAAM private set agrees in all three committed copies
+        run: node landing/scripts/check-consistency.mjs --check
+
+      - name: Check the three registry outputs are what baam.html generates
+        run: node landing/scripts/build-registry.mjs --check
+
+      # The two checks above are about the CATALOG. This one is about the PAGE
+      # that is being published: the privacy facet, the tier badges in both the
+      # rendered and the no-JS view, and the tag row that deletes rather than
+      # wraps what does not fit. Without it the entire shelf UI could regress and
+      # still ship, because the published bytes are `landing/` as-is — there is
+      # no build step between this repo and biorouter.ucsf.edu whose failure
+      # would catch anything.
+      - name: Install the Playwright module and a chromium
+        run: npm ci
+        working-directory: ui/desktop
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: "1"
+
+      - name: Install chromium
+        run: npx playwright install --with-deps chromium
+        working-directory: ui/desktop
+
+      - name: Check the BAAM shelf's privacy badges and facet in a browser
+        run: node --test landing/scripts/baam-privacy-facet.test.mjs
+
   deploy:
+    needs: check
     runs-on: ubuntu-latest
     environment:
       name: github-pages

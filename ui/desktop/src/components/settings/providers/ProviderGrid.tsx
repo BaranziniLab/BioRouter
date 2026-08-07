@@ -12,6 +12,7 @@ import CustomProviderForm from './modal/subcomponents/forms/CustomProviderForm';
 import { SwitchModelModal } from '../models/subcomponents/SwitchModelModal';
 import type { View } from '../../../utils/navigationUtils';
 import { getOrderedProviderGroups } from './providerOrdering';
+import { NonPrivateModelDisclosureNote } from '../../privacy/NonPrivateModelDisclosureNote';
 
 const GridLayout = memo(function GridLayout({ children }: { children: React.ReactNode }) {
   return <div className="flex flex-col">{children}</div>;
@@ -161,11 +162,24 @@ function ProviderCards({
     [refreshProviders]
   );
 
-  const { institutionalCards, localCards, commercialCards } = useMemo(() => {
+  /**
+   * §14.5 — the heading, the accent and the one line of card copy all come from
+   * `getOrderedProviderGroups`, never from literals here.
+   *
+   * This file used to import that function for its ORDERING and then print
+   * three hardcoded headings of its own, with its own dots. Relabelling
+   * `providerOrdering.ts` therefore changed nothing a user could see — which is
+   * the exact failure this rewrite removes, and why
+   * `ProviderGrid.privacy.test.tsx` asserts against the rendered screen rather
+   * than against the data. (The task's gate greps this file for the three old
+   * headings and expects none, so do not quote them back in here either.)
+   */
+  const sections = useMemo(() => {
     const providersArray = Array.isArray(providers) ? providers : [];
 
-    const makeCards = (subset: ProviderDetails[]) =>
-      subset.map((provider) => (
+    return getOrderedProviderGroups(providersArray).map((group) => ({
+      ...group,
+      cards: group.providers.map((provider) => (
         <ProviderCard
           key={provider.name}
           provider={provider}
@@ -173,18 +187,8 @@ function ProviderCards({
           onLaunch={() => handleProviderLaunchWithModelSelection(provider)}
           isOnboarding={isOnboarding}
         />
-      ));
-
-    const groups = getOrderedProviderGroups(providersArray);
-    const institutional = groups.find((group) => group.key === 'institutional')?.providers ?? [];
-    const local = groups.find((group) => group.key === 'local')?.providers ?? [];
-    const commercial = groups.find((group) => group.key === 'commercial')?.providers ?? [];
-
-    return {
-      institutionalCards: makeCards(institutional),
-      localCards: makeCards(local),
-      commercialCards: makeCards(commercial),
-    };
+      )),
+    }));
   }, [providers, isOnboarding, configureProviderViaModal, handleProviderLaunchWithModelSelection]);
 
   const initialData = editingProvider && {
@@ -201,36 +205,47 @@ function ProviderCards({
   return (
     <>
       <div className="space-y-8">
-        {localCards.length > 0 && (
-          <div>
-            <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0" />
-              Local Models
-            </h2>
-            <div className="divide-y divide-border-subtle">{localCards}</div>
-          </div>
-        )}
+        {sections.map((section) => {
+          // The commercial section always renders: it hosts "Add Custom
+          // Provider", which must stay reachable on a machine that has only
+          // private providers configured.
+          const alwaysVisible = section.key === 'commercial';
+          if (section.cards.length === 0 && !alwaysVisible) return null;
 
-        {institutionalCards.length > 0 && (
-          <div>
-            <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
-              <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
-              Institutional Models
-            </h2>
-            <div className="divide-y divide-border-subtle">{institutionalCards}</div>
-          </div>
-        )}
-
-        <div>
-          <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
-            <span className="w-1.5 h-1.5 bg-background-warning rounded-full flex-shrink-0" />
-            Commercial Models
-          </h2>
-          <div className="divide-y divide-border-subtle">
-            {commercialCards}
-            <CustomProviderCard onClick={() => setShowCustomProviderModal(true)} />
-          </div>
-        </div>
+          return (
+            <div key={section.key}>
+              {/* `text-caps` is the ONE caps style — it carries the 11/500,
+                  the +0.08em tracking and the uppercase transform the four
+                  utilities here were spelling out by hand. The `mb-1` (rather
+                  than main's `mb-3`) is because the section NOTE sits directly
+                  under the heading and owns the gap below the pair. */}
+              <h2 className="text-caps text-text-muted mb-1 flex items-center gap-2">
+                <span
+                  className={`w-1.5 h-1.5 ${section.accentClassName} rounded-full flex-shrink-0`}
+                />
+                {section.label}
+              </h2>
+              <p className="text-supporting text-text-muted mb-3">{section.note}</p>
+              {/*
+                Issue #56, DR-17 requirement 3. The Commercial section — and only
+                it — carries the standing one-line disclosure of what a model
+                there can reach. The words come from the daemon, never from a
+                literal here, for exactly the reason the block above exists: a
+                second copy of a sentence is a sentence that goes stale in one
+                of its two homes and stays wrong.
+              */}
+              {alwaysVisible && (
+                <NonPrivateModelDisclosureNote className="text-supporting text-text-muted mb-3" />
+              )}
+              <div className="divide-y divide-border-subtle">
+                {section.cards}
+                {alwaysVisible && (
+                  <CustomProviderCard onClick={() => setShowCustomProviderModal(true)} />
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
       <Dialog open={showCustomProviderModal} onOpenChange={handleCloseModal}>
         <DialogContent className="sm:max-w-[600px]">

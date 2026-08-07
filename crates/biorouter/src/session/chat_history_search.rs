@@ -1,4 +1,5 @@
 use crate::conversation::message::MessageContent;
+use crate::privacy::ProviderTier;
 use crate::session::chat_fts;
 use anyhow::Result;
 use chrono::{DateTime, Utc};
@@ -53,6 +54,69 @@ pub struct ChatHistorySearch<'a> {
     after_date: Option<DateTime<Utc>>,
     before_date: Option<DateTime<Utc>>,
     exclude_session_id: Option<String>,
+    /// Issue #56 Gate D. The reach this search runs with. `Public` filters
+    /// private sessions out **in SQL**; `Private` is full reach.
+    ///
+    /// Deliberately a bare [`ProviderTier`] and not a `CallCapability`: this
+    /// type sits in the session layer and is constructed from
+    /// `crates/biorouter/tests/`, where `CallCapability`'s test constructor is
+    /// not reachable. The one caller that holds a capability collapses it to a
+    /// reach — see `chatrecall_extension.rs`'s SEARCH arm, which is also where
+    /// DR-15's master opt-out is applied.
+    caller_capability: ProviderTier,
+    /// Issue #56 DR-26 / Task 50 Step 3. Whose agreements cover the searching
+    /// model — the third axis, filtered in SQL beside the tier.
+    ///
+    /// A private chat that reached the UCSF OMOP connector holds UCSF's data in
+    /// its transcript, and a snippet of it is exactly what this search returns.
+    /// Both endpoints being Private means every tier gate says yes, so without
+    /// this clause the operator's case leaks through search rather than through
+    /// a tool call.
+    ///
+    /// `None` is a public model (already handled by the tier clause) or a
+    /// private one that states nothing; both reach only chats that touched no
+    /// institution at all.
+    caller_affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+}
+
+/// The reach one chat-recall search runs with: DR-26's two axes together.
+///
+/// One value rather than two parameters because they are one caller's identity
+/// — a signature that takes them apart invites a call site that passes one
+/// model's tier and another's institution, and the wrong one compiles. (It also
+/// keeps `new` inside clippy's argument cap, which is the same pressure pointing
+/// the same way.)
+#[derive(Clone, Copy)]
+pub struct SearchReach {
+    /// `Public` filters private sessions out **in SQL**; `Private` is full
+    /// reach on this axis.
+    pub tier: ProviderTier,
+    /// Whose agreements cover the searching model. `None` is a public model, or
+    /// a private one that states nothing.
+    pub affiliation: Option<crate::privacy::affiliation::ModelAffiliation>,
+}
+
+impl SearchReach {
+    /// A search that asks only the tier question.
+    ///
+    /// ⚠ **Measured, not assumed: nothing in production uses this today.**
+    /// `grep -rn 'search_chat_history' crates/` finds exactly one production
+    /// caller, chatrecall's SEARCH arm, and it passes a real affiliation off its
+    /// admitted capability. This exists for the fixtures that assert the tier
+    /// axis, and for any future caller genuinely outside a chat — a human
+    /// searching their own history through the GUI is entitled to see it, and
+    /// that is a different question from what a MODEL may read.
+    ///
+    /// `Local` and not `None`, so the clause is absent entirely rather than
+    /// merely satisfied: a fixture must not be silently narrowed by an axis it
+    /// is not about, and `None` — an unstated model — reaches only unaffiliated
+    /// chats, which would do exactly that.
+    pub const fn tier_only(tier: ProviderTier) -> Self {
+        Self {
+            tier,
+            affiliation: Some(crate::privacy::affiliation::ModelAffiliation::Local),
+        }
+    }
 }
 
 impl<'a> ChatHistorySearch<'a> {
@@ -63,6 +127,7 @@ impl<'a> ChatHistorySearch<'a> {
         after_date: Option<DateTime<Utc>>,
         before_date: Option<DateTime<Utc>>,
         exclude_session_id: Option<String>,
+        reach: SearchReach,
     ) -> Self {
         Self {
             pool,
@@ -71,7 +136,87 @@ impl<'a> ChatHistorySearch<'a> {
             after_date,
             before_date,
             exclude_session_id,
+            caller_capability: reach.tier,
+            caller_affiliation: reach.affiliation,
         }
+    }
+
+    /// Issue #56 DR-26 / Task 50 Step 3. The affiliation clause and the value it
+    /// binds, or `None` when this search needs no clause.
+    ///
+    /// ⚠ **This one DOES take a placeholder, unlike the tier clause beside it,
+    /// and the ordinal discipline that comment describes is what makes it
+    /// safe**: it is appended last, immediately before `LIMIT ?`, and both
+    /// builders bind it in exactly that position — after `before_date`, before
+    /// the limit. It cannot be a literal: an institution id is
+    /// `name_to_key`-normalised, which lowercases and strips whitespace and
+    /// removes nothing else, so a quote survives into the slug.
+    ///
+    /// The three arms are DR-26's rows, not a policy of their own:
+    ///
+    /// * `Local` — reaches everything; no clause at all, because no transfer
+    ///   occurs.
+    /// * `Institution(X)` — reaches a chat only if **every** institution it
+    ///   touched is X. `NOT EXISTS (… WHERE value <> ?)` is the union rule
+    ///   (`affiliation::owners_compatible`) expressed in SQL; `EXISTS (… = ?)`
+    ///   would be the allowlist rule and would return a chat that also reached
+    ///   somebody else.
+    /// * unstated — reaches only chats that touched no institution.
+    fn affiliation_clause(&self) -> Option<(String, Option<String>)> {
+        use crate::privacy::affiliation::ModelAffiliation;
+        if !self.filters_by_affiliation() {
+            return None;
+        }
+        const TOUCHED: &str = "json_each(COALESCE(NULLIF(s.session_affiliations, ''), '[]'))";
+        let unclaimed_only = || {
+            Some((
+                format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED})"),
+                None::<String>,
+            ))
+        };
+        match self.caller_affiliation {
+            Some(ModelAffiliation::Local) => None,
+            // A model covered by exactly one institution.
+            other => match other.and_then(|m| m.sole_institution()) {
+                Some(id) => Some((
+                    format!(" AND NOT EXISTS (SELECT 1 FROM {TOUCHED} WHERE value <> ?)"),
+                    Some(id.as_str().to_string()),
+                )),
+                // Unstated, or covered by two or more. ⚠ The two land on one
+                // clause because the union rule makes them the same answer, not
+                // because a spanning model is treated as unknown: a chat is
+                // reachable only if EVERY institution it touched covers the
+                // reader, and a reader covered by two institutions is covered by
+                // neither alone — so no claimed chat qualifies, and only the
+                // unclaimed ones do. That is exactly `owners_compatible`'s
+                // verdict for both, and this module's
+                // `the_affiliation_clause_is_owners_compatible_in_sql` drives
+                // them against it rather than trusting this comment.
+                None => unclaimed_only(),
+            },
+        }
+    }
+
+    /// DR-15's master opt-out for the affiliation clause, plus the tier
+    /// narrowing DR-26 puts on the whole axis: affiliation is asked only of a
+    /// PRIVATE searcher. A public one is already confined to public chats by the
+    /// clause above, and a public chat holds no institution's data whatever a
+    /// stale row beside it says — stating a second, different reason for one
+    /// crossing is what `gate_cross_affiliation` avoids.
+    fn filters_by_affiliation(&self) -> bool {
+        self.caller_capability == ProviderTier::Private && crate::privacy::privacy_tiers_enabled()
+    }
+
+    /// DR-15's master opt-out for Gate D.
+    ///
+    /// Read here rather than only at the chatrecall SEARCH arm because `execute`
+    /// has other callers — `SessionManager::search_chat_history` serves the HTTP
+    /// search route and the CLI, neither of which holds a `CallCapability`.
+    /// It is not a second read on the chatrecall path: that arm collapses the
+    /// TIER to `Private` when the capability says the feature is off, so this
+    /// predicate is already false there whichever way it reads the flag.
+    fn filters_private_sessions(&self) -> bool {
+        self.caller_capability == ProviderTier::Public && crate::privacy::privacy_tiers_enabled()
     }
 
     pub async fn execute(self) -> Result<ChatRecallResults> {
@@ -147,6 +292,27 @@ impl<'a> ChatHistorySearch<'a> {
             sql.push_str(" AND m.timestamp <= ?");
         }
 
+        // Issue #56 Gate D. `sessions s` is already joined above, so this is one
+        // clause. A SQL LITERAL, never a `?`: both builders bind strictly
+        // positionally with the optional clauses in a fixed order, so an
+        // inserted placeholder shifts every later ordinal and mis-binds
+        // SILENTLY — no error, wrong results. The literal is a compile-time
+        // constant of the code path, not user input.
+        //
+        // It sits BEFORE the `LIMIT ?` on purpose: SQLite applies the limit to
+        // the filtered set, so a public caller gets its full quota of public
+        // rows even when private rows would have outranked them. A Rust-side
+        // post-filter after `execute()` returns is the same one-liner and is
+        // wrong for exactly that reason.
+        if self.filters_private_sessions() {
+            sql.push_str(" AND s.privacy_tier = 'public'");
+        }
+        // Issue #56 DR-26 / Task 50 Step 3 — see `affiliation_clause`. LAST, so
+        // its placeholder is the final one before `LIMIT ?`.
+        if let Some((clause, _)) = self.affiliation_clause() {
+            sql.push_str(&clause);
+        }
+
         sql.push_str(" ORDER BY bm25(messages_fts) ASC LIMIT ?");
 
         let mut query_builder = sqlx::query_as::<_, SqlQueryRow>(&sql).bind(match_expr);
@@ -159,6 +325,12 @@ impl<'a> ChatHistorySearch<'a> {
         }
         if let Some(before) = self.before_date {
             query_builder = query_builder.bind(before);
+        }
+        // Issue #56 DR-26 / Task 50 Step 3. Bound HERE — after `before_date`,
+        // before the limit — because the clause is appended in exactly that
+        // position. Moving either without the other mis-binds silently.
+        if let Some((_, Some(institution))) = self.affiliation_clause() {
+            query_builder = query_builder.bind(institution);
         }
         query_builder = query_builder.bind(self.limit as i64);
 
@@ -182,6 +354,10 @@ impl<'a> ChatHistorySearch<'a> {
         }
         if let Some(before) = self.before_date {
             query_builder = query_builder.bind(before);
+        }
+        // See the twin in `fetch_rows_fts`.
+        if let Some((_, Some(institution))) = self.affiliation_clause() {
+            query_builder = query_builder.bind(institution);
         }
 
         query_builder = query_builder.bind(self.limit as i64);
@@ -239,6 +415,19 @@ impl<'a> ChatHistorySearch<'a> {
         }
         if self.before_date.is_some() {
             sql.push_str(" AND m.timestamp <= ?");
+        }
+
+        // Issue #56 Gate D — the same clause on the `LIKE` fallback. `execute`
+        // branches on a `sqlite_master` probe for `messages_fts`, so filtering
+        // only the FTS builder leaks on every un-migrated profile.
+        if self.filters_private_sessions() {
+            sql.push_str(" AND s.privacy_tier = 'public'");
+        }
+        // The same clause on the `LIKE` fallback, for the reason the tier clause
+        // is duplicated here: `execute` branches on a `sqlite_master` probe, so
+        // filtering only the FTS builder leaks on every un-migrated profile.
+        if let Some((clause, _)) = self.affiliation_clause() {
+            sql.push_str(&clause);
         }
 
         sql.push_str(" ORDER BY m.timestamp DESC LIMIT ?");
@@ -366,6 +555,455 @@ impl<'a> ChatHistorySearch<'a> {
         ChatRecallResults {
             results,
             total_matches,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Issue #56 Gate D (SEARCH).
+    //!
+    //! This file had no `mod tests` before this task, so the pre-count of the
+    //! `session::chat_history_search` filter is zero — "0 passed, exits 0" is
+    //! the baseline, and the only meaningful number is the count of tests added
+    //! here.
+
+    use super::*;
+    use crate::privacy::ProviderTier;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    /// `execute` picks its builder by probing `sqlite_master` for
+    /// `messages_fts`, so the only honest way to exercise the `LIKE` fallback
+    /// is to seed a database that genuinely lacks the table.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum QueryPath {
+        Fts,
+        LikeFallback,
+    }
+
+    #[derive(Clone)]
+    struct Chat {
+        description: String,
+        working_dir: String,
+        private: bool,
+        text: String,
+    }
+
+    fn chat(private: bool, text: &str) -> Chat {
+        Chat {
+            description: if private {
+                "private chat".to_string()
+            } else {
+                "public chat".to_string()
+            },
+            working_dir: "/tmp/w".to_string(),
+            private,
+            text: text.to_string(),
+        }
+    }
+
+    fn private_chat_containing(term: &str) -> Chat {
+        chat(true, &format!("we discussed the {term} at length"))
+    }
+
+    fn public_chat_containing(term: &str) -> Chat {
+        chat(false, &format!("we discussed the {term} at length"))
+    }
+
+    /// A short document with one hit: best bm25 (`ORDER BY bm25 ASC`). These are
+    /// seeded first, and `seeded` gives earlier rows the newer timestamp, so the
+    /// `LIKE` fallback's `ORDER BY m.timestamp DESC` reproduces the same ranking.
+    fn private_chat_ranking_high(term: &str) -> Chat {
+        chat(true, term)
+    }
+
+    /// The same term buried in a long document: worst bm25, and seeded last so
+    /// it also has the oldest timestamp.
+    fn public_chat_ranking_low(term: &str) -> Chat {
+        let filler = "filler ".repeat(200);
+        chat(false, &format!("{filler}{term} {filler}"))
+    }
+
+    fn private_chat_titled(description: &str, working_dir: &str, term: &str) -> Chat {
+        Chat {
+            description: description.to_string(),
+            working_dir: working_dir.to_string(),
+            private: true,
+            text: format!("notes about the {term}"),
+        }
+    }
+
+    fn vec_of(n: usize, c: Chat) -> Vec<Chat> {
+        std::iter::repeat_n(c, n).collect()
+    }
+
+    /// The plan spelled this `vec_of(..).chain(vec_of(..))`; `Vec` is not an
+    /// `Iterator`, so the concatenation is a free function.
+    fn chain(a: Vec<Chat>, b: Vec<Chat>) -> Vec<Chat> {
+        a.into_iter().chain(b).collect()
+    }
+
+    /// Does the clause this builder chose admit a chat whose stored
+    /// `session_affiliations` column holds `stored`? **Answered by SQLite**,
+    /// against a real row.
+    ///
+    /// ⚠ **The clause is a string this module hands to a database, so a Rust
+    /// reader of it can only check the intent.** `json_each`, `COALESCE`,
+    /// `NULLIF` and `<>` are SQLite's semantics, not ours, and the interesting
+    /// failures live there: a legacy row holding `''` rather than `'[]'` makes
+    /// `json_each` RAISE, which no decode of the clause's three shapes could
+    /// ever notice and which would break recall for every reader rather than
+    /// returning a wrong set.
+    async fn clause_admits_stored(
+        pool: &Pool<Sqlite>,
+        clause: &Option<(String, Option<String>)>,
+        stored: &str,
+    ) -> bool {
+        sqlx::query("DELETE FROM sessions")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO sessions (id, session_affiliations) VALUES ('s', ?)")
+            .bind(stored)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // `1 = 1` so the clause appends exactly as it does in both real
+        // builders, which is where its leading ` AND ` comes from.
+        let (sql, bound) = match clause {
+            None => ("SELECT COUNT(*) FROM sessions s".to_string(), None),
+            Some((clause, bound)) => (
+                format!("SELECT COUNT(*) FROM sessions s WHERE 1 = 1{clause}"),
+                bound.clone(),
+            ),
+        };
+        let mut query = sqlx::query_scalar::<_, i64>(&sql);
+        if let Some(value) = bound.as_deref() {
+            query = query.bind(value);
+        }
+        query
+            .fetch_one(pool)
+            .await
+            .expect("the affiliation clause must be valid SQL over a real sessions row")
+            > 0
+    }
+
+    /// [`clause_admits_stored`] for the ordinary case: a chat that touched these
+    /// institutions, encoded the way the store encodes them.
+    async fn clause_admits(
+        pool: &Pool<Sqlite>,
+        clause: &Option<(String, Option<String>)>,
+        touched: &[&str],
+    ) -> bool {
+        let stored = serde_json::to_string(touched).unwrap();
+        clause_admits_stored(pool, clause, &stored).await
+    }
+
+    /// Task 56: **the SQL clause is `affiliation::owners_compatible` in SQLite**,
+    /// held to it rather than described as agreeing with it — and *run* there
+    /// rather than read back in Rust.
+    ///
+    /// The clause has three shapes and the model used to have three shapes, so
+    /// the mapping was one-to-one and a comment was nearly enough. It is not any
+    /// more: a model covered by TWO institutions takes the *same* clause as an
+    /// unstated one. That is a genuine coincidence of the union rule — a reader
+    /// covered by two institutions is covered by neither alone, so no claimed
+    /// chat qualifies for it, which is exactly the unstated row — and a
+    /// coincidence is the kind of thing a later edit breaks in silence. So it is
+    /// asserted against the one comparison, over every model shape this
+    /// vocabulary can produce.
+    #[tokio::test]
+    async fn the_affiliation_clause_is_owners_compatible_in_sql() {
+        use crate::privacy::affiliation::{owners_compatible, InstitutionId, ModelAffiliation};
+        use std::collections::BTreeSet;
+
+        assert!(
+            crate::privacy::privacy_tiers_enabled(),
+            "the clause is only built with the feature on, so this test would be vacuous"
+        );
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(SqliteConnectOptions::new())
+            .await
+            .unwrap();
+        // Only the column the clause reads. The point is what SQLite does with
+        // the clause, not what the real schema looks like around it.
+        sqlx::query(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, \
+             session_affiliations TEXT NOT NULL DEFAULT '')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let inst = InstitutionId::new;
+        let models = [
+            None,
+            Some(ModelAffiliation::Local),
+            Some(ModelAffiliation::institution(inst("ucsf"))),
+            Some(ModelAffiliation::institution(inst("stanford"))),
+            Some(
+                ModelAffiliation::institutions([inst("ucsf"), inst("stanford")])
+                    .expect("a two-element set is not empty"),
+            ),
+        ];
+        let touched_sets: [&[&str]; 5] = [
+            &[],
+            &["ucsf"],
+            &["stanford"],
+            &["ucsf", "stanford"],
+            &["ucsf", "stanford", "broad"],
+        ];
+
+        for model in models {
+            let search = ChatHistorySearch::new(
+                &pool,
+                "anything",
+                None,
+                None,
+                None,
+                None,
+                SearchReach {
+                    tier: ProviderTier::Private,
+                    affiliation: model,
+                },
+            );
+            let clause = search.affiliation_clause();
+            for touched in touched_sets {
+                let owners: BTreeSet<InstitutionId> = touched.iter().map(|o| inst(o)).collect();
+                assert_eq!(
+                    clause_admits(&pool, &clause, touched).await,
+                    owners_compatible(model, &owners),
+                    "the SQL clause disagrees with the union rule for {model:?} over {touched:?}"
+                );
+            }
+
+            // The row `COALESCE(NULLIF(…, ''), '[]')` exists for: a session
+            // persisted before this column held JSON stores `''`, and
+            // `json_each('')` RAISES. Without the guard the clause is not
+            // merely wrong for that row, it errors — and every recall by a
+            // private reader fails. Only running the SQL can see this.
+            assert_eq!(
+                clause_admits_stored(&pool, &clause, "").await,
+                owners_compatible(model, &BTreeSet::new()),
+                "a legacy row with no JSON must read as a chat that touched no institution, \
+                 for {model:?}"
+            );
+        }
+    }
+
+    struct Db {
+        _temp: tempfile::TempDir,
+        pool: Pool<Sqlite>,
+    }
+
+    async fn seeded(path: QueryPath, chats: &[Chat]) -> Db {
+        let _temp = tempfile::TempDir::new().unwrap();
+        let opts = SqliteConnectOptions::new()
+            .filename(_temp.path().join("recall.db"))
+            .create_if_missing(true);
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(opts)
+            .await
+            .unwrap();
+
+        sqlx::query(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '', \
+             working_dir TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, \
+             privacy_tier TEXT NOT NULL DEFAULT 'public')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, \
+             role TEXT NOT NULL, content_json TEXT NOT NULL, created_timestamp INTEGER NOT NULL, \
+             timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        if path == QueryPath::Fts {
+            sqlx::query(
+                "CREATE VIRTUAL TABLE messages_fts USING fts5(text, session_id UNINDEXED, \
+                 message_id UNINDEXED, tokenize = 'porter unicode61')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let base = chrono::Utc::now();
+        for (i, c) in chats.iter().enumerate() {
+            let sid = format!("s{i}");
+            let ts = base - chrono::Duration::seconds(i as i64);
+            sqlx::query(
+                "INSERT INTO sessions (id, description, working_dir, privacy_tier) \
+                 VALUES (?, ?, ?, ?)",
+            )
+            .bind(&sid)
+            .bind(&c.description)
+            .bind(&c.working_dir)
+            .bind(if c.private { "private" } else { "public" })
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            let content_json =
+                serde_json::to_string(&vec![MessageContent::text(c.text.clone())]).unwrap();
+            let inserted = sqlx::query(
+                "INSERT INTO messages (session_id, role, content_json, created_timestamp, timestamp) \
+                 VALUES (?, 'user', ?, ?, ?)",
+            )
+            .bind(&sid)
+            .bind(&content_json)
+            .bind(i as i64)
+            .bind(ts)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+            if path == QueryPath::Fts {
+                sqlx::query(
+                    "INSERT INTO messages_fts (text, session_id, message_id) VALUES (?, ?, ?)",
+                )
+                .bind(&c.text)
+                .bind(&sid)
+                .bind(inserted.last_insert_rowid())
+                .execute(&pool)
+                .await
+                .unwrap();
+            }
+        }
+
+        Db { _temp, pool }
+    }
+
+    /// Issue #56 DR-26: these tests assert the TIER filter, so the third axis
+    /// must not narrow them. A local model reaches everything — the affiliation
+    /// clause is absent entirely rather than merely satisfied, which is what
+    /// keeps this fixture testing what it says it does.
+    async fn search_with_limit(
+        tier: ProviderTier,
+        db: &Db,
+        query: &str,
+        limit: usize,
+    ) -> ChatRecallResults {
+        ChatHistorySearch::new(
+            &db.pool,
+            query,
+            Some(limit),
+            None,
+            None,
+            None,
+            SearchReach::tier_only(tier),
+        )
+        .execute()
+        .await
+        .unwrap()
+    }
+
+    async fn search_as(tier: ProviderTier, db: &Db, query: &str) -> ChatRecallResults {
+        ChatHistorySearch::new(
+            &db.pool,
+            query,
+            None,
+            None,
+            None,
+            None,
+            SearchReach::tier_only(tier),
+        )
+        .execute()
+        .await
+        .unwrap()
+    }
+
+    /// Everything that reaches the model. Stricter than chatrecall's prose
+    /// formatting: it covers every field of every result, not just the ones the
+    /// current renderer happens to print.
+    fn render_for_model(r: &ChatRecallResults) -> String {
+        serde_json::to_string(r).unwrap()
+    }
+
+    #[tokio::test]
+    async fn both_query_paths_filter_private_rows() {
+        for path in [QueryPath::Fts, QueryPath::LikeFallback] {
+            let db = seeded(
+                path,
+                &[
+                    private_chat_containing("cohort"),
+                    public_chat_containing("cohort"),
+                ],
+            )
+            .await;
+            assert_eq!(
+                search_as(ProviderTier::Public, &db, "cohort")
+                    .await
+                    .results
+                    .len(),
+                1,
+                "{path:?}"
+            );
+            assert_eq!(
+                search_as(ProviderTier::Private, &db, "cohort")
+                    .await
+                    .results
+                    .len(),
+                2,
+                "{path:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_limit_is_applied_after_the_filter_not_before() {
+        // THE test. 10 private rows ranking above 3 public ones with limit=5: a
+        // public caller must get all 3 public rows, not 0. A Rust-side post-filter
+        // — the obvious implementation, and the one that needs no SQL change —
+        // returns 0 here, silently and non-deterministically, with no error.
+        // SQLite applies the `LIMIT ?` at the end of each builder.
+        for path in [QueryPath::Fts, QueryPath::LikeFallback] {
+            let db = seeded(
+                path,
+                &chain(
+                    vec_of(10, private_chat_ranking_high("cohort")),
+                    vec_of(3, public_chat_ranking_low("cohort")),
+                ),
+            )
+            .await;
+            let r = search_with_limit(ProviderTier::Public, &db, "cohort", 5).await;
+            assert_eq!(
+                r.results.len(),
+                3,
+                "post-filtered in Rust instead of in SQL ({path:?})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn no_content_field_of_a_private_row_survives() {
+        // §11.4: session_description is the LLM-generated title, produced FROM the
+        // conversation, and is the field most likely to be mislabelled as metadata.
+        let db = seeded(
+            QueryPath::Fts,
+            &[private_chat_titled(
+                "PHI cohort characterisation",
+                "/data/phi/x",
+                "cohort",
+            )],
+        )
+        .await;
+        let r = search_as(ProviderTier::Public, &db, "cohort").await;
+        let rendered = render_for_model(&r);
+        for leak in [
+            "PHI cohort characterisation",
+            "/data/phi",
+            "cohort characterisation",
+        ] {
+            assert!(!rendered.contains(leak), "{leak} survived: {rendered}");
         }
     }
 }

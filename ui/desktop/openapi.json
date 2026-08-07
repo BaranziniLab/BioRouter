@@ -124,7 +124,7 @@
         },
         "responses": {
           "200": {
-            "description": "Extension added",
+            "description": "Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -135,6 +135,12 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
+          },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model"
           },
           "424": {
             "description": "Agent not initialized"
@@ -218,6 +224,53 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
+    "/agent/cross_affiliation_grant": {
+      "post": {
+        "tags": [
+          "super::routes::agent"
+        ],
+        "summary": "Record the user's acceptance of one cross-institutional data flow (issue #56,",
+        "description": "DR-26 / Task 49).\n\n⚠ **This route is a reversal of `/agent/add_extension`'s posture and the\ndifference is the ruling, not an inconsistency.** That route refuses a private\nextension on a public session *outright*, with no user-proof branch, because\nattaching one is a raise the user cannot authorize either. A Private↔Private\ncross-institution flow is the opposite case: both endpoints are already\nprivate, the tier boundary is not being crossed, and DR-26 states explicitly\nthat legitimate cross-institutional work under a real DUA exists and that the\nuser may accept the stated risk. Blocking it outright is the design\nresearchers route around by turning the feature off. So this route exists, and\nthe tier refusal beside it is untouched.\n\nThe grant is keyed on the **triple** (session, extension, model affiliation),\nwhere the affiliation is read by the daemon from the same sample that produced\nthe warning — never from the request. Re-binding to a different institution's\nmodel changes the triple, so the acceptance does not carry over.\n\n⚠ **The desktop surface is the accept control on the refusal itself** (Task\n57): `CrossAffiliationAcceptCard` renders inside the failed tool call that\ncarries `privacy::refusal::CROSS_AFFILIATION_ACCEPT_MARKER`, and posts here\nwith the `X-User-Action` header this route requires. The generated client\nattaches no header of its own, so every caller must supply one — which is the\npoint: a call without it is refused, and only a surface the user gestured at\nhas one to send.",
+        "operationId": "agent_cross_affiliation_grant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CrossAffiliationGrantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The user's acceptance was recorded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CrossAffiliationGrantResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "There is no cross-institutional mismatch to accept"
+          },
+          "401": {
+            "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow — or (DR-27) this machine's mixing policy is 'strict' and the operating system did not confirm the user"
+          },
+          "424": {
+            "description": "That chat is not loaded in this daemon, so the model it is bound to cannot be read"
           },
           "500": {
             "description": "Internal server error"
@@ -635,13 +688,30 @@
         },
         "responses": {
           "200": {
-            "description": "Provider updated successfully"
+            "description": "Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when the bind crosses no institutional boundary, which is the normal case.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "description": "Bad request - missing or invalid parameters"
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56). Gate A: a public model cannot be bound to a private chat (body = PrivacyBarrierBody). DR-16: the bind raises this chat's capability to Private and the request carried no proof it came from the user (body = plain text)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivacyBarrierBody"
+                }
+              }
+            }
           },
           "424": {
             "description": "Agent not initialized"
@@ -677,6 +747,9 @@
           },
           "401": {
             "description": "Unauthorized - invalid secret key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
           },
           "404": {
             "description": "Session not found"
@@ -1281,8 +1354,14 @@
               }
             }
           },
+          "403": {
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed — and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"
+          },
           "404": {
             "description": "Configuration key not found"
+          },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, and a delete restores its default, so it requires proof the request came from the user"
           },
           "500": {
             "description": "Internal server error"
@@ -1306,7 +1385,17 @@
           },
           "required": true
         },
-        "responses": {}
+        "responses": {
+          "200": {
+            "description": "Default provider and model set"
+          },
+          "400": {
+            "description": "The provider could not be constructed"
+          },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): this route writes BIOROUTER_PROVIDER, which decides what privacy capability new chats start at, so it requires proof the request came from the user"
+          }
+        }
       }
     },
     "/config/slash_commands": {
@@ -1355,6 +1444,15 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'"
+          },
+          "403": {
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation — or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen"
+          },
+          "409": {
+            "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode"
           },
           "500": {
             "description": "Internal server error"
@@ -1559,6 +1657,9 @@
           },
           "400": {
             "description": "Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
           }
         }
       }
@@ -1577,7 +1678,7 @@
                 "schema": {
                   "type": "array",
                   "items": {
-                    "$ref": "#/components/schemas/Manifest"
+                    "$ref": "#/components/schemas/KbListEntry"
                   }
                 }
               }
@@ -2432,6 +2533,92 @@
         }
       }
     },
+    "/knowledge/bases/{id}/tier": {
+      "get": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "summary": "Read a base's tier, its provenance, and what publicizing it would release.",
+        "description": "A plain read: it is the Knowledge view asking about the user's own base, and\nthe barrier Task 10C installs is for model callers. No proof-of-user, because\nnothing is changed.",
+        "operationId": "get_kb_tier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The base's tier and what a publicize would release",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KbTierResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found"
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "summary": "Move a knowledge base's privacy tier, on the user's behalf (issue #56 DR-18).",
+        "description": "The ONLY route in the tree that can LOWER one. It is user-only (DR-16's\n`X-User-Action`, the same header and the same key Task 18A installs — not a\nsecond one), it works in both directions, and the change carries its\nprovenance into `.kb-tiers` so a released base stays distinguishable from one\nthat was always public.\n\n⚠ **There is no `kb_set_tier` tool and there must never be one.** A model\nraises a tier as a side effect of writing (Task 10B, raise-only) and can do\nnothing else.\n\n⚠ **The typed confirmation is not enforced here, and that is deliberate**,\nunlike `POST /sessions/{id}/declassify` where the daemon re-derives the grade.\nA session's grade depends on server state (its stored provenance), so a client\ncould otherwise claim the weak control for a chat that no longer qualifies.\nA base's grade depends only on the DIRECTION, which the request itself states:\na publicize with no phrase is exactly what the request says it wants, and the\nphrase's job — making the user check *which* base — is a property of the\ndialog, not a claim about server state. What the daemon enforces is the thing\na client cannot fake: the proof that a human asked at all.",
+        "operationId": "set_kb_tier",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Knowledge base ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetKbTierBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The base's tier after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KbTierResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them — or this daemon holds no user-action key at all (body = plain text)"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        }
+      }
+    },
     "/knowledge/check-model": {
       "post": {
         "tags": [
@@ -2764,6 +2951,49 @@
         ]
       }
     },
+    "/privacy/disclosure": {
+      "get": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "summary": "The disclosure copy, and whether it has been acknowledged.",
+        "description": "⚠ **Deliberately does NOT consult the master privacy switch.** DR-15 turns\noff gates, the ratchet and refusals; it does not turn off the truth, and with\nenforcement off the exposure is *larger*. Every other privacy route in this\nfile reads the switch, which is exactly why wiring this one the same way is\nthe plausible mistake.",
+        "operationId": "get_privacy_disclosure",
+        "responses": {
+          "200": {
+            "description": "The one copy of the non-private-model disclosure, plus whether this install has acknowledged it",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PrivacyDisclosureResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/privacy/disclosure/ack": {
+      "post": {
+        "tags": [
+          "super::routes::config_management"
+        ],
+        "summary": "Record that the user has read the disclosure.",
+        "description": "⚠ **DR-16's proof-of-user, unconditionally.** This is the one thing making\nDR-17's accepted risks acceptable, so a caller holding nothing but the daemon\nsecret — which AR-11 measured to be recoverable from inside the daemon, i.e.\nthe model — must not be able to acknowledge on the user's behalf. Unlike\n`upsert_config`'s guard this is NOT additionally gated on the master privacy\nswitch: turning enforcement off must not hand the model the dismiss button.",
+        "operationId": "ack_privacy_disclosure",
+        "responses": {
+          "200": {
+            "description": "Acknowledged"
+          },
+          "403": {
+            "description": "Refused: acknowledging the disclosure is a user act, and this request carried no proof it came from the user"
+          },
+          "500": {
+            "description": "The acknowledgement could not be written"
+          }
+        }
+      }
+    },
     "/reply": {
       "post": {
         "tags": [
@@ -2790,6 +3020,9 @@
                 }
               }
             }
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
           },
           "409": {
             "description": "A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
@@ -3524,6 +3757,9 @@
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
+          },
           "404": {
             "description": "Session not found"
           },
@@ -3559,6 +3795,69 @@
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
+          },
+          "404": {
+            "description": "Session not found"
+          },
+          "500": {
+            "description": "Internal server error"
+          }
+        },
+        "security": [
+          {
+            "api_key": []
+          }
+        ]
+      }
+    },
+    "/sessions/{session_id}/declassify": {
+      "post": {
+        "tags": [
+          "Session Management"
+        ],
+        "summary": "Mark a private chat public (issue #56 §12.4/§12.5).",
+        "description": "The ONLY route in the tree that lowers a session's classification. It is\nuser-only (DR-16's `X-User-Action`), it is graded on the chat's provenance,\nand every use leaves a row in `classification_audit` — a declassified session\nmust never become indistinguishable from one that was always public.",
+        "operationId": "declassify_session",
+        "parameters": [
+          {
+            "name": "session_id",
+            "in": "path",
+            "description": "Unique identifier for the session to declassify",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeclassifySessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The chat is public",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeclassifySessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request - invalid session id, or the typed confirmation did not match (body = plain text)"
+          },
+          "401": {
+            "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 §12.4): lowering a chat's classification is the user's decision, and the request carried no proof it came from them (body = plain text)"
           },
           "404": {
             "description": "Session not found"
@@ -3620,6 +3919,9 @@
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 DR-19): the source chat is private, so the branch would inherit its private model, and the request carried no proof it came from the user (body = plain text)"
+          },
           "404": {
             "description": "Session not found"
           },
@@ -3680,6 +3982,9 @@
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
           },
+          "403": {
+            "description": "Refused by a privacy boundary (issue #56 DR-19): `editType: diverge` on a private chat branches it into a new chat that inherits its private model, and the request carried no proof it came from the user (body = plain text)"
+          },
           "404": {
             "description": "Session or message not found"
           },
@@ -3728,6 +4033,9 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "Out of reach - a private or unreadable session named without the user-action proof"
+          },
           "404": {
             "description": "No such session"
           }
@@ -3764,6 +4072,9 @@
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Out of reach - a private or unreadable session named without the user-action proof"
           },
           "404": {
             "description": "Session not found"
@@ -4902,6 +5213,24 @@
           }
         }
       },
+      "AffiliationInstitution": {
+        "type": "object",
+        "description": "One institution, as a surface that has to *print* it needs it (issue #56,\nDR-26).\n\nBoth halves travel, and neither is derivable from the other. The `id` is the\nnormalised slug — what `registry.json` publishes, what `baam.html`'s\n`data-affiliation` carries, what every cross-affiliation warning prints and\nwhat a user quotes in a support conversation. The `display_name` is what the\nregistry publishes for it, and is **absent** for an institution the registry\ndoes not know.\n\n⚠ **An absent display name is not an error and must never render as\nnothing.** Task 47 rules that an affiliation naming an unpublished\ninstitution is a *mismatch* whose raw id is surfaced; dropping the row\nbecause it has no pretty name would make a real constraint disappear from the\none surface a user can see it on. This mirrors `privacy::affiliation::label`,\nwhich falls back to the bare id for exactly that reason.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "description": "The registry's published display name (`UCSF`), or `None`.",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "description": "The normalised slug (`ucsf`)."
+          }
+        }
+      },
       "AgentInitializationError": {
         "type": "object",
         "required": [
@@ -5454,6 +5783,36 @@
           "personal"
         ]
       },
+      "CrossAffiliationGrantRequest": {
+        "type": "object",
+        "description": "Issue #56 Task 49 (DR-26): the user accepting ONE cross-institutional data\nflow.\n\n⚠ **There is no `affiliation` field, and there must not be one.** The grant is\nkeyed on the affiliation of the model bound *right now*, read by the daemon\nfrom the same sample that produced the warning. A client-supplied institution\nwould let a caller record an acceptance for a triple the user was never shown\n— which is the one thing this control exists to prevent.",
+        "required": [
+          "session_id",
+          "extension"
+        ],
+        "properties": {
+          "extension": {
+            "type": "string",
+            "description": "The extension whose cross-institutional flow the user accepted. Any\nspelling the UI holds; it is `name_to_key`-normalised on both sides."
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "CrossAffiliationGrantResponse": {
+        "type": "object",
+        "description": "What was accepted, echoed back so the caller can record the exact sentence the\nuser was shown rather than a paraphrase of it.",
+        "required": [
+          "accepted"
+        ],
+        "properties": {
+          "accepted": {
+            "type": "string",
+            "description": "The full statement, including the scope of the approval\n(`privacy::grant::GRANT_SCOPE_COPY`)."
+          }
+        }
+      },
       "CspMetadata": {
         "type": "object",
         "description": "Content Security Policy metadata for MCP Apps\nSpecifies allowed domains for network connections and resource loading",
@@ -5581,6 +5940,31 @@
             "format": "int64",
             "nullable": true,
             "minimum": 0
+          }
+        }
+      },
+      "DeclassifySessionRequest": {
+        "type": "object",
+        "properties": {
+          "confirmation": {
+            "type": "string",
+            "description": "The last six characters of the session id, as the user typed them.\n\nRequired when the chat's provenance is anything other than `turn:*` —\nsee `biorouter::privacy::declassify::requires_typed_confirmation`, which\nis where the grading lives. The daemon re-derives the grade from the\nSTORED provenance rather than trusting the client to say which control it\nshowed, so a caller cannot claim the single-click path for a chat that\nreached a private data source.",
+            "nullable": true
+          }
+        }
+      },
+      "DeclassifySessionResponse": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "privacyTier"
+        ],
+        "properties": {
+          "privacyTier": {
+            "$ref": "#/components/schemas/SessionClassification"
+          },
+          "sessionId": {
+            "type": "string"
           }
         }
       },
@@ -6552,6 +6936,69 @@
       "JsonObject": {
         "type": "object",
         "additionalProperties": true
+      },
+      "KbListEntry": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Manifest"
+          },
+          {
+            "type": "object",
+            "required": [
+              "tier"
+            ],
+            "properties": {
+              "tier": {
+                "$ref": "#/components/schemas/KbTier"
+              }
+            }
+          }
+        ],
+        "description": "One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier\n(issue #56).\n\nThe tier is **flattened alongside** the manifest rather than added to it,\nbecause `manifest.yaml` is the on-disk record and the tier lives in\n`.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next\n`manifest::save` and become a second, staler answer to a question the tier\nstore already answers — and it would also appear on `kb_list_bases`, a\nmodel-facing tool whose payload Task 10D's metadata register governs.\n\nThis route is user-facing: the renderer is the only caller, and Task 10C\nalready removes private bases from the model's own listing entirely."
+      },
+      "KbTier": {
+        "type": "string",
+        "description": "A knowledge base's privacy tier (issue #56, design §9.3 B4).\n\nThe stored form is the lowercase word in `.kb-tiers`, and it is the same\nvocabulary [`crate::knowledge::tier`] compares against — one spelling, so the\nenum and the store cannot drift.\n\n⚠ **This is a USER-FACING type, not a model-facing one.** Task 10D's metadata\nregister governs what a model may learn about a base; nothing here is added\nto a `#[tool]` response. It travels on the HTTP surface the renderer reads\n(`GET /knowledge/bases`, `GET|POST /knowledge/bases/{id}/tier`) and nowhere\nelse — in particular it is deliberately NOT a field on [`Manifest`], because\n`manifest.yaml` is the on-disk record and a second copy of the tier there\nwould be a second answer to the question `.kb-tiers` already answers.\n\nThe `bool` in `tier.rs` is unchanged and stays: `biorouter-mcp` cannot depend\non `biorouter`, where `ProviderTier` lives, and the ratchet's argument is the\nCALLER's capability rather than a base's tier.",
+        "enum": [
+          "public",
+          "private"
+        ]
+      },
+      "KbTierResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "tier",
+          "page_count",
+          "raw_source_count"
+        ],
+        "properties": {
+          "changed_at": {
+            "type": "string",
+            "description": "RFC 3339, and set exactly when `reason` is.",
+            "nullable": true
+          },
+          "id": {
+            "type": "string"
+          },
+          "page_count": {
+            "type": "integer",
+            "description": "What a publicize would release, counted from the tree at read time — not\nfrom anything the renderer already had. The confirmation states the blast\nradius rather than asking \"are you sure\", so these are the numbers it\nsays out loud.",
+            "minimum": 0
+          },
+          "raw_source_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "reason": {
+            "type": "string",
+            "description": "`publicized_by_user` / `privatized_by_user`, or absent for a base whose\ntier only the ratchet has ever touched. A base the user released must\nnever be indistinguishable from one that was always public.",
+            "nullable": true
+          },
+          "tier": {
+            "$ref": "#/components/schemas/KbTier"
+          }
+        }
       },
       "KillJobResponse": {
         "type": "object",
@@ -8124,12 +8571,97 @@
           "Tool"
         ]
       },
+      "PrivacyBarrierBody": {
+        "type": "object",
+        "description": "The body of the 409 `/agent/update_provider` returns when a privacy boundary\nrefused the bind (issue #56, Gate A).\n\nTyped rather than a bare string because the GUI does not merely report the\nrefusal — it renders §14.4's repair card from it, and the card names both\ncolliding tiers and offers the private models that would work. A plain-text\n409 would leave the renderer parsing prose.",
+        "required": [
+          "code",
+          "session_classification",
+          "provider_tier",
+          "available_private_providers"
+        ],
+        "properties": {
+          "available_private_providers": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The names of the providers a private chat *can* be switched to, so the\ncard can offer the way forward rather than only the wall."
+          },
+          "code": {
+            "type": "string",
+            "description": "Discriminator the client switches on. Always `privacy_barrier`."
+          },
+          "provider_tier": {
+            "$ref": "#/components/schemas/ProviderTier"
+          },
+          "session_classification": {
+            "$ref": "#/components/schemas/SessionClassification"
+          }
+        }
+      },
+      "PrivacyDisclosureResponse": {
+        "type": "object",
+        "description": "What `GET /privacy/disclosure` serves (issue #56, DR-17 requirement 3).\n\n⚠ **The copy is on the wire on purpose.** The sentence exists in the GUI\ndialog, the settings panel, the provider grid, the model chip, the CLI,\n`docs/` and the landing site; four hand-written copies drift within one\nrelease and the drifted one is always the one a user reads. One definition\nlives in `biorouter::privacy::disclosure` and the renderer renders what it is\nhanded — a hardcoded English string in a component is the failure this shape\nexists to prevent, and it is invisible until the two disagree.",
+        "required": [
+          "title_template",
+          "long",
+          "short",
+          "acknowledged"
+        ],
+        "properties": {
+          "acknowledged": {
+            "type": "boolean",
+            "description": "Has the user acknowledged on this install? Once per install, not once per\nsession — a dialog on every chat is a dialog nobody reads."
+          },
+          "long": {
+            "type": "string",
+            "description": "The long form: the blocking dialog and the settings panel."
+          },
+          "short": {
+            "type": "string",
+            "description": "The one-line form: the model chip's tooltip and the provider grid's\nCommercial section."
+          },
+          "title_template": {
+            "type": "string",
+            "description": "The dialog heading, with `{provider}` still in it — the renderer\nsubstitutes the display name of the provider it is warning about, and so\nnever has to know the English around it."
+          }
+        }
+      },
       "ProvenanceKind": {
         "type": "string",
         "enum": [
           "agent_injection",
           "user_direct",
           "spawn_context"
+        ]
+      },
+      "ProviderAffiliation": {
+        "type": "object",
+        "description": "DR-26's third axis for one provider **instance**, in the shape a UI can\nrender (issue #56).\n\n⚠ **Resolved from the instance, never from a name.** [`Self::of`] is the only\nconstructor a caller should reach for, and it reads\n[`Provider::tier`] and [`Provider::affiliation`] off one `&dyn Provider` —\nthe same two instance methods every gate reads. A `versa_* => ucsf` table\nwould keep claiming the institution for a Versa module repointed at another\nhost, which `tier()` has already demoted to Public: a private-looking\ninstitution chip on a public flow. Both Versa providers derive `ucsf` from\nthe same gateway-host check that decides their tier\n(`providers::ucsf_gateway_affiliation`), so a repointed instance loses\nPrivate and `ucsf` **together**, and this type is what carries that pairing\nout to the UI.\n\n⚠ **`Option<ProviderAffiliation>::None` is \"public — no affiliation at all\",\nand it is a fourth state distinct from all three\n[`ProviderAffiliationKind`]s.** See [`Self::resolved`] for the table.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "institutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AffiliationInstitution"
+            },
+            "description": "The covering institutions, ascending by id. Non-empty exactly for\n[`ProviderAffiliationKind::Institutions`], and **never** empty there:\n`InstitutionSet` cannot be constructed empty, for the reason its own doc\nrecords (an empty model set is a subset of every allowlist and so reaches\nevery private extension)."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderAffiliationKind"
+          }
+        }
+      },
+      "ProviderAffiliationKind": {
+        "type": "string",
+        "description": "Which of DR-26's three model-side affiliations this is.\n\n⚠ **There is no `Public` variant, and that is the whole shape of the type.**\nA public model's affiliation is not a value here, it is the *absence* of a\n[`ProviderAffiliation`] — `Option::None` — exactly as\n[`ModelAffiliation`] has no public variant. Giving \"public\" a seat would\ninvite a renderer to draw a chip for it, and a chip that says \"no\ninstitution\" on a public model reads as a *constraint* on a model that has\nnone of the private tier's protections at all.\n\nA closed enum rather than a free string so a renderer can switch on it\ntotally: a fourth affiliation must be a compile error at the badge, not a\nsilently-unhandled branch that renders as the safest-looking of the three.",
+        "enum": [
+          "local",
+          "institutions",
+          "unstated"
         ]
       },
       "ProviderDetails": {
@@ -8141,6 +8673,14 @@
           "provider_type"
         ],
         "properties": {
+          "affiliation": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAffiliation"
+              }
+            ],
+            "nullable": true
+          },
           "is_configured": {
             "type": "boolean"
           },
@@ -8213,8 +8753,23 @@
           "name": {
             "type": "string",
             "description": "The unique identifier for this provider"
+          },
+          "runs_locally": {
+            "type": "boolean",
+            "description": "Whether this provider's inference runs on the user's own machine — a\nbundled or self-hosted server — rather than on a remote service.\n\nDisplay only: it is what splits the private tier into the settings\ngrid's \"Local Models\" and \"Institutional Models\" sections. It is **not**\nthe privacy tier, and neither field is derivable from the other: a\nself-hosted server pointed off the machine is still `runs_locally` by\ntype and Public by instance."
+          },
+          "tier": {
+            "$ref": "#/components/schemas/ProviderTier"
           }
         }
+      },
+      "ProviderTier": {
+        "type": "string",
+        "description": "CAPABILITY — the least-privileged model currently bound to a session.\n\nDeliberately **not** `Ord`: `max` over this type is always a bug. A mixed\nlead/worker composite is `least(lead, worker)`, so a private lead with a\npublic worker has **public** reach.",
+        "enum": [
+          "public",
+          "private"
+        ]
       },
       "ProviderType": {
         "type": "string",
@@ -8905,6 +9460,11 @@
           "cron"
         ],
         "properties": {
+          "creator_session_id": {
+            "type": "string",
+            "description": "Issue #56 (§9.3 C2). The chat this schedule was created from, when there\nwas one — `/loop` and `/schedule` always have one; a workflow scheduled\nfrom the CLI or the schedules route does not.\n\nA scheduled run resolves its provider from THIS session's recorded\n`provider_name` before falling back to the global default (see\n[`resolve_scheduled_provider`]). Without it a job created from a chat on\na private model silently runs on the user's commercial default — R5 —\nand, once the design's §6.3 rule that a `Scheduled` session inherits its\ncreator's classification lands, Gate A would refuse the bind on every\ntick forever.",
+            "nullable": true
+          },
           "cron": {
             "type": "string"
           },
@@ -8917,6 +9477,11 @@
           },
           "id": {
             "type": "string"
+          },
+          "last_error": {
+            "type": "string",
+            "description": "The last run's failure, kept ON THE JOB so the schedules UI can show it.\n\nA cron tick that returns `Err` used to leave nothing behind but a log\nline, and a scheduled run mints a fresh session each time, so there was\nno surface anywhere that a repeating job had been failing since the day\nit was created. Cleared by the next successful run.",
+            "nullable": true
           },
           "last_run": {
             "type": "string",
@@ -9032,8 +9597,16 @@
           },
           "parent_session_id": {
             "type": "string",
-            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.",
+            "description": "Id of the parent session that spawned this one as a subagent (BR-71).\nSibling of `diverged_from` (branch lineage): `diverged_from` records a\nuser fork; this records a delegation. `None` for non-subagent sessions.\nIt is also what the §7 capability matrix's `L` axis reads (issue #56).",
             "nullable": true
+          },
+          "privacy_reason": {
+            "type": "string",
+            "description": "Audit and UX only — never read by a gate. One of `turn:<provider>`,\n`mcp:<extension>`, `inherited:<parent_id>`, `diverged:<parent_id>`,\n`backfill:<provider>`, `declassified_by_user`. §12.4 grades the\ndeclassification confirmation on whether it has ever been `mcp:*`.\n\nIt therefore holds the **dominant** provenance, not the first or the\nlatest one: the storage layer lets an `mcp:` raise displace a non-`mcp:`\nreason and lets nothing displace an `mcp:` reason. Freezing it on the\nfirst raise would answer \"has it ever been `mcp:*`\" with a flat no, since\nGate B's `turn:*` always lands before Gate C's `mcp:*`.",
+            "nullable": true
+          },
+          "privacy_tier": {
+            "$ref": "#/components/schemas/SessionClassification"
           },
           "provider_name": {
             "type": "string",
@@ -9078,6 +9651,14 @@
             "type": "string"
           }
         }
+      },
+      "SessionClassification": {
+        "type": "string",
+        "description": "CLASSIFICATION — the most sensitive thing a session has ever touched.\n\n`Ord` is derived and `Public < Private`, so `max` is the accumulation and is\nspellable. Monotone in time; the storage layer refuses to lower it (see\n`SessionUpdateBuilder`'s `CASE WHEN` emission).",
+        "enum": [
+          "public",
+          "private"
+        ]
       },
       "SessionDisplayInfo": {
         "type": "object",
@@ -9253,6 +9834,9 @@
             "description": "BR-71: `sub_agent` rows are grouped under this parent in History.",
             "nullable": true
           },
+          "privacy_tier": {
+            "$ref": "#/components/schemas/SessionClassification"
+          },
           "session_type": {
             "type": "string",
             "description": "BR-71: the session's type as stored (`user`/`scheduled`/`sub_agent`).",
@@ -9334,6 +9918,17 @@
               }
             ],
             "nullable": true
+          }
+        }
+      },
+      "SetKbTierBody": {
+        "type": "object",
+        "required": [
+          "tier"
+        ],
+        "properties": {
+          "tier": {
+            "$ref": "#/components/schemas/KbTier"
           }
         }
       },
@@ -10440,6 +11035,11 @@
           "is_secret"
         ],
         "properties": {
+          "confirm": {
+            "type": "string",
+            "description": "Issue #56 Task 30. The typed confirmation Settings → Privacy sends with a\nwrite to `BIOROUTER_PRIVACY_TIERS`, and nothing else sends at all.\n\n⚠ **What this is and what it is not.** It is a **UX guard against an\naccidental or model-composed config write**, not an authorization\nboundary: the phrase is a fixed string in the shipped source, so a caller\nholding the daemon secret replays it. That is acceptable because\n`check_token` has no principal — the daemon cannot tell Settings →\nPrivacy from any other loopback caller — and because the *authorization*\non this route is `X-User-Action`, not the phrase. What the phrase buys is\nthat the flip cannot be a side effect of an ordinary `/config/upsert`,\nwhich is the reachable path: a model *can* compose one of those through a\ntool.\n\n⚠ **This comment used to justify the phrase by adding *\"and a caller that\nalready holds the secret can raise its own session to private capability\nanyway\"*, citing AR-15. That is no longer true and is withdrawn** —\nAR-15 was retired on 2026-08-02 by DR-16 (commit `0757823f`), which made\nan upward provider bind require `X-User-Action`. Do not restore the\nargument: the guard does not need it, and a stale \"we are already open\nhere anyway\" is how a weakened control gets waved through.",
+            "nullable": true
+          },
           "is_secret": {
             "type": "boolean"
           },

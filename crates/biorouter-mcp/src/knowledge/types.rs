@@ -53,6 +53,49 @@ pub struct ModelRef {
     pub model: String,
 }
 
+/// A knowledge base's privacy tier (issue #56, design §9.3 B4).
+///
+/// The stored form is the lowercase word in `.kb-tiers`, and it is the same
+/// vocabulary [`crate::knowledge::tier`] compares against — one spelling, so the
+/// enum and the store cannot drift.
+///
+/// ⚠ **This is a USER-FACING type, not a model-facing one.** Task 10D's metadata
+/// register governs what a model may learn about a base; nothing here is added
+/// to a `#[tool]` response. It travels on the HTTP surface the renderer reads
+/// (`GET /knowledge/bases`, `GET|POST /knowledge/bases/{id}/tier`) and nowhere
+/// else — in particular it is deliberately NOT a field on [`Manifest`], because
+/// `manifest.yaml` is the on-disk record and a second copy of the tier there
+/// would be a second answer to the question `.kb-tiers` already answers.
+///
+/// The `bool` in `tier.rs` is unchanged and stays: `biorouter-mcp` cannot depend
+/// on `biorouter`, where `ProviderTier` lives, and the ratchet's argument is the
+/// CALLER's capability rather than a base's tier.
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum KbTier {
+    Public,
+    Private,
+}
+
+impl KbTier {
+    /// PRIVATE unless the caller's own reader said otherwise. Takes the answer
+    /// `tier::is_private` already computed rather than re-deciding the polarity,
+    /// so the fail-closed rules (unknown provenance, unparseable store, an
+    /// unrecognised word) have exactly one implementation.
+    pub fn from_is_private(is_private: bool) -> Self {
+        if is_private {
+            Self::Private
+        } else {
+            Self::Public
+        }
+    }
+
+    pub fn is_private(self) -> bool {
+        matches!(self, Self::Private)
+    }
+}
+
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Manifest {

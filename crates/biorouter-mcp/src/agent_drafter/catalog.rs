@@ -28,6 +28,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+use crate::knowledge::caller::KbCaller;
+
 use super::BUILTIN_EXTENSION_NAMES;
 
 /// An installed knowledge base.
@@ -62,13 +64,45 @@ pub struct Catalog {
 }
 
 impl Catalog {
-    /// Scan this install. Honours `BIOROUTER_PATH_ROOT` through
-    /// [`crate::paths`], so a sandboxed run sees the sandbox's catalog — not the
-    /// user's global one. (Before the path fix, an "isolated" test drive was
-    /// reading the user's real knowledge bases.)
-    pub fn discover() -> Self {
+    /// Scan this install, from the point of view of a caller with this
+    /// capability (issue #56, **CP5**).
+    ///
+    /// Honours `BIOROUTER_PATH_ROOT` through [`crate::paths`], so a sandboxed
+    /// run sees the sandbox's catalog — not the user's global one. (Before the
+    /// path fix, an "isolated" test drive was reading the user's real knowledge
+    /// bases.)
+    ///
+    /// A caller the barrier would refuse gets the base **omitted**, exactly as
+    /// `kb_list_bases` does: a KB id and name are user-authored and routinely
+    /// name a cohort or a study, so they are content and not an existence side
+    /// channel. (DR-7 covers the latter and this does not chase it — a caller
+    /// that guesses an id and asks about that one id can still be answered
+    /// truthfully; volunteering the whole list is the crossing.)
+    ///
+    /// **The filter lives here and not in the validators.** There are three
+    /// knowledge-base renderings in `validate`, plus `has_kb`, plus the runtime
+    /// report's `missing_knowledge_base` — a base that is simply *absent from the
+    /// catalog* fixes every one of them with no second rule to keep in sync, and
+    /// produces the right words for free: a public session that names a private
+    /// base by hand is told it "is not installed on this Biorouter", which is
+    /// omission rather than a refusal that would itself confirm the base exists.
+    ///
+    /// ⚠ **Audit finding 17, second spelling.** This took a bare
+    /// `caller_is_private: bool` and asked the tier axis alone, so a chat bound
+    /// to a model covered by another institution's agreements was handed
+    /// `{id, name}` for a base that `br.kb` (CP3) and `export_app` (CP4) — the
+    /// two barriers this catalogue feeds — would then refuse. The drafting model
+    /// learns KB ids from here and nowhere else; a listing that names what the
+    /// barrier refuses is the leak, and the refusal is merely the tell. It now
+    /// carries [`KbCaller`], which cannot express half a caller, and asks
+    /// [`KbCaller::can_reach`] — the barrier, negated.
+    ///
+    /// A `biorouter-mcp` type and not `ProviderTier` + `ModelAffiliation`
+    /// because this crate cannot depend on `biorouter`; `routes/apps.rs` does
+    /// the crossing at its call sites.
+    pub fn discover(caller: &KbCaller) -> Self {
         Self {
-            knowledge_bases: discover_kbs(),
+            knowledge_bases: discover_kbs(caller),
             skills: discover_skills(),
             extensions: BUILTIN_EXTENSION_NAMES
                 .iter()
@@ -122,15 +156,31 @@ impl Catalog {
     }
 }
 
-fn discover_kbs() -> Vec<KbEntry> {
+fn discover_kbs(caller: &KbCaller) -> Vec<KbEntry> {
     let Ok(service) = crate::knowledge::service::KnowledgeService::new_default() else {
         return Vec::new();
     };
+    let root = service.root().to_path_buf();
     service
         .list_bases()
         .map(|bases| {
             bases
                 .into_iter()
+                // Issue #56. Per base, and BEFORE the map: a filter applied after
+                // the `KbEntry` is built is the same code with one more chance to
+                // be reordered into a post-filter on a serialised string — which
+                // would leave `has_kb` true, so a public session could still
+                // configure an app against a private base and have its KB tools
+                // armed.
+                //
+                // ⚠ Finding 17. This asked `tier::is_private` with its own
+                // `privacy_tiers_enabled()` conjunct — a SECOND spelling of a
+                // question the barrier already answers, and one axis short of
+                // it. It now asks the barrier. DR-15's master opt-out comes with
+                // it, read once inside `tier::assert_reachable`: a caller that
+                // read the toggle here *and* called the barrier would be the
+                // two-reads race in miniature.
+                .filter(|m| caller.can_reach(&root, &m.id))
                 .map(|m| KbEntry {
                     id: m.id,
                     name: m.name,
@@ -261,13 +311,147 @@ fn discover_external_extensions() -> Vec<ExtEntry> {
     out
 }
 
+/// A sandboxed knowledge root that [`Catalog::discover`] will really resolve to,
+/// with `ids` created through the **real** `create_base` (issue #56).
+///
+/// Returned as a triple because all three must outlive the assertions: dropping
+/// the `TempDir` unlinks the tree, and dropping the `EnvGuard` un-points
+/// `BIOROUTER_PATH_ROOT` — after which `discover` reads the developer's own
+/// knowledge bases and the test says nothing.
+///
+/// `create_base` rather than hand-made directories: a directory with no tier
+/// entry reads private by inference (`tier`'s decision 3), which would make
+/// "the public catalog omits it" pass for every base and prove nothing.
+///
+/// Lives at module level, not inside `mod tests`, so `validate`'s tests and
+/// `agent_drafter`'s can share the one fixture.
+#[cfg(test)]
+pub(crate) fn drafter_catalog_root_with_kbs(
+    ids: &[&str],
+) -> (tempfile::TempDir, PathBuf, env_lock::EnvGuard<'static>) {
+    let d = tempfile::tempdir().unwrap();
+    // `crate::paths::config_dir` reads `BIOROUTER_PATH_ROOT` and
+    // `knowledge::paths::knowledge_root` is `<config>/knowledge`, so this is
+    // exactly where `discover_kbs`'s `new_default()` will look. `env_lock` and
+    // not `set_var`: the variable is read on every config-dir lookup anywhere in
+    // the process, and the guard restores it even from a panicking test.
+    let guard = env_lock::lock_env([
+        (
+            "BIOROUTER_PATH_ROOT",
+            Some(d.path().to_string_lossy().into_owned()),
+        ),
+        // Strict mode ON, so the validators really render their catalog lists.
+        // `relax_catalog_strictness` in `agent_drafter`'s tests turns this off
+        // process-wide; it now takes the same lock, so the two cannot interleave.
+        ("BIOROUTER_APPS_CATALOG_STRICT", None),
+    ]);
+    let root = d.path().join("config").join("knowledge");
+    let svc = crate::knowledge::service::KnowledgeService::new(root.clone());
+    for id in ids {
+        // The NAME embeds the id, so one `contains(id)` assertion catches a leak
+        // of either field — a KB name is user-authored and is the half a
+        // redaction-not-omission implementation would keep.
+        svc.create_base(id, &format!("Cohort {id}"), None).unwrap();
+    }
+    (d, root, guard)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// Issue #56, CP5. `discover_kbs` had **no filter of any kind**, and the tool
+    /// that serialises its output (`list_platform_catalog`) tells the model to
+    /// call it before `configure_app` — so this ran on every app-building turn.
+    #[test]
+    fn the_catalog_omits_a_private_knowledge_base_from_a_public_caller() {
+        let (_d, root, _env) = drafter_catalog_root_with_kbs(&["default", "omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+
+        let public = Catalog::discover(&KbCaller::restricted());
+        assert_eq!(public.kb_ids(), vec!["default"]);
+        assert!(
+            !serde_json::to_string(&public).unwrap().contains("omop"),
+            "the id or the NAME survived serialisation"
+        );
+        // …and `has_kb` reads the same filtered vector, so a public session
+        // cannot configure an app against it either (the "filter the serialised
+        // JSON" wrong implementation passes the assertion above and fails this).
+        assert!(!public.has_kb("omop"));
+
+        let private = Catalog::discover(&private_local());
+        assert_eq!(private.kb_ids(), vec!["default", "omop"]);
+        assert!(private.has_kb("omop"));
+    }
+
+    /// A private caller whose model is covered by one institution's agreements.
+    fn private_at(institution: &str) -> KbCaller {
+        KbCaller::new(
+            true,
+            crate::knowledge::affiliation::CallerAffiliation::Institution(institution.to_string()),
+        )
+    }
+
+    /// A private, LOCAL model — the caller DR-26 clears everywhere, because it
+    /// transfers nothing.
+    fn private_local() -> KbCaller {
+        KbCaller::new(
+            true,
+            crate::knowledge::affiliation::CallerAffiliation::Local,
+        )
+    }
+
+    /// **Audit finding 17, second spelling.** This filter asked
+    /// `tier::is_private` — the tier axis alone — so both callers below are
+    /// PRIVATE and it gave them the same answer. The drafting model learns
+    /// knowledge-base ids from this catalogue and nowhere else, and `br.kb`
+    /// (CP3) then refuses every read of a base it may not reach: the listing was
+    /// the leak and the refusal merely the tell.
+    ///
+    /// The discrimination is the point — `default` must survive for BOTH, or the
+    /// filter is "refuse the second caller" and this test would pass against a
+    /// fix that broke the feature.
+    #[test]
+    fn the_catalog_asks_the_affiliation_axis_not_only_the_tier() {
+        let (_d, root, _env) = drafter_catalog_root_with_kbs(&["default", "omop"]);
+        crate::knowledge::tier::raise_unlocked(&root, "omop", true).unwrap();
+        crate::knowledge::tier::raise_affiliation_unlocked(
+            &root,
+            "omop",
+            &crate::knowledge::affiliation::CallerAffiliation::Institution("ucsf".to_string()),
+        )
+        .unwrap();
+
+        let ucsf = Catalog::discover(&private_at("ucsf"));
+        assert_eq!(ucsf.kb_ids(), vec!["default", "omop"]);
+
+        let stanford = Catalog::discover(&private_at("stanford"));
+        assert_eq!(
+            stanford.kb_ids(),
+            vec!["default"],
+            "the catalogue named a base the barrier refuses across an \
+             institutional boundary"
+        );
+        assert!(
+            !serde_json::to_string(&stanford).unwrap().contains("omop"),
+            "the id or the NAME survived serialisation"
+        );
+        // `has_kb` reads the same filtered vector, so the cross-institution
+        // session cannot configure an app against it and have its `kb_*` tools
+        // armed either.
+        assert!(!stanford.has_kb("omop"));
+
+        // A private model that states nothing is DR-26's restrictive caller.
+        let unstated = Catalog::discover(&KbCaller::new(
+            true,
+            crate::knowledge::affiliation::CallerAffiliation::Unstated,
+        ));
+        assert_eq!(unstated.kb_ids(), vec!["default"]);
+    }
+
     #[test]
     fn builtins_are_always_present() {
-        let c = Catalog::discover();
+        let c = Catalog::discover(&KbCaller::restricted());
         for name in BUILTIN_EXTENSION_NAMES {
             assert!(c.has_extension(name), "builtin '{name}' missing");
         }

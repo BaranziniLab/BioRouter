@@ -21,6 +21,7 @@ pub mod knowledge;
 pub mod mcp_server_runner;
 mod memory;
 pub mod paths;
+pub mod privacy_toggle;
 pub mod secret_guard;
 pub mod tutorial;
 

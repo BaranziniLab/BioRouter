@@ -21,6 +21,10 @@ check-everything:
     ./scripts/check-brand-consistency.sh
     @echo "  → Checking cross-compile recipes have not drifted (glibc floor pin)..."
     ./scripts/check-no-cross-drift.sh
+    @echo "  → Checking the BAAM registry generator still refuses what it must..."
+    just check-registry
+    @echo "  → Checking the BAAM private set agrees in all three committed copies..."
+    just check-privacy-registry
     @echo ""
     @echo "✅ All style checks passed!"
 
@@ -29,6 +33,42 @@ check-everything:
 # the desktop JSON files out of sync with the Rust workspace version.
 check-versions:
     ./scripts/check-version-consistency.sh
+
+# The BAAM registry generator writes three copies of one catalog, one of them a
+# compiled-in Rust security baseline (crates/biorouter/src/privacy/
+# registry_private.rs). Its refusals are the only thing standing between a
+# mis-tagged card and a private extension silently classified Public, so they
+# need a gate of their own. No npm install: node:test ships with the runtime.
+check-registry:
+    node --test landing/scripts/build-registry.test.mjs
+    node landing/scripts/build-registry.mjs --check
+
+# The set of private extensions is committed in three places at once: the
+# published landing/registry.json, the snapshot bundled in the desktop app, and
+# the Rust baseline compiled into the CLI and the daemon. `check-registry` above
+# asks whether they are byte-for-byte what baam.html generates; this asks the
+# question that survives a generator change — do all three name the same private
+# set, and does that set have anything in it at all. An extension missing from
+# the compiled-in copy is not a build error, it is silently classified Public.
+#
+# The mutant suite runs FIRST, and for the same reason `check-registry` has one:
+# a checker earns its invocation only by failing when it should. The live
+# `--check` below passes against a `checkDocsPrivacy` rewritten to `return []` —
+# the suite is what refuses that, by requiring 20 ways of being wrong to each
+# produce a failure. No npm install: node:test ships with the runtime.
+check-privacy-registry:
+    node --test landing/scripts/check-docs-privacy.test.mjs
+    node landing/scripts/check-consistency.mjs --check
+
+# The BAAM shelf's privacy badges and Private/Public facet, in a real browser.
+# Half of what it asserts is layout — a chip that does not fit the 22px
+# `overflow: hidden` tag row is not cramped, it is deleted from view — and jsdom
+# returns zeros for every rect, so it cannot stand in. NOT part of
+# `check-everything`: it resolves Playwright out of ui/desktop/node_modules and
+# needs a chromium, neither of which a bare checkout has. CI runs it as its own
+# job, and the landing deploy is gated on it.
+check-shelf:
+    node --test landing/scripts/baam-privacy-facet.test.mjs
 
 # Default release command
 release-binary:
@@ -286,10 +326,15 @@ run-server:
     @echo "Running server..."
     BIOROUTER_DISABLE_KEYRING=true cargo run -p biorouter-server --bin biorouterd agent
 
-# Run server with secret=test so it pairs with `just debug-ui` (which sends X-Secret-Key: test)
+# Run server with secret=test and the published dev user-action key, so it pairs
+# with `just debug-ui` (which sends X-Secret-Key: test and X-User-Action: <same>).
+# The key is DELIBERATELY public: this daemon's user-proof is whatever the person
+# who started it chose, and on this path that person is the developer. It weakens
+# nothing in the shipped app, whose key is 32 random bytes per launch and never
+# leaves the Electron main process. Issue #56 DR-16 / open question 23.
 debug-server:
-    @echo "Running server in debug mode (secret=test)..."
-    BIOROUTER_DISABLE_KEYRING=true BIOROUTER_SERVER__SECRET_KEY=test cargo run -p biorouter-server --bin biorouterd agent
+    @echo "Running server in debug mode (secret=test, published dev user-action key)..."
+    printf '%s\n' "$(printf 'biorouter-dev-user-action' | shasum -a 256 | cut -d' ' -f1)" | BIOROUTER_DISABLE_KEYRING=true BIOROUTER_SERVER__SECRET_KEY=test cargo run -p biorouter-server --bin biorouterd agent
 
 # Check if OpenAPI schema is up-to-date
 check-openapi-schema: generate-openapi

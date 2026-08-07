@@ -17,10 +17,11 @@ import {
 import SessionHistoryView from '../sessions/SessionHistoryView';
 import { ScheduleModal, NewSchedulePayload } from './ScheduleModal';
 import { toastError, toastSuccess } from '../../toasts';
-import { Loader2, Pause, Play, Edit, Square, Eye } from '../icons/app-icons';
+import { Loader2, Pause, Play, Edit, Square, Eye, AlertTriangle } from '../icons/app-icons';
 import cronstrue from 'cronstrue';
 import { formatToLocalDateWithTimezone } from '../../utils/date';
 import { getSession, Session } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 
 interface ScheduleSessionMeta {
   id: string;
@@ -213,6 +214,8 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     try {
       const response = await getSession<true>({
         path: { session_id: sessionId },
+        // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+        headers: await userActionHeaders(),
         throwOnError: true,
       });
       setSelectedSession(response.data);
@@ -304,6 +307,12 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                           Paused
                         </div>
                       )}
+                      {scheduleDetails.last_error && !scheduleDetails.currently_running && (
+                        <div className="text-sm text-text-danger font-semibold flex items-center">
+                          <AlertTriangle className="w-3 h-3 mr-1" />
+                          Last Run Failed
+                        </div>
+                      )}
                     </div>
                   </div>
                   <p className="text-sm text-text-default">
@@ -319,6 +328,17 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     <span className="font-semibold">Last Run:</span>{' '}
                     {formatToLocalDateWithTimezone(scheduleDetails.last_run)}
                   </p>
+                  {/*
+                    Issue #56. Without this the only record of a repeatedly
+                    failing job is a daemon log line: each run mints a fresh
+                    session, so there is no session to open and read either.
+                  */}
+                  {scheduleDetails.last_error && (
+                    <p className="text-sm text-text-danger break-words">
+                      <span className="font-semibold">Last Error:</span>{' '}
+                      {scheduleDetails.last_error}
+                    </p>
+                  )}
                   {scheduleDetails.currently_running && scheduleDetails.current_session_id && (
                     <p className="text-sm text-text-default">
                       <span className="font-semibold">Current Session:</span>{' '}

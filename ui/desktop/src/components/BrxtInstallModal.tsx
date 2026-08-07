@@ -3,10 +3,13 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { Package } from './icons/app-icons';
 import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
+import { PrivacyBadge } from './ui/PrivacyBadge';
 import { BrxtEnvVar, BrxtManifest } from '../types/brxt';
 import { useConfig } from './ConfigContext';
 import { activateExtensionDefault } from './settings/extensions';
+import { classifyExtension } from './settings/extensions/extensionPrivacy';
 import { upsertConfig } from '../api';
+import { userActionHeaders } from '../utils/userAction';
 import { toastService } from '../toasts';
 
 interface EnvEntry {
@@ -24,9 +27,26 @@ interface Props {
   onClose: () => void;
   onInstalled: () => void;
   preloadedFilePath?: string;
+  /**
+   * Issue #56 Task 43 (DR-23). Where this bundle came from, when it came from
+   * the marketplace: `BrowseExtensionsModal` knows the registry `id` and the
+   * download URL, and this modal is where the install actually happens. The
+   * install records them beside the config entry so the daemon re-derives the
+   * privacy tier from the stable id rather than from the config name, which the
+   * user (or the model) can rename.
+   *
+   * Absent for the drop-a-file route, which has no registry id — that install
+   * records nothing and the daemon falls back to the config-name join.
+   */
+  registrySource?: { registryId: string; sourceUrl?: string };
 }
 
-export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Props) {
+export function BrxtInstallModal({
+  onClose,
+  onInstalled,
+  preloadedFilePath,
+  registrySource,
+}: Props) {
   const [step, setStep] = useState<Step>('drop');
   const [filePath, setFilePath] = useState<string | null>(null);
   const [manifest, setManifest] = useState<BrxtManifest | null>(null);
@@ -122,7 +142,11 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
     setError(null);
 
     try {
-      const result = await window.electron.installBrxtBundle(filePath, manifest.name);
+      const result = await window.electron.installBrxtBundle(
+        filePath,
+        manifest.name,
+        registrySource
+      );
 
       if ('error' in result) {
         setError(result.error);
@@ -136,6 +160,13 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
       for (const entry of envEntries.filter((e) => e.secret && e.value.trim())) {
         const res = await upsertConfig({
           body: { is_secret: true, key: entry.key, value: entry.value },
+          // Issue #56 DR-16: the key here is whatever the extension's manifest
+          // declared, so it can collide with a capability key — an extension
+          // that talks to Ollama would plausibly declare OLLAMA_HOST. The guard
+          // is on the key name and does not look at `is_secret`, so without this
+          // the user clicking Install would be refused as though a model had
+          // made the call. This IS the user, so it carries the proof.
+          headers: await userActionHeaders(),
         }).catch(() => null);
         if (res && !res.error) {
           secretEnvKeys.push(entry.key);
@@ -180,6 +211,43 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
       setIsInstalling(false);
     }
   };
+
+  /**
+   * Issue #56 §13.5. The badge this install is going to produce, said out loud
+   * before the user commits.
+   *
+   * ⚠ **The disclosure is about the RESULT, not about the route.** §13.5's
+   * sentence is written for the file-drop case and is true there — an extension
+   * installed from a file is Public under R11(ii), because the install records
+   * no provenance for the daemon to treat as private. But this component is not
+   * only the file-drop case:
+   *
+   *   - `BrowseExtensionsModal` downloads a marketplace `.brxt` and renders THIS
+   *     component with `preloadedFilePath`, so a row badged Private led straight
+   *     into a confirmation that said "always Public";
+   *   - and the task's own Step 3 records that a bundle merely NAMED
+   *     `ucsfomopagent` inherits the private badge — "fail-closed, and fine",
+   *     which it only is if the last screen before Install did not promise the
+   *     opposite.
+   *
+   * Three screens with two answers is worse than either answer alone, so once a
+   * manifest is in hand the modal states the tier the install will actually
+   * produce, resolved through `classifyExtension` — the same union the Settings
+   * card, the Browse row and the composer all read, so they cannot disagree.
+   *
+   * Before a file is chosen there is no name to classify and the route IS the
+   * only fact available, so §13.5's sentence stands verbatim: a user who has not
+   * yet picked a bundle should already know what dropping one in here means.
+   *
+   * One sentence, one element: the assertions match on the normalised text of a
+   * single node, and splitting a phrase into a nested `<strong>` would take it
+   * out of that node.
+   */
+  const resultingTier = manifest ? classifyExtension(manifest.name) : 'public';
+  const badgeNotice =
+    resultingTier === 'private'
+      ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
+      : 'Extensions installed from a file are always Public. Any model, including commercial models hosted outside UCSF, will be able to call this extension.';
 
   const requiredVars = envEntries.filter((e) => e.required);
   const optionalVars = envEntries.filter((e) => !e.required);
@@ -239,6 +307,14 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
     >
       {step === 'drop' && (
         <div className="py-3 space-y-4">
+          {/* §13.5: the tier this install will actually produce, stated before
+              a bundle has even been chosen — someone who has not yet picked one
+              should already know what dropping it in here means. */}
+          <div className="biorouter-modal-panel rounded-lg p-3">
+            <PrivacyBadge tier={resultingTier} />
+            <p className="text-supporting text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
+          </div>
+
           {/* Drop zone */}
           <div
             className={[
@@ -393,6 +469,14 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
               <p className="text-sm text-text-danger">{error}</p>
             </div>
           )}
+
+          {/* §13.5: the resulting badge, above the Install button — the footer
+              sits directly below this body, so it is the last thing read before
+              the button that commits the install. */}
+          <div className="biorouter-modal-panel rounded-lg p-3">
+            <PrivacyBadge tier={resultingTier} />
+            <p className="text-supporting text-text-muted mt-1.5 leading-relaxed">{badgeNotice}</p>
+          </div>
         </div>
       )}
     </ModalShell>

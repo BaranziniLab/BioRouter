@@ -10,16 +10,25 @@
 > the user-controllable knowledge-base tier and the non-private-model disclosure the operator ruled on
 > 2026-07-30 — each with a Files table, a failing test, complete
 > implementation code, a run step, a gate that fails a plausible wrong implementation, and one commit.
-> **Status:** Proposed — ready to execute. The design's rulings are settled (see
+> **Status:** **Executed** — every task unit below was run on the `feat/privacy-tiers` branch, not
+> merged to `main` as of 2026-08-05; this is now the record of *how*, including the
+> [review provenance](#review-provenance--what-evidence-this-branch-actually-has) the branch actually
+> has (19% independent, 81% self-review) and the questions implementation left open. The design's
+> rulings are settled (see
 > [Decisions of record](#decisions-of-record)); the costs the operator knowingly accepted are in
-> [Accepted risks](#accepted-risks); **nineteen** questions remain open (see
+> [Accepted risks](#accepted-risks); **twenty** questions remain open (see
 > [Open questions](#open-questions)) — the design's eleven minus the one the fifth-round ruling
-> closed (question 3), plus nine this plan surfaced — and none of them blocks Phase 0–3.
+> closed (question 3), plus ten this plan surfaced, the newest being question 30, the Windows and
+> Linux system-authentication prompter [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask)
+> requires and this tree has no API for — and none of them blocks Phase 0–3.
 > **One dependency is stated rather than closed:** #56's tool-channel barrier holds on
 > `POST /agent/call_tool` either way, but a caller holding the daemon secret can still run tools
-> inside another session (issue #47) and can raise its own session's capability with no credentials
-> ([AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials));
-> both need a caller identity in the daemon's auth model, which this plan does not add.
+> inside another session (issue #47), which needs a caller identity in the daemon's auth model that
+> this plan does not add. ✅ **The other half of that sentence is gone.** *"…and can raise its own
+> session's capability with no credentials"* was
+> [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials),
+> and DR-16 **retired** it on 2026-08-02 (commit `0757823f`): a raise now needs `X-User-Action` on top
+> of the secret. It did not need the general caller identity issue #47 is still waiting on.
 > **Audience:** the engineer or agent implementing issue #56, and the reviewer of its PRs.
 
 > ⚠ **Scope ruling, 2026-07-30 — read [Scope ruling — DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) before any task.**
@@ -30,6 +39,23 @@
 > ([Task 30A](#task-30a-the-non-private-model-disclosure)) that is what makes the accepted risks
 > legitimate. Everything below DR-17's section still describes the wider feature; where a task, an
 > accepted risk or an open question is affected, it says so in place.
+
+> ⚠ **Governing ruling, 2026-08-02 — read [DR-19 — a warning for the user, a wall for the agent](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) before designing any refusal or override.**
+> For every privacy or security control in this feature: an operation the **user** explicitly
+> initiates is **warned about and then allowed if they insist** — never hard-blocked; the same
+> operation initiated **automatically by an agent** is **never** allowed — it escalates to a human or
+> it does not happen. DR-16 and DR-18 are instances of this rule. A task that changes privacy state
+> and does not say *who may initiate it* is defective, because an unstated initiator becomes whatever
+> the implementer assumes.
+
+> ⚠ **Governing ruling, 2026-08-02 — read [DR-20 — declassification is gated by a system authentication](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask)
+> before touching Task 29 or Task 31.** Declassification requires an **operating-system**
+> authentication — the same class of prompt as the Keychain authorization at app start — raised once
+> **per operation**, naming the exact chats it covers, with the password verified by the OS and never
+> seen by BioRouter. **Either the agent or the UI may initiate it**, which is DR-19's agent-initiation
+> prohibition relaxed *only* where an unforgeable human act stands between the request and the effect.
+> The test seam that stands in for the prompt is gated at **compile time** and defaults to **refuse**;
+> it is the one component of this feature whose failure mode is a bypass in a shipped binary.
 
 > **For agentic workers:** follow the subagent-driven-development or executing-plans skill and
 > work task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking. Work in the worktree
@@ -61,9 +87,15 @@
 >   ran to EOF (Task 10); a `-v` filter that did not match the negated form of the assertion it meant
 >   to exclude (Task 30); two `cargo test -p biorouter-mcp --test mcp_integration_test` invocations
 >   naming a target that lives in `crates/biorouter/tests/`, which cargo hard-errors on (Tasks 20,
->   40); and a contrast total of **294** that is unreachable — three of its eighteen new assertions
->   fail AA and the same task forbids the theme edit that would fix them (Tasks 26, 32; now **288**,
->   with the deferred pair recorded as [Open question 16](#open-questions)).
+>   40); and a contrast total that is unreachable — three of its eighteen new assertions fail AA and
+>   the same task forbids the theme edit that would fix them (Tasks 26, 32; the reachable total is
+>   the two-token variant, with the deferred pair recorded as
+>   [Open question 16](#open-questions)). ⚠ **A fourth number, quoted in five places, was simply
+>   stale**: the baseline this plan added its delta to was measured before issue #65's reference-chip
+>   block joined the same loop, so `252 + 36` was quoted as the expected total when `main` had long
+>   since been 288. Task 32 found it as `324`, which is correct. Both failures are the same failure —
+>   an absolute count in a document, checked against a script that moves — which is why Tasks 26 and
+>   32 now state the **delta** (`+36`) as well as the total.
 > - **Gates that pass vacuously**, which is worse, because they are reported as verification:
 >   `grep -c '"409"'` (already 6 before any #56 code); `grep -rn "PrivacyInspector"` in three places
 >   (a name this plan invented — 0 today and 0 under every wrong implementation, so green both ways;
@@ -79,7 +111,12 @@
 > - **A pre-count table wrong in the direction that hides a no-op.** §[Which test filters are
 >   validated](#which-test-filters-are-validated-and-which-are-not) said `routes::agent` and
 >   `routes::session` had no test module. They have **8** and **20** tests respectively, so a worker
->   told to expect zero reads `8 passed` as "my tests landed" when none did.
+>   told to expect zero reads `8 passed` as "my tests landed" when none did. (⚠ `routes::session` is
+>   **29** as of Task 4b's measured run at `fd14ef9a` — this bullet records what that review round
+>   found, and 20 was true when it found it. It is left as written because rewriting a historical
+>   record hides that the figure moved; the live number is Task 4b's, which supersedes every count in
+>   this document. That a hand-measured pre-count went stale inside the same document that recorded
+>   it, in the same weeks, is this plan's most-repeated lesson and not a footnote.)
 >
 > Two rules were applied throughout and are worth stating once. **A named `cargo test` filter is
 > never gated on "PASS"** — libtest prints `0 passed` and exits 0 when a filter matches nothing, so
@@ -235,9 +272,11 @@
 >
 > **The six gates, and what each now rejects.** Task 4b's evidence column witnessed itself inside its
 > own heredoc, and its loop treated any positive count as success — so the exact pre-counts it exists
-> to establish, including the `knowledge:: = 190` correction, were decorative; the evidence is now
-> searched over the plan minus the table (measured: 18 rows stripped, all eighteen still resolve, a
-> fabricated row drops to 0) and the 41 counts are asserted by equality. Task 10B's CLI rows tested
+> to establish, including the `knowledge::` correction, were decorative; the evidence is now
+> searched over the plan minus the table (all rows still resolve, a fabricated row drops to 0) and
+> the counts are asserted by equality. (⚠ Superseded in detail by Task 4b's actual run at
+> `fd14ef9a`: the sets are now 46 resolved and 12 deferred, and `knowledge::` is **198**, not the
+> 190 this round recorded — see that task.) Task 10B's CLI rows tested
 > `build_completer`'s tuple, so a handler could call `paired`, discard the tier and key on the
 > provider name; the new row drives `handle_ingest` with the name `ollama` in **both** legs and varies
 > only `OLLAMA_HOST`. Task 10D's `META_RE` ended at `(` and missed function items — widened to `\b`,
@@ -281,8 +320,12 @@
 > and defined in none — is defined. (⚠ *Defined* was as far as that fix went; nothing emitted the
 > field until the tenth round below.) What is **not** closed and is now stated: a credential-free
 > `POST /agent/update_provider {provider:"llamacpp"}` raises any session to private capability
-> (AR-15), because the rule that would stop it forbids *"switch this chat to a private model"* —
+> ([AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)),
+> because the rule that would stop it forbids *"switch this chat to a private model"* —
 > step 1 of every refusal this feature ships.
+> ✅ **Superseded, 2026-08-02.** That last sentence is the last thing this round got wrong. DR-16 made
+> the refusal a *condition* — an upward bind without `X-User-Action` is a 409 — so the rule stops the
+> model without taking the user's model picker away, and AR-15 is **retired** (commit `0757823f`).
 
 > **Revision note (fourth round — the barrier's edges, and the first real `cargo` run).** A verifier
 > re-derived the four choke points independently and could not break them on content: it read
@@ -306,14 +349,17 @@
 > *"nothing has been compiled or run"*, and the last verifier named an actual `cargo test -- --list`
 > after Task 4 as the single thing that would most change its confidence. That is now
 > **[Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)**, a short
-> docs-only task placed immediately after Task 4, and its Step 1 was executed while writing this
-> revision — against `main` at `89c1f026`, whose only difference from the plan's anchor is six
-> developer-only files. Four of the five packages listed clean and the measured counts are pasted
-> into the task. Two of the plan's own numbers were wrong and are corrected there;
+> docs-only task placed immediately after Task 4, and it has now been **run for real** — all five
+> packages listed clean at `fd14ef9a` on 2026-08-01, 58 `(package, filter)` pairs audited, 46
+> measured and 12 deferred, gate exit 0. A first run against `main` at `89c1f026` three days earlier
+> is superseded: `main` advanced past that commit and **twenty-one of its 41 figures** — half the
+> table — are already wrong here (`agents::agent` 21 → 58, `memory` 12 → 53, `routes::session`
+> 20 → 29, and four that moved by a single test), which is the
+> arithmetic-on-a-stale-base defect the task exists to catch, caught on the task's own numbers.
 > `agents::chatrecall_extension` and `session::chat_history_search` really are **0**, as claimed, and
-> `routes::agent` = 8 / `routes::session` = 20 are confirmed exactly. What remains unrun is stated in
-> the task rather than implied: seven modules this plan creates cannot be listed until they exist,
-> and Tasks 20 and 40 re-run the audit with a shrinking and then an empty deferred set.
+> `routes::agent` = 8 is confirmed exactly. What remains unrun is stated in the task rather than
+> implied: twelve modules this plan creates cannot be listed until they exist, and Tasks 20 and 40
+> re-run the audit with a shrinking and then an empty deferred set.
 
 **Goal.** Two lattices, one column pair, five gates plus four the design did not name. A session's
 **capability** (what it may *do*) is the least-privileged model bound to it; its **classification**
@@ -574,6 +620,353 @@ ingest ratchets it (CP2/CP3), and a public model cannot read it after that.
 - **No per-page tier.** Pages are markdown in a git tree; per-page classification is a storage
   redesign and DR-18 does not ask for one. Publicizing releases the whole base, which is why (d)'s
   confirmation counts pages.
+
+---
+
+## DR-19 — a warning for the user, a wall for the agent
+
+**This is the governing asymmetry for every privacy and security control in this feature**, and it
+is the one ruling that is not about a particular control. It decides the *shape* of all of them.
+[DR-16](#decisions-of-record) (the user-only tier raise) and
+[DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)
+(the user-only knowledge-base publicize / privatize) are two instances of it that happened to be
+ruled on first; this is the rule they are instances of. Read it before designing any refusal,
+confirmation, override or escape hatch in this plan.
+
+### The ruling, verbatim
+
+Operator, 2026-08-02:
+
+> if there are things that the users are explicitly doing (not done by the agents) that are iffy in
+> terms of privacy and security, biorouter need to give warning and will allow the operation to be
+> carried on if the user insists. however, an agent will never automatically do these things
+
+### What it settles
+
+| Who initiates | An iffy privacy/security operation |
+|---|---|
+| **The user, explicitly** | **Warn, then allow if they insist.** Never a hard block. |
+| **An agent, automatically** | **Never.** It escalates to a human or it does not happen. |
+
+Both halves are load-bearing, and neither is sound without the other.
+
+**Why the user's half is a warning and not a wall.** A control that hard-blocks the user is a
+control they route around — by turning the feature off, or by leaving the product. DR-15's master
+toggle exists precisely because that pressure is real, and every hard block added to a user's path
+is a reason to reach for it. A wall in front of the user therefore does not buy safety; it trades a
+narrow refusal for a machine-wide one. What the warning buys instead is an *informed* decision,
+which is the thing actually being protected.
+
+**Why the agent's half is a wall and not a warning.** An agent that can proceed after a warning is
+an agent for which the warning is a log line. There is no one at the keyboard to read it, no one to
+decline it, and — because the model writes the next tool call — nothing stops it from retrying. A
+control an agent can satisfy by continuing is not a control. So the agent's path is not "warn and
+proceed"; it is "stop, and tell the user what to do", which is what every refusal string in this
+feature already ends on.
+
+**What makes the permissive half legitimate:
+[Task 30A](#task-30a-the-non-private-model-disclosure).** *"Allow if they insist"* is only
+defensible if the user was told what they are accepting — a user can accept a risk that was stated
+to them and cannot accept one that was not. This is the same dependency
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) already carries: the disclosure
+is the term on which its accepted risks are acceptable. DR-19 extends that from the feature's
+overall scope to every individual control inside it. That is also why Task 30A must not be gated on
+the master toggle — with enforcement off the exposure is *larger*, and a disclosure that disappears
+in that configuration fails exactly when the "allow if they insist" half is doing all the work.
+
+### Where it came from
+
+The operator was reviewing the `BindOutcome::NoSuchSession` deviation in **Gate A (Task 12)**. The
+plan specifies a hard error there — `BindOutcome::NoSuchSession => return Err(anyhow!("No such
+session: {session_id}"))` — and the implementer warned and continued instead. The operator endorsed
+warn-and-continue **and stated the general rule the endorsement is an instance of**, which is what
+is recorded here. The specific deviation is accepted; the rule is what governs.
+
+### What this does and does not change
+
+- **It does not weaken a single gate.** Gates A, B, C, D, E, F, G and H all refuse a **model**.
+  They are the agent half of this table and they stay hard refusals with no override. Nothing in
+  DR-19 authorises softening one, and *"the user could have done this"* is not a reason to let a
+  model do it.
+- **It does not require a user override on a control that only a model can trigger.** Where the
+  only initiator is an agent, there is no user half to build. `POST /agent/add_extension`'s
+  outright refusal ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+  step 3(c)) is correct as written: the user's route is to switch the model first, which is two
+  steps, not a wall.
+- **It raises the bar on "who can initiate this?" from an implementation detail to a design
+  question every task must answer.** Silence is now a defect, not a gap: an unstated initiator
+  becomes whatever the implementer assumes, and the assumption that ships is the permissive one.
+  A task that changes privacy state must say, in its own text, who may trigger it and what the
+  other party gets instead.
+- **The mechanism for "the user did this" is [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s
+  `X-User-Action` proof, and there is exactly one of it.** DR-18 already said so for knowledge
+  bases; DR-19 makes it general. A confirmation phrase compiled into the source is a UX guard
+  against an accidental write, not a proof of a human — anything holding the daemon secret replays
+  it. Where a task still names a second, undefined proof, that task is wrong and not the mechanism.
+
+---
+
+## DR-20 — declassification is gated by a system authentication, and that is what lets an agent ask
+
+**Read this with [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit)
+and [Task 31](#task-31-the-cli-is-a-required-r10-surface), which implement it, and with
+[DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), which it **refines** rather than
+replaces.** DR-19 asked *who initiated this?* and made silence about the answer a defect. DR-20
+answers a different question for one class of operation — *what stands between the request and the
+effect?* — and rules that where the answer is an act only a human at the machine can perform, the
+initiator stops being the control.
+
+### The ruling, verbatim
+
+Operator, 2026-08-02:
+
+> please make the user type in their system password (like in the beginning of the app starting,
+> typing in the password to get to the keychain) and for each declassify operation, they need to do
+> the password varification (through system means, so the app or the agent will never know the
+> password (unless the user give the agent password, which is not the app/agents problem to worry).
+> and each declassification action can declassify multiple chats (in batch) if the user so wants it.
+> both the agent or through ui can user initiate this process, but either way password will be
+> prompted. to test it, please set up this process so that when password is asked, a programatic msg
+> is sent but in the actual production (which you dont need to check, this msg will be the actual
+> system modal to ask to password) taht way i dont need to be constantly putting in password to test
+> this.
+
+### What it settles — six points
+
+1. **Declassification requires a system-level authentication.** The same *class* of prompt as the
+   Keychain authorization the user answers when BioRouter first reads a secret at app start
+   ([`docs/security/secret-storage.md`](secret-storage.md)) — an **OS** prompt, drawn by the
+   operating system, not by BioRouter. Not an in-app dialog. Not a typed phrase. Not a checkbox.
+2. **Per operation.** No session, no cached grant, no "remember for five minutes", no
+   authenticate-once-per-launch. Every declassification action raises its own prompt.
+3. **The app and the agent never see the password.** It is verified by the OS; BioRouter receives a
+   boolean. The operator states the residual and accepts it: a user who hands their password to an
+   agent is outside the threat model — *"which is not the app/agents problem to worry"*. Nothing in
+   this feature may read, transport, cache or log a password, and there is no code path in which one
+   could, because no BioRouter process is ever handed one.
+4. **Batch is supported.** One authentication may cover several chats named in **that one action** —
+   *"each declassification action can declassify multiple chats (in batch) if the user so wants
+   it."* The set must be **fixed before the prompt is raised and stated inside it**. An
+   authentication is spendable on exactly the ids it named and on no others; adding an id after the
+   prompt returns is a new operation and a new prompt.
+5. **Either the agent or the UI may INITIATE.** *"both the agent or through ui can user initiate this
+   process, but either way password will be prompted."* This is the refinement of DR-19: an agent
+   may **ask**, precisely because it cannot **satisfy**. The gate is the OS prompt, not the caller's
+   identity.
+6. **A test seam replaces the OS prompt with a programmatic answer**, so the operator is not typing
+   a password on every test run. The operator explicitly does not ask for the production modal to be
+   demonstrated — *"in the actual production (which you dont need to check, this msg will be the
+   actual system modal)"*. **The seam is the security-critical part of this ruling** and is
+   specified below at length, because it is the one component whose failure mode is a bypass in a
+   shipped binary.
+
+### Why an OS prompt, and not the three things it replaces
+
+Each of the three alternatives was available and each is weaker in a *different* way, which is why
+none of them is a partial substitute.
+
+- **A TTY check is not a human check.** *"Is a person at a terminal"* is not a question a terminal
+  can answer. `developer__shell` runs commands under a pty, this repo's own launcher documentation
+  records wrapping processes in `script` to fake one
+  ([`docs/desktop-ui/launching-the-dev-gui.md`](../desktop-ui/launching-the-dev-gui.md)), and an
+  agent shell has a controlling terminal in the ordinary case. A TTY predicate is satisfied by the
+  exact caller it is meant to exclude.
+- **A typed phrase gates the accident, never the adversary.**
+  [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s
+  own text concedes it — *"The phrase is a fixed string in the shipped source, so a caller holding
+  the daemon secret replays it"* — and DR-19 generalised the concession to a rule. A phrase is a UX
+  guard against a mis-click. It is worth keeping for that, and it is not authentication.
+- **`X-User-Action` is a proof about a process, and it does not reach two of the three callers.**
+  [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s
+  per-launch key is real, it stays, and DR-19's *"one proof of user, not two"* still governs
+  **capability raises**. But it is an **HTTP request header**: `biorouter session` has no request to
+  put it on ([Open question 29](#open-questions)), and an in-process bind has no `HeaderMap` at all
+  ([Open question 26](#open-questions)). And what it proves is *possession of a key held by the
+  Electron main process* — a statement about a process, not about a person. An OS prompt is the only
+  proof in this design that is a statement about a person.
+
+**And only the OS prompt composes with point 5.** The other three are gates on *who is calling*, so
+each of them forbids agent initiation by construction. A gate on *what must happen before the
+effect* does not care who called, which is why this ruling can grant the agent a door that DR-19
+had to keep shut.
+
+### What DR-20 relaxes in DR-19, and exactly how far
+
+DR-19's agent half reads *"An agent, automatically → never; it escalates to a human or it does not
+happen."* DR-20 does not weaken that sentence — it observes that under an OS prompt an
+agent-initiated declassification **is** an escalation to a human. The request is the agent's; the
+effect is the human's. So the prohibition that moves is on **initiation**, and it moves only here.
+
+⚠ **The relaxation is conditioned, and the condition is the whole ruling: it reaches only operations
+where an unforgeable human act stands between the request and the effect.** It does **not** extend
+to:
+
+- **Gates A–H.** They refuse a *model* mid-turn. There is no user act to interpose and no user
+  present to interpose it; a prompt raised by a model at a moment of its own choosing is
+  prompt-fatigue engineering, not consent. DR-19: *"the user could have done this"* is never a
+  reason to let a model do it, and DR-20 adds nothing to that.
+- **The spawn-downgrade** ([Open question 2](#open-questions),
+  [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)), for the same reason, and
+  for one more: the spawn happens inside a turn the user is not watching.
+- **`POST /agent/add_extension`** and the capability raises Task 18A guards. These are not
+  disclosures, they happen many times in ordinary use, and a system prompt on every model switch is
+  exactly the wall DR-19's user half forbids — the model picker is the control the entire refusal
+  vocabulary points at.
+- **Any operation a later task merely *confirms*.** A dialog is not a prompt. A task that wants this
+  relaxation must build the OS prompt first and say so; DR-19's prohibition is the default, and
+  DR-20 is an exception earned per operation, never inherited.
+
+⚠ **And it does not make an agent-initiated declassification *safe*; it makes it *gated*.** The
+residual is a prompt the user did not expect and approves out of habit. Point 4 is what limits it:
+the prompt names the exact chats, so an approval cannot be harvested for a set the user was not
+shown. A prompt that says *"BioRouter wants to make changes"* and nothing else would satisfy the
+letter of this ruling and defeat its purpose.
+
+### The mechanism, in one sentence
+
+**The process that owns the user's desktop session raises the prompt; the daemon never does.** Two
+carriers, one authenticated result type, one lowering writer.
+
+| Path | Who prompts | How the result reaches the writer |
+|---|---|---|
+| **GUI** | the Electron **main** process, which already owns the per-launch user-action key and the user's window server session | after an approval it calls `POST /sessions/declassify` carrying Task 18A's raw key plus the id set it named in the prompt; the handler verifies the key against the installed digest and mints the proof |
+| **CLI** | the `biorouter` process itself, in the terminal the user (or the agent) ran it in | it never uses the route: it opens the session store in process, exactly as `biorouter session` already does, and calls `privacy::declassify` directly |
+
+**What the daemon's guarantee is, stated exactly so no document may overstate it.** The daemon
+cannot observe an OS prompt. What it verifies is that *a process holding the per-launch user-action
+key asserts that a system authentication succeeded for this id set*. The strength comes from that
+process being the Electron main — whose heap [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
+does **not** measure as recoverable, unlike the daemon's own environment. A caller who can read the
+Electron main process, or who starts their own `biorouterd` with a key they chose, is unaffected by
+any of this; that is [Open question 20](#open-questions)'s same-machine-caller problem, unchanged
+and not made worse. On a daemon that was handed **no** digest — `just run-server`, a hand-run
+`biorouterd agent`, any headless deployment — the route fails closed for every caller, which is
+[Open question 23](#open-questions)'s answer applied to a second route.
+
+### The test seam — the part of this ruling that must never ship
+
+This is where this design fails if it fails. Everything above is defeated by one reachable bypass in
+a release binary, so the seam's gates are specified here rather than left to the task, and
+[Task 40](#task-40-final-release-gate) is where they are proven.
+
+**Five requirements, each with the mechanism that enforces it.**
+
+1. **Impossible to enable in a release build — at compile time, not at run time.** The seam module
+   is `#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]`, and both halves are load-bearing:
+   - `debug_assertions` is **off in every profile this workspace ships**. `[profile.release]` does
+     not set `debug-assertions`, so it defaults to false, and `release-dist` and `quick` both
+     `inherits = "release"` (root `Cargo.toml:43-62`). Every path in `scripts/release.sh` and every
+     `just release-*` recipe builds one of those three.
+   - `privacy-test-auth` is a **non-default** cargo feature on `biorouter`, re-exported by
+     `biorouter-server` and `biorouter-cli` as `privacy-test-auth = ["biorouter/privacy-test-auth"]`.
+     Tests reach it through `[dev-dependencies]` only — under `resolver = "2"` (root
+     `Cargo.toml:3`) a dev-dependency's features unify into the lib build when a test target is
+     being built and **not** into a plain `cargo build`, which is precisely the shape wanted.
+   - ⚠ **An environment variable alone is not sufficient and must not be the boundary.**
+     [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured the
+     daemon's environment to be recoverable *in process* by any tool that reads a caller-named path
+     (`/proc/self/environ` on Linux; `KERN_PROCARGS2` on macOS, which is not a path and which no
+     sandbox profile gates). An env-gated bypass is a bypass a compromised agent sets for itself. An
+     env var may select *which* canned answer the seam gives — it may never be what makes the seam
+     exist.
+   - ⚠ **`#[cfg(test)]` alone was considered and rejected**, not because it is weaker but because it
+     cannot carry the requirement: it is set only for a crate's own unit-test build, so an
+     integration test in `crates/biorouter-server/tests/`, a Playwright run against a dev daemon,
+     and the operator driving the dev GUI would all still meet the production prompt. The seam
+     exists to serve exactly those, and point 6 is the operator asking for them.
+
+2. **A gate that fails the BUILD if the seam is reachable from a release profile.** In
+   `crates/biorouter/src/lib.rs`, unconditionally compiled:
+
+   ```rust
+   // DR-20. `privacy-test-auth` compiles a seam that answers the declassification
+   // system prompt without an operating system prompt. It exists for tests and for
+   // driving the dev GUI. It may never be compiled with debug assertions off —
+   // which is every profile this workspace ships (release, release-dist, quick).
+   #[cfg(all(feature = "privacy-test-auth", not(debug_assertions)))]
+   compile_error!(
+       "privacy-test-auth is a TEST SEAM that bypasses the DR-20 declassification \
+        prompt and must never be compiled into a release profile. Drop the feature \
+        from this build; do not relax this guard."
+   );
+   ```
+
+   This is a compiler error, not a script that a release path could skip — the strongest gate
+   available in a Rust tree, and stronger than the `scripts/check-*.sh` convention `just
+   check-everything` uses for everything else, which only runs when someone runs it.
+   [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) Step 5
+   proves it fires by running a build that must **fail**.
+
+3. **The seam's default is REFUSE.** Unarmed, `authenticate` returns `Denied`, never `Approved`. A
+   test that forgets to arm it fails **closed** and reads as *"the user cancelled"*, which is the
+   correct thing for it to read as. Arming is **one-shot** — the canned answer is consumed by the
+   prompt it answers, so a test cannot approve a second, unexpected declassification it did not
+   intend to authorise. That is DR-20 point 2 (no cached grant) expressed in the seam, so the seam
+   cannot be *weaker* than the thing it stands in for.
+
+4. **The seam records what it was asked and says so out loud.** It captures the `AuthRequest` — the
+   reason string and the exact id set — so a test asserts that the prompt named the right chats
+   (point 4 is untestable otherwise), and it emits a `warn!` with the stable event name
+   `privacy_test_auth_used` on every use, plus a one-line `[TEST-AUTH]` banner on the CLI. A live
+   seam must be obvious in a log at a glance; that visibility is itself a safety property, and it is
+   the operator's *"a programatic msg is sent"* taken literally.
+
+5. **The Electron half has its own gate, because TypeScript has no `cfg`.** The main process's
+   prompter is the other place an approval can be fabricated, and the Rust `compile_error!` does not
+   reach it. Its seam is gated by `import.meta.env.DEV && !app.isPackaged` — the first is replaced
+   with `false` and dead-code-eliminated when Vite builds the main bundle for packaging (verify this
+   on a packaged build rather than assuming it), the second is this tree's own established
+   convention for exactly this kind of switch (`biorouterd.ts:333` decides the **keyring** default
+   that way). Because neither is a compiler error, the packaged **artifact** is checked directly:
+   the seam's env literal must not appear in `app.asar`. That grep is a real gate on a real
+   artifact, and it is the one release check the Rust side does not need.
+
+**What the production prompt is on each platform — and it is the implementer's job to verify every
+line of this before writing it.** No BioRouter code calls any of these APIs today; a repo-wide grep
+for `LocalAuthentication`, `LAContext`, `promptTouchID` and `systemPreferences` returns nothing. So
+this is a list of candidates with the reason each is named, not a settled design:
+
+- **macOS.** `LAContext.evaluatePolicy` with `.deviceOwnerAuthentication` is the right policy —
+  it accepts Touch ID **and falls back to the login password**, which is what the operator asked for.
+  ⚠ Electron's `systemPreferences.promptTouchID()` is **not** sufficient on its own: it is Touch ID
+  only, with no password fallback, so it fails on any Mac without a sensor. Authorization Services
+  (`AuthorizationCreate` with `kAuthorizationRuleAuthenticateAsSessionUser`) is the older API that
+  produces the password dialog and is the fallback to check. Whether an `LAContext` prompt can be
+  raised from `biorouter` running in a terminal — not an app bundle — is the specific thing to test
+  first, because the CLI path in Task 31 depends on it.
+- **Windows and Linux have no answer in this tree, and one is not invented here.**
+  `Windows.Security.Credentials.UI.UserConsentVerifier` (Windows Hello, which covers PIN and
+  password) and polkit (`pkexec` / a polkit agent) are the obvious candidates on each, and neither
+  is verified, neither is present, and polkit in particular is absent on the headless Linux hosts
+  this product already ships CLI packages for. **This is [Open question 30](#open-questions).**
+  Until it is answered, the honest posture is the fail-closed one: on a platform with no prompter,
+  declassification **refuses**, with a message naming the platform and pointing at the GUI on a
+  machine that has one. Shipping a Windows build whose declassification silently approves would be
+  the worst outcome available, and a build whose declassification refuses is merely a missing
+  feature.
+
+### What this changes in the plan
+
+- **[Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) is
+  rewritten** around `system_auth`, batch, and the seam. Its `UserConfirmation` ZST **stays** and
+  earns its place: it is now the *return type* of a successful authentication, so a type the
+  compiler will not let an agent-reachable path construct complements the prompt instead of
+  substituting for it. Its `secret_key_and_capability_token()` — named twice in this campaign and
+  defined neither time (DR-16's row says so) — is **gone**.
+- **[Task 31](#task-31-the-cli-is-a-required-r10-surface) is rewritten**: `biorouter session
+  declassify` is legitimate under DR-20 and takes a batch of ids. Task 29's *"no CLI subcommand can
+  construct one"* was correct under DR-19 and is wrong under DR-20; it is replaced by an enumeration
+  of the callers, which is the same shape as
+  [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)'s gate (2).
+- **The design's §12.6 *"No general bulk declassification"* is superseded.** That paragraph allowed
+  one exception, for `backfill:*` rows. Point 4 makes batch the general case. §12.1's
+  *"bind it to a one-shot token minted by the renderer over Electron IPC"* is likewise replaced —
+  that is the second of the two places DR-16 records the design assuming a proof it never defined.
+- **[Open question 29](#open-questions) is answered for this operation and stays open for the
+  other.** *"What is a proof-of-user on the CLI"* now has an answer for declassification — an OS
+  prompt raised by the CLI itself — and none for `biorouter session`'s in-process diverge, which
+  mints capability rather than releasing content and is not in DR-20's class.
+- **[Open question 30](#open-questions) is opened**: the Windows and Linux prompter.
 
 ---
 
@@ -914,7 +1307,10 @@ crates/biorouter-mcp/src/privacy_open.rs               Task 14D — safe_open: r
 crates/biorouter/src/privacy/refusal.rs                Task 12 — PrivacyRefusal; Tasks 13/14/23 add to it
 crates/biorouter/src/privacy/alt_provider.rs           Task 19 — assert_alt_provider_allowed
 crates/biorouter/src/privacy/visibility.rs             Task 21 — the §7 matrix as one predicate
-crates/biorouter/src/privacy/declassify.rs             Task 29 — UserConfirmation + declassify()
+crates/biorouter/src/privacy/declassify.rs             Task 29 — the ONE lowering writer; consumes UserConfirmation
+crates/biorouter/src/privacy/system_auth.rs            Task 29 — the OS prompt + UserConfirmation, its ONLY constructor (DR-20)
+crates/biorouter/src/privacy/system_auth_macos.rs      Task 29 — the real prompter, macOS only (DR-20; Open question 30 for the rest)
+crates/biorouter/src/privacy/system_auth_seam.rs       Task 29 — the test seam; cfg(all(debug_assertions, feature="privacy-test-auth")) (DR-20)
 crates/biorouter-mcp/src/knowledge/tier_user.rs        Task 29A — UserKbTierChange; the ONE lowering writer (DR-18)
 crates/biorouter/src/privacy/disclosure.rs             Task 30A — the ONE copy constant + required_for() (DR-17 req. 3)
 ui/desktop/src/components/ui/PrivacyBadge.tsx          Task 26
@@ -955,6 +1351,16 @@ ruling. What is *not* on this list is a defect.
 is descoped — and amended **AR-8** and **AR-11**. The knowledge-base ruling [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)
 resolved **AR-1**. None was deleted: each says in place what happened to it and why, because an
 accepted cost that simply disappears from a document is indistinguishable from one nobody noticed.
+
+⚠ **A seventh changed on 2026-08-02, and it is the only one a *task* changed rather than a ruling.**
+[Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+implemented [DR-16](#decisions-of-record) in commit `0757823f` and **retired
+[AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)**:
+a caller holding the daemon secret can no longer raise its own session's capability, because the
+upward provider bind now also requires `X-User-Action`. ⚠ **A retired risk is a claim this document
+must stop making.** An accepted risk that is quietly fixed and still described as open costs exactly
+what a missed one does — it spends the reader's trust in the entries that *are* accurate — so the
+retirement is stated here, on the section heading, and at every site in this plan that cited it.
 
 ### AR-1 — RESOLVED by DR-18 — A knowledge base that one private session touched becomes unreadable from every public chat, including the user's own ordinary work
 
@@ -1182,8 +1588,14 @@ user who accepts that sentence has accepted AR-7.
 
 Task 10A decision (2) closes the archive-laundering path in the two directions that matter: an
 imported base takes `max(archive marker, importer)` so a `.brkb` can only ever over-classify itself,
-and a **model's** export of a private base is written into `<knowledge-root>/exports/`, inside DR-14
-deny root #2, where a public-capability session cannot read it.
+and a **model's** export of a private base is written into `<knowledge-root>/.exports/` rather than
+wherever the model asked. ⚠ The second half is a **provenance control, not a barrier** — this
+paragraph used to end "inside DR-14 deny root #2, where a public-capability session cannot read it",
+which is precisely the claim this section's own amendment banner withdraws, since DR-17 descopes the
+read-deny for v1. In v1 a public session's shell can read that file; what the rule buys is that every
+model-made archive of a private base lands in one known place instead of wherever a model chose.
+(The directory is a dotfile because a plain `exports/` is a legal kb id — see
+`paths::MODEL_EXPORT_DIR`.)
 
 What is left is the *private* side. A private-capability model holds the shell (DR-14 denies reads
 to public capability only), so it can `cp` its own base's archive — or the base's markdown, or
@@ -1462,7 +1874,29 @@ private session wrote into it are covered by the same sentence, and that is the 
 rule starts applying to what happens next. A user who wants an existing app protected immediately
 opens it once in a private chat.
 
-### AR-15 — A caller holding the daemon secret can raise its own session's capability with no credentials
+### AR-15 — RETIRED by DR-16 — A caller holding the daemon secret can raise its own session's capability with no credentials
+
+> ✅ **RETIRED by [DR-16](#decisions-of-record), 2026-08-02 — closed in commit `0757823f`
+> ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)), not accepted.**
+> The body below was written before that ruling had a task, and its verdict — that this cost was
+> accepted because no rule could close it — no longer holds. `POST /agent/update_provider` now refuses an upward bind
+> that carries no proof of a human: `privacy_tiers_enabled() && raise_needs_user_action(current,
+> new_provider.tier()) && !is_user_action(&headers)` → **409 `TierRaiseNeedsUser`**
+> (`routes/agent.rs:904-916`). The daemon secret alone raises nothing; the caller also needs
+> `X-User-Action`, whose raw key the Electron main process mints per launch and hands the daemon only
+> as a SHA-256 digest on stdin (`auth.rs:40-127`) — so a tool that reads the daemon's own heap
+> recovers a value it cannot present. Four other raise channels take the same proof and a fifth
+> (`POST /agent/add_extension`) is refused outright, pinned by
+> `auth::tests::all_five_raise_channels_call_the_guard`.
+>
+> **Three residuals survive, and none of them is this risk's claim.** (1) The raw key lives in the
+> Electron main process, so a caller who can read *that* process still holds it —
+> [Open question 20](#open-questions). (2) A daemon started with no key on stdin (`just run-server`, a
+> hand-run `biorouterd agent`, every headless deployment) refuses **every** raise, the human's
+> included — [Open question 23](#open-questions). (3) The **CLI** diverge mints an already-private
+> session without passing through this gate at all — [Open question 29](#open-questions). Each is
+> tracked where it is named; leaving AR-15 open would not have covered any of them, and would have
+> gone on claiming a hole the tree does not have.
 
 `POST /agent/update_provider` (`routes/agent.rs:686-731`) binds **any** provider to **any** session
 with only `X-Secret-Key`. `llamacpp` is in the private set and needs **no credentials at all** —
@@ -1472,12 +1906,21 @@ with only `X-Secret-Key`. `llamacpp` is in the private set and needs **no creden
 session; the **upward** bind is permitted by design. So one credential-free POST makes a session
 private-capability, and every gate in this plan then permits what it would otherwise refuse.
 
-**Why it is accepted rather than closed.** The rule that would close it — refuse the upward bind
-while tiers are enabled — forbids *"switch this chat to a private model"*, which is **step 1 of the
-two-ways-out message in every refusal this feature ships**. And the daemon cannot distinguish the
-user clicking the model chip from a tool call issuing the same POST, because `check_token`
-(`auth.rs:80-127`) is one machine-wide bearer secret with no principal, no per-session token and no
-origin binding.
+**Why it was accepted when this was written — and why that reasoning did not survive.** The rule
+that would close it — refuse the upward bind while tiers are enabled — forbids *"switch this chat to
+a private model"*, which is **step 1 of the two-ways-out message in every refusal this feature
+ships**. And the daemon cannot distinguish the user clicking the model chip from a tool call issuing
+the same POST, because `check_token` (`auth.rs:80-127`) is one machine-wide bearer secret with no
+principal, no per-session token and no origin binding.
+
+⚠ **Both of those facts are still true; the conclusion drawn from them was wrong, and the banner
+above is what actually shipped.** DR-16 kept the first by making the refusal a **condition** rather
+than a blanket one — sideways and downward binds are untouched for every caller, so the model picker,
+the CLI, `restore_provider_from_session` and every apps-runtime bind keep working, and only the
+upward bind asks for anything. It answered the second by **adding** a principal for this one decision
+instead of trying to read one out of `check_token`: a per-launch key the Electron main process mints
+and never puts in the daemon's environment. The move this section could not see was *build the
+proof*; it framed the choice as control-versus-remediation-path and accepted the loss.
 
 **Bounding it honestly.** This is a *credential* escalation, not a *model* escalation. Reaching it
 requires the daemon secret, and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)
@@ -1494,8 +1937,12 @@ Layer B sandbox involved. Denying `/proc` is neither effective (`/proc/<pid>/env
 **Stated in the operator's terms:** privacy tiers stop a public **model** from reaching private
 material through the tools it is given. They do not make the daemon's own API secret a per-session
 credential, and anyone — or any model — that obtains that secret has full local access with or
-without this feature. Closing it needs a caller identity in the daemon's auth model, the same fix as
-[Open question 18](#open-questions) and [Open question 20](#open-questions).
+without this feature. ⚠ **The sentence that used to end this paragraph — *"closing it needs a caller
+identity in the daemon's auth model, the same fix as open questions 18 and 20"* — is withdrawn.** It
+was true of a *general* caller identity and false of this risk: DR-16 closed AR-15 with a
+**single-purpose** proof carried on one header for the raises that need it, leaving `check_token`
+untouched. Open questions 18 and 20 still want the general identity, and still do not have it — but
+this risk was never waiting on them.
 
 ---
 
@@ -1505,8 +1952,9 @@ The adversarial verifiers could not run a single `cargo test` filter, and named 
 biggest hole in my own coverage", because BR-71's most expensive defect was *a filter that names a
 nested module by the wrong path, prints `0 passed`, and exits 0*. This section closes as much of that
 hole as is closable by reading; **[Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)
-closes the rest by running it**, and its Step 3 carries the measured pre-count of all 30 filters that
-resolve today. Where this section and Task 4b disagree, **Task 4b wins** — it is the measurement.
+closes the rest by running it**, and its Step 3 carries the measured pre-count of all 46 pairs that
+resolve today, dated and tied to a commit. Where this section and Task 4b disagree, **Task 4b wins**
+— it is the measurement.
 
 **How each filter was checked.** For every `cargo test` line in this plan, the module path it implies
 was resolved against the tree: for an existing module, that the file exists at the path the filter
@@ -1528,16 +1976,18 @@ expect `0 passed` reads `8 passed` as "my tests landed" when in fact none of the
 modules already have **two** `#[cfg(test)]` blocks each, neither of them named `tests`, so a filter
 on the module path picks them up:
 
-| Filter | Module today — **measured at `9558c346`, confirmed by Task 4b's `--list`** | Task |
+| Filter | Module today — **measured by Task 4b's `--list` at `fd14ef9a`, 2026-08-01** | Task |
 |---|---|---|
-| `cargo test -p biorouter-server --lib routes::agent` | **8 tests**, in `mod working_dir_lock_tests` (`routes/agent.rs:1279`, 4 tests) and `mod knowledge_selection_tests` (`:1380`, 4 tests) | 12, 14 |
-| `cargo test -p biorouter-server --lib routes::session` | **20 tests**, in `mod diverge_tests` (`routes/session.rs:1038`, 11 tests) and `mod edit_message_tests` (`:1417`, 9 tests) | 22, 29 |
+| `cargo test -p biorouter-server --lib routes::agent` | **8 tests**, in `mod working_dir_lock_tests` (4) and `mod knowledge_selection_tests` (4) | 12, 14 |
+| `cargo test -p biorouter-server --lib routes::session` | **29 tests** — `mod diverge_tests` (15) and `mod edit_message_tests` (9), **plus 5 in `routes::session_events::tests`**, a different module the substring reaches. The hand count said 20 | 22, 29 |
 
-⚠ **And a third, which the hand search missed: `agents::agent` spans three test modules**, not one —
-`agents::agent::tests` (14), `agents::agent::rewrite_basis_tests` (2), `agents::agent::stall_seam_tests`
-(5), total **21**. Task 4b found it by listing. The general lesson is stated below and is worth
-repeating here: **do not assume `mod tests` is the only shape, and do not trust a hand search to have
-found every module that isn't.**
+⚠ **And a third, which the hand search missed: `agents::agent` spans five test modules**, not one —
+`agents::agent::tests` (44), `::persisted_ordering::tests` (4), `::persisted_ordering_guard` (3),
+`::stall_seam_tests` (5), `::rewrite_basis_tests` (2), total **58**. Task 4b found it by listing, and
+found it *growing*: the same command three days earlier reported three modules and 21 tests. The
+general lesson is stated below and is worth repeating here: **do not assume `mod tests` is the only
+shape, do not trust a hand search to have found every module that isn't, and do not trust any count
+that is not tied to a commit.**
 
 So Tasks 12, 14, 22 and 29 must record the **pre-count** with the same command before Step 3 and
 assert `post == pre + N`, exactly as Task 2 and Task 6 already do — never "expect a non-zero count",
@@ -1571,7 +2021,7 @@ count is therefore paired with either a named-test filter or a pre/post delta th
 
 **(a) is closed by [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only)**,
 which runs `cargo test -p <pkg> --lib -- --list` for all five packages this plan filters on and
-resolves every one of its **42** `(package, filter)` pairs against the real listing. It is placed
+resolves every one of its **58** `(package, filter)` pairs against the real listing. It is placed
 immediately after Task 4 because Task 4 is the first commit that produces a `privacy::` module, and
 it is docs-only. What it cannot close is the modules later tasks create
 (`privacy::{extensions,refusal,alt_provider,visibility,declassify}`, `providers::tier_tests`,
@@ -1582,8 +2032,8 @@ with a shrinking and then an empty list. ⚠ **Superseded by [DR-17](#scope-ruli
 `--test read_deny`. Both belong to deferred tasks, so the sweep is five packages and there is no
 second binary. The self-checking property still holds and is worth keeping in mind for a revival: a
 `--test` filter naming a binary that does not exist is a cargo hard error rather than a silent zero. Two further facts Task 4b's design turns on, both easy to get
-wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 34 occurrences, and
-`--lib -- <NAME> <NAME>`, 7 — an audit of only the first misses `privacy::refusal` and
+wrong: this plan spells its filters in **two** forms (`--lib <FILTER>`, 80 occurrences in fenced
+code, and `--lib -- <NAME> <NAME>`, 25 — an audit of only the first misses `privacy::refusal` and
 `privacy::alt_provider` entirely), and a libtest filter is a **substring** match, not a prefix, so
 `privacy` matches more than `privacy::…` and the pre-counts must be measured rather than reasoned.
 
@@ -2368,6 +2818,21 @@ would most change its confidence.
 Task 4 is the first commit that produces a `privacy::` module, so this is the earliest point at which
 that command can be run. It is docs-only: it changes this file and nothing else.
 
+> ⚠ **These tables' COUNTS are stale from Task 20 onwards — re-measure before asserting `pre + N`.**
+> Task 20's Phase 2 gate re-ran this audit at the end of Phase 2. The assertion the audit exists for
+> still holds (**0 MISSING**: no filter in this plan names a test path that resolves to nothing).
+> But **39 rows had drifted** — 32 of the 46 resolved rows had grown, every one upward, and 7 more
+> resolve with no recorded pre-count at all. Task 4b's own rule is that the task which grows a count
+> re-baselines the row in the same commit; Tasks 5-19 grew counts and did not, and Task 20 is a gate
+> that records rather than rewrites.
+>
+> **So the numbers below are a floor, not a baseline.** Any later task that computes an expected
+> count as "the number in this table plus N" is doing arithmetic on a stale base, and a shortfall
+> then reads as a pass — the exact failure this task was written to prevent. Re-run
+> `cargo test -p <pkg> -- --list` for the filter you are about to assert on and use *that* number;
+> a re-baselined table would simply go stale again by the next phase. Task 20's record carries the
+> values as measured at `71075ab8` if a diff is wanted, but re-measurement is the rule.
+
 ⚠ **Do this task even if — especially if — the filters look fine.** The two errors this catches are
 both silent: a filter that matches nothing is green, and a filter that matches *more* than intended
 is also green. §[Which test filters are validated](#which-test-filters-are-validated-and-which-are-not)
@@ -2410,100 +2875,148 @@ output. Three tests exist at this point (Task 4 Step 1 wrote two, Step 5 added a
 lines are expected; **paste what the command printed, not what this sentence predicts.**
 
 ```text
-PASTE HERE (Task 4b Step 1 output, run after Task 4 lands):
-privacy::tests::…
-privacy::tests::…
-privacy::tests::…
+$ grep '^privacy' /tmp/56-filters/biorouter.txt      # run 2026-08-01, at Task 4's commit fd14ef9a
+privacy::tests::an_unparseable_or_absent_classification_reads_private
+privacy::tests::capability_is_a_least_and_classification_is_a_max
+privacy::tests::deriving_ord_on_provider_tier_would_be_caught_here
 ```
 
-⚠ **Everything below in Step 3 was already measured**, against `main` at `89c1f026` on 2026-07-29,
-by running Step 1 verbatim (`89c1f026` differs from this plan's anchor `9558c346` in six
-developer-only files, none of which is a module any filter names). What Step 2 adds is the one thing
-that run could not produce: the `privacy::` paths, which do not exist until Task 4 lands. Everything
-else is a **re-run to confirm**, not a first measurement.
+Three tests, all under `privacy::tests`, so the three spellings this plan uses — `privacy`,
+`privacy::` and `privacy::tests` — all resolve to the same **3** and all three move out of the
+deferred set into the resolved table below. The five listings behind every number in Step 3:
+`biorouter` 1983 lib tests, `biorouter-server` 247, `biorouter-mcp` 948, `biorouter-cli` 294,
+`biorouter-sandbox` 18.
+
+⚠ **Step 3 is a FIRST measurement, not a re-run to confirm, and that is the finding.** An earlier
+draft of this task carried figures measured against `main` at `89c1f026` on 2026-07-29 and said
+everything below was "already measured". Re-running Step 1 verbatim on 2026-08-01 against this
+worktree — `main` at `e89d3742` plus Phase 0 and Task 4 — contradicted **twenty-one** of them (half
+the table), several by more than a factor of two (`agents::agent` 21 → **58**, `memory` 12 → **53**,
+`routes::session` 20 → **29**), and others by the single test that is hardest to notice
+(`providers` 359 → **360**). All twenty-one are enumerated in Step 3's item 1. `89c1f026` *is* an ancestor of this tree, but `main` advanced past it: the Workspace
+Control merge (#30), the `MessagesPersisted` ordering work (#66) and the developer file-tool jail
+(#68) all add lib tests to modules this plan filters on. **A pre-count is only true of the commit it
+was measured at**, which is precisely the arithmetic-on-the-wrong-base error this task exists to
+catch, and it re-appeared here in the space of three days. Every figure below is dated and
+commit-anchored for that reason; re-measure rather than inherit.
 
 - [ ] **Step 3: Resolve every filter, and correct the ones that disagree — MEASURED**
 
 Every `cargo test -p <pkg> --lib <FILTER>` line in this plan falls into exactly one of two sets, and
-the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs, all of them below.
+the gate in Step 5 asserts that partition. **58** `(package, filter)` pairs — 63 were harvested
+before this task struck the five retirements below — and all 58 are here.
 
-**Resolves today — 41 pairs, with the pre-count the owning task must build its `pre + N` on:**
+**Resolves today — 46 pairs, measured 2026-08-01 at `fd14ef9a` (Task 4's commit), with the pre-count
+the owning task must build its `pre + N` on:**
 
 | Package | Filter | **Measured** |
 |---|---|---|
-| `biorouter` | `agents::agent` | **21** (`::tests` 14, `::rewrite_basis_tests` 2, `::stall_seam_tests` 5 — *three* modules, none discoverable from the filter) |
-| `biorouter` | `agents::agent::tests` | 14 |
-| `biorouter` | `agents::code_execution_extension` | 69 |
-| `biorouter` | `agents::extension_manager` | **37** — ⚠ `::tests` is 33; the filter also catches `agents::extension_manager_extension::tests` (4) by substring |
+| `biorouter` | `agents::agent` | **58** — *five* test modules, only one of them named `tests`: `::tests` 44, `::persisted_ordering::tests` 4, `::persisted_ordering_guard` 3, `::stall_seam_tests` 5, `::rewrite_basis_tests` 2. None is discoverable from the filter |
+| `biorouter` | `agents::agent::tests` | 44 |
+| `biorouter` | `agents::code_execution_extension` | 71 |
+| `biorouter` | `agents::extension_manager` | **40** — ⚠ `::tests` is 36 (30 directly, plus 6 in a `generate_extension_name_tests` nested *inside* `tests`); the filter also catches `agents::extension_manager_extension::tests` (4) by substring |
 | `biorouter` | `agents::extension_manager_extension` | 4 |
 | `biorouter` | `agents::knowledge_tool` | 4 |
 | `biorouter` | `agents::mcp_client` | 12 |
-| `biorouter` | `agents::reply_parts` | 2 |
-| `biorouter` | `agents::subagent_tool` | 16 |
+| `biorouter` | `agents::reply_parts` | 3 |
+| `biorouter` | `agents::subagent_tool` | 27 |
 | `biorouter` | `agents::tool_execution` | 8 |
-| `biorouter` | `daemon_secret_never_reaches_an_extension_child` | 1 — a bare **test name** (Task 14C) that already exists |
+| `biorouter` | `daemon_secret_never_reaches_an_extension_child` | 1 — a bare **test name** that already exists (its task is ⛔ deferred; the test is not) |
 | `biorouter` | `hooks` | 93 |
-| `biorouter` | `knowledge::conversation_ingest` | 2 |
-| `biorouter` | `knowledge::provider_completer` | 4 |
-| `biorouter` | `providers` | 359 |
+| `biorouter` | `knowledge::conversation_ingest` | 3 |
+| `biorouter` | `knowledge::provider_completer` | 6 |
+| `biorouter` | `privacy` | **3** — no longer deferred: Task 4 has landed. All three are `privacy::tests::…` (Step 2) |
+| `biorouter` | `privacy::` | **3** — the trailing-`::` spelling is a *different* filter and this plan uses both; here they agree because every privacy test is nested |
+| `biorouter` | `privacy::tests` | **3** |
+| `biorouter` | `providers` | 360 |
 | `biorouter` | `scheduler` | 3 |
-| `biorouter` | `session::session_manager` | 139 |
+| `biorouter` | `session::session_manager` | 145 |
 | `biorouter-cli` | `commands::knowledge` | 9 |
-| `biorouter-cli` | `session` | 166 |
+| `biorouter-cli` | `session` | 195 — substring, so it spans sixteen modules including `commands::session*` and `commands::term` |
 | `biorouter-mcp` | `agent_drafter::` | 244 |
 | `biorouter-mcp` | `agent_drafter::catalog` | 5 |
+| `biorouter-mcp` | `agent_drafter::store` | 20 — all in `agent_drafter::store::tests`. Its sibling `agent_drafter::tier` is retired below |
 | `biorouter-mcp` | `agent_drafter::validate` | 9 |
-| `biorouter-mcp` | `daemon_secret_never_reaches_a_shell_child` | 1 — a bare test name (Task 14C) |
+| `biorouter-mcp` | `daemon_secret_never_reaches_a_shell_child` | 1 — a bare test name that already exists |
 | `biorouter-mcp` | `developer::background` | 23 |
-| `biorouter-mcp` | `developer::rmcp_developer::tests` | 64 |
-| `biorouter-mcp` | `developer::shell` | 16 |
-| `biorouter-mcp` | `knowledge::` | **190** — ⚠ the plan said "~122"; see Task 10A Step 4 |
-| `biorouter-mcp` | `knowledge::macros` | 10 |
-| `biorouter-mcp` | `knowledge::macros::ingest` | 3 |
+| `biorouter-mcp` | `developer::rmcp_developer::tests` | 68 |
+| `biorouter-mcp` | `developer::shell` | 24 |
+| `biorouter-mcp` | `knowledge::` | **198** — ⚠ `CLAUDE.md` and an earlier draft of this task said "~122" and "190"; see Task 10A Step 4 |
+| `biorouter-mcp` | `knowledge::macros` | 18 |
+| `biorouter-mcp` | `knowledge::macros::ingest` | 9 |
 | `biorouter-mcp` | `knowledge::server` | 11 |
 | `biorouter-mcp` | `knowledge::service` | 38 |
-| `biorouter-mcp` | `memory` | 12 |
-| `biorouter-mcp` | `memory::` | **10** — ⚠ *not* 12. The trailing `::` excludes two tests whose path contains `memory` without the separator, and the plan uses **both** spellings (Task 14D `--lib -- memory::`, Task 20 `--lib memory`). They are different filters and different numbers |
-| `biorouter-mcp` | `paths::` | 9 |
-| `biorouter-mcp` | `secret_guard::` | **19** — ⚠ *not* 20, for the same reason. Task 14A/14B's "expect the SAME count as before" is 19 |
+| `biorouter-mcp` | `memory` | 53 |
+| `biorouter-mcp` | `memory::` | **51** — ⚠ *not* 53. The trailing `::` excludes two `developer::undo_history` tests whose names contain `in_memory`, and the plan uses **both** spellings (Task 14D `--lib -- memory::`, Task 20 `--lib memory`). They are different filters and different numbers |
+| `biorouter-mcp` | `paths::` | **9** — ⚠ **three** modules, and the third is a substring surprise: `paths::tests` 3 + `knowledge::paths::tests` 3 + **`knowledge::source_paths::tests` 3**, because `source_paths::` *contains* `paths::`. A reviewer who enumerated `mod paths` (three declarations, one of which — `developer/paths.rs` — has no tests at all) concluded this row should be 6 and filed it as a defect. The row is right and the method was wrong: libtest matches a substring of the full path, not a module name |
+| `biorouter-mcp` | `secret_guard::` | **19** — ⚠ *not* 20, for the same reason: `secret_guard` without the separator also catches `developer::rmcp_developer::tests::secret_guard_is_rerooted_onto_the_session_working_directory` |
 | `biorouter-sandbox` | `environment` | 1 |
-| `biorouter-server` | `auth` | 4 |
-| `biorouter-server` | `routes::agent` | **8** ✓ confirms the hand-measured figure |
-| `biorouter-server` | `routes::apps` | 90 |
+| `biorouter-server` | `auth` | **6** — ⚠ only **3** of these are in `auth::tests`; the other three merely contain the word (`routes::apps`, `routes::audio`, `routes::workspace`). Task 18A writes `auth::`, which is the 3 |
+| `biorouter-server` | `auth::` | **3** |
+| `biorouter-server` | `routes::agent` | **8** — `working_dir_lock_tests` 4 + `knowledge_selection_tests` 4, and **no module named `tests`** |
+| `biorouter-server` | `routes::apps` | 94 |
 | `biorouter-server` | `routes::config_management` | 3 |
-| `biorouter-server` | `routes::session` | **20** ✓ confirms the hand-measured figure |
+| `biorouter-server` | `routes::session` | **29** — `::diverge_tests` 15 + `::edit_message_tests` 9, plus 5 in `routes::session_events::tests`, which the substring catches from a *different module* |
 
-**Deferred — 18 pairs, each with the task that creates it. A filter in neither list is the defect:**
+**Deferred — 12 pairs (13 when this table was written; see the resolution note below), each with the
+task that creates it. A filter in neither list is the defect:**
 
 | Package | Filter | Created by | Pre-count today |
 |---|---|---|---|
-| `biorouter` | `privacy` | Task 4 | **0** ✓ |
-| `biorouter` | `privacy::` | Task 4 | **0** ✓ — the trailing-`::` spelling is a *different* filter from `privacy`; both appear in this plan |
-| `biorouter` | `privacy::tests` | Task 4 | **0** ✓ |
 | `biorouter` | `providers::tier_tests` | Task 5 | **0** ✓ |
 | `biorouter` | `privacy::extensions` | Task 8 | **0** ✓ |
 | `biorouter` | `agents::chatrecall_extension` | Tasks 10, 17 | **0** ✓ confirms "no `#[cfg(test)]` at all" |
 | `biorouter-mcp` | `knowledge::tier` | Task 10A | **0** ✓ |
 | `biorouter` | `privacy::refusal` | Task 12 | **0** ✓ |
-| `biorouter-mcp` | `private_roots` | Task 14B | **0** ✓ — `crates/biorouter-mcp/src/private_roots.rs`, the resolver |
-| `biorouter` | `privacy::private_roots` | Task 14B | **0** ✓ — the `biorouter` re-export plus its tests |
-| `biorouter` | `privacy::path_policy` | Task 14B | **0** ✓ — Layer A's verdict |
-| `biorouter-mcp` | `agent_drafter::tier` | Task 14E | **0** ✓ — measured by absence: `crates/biorouter-mcp/src/agent_drafter/tier.rs` does not exist and `agent_drafter/mod.rs` declares no `mod tier` (`grep -c '^mod tier\|^pub mod tier'` → 0), so the module path cannot resolve. Its sibling `agent_drafter::store` is **not** deferred — `store.rs` has a `#[cfg(test)]` block today and that filter resolves |
-| `biorouter-server` | `call_tool_dispatches_through_the_barrier` | Task 14C | **0**, and ⚠ **this row is the live BR-71 defect this task exists to catch, found by running the command.** Task 14C spelled it `routes::agent::tests::call_tool_dispatches_through_the_barrier`, and `routes/agent.rs` has **no module named `tests`** — measured: its two `#[cfg(test)]` blocks are `working_dir_lock_tests` (4 tests) and `knowledge_selection_tests` (4), and `grep -c 'routes::agent::tests::'` over the real listing returns **0**. As written it could never resolve, no matter what Task 14C implemented, and would print `0 passed` with exit 0 for ever. Corrected in Task 14C Step 4 to the **bare test name**, which libtest matches by substring wherever the test lands |
 | `biorouter` | `session::chat_history_search` | Task 17 | **0** ✓ confirms "no `#[cfg(test)]` at all" |
 | `biorouter` | `privacy::alt_provider` | Task 19 | **0** ✓ |
 | `biorouter` | `privacy::visibility` | Task 21 | **0** ✓ |
 | `biorouter` | `every_copy_path_carries_the_tier_and_the_provider` | Task 22 | **0** ✓ — a bare **test name**, not a module; it is in the `--lib -- …` form and is invisible to an audit of only the plain form |
 | `biorouter` | `privacy::declassify` | Task 29 | **0** ✓ |
+| `biorouter-mcp` | `knowledge::tier_user` | Task 29A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
+| `biorouter` | `privacy::disclosure` | Task 30A | **0** ✓ — added by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) |
 
-⚠ **This table is 18 rows and [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) changes it to 15 — five out, two in. Fix it in the same
-commit as the deferral, not later.** Task 4b's own gate asserts that *every deferred entry is
-something this plan actually creates*, and Task 40 asserts the deferred set is **empty**. Both fail a
-**correct** tree once Tasks 14A–14F are out of scope, which is the precise failure mode this section
-exists to prevent — a gate that reports a shortfall for work nobody was supposed to do.
+⚠ **A thirteenth row was added on 2026-08-02 by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask)** — `privacy::system_auth`, the module
+Task 29 gained when declassification moved behind a system authentication. It is recorded here
+rather than left to be discovered, because an unregistered filter is exactly what this section's
+UNRECORDED check exists to catch, and Task 40 Step 2b demands an **empty** deferred set at the
+release gate. Re-derive the totals below from the table rather than from the sentence: the "12" it
+records is a measurement of *that run*.
 
-**Five rows retire with the deferred tasks**, and the filters that quote them must go with them —
-they name modules v1 does not create:
+⚠ **And that thirteenth row RESOLVED on 2026-08-04, at Task 44's commit, leaving 12** — so the
+totals in the Task 4b and Task 19 command blocks below say **13** and are records of *their* runs,
+not of this table. `crates/biorouter/src/privacy/system_auth.rs` now exists. Measured at Task 44's
+implementation commit: `cargo test -p biorouter --features privacy-test-auth --lib
+privacy::system_auth` is **22**, and the bare `cargo test -p biorouter --lib privacy::system_auth`
+is **16** — the six-test difference is the seam's own behavioural tests, which are compiled out
+without the feature. ⚠ **That is one filter under two feature sets, not two spellings** — unlike the
+`memory` / `memory::` pair above, the filter string is byte-identical in both commands. Both builds
+are live and a `pre + N` assertion has to say which *build* it is arithmetic on, which is a distinct
+hazard from the spelling one and is the reason this row was singled out in the first place.
+
+⚠ **The creating task in the row was wrong, and the row is not being moved into the resolved table
+above.** The row named Task 29, but Task 29's landed implementation predates its own DR-20 rewrite
+and never built this module (see [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit)'s
+deviation note); [Task 44](#task-44-windows-hello-and-polkit--dr-24) built it, because Task 44's
+prompters have nowhere to live otherwise. And the resolved table above is explicitly *"measured
+2026-08-01 at `fd14ef9a`"*; a row measured three days later at a different commit does not belong in
+it, and putting it there would be the arithmetic-on-the-wrong-base error that whole section exists
+to catch. The numbers live here, dated and commit-anchored, which is what that section asks for.
+
+⚠ **This table was 18 rows before this run and is 12 after: five out, two in, three resolved.** Fix
+it in the same commit as the change that moves a row, not later. Task 4b's own gate asserts that
+*every deferred entry is something this plan actually creates*, and Task 40 asserts the deferred set
+is **empty**; both fail a **correct** tree if a row lingers after its task lands or after its task is
+descoped, which is the precise failure mode this section exists to prevent — a gate that reports a
+shortfall for work nobody was supposed to do.
+
+**Three rows resolved and moved up**, because Task 4 landed before this task ran: `privacy`,
+`privacy::` and `privacy::tests` are **3** each, not 0, and are now in the resolved table. This is the
+mechanism (c) at the end of Step 5 describes, exercised for the first time — a row leaves the deferred
+set by being *created*, and the same commit that creates it re-baselines the row.
+
+**Five rows retire with the deferred tasks**, and the filters that quote them go with them — they
+name modules v1 does not create:
 
 | Package | Filter | Owning task |
 |---|---|---|
@@ -2513,53 +3026,126 @@ they name modules v1 does not create:
 | `biorouter-mcp` | `agent_drafter::tier` | 14E ⛔ |
 | `biorouter-server` | `call_tool_dispatches_through_the_barrier` | 14C ⛔ |
 
+⚠ **Retiring the row is not enough — the *command* has to stop being a command.** Tasks 14A–14F are
+kept in this document for a possible revival, so their Step 4 blocks still contained these five
+filters, and the harvest (which reads fenced code, and cannot know a task is ⛔) went on reporting
+them. Each is now struck **in place** in its own task, as a `#`-prefixed line that says which ruling
+retired it and can be uncommented if the barrier ever returns. Three lines carried a live filter
+alongside a retired one and were split rather than deleted: `paths::` (Task 14B) and
+`agent_drafter::store` (Task 14E) survive as commands, `private_roots`, `privacy::path_policy`,
+`privacy::private_roots`, `agent_drafter::tier` and `call_tool_dispatches_through_the_barrier` do not.
+
 With them go the **sixth package** and the second integration binary: `biorouter-sandbox`
 `private_data` (14B) and `--test read_deny` (14A) are not created in v1, so Task 4b sweeps **five**
 packages again, not six, and the paragraph below that says otherwise is superseded here.
 
-**Two rows join**, from the two tasks the same ruling added:
+⚠ **And eleven of the 46 resolved rows are audited on behalf of commands v1 never runs.** The gate
+below catches a *command with no row* (MISSING) but has no assertion in the other direction — a
+*row with no live command*. `resolved rows = 46` counts table rows, not usage, and the harvested
+pair count is deliberately echoed rather than asserted so the audit can grow with the plan. So a row
+whose every command sits inside a ⛔ task stays in the table, keeps being measured, and keeps
+passing, while nothing in v1 will ever execute the filter it describes. Measured by annotating the
+harvest with each command's owning task heading, these eleven are harvested **only** from
+Tasks 14A–14F:
 
-| Package | Filter | Owning task | Evidence |
-|---|---|---|---|
-| `biorouter-mcp` | `knowledge::tier_user` | 29A | `crates/biorouter-mcp/src/knowledge/tier_user.rs` |
-| `biorouter` | `privacy::disclosure` | 30A | `crates/biorouter/src/privacy/disclosure.rs` |
+| Package | Filter | Sole owner |
+|---|---|---|
+| `biorouter` | `agents::agent::tests` | 14D ⛔ |
+| `biorouter` | `agents::tool_execution` | 14D ⛔ |
+| `biorouter` | `daemon_secret_never_reaches_an_extension_child` | 14C ⛔ |
+| `biorouter-mcp` | `agent_drafter::store` | 14E ⛔ |
+| `biorouter-mcp` | `daemon_secret_never_reaches_a_shell_child` | 14C ⛔ |
+| `biorouter-mcp` | `developer::background` | 14C ⛔ |
+| `biorouter-mcp` | `developer::rmcp_developer::tests` | 14D ⛔ |
+| `biorouter-mcp` | `memory::` | 14D, 14E ⛔ |
+| `biorouter-mcp` | `paths::` | 14B ⛔ |
+| `biorouter-mcp` | `secret_guard::` | 14B ⛔ |
+| `biorouter-server` | `auth` | 14C ⛔ |
 
-Both measure **0** today, for the same reason every other deferred row does: nothing creates them yet.
+They are **kept, not struck**, and the distinction matters: unlike the five rows above, every one of
+these filters *resolves today* against a real listing, so the row is a true measurement rather than a
+standing excuse — and if the barrier is revived these are the pre-counts it needs. Two of them are
+the daemon-secret leak probes, which is the strongest reason not to drop them: those tests exist and
+pass on this tree, and the row is what keeps their count under audit even though the task that
+quotes them is deferred.
 
-⚠ **And one row is missing that is not DR-17's doing.** Task 18A's Step 4 runs
-`cargo test -p biorouter-server --lib -- auth::`, and `(biorouter-server, auth::)` appears in
-**neither** table — so Task 4b's audit reports it MISSING and exits non-zero, which is a real finding
-about a real filter rather than a consequence of this ruling. It is not resolved here because the
-count must be **measured** against a `cargo test -- --list`, not reasoned: `auth.rs` has a
-pre-existing test module, so the row belongs in the *resolved* table with its number, and a guessed
-number is the defect this whole section exists to catch.
+**The consequence, for whoever eventually deletes Tasks 14A–14F rather than reviving them:** eleven
+resolved rows go with those tasks in the same commit. Deleting the tasks alone drops the pair count
+from 58 to 47 and leaves eleven rows nothing harvests, and `resolved rows = 46` will still pass —
+this paragraph is the only thing that will tell you. Re-run Step 1 and rebuild both heredocs; do not
+hand-edit one of them.
 
-**What the measurement changed.** Five things, and none of them was catchable by reading:
+✅ **And one row that was missing is now measured.** Task 18A's Step 2 runs
+`cargo test -p biorouter-server --lib -- auth::` and `(biorouter-server, auth::)` was in **neither**
+table, so the audit reported it MISSING and exited non-zero — a real finding about a real filter,
+not a consequence of DR-17. It resolves to **3** (`auth::tests`, three tests) and is now in the
+resolved table. Its unseparated sibling `auth`, which Task 14C writes, is **6**: three of those tests
+are not in `auth` at all but in `routes::apps`, `routes::audio` and `routes::workspace`. A `pre + N`
+built on the wrong one of that pair is off by three.
+
+**What the measurement changed.** Six things, and none of them was catchable by reading:
 
 0. **A filter that names a module the tree does not have.** Task 14C's Step 4 said
    `-p biorouter-server --lib -- routes::agent::tests::call_tool_dispatches_through_the_barrier`,
    and `routes::agent` has no `tests` module — its two `#[cfg(test)]` blocks are
    `working_dir_lock_tests` and `knowledge_selection_tests` — so the filter matched nothing and
    exited 0. This is the exact defect the task was written for, found by running the command rather
-   than by reading the plan, and it survived six review rounds. Corrected to the bare test name.
-0b. **`secret_guard::` is 19 and `memory::` is 10**, while `secret_guard` is 20 and `memory` is 12.
+   than by reading the plan, and it survived six review rounds. Corrected to the bare test name in
+   Task 14C, and the row has since retired with that task under DR-17.
+0b. **`secret_guard::` is 19 and `memory::` is 51**, while `secret_guard` is 20 and `memory` is 53.
    The trailing `::` is part of the filter and this plan uses both spellings; an audit that
-   normalises it away measures a different command from the one written down.
+   normalises it away measures a different command from the one written down. The same trap in
+   `biorouter-server`: `auth::` is **3** and `auth` is **6**, and only 3 of the 6 are in `auth.rs`.
 
-1. `knowledge::` is **190**, not "~122" (a stale figure inherited from `CLAUDE.md`). Task 10A's
-   `pre + 10` assertion built on 122 would have read a 68-test shortfall as a pass. Corrected in
-   Task 10A Step 4.
-2. `agents::extension_manager::tests` is **33**, not the 27 an earlier draft asserted, and the
-   *filter* reports **37** because libtest substring-matches
-   `agents::extension_manager_extension::tests`. Corrected in Task 10A Step 1's comment.
-3. `agents::agent` spans **three** test modules — `tests`, `rewrite_basis_tests`, `stall_seam_tests`
-   — of which only the first is named `tests`. That is the same shape as `routes::agent` and
-   `routes::session`, which §"Which test filters are validated" found by hand; the pattern is
-   general, and a hand search should not be trusted to have found all of it.
+1. **A pre-count is only true of the commit it was measured at.** **Twenty-one** of the 41 figures
+   an earlier draft carried — measured at `89c1f026`, three days before this run — no longer hold on
+   this tree, because `main` advanced past that commit before the worktree was cut. That is
+   **half the table**, and the count itself is stated exactly rather than approximately, because
+   this task's own standard is that *a difference you cannot NAME is the defect* — an earlier
+   revision of this very item said "eighteen" and was three short. All twenty-one, verified by
+   diffing the old heredoc against the new one on the 41 shared `(package, filter)` keys:
+
+   | Filter | Was → is | | Filter | Was → is |
+   |---|---|---|---|---|
+   | `memory` | 12 → **53** | | `agents::extension_manager` | 37 → **40** |
+   | `memory::` | 10 → **51** | | `knowledge::conversation_ingest` | 2 → **3** |
+   | `agents::agent::tests` | 14 → **44** | | `agents::reply_parts` | 2 → **3** |
+   | `agents::agent` | 21 → **58** | | `knowledge::provider_completer` | 4 → **6** |
+   | `routes::session` | 20 → **29** | | `auth` | 4 → **6** |
+   | `agents::subagent_tool` | 16 → **27** | | `agents::code_execution_extension` | 69 → **71** |
+   | `developer::shell` | 16 → **24** | | `developer::rmcp_developer::tests` | 64 → **68** |
+   | `knowledge::macros` | 10 → **18** | | `routes::apps` | 90 → **94** |
+   | `knowledge::macros::ingest` | 3 → **9** | | `session::session_manager` | 139 → **145** |
+   | `biorouter-cli session` | 166 → **195** | | `providers` | 359 → **360** |
+   | `knowledge::` | 190 → **198** | | | |
+
+   Every one of them is a `pre + N` assertion that would have reported a shortfall as a pass, and no
+   reader could have spotted a single one. Note the tail of that list as much as the head: four rows
+   moved by **one or two tests**, which is exactly the size of delta a task's own `+ N` is trying to
+   detect — a stale base of 359 against a real 360 turns "my one test landed" into "it did not" or
+   the reverse, and it is far less likely to be noticed than `agents::agent` 21 → 58. The whole
+   table is re-measured at `fd14ef9a` and dated. Items 2-4 below expand the four of these twenty-one
+   that were wrong for a *reason* rather than merely stale.
+2. `knowledge::` is **198**, not "~122" (the stale figure inherited from `CLAUDE.md`) and not the
+   190 an earlier draft of this task recorded. Task 10A's `pre + 16` assertion built on 122 would
+   have read a 76-test shortfall as a pass. Corrected in Task 10A Step 4.
+3. `agents::extension_manager::tests` is **36**, not the 27 an earlier draft asserted nor the 33 the
+   previous measurement found, and the *filter* reports **40** because libtest substring-matches
+   `agents::extension_manager_extension::tests`. Six of the 36 are in a `generate_extension_name_tests`
+   nested *inside* `tests` — the "helper `mod` inside `mod tests`" shape §"Which test filters are
+   validated" names as failure mode (a), instantiated. Corrected in Task 10A Step 1's comment.
+4. `agents::agent` spans **five** test modules — `tests`, `persisted_ordering::tests`,
+   `persisted_ordering_guard`, `stall_seam_tests`, `rewrite_basis_tests` — of which only the first
+   is named `tests`; the previous run found three, and two more arrived with #66. That is the same
+   shape as `routes::agent` and `routes::session`, which §"Which test filters are validated" found by
+   hand; the pattern is general, it *grows*, and a hand search should not be trusted to have found
+   all of it. `routes::session` is now the sharpest case: 5 of its 29 are not in `routes::session` at
+   all but in `routes::session_events`, a **different module** the substring reaches.
 
 **What it confirmed.** Every "0 today" claim this plan makes: `agents::chatrecall_extension` and
-`session::chat_history_search` really do have no tests, and `routes::agent` = 8 / `routes::session`
-= 20 are exact. No filter in this plan names a path that resolves to *something else* — the failure
+`session::chat_history_search` really do have no tests, every deferred module is absent, and
+`routes::agent` = 8 is still exact — the one figure from the earlier run that survived a moving
+`main` unchanged. No filter in this plan names a path that resolves to *something else* — the failure
 mode that would have been worst — and none is misspelled.
 
 For every filter that resolves, record the pre-count above in its owning task, so the task asserts
@@ -2598,13 +3184,10 @@ want() {  # want <label> <expected> <actual>
 # and exits 0 — reintroduced by the gate meant to catch it. The `PKG` column is
 # what closes it.
 #
-# The 18 deferred rows from Step 3's second table, verbatim: package, filter,
+# The 12 deferred rows from Step 3's second table, verbatim: package, filter,
 # owning task, and the EVIDENCE grep that proves this plan really creates it.
 # Every one measured 0 today.
 cat > /tmp/56-filters/deferred.txt <<'ROWS'
-biorouter|privacy|4|crates/biorouter/src/privacy/mod.rs
-biorouter|privacy::|4|crates/biorouter/src/privacy/mod.rs
-biorouter|privacy::tests|4|crates/biorouter/src/privacy/mod.rs
 biorouter|providers::tier_tests|5|crates/biorouter/src/providers/tier_tests.rs
 biorouter|privacy::extensions|8|crates/biorouter/src/privacy/extensions.rs
 biorouter|agents::chatrecall_extension|10,17|crates/biorouter/src/agents/chatrecall_extension.rs
@@ -2615,69 +3198,92 @@ biorouter|privacy::alt_provider|19|crates/biorouter/src/privacy/alt_provider.rs
 biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
 biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
 biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
+biorouter|privacy::system_auth|29|crates/biorouter/src/privacy/system_auth.rs
 biorouter-mcp|knowledge::tier_user|29A|crates/biorouter-mcp/src/knowledge/tier_user.rs
 biorouter|privacy::disclosure|30A|crates/biorouter/src/privacy/disclosure.rs
 ROWS
-# ⚠ FIFTEEN, not eighteen, and the difference is DR-17. Five rows left with the
-# deferred barrier — `private_roots` (14B), `privacy::private_roots` (14B),
-# `privacy::path_policy` (14B), `agent_drafter::tier` (14E) and
-# `call_tool_dispatches_through_the_barrier` (14C) — because nothing in v1
-# creates them, and a deferred entry nothing creates is a filter that stays
-# green for ever, which assertion (b) below exists to reject. Two arrived with
-# Tasks 29A and 30A. If this number moves again, the table three sections up
-# moved with it or one of them is wrong.
-want "deferred rows" 15 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
-# ⚠ AND THE OTHER 41. Step 3's first table claims an EXACT measured count for
+# ⚠ THIRTEEN. It was TWELVE when this table was measured — not eighteen, and
+# that difference was two rulings and one landed task — and DR-20 added the
+# thirteenth on 2026-08-02: `privacy::system_auth`, the module Task 29 gained
+# when declassification moved behind a system authentication. ⚠ Its filter is
+# the one row here that does NOT run under a bare `cargo test`: it needs
+# `--features privacy-test-auth`, so a harvest that runs the plain command reads
+# 0 and calls it deferred for ever.
+# Five rows left with the deferred barrier — `private_roots` (14B),
+# `privacy::private_roots` (14B), `privacy::path_policy` (14B),
+# `agent_drafter::tier` (14E) and `call_tool_dispatches_through_the_barrier`
+# (14C) — because nothing in v1 creates them, and a deferred entry nothing
+# creates is a filter that stays green for ever, which assertion (b) below
+# exists to reject; their COMMANDS were struck in the same commit, or the
+# harvest would keep finding them and MISSING would fire. Two arrived with Tasks
+# 29A and 30A. Three left by RESOLVING: `privacy`, `privacy::` and
+# `privacy::tests` are 3 apiece now that Task 4 has landed, and they moved to the
+# resolved table. If this number moves again, the table three sections up moved
+# with it or one of them is wrong.
+want "deferred rows" 13 "$(wc -l < /tmp/56-filters/deferred.txt | tr -d ' ')"
+# ⚠ AND THE OTHER 46. Step 3's first table claims an EXACT measured count for
 # every filter that resolves, and every `pre + N` assertion in this plan is
 # arithmetic on one of those numbers. Until this round the loop below treated
-# ANY positive count as OK, so the table could claim 122 while the tree said 190
+# ANY positive count as OK, so the table could claim 122 while the tree said 198
 # and nothing failed — which is the `knowledge::` error this task itself found,
 # reintroduced as a hole in the gate that found it. Same shape as Task 10D's
 # metadata baseline, same rule: a difference you cannot NAME is the defect.
+# ⚠ These 46 numbers are dated: measured 2026-08-01 at fd14ef9a. TWENTY-ONE of
+# the 41 figures measured at 89c1f026 three days earlier are already wrong here
+# — half the table, in three days — so a DRIFT line usually means main moved,
+# not that you broke something: RE-MEASURE and re-baseline the row in the commit
+# that noticed, never guess the delta. Four of the twenty-one moved by one or
+# two tests, which is the same size as most `+ N` in this plan; do not skim a
+# DRIFT line because its numbers look close.
 cat > /tmp/56-filters/resolved.txt <<'ROWS'
-biorouter|agents::agent|21
-biorouter|agents::agent::tests|14
-biorouter|agents::code_execution_extension|69
-biorouter|agents::extension_manager|37
+biorouter|agents::agent|58
+biorouter|agents::agent::tests|44
+biorouter|agents::code_execution_extension|71
+biorouter|agents::extension_manager|40
 biorouter|agents::extension_manager_extension|4
 biorouter|agents::knowledge_tool|4
 biorouter|agents::mcp_client|12
-biorouter|agents::reply_parts|2
-biorouter|agents::subagent_tool|16
+biorouter|agents::reply_parts|3
+biorouter|agents::subagent_tool|27
 biorouter|agents::tool_execution|8
 biorouter|daemon_secret_never_reaches_an_extension_child|1
 biorouter|hooks|93
-biorouter|knowledge::conversation_ingest|2
-biorouter|knowledge::provider_completer|4
-biorouter|providers|359
+biorouter|knowledge::conversation_ingest|3
+biorouter|knowledge::provider_completer|6
+biorouter|privacy|3
+biorouter|privacy::|3
+biorouter|privacy::tests|3
+biorouter|providers|360
 biorouter|scheduler|3
-biorouter|session::session_manager|139
+biorouter|session::session_manager|145
 biorouter-cli|commands::knowledge|9
-biorouter-cli|session|166
+biorouter-cli|session|195
 biorouter-mcp|agent_drafter::|244
 biorouter-mcp|agent_drafter::catalog|5
+biorouter-mcp|agent_drafter::store|20
 biorouter-mcp|agent_drafter::validate|9
 biorouter-mcp|daemon_secret_never_reaches_a_shell_child|1
 biorouter-mcp|developer::background|23
-biorouter-mcp|developer::rmcp_developer::tests|64
-biorouter-mcp|developer::shell|16
-biorouter-mcp|knowledge::|190
-biorouter-mcp|knowledge::macros|10
-biorouter-mcp|knowledge::macros::ingest|3
+biorouter-mcp|developer::rmcp_developer::tests|68
+biorouter-mcp|developer::shell|24
+biorouter-mcp|knowledge::|198
+biorouter-mcp|knowledge::macros|18
+biorouter-mcp|knowledge::macros::ingest|9
 biorouter-mcp|knowledge::server|11
 biorouter-mcp|knowledge::service|38
-biorouter-mcp|memory|12
-biorouter-mcp|memory::|10
+biorouter-mcp|memory|53
+biorouter-mcp|memory::|51
 biorouter-mcp|paths::|9
 biorouter-mcp|secret_guard::|19
 biorouter-sandbox|environment|1
-biorouter-server|auth|4
+biorouter-server|auth|6
+biorouter-server|auth::|3
 biorouter-server|routes::agent|8
-biorouter-server|routes::apps|90
+biorouter-server|routes::apps|94
 biorouter-server|routes::config_management|3
-biorouter-server|routes::session|20
+biorouter-server|routes::session|29
 ROWS
-want "resolved rows" 41 "$(wc -l < /tmp/56-filters/resolved.txt | tr -d ' ')"
+want "resolved rows" 46 "$(wc -l < /tmp/56-filters/resolved.txt | tr -d ' ')"
 # ⚠ HARVEST FROM FENCED CODE BLOCKS ONLY, WITH `#` COMMENTS STRIPPED. Two
 # measured reasons, both of which made this gate fail on itself:
 #   * the sentence "This gate rejects: a `cargo test -p biorouter-mcp --lib
@@ -2688,8 +3294,9 @@ want "resolved rows" 41 "$(wc -l < /tmp/56-filters/resolved.txt | tr -d ' ')"
 #   Only a command inside a fence and outside a comment is a command anyone runs.
 # ⚠ AND THE TRAILING `::` IS PART OF THE FILTER: `[a-z_]+(::[a-z_]*)*`, not
 #   `(::[a-z_]+)*`. `secret_guard::` is 19 tests and `secret_guard` is 20;
-#   `memory::` is 10 and `memory` is 12. Normalising the separator away audits a
-#   different command from the one written down, which is this task's own defect.
+#   `memory::` is 51 and `memory` is 53; `auth::` is 3 and `auth` is 6.
+#   Normalising the separator away audits a different command from the one
+#   written down, which is this task's own defect.
 awk '/^```/{f=!f; next} f' "$PLAN" | sed 's/#.*//' > /tmp/56-filters/plan-code.txt
 { grep -oE 'cargo test -p [a-z-]+ --lib [a-z_]+(::[a-z_]*)*' /tmp/56-filters/plan-code.txt \
     | sed -E 's/cargo test -p ([a-z-]+) --lib /\1 /'
@@ -2762,7 +3369,7 @@ echo "  NO module called tests. That filter is unresolvable as written."
 # (b) Every DEFERRED entry is something this plan actually creates. A deferred
 #     entry nothing creates is a filter that stays green forever.
 #
-# ⚠ ALL SEVENTEEN, from the same table, in a loop — not a hand-written list of
+# ⚠ ALL TWELVE, from the same table, in a loop — not a hand-written list of
 #     the ones that happen to be new .rs files under `privacy/`. The rows this
 #     used to omit are exactly the ones that are NOT a new file in that
 #     directory, and they are the ones where "does the plan create it?" is a
@@ -2781,18 +3388,21 @@ echo "  NO module called tests. That filter is unresolvable as written."
 # column names a function this plan never writes. The check was vacuous in
 # exactly the direction it was written to close. Strip the rows first: they are the only
 # lines in the document with four `|`-separated fields and no leading `|`
-# (markdown table rows all start with `| `). The 41 resolved rows have three
+# (markdown table rows all start with `| `). The 46 resolved rows have three
 # fields and are left alone — they carry no path and no `fn`, so they cannot
 # witness anything.
 awk -F'|' 'NF == 4 && $0 !~ /^\|/ && $1 ~ /^biorouter(-[a-z]+)?$/ { next } { print }' \
   "$PLAN" > /tmp/56-filters/plan-minus-table.txt
 d=$(( $(wc -l < "$PLAN") - $(wc -l < /tmp/56-filters/plan-minus-table.txt) ))
-# Self-check on the stripper: exactly the 18 deferred rows, and NOTHING else.
-# MEASURED against this plan. If this number moves, the awk filter has started
-# eating prose and every UNBACKED verdict below is unsound — which is the failure
-# mode where a too-greedy strip makes real evidence vanish and the gate turns
-# into a wall of false UNBACKEDs that the next reader "fixes" by deleting it.
-want "rows stripped before the evidence search" 18 "$d"
+# Self-check on the stripper: exactly the 13 deferred rows, and NOTHING else.
+# MEASURED against this plan (12 when measured; DR-20 added privacy::system_auth
+# on 2026-08-02 and the heredoc above grew with it — this number tracks the
+# heredoc's line count and nothing else). If it moves for any OTHER reason, the
+# awk filter has started eating prose and every UNBACKED verdict below is
+# unsound — the failure mode where a too-greedy strip makes real evidence vanish
+# and the gate turns into a wall of false UNBACKEDs that the next reader "fixes"
+# by deleting it.
+want "rows stripped before the evidence search" 13 "$d"
 unbacked=0
 while IFS='|' read -r pkg filter task evidence; do
   n=$(grep -c -- "$evidence" /tmp/56-filters/plan-minus-table.txt) || n=0
@@ -2801,13 +3411,18 @@ while IFS='|' read -r pkg filter task evidence; do
        unbacked=$((unbacked + 1)); fi
 done < /tmp/56-filters/deferred.txt
 want "UNBACKED rows" 0 "$unbacked"
-# (c) Re-runnable, and the phase gates re-run it: after Task 20 the DEFERRED set
-#     must have lost knowledge::tier, privacy::extensions and privacy::refusal
+# (c) Re-runnable, and the phase gates re-run it: this run itself moved
+#     privacy, privacy:: and privacy::tests OUT of the deferred set because Task
+#     4 created them, which is the mechanism. After Task 20 the set must also
+#     have lost knowledge::tier, privacy::extensions and privacy::refusal
 #     (⚠ NOT agent_drafter::tier — DR-17 defers Task 14E, and that row is struck
 #     from the table along with the other four barrier rows);
-#     after Task 40 it must be EMPTY — which it can only be because the five
-#     deferred rows were REMOVED, not because they resolved. Those runs edit the heredoc above — which
-#     assertion (2) then re-checks — rather than relaxing anything here.
+#     after Task 40 it must be EMPTY. A row leaves in exactly one of two ways:
+#     it RESOLVES (move it to resolved.txt with its measured count, as the three
+#     privacy rows just did) or its task is DESCOPED (delete the row AND strike
+#     the commands that name it, or the harvest reports MISSING). Those runs edit
+#     the heredocs above — which assertions (2) and "resolved rows" then
+#     re-check — rather than relaxing anything here.
 #
 # ── LAST LINE. This block's exit status IS the verdict.
 if [ "$rc" -eq 0 ]; then echo "Task 4b gate: PASS"; else echo "Task 4b gate: FAIL"; fi
@@ -2842,20 +3457,20 @@ as it stands it prints `Task 4b gate: PASS` and exits **0**; with one deferred r
 
 **This gate rejects: a deferred row whose evidence is its own fourth column.** Round 3 §7 built it —
 add `…|fn <a name nothing writes>` to the heredoc and the `UNBACKED` loop searched the *whole plan*,
-which contains that row, so it counted 1 and reported OK. Every one of the eighteen real rows passed
+which contains that row, so it counted 1 and reported OK. Every one of the real rows passed
 for the same reason, which means the check was measuring nothing. The evidence is now searched over
-the plan **minus the eighteen rows** (they are the only lines with four `|`-fields and no leading
-`|`), the stripper's own output is asserted at exactly 18 lines removed, and the fabricated row now
-counts 0 and fails. Verified both ways on this plan: all eighteen real rows still resolve, with
-between 1 and 17 supporting mentions each, and the fabricated one drops to 0. ⚠ **A consequence for
+the plan **minus those rows** (they are the only lines with four `|`-fields and no leading
+`|`), the stripper's own output is asserted at exactly 12 lines removed, and the fabricated row now
+counts 0 and fails. Verified both ways on this plan: all twelve real rows still resolve, and the
+fabricated one drops to 0. ⚠ **A consequence for
 whoever edits this task: do not write a deferred row's evidence string into prose.** That is the same
 trap as (i) below, wearing the other face — prose naming `fn <deferred test name>` re-creates the
 self-witness that this strip removes, because prose is not stripped.
 
 **This gate rejects: Step 3's first table claiming a pre-count the tree does not have.** Until this
 round the loop treated *any* positive count as `OK`, so `knowledge:: = 122` — the stale figure that
-would have read a 68-test shortfall as a pass, and the single most valuable thing this task found —
-was invisible to the gate that found it. The 41 measured pairs are now a second heredoc keyed on the
+would have read a 76-test shortfall as a pass, and the single most valuable thing this task found —
+was invisible to the gate that found it. The 46 measured pairs are now a second heredoc keyed on the
 same `(package, filter)` pair, and a listing that disagrees with the recorded number is a `DRIFT`
 line, not an `OK`. It is an **equality**, not `n >= recorded`: tasks in this plan add tests, and the
 rule is that the task which grew a count re-baselines its row in the same commit — the identical
@@ -2869,18 +3484,21 @@ plan failed and the next reader would have "fixed" it by loosening the audit. Th
 only fenced code blocks with `#` comments stripped: a command inside a fence and outside a comment is
 a command someone runs, and nothing else is. (ii) The old pattern `[a-z_]+(::[a-z_]+)*` silently
 dropped a **trailing `::`**, so `--lib secret_guard::` (19 tests) was audited as `secret_guard`
-(20) and `--lib -- memory::` (10) as `memory` (12). It resolved either way, so nothing failed — and a
+(20) and `--lib -- memory::` (51) as `memory` (53). It resolved either way, so nothing failed — and a
 `pre + N` built on the wrong one of those pairs is the exact arithmetic-on-the-wrong-base error this
 task exists to prevent.
 
-⚠ **This task does not close the risk for the seventeen deferred filters** — they name modules and
-two test names that do not exist yet and cannot be listed. It converts "unruled-out for all 58" into
-"unruled-out for 17, each owned by a named task", which is a different order of risk: **41 of 58
-pairs are now measured**, every "0 today" claim in this plan is confirmed, and four wrong figures
-were found and corrected — `knowledge::` 190-not-122, `agents::extension_manager` 37-not-27,
-`secret_guard::` 19-not-20, `memory::` 10-not-12 — plus one filter (Task 14C's
-`routes::agent::tests::…`) that can never resolve at all Task 20's Step 4b and Task 40's Step 2b re-run Step 5 with a shrunk and
-then an **empty** `DEFERRED` set, which is what finishes the job.
+⚠ **This task does not close the risk for the twelve deferred filters** — they name modules and one
+test name that do not exist yet and cannot be listed. It converts "unruled-out for all 58" into
+"unruled-out for 12, each owned by a named task", which is a different order of risk: **46 of 58
+pairs are now measured**, every "0 today" claim in this plan is confirmed, and the wrong figures were
+found and corrected — twenty-one counts that `main` had moved past since 2026-07-29 (`agents::agent`
+58-not-21, `memory` 53-not-12, `routes::session` 29-not-20 among them), `knowledge::` 198-not-122,
+`agents::extension_manager` 40-not-27, `secret_guard::` 19-not-20, `memory::` 51-not-53, `auth::`
+3-not-6 — plus one filter (Task 14C's `routes::agent::tests::…`) that can never resolve at all, and
+five filters belonging to descoped tasks that were still live commands. Task 20's Step 4b and Task
+40's Step 2b re-run Step 5 with a shrunk and then an **empty** `DEFERRED` set, which is what finishes
+the job.
 
 - [ ] **Step 6: Commit**
 
@@ -4065,8 +4683,10 @@ impl CallCapability {
 }
 ```
 
-**Exactly four production entries sample it** — the same four Task 14's own comment enumerates, and
-no fifth:
+**Exactly four production entries decide a TOOL CALL's capability** — the same four Task 14's own
+comment enumerates, and no fifth. (Task 15 adds a fifth *constructing* site, but it is not a tool
+call: `assert_extension_reachable` is Gate C's predicate for the eight siblings that reach an MCP
+server without being one. See the sampling gate at the end of this task.)
 
 | Entry | Anchor | Samples |
 |---|---|---|
@@ -4311,15 +4931,48 @@ echo "expect: NO OUTPUT. Any hit is a second sample. The method must not exist;"
 echo "        if it does exist, someone will call it, and Gate C will drift back to it."
 grep -rn "fn capability_tier" --include='*.rs' crates/ ; echo "expect: no output"
 
-# Exactly FOUR production samples, and they are the four outermost entries.
+# FOUR entries decide a TOOL CALL's capability, but only THREE of them CONSTRUCT
+# one. The fourth — the `execute_code` JS bridge — threads the capability its own
+# `McpMeta` carried in, exactly as the ⚠ table above says; it constructs nothing
+# and can never appear in a grep for these two spellings. (The first version of
+# this gate listed it as a fourth line and therefore could not pass.)
+#
+# Task 15 adds the FOURTH constructing entry, and it is not a tool call:
+# `assert_extension_reachable` is Gate C's predicate for the eight siblings that
+# reach an MCP server WITHOUT being a tool call — resource reads, resource and
+# prompt listings, `get_prompt`. Six of those (a route handler,
+# `Agent::list_extension_prompts`, the apps' UI-resource sweep) have no admitted
+# capability to inherit, so the sample there IS the decision, taken once at the
+# decision rather than a second time after one. The two that ARE tool calls
+# (`extensionmanager__read_resource` / `__list_resources`) thread their
+# `McpMeta.capability` in as `Some(..)` and never reach the sampler.
+#
+# Task 16 adds the FIFTH, and it is not a tool call either: `allowed_extension_keys`
+# is Gate E's predicate, deciding which extensions the currently-bound model may
+# SEE. Discovery for the system prompt has no admitted turn whose decision it
+# could inherit, so the sample there IS the decision. Discovery from inside an
+# admitted call — the `execute_code` bridge's importable-module catalogue —
+# passes `Some(..)` and never reaches the sampler, for the AR-13 reason Task 15
+# gives: a script's view of the world is the script's permission, not a fresh
+# reading taken mid-turn.
+#
+# There is deliberately NO `grep -v "mod tests"` here. It never worked — it drops
+# only lines containing that literal string, which a call to either constructor
+# does not, so a unit test beside the definition was counted as a production
+# entry. Excluding the definition file instead would blind the census in exactly
+# the file where a fifth sampler is most plausible. The two tests that must name
+# the real constructors live in `crates/biorouter/tests/privacy_capability.rs`,
+# outside this window; everything else uses `CallCapability::for_test*`.
 grep -rn "CallCapability::sample(\|CallCapability::public_enforced(" --include='*.rs' crates/*/src/ \
-  | grep -v "mod tests" | sort
-echo "expect: exactly 4 lines —"
+  | sort
+echo "expect: exactly 5 lines —"
 echo "  crates/biorouter/src/agents/agent.rs           (the agent loop, dispatch_tool_call)"
 echo "  crates/biorouter/src/agents/agent.rs           (call_prefetch_tool)"
 echo "  crates/biorouter-server/src/routes/agent.rs    (call_tool -> public_enforced)"
-echo "  crates/biorouter/src/agents/code_execution_extension.rs  (the JS bridge, from its own meta)"
-echo "A FIFTH is a new entry nobody classified; a THIRD means an entry stopped deciding."
+echo "  crates/biorouter/src/agents/extension_manager.rs (Task 15, assert_extension_reachable)"
+echo "  crates/biorouter/src/agents/extension_manager.rs (Task 16, allowed_extension_keys)"
+echo "A SIXTH is a new entry nobody classified; a FOURTH means an entry stopped deciding."
+echo "Task 14C adds two more public_enforced() lines in biorouter-server; it owns updating this."
 
 # The provider mutex is not read anywhere a gate can see it. `p.tier()` outside
 # capability.rs and the provider modules themselves is a hand-rolled sample.
@@ -5012,10 +5665,12 @@ fn a_base_created_by_any_surface_is_registered_public_rather_than_unknown() {
 // (:1833 — NOT mcp_client.rs's `mod tests` at :891, which holds only
 //  BioRouterClient helpers and none of the ExtensionManager fixtures.)
 //
-// ⚠ MEASURED by Task 4b, not counted by hand: `agents::extension_manager::tests`
-// holds **33** tests, and the FILTER `agents::extension_manager` reports **37**,
-// because libtest matches substrings and `agents::extension_manager_extension::tests`
-// (4) contains it. An earlier draft said "27 tests" here. Assert 37 + N, not 27 + N.
+// ⚠ MEASURED by Task 4b at fd14ef9a (2026-08-01), not counted by hand:
+// `agents::extension_manager::tests` holds **36** tests — 30 directly plus 6 in a
+// `generate_extension_name_tests` nested INSIDE `tests` — and the FILTER
+// `agents::extension_manager` reports **40**, because libtest matches substrings
+// and `agents::extension_manager_extension::tests` (4) contains it. Earlier drafts
+// said 27, then 33/37; `main` moved. Assert 40 + N, and RE-MEASURE before you do.
 
 #[tokio::test]
 async fn a_third_party_extension_never_learns_the_capability_tier() {
@@ -5319,7 +5974,7 @@ inside it is built at execution time, on the far side of the dispatch semaphore.
 ```bash
 cargo test -p biorouter-mcp --lib knowledge::tier
 cargo test -p biorouter-mcp --lib knowledge::server    # 11 today (MEASURED, Task 4b); assert 11 + 2
-cargo test -p biorouter-mcp --lib knowledge::          # 190 today (MEASURED, Task 4b); assert 190 + 16
+cargo test -p biorouter-mcp --lib knowledge::          # 198 today (MEASURED, Task 4b); assert 198 + 16
 cargo test -p biorouter --lib agents::mcp_client
 cargo test -p biorouter --lib agents::extension_manager
 cargo test -p biorouter-server --test knowledge_routes # ~19 today; assert unchanged + 1
@@ -5335,12 +5990,15 @@ total alone cannot tell "they landed in the right module" from "they landed anyw
 an integration test, because the route is the thing under test. The last two lines are the evidence
 for decision (5a): if `create_base`'s signature had changed, they would not compile.
 
-⚠ **190, not "~122".** An earlier draft carried the figure from `CLAUDE.md`, which is stale.
+⚠ **198, not "~122" — and not the 190 an earlier draft of Task 4b recorded.**
+`CLAUDE.md`'s figure is stale, and so is any figure not tied to a commit.
 [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-docs-only) ran
-`cargo test -p biorouter-mcp --lib -- --list` and measured **190** matching `knowledge::`, across 35
-submodules (`knowledge::service::tests` alone is 38, `knowledge::store::tests` 14,
-`knowledge::server::tests` 11). A `pre + 10` assertion built on 122 would have read a **68-test
-shortfall** as a pass. The `+ 16` is 10 for the tier store and its two service tests, three
+`cargo test -p biorouter-mcp --lib -- --list` on 2026-08-01 at `fd14ef9a` and measured **198**
+matching `knowledge::`, across 35 submodules (`knowledge::service::tests` alone is 38,
+`knowledge::store::tests` 14, `knowledge::server::tests` 11). A `pre + 16` assertion built on 122
+would have read a **76-test shortfall** as a pass, and one built on the three-day-old 190 would have
+read an 8-test shortfall the same way. **Re-measure before you assert.** The `+ 16` is 10 for the
+tier store and its two service tests, three
 archive-provenance tests from decision (2)(a), and the two `server.rs` export-location rows decision
 (2)(b) gained this round — the third of those, the user's own route, is in `--test knowledge_routes`
 and so is outside the `--lib` count. Re-derive this arithmetic if a test is added or dropped; a `+ N`
@@ -6285,13 +6943,13 @@ the value, so the diff a reviewer reads at 10C is one `if`.
 # changes three struct signatures that an integration test constructs.
 cargo check --workspace --all-targets
 # Pre-counts are MEASURED (Task 4b), so these assert `pre + N`, not "non-zero".
-cargo test -p biorouter-mcp --lib knowledge::   2>&1 | grep "test result:"  # 190 + 4 (server) + 1 (ingest)
+cargo test -p biorouter-mcp --lib knowledge::   2>&1 | grep "test result:"  # 198 + 4 (server) + 1 (ingest)
 cargo test -p biorouter-mcp --lib agent_drafter:: 2>&1 | grep "test result:"  # 244, unchanged: 10B only plumbs CP4
 cargo test -p biorouter-mcp --test knowledge_macros_e2e
 cargo test -p biorouter-server --test knowledge_routes
-cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"  # 90 + 1
-cargo test -p biorouter --lib knowledge::conversation_ingest 2>&1 | grep "test result:"  # 2, unchanged
-cargo test -p biorouter --lib knowledge::provider_completer 2>&1 | grep "test result:"  # 4 + 1
+cargo test -p biorouter-server --lib routes::apps 2>&1 | grep "test result:"  # 94 + 1
+cargo test -p biorouter --lib knowledge::conversation_ingest 2>&1 | grep "test result:"  # 3, unchanged
+cargo test -p biorouter --lib knowledge::provider_completer 2>&1 | grep "test result:"  # 6 + 1
 cargo test -p biorouter-cli --lib commands::knowledge 2>&1 | grep "test result:"  # 9 + 3
 ```
 
@@ -6299,8 +6957,8 @@ Expected: **PASS**, and `cargo check --workspace --all-targets` clean. The CLI l
 decoration — it is the only crate that constructs all four Args types and never goes near an MCP
 server, so it is the evidence that the required field reached every caller rather than only the ones
 with tests, and after this round it carries the CLI's two behavioural rows (`9 + 2`, a pre-count
-measured in Task 4b — never "non-zero"). `knowledge::provider_completer` is **4** today (measured,
-Task 4b) and gains the pairing test. The `--test knowledge_macros_e2e` line is the one that used to
+measured in Task 4b — never "non-zero"). `knowledge::provider_completer` is **6** today (measured
+2026-08-01 at `fd14ef9a`, Task 4b — it was 4 three days earlier) and gains the pairing test. The `--test knowledge_macros_e2e` line is the one that used to
 be missing: it is the sole out-of-lib constructor of `IngestArgs`/`QueryArgs`, and without it this
 commit and the eight after it leave `cargo test` red.
 
@@ -7773,7 +8431,7 @@ async fn a_public_worker_profile_is_not_granted_a_private_base() {
 cargo test -p biorouter-mcp --lib agent_drafter::catalog    # 5 today (measured, Task 4b); assert 5 + 1
 cargo test -p biorouter-mcp --lib agent_drafter::validate
 cargo test -p biorouter-mcp --lib agent_drafter::           # 244 today (measured); assert 244 + 6
-cargo test -p biorouter-server --lib routes::apps           # 90 today (measured); assert 90 + 2
+cargo test -p biorouter-server --lib routes::apps           # 94 today (measured); assert 94 + 2
 ```
 
 Expected: **COMPILE ERROR** first — `Catalog::discover` takes 0 arguments, `capability_report` takes
@@ -8951,7 +9609,7 @@ and says which:
 | **12** (here) | the `PrivacyRefusal` error enum with `PublicModelOnPrivateSession { session_id, provider }`, its `session_classification()` / `provider_tier()` accessors for the typed 409, and `std::error::Error` so `anyhow`'s `downcast_ref` works |
 | **13** | `turn_refusal(&Session) -> String`, and moves Task 10's file-local `CHATRECALL_LOAD_REFUSAL` here as `chatrecall_load_refusal()` |
 | **14** | `privacy_refusal(extension, extension_tier, caller_tier) -> Option<ErrorData>` |
-| **23** | the `PrivateChildOfPublicParent { requested }` variant and its `PrivacyRefusal::spawn_upgrade(tier)` constructor |
+| **23** | **two** variants — `PrivateChildOfPublicParent { requested }` (R4) and `PublicChildOfPrivateParent { requested }` (DR-19; see Task 23's amendment banner) — and their `spawn_upgrade(tier)` / `spawn_downgrade(tier)` constructors |
 
 ⚠ `bind_provider_if_allowed` replaces the builder for this one write, so the `.provider_name(..)`
 call at `:5670` disappears — and with it the tree's only use of that setter. Leave the setter in
@@ -12112,8 +12770,12 @@ Layer A keeps every in-process tool working there.
 
 ```bash
 cargo test -p biorouter-mcp --lib secret_guard::          # expect the SAME count as before (a)
-cargo test -p biorouter-mcp --lib -- private_roots paths::
-cargo test -p biorouter --lib -- privacy::path_policy privacy::private_roots
+cargo test -p biorouter-mcp --lib -- paths::
+# ⛔ RETIRED WITH THIS TASK by DR-17, and struck by Task 4b so the filter audit
+# stops harvesting a command nothing in v1 makes resolvable. Uncomment together
+# with the task if the barrier is ever revived:
+#   cargo test -p biorouter-mcp --lib -- private_roots
+#   cargo test -p biorouter --lib -- privacy::path_policy privacy::private_roots
 cargo test -p biorouter --lib -- agents::extension_manager
 cargo test -p biorouter-mcp --lib -- developer::shell
 cargo test -p biorouter --test path_resolver_agreement
@@ -12390,16 +13052,27 @@ So: recover the secret (AR-11), `POST /agent/update_provider {session_id: "<any>
 "llamacpp", model: "qwen3.5-4b"}`, and that agent's capability is Private. Credential-free, no race
 window, permanent until the next bind.
 
-**This plan does not close it, and the reason is not cost.** Refusing the upward bind while tiers are
+~~**This plan does not close it, and the reason is not cost.**~~ ✅ **The plan DID close it — DR-16
+and [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has),
+commit `0757823f`, 2026-08-02.** The paragraph below is kept because its reasoning is still the
+reason the fix has the shape it has, and struck through because its conclusion is not what shipped.
+~~Refusing the upward bind while tiers are
 enabled would forbid *"switch this chat to a private model"* — which is **step 1 of the two-ways-out
 message in every single refusal this feature ships** (Task 12's, Task 14B's, Gate D's). A control
 whose remediation path is itself refused is not a control. There is no version of this rule that
 distinguishes the user clicking the model chip from a tool call issuing the same POST, because — (1)
-above — the daemon cannot tell them apart.
+above — the daemon cannot tell them apart.~~
 
-**Recorded as [AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials) and as a stated dependency**: closing it needs a caller
-identity in the daemon's auth model, which is the same fix as [Open question 18](#open-questions)
-and [Open question 20](#open-questions), and is out of scope here.
+**What was missed:** *"there is no version of this rule that distinguishes the user from a tool call"*
+is a statement about `check_token`, and it was read as a statement about the daemon. DR-16 left
+`check_token` exactly as it is and added a second, single-purpose proof beside it — `X-User-Action`,
+minted per launch by the Electron main process, held by the daemon only as a digest — required on
+the **upward** bind and on nothing else. The remediation path is untouched, because the user's click
+carries the header and the model's POST does not.
+
+**Recorded as [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials), and that risk is now RETIRED.** ⚠ It did **not** need the
+general caller identity in the daemon's auth model; [Open question 18](#open-questions) and
+[Open question 20](#open-questions) still want that, and still do not have it.
 
 ⚠ **And AR-11's own bound is weaker than it reads.** The secret is recoverable *in-process*, with no
 shell, by any tool that reads a caller-named path: `computercontroller__cache view
@@ -12704,7 +13377,9 @@ would leave two spawn paths to keep in step and is the divergence this task exis
 ```bash
 cargo test -p biorouter-mcp --lib -- developer::background
 cargo test -p biorouter-server --lib auth
-cargo test -p biorouter-server --lib -- call_tool_dispatches_through_the_barrier
+# ⛔ RETIRED WITH THIS TASK by DR-17, and struck by Task 4b so the audit stops
+# harvesting a command v1 never makes resolvable. Revive as:
+#   cargo test -p biorouter-server --lib -- call_tool_dispatches_through_the_barrier
 # ⚠ The BARE TEST NAME, not `routes::agent::tests::…`. Measured by Task 4b against a
 # real `--list`: `routes/agent.rs` has NO module named `tests` — its two `#[cfg(test)]`
 # blocks are `working_dir_lock_tests` and `knowledge_selection_tests` — so the
@@ -13963,7 +14638,11 @@ so a tool-side caller is a failing gate rather than a silent hole.
 - [ ] **Step 4: Run**
 
 ```bash
-cargo test -p biorouter-mcp --lib -- agent_drafter::tier agent_drafter::store
+cargo test -p biorouter-mcp --lib -- agent_drafter::store
+# ⛔ `agent_drafter::tier` RETIRED WITH THIS TASK by DR-17, and struck by Task 4b
+# so the audit stops harvesting it; `agent_drafter::store` above is real (20
+# tests today) and stays. Revive as:
+#   cargo test -p biorouter-mcp --lib -- agent_drafter::tier agent_drafter::store
 cargo test -p biorouter-mcp --lib -- knowledge::                 # pre-count is MEASURED, assert pre + N
 cargo test -p biorouter-mcp --lib -- memory::
 cargo test -p biorouter-mcp --test agent_drafter_registered      # the real-transport leg
@@ -14865,7 +15544,9 @@ measured that bearer to be recoverable from inside the daemon. That is exactly w
 along with the model's, and the picker is what the entire refusal vocabulary points at. So this task
 has to build the proof-of-user the design has assumed twice (§12.1, and Task 29's
 `secret_key_and_capability_token()`) and defined neither time. It is recorded as
-[AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials).
+[AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+— ✅ **and this task is what retired that risk**, in commit `0757823f` on 2026-08-02. AR-15 is the one
+accepted risk in this plan that a *task*, rather than a scope ruling, took off the list.
 
 **The proof, in one sentence: whoever launches the daemon mints it, and it never touches the
 daemon's environment.** The Electron main process generates 32 random bytes per launch, keeps the
@@ -15959,20 +16640,47 @@ curl -s -X POST http://127.0.0.1:3000/agent/call_tool -H 'X-Secret-Key: test' \
 - [ ] **Step 4b: Re-run Task 4b's filter audit with a shrunk deferred set**
 
 ```bash
-# Nine of Task 4b's twelve deferred filters were created by Tasks 4-19, so only
-# three may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
-# nine landed ROWS from /tmp/56-filters/deferred.txt and keeping these three:
-#   biorouter|privacy::visibility|21|crates/biorouter/src/privacy/visibility.rs
-#   biorouter|privacy::declassify|29|crates/biorouter/src/privacy/declassify.rs
-#   biorouter|every_copy_path_carries_the_tier_and_the_provider|22|fn every_copy_path_carries_the_tier_and_the_provider
+# Seven of Task 4b's THIRTEEN deferred rows are created by Tasks 5-19, so exactly
+# six may still be deferred here. Re-run Task 4b Steps 1 and 5, deleting the
+# seven landed ROWS from /tmp/56-filters/deferred.txt and keeping these six —
+# named by (package, filter, task) ONLY, with the evidence column deliberately
+# omitted; copy each row's fourth field from Task 4b's own heredoc, do not
+# retype it here:
+#   biorouter                privacy::visibility                              21
+#   biorouter                every_copy_path_carries_the_tier_and_the_provider 22
+#   biorouter                privacy::declassify                              29
+#   biorouter                privacy::system_auth                             29
+#   biorouter-mcp            knowledge::tier_user                             29A
+#   biorouter                privacy::disclosure                              30A
+# ⚠ `privacy::system_auth` was added by DR-20 on 2026-08-02 and is the SIXTH.
+# A re-run that keeps five is reading a pre-DR-20 copy of Task 4b's table.
+# ⚠ THE OMISSION IS THE POINT, and it is Task 4b's own rule ("do not write a
+# deferred row's evidence string into prose"). The UNBACKED check greps each
+# row's evidence over the plan MINUS the deferred heredoc, and the stripper that
+# removes that heredoc keys on a line whose first `|`-field is exactly a package
+# name. A `#`-prefixed copy has `#   biorouter` in that field, so it is NOT
+# stripped — it survives into the searched text and witnesses the very row it
+# is a copy of. Six rows reproduced in full here would each gain a witness that
+# is nothing but themselves, which is exactly the self-witnessing defect Round 3
+# §7 found and the strip exists to remove. Reintroducing it in a re-run of the
+# audit that removed it is the shape of bug this plan keeps catching.
+# …and add each of the seven landed filters to resolved.txt with the count the
+# --list now reports. `privacy`, `privacy::` and `privacy::tests` are ALREADY in
+# resolved.txt at 3 apiece (Task 4 landed before Task 4b ran) and every task
+# since has added to them, so re-baseline those three too.
 # Delete rows rather than editing a regex: the deferral is keyed on the
-# (package, filter) PAIR, and a nine-term alternation is where a package gets
+# (package, filter) PAIR, and a seven-term alternation is where a package gets
 # dropped (Task 4b's "What this catches").
-# Expect: 0 MISSING, 3 DEFER, 0 UNUSED, and OK with a non-zero count for all nine of
-# privacy, privacy::tests, privacy::extensions, privacy::refusal,
+# ⚠ EXPECT DRIFT LINES, AND FIX THEM BY RE-MEASURING, NOT BY LOOSENING THE GATE.
+# Twenty tasks of new tests have moved the pre-counts recorded at fd14ef9a, and
+# main may have moved under the branch as well; the rule is Task 10D's — the
+# commit that grows a count re-baselines its row. A count you cannot NAME the
+# source of is the defect.
+# Expect: 0 MISSING, 6 DEFER, 0 UNBACKED, 0 DRIFT after re-baselining, and OK
+# with a non-zero count for all seven of privacy::extensions, privacy::refusal,
 # privacy::alt_provider, providers::tier_tests, knowledge::tier,
 # agents::chatrecall_extension and session::chat_history_search.
-# A DEFER on any of those nine means the module landed under a different path
+# A DEFER on any of those seven means the module landed under a different path
 # from the one this plan filters on — the BR-71 defect, caught here rather than
 # at the release gate, where forty tasks of gates have already quoted it.
 ```
@@ -15995,6 +16703,42 @@ breaks under the gates.
 
 Design §7 is a nine-column table over three inputs. Written once, as a pure function, it is
 unit-testable without a database and BR-71's tool handlers can call it rather than re-deriving it.
+
+> ⚠ **This task ships the predicate with no caller, and no later task adds one.** Recorded by
+> **Task 20's Phase 2 gate**, which found the surface through its metadata sweep and measured the
+> following against this plan:
+>
+> * Step 5 below states the consumer count itself — *"every consumer calls `may_read`/`may_write`/
+>   `appears_in_list`. **Measured today: 0**"* — and nothing after Task 21 changes it.
+> * `workspace_list` appears in this plan **exactly once**: in `appears_in_list`'s doc comment in
+>   Step 3. `workspace_read_conversation` appears **zero** times, and
+>   `crates/biorouter/src/agents/workspace_extension.rs` — the file holding both handlers —
+>   appears **zero** times. No task modifies it. Tasks 22 (copy), 23 (spawn), 24 (scheduler +
+>   Agent Drafter route) and the Task 25 / Task 40 gates never name a workspace tool.
+>
+> **What that leaves open, today and at the end of this plan as written.** `workspace_list`
+> (`list_session_row`, `workspace_extension.rs:749-803`) emits, for every non-hidden session,
+> `name` · `working_dir` · `extensions` · `knowledge_bases` · `primary_kb` — where §11.4 rules
+> the first **CONTENT — withheld** ("the LLM-generated session title … the one that leaks most per
+> byte") and the second **CONTENT — withheld** ("routinely names a cohort, a study or a patient
+> population"), and `extensions` re-exposes by name exactly the private extensions Gate E omits
+> from that model's own tool list. `workspace_read_conversation` (`:805`) then returns the full
+> transcript. Neither consults `privacy_tier`: `workspace_extension.rs` greps 5 privacy hits, all
+> `for_test_restricted()` in tests, and both `workspace_services.rs` files grep **0**.
+>
+> Design §7 already rules both (`privacy-tiers.md:493` `workspace_list` = **∅ row omitted**,
+> `:494` `workspace_read_conversation` = **✗**), so this is a ruled requirement with no
+> implementation behind it — not deferred work, unassigned work.
+>
+> **The wiring is small.** `SessionSummary` already carries `privacy_tier`
+> (`session_manager.rs:227-230`, added by this issue for the sidebar badge), and `list_session_row`
+> is handed that summary — so the
+> filter is one `appears_in_list` call on data already in hand, no extra query;
+> `handle_read_conversation` needs one `may_read`. Reaching either tool requires an explicit
+> `workspace` extension entry: auto-injection grants the spawn tool only, asserted by
+> `subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only` (`agent.rs:8525`).
+> **Scheduling this is an operator decision** — Task 20 is a gate and records it rather than
+> inventing a task.
 
 **Files:**
 
@@ -16132,6 +16876,67 @@ git commit -m "feat(privacy): the capability matrix as one predicate per verb (#
 
 ### Task 22: Session copy — three hand-rolled builders become one derived-session helper
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — this
+> task never says who may copy a session, and under DR-19 that silence is itself the defect.** Read
+> this before Step 3. Nothing below is reversed; a requirement and a guard site are added.
+>
+> **The direction of the fix is right and stays.** Carrying the tier forward is the safe half —
+> without it a branch of a private chat runs private history on a public model, which is the bug
+> this task exists to close — and `import_session`'s raise-only rule is DR-19-correct as written:
+> an import of unknown provenance becomes Private whatever the file claims, so it can only ever
+> *withhold* capability, never mint it. Neither is touched.
+>
+> **What the silence hides.** The word "user" appears twice in this task, both times inside the
+> phrase *"the user's default public model"* — i.e. never about who acts. And
+> `create_derived_session` carries `provider_name` **and** `model_config` as well as
+> `privacy_tier`, which means a diverge of a private session does not merely copy a label: it
+> **mints a new session that is already bound to a private provider**, i.e. a new
+> private-**capability** session. [DR-16](#decisions-of-record) and
+> [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+> guard *raises on sessions that already exist* — `raise_needs_user_action(current, new)` compares
+> an existing agent's bound provider against a requested one — so a session created already-private
+> passes no gate at all: it never calls `POST /agent/update_provider`, and Gate A only ever sees the
+> already-correct pairing.
+>
+> **And the route has no principal.** `POST /sessions/{session_id}/diverge`
+> (`routes/session.rs:1029`, registered at the route table beside it) sits behind `check_token` and
+> nothing else, which [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+> and [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) between them
+> establish is not a proof of a human. (AR-15 is **retired** — the measurement cited here, that
+> `check_token` has no principal, is the part of it that stands; what DR-16 retired is the conclusion
+> that the raise therefore could not be gated. This route is exactly the case DR-16's gate does not
+> reach, which is why it needs its own.) So on the plan as written, a model that recovers the daemon
+> secret can hand itself a private-capability session by diverging one — no `X-User-Action`, no
+> confirmation, no gate — and every gate downstream then reads that session as legitimately private.
+>
+> **The requirement, stated in DR-19's two halves.**
+>
+> - **Who may initiate a copy: the user, and only the user.** All three paths are user surfaces
+>   today and there is no model-facing tool for any of them — measured in this worktree at
+>   `6b4a26ba`: `diverge_session` is reached from `POST /sessions/{id}/diverge` and from the CLI
+>   (`biorouter-cli/src/commands/session.rs:419`, `session/mod.rs:736`); `diverge_session_for_edit`
+>   from `POST /sessions/{id}/edit_message` (`routes/session.rs:746`); and **`copy_session` has no
+>   production caller at all** (`grep -rn --include='*.rs' "copy_session(" crates/ | grep -v
+>   session_manager.rs` → 0 hits). ⚠ **"No tool exposes it" is not the same as "no model can reach
+>   it"** — that is the [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+>   shape, and stating the initiator without stating the proof is exactly
+>   the assumption DR-19 says ships permissive.
+> - **What the copy of a private session requires: the same one proof, on the same header.** When
+>   the **source** session's tier is Private, the HTTP paths require `X-User-Action` — the mechanism
+>   [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+>   builds, reused, not re-invented (DR-19: *"one proof of user, not two"*). Both routes are real
+>   HTTP handlers with a request to carry it, so this is the mechanical extension open question 24
+>   was, and not the undecidable one open question 26 is. A public source needs nothing: copying a
+>   public chat mints no capability.
+> - **What a refusal says.** The user's route is not blocked, it is redirected: *"This chat is
+>   private. Branch it from the chat window."* DR-19's user half is untouched — the human at the
+>   keyboard clicks diverge and it works, because the renderer holds the key.
+>
+> **The one part that needs a ruling: the CLI.** `biorouter session` runs in a terminal with no
+> renderer to mint a header, and it is also runnable by any agent holding `developer__shell`. That
+> is the same shape as [Open question 23](#open-questions)'s keyless daemon and it is deliberately
+> **not** decided here — see [Open question 29](#open-questions).
+
 Three copy paths carry the conversation and not the provider, so a branch of a private chat resolves
 through `restore_provider_from_session`'s `Config::global()` fallback (`agent.rs:5685`) and runs
 private history on the user's default public model, with no prompt.
@@ -16145,7 +16950,7 @@ three hand-rolled builders into one shared helper is a better trade and closes t
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Modify | `crates/biorouter/src/session/session_manager.rs` | `copy_session` `:4710-4741` (`create_session` `:4718-4724`, builder `:4726-4733`, `replace_conversation` `:4736`); `diverge_session_for_edit` `:4743-4773`; `diverge_session` `:4776-4841` (**the primary GUI diverge, and it does NOT call `copy_session`** — `create_session` `:4816-4822`, builder `:4824-4836`, `replace_conversation` `:4838`); `import_session` `:4668-4707` (builder `:4683-4700`, `replace_conversation` `:4703`); the two builder setters this helper must use correctly — `provider_name(impl Into<String>)` `:972-975` and `model_config(ModelConfig)` `:977-980`, **both taking values, not `Option`s** |
-| Reference | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029`. ⚠ **`routes/session.rs` already has 20 tests** in two `#[cfg(test)]` blocks — `mod diverge_tests` (`:1038`, 11) and `mod edit_message_tests` (`:1417`, 9). Neither is named `tests`, and the module-path filter picks up both, so Step 4's `cargo test -p biorouter-server --lib routes::session` prints **`20 passed`** before this task, not `0 passed`. A previous version of this row said the module was empty. **Record the pre-count and assert `pre + N`** — `mod diverge_tests` is also exactly where this task's route test belongs |
+| **Modify** (was Reference, changed by DR-19) | `crates/biorouter-server/src/routes/session.rs` | `POST /sessions/{id}/diverge` at `:1029` and `POST /sessions/{id}/edit_message` (`diverge_session_for_edit` call at `:746`) — **both gain a `HeaderMap` before `Json`** and one `is_user_action` condition each, fired only when the SOURCE session's tier is Private. Same header, same helper, same file as [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) — do not add a second. `POST /sessions/{id}/copy` does not exist and no production caller of `copy_session` does either (measured at `6b4a26ba`), so there is no third handler to guard. ⚠ **Do Task 18A first**; without `is_user_action` this row does not compile. ⚠ **the filter `routes::session` reports 29 tests** (measured by Task 4b at `fd14ef9a`): `mod diverge_tests` (15) and `mod edit_message_tests` (9) in this file — neither named `tests`, both picked up by the module-path filter — **plus 5 in `routes::session_events::tests`, a different file the substring also reaches**. So Step 4's `cargo test -p biorouter-server --lib routes::session` prints **`29 passed`** before this task, not `0 passed` and not the 20 an earlier hand count claimed. A previous version of this row said the module was empty. **Re-measure and record the pre-count, then assert `pre + N`** — `mod diverge_tests` is also exactly where this task's route test belongs |
 | Reference | `crates/biorouter/src/session/session_manager.rs` | `diverge_session_at` `:1562` — checked, and it is a thin wrapper onto the same storage `diverge_session` at `:4776`, so the three-path coverage below really is complete. Say so, or the next reviewer re-derives it |
 
 - [ ] **Step 1: Write the failing tests — one per path, and one that enumerates**
@@ -16177,6 +16982,33 @@ async fn an_import_with_no_tier_is_private_and_one_with_a_tier_is_only_raised_by
     assert_eq!(import_json_with("public").await.privacy_tier, SessionClassification::Private);
 }
 
+#[tokio::test]
+async fn diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not() {
+    // DR-19. The copy carries `provider_name`, so a diverge of a private source
+    // MINTS a new private-CAPABILITY session — and DR-16 guards raises on
+    // sessions that already exist, so nothing downstream ever sees this one as
+    // a raise. `X-User-Action` is Task 18A's header, reused; there is exactly
+    // one proof of user in this feature and this is not a second.
+    let priv_src = private_session_on("versa_azure").await;
+    assert_eq!(post_diverge(&priv_src, secret_key_only()).await.status(), 403);
+    assert_eq!(post_diverge(&priv_src, secret_key_and_user_action()).await.status(), 200);
+
+    // A public source mints no capability, so it needs no proof — a gate that
+    // fires on every branch is one people route around (DR-19's user half).
+    let pub_src = public_session().await;
+    assert_eq!(post_diverge(&pub_src, secret_key_only()).await.status(), 200);
+
+    // Both HTTP paths, not just the one the GUI menu uses: `edit_message`
+    // reaches `diverge_session_for_edit` (routes/session.rs:746) and is the
+    // path a test written against `/diverge` alone would miss — the same
+    // omission shape as the parameterised loop above.
+    assert_eq!(post_edit_message(&priv_src, secret_key_only()).await.status(), 403);
+    assert_eq!(post_edit_message(&priv_src, secret_key_and_user_action()).await.status(), 200);
+
+    // And a refusal must not have branched anything.
+    assert_eq!(children_of(&priv_src).await.len(), 2);
+}
+
 #[test]
 fn no_copy_path_hand_rolls_its_own_builder_any_more() {
     // The design's enumeration test, aimed at the three functions that matter
@@ -16190,7 +17022,9 @@ fn no_copy_path_hand_rolls_its_own_builder_any_more() {
 }
 ```
 
-- [ ] **Step 2: Run** → tests 1 and 3 **FAIL**, test 2 **FAIL**.
+- [ ] **Step 2: Run** → tests 1 and 3 **FAIL**, test 2 **FAIL**, and the DR-19 route test **FAILS**
+(it is a route test and belongs in `mod diverge_tests`, per the Files table's third row — re-measure
+that module's pre-count and assert `pre + 1`, not a bare `tail -3`).
 
 - [ ] **Step 3: Implement**
 
@@ -16276,6 +17110,18 @@ awk '/async fn import_session/,/^    }/' crates/biorouter/src/session/session_ma
 # defect this plan exists to avoid. Assert the count.
 cargo test -p biorouter --lib -- every_copy_path_carries_the_tier_and_the_provider \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# DR-19: both HTTP copy handlers ask who is calling when the SOURCE is private.
+# The condition is on the source's tier, not on the request — a handler that
+# demands the header unconditionally is a wall in front of the user (DR-19's
+# permissive half) and would fire on every branch of every public chat.
+for f in diverge_session edit_message; do
+  echo -n "$f: "
+  awk "/async fn $f/,/^}/" crates/biorouter-server/src/routes/session.rs \
+    | grep -c "is_user_action(&headers)"
+done ; echo "expect: 1 each — a CONDITION, not an unconditional refusal"
+cargo test -p biorouter-server --lib -- \
+  diverging_a_private_chat_needs_the_user_and_diverging_a_public_one_does_not \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 ```
 
 **What this catches.** A test on `copy_session` alone — the only path the design's §9.3 B1 originally
@@ -16287,13 +17133,65 @@ impossible to miss.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/session/session_manager.rs
+git add crates/biorouter/src/session/session_manager.rs crates/biorouter-server/src/routes/session.rs
 git commit -m "fix(session): carry tier, provider and model config across all three copy paths (#56)"
 ```
 
 ---
 
 ### Task 23: Spawn — reorder, stamp, filter, and the spawn matrix
+
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — the
+> spawn downgrade is a REFUSAL, not a confirmation.** Read this before Step 1. It changes one
+> matrix row, one test, one `TaskConfig` field and one branch of Step 3(c), and it **answers**
+> [Open question 2](#open-questions).
+>
+> **The defect: a flag with no reader.** `requires_downgrade_confirmation` occurs **three times in
+> this entire document** — the field in Step 3(b), the assignment in Step 3(c), and
+> [Open question 2](#open-questions) — and nowhere else. No surface renders it, no handler branches
+> on it, and none of the three interfaces this feature must serve (GUI, CLI, headless) is named as
+> its consumer. Step 1's matrix carries a `prompt =` column whose only possible subject is the flag
+> itself: `assert_child` can observe the field being set, because there is nothing else in the plan
+> to observe. **A flag nothing reads is worse than no control at all**, because in review it reads
+> like one. DR-19 makes that silence a defect rather than a gap.
+>
+> **Who initiates this, stated: only a model, ever.** A subagent spawn is a tool call. There is no
+> shipped surface on which a human spawns a subagent and chooses its provider — the request comes
+> out of `ProfileParam`-shaped tool arguments the model writes, and a private parent asking for a
+> public child is therefore an **agent-initiated** send of private-origin prompt text to a public
+> model, plus the model's own choice of which public provider receives it. DR-19's agent half is
+> unconditional: *never* — it escalates to a human or it does not happen.
+>
+> **And there is no escalation path to escalate to.** DR-19 names exactly one proof of user,
+> [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s
+> `X-User-Action`, and it is an HTTP request header. `apply_settings_overrides` runs in process,
+> inside the parent's own turn, with no request to carry one — the same obstacle
+> [Open question 25](#open-questions) records for the app runtime. The only other candidate is the
+> permission/approval machinery, and [Open question 2](#open-questions) already measured that a
+> planted `PermissionRequest` hook bypasses it: hooks load from `~/.config/biorouter/config.yaml`
+> and, with `allow_project_hooks`, from `.biorouter/hooks.yaml`, **both writable by the same agent
+> with `text_editor`** — and under [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)
+> neither file is behind a deny root any more, because [DR-14](#decisions-of-record) is deferred. An
+> approval an agent can author the approver for is not an approval. **So the requirement is stated
+> both ways, and the second half is not decoration: the child spawn is refused, and the refusal must
+> not be satisfiable by any hook, config entry, permission mode or `always_allow` record the agent
+> can write.** The refusal is a `return Err` inside `apply_settings_overrides`, upstream of every
+> one of those, which is precisely why it is the branch to take.
+>
+> **This is not DR-19 overriding R4; it is DR-19 supplying the initiator R4 never named.** R4 permits
+> a private session to have public children. It says nothing about *who asks for one*, and DR-19's
+> `POST /agent/add_extension` precedent is the governing shape: *"It does not require a user override
+> on a control that only a model can trigger… the user's route is to switch the model first, which
+> is two steps, not a wall."* Here the user's route is the same two steps — start a chat on the
+> public model and give it the task directly — and it costs the user nothing they cannot see.
+> `parent = Priv, request = Inherit` is untouched, so the ordinary case (a private parent delegating
+> on its own model) still works exactly as before; only the model **naming a public provider for a
+> child** is refused.
+>
+> **What this does NOT change.** Task 21's `requires_first_crossing_approval` is a different
+> subject — a cross-session *write* to a public session that already exists (BR-71's workspace
+> tools), not the minting of a public child — and this amendment neither touches nor relies on it.
+> Task 7's `floor` crossing count stays **1**: refusing a branch removes no crossing.
 
 ⚠ **The design's §8.2 sketch does not survive the tree's ordering.** `create_subagent_session` runs
 at `subagent_tool.rs:507` and `:526`; `overridden_task_config` (→ `apply_settings_overrides`) runs
@@ -16321,24 +17219,50 @@ async fn the_spawn_matrix_holds() {
     // when only `model` is given today's code keeps the parent's provider_name
     // and swaps the model string — harmless, because the tier is a property of
     // the instance and never of the model id.
-    assert_child(parent = Priv, request = Inherit,  ok(), tier = Private, prompt = false).await;
-    assert_child(parent = Priv, request = Private,  ok(), tier = Private, prompt = false).await;
-    assert_child(parent = Priv, request = Public,   ok(), tier = Public,  prompt = true ).await;
-    assert_child(parent = Pub,  request = Inherit,  ok(), tier = Public,  prompt = false).await;
-    assert_child(parent = Pub,  request = Public,   ok(), tier = Public,  prompt = false).await;
+    // ⚠ The `prompt` column is GONE with DR-19 — see the amendment banner. It
+    // had no subject: nothing in this plan reads
+    // `requires_downgrade_confirmation`, so the only thing `assert_child` could
+    // have asserted was that the field was written.
+    assert_child(parent = Priv, request = Inherit,  ok(), tier = Private).await;
+    assert_child(parent = Priv, request = Private,  ok(), tier = Private).await;
+    assert_child(parent = Pub,  request = Inherit,  ok(), tier = Public ).await;
+    assert_child(parent = Pub,  request = Public,   ok(), tier = Public ).await;
     // R4: a public session may never gain private reach. Hard refusal.
     assert_spawn_refused(parent = Pub, request = Private).await;
+    // DR-19: a model may not send private-origin prompt text to a public model
+    // of its own choosing, and there is no in-process channel on which it could
+    // ask a human. Hard refusal, in the other direction, for the other reason.
+    assert_spawn_refused(parent = Priv, request = Public).await;
 }
 
 #[tokio::test]
-async fn a_downgraded_child_is_born_public_not_inheriting_the_parents_private() {
-    // Otherwise it is born in the stuck residual state. It receives only the
-    // task prompt — none of the parent's history, none of its private
-    // extensions — which is exactly why the confirmation shows the prompt: the
-    // prompt is the entire disclosure.
-    let child = spawn(parent = Priv, request = Public).await.unwrap();
-    assert_eq!(row(&child.id).await.privacy_tier, SessionClassification::Public);
-    assert!(child.conversation_carried_from_parent().is_none());
+async fn a_private_parent_cannot_hand_its_prompt_to_a_public_model_it_picked() {
+    // DR-19, replacing `a_downgraded_child_is_born_public_not_inheriting_the_parents_private`.
+    // That test asserted the shape of a child this plan no longer creates. What
+    // has to be true instead is that the refusal happens, that it names the way
+    // out, and — the part a refusal test usually forgets — that it leaves
+    // NOTHING behind, because Step 3(a)'s reorder is what makes that possible.
+    let before = session_count().await;
+    let err = spawn(parent = Priv, request = Public).await.unwrap_err();
+    assert!(err.to_string().contains("public model"), "{err}");
+    assert!(err.to_string().contains("start a new chat"), "the way out, not just a no: {err}");
+    assert_eq!(session_count().await, before);
+}
+
+#[tokio::test]
+async fn the_spawn_refusal_cannot_be_unlocked_by_anything_the_agent_can_write() {
+    // DR-19's second half, as an assertion. Open question 2 measured that a
+    // planted PermissionRequest hook bypasses an approval, and that hooks load
+    // from two files an agent holding `text_editor` can write — neither of them
+    // behind a deny root, because DR-14 is deferred by DR-17. So the refusal is
+    // asserted to survive every agent-writable unlock in the tree at once.
+    for unlock in [Unlock::PermissionRequestHookAllow, Unlock::ProjectHooksAllow,
+                   Unlock::AlwaysAllowRecord, Unlock::PermissionMode(Smart),
+                   Unlock::PermissionMode(Chat)] {
+        with_unlock(unlock, || async {
+            assert!(spawn(parent = Priv, request = Public).await.is_err(), "{unlock:?}");
+        }).await;
+    }
 }
 
 #[tokio::test]
@@ -16357,7 +17281,18 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
     // (`task_config.extensions.retain(|ext| extension_names.contains(&ext.name()))`,
     // :788-791), never by tier — so today a session holding ucsfomopagent can
     // spawn a public-model child that inherits it verbatim.
-    let child = spawn_with_parent_extensions(parent = Priv, request = Public,
+    //
+    // ⚠ THE FIXTURE CHANGED WITH DR-19, and the filter did NOT become dead code.
+    // The obvious fixture — a private parent asking for a public child — is now
+    // a refusal (see the banner), so this test would have asserted on a spawn
+    // that never happens. The surviving reachable case is a parent whose
+    // CAPABILITY is Public while its extension list still holds a
+    // private-classified record: Gate C refuses that extension at dispatch and
+    // Gate E hides it from discovery, but neither REMOVES it from the manager,
+    // so `TaskConfig.extensions` (the parent's own list, agent.rs:2727) still
+    // carries it — the AR-13 shape, one layer over. An inheriting child is then
+    // Public and must not receive it.
+    let child = spawn_with_parent_extensions(parent = Pub, request = Inherit,
                                              &["ucsfomopagent", "developer"]).await.unwrap();
     assert_eq!(child.extension_names(), vec!["developer"]);
     assert!(child.tool_result_text().contains("ucsfomopagent"),
@@ -16365,7 +17300,8 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
 }
 ```
 
-- [ ] **Step 2: Run** → tests 1, 3 and 4 **FAIL**; test 2 **FAIL**.
+- [ ] **Step 2: Run** → all **five** tests **FAIL** (the count changed with DR-19: the downgrade
+test was replaced and a second one added).
 
 - [ ] **Step 3: Implement**
 
@@ -16379,8 +17315,12 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
     let session = create_subagent_session(&config, working_dir, task_config.privacy_tier).await?;
 ```
 
-(b) **`TaskConfig` gains two fields** — `privacy_tier: SessionClassification` and
-`requires_downgrade_confirmation: bool`.
+(b) **`TaskConfig` gains ONE field** — `privacy_tier: SessionClassification`.
+
+⚠ **It was two, and `requires_downgrade_confirmation: bool` is deliberately not added** (DR-19; see
+the banner). Adding a field no code reads is how a refusal that was never built comes to look, in
+review and in a later audit, like a control that exists. If a future ruling reinstates the approval,
+it is added **together with its consumer**, not before one.
 
 (c) **`apply_settings_overrides`** (`:756-795`), after `providers::create` at `:778`:
 
@@ -16391,8 +17331,22 @@ async fn a_public_child_does_not_inherit_its_parents_private_extensions() {
         if child_tier.is_private() && !parent_cap.is_private() {
             return Err(PrivacyRefusal::spawn_upgrade(child_tier).into());   // R4
         }
+        // DR-19. Was `task_config.requires_downgrade_confirmation = true`, a
+        // write nothing in the tree read. The prompt is private-origin text and
+        // the MODEL chose which public provider receives it; there is no
+        // request on this path to carry Task 18A's `X-User-Action`, and the
+        // approval machinery is unlockable by hooks the same agent can author.
+        // So: refuse, above every one of those, and say what the user can do.
+        //
+        // ⚠ This condition fires ONLY on an explicit request, and needs no
+        // extra term to say so. `request = Inherit` hands the child the
+        // parent's SAME `Arc<dyn Provider>` (agent.rs:2727, and it is the same
+        // fact R5 rides on), so `child_tier == parent_cap` identically and the
+        // comparison cannot be true. The two tiers can only differ when the
+        // request named a provider or a model and `providers::create` (:778)
+        // built something else — which is exactly the case DR-19 refuses.
         if !child_tier.is_private() && parent_cap.is_private() {
-            task_config.requires_downgrade_confirmation = true;             // R4 permits; disclose
+            return Err(PrivacyRefusal::spawn_downgrade(child_tier).into());  // DR-19
         }
         // The ONE crossing this task adds: the child's CAPABILITY establishes
         // the CLASSIFICATION its row is born with. Task 7's EXPECTED gains
@@ -16425,12 +17379,26 @@ to need — **`PrivacyRefusal::spawn_upgrade` is defined here, and nowhere befor
     /// parent's, so the message can say what was asked for without naming the
     /// parent's provider.
     PrivateChildOfPublicParent { requested: ProviderTier },
+
+    /// DR-19: a private-capability session may not hand its task prompt to a
+    /// public model the MODEL chose. The prompt is private-origin content and
+    /// the spawn is agent-initiated with no channel to ask a human on, so this
+    /// is a refusal and not a confirmation — see Task 23's banner.
+    ///
+    /// The message must end on the user's route, like every other refusal in
+    /// this feature: *"Start a new chat on that model and give it this task
+    /// directly."* Do NOT name the parent's provider or quote the prompt — the
+    /// prompt is the thing being withheld.
+    PublicChildOfPrivateParent { requested: ProviderTier },
 ```
 
 ```rust
 impl PrivacyRefusal {
     pub fn spawn_upgrade(requested: ProviderTier) -> Self {
         Self::PrivateChildOfPublicParent { requested }
+    }
+    pub fn spawn_downgrade(requested: ProviderTier) -> Self {
+        Self::PublicChildOfPrivateParent { requested }
     }
 }
 ```
@@ -16476,14 +17444,34 @@ cargo test -p biorouter --lib \
 # subagent_tool.rs with count 2 means the extension retain used `floor` instead
 # of the shared refusal predicate — read the comment in Step 3 (c) before
 # "fixing" the constant.
-# And the spawn refusal is a real variant, not an invented constructor.
+# And the spawn refusals are real variants, not invented constructors — BOTH
+# directions, because DR-19 added the second one.
 grep -c "PrivateChildOfPublicParent" crates/biorouter/src/privacy/refusal.rs ; echo "expect: >= 2 (variant + constructor)"
+grep -c "PublicChildOfPrivateParent" crates/biorouter/src/privacy/refusal.rs ; echo "expect: >= 2 (variant + constructor)"
+# DR-19: the flag with no reader is GONE and must not come back. This is the
+# gate for the amendment banner, and it is a zero on purpose — a field nothing
+# reads is indistinguishable, in review, from a control.
+grep -rn --include='*.rs' "requires_downgrade_confirmation" crates/
+echo "expect: NO OUTPUT. If a hit appears, its READER must be named in the same"
+echo "  commit, on all three interfaces (GUI, CLI, headless), or it is the defect"
+echo "  DR-19 removed. Do not re-add the field 'for later'."
+# The refusal sits ABOVE every unlock an agent can author (hooks, always_allow,
+# permission mode), which is the whole reason it is a refusal and not an
+# approval. Assert it by position: nothing permission-shaped is consulted here.
+awk '/async fn apply_settings_overrides/,/^}/' crates/biorouter/src/agents/subagent_tool.rs \
+  | grep -c "PermissionRequest\|always_allow\|permission_mode\|hook" ; echo "expect: 0"
 ```
 
 **What this catches.** Stamping the tier in `create_subagent_session`'s INSERT without reordering —
 which is literally what the design says to do, compiles, and produces an orphan `SubAgent` row on
 every refused spawn (durably, and in a detached task on the background path). Test 3 is the only
-thing that fails it, and the ordering grep is what makes the fix visible in review.
+thing that fails it, and the ordering grep is what makes the fix visible in review. **DR-19 makes
+the reorder load-bearing twice**, because the downgrade is now a refusal as well: a plan that kept
+the old ordering would leave an orphan row on the *commonest* refusal rather than the rarest.
+
+And, from the amendment banner: **a `bool` assigned and never read.** Nothing in the test suite
+fails when a control is a field, which is why the gate for that one is a `grep` returning nothing
+rather than an assertion returning true.
 
 - [ ] **Step 6: Commit**
 
@@ -16496,6 +17484,67 @@ git commit -m "feat(privacy): spawn inheritance - resolve the tier before the ro
 ---
 
 ### Task 24: The two shipped features the gates break
+
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — H4's
+> sequence NARRATES a tier raise this plan never authorises, and Task 18A explicitly blesses the
+> path it takes.** Read this before Step 1. It adds a requirement and one open question; it does
+> **not** invent a mechanism, because the plan does not have one.
+>
+> **What H4 actually says.** *"public app session, route pinned to `versa_azure` → Gate A allows the
+> bind → Gate B ratchets."* That is a **Public → Private capability raise on a live session**, which
+> [DR-16](#decisions-of-record) reserves to the user and DR-19 restates as the general rule. And the
+> route that supplies `versa_azure` is **agent-authored**: `configure_main_provider`
+> (`routes/apps.rs:809`, called `:1259`) reads `AgentConfig.model` — a `{provider, model}` pair —
+> out of the app's stored manifest (`agent_drafter/store.rs:76-79`), and
+> `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes that per-profile
+> `model` straight from `ProfileParam` (`:699-712`), i.e. from tool arguments a model writes.
+> `agent_drafter` is **Public** by design (Task 8). So the sequence is: a public model writes a
+> provider name into a file, and the app runtime binds it, raising the session it is running in.
+>
+> **Task 18A does not cover this — it exempts it, in so many words.** Step 3(g) reads: *"Sideways
+> and downward binds are untouched **for every caller**, which is what keeps Gate A's
+> `agent_on(private_provider())` path, the CLI, `restore_provider_from_session`, and every
+> `routes/apps.rs` bind working exactly as before."* Read literally that is true of *sideways and
+> downward* binds and false as a blanket statement about `routes/apps.rs`, because
+> `configure_main_provider` and `apply_route_for_turn` (`:2211`) also bind **upward**. The exemption
+> is the whole of what makes H4's first arrow legal, and it is the sentence this amendment narrows.
+>
+> **A second site, not previously named, and it is the sharper one.** Step 3 of this task says
+> `ClientFrame::ModelSelect` (`:3409-3428`, bind at `:3418`) *"is fixed with **zero new code** — it
+> goes through `Agent::update_provider`, so Gate A covers it."* Gate A covers the **downward**
+> direction (a public provider onto a private session). It does not cover the **raise**, which is
+> Task 18A's subject and which Task 18A guards only on HTTP routes. `ModelSelect` arrives on
+> `GET /apps/{id}/agent`, which is **exempt from secret-key auth** (`auth.rs:52-77`,
+> `is_public_app_get` matching the tail `["agent"]` at `:76`) — this task's own Step 3 says so, as
+> the reason Gate A must carry it. So a `ModelSelect` naming `llamacpp` or `versa_azure` raises an
+> app session's capability from a channel that needs **no credential at all**, and the page that
+> sends it is **agent-authored TypeScript** (Agent Drafter apps are built by the model). That is
+> both halves of DR-19's agent row on one frame.
+>
+> **The requirement, stated.** A bind that raises a live app session's capability from Public to
+> Private must not proceed on the strength of agent-authored data alone — not from a manifest
+> `model`, not from a manifest route pin, not from a `ClientFrame::ModelSelect`. The predicate is
+> the one Task 18A already defines, `raise_needs_user_action(current, new.tier())`; the guard sites
+> are `configure_main_provider` before `agent.update_provider` at `:820`, `apply_route_for_turn`
+> before its bind at `:2211`, and the `ModelSelect` arm at `:3418`.
+>
+> **What is NOT claimed, so the next reviewer does not re-derive it.** A worker profile gets its own
+> session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so an unpinned worker
+> binding a private provider *creates* a session at a tier rather than raising one — the same shape
+> as any new session, and [Open question 25](#open-questions) already says so. Step 3(d) of this
+> task, which teaches `configure_worker_provider` to inherit the main agent's provider, is
+> unaffected and stays as written. Step 3(b)'s ratchet-aware restore is also unaffected — but note
+> what it is and is not: it makes the *consequence* of the raise visible; it is not, and must not be
+> read as, the authorisation for the raise that preceded it.
+>
+> **Why this task states the requirement and stops.** The proof DR-19 names is a request header, and
+> `configure_main_provider` / `apply_route_for_turn` are **in-process** calls with no request to
+> carry one; `ModelSelect` arrives on an unauthenticated socket, so a header there proves nothing.
+> [Open question 25](#open-questions) assigned this to Tasks 22 and 23 — **checked, and neither
+> answers it**: measured over both tasks' full text, neither mentions apps, manifests,
+> per-connection re-derivation, or session-capability lifetime at all. Inventing the mechanism here
+> would be inventing the *scoped-permission* concept DR-16 deliberately left unbuilt. So it is
+> [Open question 26](#open-questions).
 
 **C2 — a scheduled job created from a private session becomes permanently, silently broken.**
 `scheduler.rs:846-850` builds its provider from `Config::global()` **only**, `:867` binds. Under
@@ -16559,6 +17608,32 @@ fn provider_class_is_not_inverted_any_more() {
 }
 
 #[tokio::test]
+#[ignore = "DR-19 / open question 26: states the requirement, awaiting the operator's ruling on \
+            what a proof-of-user is on an in-process bind. Un-ignore when 26 is answered; do NOT \
+            delete it, and do NOT satisfy it by inventing a grant mechanism."]
+async fn agent_authored_data_cannot_raise_a_live_app_sessions_capability() {
+    // DR-19 + DR-16. Three sites, one rule. Each starts from a PUBLIC app
+    // session that already exists, and each supplies the private provider from
+    // something a public model can write.
+    let app = public_app_session().await;
+
+    // (1) the manifest's own model, written by agent_drafter__declare_profiles.
+    declare_profile_model(&app, "main", "versa_azure").await;
+    assert!(reconnect(&app).await.is_err(), "configure_main_provider raised on a manifest edit");
+
+    // (2) a manifest route pin — H4's own sequence, which this plan narrates.
+    pin_route(&app, "versa_azure").await;
+    assert!(run_turn(&app).await.is_err(), "apply_route_for_turn raised on a route pin");
+
+    // (3) a ClientFrame::ModelSelect on the UNAUTHENTICATED app socket, sent by
+    //     the app's own agent-authored page.
+    assert!(send_model_select(&app, "llamacpp").await.is_err());
+
+    assert_eq!(row(&app.session_id).await.privacy_tier, SessionClassification::Public,
+               "no path may leave this session private-capable");
+}
+
+#[tokio::test]
 async fn an_unpinned_worker_profile_inherits_the_main_agents_provider() {
     // R5. configure_worker_provider has NO branch that reads the main agent's
     // provider (:1480-1516), so an unpinned profile falls to Config::global()
@@ -16569,7 +17644,22 @@ async fn an_unpinned_worker_profile_inherits_the_main_agents_provider() {
 }
 ```
 
-- [ ] **Step 2: Run** → all four **FAIL** (test 3 fails on the first two assertions).
+- [ ] **Step 2: Run** → all four **FAIL** (test 3 fails on the first two assertions). The fifth,
+`agent_authored_data_cannot_raise_a_live_app_sessions_capability`, is `#[ignore]`d and reports
+`1 ignored` — deliberately, and it stays that way until [Open question 26](#open-questions) is
+ruled on. ⚠ **An `#[ignore]`d test is exactly the shape this plan warns about elsewhere** (a filter
+that prints green having run nothing), so it is not a substitute for the guard: the *requirement*
+lives in the banner and in open question 26, and the test is there so that answering 26 has a place
+to land rather than a blank page.
+
+**As landed** (Task 25 review found it missing entirely and it was added then): it lives in
+`routes::apps::tests::privacy_task24` and drives the **one in-process bind all three sites end
+in**, `Agent::update_provider` on a live public app session, rather than driving each site through
+its own route — the three-site version above needs an app-session harness that does not exist and
+would have bought nothing, since it is that shared bind which is ungated. Verified genuinely red
+under `--ignored` (a parked test that passes asserts nothing), and the three sites now also carry a
+pointer to it in `configure_main_provider`, `apply_route_for_turn` and the `ClientFrame::ModelSelect`
+arm, so an engineer editing any of them meets the requirement without reading this plan.
 
 - [ ] **Step 3: Implement**
 
@@ -16598,6 +17688,13 @@ through `Agent::update_provider`, so Gate A covers it. Note that `GET /apps/{id}
 from secret-key auth (`auth.rs:52-77`, `is_public_app_get` matching the tail `["agent"]` at `:76`),
 which is exactly why it must be covered by the bind gate rather than by a route check. Lock it in
 with a test rather than adding one.
+
+⚠ **"Zero new code" is true of the DOWNWARD direction only** (DR-19; see this task's banner). Gate A
+refuses a **public** provider on a **private** session. A `ModelSelect` naming a **private** provider
+on a **public** session is the opposite arrow — a capability raise — and Gate A passes it by design,
+Task 18A guards it only on HTTP routes, and this socket carries no credential at all. The frame is
+therefore **not** fixed by this task; it is the third guard site named in the banner and it is part
+of [Open question 26](#open-questions). Do not read the paragraph above as clearing it.
 
 - [ ] **Step 4: Run**
 
@@ -16719,7 +17816,7 @@ parchment:dark measures exactly 1.00, the same colour — and **no border token 
 3:1 on any ground**, so an outline pill is not expressible here at all. And a `--text-subtle` label
 drops under AA the moment the user hovers a History row in three of the six scopes.
 
-`ui/desktop/scripts/check-contrast.mjs` passes 252 assertions today and looks at **none** of those pairs: its
+`ui/desktop/scripts/check-contrast.mjs` passes 288 assertions today and looks at **none** of those pairs: its
 `TEXT_GROUNDS` (`:70-78`) is `app, canvas, default, muted, sidebar`, and `--background-medium`
 appears only in `RING_GROUNDS` (`:83`). Which also means the app's own `Badge` default tone
 (`neutral` = `bg-background-medium text-text-muted`) is outside the audit; it happens to pass
@@ -16776,13 +17873,21 @@ ring assertion changes. (An earlier version of this task moved the ground and th
 `RING_GROUNDS`' copy to avoid six duplicate ring assertions; that whole manoeuvre is gone with the
 move.) Do not "tidy" line 83.
 
-**The arithmetic, so the expected total is derived rather than guessed:** 252 today, `+12` from the
+**The arithmetic, so the expected total is derived rather than guessed:** 288 today, `+12` from the
 new hover-ground block (2 text tokens × 6 family×mode scopes), `+24` from the four badge assertions
-(× 6 scopes), `+0` from rings → **288**.
+(× 6 scopes), `+0` from rings → **324**.
 
-Verify the 252 decomposes as you expect before trusting the delta: per scope the script runs
-15 (TEXT_GROUNDS 5 × 3 tokens) + 6 (RING_GROUNDS) + 2 (accent) + 8 (4 statuses × 2) + 2 (borders)
-+ 3 (code ground) + 3 (focus) + 3 (sidebar icon) = **42**, and 42 × 6 scopes = 252.
+⚠ **This baseline was `252` in every earlier version of this plan and it was stale — measure, do not
+quote.** Issue #65's `<biorouter-ref>` reference chip added a six-assertion block (2 grounds × 3
+assertions) to the same per-scope loop after this task was written, taking `main` from 42 to 48 per
+scope. Nothing about this task changed; the number it is added to did. Re-run
+`node scripts/check-contrast.mjs | tail -1` on `main` before trusting any figure here, because a
+"pre + N" assertion against a stale baseline reads a shortfall as a pass.
+
+Verify the 288 decomposes as you expect before trusting the delta: per scope the script runs
+15 (TEXT_GROUNDS 5 × 3 tokens) + 6 (RING_GROUNDS) + 2 (accent) + 8 (4 statuses × 2)
++ 6 (reference chip, 2 grounds × 3 — issue #65) + 2 (borders) + 3 (code ground) + 3 (focus)
++ 3 (sidebar icon) = **48**, and 48 × 6 scopes = 288.
 
 ```tsx
 // PrivacyBadge.test.tsx
@@ -16848,19 +17953,20 @@ cd ui/desktop && node scripts/check-contrast.mjs && npm run themes -- --check
 npx vitest run PrivacyBadge 2>&1 | tail -5
 ```
 
-Expected: `OK — all 288 contrast assertions pass` (252 + 12 + 24 + 0, per the arithmetic above),
+Expected: `OK — all 324 contrast assertions pass` (288 + 12 + 24 + 0, per the arithmetic above),
 `OK — generated artifacts are current (3 themes)`, and **1 file / 2 tests**. Read a wrong total
-rather than "fixing" the theme: **294** means `--background-medium` went into `TEXT_GROUNDS` after
+rather than "fixing" the theme: **330** means `--background-medium` went into `TEXT_GROUNDS` after
 all — the run then shows `3 FAIL` on `--text-subtle` and exits 1, and the only way to green is a
-theme edit Step 5 forbids; **276** means the hover-ground block landed outside the per-scope loop
-and ran once instead of six times; **264** means the four badge assertions did.
+theme edit Step 5 forbids; **314** means the hover-ground block landed outside the per-scope loop
+and ran once instead of six times; **304** means the four badge assertions did. A total that is
+`36` above whatever `main` prints is this task landing correctly, whatever `main` prints.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd ui/desktop
 # The assertion count is the tell that the new checks actually ran.
-node scripts/check-contrast.mjs | tail -1 ; echo "expect: OK — all 288 contrast assertions pass"
+node scripts/check-contrast.mjs | tail -1 ; echo "expect: OK — all 324 contrast assertions pass"
 # RING_GROUNDS is UNTOUCHED. `--background-medium` never moved into TEXT_GROUNDS,
 # so there is no duplicate — and a worker who removes this line anyway silently
 # deletes six ring assertions.
@@ -16895,15 +18001,15 @@ comment in `src/styles/search.css:2` that says the token does not exist. A gate 
 **What this catches.** A worker copying §14.1 verbatim ships a `var(--text-standard)` label that
 resolves to nothing and inherits whatever colour it lands on, and a Public pill that is invisible in
 parchment:dark. Neither produces an error, neither fails a screenshot review at a glance, and both
-pass the current 252 assertions. The `--background-medium` block is what turns that class of gap
+pass the current 288 assertions. The `--background-medium` block is what turns that class of gap
 into a CI failure for every future chip on a hover row, not just this one.
 
-**What it deliberately does NOT catch, and why the number is 288 rather than 294.** An earlier
+**What it deliberately does NOT catch, and why the number is 324 rather than 330.** An earlier
 version of this task added `--background-medium` to `TEXT_GROUNDS` wholesale, which audits three
-tokens rather than two and totals 294. Three of those eighteen assertions **fail**:
+tokens rather than two and totals 330. Three of those eighteen assertions **fail**:
 `--text-subtle` on `--background-medium` measures 3.75 (parchment:dark), 4.45 (alma-mater:light) and
 4.28 (alma-mater:dark) — the same three numbers this task's own D4 table already prints, from the
-same resolver. So the gate demanded `all 294 pass` from a run that exits 1 with `3 FAIL`, while
+same resolver. So the gate demanded `all 330 pass` from a run that exits 1 with `3 FAIL`, while
 Step 5 forbade the only available fix ("Zero theme work … an empty diffstat"). It was unreachable by
 construction, and it was quoted in three places. The pair is a **pre-existing** a11y gap — the app
 paints subtle text on hover rows today and CI has never asserted it — so it belongs to the theme
@@ -17149,7 +18255,62 @@ git commit -m "feat(ui): tier badges and pre-flight states on every model and ex
 
 ---
 
-### Task 29: Declassification — the dialog, the route, and the audit
+### Task 29: Declassification — the system authentication, the batch, and the audit
+
+> ⚠ **REWRITTEN by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02 — read the ruling before Step 1.**
+> Three things changed and two stayed.
+>
+> **Changed.** (1) The authorization is an **operating-system authentication prompt**, raised once
+> per operation. (2) The operation takes a **batch** of session ids, fixed before the prompt and
+> named inside it. (3) `secret_key_and_capability_token()` — this task's third assertion, a helper
+> named twice in this campaign and defined neither time
+> ([DR-16](#decisions-of-record) says so in its own row) — is **gone**, replaced by the mechanism
+> DR-20 specifies.
+>
+> **Stayed, and both still earn their place.** (1) The graded confirmation of
+> [DR-8](#decisions-of-record) / §12.4 is untouched: it now grades the **in-app review step** that
+> precedes the prompt rather than the authorization itself, because DR-20 point 2 admits no grading
+> of the prompt. The typed phrase is kept for the same reason
+> [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s
+> amendment kept its own — *"the phrase still guards the accident; the header guards the adversary"* —
+> with the prompt now in the adversary's slot. (2) `UserConfirmation` stays, in a **stronger** form:
+> it stops being a ZST and becomes a private-field newtype over the authorised id set, so a proof
+> minted for one batch is not spendable on another, and it is consumed **by value**, so one
+> authentication cannot be spent twice. The property that made the ZST worth having — no
+> agent-reachable path can construct one — is preserved by the compiler exactly as before.
+>
+> **And the *"no CLI subcommand can construct one"* clause is withdrawn**, because DR-20 makes
+> [Task 31](#task-31-the-cli-is-a-required-r10-surface)'s `biorouter session declassify` legitimate:
+> the gate is the OS prompt, not the caller. Step 5's "no output" grep becomes an **enumeration** of
+> the four files that may name the type — the same shape as
+> [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)'s gate (2),
+> and for the same reason a count would not do.
+
+> ⚠ **WHAT LANDED IS THE PRE-DR-20 DESIGN, AND NO COMMIT SAYS SO. Recorded 2026-08-04, by Task 44.**
+> This task was rewritten for DR-20 in `db1a741b` on 2026-08-02 and *implemented* in `c880daca` on
+> 2026-08-03 — the day **after** — yet what `c880daca` shipped is the design this box replaced.
+> `privacy/declassify.rs` carries `pub struct UserConfirmation(())`, a ZST, minted by
+> `from_typed_confirmation()`; the route is the per-id `POST /sessions/{session_id}/declassify`. None
+> of `system_auth.rs`, `system_auth_seam.rs`, the batch, the OS prompt or the `privacy-test-auth`
+> feature arrived with it, and its commit body does not mention the divergence. **A silent deviation
+> is how this survived two whole tasks**, and it was found only when
+> [Task 44](#task-44-windows-hello-and-polkit--dr-24) went looking for the `AuthOutcome` it was
+> specified to implement behind.
+>
+> **What Task 44 did about it, and what it deliberately did not.** Task 44 built
+> `privacy::system_auth` — the `AuthRequest`/`AuthOutcome`/`SystemAuthenticator` seam, the three
+> DR-24 prompters, the test seam and the `compile_error!` guard — because its own prompters have
+> nowhere to live otherwise, and Task 44's scope (*"adds implementations behind it and changes no
+> caller"*) is satisfied by exactly that. It did **not** write `authenticate()`, did not touch
+> `UserConfirmation`, and did not move the route, because those are this task's and doing them under
+> another task's name is what produced this box in the first place.
+>
+> **So this task is still owed, and its remaining scope is now smaller and sharper:** turn the
+> existing `AuthOutcome` into the proof `declassify` consumes, make that proof carry its authorised
+> id set, replace the per-id route with the collection route a batch needs, and re-point the two
+> existing callers. Until that lands, **declassification in this tree is still gated on a retypeable
+> typed phrase** — `confirmation_matches` — and DR-20 is not in force however complete
+> `privacy::system_auth` looks.
 
 ⚠ **The design's stated attachment point does not exist.** §12.1 says "History → the session's own
 row → overflow menu". `SessionListView`'s row has **no** overflow menu: it has a `DropdownMenu`
@@ -17167,29 +18328,50 @@ returns **zero** product hits. `ConfirmationModal` (`ui/desktop/src/components/u
 
 **Files:**
 
+⚠ **The first five rows below already landed, under
+[Task 44](#task-44-windows-hello-and-polkit--dr-24) on 2026-08-04** — see the deviation box above.
+They are kept, re-labelled, so the remaining work is legible; do not re-create what exists.
+
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
-| Create | `crates/biorouter/src/privacy/declassify.rs` | new |
-| Create | `ui/desktop/src/components/ui/DangerousConfirmDialog.tsx` | new — used by **both** typed confirmations (§12.4 and §14.6) so they cannot diverge |
-| Create | `ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx` | new — shared by both entry points |
-| Modify | `crates/biorouter-server/src/routes/session.rs` | new `POST /sessions/{session_id}/declassify`; route table beside `:1013`/`:1029` |
-| Modify | `crates/biorouter-server/src/auth.rs` | `is_public_app_get` `:52-77`; `check_token` `:80-126` |
-| Modify | `ui/desktop/src/components/sessions/SessionListView.tsx` | the row control cluster `:788-855` |
+| ~~Create~~ **Modify** | `crates/biorouter/src/privacy/system_auth.rs` | ✅ exists — `AuthRequest`, `AuthOutcome`, the `SystemAuthenticator` trait and the platform resolver landed with Task 44. **Still owed here:** `authenticate()`, the **only** constructor of `UserConfirmation`. ⚠ this module deliberately does not yet name that type, because `the_proof_of_user_is_constructed_in_exactly_two_places` asserts the naming set by exact equality — adding `authenticate()` here is what legitimately makes it a third member, and that assertion must be updated in the same commit |
+| ~~Create~~ ✅ done | `crates/biorouter/src/privacy/system_auth_macos.rs` | exists — `LAContext.evaluatePolicy` with `LAPolicyDeviceOwnerAuthentication`, via the objc2 runtime. Task 44 also added `system_auth_windows.rs` (`UserConsentVerifier`) and `system_auth_polkit.rs` (`pkcheck` against a dedicated `auth_self` action) per [DR-24](#dr-24--all-three-platforms-get-a-real-system-authentication-prompt) |
+| ~~Create~~ ✅ done | `crates/biorouter/src/privacy/system_auth_seam.rs` | exists — `#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]`, and **nothing else in the tree may carry that cfg pair** (asserted by `the_test_seam_cannot_be_compiled_into_a_shipped_profile`). Default REFUSE, one-shot arming, records the `AuthRequest` |
+| ~~Modify~~ ✅ done | `crates/biorouter/Cargo.toml` | `privacy-test-auth = []` exists beside `aws-providers`. **Non-default**, and it must never appear in any crate's `[dependencies]` features list |
+| ~~Modify~~ ✅ done | `crates/biorouter/src/lib.rs` | the unconditional `compile_error!` guard from DR-20 requirement (2) exists. It is the gate; everything else about the seam is a convention |
+| Modify | `crates/biorouter-server/Cargo.toml` | `[features]` `:58-61` — `privacy-test-auth = ["biorouter/privacy-test-auth"]`, plus a `[dev-dependencies]` entry on `biorouter` carrying the feature, so `resolver = "2"` (root `Cargo.toml:3`) unifies it into **test** builds and not into `cargo build` |
+| Modify | `crates/biorouter-cli/Cargo.toml` | `[features]` `:76-79` — the same two lines |
+| Create | `crates/biorouter/src/privacy/declassify.rs` | new — the one lowering writer; takes `UserConfirmation` **by value** |
+| Modify | `crates/biorouter-server/src/routes/session.rs` | new **`POST /sessions/declassify`** (a collection route taking `{ "session_ids": [...] }` — a per-id route cannot express one authentication over N); route table beside `:1013`/`:1029` |
+| Modify | `crates/biorouter-server/src/auth.rs` | `is_public_app_get` `:52-77`; `check_token` `:80-126`; and Task 18A's `user_action_matches` / installed digest, **reused, not duplicated** |
+| Modify | `ui/desktop/src/main.ts` | the prompter and the `declassify-sessions` IPC handler — main raises the prompt **and makes the HTTP call**; `getServerSecret` `:902-910` is the shape to mirror, `getUserActionKey` (Task 18A) is what it presents |
+| Modify | `ui/desktop/src/preload.ts` | one binding, beside `getSecretKey` `:240`/`:468` |
+| Create | `ui/desktop/src/components/ui/DangerousConfirmDialog.tsx` | new — used by **all three** typed confirmations (§12.4, §14.6 and Task 29A) so they cannot diverge |
+| Create | `ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx` | new — shared by both entry points, and the **batch review list** |
+| Modify | `ui/desktop/src/components/sessions/SessionListView.tsx` | the row control cluster `:788-855`, plus the multi-select the batch needs |
 | Modify | `ui/desktop/src/components/sessions/SessionHistoryView.tsx` | `SessionHeader`'s `actionButtons` slot `:230-266` |
-| Reference | `ui/desktop/src/components/settings/app/ResetPanel.tsx` | `:344-387` — the closest precedent: a bespoke `Dialog` that **previews exactly what will be destroyed** before confirming, with a `variant="destructive"` confirm at `:383` |
+| Modify | `Justfile` | one recipe, `run-dev-testauth`, so the operator can drive the GUI with the seam armed. ⚠ `just run-dev` must **not** arm it — an unarmed dev build meets the real prompt, which is the fail-closed default DR-20 requires |
+| Reference | `ui/desktop/src/components/settings/app/ResetPanel.tsx` | `:344-387` — the closest precedent: a bespoke `Dialog` that **previews exactly what will be destroyed** before confirming, with a `variant="destructive"` confirm at `:383`. The batch review list is this pattern |
+| Reference | `crates/biorouter-mcp/src/knowledge/test_mode.rs` | `:22-32` — this tree's existing test seam, and the one to **not** copy: it is gated by an env var alone, which [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) makes insufficient for a security boundary. It is a fine precedent for the *shape* (`env_enabled()`, a swapped implementation) and a wrong one for the *gate* |
 
 - [ ] **Step 1: Write the failing tests**
 
 ```rust
 #[tokio::test]
-async fn only_a_user_confirmation_can_lower_the_tier() {
-    // UserConfirmation is a ZST whose constructor is invoked in exactly one
-    // place: the HTTP handler, after it has matched the typed confirmation. No
-    // MCP server, no ToolRouter, no workspace_* handler and no CLI subcommand
-    // can construct one. "An agent cannot call this" is enforced by Rust module
-    // privacy, not by the route being undocumented.
+async fn only_an_authenticated_confirmation_can_lower_the_tier() {
+    // DR-20. `UserConfirmation` is a private-field newtype over the authorised
+    // id set, and `privacy::system_auth::authenticate` is its ONLY constructor.
+    // No MCP server, no ToolRouter and no `workspace_*` handler can produce one.
+    // The CLI CAN (Task 31) — and that is now correct, because what gates the
+    // operation is the prompt inside `authenticate`, not the caller's identity.
     let s = private_session_with_reason("mcp:ucsfomopagent").await;
-    declassify(&sm, &s.id, UserConfirmation::for_test()).await.unwrap();
+
+    seam::answer_next_prompt(AuthOutcome::Approved);           // one-shot; see below
+    let ok = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()]))
+        .await
+        .expect("armed seam approves");
+
+    declassify(&sm, ok).await.unwrap();                        // consumed by value
     let row = reread(&s.id).await;
     assert_eq!(row.privacy_tier, SessionClassification::Public);
     assert_eq!(row.privacy_reason.as_deref(), Some("declassified_by_user"));
@@ -17203,15 +18385,86 @@ async fn only_a_user_confirmation_can_lower_the_tier() {
 }
 
 #[tokio::test]
-async fn the_route_needs_more_than_the_secret_key() {
-    // §9.3 A1: the secret is reachable from any developer-enabled agent shell,
-    // so `X-Secret-Key` alone is not a human. Note that a test asserting the
-    // route is not in the public-GET exemption list is VACUOUSLY true —
-    // is_public_app_get only matches GETs under /apps/{id} with an explicit
-    // tail allowlist (auth.rs:52-77) and can never match a POST under /sessions.
+async fn the_seam_refuses_by_default_and_arms_exactly_once() {
+    // DR-20 requirement (3), and the single most important test in this task.
+    // A test that FORGETS to arm the seam must fail CLOSED. If this assertion
+    // is ever "flipped to make the suite green", every other test in this file
+    // becomes vacuous.
+    let s = private_session().await;
+    let denied = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await;
+    assert!(matches!(denied, Err(DeclassifyRefusal::Denied)));
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+
+    // Arming is consumed by the prompt it answers — DR-20 point 2 (no cached
+    // grant) expressed in the seam, so the seam is not weaker than the thing it
+    // stands in for.
+    seam::answer_next_prompt(AuthOutcome::Approved);
+    system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await.unwrap();
+    let second = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await;
+    assert!(matches!(second, Err(DeclassifyRefusal::Denied)));
+}
+
+#[tokio::test]
+async fn one_authentication_covers_the_batch_it_named_and_nothing_else() {
+    // DR-20 point 4, in the type system. The proof carries the id set; a proof
+    // minted for one batch is not spendable on a session that was not in it.
+    let a = private_session().await;
+    let b = private_session().await;
+    let outsider = private_session().await;
+
+    seam::answer_next_prompt(AuthOutcome::Approved);
+    let ok = system_auth::authenticate(
+        AuthRequest::declassify(&[a.id.clone(), b.id.clone()]),
+    ).await.unwrap();
+
+    // The request the prompt was shown carries both, in a stable order, so the
+    // renderer's list and the prompt's text cannot disagree.
+    assert_eq!(seam::last_request().session_ids, vec![a.id.clone(), b.id.clone()]);
+
+    let err = declassify_ids(&sm, &[a.id.clone(), outsider.id.clone()], ok).await.unwrap_err();
+    assert!(err.to_string().contains("not covered by this authentication"));
+    assert_eq!(reread(&outsider.id).await.privacy_tier, SessionClassification::Private);
+    // …and nothing partially applied: the batch is one transaction.
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn a_cancelled_or_unavailable_prompt_changes_nothing() {
+    // Cancel and "this platform has no prompter" are DIFFERENT outcomes with the
+    // same effect and different messages. Open question 30 is why the second
+    // exists at all, and it is the one a Windows or Linux build hits today.
+    let s = private_session().await;
+
+    seam::answer_next_prompt(AuthOutcome::Denied);
+    assert!(matches!(
+        system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await,
+        Err(DeclassifyRefusal::Denied)
+    ));
+
+    seam::answer_next_prompt(AuthOutcome::Unavailable);
+    let err = system_auth::authenticate(AuthRequest::declassify(&[s.id.clone()])).await.unwrap_err();
+    assert!(err.to_string().contains("cannot ask"));       // names the platform
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn the_route_needs_the_launcher_proof_and_fails_closed_without_a_digest() {
+    // §9.3 A1: the daemon secret is reachable from any developer-enabled agent
+    // shell, so `X-Secret-Key` alone is not a human. DR-20's HTTP carrier is
+    // Task 18A's EXISTING key and header — one proof of user, not two (DR-19).
+    // Note that a test asserting the route is not in the public-GET exemption
+    // list is VACUOUSLY true: `is_public_app_get` only matches GETs under
+    // /apps/{id} with an explicit tail allowlist (auth.rs:52-77) and can never
+    // match a POST under /sessions.
     assert_eq!(post_declassify(no_headers()).await.status(), 401);
     assert_eq!(post_declassify(secret_key_only()).await.status(), 403);
-    assert_eq!(post_declassify(secret_key_and_capability_token()).await.status(), 200);
+    assert_eq!(post_declassify(secret_key_and_user_action_key()).await.status(), 200);
+
+    // Open question 23's answer, applied to a second route: a daemon launched
+    // with no digest (`just run-server`, a hand-run `biorouterd agent`, any
+    // headless deployment) refuses every caller, including the human.
+    let keyless = daemon_with_no_user_action_digest().await;
+    assert_eq!(post_declassify_to(&keyless, secret_key_and_user_action_key()).await.status(), 403);
 }
 ```
 
@@ -17253,19 +18506,170 @@ it('the action is on the History row and NOT in the chat header', async () => {
   render(<SessionNamePill name="x" privacyTier="private" onRename={vi.fn()} />);
   expect(screen.queryByText(/Make this chat public/)).toBeNull();
 });
+
+// ── DR-20 ──────────────────────────────────────────────────────────────────
+
+it('the batch names every chat it will release, and the set is fixed before the prompt', async () => {
+  const declassify = vi.fn().mockResolvedValue({ ok: true });
+  render(<DeclassifySessionDialog sessions={[a, b, c]} onDeclassify={declassify} />);
+  // Every row is named and individually checked — this list IS the "fixed
+  // before the prompt" half of DR-20 point 4, and the OS prompt only summarises
+  // it. A dialog that says "3 chats" and lists nothing fails here.
+  expect(screen.getByText(a.name)).toBeInTheDocument();
+  expect(screen.getByText(/…def456/)).toBeInTheDocument();
+  await user.click(screen.getByRole('checkbox', { name: new RegExp(a.name) }));
+  await user.click(screen.getByRole('checkbox', { name: new RegExp(b.name) }));
+  await user.click(screen.getByRole('button', { name: /Make public/ }));
+  expect(declassify).toHaveBeenCalledWith([a.id, b.id]);          // NOT c
+});
+
+it('the renderer never calls the declassify route itself', async () => {
+  // DR-20's carrier is the Electron MAIN process: it raises the prompt and then
+  // makes the HTTP call. The renderer holds Task 18A's raw user-action key for
+  // its three tier-raising requests, so a renderer that called the route
+  // directly would bypass the prompt with a key it already has. This asserts
+  // the one call it may make.
+  const invoke = vi.fn().mockResolvedValue({ ok: true });
+  const fetchSpy = vi.spyOn(globalThis, 'fetch');
+  render(<DeclassifySessionDialog sessions={[a]} electron={{ declassifySessions: invoke }} />);
+  await user.click(screen.getByRole('button', { name: /Make public/ }));
+  expect(invoke).toHaveBeenCalledWith([a.id]);
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+
+it('the main-process prompt seam cannot be armed in a packaged app', () => {
+  // DR-20 requirement (5). TypeScript has no `cfg`, so this is the assertion
+  // that stands in for the Rust `compile_error!`, and the packaged-artifact
+  // grep in Step 5 is what covers the case where this test is deleted.
+  const env = { BIOROUTER_PRIVACY_TEST_AUTH: 'approve' };
+  expect(resolveTestAuthAnswer({ isPackaged: true, dev: false, env })).toBeNull();
+  expect(resolveTestAuthAnswer({ isPackaged: false, dev: false, env })).toBeNull();
+  expect(resolveTestAuthAnswer({ isPackaged: false, dev: true, env })).toBe('approve');
+  // Unarmed is refuse, never approve — the same fail-closed default as the Rust seam.
+  expect(resolveTestAuthAnswer({ isPackaged: false, dev: true, env: {} })).toBeNull();
+});
 ```
 
-- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module declassify`); TS **FAIL**.
+- [ ] **Step 2: Run** → Rust **COMPILE ERROR** (`unresolved module system_auth`); TS **FAIL**.
 
 - [ ] **Step 3: Implement**
 
 ```rust
-// crates/biorouter/src/privacy/declassify.rs
+// crates/biorouter/src/privacy/system_auth.rs — DR-20's whole mechanism.
 
-/// Proof that a human confirmed. A ZST whose constructor is `pub(in …)` — it is
-/// invoked in exactly one place, the HTTP handler, after it has matched the
-/// typed confirmation.
-pub struct UserConfirmation(());
+/// What the user is about to be asked. Built BEFORE the prompt and rendered
+/// inside it: DR-20 point 4 requires the set to be fixed and stated, and a
+/// prompt that says "BioRouter wants to make changes" satisfies the letter of
+/// the ruling and defeats its purpose.
+pub struct AuthRequest {
+    pub reason: String,            // e.g. "Make 3 chats public. This cannot be undone."
+    pub session_ids: Vec<String>,  // sorted, deduplicated, non-empty
+}
+
+pub enum AuthOutcome {
+    Approved,
+    Denied,       // the user said no, or dismissed the prompt
+    Unavailable,  // no prompter on this platform / no desktop session — Open question 30
+}
+
+/// The prompt itself. One implementation per platform, plus the test seam.
+/// NOTHING here ever receives, stores or logs a password: the OS asks, the OS
+/// verifies, and this trait returns a decision (DR-20 point 3).
+#[async_trait]
+pub trait SystemAuthenticator: Send + Sync {
+    async fn authenticate(&self, req: &AuthRequest) -> AuthOutcome;
+}
+
+/// Proof that a system authentication succeeded, FOR THESE IDS.
+///
+/// Not a ZST any more, and the change is deliberate: the private field carries
+/// the authorised set, so a proof minted for one batch cannot be spent on a
+/// session that was not named in the prompt. It is `!Clone`, `!Default`, has no
+/// public constructor, and `declassify` consumes it BY VALUE — so one
+/// authentication cannot be spent twice, which is DR-20 point 2 in the type
+/// system rather than in a comment. The property the ZST had (no agent-reachable
+/// path can construct one) is unchanged and still enforced by module privacy.
+pub struct UserConfirmation {
+    session_ids: Vec<String>,
+}
+
+/// The ONLY constructor of `UserConfirmation` in the tree.
+pub async fn authenticate(req: AuthRequest) -> Result<UserConfirmation, DeclassifyRefusal> {
+    match prompter().authenticate(&req).await {
+        AuthOutcome::Approved    => Ok(UserConfirmation { session_ids: req.session_ids }),
+        AuthOutcome::Denied      => Err(DeclassifyRefusal::Denied),
+        AuthOutcome::Unavailable => Err(DeclassifyRefusal::NoPrompter { platform: … }),
+    }
+}
+
+/// Resolution order, and the ONLY place the seam is reachable from.
+fn prompter() -> &'static dyn SystemAuthenticator {
+    #[cfg(all(debug_assertions, feature = "privacy-test-auth"))]
+    { return crate::privacy::system_auth_seam::prompter(); }
+    #[cfg(all(target_os = "macos", not(all(debug_assertions, feature = "privacy-test-auth"))))]
+    { return crate::privacy::system_auth_macos::prompter(); }
+    // Open question 30: no Windows or Linux prompter exists. Fail CLOSED — a
+    // build whose declassification refuses is a missing feature; one whose
+    // declassification silently approves is the worst outcome this feature can
+    // produce.
+    #[allow(unreachable_code)]
+    { &NoPrompter }
+}
+```
+
+```rust
+// crates/biorouter/src/lib.rs — the gate. DR-20 requirement (2).
+//
+// This is a COMPILER error, not a script someone must remember to run, which is
+// what makes it stronger than the `scripts/check-*.sh` convention the rest of
+// this repo uses. `debug_assertions` is off in `release`, `release-dist` and
+// `quick` (root Cargo.toml:43-62 — the latter two `inherits = "release"`), i.e.
+// in every profile `scripts/release.sh` and every `just release-*` recipe build.
+#[cfg(all(feature = "privacy-test-auth", not(debug_assertions)))]
+compile_error!(
+    "privacy-test-auth is a TEST SEAM that bypasses the DR-20 declassification \
+     prompt and must never be compiled into a release profile. Drop the feature \
+     from this build; do not relax this guard."
+);
+```
+
+```rust
+// crates/biorouter/src/privacy/system_auth_seam.rs
+#![cfg(all(debug_assertions, feature = "privacy-test-auth"))]
+
+// DEFAULT REFUSE. A test that forgets to arm this fails CLOSED and reads as
+// "the user cancelled" — which is what it should read as. Arming is one-shot:
+// the canned answer is CONSUMED by the prompt it answers, so an armed test
+// cannot accidentally approve a second declassification it never intended.
+static NEXT: Mutex<Option<AuthOutcome>> = Mutex::new(None);
+static LAST: Mutex<Option<AuthRequest>> = Mutex::new(None);
+
+pub fn answer_next_prompt(outcome: AuthOutcome) { *NEXT.lock() = Some(outcome); }
+pub fn last_request() -> AuthRequest { … }   // so a test can assert what was named
+
+impl SystemAuthenticator for Seam {
+    async fn authenticate(&self, req: &AuthRequest) -> AuthOutcome {
+        *LAST.lock() = Some(req.clone());
+        // The operator's "a programatic msg is sent", taken literally. A live
+        // seam must be obvious in a log at a glance; that visibility is itself a
+        // safety property.
+        warn!(event = "privacy_test_auth_used", ids = ?req.session_ids, "{}", req.reason);
+        NEXT.lock().take()
+            .or_else(|| env_answer())        // BIOROUTER_PRIVACY_TEST_AUTH=approve|deny
+            .unwrap_or(AuthOutcome::Denied)  // ← the default, and it is REFUSE
+    }
+}
+```
+
+⚠ **`BIOROUTER_PRIVACY_TEST_AUTH` selects the canned answer; it never makes the seam exist.** The
+boundary is the `cfg` pair above and the `compile_error!` beside it. This ordering is the whole
+difference between this seam and `knowledge/test_mode.rs`, which is env-gated alone and is a
+security boundary in no build — see [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable),
+which measured the daemon's environment to be recoverable in process by any tool that reads a
+caller-named path.
+
+```rust
+// crates/biorouter/src/privacy/declassify.rs
 
 /// The ONLY writer in the tree permitted to lower `privacy_tier`. Every other
 /// write goes through the session update builder, whose emission is the
@@ -17273,24 +18677,61 @@ pub struct UserConfirmation(());
 /// builder with its own UPDATE. A repo-grep gate asserts exactly one statement
 /// matching `privacy_tier\s*=\s*'public'` exists outside the migration.
 ///
-/// The audit row is written in the SAME transaction, BEFORE the UPDATE.
+/// Takes the proof BY VALUE and refuses any id the proof does not cover. The
+/// whole batch is ONE transaction: a partial declassification would leave the
+/// user unable to say what they released. Each session gets its own audit row,
+/// written in that same transaction, BEFORE the UPDATE.
 pub async fn declassify(
     sm: &SessionManager,
-    session_id: &str,
-    _ok: UserConfirmation,
+    ok: UserConfirmation,
 ) -> Result<()> { … }
 ```
 
-§12.4's graded confirmation, keyed on `privacy_reason`: `mcp:*` (or inherited from an `mcp:*`
-ancestor) → typed confirmation on the **last 6 characters of the session id**, displayed beside the
-field; `turn:*` only → **single-click with a 5-second undo**, still audited, still user-only, still
-not agent-invocable. Not the session name: `is_default_session_name`
-(`session_manager.rs:1821`, ⚠ the design cites a stale `:1614-1632`) shows `"New Session"`,
-`"CLI Session"`, `"Session <N>"` and `"New session <N>"` are all live placeholders, and
-`fallback_session_name` (`:1721`, ⚠ design cites `:1527`) derives a short title from the first user
-message — so a name-typed phrase is either a duplicate string shared by dozens of rows, destroying
-the justification (forcing the user to look at *which* conversation), or a sentence to retype. An id
-suffix is unique, short, and forces row-identity checking.
+**The route and the two carriers.** `POST /sessions/declassify` takes `{ "session_ids": [...] }` —
+a collection route, because a per-id route cannot express one authentication over N. It reuses
+Task 18A's key and header verbatim (DR-19: *one proof of user, not two*), and the **Electron main
+process** is what presents them: the renderer calls `window.electron.declassifySessions(ids)`, main
+raises the prompt, and **main makes the HTTP call**. The renderer never touches the route.
+
+⚠ **Stated, because Task 18A states its own equivalent.** The renderer already holds the raw
+user-action key for its three tier-raising requests, so a *compromised renderer* could call this
+route without a prompt. That is the same same-machine-caller residual as
+[Open question 20](#open-questions), it is not made worse here, and the gate below is what keeps our
+own UI on the correct side of it. What the daemon verifies is that *a process holding the per-launch
+key asserts a system authentication succeeded for this id set* — never that a prompt occurred, which
+it cannot observe. No document in this campaign may describe it as more than that.
+
+**The graded confirmation now grades the review step, not the authorization.**
+[DR-8](#decisions-of-record) / §12.4 are unrepealed and unchanged in substance; what changed is that
+the OS prompt fires **unconditionally** afterwards, because DR-20 point 2 admits no grading of the
+prompt.
+
+| Case | In-app step before the prompt | After |
+|---|---|---|
+| One session, `mcp:*` (or inherited from an `mcp:*` ancestor) | typed confirmation on the **last 6 characters of the session id**, displayed beside the field | permanent |
+| One session, `turn:*` only | single click, no phrase | 5-second undo (DR-8's ergonomic ruling, kept: it is a mis-click guard on a low-exposure row, not an authorization) |
+| **A batch of 2 or more** | the **review list** — every chat by name, id suffix, privacy reason and date, each with its own checkbox, all explicitly checked | **no undo** if any row is `mcp:*` |
+
+The id suffix, not the session name: `is_default_session_name` (`session_manager.rs:1821`, ⚠ the
+design cites a stale `:1614-1632`) shows `"New Session"`, `"CLI Session"`, `"Session <N>"` and
+`"New session <N>"` are all live placeholders, and `fallback_session_name` (`:1721`, ⚠ design cites
+`:1527`) derives a short title from the first user message — so a name-typed phrase is either a
+duplicate string shared by dozens of rows, destroying the justification (forcing the user to look at
+*which* conversation), or a sentence to retype. An id suffix is unique, short, and forces row-identity
+checking. In the batch case that job belongs to the review list, which is why the batch has no phrase:
+stacking a typed phrase on top of a per-row checklist and an OS prompt is three frictions on one
+action, and DR-19's user half is explicit that a control the user routes around buys nothing.
+
+**The prompt's own text** is built from the same list: *"Make 3 chats public — "OMOP cohort
+characterisation", "Lab results Q2" and 1 more. Their contents become readable by every model,
+including commercial models hosted outside UCSF."* Truncation is fine; anonymity is not.
+
+**The Justfile recipe.** `just run-dev-testauth` = `just run-dev` plus
+`--features biorouter-server/privacy-test-auth,biorouter-cli/privacy-test-auth` and
+`BIOROUTER_PRIVACY_TEST_AUTH=approve`. ⚠ **`just run-dev` must not arm it.** A plain `cargo build`
+pulls no dev-dependencies and enables no non-default feature, so an ordinary dev build meets the real
+prompt — which is the fail-closed default DR-20 requires and the thing that makes the seam's absence
+the normal case rather than the exceptional one.
 
 `DangerousConfirmDialog` owns the `onOpenAutoFocus` handler that puts focus on Cancel, and binds no
 keyboard shortcut to confirm. §14.6's `DISABLE PROTECTION` uses the same component.
@@ -17298,44 +18739,117 @@ keyboard shortcut to confirm. §14.6's `DISABLE PROTECTION` uses the same compon
 - [ ] **Step 4: Run**
 
 ```bash
-cargo test -p biorouter --lib privacy::declassify
+# ⚠ The seam is a NON-DEFAULT feature, so a bare `cargo test -p biorouter` runs
+# every DR-20 test against the real prompter and they hang or fail. The feature
+# comes from the `[dev-dependencies]` entry for the server and CLI crates; for
+# `biorouter`'s own unit tests it has to be asked for by name.
+cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth
+cargo test -p biorouter --features privacy-test-auth --lib privacy::declassify
 cargo test -p biorouter-server --lib routes::session
 just generate-openapi && (cd ui/desktop && npm run generate-api)
 cd ui/desktop && npx vitest run DeclassifySessionDialog DangerousConfirmDialog SessionListView SessionNamePill 2>&1 | tail -6
 ```
 
+⚠ **`routes::session` reports 29 passed before this task** (measured by Task 4b at `fd14ef9a`, and it
+was 20 three days earlier). **Re-measure and record the pre-count, then assert `pre + N`** — a bare
+"non-zero" here is satisfied by a tree in which this task added no route test at all.
+
 - [ ] **Step 5: Gate**
 
 ```bash
-# The entire audit surface for "can the ratchet be reversed".
+# ── The ratchet ────────────────────────────────────────────────────────────
+# The entire audit surface for "can the ratchet be reversed". Unchanged by
+# DR-20: the batch is one transaction through one writer.
 grep -rn --include='*.rs' "privacy_tier *= *'public'" crates/ | grep -v "DEFAULT 'public'"
 echo "expect: exactly 1 hit, in crates/biorouter/src/privacy/declassify.rs"
-# Nothing agent-reachable can construct the proof.
-grep -rn "UserConfirmation" crates/ | grep -v "privacy/declassify.rs" | grep -v routes/session.rs
-echo "expect: no output"
-# One dialog primitive, and it is genuinely shared. At the end of THIS task the
-# list is the primitive, its own test, and DeclassifySessionDialog; Task 30 adds
-# PrivacyPanel as the fourth. Building a second typed-confirm component instead
-# would guarantee the two phrases diverge, which is why this is a file list and
-# not a count.
+
+# ── The proof ──────────────────────────────────────────────────────────────
+# ENUMERATE, do not expect "no output". Under DR-19 the CLI could not name this
+# type; under DR-20 it must (Task 31), so the old "no output" grep would now fail
+# a CORRECT implementation. A count would not do either: it is satisfied by
+# deleting one of these and adding a construction site somewhere worse.
+grep -rln "UserConfirmation" crates/ | sort
+echo "expect exactly these four:"
+echo "  crates/biorouter/src/privacy/system_auth.rs        (the only constructor)"
+echo "  crates/biorouter/src/privacy/declassify.rs         (consumes it by value)"
+echo "  crates/biorouter-server/src/routes/session.rs      (the GUI carrier)"
+echo "  crates/biorouter-cli/src/commands/session.rs       (the CLI carrier, Task 31)"
+# …and the constructor really is the only one. `authenticate` is a function, so
+# module privacy is what enforces this; the grep is what makes a `pub(crate)`
+# slip visible in review.
+grep -rn "UserConfirmation *{" crates/ | grep -v "^crates/biorouter/src/privacy/system_auth.rs"
+echo "expect: no output — no other file constructs the struct literal"
+
+# ── The seam: the gate that fails the BUILD ────────────────────────────────
+# This must FAIL. A zero exit here is the finding: it means the compile_error!
+# guard is missing, mis-spelled, or was relaxed, and the seam can be compiled
+# into a shipped binary. Run it and read the exit code, not the noise.
+cargo check -p biorouter --release --features privacy-test-auth 2>&1 | tail -3
+echo "expect: FAILS with 'privacy-test-auth is a TEST SEAM' — a SUCCESS here is the defect"
+
+# The seam module carries the cfg pair, and nothing else in the tree does.
+grep -rn 'debug_assertions, feature = "privacy-test-auth"' crates/ | sort
+echo "expect: 2 lines — system_auth_seam.rs's inner attribute and system_auth.rs's resolver arm"
+
+# The feature is never enabled from a NORMAL dependency. Under resolver = "2"
+# a dev-dependency's features unify into test builds only; a `[dependencies]`
+# entry carrying it would turn the seam on in `cargo build` for every consumer,
+# which is the one way to get it into a debug binary nobody asked for.
+grep -rn "privacy-test-auth" crates/*/Cargo.toml
+echo "expect: only [features] declarations and [dev-dependencies] entries — never a [dependencies] one"
+
+# The release pipeline does not enable features by hand, and --all-features
+# would trip the compile_error! anyway.
+grep -rn -- "--all-features\|--features" scripts/release.sh Justfile | grep -v check-cross
+echo "expect: no privacy-test-auth, and no --all-features on any release path"
+
+# ── The seam: the Electron half, checked on the ARTIFACT ───────────────────
+# TypeScript has no cfg, so the packaged bundle is the thing to inspect. Run
+# after `npm run package`; app.asar is not stripped, unlike the Rust binaries
+# (root Cargo.toml sets strip = true), which is why the Rust side is gated at
+# compile time and this side is gated on the artifact.
+grep -ac "BIOROUTER_PRIVACY_TEST_AUTH" ui/desktop/out/BioRouter-darwin-arm64/BioRouter.app/Contents/Resources/app.asar
+echo "expect: 0 — the seam's env literal must not survive into a packaged app"
+
+# ── The renderer stays off the route ───────────────────────────────────────
+# Main raises the prompt and makes the call; the renderer holds Task 18A's raw
+# key for three OTHER requests and must never spend it here.
+cd ui/desktop && grep -rn "sessions/declassify" src/components src/hooks
+echo "expect: no output — components call window.electron.declassifySessions"
+
+# ── One dialog primitive, genuinely shared ─────────────────────────────────
+# At the end of THIS task the list is the primitive, its own test, and
+# DeclassifySessionDialog; Task 29A adds KbTierControl and Task 30 adds
+# PrivacyPanel. Building a second typed-confirm component instead would
+# guarantee the phrases diverge, which is why this is a file list and not a count.
 cd ui/desktop && grep -rl "DangerousConfirmDialog" src/components | sort
 echo "expect: DangerousConfirmDialog.tsx, DangerousConfirmDialog.test.tsx, DeclassifySessionDialog.tsx"
 ```
 
-**What this catches.** Three wrong implementations. (1) A phrase field that is rendered but never
-gates the button — with no precedent in the app to copy, this is the likely outcome; the three-step
-type-and-assert test fails it. (2) Relying on Radix defaults for focus, which lands on the close
-button and lets Enter submit; the focus test fails it. (3) Attaching the action to
-`SessionNamePill`'s existing overflow menu — the obvious slot, and the one §12.1 forbids; the
-paired presence/absence test fails it.
+**What this catches.** Six wrong implementations, and the last three are the ones DR-20 exists for.
+(1) A phrase field that is rendered but never gates the button — with no precedent in the app to
+copy, this is the likely outcome; the three-step type-and-assert test fails it. (2) Relying on Radix
+defaults for focus, which lands on the close button and lets Enter submit; the focus test fails it.
+(3) Attaching the action to `SessionNamePill`'s existing overflow menu — the obvious slot, and the
+one §12.1 forbids; the paired presence/absence test fails it. (4) **A seam gated by an environment
+variable alone** — the natural thing to copy from `knowledge/test_mode.rs`, and a bypass any
+compromised agent can arm for itself (AR-11); the `cargo check --release --features` gate and the
+cfg-pair grep fail it. (5) **A seam that defaults to approve**, or that stays armed across prompts —
+`the_seam_refuses_by_default_and_arms_exactly_once` fails it, and it is the assertion most likely to
+be "fixed" by someone chasing a red suite. (6) **A proof spendable on a session the prompt never
+named** — the obvious implementation is to keep the ZST and pass the ids separately, and
+`one_authentication_covers_the_batch_it_named_and_nothing_else` fails it.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add crates/biorouter/src/privacy/declassify.rs crates/biorouter-server/src/routes/session.rs \
-        crates/biorouter-server/src/auth.rs ui/desktop/src/components/ui/DangerousConfirmDialog.tsx \
+git add crates/biorouter/src/privacy crates/biorouter/src/lib.rs crates/biorouter/Cargo.toml \
+        crates/biorouter-server/src/routes/session.rs crates/biorouter-server/src/auth.rs \
+        crates/biorouter-server/Cargo.toml crates/biorouter-cli/Cargo.toml Justfile \
+        ui/desktop/src/main.ts ui/desktop/src/preload.ts \
+        ui/desktop/src/components/ui/DangerousConfirmDialog.tsx \
         ui/desktop/src/components/sessions ui/desktop/openapi.json ui/desktop/src/api
-git commit -m "feat(privacy): user-only declassification with a graded confirmation and an audit row (#56)"
+git commit -m "feat(privacy): declassification behind a system authentication, in batches, audited (#56)"
 ```
 
 ---
@@ -17611,6 +19125,82 @@ git commit -m "feat(privacy): user-only publicize/privatize for knowledge bases,
 
 ### Task 30: Settings → Privacy — the master toggle, its three hardening measures, and the badge it does not hide
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — the
+> disabling arm requires Task 18A's `X-User-Action`, and `BIOROUTER_PRIVACY_TIERS` joins
+> `CAPABILITY_CONFIG_KEYS`.** Read this before Step 1; it adds one header check, one entry to a
+> list, and one open question. It removes nothing: the typed phrase **stays**.
+>
+> **What was wrong.** This task's own ⚠ concedes it: *"The phrase is a fixed string in the shipped
+> source, so a caller holding the daemon secret replays it."* The concession is accepted there on a
+> premise that two later rulings have taken away. (1) It rests on *"a model **can** compose one of
+> those through a tool and **cannot** compose the daemon secret out of thin air on macOS without a
+> shell"* — and [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) **keeps the
+> shell**, because Tasks 14A–14F are deferred and [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself)
+> is retired precisely so that public sessions do *not* lose `developer__shell`. (2)
+> [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured the secret
+> to be recoverable **in process**, without a shell, by any tool that reads a caller-named path.
+> So both halves of the "cannot" are false, and what remained was a machine-wide off switch for the
+> whole feature guarded by a string the model can read out of the source it is standing in.
+>
+> **And the switch was less protected than the default provider.** `BIOROUTER_PRIVACY_TIERS` is
+> **not** in `CAPABILITY_CONFIG_KEYS` (measured: five keys, `BIOROUTER_PROVIDER`,
+> `BIOROUTER_LEAD_MODEL`, `BIOROUTER_LEAD_PROVIDER`, `OLLAMA_HOST`, `LLAMACPP_EXTERNAL_HOST`) — so
+> `POST /config/upsert` guards a key that raises *one future session's* capability and does not
+> guard the key that disables **every gate on the machine**. [Open question 24](#open-questions)'s
+> own answer already saw where this ends: *"Task 30's `/config/upsert` confirmation phrase, which is
+> a UX guard and not an authorization boundary, and which **Task 18A's key now can promote it to
+> one**."* This amendment takes that promotion.
+>
+> **The requirement, in DR-19's two halves.**
+>
+> - **The user, explicitly → warn, then allow.** Unchanged, and it is why nothing here is a wall.
+>   Settings → Privacy keeps the typed `DISABLE PRIVACY TIERS` phrase and all four sentences of the
+>   disclosure, because that is the *warning*, and [Task 30A](#task-30a-the-non-private-model-disclosure)
+>   is what makes accepting it legitimate. The renderer already holds the raw user-action key for
+>   its three tier-raising requests ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has));
+>   this is a **fourth** — the same key, the same header, no second mechanism. DR-19: *"One proof of
+>   user, not two."*
+> - **An agent, automatically → never.** A tool-composed `/config/upsert` cannot present
+>   `X-User-Action`, because the key never enters the daemon's environment, its argv or its heap —
+>   only the digest does. That is the whole of what the header buys here, and it is exactly the
+>   residual the phrase could not cover.
+>
+> **The concrete changes.**
+>
+> 1. **Add `"BIOROUTER_PRIVACY_TIERS"` to `CAPABILITY_CONFIG_KEYS`** in
+>    `crates/biorouter/src/privacy/config_keys.rs` (Task 18A Step 3(d)), with the comment: *"Not a
+>    provider key — the master switch itself. In this list because `is_capability_key` is what
+>    `upsert_config` consults, and a switch a model can flip is not a switch (DR-14's phrasing,
+>    DR-19's rule)."* **Task 18A's `assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5)` becomes `6` in the
+>    same commit.** ⚠ Like `BIOROUTER_PROVIDER`, this key is **seeded, not scanned**: it is never
+>    read through `get_param` in any of `TIER_INPUT_FILES`, so
+>    `every_config_key_the_tier_resolver_reads_is_classified` neither requires it nor rejects it,
+>    and it must **not** also be added to `NOT_CAPABILITY_CONFIG_KEYS` — a key in both lists fails
+>    that test's "exactly one" rule.
+> 2. **The guard is on the disabling arm only.** `upsert_config` refuses without `X-User-Action`
+>    when the key is `BIOROUTER_PRIVACY_TIERS` **and the value turns enforcement off**. Turning it
+>    back **on** stays ungated, for the same reason `/config/remove` is ungated: restoring the
+>    control cannot be the iffy operation, and a gate there would be a wall in front of the one
+>    action nobody needs protecting from.
+> 3. **Both proofs, not either.** The phrase still guards the accident (a settings write that flips
+>    the switch as a side effect); the header guards the adversary. Step 1's existing three
+>    assertions therefore gain a fourth shape: secret-only → 403 (already asserted); secret + phrase,
+>    **no header** → **403**, and `privacy_tiers_enabled()` still true; secret + phrase + header →
+>    200; secret + header, wrong phrase → 403. The middle one is the new assertion and it is the
+>    one this amendment exists for.
+> 4. **Step 5's writer inventory is unchanged at two** (`set_privacy_tiers_enabled` from startup and
+>    from `/config/upsert`'s gated arm). This adds a condition to an existing writer, not a writer.
+>
+> **What this does not close, and it is not small.** The daemon reads the value from `config.yaml`
+> at startup (hardening measure 3), and under DR-17 that file is **no longer behind a deny root** —
+> [DR-14](#decisions-of-record) is deferred, and `<config>/config.yaml` was its entry #5, added for
+> exactly this reason (*"a master switch a public model can edit is not a switch"*). So an agent
+> holding `developer__shell` or `developer__text_editor` can write `BIOROUTER_PRIVACY_TIERS: off`
+> into the file directly. Measure (3) means this does **not** take effect in the running daemon —
+> the authoritative value is the in-memory atomic — so it is a **next-launch** disable rather than an
+> immediate one, and the HTTP channel this amendment closes was the immediate one. That is a real
+> narrowing and not a fix. It is [Open question 27](#open-questions).
+
 **This task changed shape under DR-15.** The first version shipped a Gate-C-scoped switch and a test
 asserting that Gates A and D were *unaffected* by it. The operator has since ruled the other way
 ([Open question 3](#open-questions) is closed): one master toggle, `BIOROUTER_PRIVACY_TIERS`,
@@ -17712,8 +19302,15 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
     assert!(check_enable_allowed(Some(entry_for("ucsfomopagent")), false,
                                  "ucsfomopagent", ProviderTier::Public).is_err());      // 11 F1  (Task 18)
     assert!(!public_system_prompt().await.contains(PRIVATE_SERVER_INSTRUCTION_SENTINEL));// 12 F2 (Task 18)
-    // Spawn (Task 23): a public parent may not spawn a private child.
+    // Spawn (Task 23): a public parent may not spawn a private child (R4), and
+    // ⚠ a private parent may not hand its prompt to a public model it picked
+    // (DR-19, added with Task 23's amendment). ONE enforcement point — the
+    // toggle read in `apply_settings_overrides` — with TWO refusal directions,
+    // so it is one inventory row and two assertions. A row that exercised only
+    // the upgrade arrow would let the DR-19 arrow stay armed with the toggle
+    // off, which is this matrix's named failure class.
     assert!(spawn(Parent::Public, Request::Private).await.is_err());                    // 13 spawn
+    assert!(spawn(Parent::Private, Request::Public).await.is_err());                    // 13 spawn (DR-19)
     // Knowledge-base surfaces beyond the read barrier.
     assert!(!platform_catalog_as_public().await.contains("omop"));                      // 14 CP5 (Task 10D)
     assert!(kb_export_as(ProviderTier::Private, "omop", &outside)                       // 15 archive
@@ -17785,6 +19382,7 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
                                  "ucsfomopagent", ProviderTier::Public).is_ok());
     assert!(public_system_prompt().await.contains(PRIVATE_SERVER_INSTRUCTION_SENTINEL));
     assert!(spawn(Parent::Public, Request::Private).await.is_ok());
+    assert!(spawn(Parent::Private, Request::Public).await.is_ok());          // 13's DR-19 arrow
     assert!(platform_catalog_as_public().await.contains("omop"));
     assert_eq!(kb_export_as(ProviderTier::Private, "omop", &outside).await.unwrap(), outside);
     assert!(kb_write_as(ProviderTier::Private, "notes2").await.is_ok()
@@ -17905,18 +19503,37 @@ async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
     assert!(r.text().await.contains("Settings"));
     assert!(privacy_tiers_enabled(), "a refused request must not have written");
 
+    // DR-19, the assertion this amendment exists for: the PHRASE ALONE IS NOT
+    // ENOUGH. It is a fixed string in the shipped source, so a caller holding
+    // the daemon secret replays it — and AR-11 measured that secret to be
+    // recoverable in process, while DR-17 keeps the shell that would also
+    // reach it. Task 18A's key is the difference, and there is exactly one of
+    // it (DR-19: "one proof of user, not two").
     let r = post_config_upsert_confirmed("BIOROUTER_PRIVACY_TIERS", "off",
-                                         "DISABLE PRIVACY TIERS").await;
+                                         "DISABLE PRIVACY TIERS").await;   // no header
+    assert_eq!(r.status(), 403);
+    assert!(privacy_tiers_enabled(), "a phrase a model can read is not a human");
+
+    let r = post_config_upsert_confirmed_by_user("BIOROUTER_PRIVACY_TIERS", "off",
+                                                 "DISABLE PRIVACY TIERS").await;
     assert_eq!(r.status(), 200);
     assert!(!privacy_tiers_enabled());
+
+    // …and the RE-ARMING direction needs neither, because restoring the control
+    // is not the iffy operation — the same reasoning that leaves
+    // `/config/remove` unguarded in Task 18A Step 3(d).
+    let r = post_config_upsert("BIOROUTER_PRIVACY_TIERS", "on").await;
+    assert_eq!(r.status(), 200);
+    assert!(privacy_tiers_enabled());
+    biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(false);        // back to the OFF state
 
     // A wrong phrase is refused, and the comparison is exact.
     // ⚠ A BARE re-arm, not a second `set_privacy_tiers(..)`: `_g` still holds
     // the (non-reentrant) lock, so calling the helper again here would deadlock
     // rather than fail. `_g`'s Drop still restores the value this test found.
     biorouter_mcp::privacy_toggle::set_privacy_tiers_enabled(true);
-    let r = post_config_upsert_confirmed("BIOROUTER_PRIVACY_TIERS", "off",
-                                         "disable privacy tiers").await;
+    let r = post_config_upsert_confirmed_by_user("BIOROUTER_PRIVACY_TIERS", "off",
+                                                 "disable privacy tiers").await;
     assert_eq!(r.status(), 403);
     assert!(privacy_tiers_enabled());
 }
@@ -17926,13 +19543,34 @@ async fn a_bare_config_upsert_cannot_flip_the_key_but_the_confirmed_one_can() {
 accidental or model-composed config write**, not an authorization boundary. The phrase is a fixed
 string in the shipped source, so a caller holding the daemon secret replays it — which round 3 said,
 and which is true. It is accepted for the same reason
-[AR-15](#ar-15--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
+[AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials)
 is: `check_token` (`auth.rs:80-127`) has no principal, so the daemon cannot tell Settings → Privacy
 from any other loopback caller, and a caller that already holds the secret can raise its own session
 to private capability anyway. **What the guard actually buys** is that the flip cannot be a side
 effect of an ordinary `/config/upsert` — which is the reachable path, because a model *can* compose
 one of those through a tool and cannot compose the daemon secret out of thin air on macOS without a
 shell. Closing it properly needs a per-caller credential, [Open question 20](#open-questions).
+
+⚠ **SUPERSEDED IN PART by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) — the last
+two sentences above are no longer the state of the plan.** The paragraph is kept because its
+*analysis* is right and is the reason this amendment exists; what changed is the conclusion.
+(1) The premise **"a model … cannot compose the daemon secret out of thin air on macOS without a
+shell"** fails twice over: [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store)
+**keeps** the shell (14A–14F deferred, AR-6 retired), and
+[AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured the secret
+recoverable **in process**, path-read only, no shell required. (2) **The per-caller credential
+exists now.** [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)
+built it, and [Open question 24](#open-questions)'s answer already anticipated this exact promotion:
+*"Task 18A's key now can promote it to one."* So the disabling arm requires `X-User-Action` as well
+as the phrase — see this task's amendment banner — and the phrase keeps the job this paragraph
+correctly describes: the accident, not the adversary. The residual that is genuinely still open is
+the **file** channel, not the HTTP one: [Open question 27](#open-questions).
+(3) ⚠ **And one clause in the middle of the paragraph, not just the last two sentences:** *"a caller
+that already holds the secret can raise its own session to private capability anyway"* was true when
+it was written and is **false now** — that was AR-15, and the same Task 18A key **retired** it
+(commit `0757823f`). The half of the citation that still stands is the one the sentence rests on:
+`check_token` has no principal. Do not read the retired half as still live; the argument for the
+confirmation phrase does not need it, because point (2) supplies the stronger guard.
 
 ```tsx
 it('the Privacy tab exists and its toggle is mounted', async () => {
@@ -18116,6 +19754,21 @@ grep -rn "set_privacy_tiers_enabled(" --include='*.rs' crates/*/src/ \
   | grep -v "fn set_privacy_tiers_enabled"
 echo "expect: exactly 2 — the startup load and /config/upsert's gated arm. A third"
 echo "  writer is a way to flip the switch that Settings does not know about."
+echo "  ⚠ DR-19 added a CONDITION to the second writer, not a third writer: the"
+echo "  count stays 2."
+
+# (2b) DR-19: the master switch is at least as protected as the default
+#      provider. Before this amendment it was not — /config/upsert guarded
+#      BIOROUTER_PROVIDER and did not guard the key that disables every gate.
+grep -c "BIOROUTER_PRIVACY_TIERS" crates/biorouter/src/privacy/config_keys.rs ; echo "expect: 1 (0 today) — in CAPABILITY_CONFIG_KEYS"
+awk '/NOT_CAPABILITY_CONFIG_KEYS/,/^\];/' crates/biorouter/src/privacy/config_keys.rs \
+  | grep -c "BIOROUTER_PRIVACY_TIERS" ; echo "expect: 0 — a key in BOTH lists fails Task 18A's exactly-one test"
+cargo test -p biorouter --lib -- privacy::config_keys 2>&1 | grep "test result:"
+echo "expect: all passed, with CAPABILITY_CONFIG_KEYS.len() == 6 (Task 18A's assertion moves 5 -> 6"
+echo "  IN THIS COMMIT — a stale 5 there fails, which is the point of asserting a length at all)"
+# The disabling arm demands the header; the ENABLING arm must not.
+awk '/async fn upsert_config/,/^}/' crates/biorouter-server/src/routes/config_management.rs \
+  | grep -c "is_user_action" ; echo "expect: 1 — one condition, covering the capability keys and the off-switch"
 
 # (3) EVERY enforcement point reads it, and NOTHING refuses without reading it.
 #     Two closures over the tree, both mechanical, both exit non-zero. The
@@ -18620,6 +20273,38 @@ git commit -m "feat(privacy): disclose what a non-private model can reach (#56, 
 
 ### Task 31: The CLI is a required R10 surface
 
+> ⚠ **REWRITTEN by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02 — read the ruling before Step 1.**
+>
+> **This task contradicted [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit)
+> and the contradiction was real, not a wording slip.** Task 29 said *"no MCP server, no
+> `ToolRouter`, no `workspace_*` handler and no CLI subcommand can construct one"* and backed it
+> with a grep gate expecting **no output** outside two files; this task then required
+> `biorouter session declassify <id>`, which cannot exist without constructing exactly that proof.
+> Whichever was implemented first, the other's gate failed. Under
+> [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) Task 29 was the one that was right:
+> the same binary is runnable by any agent holding `developer__shell`, so *"the person who ran the
+> command is the user"* was false, which is
+> [Open question 29](#open-questions)'s whole subject.
+>
+> **DR-20 dissolves it rather than picking a side.** The subcommand may exist because what gates it
+> is an operating-system authentication prompt raised by the `biorouter` process itself — not the
+> caller's identity. An agent may run the command; it cannot answer the prompt. Task 29's gate
+> becomes a four-file enumeration that names this file.
+>
+> **Four things this adds.** (1) The subcommand takes a **batch** of ids, `declassify <id>...`.
+> (2) The prompt states **exactly** what will be declassified before it is raised — DR-20 point 4,
+> and the thing that stops an agent harvesting an approval the user thought was for one chat.
+> (3) A **denied or cancelled** prompt changes nothing and exits non-zero. (4) On a host with no
+> prompter — headless Linux, and Windows until [Open question 30](#open-questions) is answered — it
+> **fails closed** and says so, naming the platform.
+>
+> ⚠ **The third test's `SessionType` loop stays, and it is not in tension with anything.** Task 29
+> never forbade declassifying a `SubAgent` or `Hidden` session; what it forbade was a *caller* the
+> route could not authenticate. The escape hatch works by id for every session type precisely
+> because `list_sessions` filters History to `('user','scheduled')` — and the alternative fix, a
+> "System sessions" filter in the GUI, surfaces 511 hidden sessions on this machine into a
+> user-facing list.
+
 Every repair affordance in Phase 4 so far is a GUI card. `biorouter-cli/src/session/builder.rs:479-484`
 resolves the provider as `--provider` flag → saved session provider → workflow's
 `biorouter_provider` → global default; two of those four can produce a public provider on a private
@@ -18631,9 +20316,11 @@ any private session with nothing explaining why.
 | Action | Path | Anchor (re-verified at `9558c346`) |
 |---|---|---|
 | Modify | `crates/biorouter-cli/src/session/builder.rs` | provider precedence `:479-484`; `providers::create` `:523`; bind `:601` |
-| Modify | `crates/biorouter-cli/src/commands/session.rs` | new `declassify <id>` subcommand |
+| Modify | `crates/biorouter-cli/src/commands/session.rs` | new **`declassify <id>...`** subcommand — variadic, one prompt per invocation. It is the **second** of the two files permitted to name `UserConfirmation` outside `privacy/` ([Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) Step 5's enumeration), and it calls `privacy::declassify` in process rather than the HTTP route: the daemon may not be running, and a route call would need the launcher proof this process does not have |
 | Modify | `crates/biorouter-cli/src/session/mod.rs` | the Gate B terminal refusal rendering |
 | Modify | `crates/biorouter/src/workflow/` | workflow load-time provider check |
+| Modify | `crates/biorouter-cli/Cargo.toml` | `[features]` `:76-79` — `privacy-test-auth = ["biorouter/privacy-test-auth"]` plus the `[dev-dependencies]` arming entry, both created by Task 29. Nothing new here; the row exists so this task's Step 4 command is not a surprise |
+| Reference | `crates/biorouter/src/privacy/system_auth.rs` | Task 29's module. **Reused, never re-implemented** — a second prompter is how the CLI's prompt and the GUI's come to say different things about the same operation |
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -18664,19 +20351,120 @@ async fn declassify_works_by_id_regardless_of_session_type() {
     // hidden sessions into a user-facing list. The CLI escape hatch works by id.
     for t in [SessionType::Hidden, SessionType::SubAgent, SessionType::User] {
         let s = private_session_of_type(t).await;
-        run_cli_confirming(&["session", "declassify", &s.id]).await.unwrap();
+        seam::answer_next_prompt(AuthOutcome::Approved);
+        run_cli(&["session", "declassify", &s.id]).await.unwrap();
         assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Public);
     }
 }
+
+// ── DR-20 ──────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn one_invocation_one_prompt_and_the_prompt_names_every_chat() {
+    // DR-20 point 4. The set is fixed by argv BEFORE the prompt is raised, and
+    // the prompt states it. An agent may run this command; what it cannot do is
+    // get an approval for a set the user was not shown — which is the ONLY
+    // thing standing between agent initiation and an agent-driven release.
+    let a = private_session_named("OMOP cohort characterisation").await;
+    let b = private_session_named("Lab results Q2").await;
+
+    seam::answer_next_prompt(AuthOutcome::Approved);
+    let out = run_cli(&["session", "declassify", &a.id, &b.id]).await.unwrap();
+
+    assert_eq!(seam::prompt_count(), 1);                      // ONE prompt, not two
+    let asked = seam::last_request();
+    assert_eq!(asked.session_ids, vec![a.id.clone(), b.id.clone()]);
+    assert!(asked.reason.contains("2 chats"));
+    assert!(asked.reason.contains("OMOP cohort characterisation"));
+    // The terminal shows the same list BEFORE the prompt, so the user is not
+    // reading a one-line OS dialog for the first time.
+    assert!(out.contains("OMOP cohort characterisation"));
+    assert!(out.contains("Lab results Q2"));
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Public);
+    assert_eq!(reread(&b.id).await.privacy_tier, SessionClassification::Public);
+}
+
+#[tokio::test]
+async fn a_denied_prompt_declassifies_nothing_and_exits_non_zero() {
+    let a = private_session().await;
+    let b = private_session().await;
+
+    seam::answer_next_prompt(AuthOutcome::Denied);
+    let err = run_cli(&["session", "declassify", &a.id, &b.id]).await.unwrap_err();
+    assert!(err.to_string().contains("Cancelled"));
+    assert_eq!(err.exit_code(), 1);
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Private);
+    assert_eq!(reread(&b.id).await.privacy_tier, SessionClassification::Private);
+
+    // And an UNARMED seam is the same outcome, because the seam's default is
+    // refuse. A test that forgets to arm it must not silently pass.
+    let err = run_cli(&["session", "declassify", &a.id]).await.unwrap_err();
+    assert_eq!(err.exit_code(), 1);
+    assert_eq!(reread(&a.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn a_host_with_no_prompter_fails_closed_and_says_which_host() {
+    // Open question 30. Headless Linux has no polkit agent; Windows has no
+    // verified prompter at all. The refusal names the platform and points at a
+    // machine that can ask — a build whose declassification refuses is a missing
+    // feature, and one whose declassification silently approves is the worst
+    // outcome this feature can produce.
+    let s = private_session().await;
+    seam::answer_next_prompt(AuthOutcome::Unavailable);
+    let err = run_cli(&["session", "declassify", &s.id]).await.unwrap_err();
+    assert!(err.to_string().contains("cannot ask"));
+    assert!(err.to_string().contains("system authentication"));
+    assert_eq!(err.exit_code(), 1);
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+}
+
+#[tokio::test]
+async fn a_batch_with_one_bad_id_prompts_for_nothing() {
+    // The set must be VALID before the prompt: asking the user to authenticate
+    // a list and then applying a shorter one is exactly what point 4 forbids.
+    let s = private_session().await;
+    let err = run_cli(&["session", "declassify", &s.id, "no-such-session"]).await.unwrap_err();
+    assert!(err.to_string().contains("no-such-session"));
+    assert_eq!(seam::prompt_count(), 0);
+    assert_eq!(reread(&s.id).await.privacy_tier, SessionClassification::Private);
+}
 ```
 
-- [ ] **Step 2: Run** → **FAIL** on all three.
+- [ ] **Step 2: Run** → **FAIL** on all seven.
 
 - [ ] **Step 3: Implement** — (a) tier printed at session start; (b) Gate B's terminal refusal lists
-the available private models and the exact re-run command; (c) `biorouter session declassify <id>`
-running the same graded confirmation at the terminal; (d) the workflow load-time check.
+the available private models and the exact re-run command; (c) **`biorouter session declassify
+<id>...`**; (d) the workflow load-time check.
 
-- [ ] **Step 4: Run** → `cargo test -p biorouter-cli` → **PASS**.
+**(c), in order, because the order is the requirement.** Resolve every id first and abort on any
+that does not exist or is already public — a prompt for a set that will not be applied whole is the
+thing DR-20 point 4 forbids. Print the resolved list to the terminal (name, id suffix,
+`privacy_reason`, date). Build **one** `AuthRequest` naming that exact set and raise **one** prompt
+through `privacy::system_auth::authenticate` — the same module as the GUI, never a second
+implementation. On `Approved`, call `privacy::declassify` in process with the returned
+`UserConfirmation`; on `Denied` print `Cancelled — nothing was changed.` and exit 1; on
+`Unavailable` print the platform-named refusal and exit 1.
+
+⚠ **No `--yes` flag, and no `--force`.** A flag that skips the prompt is the bypass this whole
+ruling exists to prevent, it would be the first thing an agent reaches for, and it cannot be
+justified by scripting convenience: a script that declassifies without a human is precisely the
+actor DR-20 excludes. If a future need appears, it is a ruling, not a flag.
+
+⚠ **The graded confirmation is Task 29's and this command does not re-grade it.** The typed phrase
+and the 5-second undo are GUI affordances; at a terminal the review list plus the OS prompt carry
+the same job, and a CLI that asked for six characters *and* a password would be the "three
+frictions" DR-19's user half warns about.
+
+- [ ] **Step 4: Run** → **PASS**.
+
+```bash
+# ⚠ The DR-20 tests need the seam, which is a NON-DEFAULT feature (Task 29).
+# A bare `cargo test -p biorouter-cli` runs them against the real prompter: on
+# macOS that means a password dialog per test, and on CI it means a hang.
+cargo test -p biorouter-cli --features privacy-test-auth
+cargo test -p biorouter-cli          # the rest of the suite, unarmed, still green
+```
 
 - [ ] **Step 5: Gate**
 
@@ -18687,24 +20475,51 @@ running the same graded confirmation at the terminal; (d) the workflow load-time
 # if the worker names it anything else.
 awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs | wc -l
 echo "expect: > 1 (0 today — the fn does not exist yet). A 0 here makes the next"
-echo "  line vacuous, so read this one first."
+echo "  three lines vacuous, so read this one first."
 awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs | grep -c "SessionType"
 echo "expect: 0 — it works by id"
+
+# DR-20: exactly one prompt call, and it is the SHARED module. A CLI that
+# re-implements the prompt is how the two surfaces come to describe the same
+# operation differently — and how one of them ends up not prompting at all.
+awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs \
+  | grep -c "system_auth::authenticate("
+echo "expect: 1"
+grep -rn "SystemAuthenticator\|AuthOutcome::Approved" crates/biorouter-cli/src/
+echo "expect: no output — the CLI CONSUMES the authenticator, it does not implement or fake one"
+
+# No bypass flag, under any spelling. This is the one grep on this task that is
+# 0 today AND 0 under a correct implementation — a genuine tripwire.
+awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs \
+  | grep -n "yes\|force\|no_prompt\|skip_auth\|assume"
+echo "expect: no output"
+
+# The prompt is raised ONCE per invocation, not once per id. A loop that calls
+# authenticate() inside it satisfies every functional test and violates the
+# ruling — this is the shape that catches it.
+awk '/fn declassify_command/,/^}/' crates/biorouter-cli/src/commands/session.rs \
+  | awk '/for .* in .*ids/,/^    }/' | grep -c "authenticate("
+echo "expect: 0 — one AuthRequest for the whole batch"
+
 # And History did not gain a system-sessions filter. (0 today AND 0 under a
-# correct implementation — this one is a genuine tripwire, not a measurement:
-# the wrong implementation is the only thing that makes it non-zero.)
+# correct implementation — also a genuine tripwire, not a measurement.)
 grep -rn "System sessions\|include_hidden" ui/desktop/src/components/sessions/ ; echo "expect: no output"
 ```
 
-**What this catches.** Adding a "System sessions" filter to History as the declassification path for
-Hidden sessions — which is the obvious fix and which surfaces 511 hidden sessions on this machine
-into a user-facing list, a regression traded for an edge case.
+**What this catches.** Three wrong implementations. (1) Adding a "System sessions" filter to History
+as the declassification path for Hidden sessions — the obvious fix, which surfaces 511 hidden
+sessions on this machine into a user-facing list, a regression traded for an edge case. (2) **A
+prompt per id**, which passes every functional assertion in Step 1 except `prompt_count() == 1` and
+turns a 12-chat batch into twelve password dialogs — at which point the user learns to approve
+without reading, which is the exact failure DR-20 point 4 exists to prevent. (3) **A `--yes` flag**,
+added in good faith for scripting, which hands an agent the bypass the whole ruling is built to
+deny.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add crates/biorouter-cli crates/biorouter/src/workflow
-git commit -m "feat(cli): print the tier, teach the repair, and declassify by id (#56)"
+git commit -m "feat(cli): print the tier, teach the repair, and declassify batches behind a system prompt (#56)"
 ```
 
 ---
@@ -18718,21 +20533,34 @@ cargo test --workspace --no-fail-fast 2>&1 | tail -20
 cargo fmt --check && ./scripts/clippy-lint.sh
 just generate-openapi && git diff --exit-code ui/desktop/openapi.json
 cd ui/desktop && npx tsc --noEmit && npm run lint:check && npm run test:run 2>&1 | tail -8
-node scripts/check-contrast.mjs | tail -1     # expect: OK — all 288 contrast assertions pass
+node scripts/check-contrast.mjs | tail -1     # expect: OK — all 324 contrast assertions pass
 npm run themes -- --check                     # expect: OK — generated artifacts are current (3 themes)
 ```
 
-⚠ **288 — and it must match Task 26's Step 4 exactly, because two of the three numbers this plan has
-quoted here were wrong.** 252 measured on `main` today (42 assertions × 6 family×mode scopes),
-`+12` from Task 26's hover-ground block (2 text tokens × 6 scopes), `+24` from the four new badge
-assertions (× 6 scopes), `+0` from rings — `RING_GROUNDS` is untouched, because
-`--background-medium` never moves into `TEXT_GROUNDS`. The first version said **274**, a number its
-own Task 26 contradicted. The second said **294**, which is the total for a variant that puts
+⚠ **324 = `main` + 36, and it must match Task 26's Step 4 exactly, because THREE of the four numbers
+this plan has quoted here were wrong.** 288 measured on `main` (48 assertions × 6 family×mode
+scopes), `+12` from Task 26's hover-ground block (2 text tokens × 6 scopes), `+24` from the four new
+badge assertions (× 6 scopes), `+0` from rings — `RING_GROUNDS` is untouched, because
+`--background-medium` never moves into `TEXT_GROUNDS`.
+
+The history, because the same mistake was made four times and in two different ways. **274** was a
+number its own Task 26 contradicted. **294** was the total for a variant that puts
 `--background-medium` into `TEXT_GROUNDS` — and that run does not print `OK` at all: three of its
-eighteen new assertions fail AA (`--text-subtle`, measured 3.75 / 4.45 / 4.28) and it exits 1. Both
-versions read to a worker as "the phase failed" when the phase had succeeded. If the printed total
-is **294**, the ground moved after all; if **276** or **264**, one of the two new blocks landed
-outside the per-scope loop and ran once instead of six times.
+eighteen new assertions fail AA (`--text-subtle`, measured 3.75 / 4.45 / 4.28) and it exits 1. Then
+**288** — arithmetically consistent with itself and with Task 26, and still wrong, because its
+`252` baseline had been overtaken: issue #65's `<biorouter-ref>` reference-chip block (2 grounds × 3
+assertions) joined the same per-scope loop after this plan was written, taking `main` from 42 to 48
+per scope. Task 32 measured `324` and the plan was corrected to it. Every one of those versions
+reads to a worker as "the phase failed" when the phase had succeeded.
+
+⚠ **Trust the delta over the total.** An absolute count in a document is checked against a script
+that other issues keep adding to, so it goes stale silently and in the direction that reads as
+failure. The invariant this task actually owns is **`+36` over whatever `main` prints** — run
+`git stash`-free on a `main` checkout if you need the baseline, or read it off
+`git diff main -- ui/desktop/scripts/check-contrast.mjs`, which must be exactly six new `assert`
+calls inside the `for (const [theme, scope] of Object.entries(SCOPES))` loop and nothing else. If
+the printed total is `main + 42`, the ground moved after all; if `main + 26` or `main + 16`, one of
+the two new blocks landed outside the per-scope loop and ran once instead of six times.
 
 - [ ] **Step 2: Live GUI verification over CDP — the four surfaces, in a sandbox**
 
@@ -18764,25 +20592,70 @@ count and gates the button on the base id, and privatizing is one click.
 accepted risks are acceptable. A Phase 4 that passes without it has shipped the narrowing without the
 thing that justifies it.
 
+⚠ **(5) failed on the first run of this gate, and the failure was invisible to the whole test
+suite** — which is the reason it is a *live* check and not a `vitest` line. The disclosure gate's
+only mount was `BaseChat`, keyed on `session?.provider_name`; `session` is filled from
+`/agent/resume`, which is a plain storage read with no create semantics, so on a fresh profile there
+was no row, no provider name and no dialog until the first turn had already gone out — a receipt.
+Every one of the gate's sixteen unit tests hands `providerName` a literal, so they proved the
+predicate ("given a public provider, disclose") and never the conjunction ("is one bound yet?"),
+and `BaseChat.privacy.test.tsx` asserts a source-text regex for the presence of the very expression
+that was the defect. Fixed by an `AppNonPrivateModelDisclosureGate` mounted in `App.tsx`, keyed on
+the **configured** provider, alongside — not instead of — the chat-level mount;
+`useSoleDisclosurePresenter` keeps the two to one dialog. When re-verifying, check it on a profile
+with **no chat open at all**, because a check performed after opening one cannot tell the two mounts
+apart.
+
 - [ ] **Step 3: The badges are mounted, not merely defined**
 
 ```bash
 cd ui/desktop
-# Enumerate rather than count: Task 27 mounted 6 host files, Task 28 mounted 5
-# more, and a bare number invites "fixing" a mismatch by deleting a mount.
-grep -rl "PrivacyBadge" src/components | sort
-# Expected, exactly these 13:
-#   ui/badge-adjacent:  ui/PrivacyBadge.tsx, ui/PrivacyBadge.test.tsx
-#   Task 27 hosts:      sessions/SessionListView.tsx, sessions/SessionItem.tsx,
-#                       sessions/SessionHistoryView.tsx, SessionNamePill.tsx,
-#                       BioRouterSidebar/RecentChats.tsx, chatGroups/ChatTabStrip.tsx
-#   Task 28 hosts:      settings/providers/ProviderGrid.tsx,
-#                       settings/models/subcomponents/SwitchModelModal.tsx,
-#                       settings/models/bottom_bar/ModelsBottomBar.tsx,
-#                       bottom_menu/BottomMenuExtensionSelection.tsx,
-#                       settings/extensions/subcomponents/ExtensionItem.tsx
+# MOUNTED means rendered. Grep for the JSX, not for the name — the name also
+# appears in five doc comments that reference the component without using it,
+# and a gate that counts those is satisfied by prose.
+grep -rl "<PrivacyBadge" src/components | sort
+# Expected, exactly these 10 — 9 render sites plus the badge's own suite:
+#   Task 27 hosts:  sessions/SessionListView.tsx, sessions/SessionItem.tsx,
+#                   sessions/SessionHistoryView.tsx, SessionNamePill.tsx,
+#                   BioRouterSidebar/RecentChats.tsx, chatGroups/ChatTabStrip.tsx
+#   Task 28 host:   settings/models/bottom_bar/ModelsBottomBar.tsx
+#   Task 29A hosts: knowledge/KBSelector/KBSelectorPalette.tsx, knowledge/KbTierControl.tsx
+#   its own suite:  ui/PrivacyBadge.test.tsx
 grep -c 'data-testid="settings-.*-tab"' src/components/settings/SettingsView.tsx ; echo "expect: 4"
 ```
+
+⚠ **The 13-file list this step used to print was wrong in both directions, and "fixing" the mismatch
+by editing the code would have been the damaging move.** It named four Task 28 files that carry no
+badge — `settings/providers/ProviderGrid.tsx`, `settings/models/subcomponents/SwitchModelModal.tsx`,
+`bottom_menu/BottomMenuExtensionSelection.tsx`, `settings/extensions/subcomponents/ExtensionItem.tsx`
+— and it omitted Task 29A's two knowledge hosts, which did not exist when it was written. The four
+are not gaps: each surfaces the tier by the affordance that fits it, which is what Task 28 asked for.
+`ProviderGrid` renders `NonPrivateModelDisclosureNote` above the Commercial section (`:233`);
+`SwitchModelModal` takes `privacyTier` and disables public models pre-flight (`:190`, `:277`);
+`BottomMenuExtensionSelection` (`:419`) and `ExtensionItem` (`:70`) both call
+`extensionPairingRefused` and render the row visible-but-disabled with `PAIRING_REFUSED_REASON` as
+its title. A pill on a disabled row that already explains itself is noise; the badge is for surfaces
+that name a *chat* or a *knowledge base*.
+
+⚠ **`grep -rl "PrivacyBadge"` — the name, not the JSX — returns 16 and is the wrong gate.** The six
+extra hits are `ui/PrivacyBadge.tsx` itself, `ModelsBottomBar.privacy.test.tsx`, and four doc
+comments that mention the component while explaining something else (`ConfigContext.tsx:471`,
+`settings/privacy/privacyTiers.ts:6`, `settings/privacy/PrivacyPanel.tsx:12`,
+`settings/providers/providerOrdering.ts:83` — the last of which exists precisely to say a badge does
+**not** belong on that field). Counting mentions rewards writing the name in a comment.
+
+⚠ **Superseded in part by Task 38, on the extension surfaces only** (commit `8eb752d5`, *"finish
+§13.5 — a badge on every extension card, and on the Add form"*). Four files gained a
+`<PrivacyBadge>` after this step was written — `BrxtInstallModal.tsx`,
+`baam/BrowseExtensionsModal.tsx`, `settings/extensions/modal/ExtensionModal.tsx` and
+`settings/extensions/subcomponents/ExtensionItem.tsx` — so the workspace-wide total is **13
+non-test mount files** at the release gate, and it is [Task 40](#task-40-final-release-gate) Step 3
+that enumerates all thirteen. `ExtensionItem.tsx` is named in the paragraph above as a file that
+should *not* carry a badge, on the argument that a pill on a disabled row that already explains
+itself is noise. §13.5 wanted the tier legible on **every** extension card, present or absent, and
+not only on the refused ones — that is a wider requirement than this step was measuring, and it
+won. The three chat/model/knowledge groups this step pins are unchanged; only the count moved, and
+only because a later task added surfaces on purpose.
 
 - [ ] **Step 4: Adversarial review of the phase diff; every finding addressed.**
 
@@ -19316,6 +21189,63 @@ git commit -m "docs(landing): a Privacy column on the agents table, checked agai
 
 ### Task 37: The in-app registry — freshness that raises and never lowers
 
+> ⚠ **AMENDED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent), 2026-08-02 — this
+> task's union rule protects the registry document and not the **key** it is looked up by, and the
+> plan never says who may write that key.** Read this before Step 3. It adds a requirement and one
+> open question; the mechanism is not obvious from the tree, so none is invented here.
+>
+> **The chain, end to end.** `classify_extension` (Task 8) resolves the tier from
+> `name_to_key(name)` (`config/extensions.rs:23`) against `PRIVATE_EXTENSIONS ∪
+> private(last_good_fetch)` — a string join on the extension's **config entry name**, which
+> `BrxtInstallModal.tsx:152-161` writes from `manifest.name` and which this task's Step 3 already
+> describes as recording *"no provenance whatsoever"*. Step 3 then writes down the consequence as a
+> known naming quirk: *"a genuinely private extension renamed locally becomes public."*
+>
+> **That consequence is larger than "a badge".** `classify_extension` is what stamps
+> `Extension.tier` at all three admission points (Task 8 Step 3), and `Extension.tier` is what
+> **Gate C** reads at dispatch, **Gate E** at discovery and **Gate F** at enable. So renaming a
+> config entry does not merely relabel `ucsfomopagent` — it makes a public model able to **call**
+> it. And `add_extension`'s early `contains_key -> Ok(())` (`:678`) means a re-add never restamps,
+> so the change lands on the next admission and is invisible until then. The direction is one-way in
+> the dangerous sense: renaming *to* a private name is fail-closed and harmless (Step 3 says so);
+> renaming *away* removes enforcement.
+>
+> **Who may write it? The plan does not say, and DR-19 makes that the defect.** *"It makes silence a
+> defect: every task that changes privacy state must say who may initiate it, because an unstated
+> initiator becomes whatever the implementer assumes."* Compare the two objects this feature
+> classifies:
+>
+> | Object | Who may lower its tier | What proves it |
+> |---|---|---|
+> | A **session** | one function, `privacy::declassify` | `UserConfirmation` + `X-User-Action`; [Task 40](#task-40-final-release-gate) Step 3 asserts `privacy_tier = 'public'` appears **exactly once** in the tree |
+> | A **knowledge base** | one file, `knowledge/tier_user.rs::set_unlocked` | `UserKbTierChange` (a ZST no model can construct) + the same header ([Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)) |
+> | An **extension** | **anyone who can rename a config entry** | **nothing** |
+>
+> **The requirement, stated.** An extension's effective tier may be lowered only by the user. Today
+> it is lowered by a rename, `config.yaml` is agent-writable with `text_editor` (§9.3 C1), and
+> [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) deferred
+> [DR-14](#decisions-of-record), which had made that file deny entry #5 for a closely related
+> reason. The union rule this task builds is the right shape — freshness raises and never lowers —
+> but it is applied to the *value* side of the lookup while the *key* side is unprotected, and an
+> attacker (or an accident) takes the cheaper of the two.
+>
+> **Why this task states it and stops.** The obvious fix is to stop deriving the badge from the
+> mutable name and derive it from install **provenance** instead — a registry id, source URL and
+> hash recorded at install — but this task's own Files table records that the install writes
+> *"name/cmd/args/envs and no registry id, source URL or hash"*, so the provenance the fix needs
+> does not exist to be read, and creating it changes what a `.brxt` install writes, what
+> `ExtensionConfig` carries (which Task 8's OpenAPI gate deliberately freezes), and how R11(i) is
+> phrased. That is a design decision, not an implementation detail. It is
+> [Open question 28](#open-questions).
+>
+> **What must NOT be done in the meantime.** Do not "fix" it by letting the local config declare a
+> tier — that is R11(i) inverted and Task 8's gate exists to catch it. Do not widen
+> `PRIVATE_EXTENSIONS` to cover aliases; a rename can pick any string. And when Step 3 writes down
+> the rename consequence as *"already the accepted direction under R11(ii)"*, correct it to say what
+> it is: R11(ii) is about extensions **not on BAAM** defaulting public, which is a statement about
+> unknown extensions; a **known** private extension losing its tier because someone edited a name is
+> a different fact and was never ruled on.
+
 `main.ts:2855-2866` is a bare `fetch(REGISTRY_URL, { headers })` (`REGISTRY_URL` at `:2832`, preload
 bridge at `:355`/`:580`) with **no timeout, no cache and no last-good write**.
 
@@ -19334,6 +21264,8 @@ show it nowhere.
 | Modify | `ui/desktop/src/components/baam/BrowseExtensionsModal.tsx` | `live` consumption `:23`/`:32`/`:35`/`:100` |
 | Modify | `ui/desktop/src/components/BrxtInstallModal.tsx` | the config write `:152-161` — records **no provenance whatsoever** |
 | **Create** | `ui/desktop/src/components/BrxtInstallModal.test.tsx` | new — verified absent; the fourth test below `render`s this component and has nowhere else to go |
+| **Create** | `ui/desktop/src/utils/registryCache.ts` | new — **added during implementation, not planned here, and the omission was the point.** `main.ts` imports `electron` at the top level and cannot be unit-tested, and the renderer's tests stop at the IPC boundary — so with the timeout, the validation, the atomic write and the stale replay all inline in `main.ts`, an implementation with **no disk cache at all** passed every test this task has, and one that imported this module and never *called* it would too. The Electron-free half moves here: `isRegistryDocument`, `writeLastGoodRegistry`, `readLastGoodRegistry`, `REGISTRY_FETCH_TIMEOUT_MS` and the whole `fetchRegistryWithLastGood` composition. `main.ts` keeps only what needs Electron — `registryCachePath()` (`app`) and the write-failure warning (`log`) |
+| **Create** | `ui/desktop/src/utils/registryCache.test.ts` | new — the only coverage of the disk cache **and** of the handler's `fetch fails → replay as `stale: true`` branch, which is the entire reason the last-good cache exists |
 
 ⚠ **The file path is load-bearing, and its absence is what made this task's gate vacuous.** The
 gate ran `npx vitest run registry -t "downgrade is never honoured"`. Measured: `registry` matches
@@ -19379,15 +21311,40 @@ it('the brxt install modal says the resulting badge out loud', () => {
 - [ ] **Step 2: Run** → **FAIL** on all four.
 
 - [ ] **Step 3: Implement** — a 10 s `AbortController`, a last-good write, the union rule, the
-staleness line surfaced on the Extensions settings cards as well as in the modals, and the three
+staleness line surfaced on the Extensions settings screen as well as in the modals, and the three
 provenance strings of §13.5: *"Private — published on the Biorouter marketplace"*, *"Public —
 published on the Biorouter marketplace"*, *"Public — installed from a file, not on the marketplace.
 Any model can call it."*
 
+Two amendments to that sentence, both made during implementation and recorded here rather than left
+to be rediscovered as drift:
+
+- **"on the Extensions settings *cards*" became once above the list**, and deliberately: the line
+  describes the *catalogue*, which is one object shared by every card on the screen, so repeating it
+  on twenty rows is noise — and noise is exactly what makes the stale case invisible. What is
+  per-card is the provenance sentence, which genuinely varies per extension.
+  `ExtensionsSection.tsx` renders it once above `ExtensionList`; `ExtensionsSection.privacy.test.tsx`
+  asserts it.
+- **Five provenance strings, not three.** The union has branches where §13.5's private string —
+  which asserts *publication* — is simply false: a key learned from a catalogue that no longer lists
+  it, and the compiled baseline read against a document that does not. That branch says *"Private —
+  the Biorouter marketplace publishes this name as private"*. And a built-in extension fits neither
+  marketplace sentence, so it says *"Public — built into Biorouter, not on the marketplace. Any
+  model can call it."* The original three are still emitted verbatim wherever they are true, and
+  `ExtensionsSection.privacy.test.tsx` asserts them verbatim.
+
 Two naming consequences to write down as **known rather than discovered**: a hand-installed
 extension *named* `ucsfomopagent` inherits the private badge (fail-closed, fine); and a genuinely
-private extension renamed locally becomes public — already the accepted direction under R11(ii), and
-unavoidable because the install records no provenance at all.
+private extension renamed locally becomes public.
+
+⚠ **The second one is NOT "already the accepted direction under R11(ii)"** — that clause was in this
+paragraph and is withdrawn by DR-19 (see this task's banner). R11(ii) rules that an extension **not
+on BAAM** is public, which is a statement about *unknown* extensions. A **known** private extension
+losing its tier because a config entry was renamed is a different fact, it was never ruled on, and it
+is not a badge change: `classify_extension` stamps `Extension.tier`, which Gates C, E and F read, so
+the rename removes **enforcement**. "Unavoidable because the install records no provenance at all"
+is the accurate half and is exactly why this is [Open question 28](#open-questions) rather than a
+fix in this task.
 
 - [ ] **Step 4: Run** — name the FILES, never the bare word `registry`:
 
@@ -19395,19 +21352,52 @@ unavoidable because the install records no provenance at all.
 cd ui/desktop && npx vitest run \
   src/components/baam/registry.test.ts \
   src/components/baam/BrowseExtensionsModal.test.tsx \
-  src/components/BrxtInstallModal.test.tsx 2>&1 | tail -6
+  src/components/BrxtInstallModal.test.tsx \
+  src/utils/registryCache.test.ts \
+  src/components/settings/extensions/ExtensionsSection.privacy.test.tsx 2>&1 | tail -6
 ```
 
-Expected: `3 test files`, with `registry.test.ts` reporting **3 passed** and
-`BrxtInstallModal.test.tsx` **1 passed**. A run that reports `3 skipped` has matched suite *paths*
-and filtered out every test; a run that reports `2 test files` means one of the two new files was
-never created.
+Expected: **`5 test files`, `37 passed`**. A run that reports any `skipped` has matched suite *paths*
+and filtered out tests; a run that reports fewer than 5 files means one was never created.
+
+⚠ **These counts are MEASURED, not predicted, and re-measure rather than trusting them.** The
+figures originally written here — `3 test files`, `registry.test.ts` 3 passed,
+`BrxtInstallModal.test.tsx` 1 passed — were the plan's *expectation*, and the implementation landed
+supersets of all three without anyone updating this line. That fails safe (a re-runner sees more
+than the plan promised and investigates; it cannot read as a false pass) but it is precisely the
+stale-count drift this plan warns about elsewhere, so the current per-file figures are recorded and
+dated: `registry.test.ts` **10**, `BrowseExtensionsModal.test.tsx` **1**,
+`BrxtInstallModal.test.tsx` **2**, `registryCache.test.ts` **17**,
+`ExtensionsSection.privacy.test.tsx` **7** — 37 total, measured 2026-08-03.
+
+⚠ **The last two files are on this list because review found the gate omitted them.** They are the
+only coverage of two of Step 3's four deliverables — the disk cache and the handler composition
+(`registryCache.test.ts`), and the §13.5 strings and the settings freshness line
+(`ExtensionsSection.privacy.test.tsx`) — so the earlier three-file command passed with **both files
+deleted**. CI's full-suite run covers them; this task's own gate did not, and a gate that depends on
+a different job to be non-vacuous is not a gate.
 
 - [ ] **Step 5: Gate**
 
 ```bash
 cd ui/desktop
-grep -c "AbortController" src/main.ts ; echo "expect: >= 1 (0 today)"
+# ⚠ NOT `grep -c AbortController`. That was this gate's own weakest line and it
+# is now its own counterexample: the word survives in `main.ts` ONLY inside a
+# comment explaining that a comment satisfies the grep, so the original
+# `grep -c AbortController src/main.ts >= 1` still passes against a main process
+# with no timeout at all. It also passed on a controller whose `signal` was
+# never handed to `fetch` — a reviewer had to confirm that wiring by reading it,
+# because nothing automated could.
+#
+# The timeout is now a unit test instead. Its fake `fetch` settles ONLY when
+# handed an abort signal that fires, which separates the three implementations
+# grep cannot tell apart: no timeout, a controller never wired in, and the word
+# in a comment. Each leaves the promise pending and fails on the test timeout.
+npx vitest run src/utils/registryCache.test.ts \
+  -t "aborts a host that accepts the connection and then says nothing" 2>&1 | tail -4
+echo "expect: '1 passed' — NOT '1 skipped'"
+# ...and the handler actually CALLS the module rather than merely importing it.
+grep -c "fetchRegistryWithLastGood" src/main.ts ; echo "expect: >= 1"
 # The union rule is a function, not four inline ORs.
 grep -rn "effectivePrivacy" src/components/baam/ | wc -l ; echo "expect: >= 2 (definition + consumers; 0 today)"
 # A live fetch can never lower a compiled-in badge. ⚠ The FILE PATH, not the
@@ -19424,10 +21414,28 @@ echo "  it(...) title exactly as written in Step 1."
 # ...and the other two in that file actually run too, so a single live term
 # cannot hide them.
 npx vitest run src/components/baam/registry.test.ts 2>&1 | tail -4
-echo "expect: 1 test file, 3 passed"
+echo "expect: 1 test file, 10 passed (measured 2026-08-03; the plan originally"
+echo "  predicted 3 and the implementation landed a superset — re-measure,"
+echo "  do not trust this number)"
 test -f src/components/BrxtInstallModal.test.tsx || echo "MISSING: the fourth test has no file"
 npx vitest run src/components/BrxtInstallModal.test.tsx 2>&1 | tail -4
-echo "expect: 1 test file, 1 passed"
+echo "expect: 1 test file, 2 passed"
+# ⚠ The two files review found the gate omitting. Without these lines, this Step
+# passes with BOTH deleted, and they are the only coverage of two of Step 3's
+# four deliverables.
+test -f src/utils/registryCache.test.ts || echo "MISSING: nothing covers the disk cache"
+npx vitest run src/utils/registryCache.test.ts 2>&1 | tail -4
+echo "expect: 1 test file, 17 passed"
+npx vitest run src/components/settings/extensions/ExtensionsSection.privacy.test.tsx 2>&1 | tail -4
+echo "expect: 1 test file, 7 passed"
+# The learned badge is DURABLE, not merely remembered for the life of the module.
+# Both loadRegistry calls in the persistence test share one module instance, so a
+# memory-only store was indistinguishable from a persisted one: measured,
+# replacing privateSet.ts's localStorage read AND write with an in-memory Set
+# left all 8 tests in registry.test.ts green.
+npx vitest run src/components/baam/registry.test.ts \
+  -t "an upgrade takes effect on the next successful fetch and persists" 2>&1 | tail -4
+echo "expect: '1 passed'"
 ```
 
 **What this catches.** The natural implementation — trusting the live document — which lets a
@@ -19437,10 +21445,38 @@ enforces it. And, before that, it catches the state this gate was in: a vitest i
 reported success while running none of the four tests, because the file they belong in did not exist
 and no Files-table row created it.
 
+**Verified by mutation, not by reading** (2026-08-03). Each of these was applied to the tree, run,
+and reverted; every one is killed, and the named test is the only one that kills it:
+
+| Mutant | Killed by |
+|---|---|
+| `effectivePrivacy` trusts the live document | `a downgrade is never honoured…` |
+| the learned set is memory-only (no localStorage read, or no write, or neither) | `an upgrade takes effect… and persists` |
+| the `AbortController` is constructed but its `signal` never reaches `fetch` | `aborts a host that accepts the connection and then says nothing` |
+| the document is cached *before* it is validated | `neither returns nor caches a 200 that is not a catalogue` |
+| a failed fetch never replays the cache | `replays the cached document as stale when the fetch fails` |
+| a cache-write failure fails the fetch that just succeeded | `still returns the live document when the cache cannot be written` |
+| `response.ok` is ignored | `treats a non-2xx as a failure rather than parsing the error page` |
+| the boundary sanitiser `withUsableEntriesOnly` is dropped | `strips non-entries before any consumer sees the document` |
+| the inner `isEntry` filter in `privateKeysIn` is dropped | `classifies a document that never went through the boundary` |
+
+The last two are the two layers that deliberately overlap. Review measured that removing *either*
+one alone left every test green, because the malformed-entry test reached the classifier only
+through the boundary — so each is now pinned by its own contract: the boundary by what it hands
+downstream (the Browse lists read `.name`/`.description`/`.tags` off every entry, in files with no
+test of this input), the inner filter by `effectivePrivacy` being documented as callable with a
+document that never went through `loadRegistry`.
+
+Three of those nine were previously covered by **nothing**: the persistence of a learned badge, the
+timeout wiring (grep-only), and the whole `fetch fails → replay as stale` branch. The first survived
+review's mutation run; the other two were unreachable while the composition lived in `main.ts`,
+which is why `utils/registryCache.ts` exists.
+
 - [ ] **Step 6: Commit**
 
 ```bash
-git add ui/desktop/src/main.ts ui/desktop/src/components/baam ui/desktop/src/components/BrxtInstallModal.tsx
+git add ui/desktop/src/main.ts ui/desktop/src/components/baam ui/desktop/src/components/BrxtInstallModal.tsx \
+        ui/desktop/src/utils/registryCache.ts ui/desktop/src/utils/registryCache.test.ts
 git commit -m "feat(marketplace): last-good registry with a timeout, and a union rule that only raises (#56)"
 ```
 
@@ -19749,8 +21785,9 @@ the assertion: a `0 passed` is not "nothing to run", it is a suite that did not 
 looks.
 
 ⚠ **The other two are NOT zero, and "assert non-zero" is worthless for them.**
-`routes::agent` reports **8 passed** on `main` and `routes::session` reports **20 passed**, from four
-pre-existing `#[cfg(test)]` blocks that are not named `tests`. A release gate that only demands
+`routes::agent` reports **8 passed** and `routes::session` **29 passed** (measured by Task 4b at
+`fd14ef9a`; `routes::session` was 20 three days earlier, so re-measure rather than inherit these),
+from five pre-existing `#[cfg(test)]` blocks, none named `tests`. A release gate that only demands
 "non-zero" from those two is satisfied by a tree in which #56 added no route tests whatsoever. Run
 them and compare against the recorded baselines:
 
@@ -19758,7 +21795,7 @@ them and compare against the recorded baselines:
 cargo test -p biorouter-server --lib routes::agent   2>&1 | grep "test result:"
 echo "expect: strictly MORE than 8 passed  (8 is the untouched baseline)"
 cargo test -p biorouter-server --lib routes::session 2>&1 | grep "test result:"
-echo "expect: strictly MORE than 20 passed (20 is the untouched baseline)"
+echo "expect: strictly MORE than 29 passed (29 is the untouched baseline at fd14ef9a — re-measure)"
 cargo test -p biorouter --lib agents::chatrecall_extension 2>&1 | grep "test result:"
 echo "expect: non-zero (0 is the untouched baseline)"
 cargo test -p biorouter --lib session::chat_history_search 2>&1 | grep "test result:"
@@ -19769,13 +21806,65 @@ echo "expect: non-zero (0 is the untouched baseline)"
 
 ```bash
 # Every module this plan creates now exists, so nothing may be deferred. Re-run
-# Task 4b Steps 1 and 5 with an EMPTY deferred table:
+# Task 4b Step 1 (the five `--list`s), then Step 5's gate block with the deferred
+# heredoc followed by an emptying line — and WITHOUT its trailing `git add` /
+# `git commit`, which belong to Task 4b's own commit and not to this gate:
 #   : > /tmp/56-filters/deferred.txt   # nothing may be missing at the release gate
-# Expect: 0 MISSING, 0 DEFER and 0 UNUSED across all 42 (package, filter) pairs.
-# A single DEFER here means a filter this plan has been quoting for forty tasks
+#
+# THE THREE ASSERTIONS THIS STEP IS FOR, and what they read on 2026-08-05:
+#   ok  MISSING lines = 0            ← the whole point; see below
+#   ok  DEFER == deferred rows = 0   ← 0 DEFER, and that equality IS the 0-UNUSED
+#                                      check (pairs are unique after `sort -u`,
+#                                      so DEFER == rows exactly when every
+#                                      deferred row was used). Both halves are
+#                                      0 with the table emptied.
+#   61 (package, filter) pairs harvested.
+# A single MISSING here means a filter this plan has been quoting for forty tasks
 # names a module that never came to exist — a gate that has been printing
 # `0 passed` and exiting 0 the whole time. That is BR-71's most expensive defect,
-# and this line is the last place it can be caught.
+# and this line is the last place it can be caught. It reads 0.
+#
+# ⚠ THE GATE BLOCK STILL EXITS 1, AND THAT IS NOT A FAILURE OF THIS STEP. Four
+# `want`s fail, all four on Task 4b's TABLE bookkeeping rather than on the tree:
+#   FAIL deferred rows = 0, expected 13   ← this step emptied it ON PURPOSE
+#   FAIL DRIFT lines = 36, expected 0     ← the 46 resolved counts are dated
+#                                            2026-08-01 at fd14ef9a; all 36 moved
+#                                            UPWARD (e.g. knowledge:: 198→272,
+#                                            routes::apps 94→115, providers
+#                                            360→392, privacy 3→202)
+#   FAIL UNRECORDED lines = 15            ← 12 are Task 4b's deferred rows, which
+#                                            have LANDED and now resolve
+#                                            (privacy::refusal 17, knowledge::tier
+#                                            28, privacy::system_auth 20,
+#                                            session::chat_history_search 4,
+#                                            agents::chatrecall_extension 8, …);
+#                                            3 are modules DR-26 and Task 18A
+#                                            added that predate no table at all
+#                                            (privacy::affiliation 43,
+#                                            privacy::config_keys 2,
+#                                            providers::factory 10)
+#   FAIL OK + DEFER == pairs = 10 of 61   ← arithmetic falling out of the above
+# Every one is a row that RESOLVES with a bigger number than a table written
+# forty tasks ago recorded. Do NOT "fix" this by re-baselining the tables
+# wholesale: Task 4b ruled against exactly that — "a re-baselined table would
+# simply go stale again by the next phase … re-measurement is the rule" — so the
+# tables stay a floor and each assertion re-measures the filter it is about to
+# use. What must be read by hand is that every DRIFT is upward and every
+# UNRECORDED resolves non-zero. A DOWNWARD drift, or an UNRECORDED reading 0, is
+# the real defect and is not what this run shows.
+#
+# ⚠ AND THE AUDIT HAS ONE BLIND SPOT, measured here: the harvest regex requires
+# `cargo test -p <pkg> --lib` contiguously, so any filter written with a flag in
+# between is invisible to it — neither OK, nor MISSING, nor DEFER, nor counted in
+# the 61. There are exactly two, both needing the same feature flag:
+#   cargo test -p biorouter --features privacy-test-auth --lib privacy::declassify
+#   cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth
+# Measured directly rather than through the audit: `privacy::declassify` = 13
+# tests. (`privacy::system_auth` is ALSO written plainly elsewhere in this plan,
+# so the harvest does see that one — 20 — which is why only declassify vanished
+# from the 61.) Widening the regex is the fix; it is a follow-up, not this gate's
+# job, and the number is recorded here so the next reader does not have to
+# rediscover that a filter went unaudited.
 ```
 
 See [Which test filters are validated, and which are not](#which-test-filters-are-validated-and-which-are-not)
@@ -19783,30 +21872,73 @@ and [Task 4b](#task-4b-resolve-every-test-filter-against-a-real-cargo---list-doc
 
 - [ ] **Step 3: The twelve invariants, as commands**
 
+⚠ **Read this before running it — it is why most of the numbers below moved once, on
+2026-08-05, and are pinned to a *production* count now.** This repo puts `mod tests` in the same
+file as the code it tests, so a bare `grep -c` counts production sites and test sites together.
+When #56 landed ~1,100 tests, **eight** of these lines began printing a number that contradicted
+their own `expect:` while the invariant behind them was untouched, and **three more** had become
+incapable of failing at all. A gate that hands its reader a wall of mismatches to adjudicate by
+hand is a gate that gets waved through — which is the failure this campaign has already paid for
+three times. So every line below is now one of three shapes: **(a)** restricted to the production
+half, **(b)** replaced by the compiled audit test that pins the same invariant with no spelling to
+drift, or **(c)** left as a PRINT whose expectation names *paths* rather than a total. If you
+change one, keep it in one of those three shapes.
+
 ```bash
 cd /Users/wgu/Desktop/BioRouter-privacy
-# O5 — the ratchet fires in exactly two places, neither of them the bind. PRINT,
-# do not `wc -l`: a bare 2 is also produced by two calls in agent.rs and none in
-# extension_manager.rs, which is Gate C's ratchet silently missing. (Task 20
-# Step 3 prints; this copy counted. Same invariant, two strengths.)
+# `prod <file> <substring>` counts matches in a file's PRODUCTION half — above
+# its first UNINDENTED `#[cfg(test)]`, which is where every `mod tests` in this
+# tree begins. Substring, not regex, so no call site needs escaping.
+#
+# ⚠ It is WRONG for `agents/agent.rs`, which has an unindented `#[cfg(test)] mod
+# seams` at ~:1370 and ~9,000 production lines after it. Never point `prod` at
+# that file — pointing it there reports Gate B missing, which is exactly the
+# false red that teaches a reader to ignore this gate. agent.rs is covered by
+# the two compiled censuses instead.
+prod() { awk -v pat="$2" '/^#\[cfg\(test\)\]/{exit} index($0,pat){c++} END{print c+0}' "$1"; }
+
+# O5 — the ratchet fires at Gate B (the first turn) and Gate C (a permitted
+# private dispatch), never at the bind. PRINT, do not `wc -l`: the total is
+# dominated by test-module calls and a bare number cannot tell "Gate C is
+# present" from "Gate C is gone and someone added two tests".
 grep -rn "raise_privacy(" --include='*.rs' crates/ | grep -v session_manager.rs
-echo "expect: exactly 2 lines — one in agents/agent.rs (Gate B) and one in"
-echo "        agents/extension_manager.rs (Gate C). Read the paths, not the count."
-# O7 — one production path into an MCP client (see Task 20 Step 3 for the full
-# hit list and why a `grep -vc "cfg(test)"` cannot express this).
-grep -c "\.call_tool(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 1 (1 today)"
-grep -rn "\.call_tool(" --include='*.rs' crates/ | wc -l
-echo "expect: 10 — the SAME 10 as at 9558c346, so this is a no-growth tripwire"
-echo "        rather than a measurement of #56. Any increase is a new bypass."
+echo "expect: 19 lines, of which exactly THREE are production. Read the PATHS:"
+echo "  agents/agent.rs             Gate B, the first turn"
+echo "  agents/extension_manager.rs Gate C's ratchet (inside raise_session_privacy)"
+echo "  agents/subagent_tool.rs     the spawn STAMP — a new child row born at its"
+echo "                              parent's tier, which DR-15 says is propagation"
+echo "                              of a column and not a classification decision"
+echo "The other 16 are test-module calls, in 10 files. The two censuses below pin"
+echo "all three sites by walking the tree, so a wrong count here is a prompt to"
+echo "re-read, not a verdict."
+# ...and the two compiled forms of that same invariant, which DO fail on a
+# fourth site. Gate C + its affiliation twin:
+cargo test -p biorouter --lib \
+  agents::extension_manager::tests::the_two_chat_side_ratchets_share_one_production_call_site \
+  | grep "test result:" ; echo "expect: 1 passed; 0 failed"
+# O7 — one production path into an MCP client. The workspace-wide count was 10
+# at 9558c346 and is 41 today; 40 of the 41 are test-module calls, so the total
+# stopped being a tripwire the moment #56 added tests. The census below is the
+# tripwire: it prints one line per file that reaches a client OUTSIDE its tests.
+for f in $(grep -rl ".call_tool(" --include='*.rs' crates/*/src/ | sort); do
+  n=$(prod "$f" ".call_tool(")
+  if [ "$n" != "0" ]; then echo "$n  $f"; fi
+done
+echo "expect: exactly one line — '1  crates/biorouter/src/agents/extension_manager.rs'."
+echo "        A second file, or a second hit in that file, is a new bypass of Gate C."
 # O6 — nothing above filter_tools consults a tier.
 awk '/async fn get_all_tools_cached/,/^    }/' crates/biorouter/src/agents/extension_manager.rs \
   | grep -c "cap\.tier()\|allowed_extension_keys" ; echo "expect: 0"
 # The ratchet is irreversible except through one statement.
 grep -c "privacy_tier = CASE WHEN" crates/biorouter/src/session/session_manager.rs ; echo "expect: 1"
-grep -rn --include='*.rs' "privacy_tier *= *'public'" crates/ | grep -v "DEFAULT 'public'" | wc -l ; echo "expect: 1"
+# ⚠ `privacy_tier *= *'public'` matches 9 lines — doc comments and read-side
+# `WHERE`/`AND` clauses, which are Gate D doing its job. Only a `SET` writes the
+# column back down, and only a non-comment `SET` is code.
+grep -rn --include='*.rs' "SET privacy_tier *= *'public'" crates/ \
+  | grep -v ":[[:space:]]*///" ; echo "expect: exactly 1 — privacy/declassify.rs, the user-only path"
 # Gate D is in both builders; Gate C has all nine entry points.
 grep -c "s.privacy_tier = 'public'" crates/biorouter/src/session/chat_history_search.rs ; echo "expect: 2"
-grep -c "assert_extension_reachable(" crates/biorouter/src/agents/extension_manager.rs ; echo "expect: 9"
+prod crates/biorouter/src/agents/extension_manager.rs "assert_extension_reachable(" ; echo "expect: 9 (1 definition + 8 call sites; a bare grep -c reads 13, the extra 4 being test calls)"
 # O12 — the knowledge-base barrier at its five choke points, and its ratchet.
 grep -c "assert_kb_reachable(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 2 (CP1)"
 grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/knowledge/macros/ingest.rs \
@@ -19815,47 +21947,87 @@ grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/knowledge/macros/inge
 grep -c "tier::assert_reachable(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1 (CP3)"
 grep -c "tier::assert_reachable(" crates/biorouter-mcp/src/agent_drafter/mod.rs ; echo "expect: 1 (CP4)"
 grep -c "pub fn discover(" crates/biorouter-mcp/src/agent_drafter/catalog.rs ; echo "expect: 1 (CP5)"
-grep -rn "Catalog::discover(true)" --include='*.rs' crates/*/src/ ; echo "expect: no output (CP5)"
-grep -c "tool_handler" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 0 — CP1 is hand-written"
-grep -c "raise_tier(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
-grep -c "raise_tier(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
+# CP5: a bare grep prints 2 (both in test modules, both legitimate fixtures).
+for f in $(grep -rl "Catalog::discover(true)" --include='*.rs' crates/*/src/ | sort); do
+  n=$(prod "$f" "Catalog::discover(true)")
+  if [ "$n" != "0" ]; then echo "$n  $f"; fi
+done
+echo "expect: no output (CP5) — no PRODUCTION caller asks the catalog for private apps"
+# ⚠ `grep -c "tool_handler"` reads 3 and always will: CP1's doc comment says it
+# is what `#[tool_handler]` generated. Re-adding the real macro would print 4 —
+# a number nobody would notice. The ATTRIBUTE is the checkable form.
+grep -c '^[[:space:]]*#\[tool_handler\]' crates/biorouter-mcp/src/knowledge/server.rs
+echo "expect: 0 — CP1 is hand-written, and re-adding the macro would delete the gate"
+# ⚠ `raise_tier(` reads 0 in both files: Task 50 renamed it to
+# `raise_tier_and_affiliation` so the two axes move under one lock. Same ratchet,
+# current spelling.
+grep -c "raise_tier_and_affiliation(" crates/biorouter-mcp/src/knowledge/server.rs ; echo "expect: 3"
+grep -c "raise_tier_and_affiliation(" crates/biorouter-server/src/routes/apps.rs ; echo "expect: 1"
 cargo test -p biorouter-mcp --lib \
   knowledge::server::tests::every_kb_tool_is_gated_or_exempt_for_a_pinned_reason \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
 cargo test -p biorouter-mcp --lib \
   knowledge::server::tests::no_exempt_tool_volunteers_a_private_bases_id_to_a_public_caller \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed"
-grep -rn "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v "fn kb_tiers_path"
-echo "expect: tier.rs and service.rs::ensure_tiers_migrated only"
+for f in $(grep -rl "kb_tiers_path" crates/biorouter-mcp/src/knowledge/ | grep -v paths.rs | sort); do
+  n=$(prod "$f" "kb_tiers_path")
+  if [ "$n" != "0" ]; then echo "$n  $f"; fi
+done
+echo "expect: exactly two files — tier.rs (4: the store's own reader/writer) and"
+echo "        service.rs (2: ensure_tiers_migrated, plus export_brkb naming the"
+echo "        path in a refusal message). A third file is a second reader of the"
+echo "        tier store, which is the thing tier.rs exists to be the only one of."
 grep -rn "store::\(list_pages\|read_page\|write_page\|search\|search_with_scope\)(" \
-  --include='*.rs' crates/ | grep -v "src/knowledge/" | wc -l
-echo "expect: 4 — a FIFTH is a new CONTENT surface; see Task 10C Step 5"
+  --include='*.rs' crates/ | grep -v "src/knowledge/"
+echo "expect: 5 — four in routes/knowledge.rs and ONE in routes/apps.rs (the app"
+echo "        runtime's kb_search, gated by CP3's assert_reachable above the"
+echo "        match). A SIXTH is a new CONTENT surface; see Task 10C Step 5."
 # ...and the METADATA tripwire, which the two content detectors cannot express.
-# BOTH sweeps, at 9558c346: a growth in either is a new way to hand a model a
-# base id or name. One sweep with `grep -v src/knowledge/` is what let the
-# pointer tools through a whole review round.
-grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
-  | grep -v "src/knowledge/" | wc -l
-echo "expect: 27 — 18 production / 9 test-module; see Task 10D Step 5 sweep (1)"
-grep -rn "\.list_bases()\|\.session_kb_ids(\|\.selection(" --include='*.rs' crates/*/src/ \
-  | grep "src/knowledge/" | wc -l
-echo "expect: 22 — 5 production / 17 test-module; see Task 10D Step 5 sweep (2)"
+# BOTH sweeps: a growth in either is a new way to hand a model a base id or name.
+# One sweep with `grep -v src/knowledge/` is what let the pointer tools through a
+# whole review round. Production only — the raw totals are 29 and 23, and they
+# move whenever anyone adds a test.
+echo "-- metadata sweep (1), outside src/knowledge --"
+for f in $(grep -rl ".list_bases()\|.session_kb_ids(\|.selection(" --include='*.rs' crates/*/src/ | grep -v "src/knowledge/" | sort); do
+  t=$(( $(prod "$f" ".list_bases()") + $(prod "$f" ".session_kb_ids(") + $(prod "$f" ".selection(") ))
+  if [ "$t" != "0" ]; then echo "$t  $f"; fi
+done
+echo "expect: 19 production hits over 9 files; see Task 10D Step 5 sweep (1)"
+echo "-- metadata sweep (2), inside src/knowledge --"
+for f in $(grep -rl ".list_bases()\|.session_kb_ids(\|.selection(" --include='*.rs' crates/*/src/ | grep "src/knowledge/" | sort); do
+  t=$(( $(prod "$f" ".list_bases()") + $(prod "$f" ".session_kb_ids(") + $(prod "$f" ".selection(") ))
+  if [ "$t" != "0" ]; then echo "$t  $f"; fi
+done
+echo "expect: 6 production hits over 3 files; see Task 10D Step 5 sweep (2)"
 # The two id-list error messages omit rather than enumerate (Tasks 10C, 11).
+# ⚠ `tier::is_private` reads 0 inside `kb_id_or_primary`: the predicate moved
+# into `kb_is_out_of_reach`, the ONE filter every omission in this file shares,
+# so "omit" and "refuse" cannot disagree. That is the invariant; grep for it.
 awk '/fn kb_id_or_primary\(/,/^    }/' crates/biorouter-mcp/src/knowledge/server.rs \
-  | grep -c "tier::is_private" ; echo "expect: 1"
+  | grep -c "kb_is_out_of_reach" ; echo "expect: 1"
 awk '/fn resolve_target_kb\(/,/^}/' crates/biorouter/src/agents/knowledge_tool.rs \
   | grep -c "is_private" ; echo "expect: 1"
 # Gate G is one guard in the shared function, covering all three of its callers.
-# PRINT: `| wc -l` cannot tell "three callers pass it" from "one caller passes it
-# and two tests construct the struct", and this repo's tests live in the same
-# files as the code they test.
-grep -rn "caller_capability:" --include='*.rs' crates/ | grep -v conversation_ingest.rs
+# ⚠ `grep -rn "caller_capability:"` matched NONE of those three callers and
+# certified nothing: all three use Rust field-init shorthand, so the text on the
+# line is `caller_capability,`. The four lines it did print are the two HTTP
+# helper signatures and the struct's own field. PRINT the shorthand instead —
+# `| wc -l` cannot tell "three callers pass it" from "one caller passes it and
+# two tests construct the struct", and this repo's tests live beside the code.
+grep -rn "^ *caller_capability,$" --include='*.rs' crates/ | grep -v conversation_ingest.rs
 echo "expect: 3 lines, one each in agents/knowledge_tool.rs (the platform tool),"
 echo "        biorouter-server/src/routes/knowledge.rs (the HTTP route) and"
 echo "        biorouter-cli/src/commands/knowledge.rs (the CLI). Read the paths."
-grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ ; echo "expect: no output"
+echo "        The field is a required, non-Option ProviderTier, so a fourth caller"
+echo "        that forgets it is a COMPILE error, not a missing line here."
+grep -rn "caller_capability: ProviderTier::Private" --include='*.rs' crates/ \
+  | grep -v conversation_ingest.rs ; echo "expect: no output"
+echo "  (the exclusion is not optional: conversation_ingest.rs's own test module"
+echo "   hard-codes Private three times as a fixture, and the line above it in"
+echo "   this gate has always excluded that file for the same reason.)"
 # floor() is crossed at exactly its two intended callers, and the audit test
 # names them rather than counting — see Task 7 for why a count could not work.
+# This is also the compiled form of Gate B's and the spawn stamp's O5 sites.
 cargo test -p biorouter --lib \
   privacy::tests::floor_is_crossed_only_where_a_capability_establishes_a_classification \
   | grep "test result:" ; echo "expect: 1 passed; 0 failed (never just 'PASS' — 0 passed exits 0)"
@@ -19864,19 +22036,50 @@ just check-privacy-registry
 # No privacy control is an inspector. ⚠ NOT `grep -rn "PrivacyInspector"`: 0
 # today, 0 under every wrong implementation, green both ways. The trait's impl
 # set is the checkable form.
+#
+# ⚠ NINE files, not the seven this list held until 2026-08-05. The two additions
+# are NOT #56's — this branch also carries BR-71 slice 1 and issue #63 — and
+# neither is a privacy control: `workspace_inspector.rs` is BR-71 §5's
+# always-confirm case and `global_memory.rs` is issue #63's consent gate, and
+# `grep -c "privacy\|ProviderTier"` reads 0 in both. They are pinned here rather
+# than filtered out, because the whole point of this check is that a NEW impl
+# has to be argued for by whoever adds it.
 diff <(grep -rl "impl ToolInspector for" --include='*.rs' crates/ | sort) <(cat <<'EOF'
+crates/biorouter/src/agents/workspace_inspector.rs
 crates/biorouter/src/hooks/inspector.rs
 crates/biorouter/src/permission/managed_inspector.rs
 crates/biorouter/src/permission/permission_inspector.rs
+crates/biorouter/src/security/global_memory.rs
 crates/biorouter/src/security/security_inspector.rs
 crates/biorouter/src/security/sensitive_ops.rs
 crates/biorouter/src/tool_monitor.rs
 crates/biorouter/tests/tool_inspection_manager_tests.rs
 EOF
-) && echo "OK: the impl set is exactly what it was at 9558c346"
-# The badges are mounted — the same 13-file enumeration as Task 32 Step 3.
-cd ui/desktop && grep -rl "PrivacyBadge" src/components | sort
-echo "expect: the 13 files listed in Task 32 Step 3, no more and no fewer"
+) && echo "OK: the impl set is the 9558c346 seven plus BR-71's and #63's, and no privacy control"
+# The badges are MOUNTED. ⚠ Three different numbers were in play here and none
+# of them was this one, which is why the line is written out in full below.
+# `grep -rl "PrivacyBadge"` reads 25 — it counts imports, tests and doc comments
+# that merely name the component, which rewards writing the name in prose.
+# `<PrivacyBadge` reads 14, the fourteenth being PrivacyBadge.test.tsx rendering
+# it. MOUNTED means a JSX element in a non-test file: 13.
+#
+# ⚠ And 13 is NOT "the Task 32 Step 3 enumeration", which is 10 and was correct
+# when it was written. Task 38 (`8eb752d5`, "a badge on every extension card, and
+# on the Add form") added four extension surfaces afterwards, one of them
+# `ExtensionItem.tsx` — the file Task 32's own ⚠ note argues should NOT carry a
+# badge. Task 38 superseded that argument deliberately; see the note appended to
+# Task 32 Step 3.
+cd ui/desktop && grep -rl "<PrivacyBadge" src/components | grep -v '\.test\.' | sort
+echo "expect: exactly these 13, no more and no fewer —"
+echo "  Task 27 chat surfaces (6): sessions/SessionListView.tsx, sessions/SessionItem.tsx,"
+echo "        sessions/SessionHistoryView.tsx, SessionNamePill.tsx,"
+echo "        BioRouterSidebar/RecentChats.tsx, chatGroups/ChatTabStrip.tsx"
+echo "  Task 28 model surface (1): settings/models/bottom_bar/ModelsBottomBar.tsx"
+echo "  Task 29A knowledge surfaces (2): knowledge/KBSelector/KBSelectorPalette.tsx,"
+echo "        knowledge/KbTierControl.tsx"
+echo "  Task 38 extension surfaces (4): BrxtInstallModal.tsx, baam/BrowseExtensionsModal.tsx,"
+echo "        settings/extensions/modal/ExtensionModal.tsx,"
+echo "        settings/extensions/subcomponents/ExtensionItem.tsx"
 ```
 
 - [ ] **Step 4: Live GUI verification, in a sandbox, with evidence**
@@ -19905,6 +22108,40 @@ private session touched is unreadable from every public chat, with no declassifi
 is ungated). They are rulings, not omissions, but an issue that closes without stating them leaves
 the next reader to rediscover them as bugs. See [Accepted risks](#accepted-risks).
 
+⚠ **Departure, recorded rather than absorbed: the `Status:` line does not say `Current —
+implemented` and should not, while that sentence is false.** It reads *"**Implemented for v1** on
+the `feat/privacy-tiers` branch — not merged to `main` as of 2026-08-05"*. `Current` in
+[`docs/contributing/documentation-style.md`](../contributing/documentation-style.md) is a claim
+about the shipping product, and this feature is one branch and one merge away from being that.
+**Change it to `Current — implemented` at the merge, not before** — a status that runs ahead of the
+merge is how a reader comes to trust a document that describes something no build contains.
+
+⚠ **This branch is NOT only #56, and the closing summary must not claim its diff.** It also carries
+**BR-71 slice 1** (`agents/workspace_extension.rs`, `agents/workspace_inspector.rs`,
+`workspace/services.rs`) and **issue #63** (the global-memory consent gate,
+`security/global_memory.rs`). Between them those account for two of the nine `ToolInspector` impls
+Step 3 pins, most of the growth in the `.call_tool(` tripwire, and one of the metadata-sweep
+entries. A summary that reports the whole 455-file diff as privacy work overstates #56 and, worse,
+silently buries two features that need their own review and their own release note.
+
+Follow-up issues to open, **beyond** the [Open questions](#open-questions) table:
+
+- **The affiliation interners are unbounded and the cap they point at does not exist.**
+  `privacy/affiliation.rs`'s `intern` and `intern_set` both `Box::leak` and never evict, and the
+  module says so — it locates the mitigation elsewhere, at *"the parse that admits a
+  registry-sourced institution"* (Task 47), and **that parse does not cap**. Measured on
+  2026-08-05, the residual is a future one and not a live defect: every production path into
+  `InstitutionId::new` reads `&'static` data — `RegistrySnapshot`'s two fields are both
+  `&'static [&'static str]` from the build-generated `registry_private`, and the two Versa modules
+  pass the literal `"ucsf"` — so the interner's input set is closed at compile time and the leak is
+  bounded by the registry snapshot's size. It stops being bounded the moment any runtime string
+  (a `.brxt` manifest, a fetched registry, a config key) reaches that constructor, and set
+  interning is combinatorial in the id count. File it against Task 47's parse, where refusing is
+  meaningful, and **not** against the constructor: truncating or stripping a slug there rewrites
+  two distinct institutions into one id, which grants a cross-institutional flow that should have
+  warned — strictly worse than leaking the string, and already pinned by
+  `distinct_institution_names_never_collide`.
+
 ---
 
 ## Decisions of record
@@ -19932,6 +22169,8 @@ the implementation is wrong.
 | **DR-16** | **Raising a session's capability to Private is the user's act alone. A model may never do it.** This is DR-8 made symmetric: *lowering* a session's classification was already user-only, and *raising* its capability now matches. Concretely — `POST /agent/update_provider` refuses a bind that would take a session from public capability to private unless the request carries a proof-of-user the daemon issued to its own UI, and `POST /agent/add_extension` refuses attaching a private-classified extension to a public-capability session outright. A bind that **keeps or lowers** the tier is untouched, on both routes and for every caller. [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has). **The operator was shown the cost and took it.** Three costs, each named before the ruling: it inverts a settled plan test (Task 12's `a_private_provider_binds_to_anything_and_a_public_session_accepts_anything`, whose `// upward: fine` comment is now `// upward: user-only`); it can break an agent workflow that switches itself to a local model mid-run; and it turns *"switch this chat to a private model"* — step 1 of the two-ways-out message in **every** refusal this feature ships — into an instruction the model must hand to the user rather than follow. **Two alternatives were rejected.** *Allow-but-ratchet* (permit the raise, stamp the session private) was rejected because a public model then chooses when to become private, which is exactly the classification it is supposed to be bound by. *Treat identity-free routes as public* — the [Task 14C](#task-14c-the-other-door--the-daemons-own-http-api-pinned-rather-than-assumed) (2) posture, which refuses every raise unconditionally because the route has no principal — was rejected because it removes the **user's** model picker along with the model's, which is the one control the whole refusal vocabulary points at. Choosing neither is what forces Task 18A to build a user-proof that does not exist today; the design has assumed one twice (§12.1, and Task 29's `secret_key_and_capability_token()`) and defined it neither time. **What would justify revisiting:** real evidence from use that the local-model handoff is a routine, legitimate agent step — an agent that switches to `llamacpp` to process something it should not send out, and which now stops and asks. If that pattern appears in practice, the answer is a *scoped* permission (a user-granted, per-session "this agent may switch to a local model" grant) rather than reopening the bind, because the failure being prevented is the model choosing its own tier and a scoped grant leaves the choosing with the user. |
 | **DR-17** | **The feature is narrowed to the session store, and the general filesystem barrier is descoped for v1.** In scope and non-negotiable: (1) session logs and histories are locked against a public-capability model; (2) a public model may neither raise its own tier (DR-16) nor reach the private-only extensions `ucsfomopagent` / `cdwagent`; (3) **the user is told** that a model which is not HIPAA-compliant, not on-premise and not local can reach what is on their machine ([Task 30A](#task-30a-the-non-private-model-disclosure)). Accepted as risk, and disclosed rather than mechanised: files a private session produced elsewhere on disk, encryption at rest, and **DR-14's Layer A / Layer B read-deny** — *"we don't have to enforce and encrypt every single step along the way. for now."* Tasks 14A–14F are **DEFERRED, not deleted**; AR-6, AR-9 and AR-10 are retired with them, so a public session on Windows or bubblewrap-less Linux **keeps the shell**. Requirement 3 is what makes accepting the rest a considered tradeoff rather than an oversight, which is why it ships as a task with a gate. Full text in [Scope ruling — DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). |
 | **DR-18** | **A knowledge base is a first-class BioRouter component: it carries a tier, every guardrail applies to it, and the *user* — never a model — decides that tier.** Confirmed and extended by the operator on 2026-07-30: *"knowledge bases should also be able to be deemed private - as it is also a piece of biorouter component . please make sure that users can change the kb to be private or public and the private model generated kb will automatically be private until the user publicize it, and all the other guardrails will apply as well."* Four parts. (a) **DR-13's ratchet stays** — Tasks 10A–10D unchanged, and a public-capability session may neither read nor write a private base. (b) **Tier at creation, not only on ingest**: a base a private-capability model creates is private from birth. (c) **The user may publicize or privatize a base**, from the Knowledge view, **user-only** and routed through the same user-proof DR-16 requires — a model may never do it, in either direction. (d) **Publicizing is graded and irreversible for content already released**, so its confirmation names the page count and says so; privatizing is single-click, because nothing is disclosed by it. [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited). This **resolves [AR-1](#ar-1--resolved-by-dr-18--a-knowledge-base-that-one-private-session-touched-becomes-unreadable-from-every-public-chat-including-the-users-own-ordinary-work)** and answers half (a) of [Open question 15](#open-questions). Full text in [DR-18 — the knowledge-base tier](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base). |
+| **DR-19** | **A warning for the user, a wall for the agent — the governing asymmetry for every privacy and security control in this feature.** Ruled by the operator on 2026-08-02: *"if there are things that the users are explicitly doing (not done by the agents) that are iffy in terms of privacy and security, biorouter need to give warning and will allow the operation to be carried on if the user insists. however, an agent will never automatically do these things."* Two halves. **The user, explicitly → warn, then allow if they insist; never a hard block**, because a control that walls the user is one they route around — by disabling the feature (DR-15's toggle exists for that pressure) or by leaving the product. **An agent, automatically → never**; it escalates to a human or it does not happen, because a warning an agent can proceed past is a log line and a control it can satisfy by continuing is not a control. [DR-16](#decisions-of-record) and [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base) are **instances** of this rule, not separate rules. **[Task 30A](#task-30a-the-non-private-model-disclosure) is what legitimises the permissive half** — a user can only accept a risk that was stated to them — which is also why that disclosure is not gated on the master toggle. **It weakens no gate:** Gates A–H refuse a *model* and are the agent half; *"the user could have done this"* is never a reason to let a model do it. **It makes silence a defect:** every task that changes privacy state must say who may initiate it, because an unstated initiator becomes whatever the implementer assumes. **One proof of user, not two:** [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action`; a confirmation phrase compiled into the source is a UX guard, not a human. Provenance: the operator stated it while reviewing the `BindOutcome::NoSuchSession` deviation in Gate A (Task 12), endorsing warn-and-continue there and naming the general rule it instances. Full text in [DR-19 — a warning for the user, a wall for the agent](#dr-19--a-warning-for-the-user-a-wall-for-the-agent). |
+| **DR-20** | **Declassification is gated by a system authentication, and that is what lets an agent ask.** Ruled by the operator on 2026-08-02: *"please make the user type in their system password (like in the beginning of the app starting, typing in the password to get to the keychain) and for each declassify operation, they need to do the password varification (through system means, so the app or the agent will never know the password … and each declassification action can declassify multiple chats (in batch) if the user so wants it. both the agent or through ui can user initiate this process, but either way password will be prompted. to test it, please set up this process so that when password is asked, a programatic msg is sent…"* Six points. **(1)** An **OS** prompt — the class of the Keychain authorization at app start — not an in-app dialog and not a typed phrase. **(2)** **Per operation**; no session, no cached grant. **(3)** The password is verified by the OS and never seen by BioRouter; a user who hands their password to an agent is explicitly outside the threat model. **(4)** **Batch**: one authentication may cover several chats, fixed before the prompt and named inside it, spendable on those ids and no others. **(5)** **Either the agent or the UI may initiate** — an agent may *ask* because it cannot *satisfy*; the gate is the prompt, not the caller. **(6)** A **test seam** stands in for the prompt, gated at **compile time** (`#[cfg(all(debug_assertions, feature = "privacy-test-auth"))]` plus a `compile_error!` that fails any build with the feature on and debug assertions off) and defaulting to **refuse**. **This refines DR-19 and does not repeal it:** the agent-initiation prohibition is relaxed **only** where an unforgeable human act stands between the request and the effect — never for Gates A–H, the spawn-downgrade, `add_extension`, the Task 18A capability raises, or any operation a task merely *confirms*. **It retires two undefined proofs:** Task 29's `secret_key_and_capability_token()` and the design §12.1 *"one-shot token minted by the renderer over Electron IPC"*, the two places DR-16 recorded this design assuming a proof it never defined. **It supersedes the design's §12.6 *"No general bulk declassification"***. Tasks [29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) and [31](#task-31-the-cli-is-a-required-r10-surface). Full text in [DR-20 — declassification is gated by a system authentication, and that is what lets an agent ask](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask). |
 
 ---
 
@@ -19946,7 +22185,7 @@ costs recorded in [Accepted risks](#accepted-risks) (AR-1, AR-2 and AR-5).
 | # | Question | What this plan does while it is open |
 |---|---|---|
 | **1** | **Does a mixed lead/worker composite ratchet the session?** R3 says "switched to a private model even once → private permanently", and a private-lead/public-worker composite *contains* a private model. The design says it does **not** ratchet, because `tier = least` and the transcript has already gone to the public worker, and because ratcheting on `max` would make the bind gate refuse that same composite on the next resume — bricking a working configuration. Using one reduction for both the gate and the ratchet is what makes `capability ≥ classification` provable by induction (Task 7). **This is the single place the letter of a requirement was not followed, and it needs a ruling.** | Implements the design: `LeadWorkerProvider::tier() = least(lead, worker)`, and `floor(Public) = Public` so no ratchet fires. Task 5's composite test and Task 7's induction test both encode this; **a ruling the other way changes both tests and the `tier()` override, and nothing else.** |
-| **2** | **Is the spawn-downgrade an approval or a refusal?** R4 permits it, so the design makes it an approval showing the task prompt. But the prompt is written by a private-context model and is the only leak vector, and it is the one control a planted `PermissionRequest` hook could bypass — hooks load from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from `.biorouter/hooks.yaml`, both writable by an agent with `text_editor`. | Task 23 implements the approval, behind `requires_downgrade_confirmation`. Flipping it to a `Deny` is one branch. |
+| **2** | ✅ **ANSWERED by [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) — a refusal.** The question named the two branches and this row said *"flipping it to a `Deny` is one branch"*; DR-19 picks that branch, and picks it for the reason this row already gave. The spawn is agent-initiated, there is no in-process channel to present Task 18A's `X-User-Action` on, and the approval this row worried about is unlockable by a hook the same agent can author — a hazard that grew, not shrank, when [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) deferred [DR-14](#decisions-of-record) and left both hook files outside any deny root. Original text: **Is the spawn-downgrade an approval or a refusal?** R4 permits it, so the design makes it an approval showing the task prompt. But the prompt is written by a private-context model and is the only leak vector, and it is the one control a planted `PermissionRequest` hook could bypass — hooks load from `~/.config/biorouter/config.yaml` and, with `allow_project_hooks`, from `.biorouter/hooks.yaml`, both writable by an agent with `text_editor`. | [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix) refuses the spawn, drops `requires_downgrade_confirmation` rather than adding a field nothing reads, and gates the flag's absence. The user's route is R4-equivalent and two steps: start a chat on the public model and give it the task directly. |
 | **3** | ~~**Does the R7 opt-out really stop at Gate C?**~~ **CLOSED — the operator ruled: it stops nowhere.** `BIOROUTER_PRIVACY_TIERS=off` disables every gate, the ratchet and the sandbox (DR-15). The original wording — "opt out of the **entire** protection layer" — is now read literally. | Task 30 implements the master toggle and its Step 1 is a **twenty-row** on/off matrix — nineteen enforcement points plus the session-copy invariant — closed at both ends by Step 5's two inventory diffs. The cost this closure buys is real and is recorded as [AR-7](#ar-7--while-the-tiers-are-off-nothing-is-recorded-and-turning-them-back-on-does-not-reclassify-the-gap): while the toggle is off the ratchet does not run, so sessions that handled private material during that window stay stamped `public` for ever. |
 | **4** | **Is the first cross-tier write approval remembered per (caller, target) or per call?** Per-pair-per-session-lifetime was chosen because a confirmation on every steer of a public worker is miserable and would be clicked through. | Task 21 exposes `requires_first_crossing_approval`; the memoisation policy lives with BR-71's inspector. |
 | **5** | **Institutional Ollama versus hosted Ollama SaaS.** R1 says self-hosted *or* institution-hosted is private, and config cannot tell a lab GPU box at `OLLAMA_HOST=gpu.lab.ucsf.edu` from a hosted SaaS. **This plan disagrees with the design on the severity**: the design rates "non-loopback stays Private" a false-private and "the one place this design is permissive". It is a live bypass — `ProviderEngine::Ollama` plus a remote `base_url` in one agent-writable JSON file mints a Private-tier provider pointing anywhere. Certainty needs a `BIOROUTER_PRIVATE_HOSTS` allowlist, a new concept deliberately not added. | Task 5 makes **loopback-only** Private and non-loopback Public, and its third test encodes the bypass. A lab GPU box therefore reads Public until an allowlist exists. **This is a real ergonomic regression for lab users and needs a ruling.** |
@@ -19981,7 +22220,8 @@ independent follow-ups.
 | **18** | ⚠ **WIDENED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), not resolved.** DR-14 used to remove two of the three local sources of an app id; with the barrier deferred, **all three are open again** — `GET /apps` needs only the secret, the app tree is an ordinary directory, and `agent_drafter__list_apps` is unfiltered because Task 14E is deferred. So any loopback client that can list apps can drive any app's agent socket with no credential. This is squarely inside DR-17's accepted risk and inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. Original text: **Should the per-app agent WebSocket be authenticated by something a shell cannot obtain?** `GET /apps/{id}` and `GET /apps/{id}/agent` are deliberately unauthenticated (`auth.rs:52-78`), and `serve_index` (`apps.rs:168-184`) embeds the socket token in the page it serves, so any loopback client that knows an app id can read the token and drive that app's agent. ⚠ **There are THREE local sources of app ids, not two, and this row said two until this round.** DR-14 removes the first two — `GET /apps` needs the secret, and the app tree is deny root #4 — but the third is `agent_drafter__list_apps` (`agent_drafter/mod.rs:2636` → `ArtifactStore::list`, `store.rs:606`), a tool on a **public** extension that takes no path argument, so neither Layer A nor a filesystem deny can see it. Task 14C withdrew that premise; this row had not caught up. What Task 14E changes is narrower than "removes": a public-capability session's `list_apps` no longer returns a **private** app's id, so what stays reachable is that any loopback client — including a public-capability session — can drive a **public** app's agent socket with no credential at all. | Nothing in this plan; the residual is stated in [AR-6](#ar-6--retired-by-dr-17--on-a-host-that-cannot-express-the-read-deny-a-public-session-loses-the-shell-and-two-costs-come-with-the-sandbox-itself) and pinned by Task 14C's `the_unauthenticated_app_surface_does_not_grow_by_accident`. |
 | **20** | ⚠ **WIDENED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store), not resolved.** Layer A used to cover the biggest local route, `POST /agent/call_tool`; with it deferred, that route is covered by **Gate C** for private *extensions* and by nothing for private *paths*. The route list below is unchanged and is now the full extent of what a local caller holding the secret can read. Original text: **Should the daemon's HTTP API authenticate a caller that is on the same machine?** [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable): the secret is recoverable from the daemon's own environment (`ps -Ewww -p $PPID` on macOS, `/proc/self/environ` in-process on Linux), so `check_token`'s header comparison stops a remote caller and not a local one. Layer A covers the biggest local route, `POST /agent/call_tool`, because that route dispatches through the same choke point. It does **not** cover the routes that return private content without running a tool: `GET /sessions/{id}/export` and the rest of the transcript family, the `/knowledge/*` read routes, `GET /apps/{id}/export`, and `GET /diagnostics/{id}` — which returns a zip of `session.json`, recent `logs/*.jsonl` and a verbatim `config.yaml`, and is the widest single route in the API. | Nothing in this plan. Task 14C states the residual instead of the old "no way to authenticate" claim, and pins the strip so the *remote* half stays closed. Closing the local half needs a per-caller credential the daemon does not hand to its own children — the same shape as [Open question 18](#open-questions), and probably the same fix. |
 | **19** | ✅ **RESOLVED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) — the filesystem channel is descoped, so there is no root to narrow.** The ergonomic loss it recorded (a public chat cannot `cat` its own app's source) is not incurred. The *tool*-channel half went with it: Task 14E is deferred, so apps carry no tier in v1 (see [AR-14](#ar-14--every-biorouter-app-that-exists-today-starts-public-at-migration-even-if-it-was-built-in-a-private-chat)). ~~**Should DR-14's Agent Drafter root narrow to `.vault/` plus other sessions' apps on the FILESYSTEM channel too?** Task 14E has now answered the *tool* channel: apps carry a tier, and a public session may read a public app and not a private one. The filesystem channel still denies the whole root, so a public-capability chat cannot `cat` even its **own** public app's source from the shell (AR-6(3)) — a real ergonomic loss, and now an asymmetry a user can see (`read_app` works, `cat` does not). Narrowing it means teaching Layer A which app a raw path belongs to, which is the per-object resolution the filesystem channel deliberately does not have.~~ | **Nothing — Tasks 14B and 14E are deferred.** Previously: Task 14B denies the whole root on the filesystem channel; Task 14E resolves per app on the tool channel. Narrowing the filesystem side is a follow-up, and it is no longer blocked on 18 — Task 14E's `list_apps` filter already removes a **private** app's id from a public model's reach, which was 18's dependency. |
-| **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **288**, not 294. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
+| **16** | **`--text-subtle` on `--background-medium` is sub-AA in three of the six family×mode scopes, and #56 is not the right owner of the fix.** Measured with `ui/desktop/scripts/lib/theme-tokens.mjs`: parchment:dark **3.75**, alma-mater:light **4.45**, alma-mater:dark **4.28**, against a 4.5 floor. `--background-medium` is the row-hover ground that `biorouter-list-row`, `SessionItem` and `ExtensionItem` all paint, so this affects every subtle label on a hovered row **today** — it is a pre-existing gap, not something the privacy badge introduces, and `check-contrast.mjs` has never asserted it. Task 26 therefore audits only `--text-default` and `--text-muted` on that ground (the two the badge actually uses) and the total is **324**, not 330 — measured, after Task 32 found
+the plan's `288` baseline had been stale since issue #65's reference-chip block. Auditing the third token as well makes the run exit 1 with three failures whose only fix is a theme-token edit — precisely the "Zero theme work" Task 26 Step 5 forbids, and a scope the privacy feature has no business taking. | Nothing in this plan. Open it as a theme/a11y follow-up at Task 40 Step 6, alongside the deferred findings from the 2026-07 theme redesign. Do **not** close it by lowering the threshold in `check-contrast.mjs`. |
 | **21** | **`bin/knowledge_ingest_probe.rs` is the one macro caller with no behavioural row.** It is a `[[bin]]` target, so `cargo test -p biorouter-server --lib` never compiles it and no harness in the repo executes it. Task 10B closes it *by construction* instead — `ProviderCompleter::paired` hands back the completer and the tier from one `Arc`, and Step 5 asserts zero surviving production uses of `ProviderCompleter::new` — but if a future edit re-derives the probe's tier from `cli.provider` rather than from the instance, nothing fails. | Nothing in this plan. **Accepted risk, in the operator's terms:** the probe is a developer diagnostic run by hand with `--root` and a default `probe` KB; a wrong tier there mis-stamps one developer's own scratch base on their own machine, and no model can reach it. If the probe ever becomes something a model or a route invokes, it needs a behavioural row before that lands. |
 | **22** | ✅ **RESOLVED by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) as posed, and it does not become moot.** The comparison it rests on — that the *other three* roots have a private resolver and knowledge does not — is gone with the other three roots. What survives is real and is now covered by [DR-18](#dr-18--the-knowledge-base-tier-is-user-controllable-and-a-private-session-creates-a-private-base)'s gates rather than by a deny root: CP1–CP4 **are** the knowledge door, and a new reader added beside them inside `biorouter-mcp` still bypasses the barrier. The `pub(crate)` follow-up below stands on its own merits. ~~**The knowledge root's door is a convention enforced by a grep, not by a private function.** The other three roots have a resolver the type system can hide: `ArtifactStore::dir` is already private (`agent_drafter/store.rs:447`), `MemoryRouter::get_memory_file` is private (`memory/mod.rs:336`), and the session store is a sqlx pool nobody outside `session/` should hold. Knowledge has none — `resolve_readable_path` (`knowledge/store.rs:121`) has **3** call sites against roughly **40** direct filesystem reads in the same module, and `KnowledgeService::root()` is `pub` (`service.rs:415`) because `routes/knowledge.rs` legitimately joins off it at 7 sites. So CP1–CP4 are the door and Task 14E Step 5 (4) is what stops an eighth reader appearing beside them.~~ **With Task 14E deferred, nothing does** — [Task 10C](#task-10c-the-knowledge-base-barrier--one-line-at-each-of-the-four-choke-points)'s completeness test is the surviving guard, and it is a test rather than a type. | Nothing in this plan. **Accepted risk, in the operator's terms:** a future reader of the knowledge tree added inside `biorouter-mcp` would bypass the barrier and only a grep would notice. The fix is to make `root()` `pub(crate)` and give `biorouter-server` a narrower accessor that returns a *base's* directory rather than the tree's — a mechanical change across 7 call sites, deliberately not bundled into a task whose subject is something else. |
 
@@ -19990,11 +22230,42 @@ answer either without inventing an operator ruling, so it states what it does me
 both are now answered in part or in full and say so. The third was **measured while writing Task 18A**
 and is a scope question the ruling does not reach.
 
+**Four more came out of [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) (2026-08-02),
+and they share one shape: a privacy-state change whose initiator the plan never named.** Auditing
+every such task against DR-19 produced five defects; one ([Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)'s
+spawn downgrade) DR-19 answers outright, and the other four need an operator decision rather than an
+implementation — **26** (a bind with no request to prove a user on), **27** (a config file the agent
+can write), **28** (an extension tier keyed on a mutable name), **29** (a CLI with no request at
+all). ⚠ **Do not read the count as a backlog.** DR-19's own text is what makes each of these
+*findable*: three of the four were already in the plan as measured facts and were simply not framed
+as "who may initiate this?" — 26's manifest path is [open question 25](#open-questions)'s own
+subject, 27's file channel is DR-14's deny entry #5 with DR-14 deferred, and 28's rename is a
+sentence Task 37 already wrote down as a naming quirk. Only 29 is new. The pattern to carry into any
+future task: the mechanism (`X-User-Action`) is settled and reusable, and every one of these is open
+because the *channel* cannot carry it, never because the proof is undecided.
+
+**Two more (31 and 32) came out of [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions)'s
+accept control, and they share a shape the earlier ones do not: both are places where the renderer
+already *reads* a decision the daemon does not yet *write*.** That is a weaker failure than an open
+channel and a more dangerous one to leave undocumented, because nothing fails — a live read of a key
+nothing sets simply answers the default for ever, and the control it governs is silently not the
+control it claims to be. Neither needs an operator ruling; each needs the task named in its Blocks
+cell to reconcile one spelling. ⚠ **Both are recorded here specifically because a code comment was
+found to be the only place they lived**, and a comment is not where the engineer implementing the
+*other* task looks.
+
 | # | Question | Blocks |
 |---|---|---|
 | **23** | **What should a daemon that was handed no user-action key do?** DR-16's refusal is conditioned on a per-launch key the Electron main process mints and hands `biorouterd` on stdin ([Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)). Four shipping ways to start the daemon supply no such key: `just run-server`, `just debug-server` (the external backend `just debug-ui` talks to), a hand-run `biorouterd agent`, and any headless/server deployment. In all four the raise is refused **for every caller, including the human at the keyboard** — a private model cannot be bound to a session over HTTP at all. That is the only direction consistent with DR-16 ("the model may never do it" cannot be relaxed by *how the daemon was started*, which a model can influence), and it is a real ergonomic loss on the dev path that this repo's own `just debug-ui` workflow uses daily. The alternative — an env-var escape hatch — is not an alternative: the daemon's environment is exactly what [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) measured to be recoverable, so a key delivered that way is a key the model has. | **Answered in part by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(a) and 3(f); the last third stays open.** **Closed:** *fail closed* is now specified, not merely preferred — `read_user_action_digest` returns `None` when stdin is a terminal or carries no digest, `install_user_action_digest(None)` is a legal state, and `user_action_matches(_, None)` is `false` for every caller, asserted by `a_daemon_with_no_user_action_key_refuses_every_raise`. **Closed:** the dev path, by *supplying a key* rather than by opening a hatch — `just debug-server` pipes `sha256('biorouter-dev-user-action')` on stdin and `getUserActionKey` returns the same published constant under `BIOROUTER_EXTERNAL_BACKEND`, mirroring `getServerSecret`'s `'test'` branch (`main.ts:906-908`). That key is deliberately public: a daemon's user-proof is whatever the person who launched it chose, and on that path the launcher *is* the developer. It weakens nothing shipped, where the key is 32 random bytes per launch that never leave the Electron main process. `just run-server` is left keyless on purpose, so the fail-closed path stays reachable by hand, and the gate asserts it stays that way. **Still open, and needing an operator ruling rather than an implementation: the headless deployment.** A server install has no GUI, so there is no process that can mint a key on the user's behalf and no picker for the proof to come from; deciding what "the user" means there is the same shape as [Open question 8](#open-questions) and is not something Task 18A can invent. Until it is ruled on, a headless daemon cannot bind a private model over HTTP at all. |
 | **24** | **Does DR-16 extend to the config routes that set the *default* provider?** The ruling names two routes. Two more reach the same outcome one step later and are not covered: `POST /config/set_provider` (`config_management.rs:876-889`, registered `:923`) writes `BIOROUTER_PROVIDER`/`BIOROUTER_MODEL`, and `POST /config/upsert` (`:183-193`) writes **any** key including `BIOROUTER_PROVIDER`, both with nothing but the secret. `restore_provider_from_session` (`agent.rs:5682-5688`) falls back to `config.get_biorouter_provider()` for a row with no `provider_name`, so a session started after such a write comes up private-capability with no `/agent/update_provider` call at all. ⚠ **DR-14 does not cover this.** It makes `<config>/config.yaml` deny entry #5 on the *filesystem* channel precisely because *"a master switch a public model can edit is not a switch"* — and `POST /config/upsert` is the **HTTP** channel to the same file, which no layer of DR-14 sees. By DR-14's own argument, a default provider a public model can edit is a tier raise. It is a raise of every *future* session rather than of the caller's own, which is why it is a scope question and not a bug report. | **Answered by [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has) Step 3(d).** **Ruled:** the `X-User-Action` requirement extends to both handlers, for a **named key set only** — a blanket rule on `/config/upsert` would make every programmatic config write a user act, and a rule that fires constantly is one people route around. The set is `CAPABILITY_CONFIG_KEYS` in the new `crates/biorouter/src/privacy/config_keys.rs`, and it is five: `BIOROUTER_PROVIDER` (the default itself, read through `config_value!` at `config/base.rs:1147`); `BIOROUTER_LEAD_MODEL` (its mere presence diverts `create()` to the lead/worker path at `factory.rs:142-146`, **before** the registry lookup, changing the tier of every provider name rather than of one); `BIOROUTER_LEAD_PROVIDER` (names the lead half, one of the two tiers `least()` takes); and `OLLAMA_HOST` + `LLAMACPP_EXTERNAL_HOST` (Task 5's third test makes a self-hosted provider Private only while its base URL is loopback, so these two keys *are* that boundary). `set_config_provider` is guarded unconditionally, since it writes `BIOROUTER_PROVIDER` by construction; `upsert_config` is guarded by `is_capability_key(&query.key)`. `/config/remove` is deliberately unguarded — deleting the key cannot raise anything, because `restore_provider_from_session` then fails with *"Could not configure agent: missing provider"* (`agent.rs:5686`). **How a future capability-determining key avoids being forgotten:** not by a rule someone must remember, but by `every_config_key_the_tier_resolver_reads_is_classified`, which scans the five files Task 5 touches to define `tier()` for `get_param("KEY")` literals — 22 today — and fails unless each appears in **exactly one** of `CAPABILITY_CONFIG_KEYS` or `NOT_CAPABILITY_CONFIG_KEYS`, the latter carrying a one-line reason per key. Adding a config read to any of those files fails the test until someone classifies it. A companion test forbids computed keys (`get_param(&format!(..))`), which the scan could not see; measured, there are none today. Related: Task 30's `/config/upsert` confirmation phrase, which is a UX guard and not an authorization boundary, and which Task 18A's key now can promote to one. |
-| **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | Nothing in this plan. **The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s and [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix)' to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
+| **25** | **Does DR-16 reach the app runtime, which binds a provider the model itself authored?** Measured while writing Task 18A, and not covered by it. `configure_main_provider` (`routes/apps.rs:809`, called `:1259`) and `configure_worker_provider` (`:1480`, called `:1553`) both read `AgentConfig.model` — a `{provider, model}` pair — out of the app's stored manifest (`agent_drafter/store.rs:76-79`) and bind it with `agent.update_provider` **in process**, at `:820` and `:1492`, never through `POST /agent/update_provider`. That manifest is agent-authored: `agent_drafter__declare_profiles` (`agent_drafter/mod.rs:2497-2528`) takes a per-profile `model` straight from `ProfileParam` (`:699-712`) — tool arguments the model writes — and `agent_drafter` is **Public** by design. So a public model can name `llamacpp` in a profile and the app runtime will bind it, with Task 18A's guard nowhere on that path. **What is NOT claimed:** a worker profile gets its own session (`worker_session_key` → `app:{id}:{cid}:{profile}`, `:1450-1452`), so that is a session *created* at a tier, which is the same shape as any new session and not a raise. The sharp case is the app's **main** session, which is long-lived: a manifest edit followed by a reconnect re-runs `configure_main_provider` against a session that already exists. | ⚠ **The referral in this column was checked and does not hold — see [Open question 26](#open-questions), which is where the live half now lives.** Neither [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper) nor [Task 23](#task-23-spawn--reorder-stamp-filter-and-the-spawn-matrix) answers it: measured over both tasks' full text on 2026-08-02, neither mentions apps, manifests, per-connection re-derivation or session-capability lifetime at all, so the answer this row waits on was never going to arrive from there. [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) also settles the *scope* half the row called undecided: a bind that raises a **live** session is a raise whatever re-derives it, because the rule is about who initiated it and not about when it is recomputed. [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner states the requirement and names the three guard sites. Original text: **Nothing in this plan. The question is scope, not mechanism:** whether an app session's capability is fixed for its lifetime or re-derived per connection is Task 22's and Task 23's to answer, and the answer decides whether this is a raise at all. Extending Task 18A here is not mechanical the way open question 24 was: these are in-process calls with no HTTP request to carry a header, so the proof would have to be a manifest-level grant rather than a request-level one — the *scoped permission* shape DR-16 names as the right answer if the local-model handoff turns out to be a routine agent step. |
+| **26** | **What is a proof-of-user for a bind that has no request?** [Task 24](#task-24-the-two-shipped-features-the-gates-break)'s banner establishes the requirement — agent-authored data may not raise a live app session's capability — and there are **three** sites, of which only the first two were previously known. (a) `configure_main_provider` (`routes/apps.rs:809`, bind `:820`) binds the manifest's `model`, which `agent_drafter__declare_profiles` wrote from tool arguments. (b) `apply_route_for_turn` (`:2181-2229`, bind `:2211`) binds a manifest route pin — **this is H4's own sequence**, which this plan narrates as *"Gate A allows the bind → Gate B ratchets"* and has never authorised. (c) **New, and the sharpest:** `ClientFrame::ModelSelect` (`:3409-3428`, bind `:3418`) arrives on `GET /apps/{id}/agent`, which is exempt from secret-key auth (`auth.rs:52-77`, `is_public_app_get` at `:76`), from a page whose TypeScript the model itself authored — so it is a raise over a channel needing **no credential at all**, and Task 24's *"fixed with zero new code — Gate A covers it"* is true of the downward arrow only. **Why the mechanism cannot be lifted from Task 18A:** (a) and (b) are in-process calls with no `HeaderMap`, and (c) has one but on an unauthenticated socket, where a header proves nothing. **The decision needed:** does an app that declares a private-tier provider require a one-time user grant, and if so where is it recorded? It cannot be the manifest (`store.rs:76-79`, agent-writable, which is the whole defect) and it cannot be an env var ([AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable)). This is the *scoped permission* shape DR-16 names and deliberately did not build. | **Nothing is built.** [Task 24](#task-24-the-two-shipped-features-the-gates-break) carries the requirement in its banner and the three sites in its text; **in the code** it is carried by one `#[ignore]`d test, `agent_authored_data_cannot_raise_a_live_app_sessions_capability` (in `routes::apps::tests::privacy_task24`), plus a pointer to that test at each of the three sites. The test drives the **single in-process bind all three end in** — `Agent::update_provider` on a live public app session — rather than each site through its own route; that shared bind is what is ungated, and it is verified genuinely red under `--ignored`, since a parked test that passes asserts nothing. (Task 25's review found the test had not in fact been written; it was added then, and this row previously claimed it "asserts all three".) **Until this question is answered the exposure is live and belongs to [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure**, not to a gate. ⚠ Do **not** close it by adding a confirmation phrase or a manifest boolean: DR-19 says a confirmation compiled into the source is a UX guard and not a human, and a grant stored where the agent writes is not a grant. |
+| **27** | **What stops an agent from disabling the master switch by writing `config.yaml`?** [Task 30](#task-30-settings--privacy--the-master-toggle-its-three-hardening-measures-and-the-badge-it-does-not-hide)'s amendment closes the HTTP channel — `POST /config/upsert` now needs [Task 18A](#task-18a-the-two-http-channels-that-raise-a-sessions-own-tier-and-the-user-proof-neither-of-them-has)'s `X-User-Action` on the disabling arm — but the value's home is a **file**, and [DR-14](#decisions-of-record) made `<config>/config.yaml` deny entry #5 for exactly this reason (*"a master switch a public model can edit is not a switch"*). [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) defers DR-14, so in v1 that file is an ordinary file and `developer__shell` / `developer__text_editor` can write `BIOROUTER_PRIVACY_TIERS: off` into it. **What limits it today, and it is a real limit rather than a fix:** hardening measure (3) holds the authoritative value in the daemon's memory from startup, so a file write is a **next-launch** disable and not an immediate one — the running daemon keeps enforcing, and the badge keeps reading `Private`, until someone restarts the app. **The decision needed** is which of three: (a) revive the *one file* of DR-14 for this key alone — a single deny path, not the deferred four-root barrier, and the cheapest of the three; (b) move the switch out of `config.yaml` into a store the agent cannot write (the OS credential store already used for secrets, per `docs/security/secret-storage.md`); or (c) accept it, in which case it belongs in [Accepted risks](#accepted-risks) with the next-launch limitation stated, and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built beyond the narrowing.** Task 30's amendment banner states it; the immediate HTTP path is closed. ⚠ Do not close this by re-enabling `get_param`'s env branch for the key, or by reading the file per gate — measure (1) forbids the first (`BIOROUTER_PRIVACY_TIERS=off biorouterd` is a one-token disable) and measure (3) forbids the second. |
+| **28** | **Who may write an extension config entry's `name`, and what enforces it?** [DR-19](#dr-19--a-warning-for-the-user-a-wall-for-the-agent) makes an unstated initiator a defect, and this is the one object in the feature that has none. A session's tier has exactly one lowering writer (`privacy::declassify`, asserted by [Task 40](#task-40-final-release-gate) Step 3: `privacy_tier = 'public'` appears **once** in the tree); a knowledge base's has exactly one (`knowledge/tier_user.rs::set_unlocked` + a ZST no model can construct, [Task 29A](#task-29a-knowledge-base-publicize--privatize--user-only-graded-audited)); an **extension's has none**. `classify_extension` (Task 8) keys on `name_to_key(name)` — the config entry's name, written from `manifest.name` by `BrxtInstallModal.tsx:152-161`, which [Task 37](#task-37-the-in-app-registry--freshness-that-raises-and-never-lowers) records as carrying *"no provenance whatsoever"* — and `config.yaml` is agent-writable with `text_editor` (§9.3 C1), with [DR-14](#decisions-of-record)'s deny entry #5 deferred by [DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store). ⚠ **This is not a badge bug.** `classify_extension` stamps `Extension.tier` at all three admission points, and Gates C (dispatch), E (discovery) and F (enable) all read it — so a rename makes a public model able to **call** `ucsfomopagent`, and `add_extension`'s early `contains_key -> Ok(())` (`:678`) means it lands silently on the next admission. Task 37's union rule protects the registry *document* and not the *key* it is looked up by. **The decision needed:** does a `.brxt` install record provenance (registry id + source URL + hash) so the tier is derived from where an extension came from rather than from a mutable local string — and if so, does that provenance live on `ExtensionConfig` (which [Task 8](#task-8-classify_extension-and-the-generated-private-set)'s OpenAPI gate deliberately freezes) or beside it? The alternative is to accept it and say so in [Accepted risks](#accepted-risks) and in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure. | **Nothing is built.** Task 37's banner states the requirement and withdraws the *"already the accepted direction under R11(ii)"* clause that made this look ruled-on when it was not. ⚠ Do **not** close it by letting `config.yaml` declare a tier — that is R11(i) inverted, and Task 8's OpenAPI-diff gate exists to catch exactly that implementation. Do not close it by adding aliases to `PRIVATE_EXTENSIONS` either: a rename can pick any string. |
+| **29** | ⚠ **NARROWED by [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask), 2026-08-02 — answered for the operation that *releases content* and still open for the one that *mints capability*, which is the one the question is about.** DR-20 supplies a CLI proof-of-user that does not need a request: an **OS authentication prompt raised by the `biorouter` process itself**, which is what [Task 31](#task-31-the-cli-is-a-required-r10-surface)'s `session declassify` is gated on. That answers *"is there any proof-of-user available at a terminal"* — yes — without answering this row, because DR-20's relaxation reaches only operations where an unforgeable human act stands between request and effect, and the CLI diverge below has none built. ⚠ **Do not close this row by pointing at DR-20**: the fix it implies is *build the same prompt on the diverge path*, which is a decision (a prompt on every CLI diverge is a wall on a routine command, exactly what DR-19's user half forbids), not an implementation detail. Original text: **What is a proof-of-user on the CLI, for an operation that mints capability?** [Task 22](#task-22-session-copy--three-hand-rolled-builders-become-one-derived-session-helper)'s amendment requires `X-User-Action` when the *source* of a copy is private, because the copy carries `provider_name` and therefore **mints a new private-capability session** that [DR-16](#decisions-of-record) never sees (DR-16 guards raises on sessions that already exist). Both HTTP handlers can carry the header. `biorouter session` cannot: it calls `diverge_session` in process (`biorouter-cli/src/commands/session.rs:419`, `session/mod.rs:736`), there is no renderer to mint a key, and the same binary is runnable by any agent holding `developer__shell` — so *"the person who ran the command is the user"* is true of a human at a terminal and false of a model that spawned one. This is the same shape as [Open question 23](#open-questions)'s headless third, and probably has the same answer; it is listed separately because 23's subject is a *daemon started without a key* and this one's is a *binary with no request at all*. ⚠ **This is not a reason to leave the HTTP half ungated** — closing two of three doors is worth doing, and the CLI is the door with a human standing at it in every shipped workflow. | **Nothing is built.** Task 22 guards the two HTTP paths and its banner states the CLI is undecided. The interim posture is the honest one: the CLI diverge stays unguarded and is inside [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure, alongside [AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable), which already says a same-machine caller is not distinguishable from the user. ⚠ **This row used to cite [AR-15](#ar-15--retired-by-dr-16--a-caller-holding-the-daemon-secret-can-raise-its-own-sessions-capability-with-no-credentials) beside it, and that citation is withdrawn**: AR-15 was **retired** on 2026-08-02 because a proof of user *was* built for the HTTP raises, so the nearest precedent now argues the opposite way — the CLI is the surface that still has none, which is what this row is about. |
+| **30** | **What raises the [DR-20](#dr-20--declassification-is-gated-by-a-system-authentication-and-that-is-what-lets-an-agent-ask) system-authentication prompt on Windows and on Linux?** DR-20 requires an operating-system authentication before any declassification, on every platform BioRouter ships to — and **this tree has no cross-platform story for one**. A repo-wide grep for `LocalAuthentication`, `LAContext`, `promptTouchID` and `systemPreferences` across `crates/` and `ui/desktop/src/` returns **zero hits**: nothing in the product has ever raised an OS auth prompt, and the Keychain prompt the operator's ruling compares this to is raised by *macOS* as a side effect of the `keyring` crate reading a secret, not by BioRouter calling an API. macOS has a credible path (`LAContext.evaluatePolicy(.deviceOwnerAuthentication)`, with Authorization Services as the fallback; ⚠ **not** Electron's `systemPreferences.promptTouchID()`, which is Touch ID only with no password fallback and therefore fails on any Mac without a sensor). **Windows** would need `Windows.Security.Credentials.UI.UserConsentVerifier` (Windows Hello, which covers PIN and password) or a `CredUIPromptForWindowsCredentials` + `LogonUser` pair — neither verified, neither present, and the second is a password-handling path DR-20 point 3 forbids outright. **Linux** would need polkit (`pkexec` or a polkit agent), which is **absent on the headless hosts this product already ships CLI-only deb and rpm packages for** (`scripts/build-cli-linux-packages.sh`), so on that platform the answer is likely "there is no prompter" rather than "here is the API". ⚠ **Do not close this by inventing a prompt BioRouter draws itself.** An in-app password box is the thing DR-20 point 3 exists to forbid: it would put a password inside the process, which is precisely the property the ruling buys by staying out of the OS's way. | **Nothing is built, and the posture is fail-closed and stated.** [Task 29](#task-29-declassification--the-system-authentication-the-batch-and-the-audit) specifies `AuthOutcome::Unavailable` as a first-class outcome and Task 29 / [Task 31](#task-31-the-cli-is-a-required-r10-surface) both **refuse** on it, with a message naming the platform and pointing at a machine that has a prompter. macOS is the platform the implementation is specified against; a Windows or Linux build whose declassification refuses is a missing feature, and one whose declassification silently approves is the worst outcome this feature can produce. Until this is ruled on, the refusal belongs in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure and in the user-facing docs of [Task 39](#task-39-docs--user-facing-and-the-designs-status-closure). |
+| **31** | ~~**`BIOROUTER_PRIVACY_MIXING_POLICY` is a spelling the renderer guessed, and nothing writes it.**~~ **CLOSED — Task 52 landed both obligations.** (a) The daemon adopted the renderer's spelling verbatim, as `biorouter::privacy::mixing::MIXING_POLICY_CONFIG_KEY`, and `/config/upsert` writes it. (b) The missing detector landed as `privacy::mixing::tests::the_renderer_and_the_daemon_spell_this_setting_the_same_way`, which reads `ui/desktop/src/utils/crossAffiliation.ts` and asserts the daemon's constant **and all three mode spellings** are in it — and, as this row asked, covers `PRIVACY_TIERS_KEY` in `settings/privacy/privacyTiers.ts` in the same test, so it closes two gaps rather than one. ⚠ It was not added by the same commit that landed the setting; review caught the omission and it landed in the fixup. The original text is kept below because it names the failure direction, which is still the one to reason about. The cross-institutional accept control reads the mixing policy live from the daemon's config (`mixingModeFromConfig` / `readMixingMode` in `ui/desktop/src/utils/crossAffiliation.ts`) and branches three ways on it: `open` withdraws the control, `standard` accepts on the in-app `X-User-Action` proof, `strict` refuses in-app acceptance (see **32**). But the mixing-policy *setting* is a later task's, and **the key does not exist on any machine today** — measured: `mixing`, `MixingMode` and `BIOROUTER_PRIVACY_MIXING_POLICY` appear nowhere under `crates/`. ⚠ **The failure direction is the silent one.** If the setting lands under a different constant, `readMixingMode` answers `standard` for ever and nothing fails: a machine set to `strict` would accept on the in-app proof alone — the exact downgrade the strict branch exists to prevent — and a machine set to `open` would keep offering a control for a mismatch that is no longer raised. ⚠ **Note what is asymmetric about this and do not repeat it.** The same commit gave `GRANT_SCOPE_COPY` — a reworded *sentence* — a byte-level cross-language detector (`privacy::grant::tests::the_scope_copy_the_user_reads_is_the_one_the_daemon_records`, which reads the `.ts` file from a Rust test) and gave the *key* — a weakened *control* — only a doc comment. That was not a judgement that the key matters less; it is that a detector needs both ends to exist, and this one has no daemon end yet. | **The mixing-policy setting task, whenever it lands.** Two obligations, and the first is the cheap one: (a) reconcile the spelling — either adopt `BIOROUTER_PRIVACY_MIXING_POLICY` daemon-side or change the renderer constant in the same commit; and (b) add the missing detector in the same shape as the scope-copy one, a Rust test that reads `ui/desktop/src/utils/crossAffiliation.ts` and asserts the daemon's constant is contained in it. Precedent for the shape: `PRIVACY_TIERS_KEY` is one spelling shared with `biorouter::privacy::PRIVACY_TIERS_CONFIG_KEY` and has **no** such detector either, so this closes two gaps rather than one. Until then the renderer's fallback is `standard` in every direction, which is the mode the daemon has always enforced — so today's behaviour on a real machine is unchanged, and that is exactly why nothing would notice. |
+| **32** | ~~**Under `strict` there is no way to accept a cross-institutional flow at all, which restores the hard block DR-26 forbids.**~~ **CLOSED — the renderer's half landed (this branch, after Task 58).** `CrossAffiliationAcceptCard` no longer branches into an explanation under `strict`: `standard` and `strict` render the **same** control, post the same body to the same route, and differ by one sentence of copy — *"your operating system will ask you to confirm it is you before this is recorded"* — shown **before** the press. That is the whole renderer-side difference, and deliberately so: the extra proof is the daemon's to demand (`strict_mode_authorization` reads `mixing::policy()` itself), so the app never becomes a second reader of the policy and cannot disagree with it about a control the user has just used. The row's two prohibitions are both honoured — `strict` does not fall back to `standard` (the daemon still refuses the grant with a 403 when the prompt is denied or unavailable, and that sentence is printed verbatim in the card, leaving the control pressable), and no password box is drawn in the app. ⚠ **What resolved the "no design for what to show while one is up" objection is that there is nothing to show**: the dialog is modal at the OS level and the button is merely `disabled` behind it, exactly as it is for the ordinary in-app round trip. The gate is `ToolCallWithResponse.crossAffiliation.test.tsx` → *"under each mixing policy"*, which drives the mode through the real `/config/read` value and asserts the control by role and name **in a rendered transcript** — reachable from the refusal a person actually meets, not merely present as a handler. Original text kept below, because it names the failure direction. **Under `strict` there is no way to accept a cross-institutional flow at all, which restores the hard block [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions) forbids.** `strict` is specified as *"`standard`, and additionally requires the system prompt"* — DR-20's operating-system authentication on top of the in-app proof. The accept card therefore renders **no control** under `strict`, only an explanation naming the model switch as the remaining way out. That is fail-closed and it is the right default: accepting on the weaker proof would be the control quietly downgrading itself under precisely the policy that asked for more. ⚠ **But it is not a finished behaviour, and the difference matters.** DR-20's prompter exists (`crates/biorouter/src/privacy/system_auth*.rs`, five files, macOS / Windows / polkit / test-seam) and — **as measured when this row was written** — had no production callers. So `strict` was not "a stricter way to accept", it was "no way to accept", and for anyone who set it the warning became the hard block DR-26 exists to prevent. ⚠ **The DAEMON half of this closed in Task 52**, which wired the prompter to `POST /agent/cross_affiliation_grant` (`strict_mode_authorization`): in `strict` the route now asks the operating system on top of the in-app proof and records the grant when it approves, so the acceptance path exists. What is **still open is the renderer's half** — the accept card in `ui/desktop/` still renders an explanation rather than a control under `strict`, because it has no way to know the daemon will raise a prompt and no design for what to show while one is up. Until that lands, a `strict` machine can accept only through a direct call to the route. | **The task that wires DR-20's system authentication to its callers.** Once a surface can raise the prompt, `strict` gets the `standard` control plus that prompt, and the card's explanatory branch is replaced rather than extended. ⚠ **Do not close this by letting `strict` fall back to `standard`** — that is the downgrade the branch exists to refuse — and do not close it by drawing a password box in the app, which [open question 30](#open-questions) and DR-20 point 3 both forbid. If the prompter is not wired before this ships to anyone who might set `strict`, the refusal belongs in [Task 30A](#task-30a-the-non-private-model-disclosure)'s disclosure alongside question 30's. |
 
 ---
 
@@ -21387,8 +23658,31 @@ assert with a test that a release build has no path to it.
 
 - [ ] **Step 4: The gate**
 
+⚠ **This gate was vacuous as first written and was corrected on 2026-08-04.** It ran the filter
+without `--features privacy-test-auth` — the one row in
+[Task 4b's inventory](#task-4b-the-test-filter-audit--every-filter-in-this-plan-resolves-or-is-owned)
+whose tests do not run under a bare `cargo test` — and piped the result to `grep "test result:"`.
+libtest prints a `test result:` line **even when the filter matches nothing**, so the original gate
+printed a green line against a module that did not exist, and would have scored an unimplemented
+task as done. A gate must assert a *count*, never the presence of a line.
+
 ```bash
-cargo test -p biorouter --lib privacy::system_auth 2>&1 | grep "test result:"
+# 1. The module's own tests, in the build that has the seam.
+cargo test -p biorouter --features privacy-test-auth --lib privacy::system_auth 2>&1 | tail -3
+# expect: a NON-ZERO passed count with 0 failed. "0 passed" here means the module
+# is absent, not that it is clean.
+
+# 2. The same filter in the build that does NOT have the seam. It must also be
+# green, and it must be SMALLER — the seam's own behavioural tests are compiled
+# out, and the compile-out audit is what has to pass without them.
+cargo test -p biorouter --lib privacy::system_auth 2>&1 | tail -3
+
+# 3. Step 3's guard, proven by a build that must FAIL. This is the assertion that
+# distinguishes a real implementation from one that left the bypass reachable.
+cargo build --release -p biorouter --features privacy-test-auth 2>&1 | tail -5
+# expect: FAILS with "privacy-test-auth is a TEST SEAM". A SUCCESS here is the defect.
+
+# 4. And the shipped binary still builds without it.
 cargo build --release -p biorouter-server 2>&1 | tail -3
 ```
 
@@ -21449,9 +23743,24 @@ There must be exactly **one** such function. No gate may hand-compare affiliatio
 
 - [ ] **Step 3: The gate**
 
+⚠ **Corrected on 2026-08-04, for the same reason as
+[Task 44's](#task-44-windows-hello-and-polkit--dr-24).**
+As first written this piped to `grep "test result:"`, and libtest prints that line whether the filter
+matched every test or **none** — so a module that did not exist would have printed a green line and
+scored the task as done. A gate asserts a *count*, never the presence of a line. This one was not
+vacuous when it ran (all of the module's tests sit under `privacy::affiliation::tests::`, so the filter
+does resolve), but it could not have told the difference, which is the defect.
+
 ```bash
-cargo test -p biorouter --lib privacy::affiliation 2>&1 | grep "test result:"
+cargo test -p biorouter --lib privacy::affiliation 2>&1 | tail -3
+# expect: a NON-ZERO passed count with 0 failed. "0 passed; 0 failed; N filtered
+# out" is the failure this spelling exists to catch, not a pass.
 ```
+
+Measured at Task 45 as shipped, 2026-08-04: **18 passed, 0 failed** — the module's original 16 plus the
+two review added, `ids_with_equal_contents_but_distinct_pointers_are_equal` and
+`distinct_institution_names_never_collide`. Re-measure it rather than asserting a delta against it; a
+stale figure is worse than none, because "pre + N" reads a shortfall as a pass.
 
 Every row of DR-26's compatibility table, as a named test. Plus the four that catch the real mistakes:
 

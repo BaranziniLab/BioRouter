@@ -100,7 +100,8 @@ fn the_invented_ids_in_the_real_corpus_are_now_caught() {
     let empty_install = Catalog {
         knowledge_bases: Vec::new(),
         skills: Vec::new(),
-        extensions: Catalog::discover().extensions,
+        extensions: Catalog::discover(&biorouter_mcp::knowledge::caller::KbCaller::restricted())
+            .extensions,
     };
 
     let mut caught: Vec<String> = Vec::new();

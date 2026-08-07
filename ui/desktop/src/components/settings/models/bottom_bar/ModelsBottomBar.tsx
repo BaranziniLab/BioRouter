@@ -16,6 +16,15 @@ import { getProviderMetadata } from '../modelInterface';
 import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
+import { PrivacyBadge } from '../../../ui/PrivacyBadge';
+import { AffiliationBadge } from '../../../ui/AffiliationBadge';
+import {
+  affiliationPresentation,
+  readProviderAffiliation,
+  type ProviderAffiliation,
+} from '../../../privacy/providerAffiliation';
+import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/disclosureCopy';
+import type { SessionClassification } from '../../../../api/types.gen';
 
 interface ModelsBottomBarProps {
   sessionId: string | null;
@@ -25,6 +34,22 @@ interface ModelsBottomBarProps {
   /** Hide the inline alert green-dot when the context window indicator is
    * surfaced separately (e.g. in the picker popover's dedicated row). */
   hideAlertPopover?: boolean;
+  /**
+   * The focused chat's privacy tier (issue #56, R10 / §14.2).
+   *
+   * ⚠ This is the SESSION's ratcheted classification, not the bound provider's
+   * `metadata.tier`. `providerOrdering.ts` records why, and it is not a
+   * preference: `GET /config/providers` serves the *type-level* tier, so an
+   * `ollama` re-pointed off this machine by `OLLAMA_HOST` still arrives here
+   * claiming `private` while its instance resolves `public`. A badge hung on
+   * that field would read Private in exactly the demotion case the tier exists
+   * to catch. The session classification is computed server-side from the
+   * instance and only ever ratchets upward, so it can be asserted.
+   *
+   * `undefined` — a chat whose session has not loaded — renders nothing rather
+   * than asserting Public, matching `SessionNamePill`.
+   */
+  privacyTier?: SessionClassification;
 }
 
 const MAX_INLINE_MODEL_LABEL_CHARS = 24;
@@ -35,6 +60,7 @@ export default function ModelsBottomBar({
   setView,
   alerts,
   hideAlertPopover = false,
+  privacyTier,
 }: ModelsBottomBarProps) {
   const {
     currentModel,
@@ -51,6 +77,26 @@ export default function ModelsBottomBar({
   const [isLeadWorkerModalOpen, setIsLeadWorkerModalOpen] = useState(false);
   const [isLeadWorkerActive, setIsLeadWorkerActive] = useState(false);
   const [providerDefaultModel, setProviderDefaultModel] = useState<string | null>(null);
+  /**
+   * Task 30A (issue #56, DR-17 requirement 3). Does the model bound to this
+   * chat need the one-line disclosure?
+   *
+   * ⚠ It hangs off the bound PROVIDER's tier, never off {@link privacyTier}.
+   * That prop is the chat's ratcheted CLASSIFICATION, and a fresh chat on Versa
+   * is classified `public` while its model is emphatically not a public model —
+   * so a line keyed on it would tell the user something false about the one
+   * provider this whole feature exists to make safe to use.
+   *
+   * `null` while unresolved: say nothing rather than guess, in a chip that is
+   * re-rendered on every keystroke in the composer.
+   */
+  const [needsDisclosure, setNeedsDisclosure] = useState<boolean | null>(null);
+  /**
+   * Issue #56, DR-26 — *under whose agreements?* for the model bound to this
+   * chat. `null` renders nothing, which is both the "not resolved yet" answer
+   * and the correct answer for a public model.
+   */
+  const [affiliation, setAffiliation] = useState<ProviderAffiliation | null>(null);
 
   // Check if lead/worker mode is active
   useEffect(() => {
@@ -165,6 +211,71 @@ export default function ModelsBottomBar({
     })();
   }, [currentModel, getCurrentModelDisplayName]);
 
+  // Task 30A. The bound provider's own tier, resolved from the registry the
+  // daemon serves — never a list kept here.
+  //
+  // ⚠ Issue #56 DR-26: the same fetch now also yields the bound model's
+  // AFFILIATION. One fetch and one row, deliberately — the two axes are decided
+  // by one endpoint resolution in the daemon (`ProviderAffiliation::of` takes
+  // both off a single `&dyn Provider`), and two fetches here could pair one
+  // provider's tier with another's institution across a model switch.
+  useEffect(() => {
+    if (!currentProvider) {
+      setNeedsDisclosure(null);
+      setAffiliation(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const rows = await getProviders(false);
+        const row = rows.find((candidate) => candidate.name === currentProvider);
+        if (!row) throw new Error(`No match for provider: ${currentProvider}`);
+        if (cancelled) return;
+        setNeedsDisclosure(disclosureRequiredForTier(row.metadata.tier));
+        // Read off the ROW, never `row.metadata`: the metadata's tier is the
+        // type-level claim, and affiliation is served beside it precisely
+        // because DR-26 requires an instance-resolved value.
+        setAffiliation(readProviderAffiliation(row));
+      } catch {
+        // A provider Biorouter cannot classify is one it cannot vouch for.
+        // Fail-safe here means fail towards telling the user.
+        if (!cancelled) {
+          setNeedsDisclosure(true);
+          // ...but NOT towards claiming an affiliation. Failing safe on the
+          // disclosure means saying more; failing safe on the third axis means
+          // saying nothing, because every value here is a claim about whose
+          // agreements cover a transcript.
+          setAffiliation(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [currentProvider, getProviders]);
+
+  // ⚠ Unconditional on the master privacy switch — DR-15 turns off enforcement,
+  // not the truth. See `privacy/disclosureCopy.ts`.
+  const { copy: disclosure } = useDisclosure(needsDisclosure === true);
+  const disclosureLine = needsDisclosure === true ? (disclosure?.short ?? null) : null;
+
+  // §14.2's line for the chat's tier. A "Private" PILL cannot fit in this chip
+  // — the trigger is `max-w-[120px]` and the label is already truncated at 24
+  // characters — so the chip carries the dense dot and the WORD goes where
+  // there is room for it: the tooltip and the dropdown header.
+  const privacyLine =
+    privacyTier === 'private'
+      ? 'Private chat — only private models can read it'
+      : privacyTier === 'public'
+        ? 'Public chat'
+        : null;
+
+  // DR-26's third axis, in the same two places the tier's WORD goes: this chip
+  // has room for a glyph and nothing more. `null` for a public model, which has
+  // no affiliation, so a public chat's chip is byte-for-byte what it was.
+  const affiliationWords = affiliationPresentation(affiliation);
+
   return (
     <div className="relative flex items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
@@ -172,16 +283,33 @@ export default function ModelsBottomBar({
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger
-              aria-label={`Current model: ${fullModelLabel}`}
+              aria-label={`Current model: ${fullModelLabel}${privacyLine ? ` (${privacyLine})` : ''}${
+                affiliationWords ? ` (Affiliation: ${affiliationWords.label})` : ''
+              }`}
               className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-element px-0.5 hover:cursor-pointer text-text-default/70 tint-interactive hover:text-text-default transition-colors"
             >
               <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
                 <Brain className="size-[18px] flex-shrink-0" />
                 <span className="truncate text-xs">{inlineModelLabel}</span>
+                {privacyTier && <PrivacyBadge tier={privacyTier} dense className="ml-1" />}
+                {/* Beside the tier dot, in its dense form — the chip is
+                    `max-w-[120px]` with an already-truncated label, so the WORDS
+                    go where there is room for them (the tooltip and the dropdown
+                    header below), exactly as the tier's do. */}
+                <AffiliationBadge affiliation={affiliation} dense className="ml-0.5" />
               </div>
             </DropdownMenuTrigger>
           </TooltipTrigger>
-          <TooltipContent side="top">Model: {fullModelLabel}</TooltipContent>
+          <TooltipContent side="top">
+            Model: {fullModelLabel}
+            {privacyLine && ` · ${privacyLine}`}
+            {affiliationWords && ` · ${affiliationWords.label}`}
+            {disclosureLine && (
+              <span className="mt-1 block max-w-[280px] [overflow-wrap:anywhere]">
+                {disclosureLine}
+              </span>
+            )}
+          </TooltipContent>
         </Tooltip>
         <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
           <div className="border-b border-border-subtle px-3 py-2.5">
@@ -190,6 +318,34 @@ export default function ModelsBottomBar({
               {displayModelName}
               {displayProvider && ` · ${displayProvider}`}
             </div>
+            {privacyLine && (
+              <div className="mt-1 text-[11px] leading-4 text-text-muted">{privacyLine}</div>
+            )}
+            {/*
+              DR-26's third axis, with room for the full pill — the one place on
+              this chip where the affiliation gets its word rather than its
+              glyph. It sits directly under the tier line so the two axes read as
+              one statement about this chat.
+            */}
+            {affiliationWords && (
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <AffiliationBadge affiliation={affiliation} className="max-w-full" />
+              </div>
+            )}
+            {/*
+              Issue #56, DR-17 requirement 3 — the standing one-line disclosure,
+              in the one place on this chip with room for a sentence. The words
+              come from the daemon; a literal here would be a second definition
+              and would be the one that shipped stale.
+            */}
+            {disclosureLine && (
+              <div
+                data-testid="non-private-model-chip-note"
+                className="mt-1 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]"
+              >
+                {disclosureLine}
+              </div>
+            )}
           </div>
           <div className="p-1.5">
             <DropdownMenuItem
@@ -213,6 +369,7 @@ export default function ModelsBottomBar({
       {isAddModelModalOpen ? (
         <SwitchModelModal
           sessionId={sessionId}
+          privacyTier={privacyTier}
           setView={setView}
           onClose={() => setIsAddModelModalOpen(false)}
         />

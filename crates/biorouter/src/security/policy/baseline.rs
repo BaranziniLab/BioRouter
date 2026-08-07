@@ -1,9 +1,8 @@
 //! The embedded, always-on baseline rule set.
 //!
 //! Compiled into the binary via `include_str!`, so command governance is on by
-//! default with no user action — a strict improvement over the old
-//! `SECURITY_PROMPT_ENABLED=false` no-op scanner. External tier files (user /
-//! project / admin) are a later slice; this is the sole rule source today.
+//! default with no user action. External tier files (user / project / admin)
+//! are a later slice; this is the sole rule source today.
 
 use serde::Deserialize;
 

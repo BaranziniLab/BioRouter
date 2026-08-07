@@ -8,6 +8,8 @@ use super::base::{LeadWorkerProviderTrait, Provider, ProviderMetadata, ProviderU
 use super::errors::ProviderError;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
+use crate::privacy::affiliation::ModelAffiliation;
+use crate::privacy::ProviderTier;
 use rmcp::model::Tool;
 use rmcp::model::{Content, RawContent};
 
@@ -332,6 +334,36 @@ impl Provider for LeadWorkerProvider {
     fn get_name(&self) -> &str {
         // Return the lead provider's name as the default
         self.lead_provider.get_name()
+    }
+
+    /// The composite override. `get_name()` above answers for the lead alone, so
+    /// anything keyed on it would badge a private-lead/public-worker pair
+    /// Private — while the worker sees the whole transcript.
+    fn tier(&self) -> ProviderTier {
+        ProviderTier::least(self.lead_provider.tier(), self.worker_provider.tier())
+    }
+
+    /// The same override on DR-26's third axis, and it must exist for the same
+    /// reason: the transcript reaches **both** endpoints, so whose agreements
+    /// cover the pair is what both halves agree on, never the lead's alone.
+    ///
+    /// ⚠ Leaving this on the trait default is not a missing nicety — it produces
+    /// the one combination DR-26's vocabulary says cannot exist, tier `Private`
+    /// with affiliation `None`, where `None` is specified to mean *"a public
+    /// model; the tier gates already hold, so affiliation never applies"*. A gate
+    /// that short-circuits on it skips the cross-affiliation check for a private
+    /// composite: fail-**open**, in exactly the case DR-26 exists to catch.
+    ///
+    /// ⚠ The affiliation census in `factory.rs` structurally cannot catch that:
+    /// it enumerates what `register_builtin_providers` registers, and this
+    /// composite is never registered — `factory::create` constructs it directly
+    /// whenever `BIOROUTER_LEAD_MODEL` is set. The fold itself, and why `Local`
+    /// is its identity, is documented on `providers::composite_affiliation`.
+    fn affiliation(&self) -> Option<ModelAffiliation> {
+        crate::providers::composite_affiliation(
+            self.lead_provider.affiliation(),
+            self.worker_provider.affiliation(),
+        )
     }
 
     fn get_model_config(&self) -> ModelConfig {

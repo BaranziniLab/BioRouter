@@ -29,6 +29,8 @@ import { Workflow } from '../workflow';
 import MessageQueue from './MessageQueue';
 import { detectInterruption } from '../utils/interruptionDetector';
 import { getSession, llamacppStatus, Message } from '../api';
+import { userActionHeaders } from '../utils/userAction';
+import type { SessionClassification } from '../api/types.gen';
 import { getInitialWorkingDir } from '../utils/workingDir';
 import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUtils';
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
@@ -253,7 +255,11 @@ export default function ChatInput({
 
     const fetchSessionWorkingDir = async () => {
       try {
-        const response = await getSession({ path: { session_id: sessionId } });
+        const response = await getSession({
+          path: { session_id: sessionId },
+          // Issue #56 Task 58: reading a private chat needs the proof-of-user.
+          headers: await userActionHeaders(),
+        });
         if (response.data?.working_dir) {
           setSessionWorkingDir(response.data.working_dir);
         }
@@ -263,6 +269,74 @@ export default function ChatInput({
     };
 
     fetchSessionWorkingDir();
+  }, [sessionId]);
+
+  /**
+   * The chat's privacy tier, for the two composer surfaces that need it
+   * (issue #56, §14.2 / §14.5): the model chip's dot and the extension
+   * selector's pairing state.
+   *
+   * Its own effect rather than a second read inside the working-directory one
+   * above, because it must re-read when a turn ENDS — the classification
+   * ratchets on the provider bind, so a chat that becomes private mid-session
+   * would otherwise keep showing the tier it had when the composer mounted.
+   * Folding it into the working-directory fetch would also re-apply a
+   * server-side `working_dir` over a change the user had just made locally.
+   *
+   * Left `undefined` on any failure. That is not "public": both consumers treat
+   * an unresolved tier as "judge nothing", because walling a working tool on a
+   * failed read is the same defect as hiding it.
+   */
+  const [sessionPrivacyTier, setSessionPrivacyTier] = useState<SessionClassification | undefined>(
+    undefined
+  );
+  useEffect(() => {
+    // Clear FIRST, on every rebind and not only on the no-session case.
+    // `BaseChat` is keyed by tab rather than by session, so this component
+    // survives a move from one chat to another; keeping the old value until the
+    // new read lands (or forever, if it throws) makes both consumers assert the
+    // previous chat's tier about this one. In the private -> public direction
+    // that greys out every model the new chat may legitimately run, and in the
+    // reverse it paints a Private dot on a chat with no such guarantee.
+    setSessionPrivacyTier(undefined);
+
+    if (!sessionId) {
+      return;
+    }
+
+    // Both of this effect's readers — the mount fetch and every
+    // `message-stream-finished` refresh — share this closure, so plain locals
+    // are enough and no ref is needed. `cancelled` retires the whole effect
+    // when the session rebinds; `latestIssued` orders the reads within it,
+    // because two can be in flight at once and they settle in whatever order
+    // the daemon answers. "Last to land" is not "newest": without this a slow
+    // first read overwrites the fresher answer that already arrived.
+    let cancelled = false;
+    let latestIssued = 0;
+
+    const readTier = async () => {
+      const issued = ++latestIssued;
+      try {
+        const response = await getSession({
+          path: { session_id: sessionId },
+          // Issue #56 Task 58: and this read is *about* the tier, so it is
+          // exactly the read the gate refuses without the header.
+          headers: await userActionHeaders(),
+        });
+        if (!cancelled && issued === latestIssued && response.data?.privacy_tier) {
+          setSessionPrivacyTier(response.data.privacy_tier);
+        }
+      } catch (error) {
+        console.error('[ChatInput] Failed to read the session privacy tier:', error);
+      }
+    };
+
+    void readTier();
+    window.addEventListener('message-stream-finished', readTier);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('message-stream-finished', readTier);
+    };
   }, [sessionId]);
 
   // Save queue state (paused/interrupted) to storage
@@ -1916,7 +1990,10 @@ export default function ChatInput({
           );
           const extensionsSkillsKnowledge = (
             <>
-              <BottomMenuExtensionSelection sessionId={sessionId} />
+              <BottomMenuExtensionSelection
+                sessionId={sessionId}
+                privacyTier={sessionPrivacyTier}
+              />
               <BottomMenuSkillSelection sessionId={sessionId} />
               <BottomMenuKnowledgeSelection />
             </>
@@ -1926,6 +2003,7 @@ export default function ChatInput({
             <div className="min-w-0">
               <ModelsBottomBar
                 sessionId={sessionId}
+                privacyTier={sessionPrivacyTier}
                 dropdownRef={dropdownRef}
                 setView={setView}
                 alerts={alerts}

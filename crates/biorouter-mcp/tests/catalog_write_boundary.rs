@@ -51,7 +51,8 @@ fn catalog(kbs: &[&str], skills: &[&str]) -> Catalog {
                 description: String::new(),
             })
             .collect(),
-        extensions: Catalog::discover().extensions,
+        extensions: Catalog::discover(&biorouter_mcp::knowledge::caller::KbCaller::restricted())
+            .extensions,
     }
 }
 

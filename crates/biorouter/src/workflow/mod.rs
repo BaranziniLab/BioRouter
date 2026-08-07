@@ -15,6 +15,7 @@ use utoipa::ToSchema;
 
 pub mod build_workflow;
 pub mod local_workflows;
+pub mod privacy;
 pub mod read_workflow_file_content;
 pub mod template_workflow;
 pub mod validate_workflow;

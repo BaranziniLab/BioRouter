@@ -82,7 +82,12 @@ async fn exec(manager: &Arc<ExtensionManager>, code: &str) -> String {
         arguments: Some(object!({ "code": code })),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -113,7 +118,12 @@ async fn exec_raw(manager: &Arc<ExtensionManager>, code: &str) -> (bool, String)
         arguments: Some(object!({ "code": code })),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -155,7 +165,12 @@ async fn call_tool(manager: &Arc<ExtensionManager>, tool: &str, args: serde_json
         arguments: Some(args.as_object().unwrap().clone()),
     };
     let dispatched = manager
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -543,7 +558,12 @@ async fn search_modules_no_match_is_a_success_with_guidance() {
         })),
     };
     let dispatched = m
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch");
     let result = dispatched.result.await.expect("tool result");
@@ -820,7 +840,12 @@ async fn case22_autovisualiser_blob_resource_is_collected_and_rendered_inline() 
         "# })),
     };
     let result = m
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch")
         .result
@@ -888,7 +913,12 @@ async fn case23_agent_drafter_preview_and_launch_metadata_survive_execute_code()
         "# })),
     };
     let result = m
-        .dispatch_tool_call(SESSION, call, CancellationToken::new())
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            biorouter::privacy::CallCapability::public_enforced(),
+            CancellationToken::new(),
+        )
         .await
         .expect("dispatch")
         .result
@@ -1005,12 +1035,17 @@ async fn exec_result(m: &Arc<ExtensionManager>, code: &str) -> rmcp::model::Call
         name: "code_execution__execute_code".into(),
         arguments: Some(object!({ "code": code })),
     };
-    m.dispatch_tool_call(SESSION, call, CancellationToken::new())
-        .await
-        .expect("dispatch")
-        .result
-        .await
-        .expect("tool result")
+    m.dispatch_tool_call(
+        SESSION,
+        call,
+        biorouter::privacy::CallCapability::public_enforced(),
+        CancellationToken::new(),
+    )
+    .await
+    .expect("dispatch")
+    .result
+    .await
+    .expect("tool result")
 }
 
 // ---------------------------------------------------------------------------
@@ -1173,5 +1208,334 @@ async fn case25_calling_a_non_function_explains_itself() {
     assert!(
         out.contains("JSON.stringify"),
         "must name the recovery, got: {out}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #56 Gate C — the `execute_code` bridge, driven by a REAL script.
+//
+// `code_execution_extension::gate_c_bridge_tests` calls `dispatch_sub_call`
+// directly with a capability it builds itself, which pins the refusal but not
+// the propagation: an implementation that hard-coded a tier anywhere between
+// `McpMeta` and that function would still pass it. These two run the whole
+// chain — `dispatch_tool_call` → `McpMeta.capability` →
+// `CodeExecutionClient::call_tool` → `handle_execute_code` → `run_tool_handler`
+// → `dispatch_sub_call` → Gate C — with the outer call admitted the way the
+// route admits one, so the tier the gate reads is the tier the outer dispatch
+// carried and nothing in between may substitute its own.
+// ---------------------------------------------------------------------------
+
+/// `manager()` plus a private extension, admitted through the production path
+/// (`add_inprocess_server` inserts into the SAME `extensions` map, so the tier
+/// is stamped by the admission code rather than poked into the record).
+async fn manager_with_a_private_extension() -> Arc<ExtensionManager> {
+    let m = manager().await;
+    m.add_inprocess_server(
+        "ucsfomopagent",
+        biorouter_mcp::datasql::server::DataSqlServer::new(std::collections::HashMap::new()),
+    )
+    .await
+    .expect("inject the private extension");
+    m
+}
+
+/// A provider that answers nothing and only exists to carry a tier.
+///
+/// `CallCapability::for_test` is `#[cfg(test)] pub(crate)`, deliberately: Task
+/// 51's census counts the two production constructors under `crates/*/src/` and
+/// a test spelling either of them would be indistinguishable from an entry
+/// nobody classified. An integration test is outside that window but still
+/// cannot see `for_test`, so the private capability below is built the way
+/// production builds one — by sampling a bound provider.
+struct TieredProvider(biorouter::privacy::ProviderTier);
+
+#[async_trait::async_trait]
+impl biorouter::providers::base::Provider for TieredProvider {
+    fn metadata() -> biorouter::providers::base::ProviderMetadata {
+        biorouter::providers::base::ProviderMetadata::new(
+            "tiered",
+            "Tiered",
+            "",
+            "tiered-model",
+            vec![],
+            "",
+            vec![],
+        )
+    }
+
+    fn get_name(&self) -> &str {
+        "tiered"
+    }
+
+    fn tier(&self) -> biorouter::privacy::ProviderTier {
+        self.0
+    }
+
+    /// ⚠ **A private double must state an affiliation, because every real
+    /// private provider does** — issue #56 DR-26, Task 48.
+    ///
+    /// `Some(..)` exactly while a provider's tier is Private is a property of
+    /// this build rather than an accident: both deciders route *through* the
+    /// tier predicate (`ucsf_gateway_affiliation`, `self_hosted_affiliation`)
+    /// and `LeadWorkerProvider` folds both halves. Leaving this on the trait
+    /// default gives the one pairing DR-26's vocabulary says cannot exist —
+    /// Private tier, affiliation `None` — which the gate treats as *unstated*
+    /// rather than as *unconstrained*, so this double would be refused at
+    /// `ucsfomopagent` for a reason these tests are not about.
+    ///
+    /// `Local` because it is DR-26's identity element: the one model
+    /// affiliation compatible with every extension, which keeps the assertions
+    /// below on the TIER axis they were written for.
+    fn affiliation(&self) -> Option<biorouter::privacy::ModelAffiliation> {
+        match self.0 {
+            biorouter::privacy::ProviderTier::Private => {
+                Some(biorouter::privacy::ModelAffiliation::Local)
+            }
+            biorouter::privacy::ProviderTier::Public => None,
+        }
+    }
+
+    async fn complete_with_model(
+        &self,
+        _model_config: &biorouter::model::ModelConfig,
+        _system: &str,
+        _messages: &[biorouter::conversation::message::Message],
+        _tools: &[rmcp::model::Tool],
+    ) -> Result<
+        (
+            biorouter::conversation::message::Message,
+            biorouter::providers::base::ProviderUsage,
+        ),
+        biorouter::providers::errors::ProviderError,
+    > {
+        unreachable!("a script's sub-call never completes a model turn")
+    }
+
+    fn get_model_config(&self) -> biorouter::model::ModelConfig {
+        biorouter::model::ModelConfig::new_or_fail("tiered-model")
+    }
+}
+
+/// The capability a private-model turn carries, sampled the way the agent loop
+/// samples it rather than constructed.
+async fn private_capability() -> biorouter::privacy::CallCapability {
+    let provider: biorouter::agents::types::SharedProvider = Arc::new(Mutex::new(Some(Arc::new(
+        TieredProvider(biorouter::privacy::ProviderTier::Private),
+    ))));
+    biorouter::privacy::CallCapability::sample(&provider).await
+}
+
+/// The refusal Gate C produces for this pair, rebuilt from the pure function.
+///
+/// Asserting on the extension's NAME alone would pass on a fixture that never
+/// loaded it — `Tool 'ucsfomopagent__data_sources' not found` contains the name
+/// too — and would go on passing after Gate C was deleted.
+fn gate_c_refusal_text() -> String {
+    biorouter::privacy::refusal::privacy_refusal(
+        "ucsfomopagent",
+        biorouter::privacy::ProviderTier::Private,
+        biorouter::privacy::ProviderTier::Public,
+    )
+    .expect("a public caller on a private extension is refused")
+    .message
+    .to_string()
+}
+
+/// ⚠ **Re-baselined by Task 16 (Gate E), and the change of premise is the
+/// point.**
+///
+/// This test used to import `ucsfomopagent`, call one of its tools, catch Gate
+/// C's refusal and assert on the caught text. That whole shape depended on the
+/// private module being IMPORTABLE by a public caller — i.e. on its tool names
+/// and signatures being in the bridge's catalogue, which `search_modules` and
+/// `read_module` serve on demand. Gate E takes the module out of that catalogue,
+/// so a public caller can no longer reach the point where Gate C would speak.
+/// The refusal now arrives one layer earlier and one layer stronger: the module
+/// does not exist as far as this caller is concerned.
+///
+/// Nothing is lost by the change. The exact property this test used to hold —
+/// Gate C's refusal reaching a script's sub-call intact and not laundered as a
+/// user decline — is asserted directly, at the only level where a public caller
+/// can still get there, by
+/// `agents::code_execution_extension::gate_c_bridge_tests::the_execute_code_bridge_cannot_reach_a_private_extension`.
+/// What is asserted here instead is Gate E's own guarantee, which that test
+/// cannot see: no tool NAME, SIGNATURE or DESCRIPTION of the private server
+/// reaches the script at all.
+#[tokio::test]
+async fn case29_a_script_cannot_reach_a_private_extension_from_a_public_call() {
+    let m = manager_with_a_private_extension().await;
+    // `exec_raw`, not `exec`: the import itself fails now, so `execute_code`
+    // reports an error result rather than a caught string.
+    let (is_error, out) = exec_raw(
+        &m,
+        r#"
+        import * as omop from "ucsfomopagent";
+        let seen = "the call was not refused";
+        try {
+            omop.data_sources({});
+        } catch (e) {
+            seen = String(e);
+        }
+        record_result(seen);
+        "#,
+    )
+    .await;
+
+    assert!(
+        is_error,
+        "a public caller must not be able to import the private module: {out}"
+    );
+    assert!(
+        !out.contains("the call was not refused"),
+        "the script must not have reached the tool at all, got: {out}"
+    );
+    // Gate E proper: the private server's tool names and descriptions are the
+    // content being withheld, and `data_sources` is one of them. The module name
+    // itself is echoed by the resolver's error and is an existence disclosure
+    // only, which DR-7 puts out of scope.
+    assert!(
+        !out.contains("data_sources"),
+        "a private server's tool names must not reach a public model, got: {out}"
+    );
+    assert!(
+        !out.contains("The user has declined"),
+        "a privacy refusal must not be laundered as a decline, got: {out}"
+    );
+}
+
+/// Dispatch one of the bridge's discovery tools on a given capability and join
+/// its text content. Never asserts — the two callers below disagree about what
+/// the right answer is, which is the entire point.
+async fn catalogue_text(
+    m: &Arc<ExtensionManager>,
+    tool: &str,
+    args: rmcp::model::JsonObject,
+    cap: biorouter::privacy::CallCapability,
+) -> String {
+    let dispatched = m
+        .dispatch_tool_call(
+            SESSION,
+            CallToolRequestParams {
+                task: None,
+                meta: None,
+                name: tool.to_string().into(),
+                arguments: Some(args),
+            },
+            cap,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("dispatch");
+    let result = dispatched.result.await.expect("tool result");
+    result
+        .content
+        .iter()
+        .filter_map(|c| match &c.raw {
+            RawContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Gate E on the bridge's two explicit discovery tools, which is where a model
+/// that has NOT guessed a name would look. They serve tool names, signatures and
+/// descriptions out of the same catalogue, so they are as much Gate E's business
+/// as the system prompt is.
+///
+/// **Each tool is asserted in both directions, in one test.** A lone negative
+/// (`!contains("data_sources")`) is satisfied by any bridge that has stopped
+/// working: a tool that errors, returns nothing, or a fixture that quietly
+/// stopped loading `ucsfomopagent` all make it green while asserting nothing at
+/// all — and these two tools are exactly the surface this test exists to cover,
+/// so `case30`'s positive control over `execute_code` does not reach them. The
+/// private arm below is that control: the same tool, the same arguments, the
+/// same fixture, admitted on a private capability, must NAME the tool the public
+/// arm may not see.
+#[tokio::test]
+async fn case29b_the_module_catalogue_never_names_a_private_extension_to_a_public_call() {
+    let m = manager_with_a_private_extension().await;
+    let private = private_capability().await;
+
+    for (tool, args) in [
+        (
+            "code_execution__search_modules",
+            object!({ "terms": ["data", "sources", "sql"] }),
+        ),
+        (
+            "code_execution__read_module",
+            object!({ "module_path": "ucsfomopagent" }),
+        ),
+    ] {
+        let public_text = catalogue_text(
+            &m,
+            tool,
+            args.clone(),
+            biorouter::privacy::CallCapability::public_enforced(),
+        )
+        .await;
+        assert!(
+            !public_text.contains("data_sources"),
+            "{tool} handed a public model a private server's tool: {public_text}"
+        );
+
+        let private_text = catalogue_text(&m, tool, args, private).await;
+        assert!(
+            private_text.contains("data_sources"),
+            "the positive control failed: {tool} does not name the private \
+             server's tool even to a caller entitled to it, so the assertion \
+             above proves nothing: {private_text}"
+        );
+    }
+}
+
+/// The other direction, so the assertion above cannot be satisfied by a bridge
+/// that is simply broken for this extension: the same script, the same tool,
+/// admitted on a private capability, runs.
+#[tokio::test]
+async fn case30_a_private_script_still_reaches_the_private_extension() {
+    let m = manager_with_a_private_extension().await;
+    let call = CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: "code_execution__execute_code".into(),
+        arguments: Some(object!({
+            "code": r#"
+            import * as omop from "ucsfomopagent";
+            record_result(omop.data_sources({}));
+            "#
+        })),
+    };
+    let result = m
+        .dispatch_tool_call(
+            SESSION,
+            call,
+            // The one place these tests need a capability that is NOT the
+            // route's: a private caller.
+            private_capability().await,
+            CancellationToken::new(),
+        )
+        .await
+        .expect("dispatch")
+        .result
+        .await
+        .expect("tool result");
+
+    let text = result
+        .content
+        .iter()
+        .filter_map(|c| match &c.raw {
+            RawContent::Text(t) => Some(t.text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        !result.is_error.unwrap_or(false),
+        "a private caller must reach a private extension from a script: {text}"
+    );
+    assert!(
+        !text.contains(&gate_c_refusal_text()),
+        "a private caller must not be refused: {text}"
     );
 }

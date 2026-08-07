@@ -78,6 +78,37 @@ pub fn hidden_kb_sessions_dir(root: &std::path::Path) -> std::path::PathBuf {
     root.join(".hidden-kb-sessions")
 }
 
+/// Returns `<knowledge-root>/.kb-tiers` — the machine-local map of kb id →
+/// privacy tier (issue #56).
+///
+/// Deliberately a sibling of `.active-kb` and `.hidden-kbs` rather than a field
+/// in each base's `manifest.yaml`: the manifest is inside the base's git tree
+/// and travels inside the `.brkb` archive, so a tier stored there would be
+/// supplied by whoever authored the archive. This file never leaves the machine.
+pub fn kb_tiers_path(root: &std::path::Path) -> std::path::PathBuf {
+    root.join(".kb-tiers")
+}
+
+/// The leaf name of [`model_export_dir`]. A **dot** prefix, and that is the
+/// whole point: it fails [`validate_kb_id`], so it can never also be the id of a
+/// knowledge base.
+///
+/// Without the dot this directory would be named `exports`, which is a perfectly
+/// legal kb id — and `create_base` only refuses an id whose directory already
+/// exists, so any session could create the base `exports` first. A private
+/// session's `kb_export` would then write its archive *inside that public base's
+/// own directory*, where `brkb::walk` packs every file it finds with no filter:
+/// exporting the public base would hand out the whole private one. That is
+/// exactly the laundering path decision (2) exists to close, walked in through
+/// the directory name.
+pub const MODEL_EXPORT_DIR: &str = ".exports";
+
+/// Where a **model's** export of a **private** base is forced to land
+/// (issue #56, decision 2b). See [`MODEL_EXPORT_DIR`] for why it is a dotfile.
+pub fn model_export_dir(root: &Path) -> PathBuf {
+    root.join(MODEL_EXPORT_DIR)
+}
+
 pub fn kb_knowledge_dir(root: &Path, id: &str) -> PathBuf {
     kb_root(root, id).join("knowledge")
 }
@@ -115,6 +146,18 @@ mod tests {
         ] {
             assert_eq!(validate_kb_id(id).unwrap_err(), want, "for {id}");
         }
+    }
+
+    #[test]
+    fn the_model_export_directory_can_never_be_a_knowledge_base_id() {
+        // Issue #56. If this name validated, a session could `kb_create_base` it
+        // and a private export would land inside a public base's own tree, where
+        // `brkb::walk` would pack it into that base's next archive.
+        assert!(validate_kb_id(MODEL_EXPORT_DIR).is_err());
+        assert_eq!(
+            model_export_dir(Path::new("/tmp/kb")),
+            Path::new("/tmp/kb/.exports")
+        );
     }
 
     #[test]

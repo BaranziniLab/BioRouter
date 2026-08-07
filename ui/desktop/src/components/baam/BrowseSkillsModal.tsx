@@ -4,6 +4,7 @@ import { toastSuccess, toastError } from '../../toasts';
 import {
   loadRegistry,
   skillMatches,
+  catalogFreshnessLine,
   type BaamRegistry,
   type RegistrySkill,
   type SkillCategory,
@@ -30,6 +31,7 @@ type Filter = 'All' | SkillCategory;
 export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }: Props) {
   const [registry, setRegistry] = useState<BaamRegistry | null>(null);
   const [live, setLive] = useState(false);
+  const [fetchedAt, setFetchedAt] = useState<string | undefined>(undefined);
   const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState('');
   const [filter, setFilter] = useState<Filter>('All');
@@ -40,10 +42,11 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
   useEffect(() => {
     let cancelled = false;
     loadRegistry()
-      .then(({ registry, live }) => {
+      .then(({ registry, live, fetchedAt }) => {
         if (cancelled) return;
         setRegistry(registry);
         setLive(live);
+        setFetchedAt(fetchedAt);
       })
       .catch(() => !cancelled && setLoadError(true));
     return () => {
@@ -148,8 +151,11 @@ export default function BrowseSkillsModal({ onClose, onInstalled, installedIds }
             <p className="text-xs text-text-muted mt-0.5">
               Install skills from the Biorouter marketplace. Select as many as you like. Skills need
               no setup.
-              {!live && (
-                <span className="text-text-subtle"> · showing bundled catalog (offline)</span>
+              {catalogFreshnessLine({ live, fetchedAt }) && (
+                <span className="text-text-subtle">
+                  {' '}
+                  · {catalogFreshnessLine({ live, fetchedAt })}
+                </span>
               )}
             </p>
           </div>

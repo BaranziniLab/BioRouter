@@ -1,0 +1,26 @@
+<!--
+  Fixture: data-privacy carries a value that is neither "private" nor "public".
+
+  Expected: exit 1, with a message naming data-privacy. A third spelling is not
+  a third tier — it is a typo that would silently fall through to public.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="maybe">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Invalid Privacy Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/invalid-privacy-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A card whose privacy annotation is not one of the two spellings the schema allows.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/invalidprivacyagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

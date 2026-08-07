@@ -1,0 +1,39 @@
+<!--
+  Fixture: a PUBLIC card whose description honestly says "patient".
+
+  Expected: exit 0, published as privacy:"public".
+
+  This is the false failure the deleted description-keyword heuristic produced.
+  That heuristic refused any un-annotated card whose description matched
+  "patient", "ehr", "phi", "clinical record", "medical record" or "de-identified
+  clinical" — which is a guess about a security property drawn from marketing
+  prose. A literature-search tool that says it searches trials by patient
+  population, or an imaging tool that says it never touches patient identifiers,
+  is public and is telling the truth; refusing it teaches authors to describe
+  their extension around the word list rather than accurately.
+
+  The private set is a closed list instead (see EXPECTED_PRIVATE_EXTENSIONS in
+  build-registry.mjs), so nothing is inferred from a description at all.
+
+  Keep this fixture. Without it, reinstating the keyword list breaks nothing.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Patient Literature Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/patient-literature-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">Searches published trial literature by patient population and endpoint. Reads no EHR, stores no medical record, and touches no PHI.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag public" data-privacy-badge>Public</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/patientliteratureagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

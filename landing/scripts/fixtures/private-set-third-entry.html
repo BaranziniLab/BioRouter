@@ -1,0 +1,63 @@
+<!--
+  Fixture: the two real private extensions, plus a THIRD private card.
+
+  Expected: exit 1, naming the third card and pointing at the closed list.
+
+  The private set is a closed list of two, not a property a card can grant
+  itself by writing data-privacy="private". Publishing a new private connector
+  is a decision someone makes; this fixture is what proves it cannot happen as
+  a side effect of writing a card.
+
+  Run with --assert-private-set, which is how a fixture opts into the rule a
+  real run always applies.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="CDWAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>CDW Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/cdw-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">One of the two extensions the closed private set names.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/cdwagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="UCSFOMOPAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>UCSF OMOP Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/ucsf-omop-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The other extension the closed private set names.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/ucsfomopagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="ThirdPrivateAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Third Private Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/third-private-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A well-formed card that declares itself private. Every other rule in the generator passes it; only the closed list refuses it.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/thirdprivateagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

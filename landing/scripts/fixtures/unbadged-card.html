@@ -1,0 +1,31 @@
+<!--
+  Fixture: a well-formed public card that carries no privacy badge at all.
+
+  Nothing about this card is wrong as data — it is public by construction, and
+  the registry entry it produces is correct. The failure is what a visitor with
+  JavaScript disabled reads: two cards on the shelf say "Private", this one says
+  nothing, and "nothing" reads as "not yet reviewed" rather than "public". A
+  badge shown only on private extensions teaches a visitor nothing about its
+  absence, which is why both states are labelled and why the label is enforced
+  rather than hoped for.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Unbadged Agent</h3>
+          <div class="ext-org">Fixtures · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/unbadged-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A card that declares no privacy and shows no badge, so the fallback view says nothing at all about its tier.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/unbadgedagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

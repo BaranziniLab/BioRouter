@@ -23,6 +23,7 @@ import {
   Eye,
   CircleDotDashed,
   Trash2,
+  AlertTriangle,
 } from '../icons/app-icons';
 import { NewSchedulePayload, ScheduleModal } from './ScheduleModal';
 import ScheduleDetailView from './ScheduleDetailView';
@@ -101,6 +102,17 @@ const ScheduleCard: React.FC<{
                 Paused
               </span>
             )}
+            {/*
+              Issue #56. A schedule whose last tick failed looks identical to a
+              healthy one on this list — a fresh session is minted per run, so
+              there is nothing else here to notice. Cleared by the next success.
+            */}
+            {job.last_error && !job.currently_running && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium bg-background-danger/15 text-text-danger">
+                <AlertTriangle className="w-3 h-3 mr-1" />
+                Failed
+              </span>
+            )}
           </div>
           <p className="text-xs text-text-muted mt-0.5 line-clamp-1" title={readableCron}>
             {readableCron}
@@ -108,6 +120,14 @@ const ScheduleCard: React.FC<{
           <div className="flex items-center text-[11px] text-text-subtle mt-1">
             <span>Last run: {formattedLastRun}</span>
           </div>
+          {job.last_error && (
+            <p
+              className="text-[11px] text-text-danger mt-1 line-clamp-2 break-words"
+              title={job.last_error}
+            >
+              {job.last_error}
+            </p>
+          )}
         </button>
 
         <div className="flex items-center gap-1 shrink-0 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">

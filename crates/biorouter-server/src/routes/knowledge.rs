@@ -15,8 +15,14 @@ use biorouter_mcp::knowledge::{
     service::{KnowledgeService, PrimaryUpdate, ReadPageError},
     source_paths, store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
-    types::{Credibility, Graph, HistoryEntry, Manifest, ModelRef},
+    tier,
+    tier_user::UserKbTierChange,
+    types::{Credibility, Graph, HistoryEntry, KbTier, Manifest, ModelRef},
 };
+// Issue #56 DR-16/DR-18. `src/routes/` is compiled into the `biorouterd` binary
+// as well as the lib and cannot name `crate::auth`, so this is the shared
+// direction — the same import `routes::session` uses for the declassify route.
+use biorouter_server::auth::{user_action_proof, UserActionProof};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,6 +40,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
             "/bases/{id}",
             get(get_base).put(update_base).delete(delete_base),
         )
+        .route("/bases/{id}/tier", get(get_kb_tier).post(set_kb_tier))
         .route("/bases/{id}/default-model", put(set_default_model))
         .route("/bases/{id}/graph", get(get_graph))
         .route("/bases/{id}/location", get(get_location))
@@ -333,17 +340,44 @@ pub struct LintBody {
 // Task 5: read-only routes (list / create / get / delete / graph)
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier
+/// (issue #56).
+///
+/// The tier is **flattened alongside** the manifest rather than added to it,
+/// because `manifest.yaml` is the on-disk record and the tier lives in
+/// `.kb-tiers`. A `tier` field on [`Manifest`] would be persisted by the next
+/// `manifest::save` and become a second, staler answer to a question the tier
+/// store already answers — and it would also appear on `kb_list_bases`, a
+/// model-facing tool whose payload Task 10D's metadata register governs.
+///
+/// This route is user-facing: the renderer is the only caller, and Task 10C
+/// already removes private bases from the model's own listing entirely.
+#[derive(Serialize, ToSchema)]
+pub struct KbListEntry {
+    #[serde(flatten)]
+    pub manifest: Manifest,
+    pub tier: KbTier,
+}
+
 #[utoipa::path(
     get, path = "/knowledge/bases",
-    responses((status = 200, description = "List of knowledge bases", body = Vec<Manifest>))
+    responses((status = 200, description = "List of knowledge bases", body = Vec<KbListEntry>))
 )]
 pub async fn list_bases(
     State(svc): State<Arc<KnowledgeService>>,
-) -> Result<Json<Vec<Manifest>>, (StatusCode, String)> {
+) -> Result<Json<Vec<KbListEntry>>, (StatusCode, String)> {
     let bases = svc
         .list_bases()
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
-    Ok(Json(bases))
+    Ok(Json(
+        bases
+            .into_iter()
+            .map(|manifest| KbListEntry {
+                tier: tier::entry(svc.root(), &manifest.id).tier,
+                manifest,
+            })
+            .collect(),
+    ))
 }
 
 #[utoipa::path(
@@ -430,6 +464,199 @@ pub async fn set_default_model(
         }
     })?;
     Ok(Json(manifest))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Issue #56 DR-18 / Task 29A: the user's own publicize / privatize control.
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// What `POST /knowledge/bases/{id}/tier` says to a caller holding nothing but
+/// the daemon secret.
+///
+/// §9.3 A1: that secret is reachable from any developer-enabled agent shell, so
+/// `X-Secret-Key` alone is not a human (AR-11/AR-15). Moving a base's tier is the
+/// one operation that can *reverse* the knowledge-base ratchet, so it is the last
+/// place an unproven caller may be given the benefit of the doubt.
+///
+/// §14.4's content rule: it names the boundary and nothing about the base, and it
+/// forecloses the retry, because a model that reads a refusal as transient loops
+/// on it.
+///
+/// ⚠ It deliberately carries NEITHER of the two markers the renderer keys on —
+/// not `USER_ACTION_REFUSAL_MARKER` ("is the user's decision, not yours"), whose
+/// toast says *switch this chat's model*, nor `COPY_OF_PRIVATE_REFUSAL_MARKER`
+/// ("only the person at the keyboard may do it"), whose toast says *branch it
+/// from the chat window*. Both would send the user somewhere that cannot help.
+const TIER_NEEDS_USER: &str =
+    "Changing a knowledge base's privacy is a choice only the person at the keyboard can make, and \
+     this request carried no proof it came from them. Nothing was changed. Do not retry; the same \
+     call will be refused again. If this base should be readable by public models, stop and ask \
+     the user to change it from the Knowledge view.";
+
+/// Open question 23's posture, applied here without inventing a second answer: a
+/// daemon that was handed no user-action key cannot verify one, so the control is
+/// **unavailable** rather than open — in both directions, for every caller,
+/// including the human at the keyboard.
+///
+/// It names the cause, because a refusal that reads as a permission denial sends
+/// the user hunting for a permission that does not exist.
+const TIER_NEEDS_A_DAEMON_KEY: &str =
+    "This Biorouter backend was started without a user-action key, so it cannot tell a request \
+     made by you from one made by a model — and changing a knowledge base's privacy is yours to \
+     decide. Nothing was changed. The desktop app supplies that key; a backend started by `just \
+     run-server`, by running `biorouterd agent` by hand, or as a headless server deployment does \
+     not, and cannot offer this control. Use the desktop app for this change.";
+
+#[derive(Deserialize, ToSchema)]
+pub struct SetKbTierBody {
+    /// The tier the user chose. Both directions require the proof-of-user:
+    /// privatizing discloses nothing and needs no confirmation dialog, but it is
+    /// still not a thing a model may do, and admitting one direction unproven is
+    /// how the tool channel gets the decision back.
+    pub tier: KbTier,
+}
+
+#[derive(Serialize, ToSchema)]
+pub struct KbTierResponse {
+    pub id: String,
+    pub tier: KbTier,
+    /// `publicized_by_user` / `privatized_by_user`, or absent for a base whose
+    /// tier only the ratchet has ever touched. A base the user released must
+    /// never be indistinguishable from one that was always public.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// RFC 3339, and set exactly when `reason` is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changed_at: Option<String>,
+    /// What a publicize would release, counted from the tree at read time — not
+    /// from anything the renderer already had. The confirmation states the blast
+    /// radius rather than asking "are you sure", so these are the numbers it
+    /// says out loud.
+    pub page_count: usize,
+    pub raw_source_count: usize,
+}
+
+/// Count what a publicize would release: every page under `knowledge/` and every
+/// raw source under `raw/`.
+///
+/// A missing directory counts zero rather than failing: a base can legitimately
+/// have no raw sources, and a dialog that cannot open because a folder is absent
+/// is worse than one that says "0 raw sources".
+fn blast_radius(root: &std::path::Path, kb_id: &str) -> (usize, usize) {
+    let kb_root = paths::kb_root(root, kb_id);
+    let pages = store::list_pages(&kb_root, None)
+        .map(|p| p.len())
+        .unwrap_or(0);
+    let raw = std::fs::read_dir(paths::kb_raw_dir(root, kb_id))
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .count()
+        })
+        .unwrap_or(0);
+    (pages, raw)
+}
+
+fn tier_response(svc: &KnowledgeService, id: &str) -> KbTierResponse {
+    let entry = tier::entry(svc.root(), id);
+    let (page_count, raw_source_count) = blast_radius(svc.root(), id);
+    KbTierResponse {
+        id: id.to_string(),
+        tier: entry.tier,
+        reason: entry.reason,
+        changed_at: entry.changed_at,
+        page_count,
+        raw_source_count,
+    }
+}
+
+/// Read a base's tier, its provenance, and what publicizing it would release.
+///
+/// A plain read: it is the Knowledge view asking about the user's own base, and
+/// the barrier Task 10C installs is for model callers. No proof-of-user, because
+/// nothing is changed.
+#[utoipa::path(
+    get, path = "/knowledge/bases/{id}/tier",
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "The base's tier and what a publicize would release", body = KbTierResponse),
+        (status = 404, description = "Not found"),
+    )
+)]
+pub async fn get_kb_tier(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+) -> Result<Json<KbTierResponse>, (StatusCode, String)> {
+    svc.get_base(&id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+    Ok(Json(tier_response(&svc, &id)))
+}
+
+/// Move a knowledge base's privacy tier, on the user's behalf (issue #56 DR-18).
+///
+/// The ONLY route in the tree that can LOWER one. It is user-only (DR-16's
+/// `X-User-Action`, the same header and the same key Task 18A installs — not a
+/// second one), it works in both directions, and the change carries its
+/// provenance into `.kb-tiers` so a released base stays distinguishable from one
+/// that was always public.
+///
+/// ⚠ **There is no `kb_set_tier` tool and there must never be one.** A model
+/// raises a tier as a side effect of writing (Task 10B, raise-only) and can do
+/// nothing else.
+///
+/// ⚠ **The typed confirmation is not enforced here, and that is deliberate**,
+/// unlike `POST /sessions/{id}/declassify` where the daemon re-derives the grade.
+/// A session's grade depends on server state (its stored provenance), so a client
+/// could otherwise claim the weak control for a chat that no longer qualifies.
+/// A base's grade depends only on the DIRECTION, which the request itself states:
+/// a publicize with no phrase is exactly what the request says it wants, and the
+/// phrase's job — making the user check *which* base — is a property of the
+/// dialog, not a claim about server state. What the daemon enforces is the thing
+/// a client cannot fake: the proof that a human asked at all.
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/tier",
+    request_body = SetKbTierBody,
+    params(("id" = String, Path, description = "Knowledge base ID")),
+    responses(
+        (status = 200, description = "The base's tier after the change", body = KbTierResponse),
+        (status = 403, description = "Refused by a privacy boundary: changing a knowledge base's \
+                                      privacy is the user's decision and the request carried no \
+                                      proof it came from them — or this daemon holds no \
+                                      user-action key at all (body = plain text)"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal server error"),
+    )
+)]
+pub async fn set_kb_tier(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: HeaderMap,
+    Json(body): Json<SetKbTierBody>,
+) -> Result<Json<KbTierResponse>, (StatusCode, String)> {
+    // FIRST, before the base is even looked up. An unproven caller learns nothing
+    // about which ids exist, and the refusal cannot be told apart from one for a
+    // base that is not there.
+    match user_action_proof(&headers) {
+        UserActionProof::Proven => {}
+        UserActionProof::Unproven => {
+            return Err((StatusCode::FORBIDDEN, TIER_NEEDS_USER.to_string()))
+        }
+        UserActionProof::NoKeyInstalled => {
+            return Err((StatusCode::FORBIDDEN, TIER_NEEDS_A_DAEMON_KEY.to_string()))
+        }
+    }
+
+    svc.get_base(&id)
+        .map_err(|e| (StatusCode::NOT_FOUND, e.to_string()))?;
+
+    // The single construction site of the proof-of-user, pinned by
+    // `knowledge::tier_user::tests::the_proof_of_user_is_constructed_in_exactly_one_place`.
+    svc.set_tier_by_user(&id, body.tier, &UserKbTierChange::from_user_action())
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
+
+    Ok(Json(tier_response(&svc, &id)))
 }
 
 #[utoipa::path(
@@ -777,6 +1004,14 @@ pub async fn get_active(
         (status = 200, description = "The resulting selection", body = ActiveKbResponse),
         (status = 400, description = "Unknown kb id, a primary outside the resulting set, \
                                       or conflicting primary-KB fields"),
+        // Issue #56 Task 58 / #47. Produced by the layer on this router
+        // (`routes::session_reach::gate_knowledge_active`), not by the handler
+        // below — but it is what a client receives, so it belongs here.
+        (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
+                                      `session_id` names a private chat (or an absent one — an \
+                                      unproven caller is told the same thing for both) and the \
+                                      request carried no proof it came from the user \
+                                      (body = plain text)"),
     )
 )]
 pub async fn set_active(
@@ -894,14 +1129,37 @@ pub async fn restore_state(
 // Task 9: SSE-streamed macro routes (ingest / query / lint)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Build a `Provider + ProviderCompleter` for the given `ModelRef`.
+/// Build a `Provider + ProviderCompleter` for the given `ModelRef`, **and** the
+/// tier of the provider that was actually constructed (issue #56).
+///
 /// Returns a 400 error if the provider name is unknown or model config is invalid.
+///
+/// The tier comes back from here rather than being re-derived by each caller,
+/// because `providers::create` intercepts `BIOROUTER_LEAD_MODEL` *before* the
+/// registry lookup and can hand back a composite that is not the requested
+/// name's provider at all. `ProviderCompleter::paired` reads it off the same
+/// `Arc` the completer wraps, so the two cannot come from different providers.
 async fn build_completer(
     model: &ModelRef,
-) -> Result<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>, (StatusCode, String)> {
+) -> Result<
+    (
+        Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>,
+        biorouter::privacy::ProviderTier,
+        // Issue #56 DR-26 / Task 50: the third axis, off the same `Arc`.
+        Option<biorouter::privacy::affiliation::ModelAffiliation>,
+    ),
+    (StatusCode, String),
+> {
     if biorouter_mcp::knowledge::test_mode::env_enabled() {
-        return Ok(Box::new(
-            biorouter_mcp::knowledge::test_mode::TestModeCompleter,
+        // ⚠ The FIRST of the two named literal exemptions (the CLI's
+        // `build_completer` early return is the other). There is no provider
+        // here to read a tier from, and the fail-safe direction for a *ratchet*
+        // is not to privatise a base on a test path — a test-mode completer
+        // reaches no network at all.
+        return Ok((
+            Box::new(biorouter_mcp::knowledge::test_mode::TestModeCompleter),
+            biorouter::privacy::ProviderTier::Public,
+            None,
         ));
     }
 
@@ -910,7 +1168,77 @@ async fn build_completer(
     let provider = biorouter::providers::create(&model.provider, model_config)
         .await
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
-    Ok(Box::new(ProviderCompleter::new(provider)))
+    let (completer, tier, affiliation) = ProviderCompleter::paired(provider);
+    Ok((Box::new(completer), tier, affiliation))
+}
+
+/// Issue #56, Task 10C. Refuse a macro run whose model may not reach the target
+/// base, **before** the SSE stream opens.
+///
+/// The barrier itself is CP2, inside each macro — that is what covers the CLI
+/// and every non-HTTP caller, and it is the check a `grep` counts. This is the
+/// same question asked one layer up so the GUI gets a real status code instead
+/// of a stream that opens and immediately dies: a 200 with an `event: error`
+/// frame is indistinguishable, to the fetch that started it, from a model that
+/// failed to connect.
+///
+/// 409 CONFLICT and not 403: nothing about the *request* is unauthorised — the
+/// user may read this base all day through `/bases/{id}/page`. What conflicts is
+/// the base's tier with the model this chat is on, and the recovery is to change
+/// the model.
+///
+/// ⚠ The message is `assert_reachable`'s own, never a second spelling of it.
+fn assert_macro_target_reachable(
+    svc: &Arc<KnowledgeService>,
+    kb_id: &str,
+    caller_capability: biorouter::privacy::ProviderTier,
+    // Issue #56 DR-26 / Task 50: the third axis, so this pre-check asks the
+    // caller's whole identity and not half of it. A pre-check that answered a
+    // narrower question than the barrier would open the SSE stream on a flow
+    // the barrier is about to refuse — which is the failure this function
+    // exists to prevent, in the other direction.
+    caller_affiliation: Option<biorouter::privacy::affiliation::ModelAffiliation>,
+) -> Result<(), (StatusCode, String)> {
+    biorouter_mcp::knowledge::tier::assert_reachable(
+        svc.root(),
+        kb_id,
+        caller_capability.is_private(),
+        &biorouter::privacy::affiliation::caller_affiliation(caller_affiliation),
+    )
+    .map_err(|e| (StatusCode::CONFLICT, e.to_string()))
+}
+
+/// Issue #56, Gate G. Refuse a conversation ingest whose model may not read the
+/// requested chats, **before** the SSE stream opens.
+///
+/// The barrier itself is inside `conversation_ingest::ingest_conversation` —
+/// that is the ONE guard, and it is what covers the CLI, the platform tool and
+/// this route alike even if this pre-check were deleted. Exactly as
+/// `assert_macro_target_reachable` does for Task 10C's barrier, this asks the
+/// same question one layer up so the GUI gets a real status code instead of a
+/// 200 whose stream opens and immediately dies — indistinguishable, to the
+/// fetch that started it, from a model that failed to connect.
+///
+/// 409 CONFLICT and not 500: a barrier that surfaces as an internal error
+/// teaches the caller to retry. Nothing about the *request* is malformed; what
+/// conflicts is the chats' classification with the model this call is on, and
+/// the recovery is to change the model.
+///
+/// ⚠ The message is `conversation_ingest`'s own, never a second spelling of it,
+/// and it names no session (§11.4 classifies id, title and working directory as
+/// content).
+fn assert_conversations_readable(
+    caller_capability: biorouter::privacy::ProviderTier,
+    sessions: &[biorouter::session::session_manager::Session],
+) -> Result<(), (StatusCode, String)> {
+    if biorouter::knowledge::conversation_ingest::refuses_every_session(caller_capability, sessions)
+    {
+        return Err((
+            StatusCode::CONFLICT,
+            biorouter::knowledge::conversation_ingest::REFUSED_ALL_PRIVATE.to_string(),
+        ));
+    }
+    Ok(())
 }
 
 /// Build a well-formed SSE error frame. Uses `serde_json` for proper escaping so
@@ -1084,7 +1412,7 @@ pub async fn check_model(
     Json(body): Json<CheckModelBody>,
 ) -> Result<Json<CheckModelResponse>, (StatusCode, Json<CheckModelResponse>)> {
     let completer = match build_completer(&body.model).await {
-        Ok(c) => c,
+        Ok((c, _tier, _affiliation)) => c,
         Err((_status, msg)) => {
             return Err((
                 StatusCode::BAD_GATEWAY,
@@ -1127,7 +1455,8 @@ pub async fn ingest(
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let (source, model, focus) = parse_ingest_request(&headers, req).await?;
 
-    let completer = build_completer(&model).await?;
+    let (completer, caller_capability, caller_affiliation) = build_completer(&model).await?;
+    assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1141,6 +1470,13 @@ pub async fn ingest(
     let macro_handle = tokio::spawn(async move {
         let args = ingest_macro::IngestArgs {
             kb_id: id,
+            // Issue #56. The tier of the provider `build_completer` actually
+            // constructed — never `body.model.provider`, the string the caller
+            // supplied, which `providers::create` is free to ignore.
+            caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             source,
             completer,
             focus,
@@ -1197,7 +1533,14 @@ pub async fn ingest_conversation(
     }
 
     // Load the requested sessions (with messages) from the global session store.
-    let session_manager = biorouter::session::session_manager::SessionManager::instance();
+    //
+    // Issue #56 DR-26 / Task 50 Step 3: ONE handle, shared with the macro below
+    // rather than a second `instance()`. Both resolve to the same static storage
+    // so the old pair was harmless — but the guard's whole claim is that it reads
+    // each selected chat's institutions *from the store those chats came from*,
+    // and one binding is what makes that visible instead of argued.
+    let session_manager =
+        std::sync::Arc::new(biorouter::session::session_manager::SessionManager::instance());
     let mut sessions = Vec::new();
     for sid in &body.session_ids {
         match session_manager.get_session(sid, true).await {
@@ -1211,7 +1554,12 @@ pub async fn ingest_conversation(
         }
     }
 
-    let completer = build_completer(&body.model).await?;
+    let (completer, caller_capability, caller_affiliation) = build_completer(&body.model).await?;
+    // Issue #56, Gate G. Before the stream opens, and before a single transcript
+    // is rendered: this route is the same private -> public laundering primitive
+    // as the platform tool, reachable with nothing but the secret key.
+    assert_conversations_readable(caller_capability, &sessions)?;
+
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
     let (sse_tx, sse_rx) = mpsc::channel::<String>(64);
@@ -1220,9 +1568,18 @@ pub async fn ingest_conversation(
 
     let focus = body.focus.clone();
     let cancel_for_macro = cancel.clone();
+    // Issue #56 DR-26 / Task 50 Step 3: the guard reads each selected chat's
+    // institutions itself — see `ConversationIngestArgs::session_manager`. The
+    // same handle the sessions above were loaded through.
+    let session_manager_for_macro = session_manager.clone();
     let macro_handle = tokio::spawn(async move {
         let args = biorouter::knowledge::conversation_ingest::ConversationIngestArgs {
             kb_id: id,
+            // Issue #56. Same rule as the other three macro routes: the tier of
+            // the constructed provider, not of the requested name.
+            caller_capability,
+            caller_affiliation,
+            session_manager: session_manager_for_macro,
             sessions,
             completer,
             focus,
@@ -1271,7 +1628,8 @@ pub async fn query_kb(
     Path(id): Path<String>,
     Json(body): Json<QueryBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
-    let completer = build_completer(&body.model).await?;
+    let (completer, caller_capability, caller_affiliation) = build_completer(&body.model).await?;
+    assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1283,6 +1641,12 @@ pub async fn query_kb(
     let macro_handle = tokio::spawn(async move {
         let args = query_macro::QueryArgs {
             kb_id: id,
+            // Issue #56. `query` writes — its sub-agent holds kb_write_page,
+            // kb_append_log and kb_add_raw_source unconditionally.
+            caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             question: body.question,
             completer,
             file_as_page: body.file_as_page.unwrap_or(false),
@@ -1329,12 +1693,25 @@ pub async fn lint(
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let autofix = body.autofix.unwrap_or(false);
     // Only build a completer when autofix is requested (it requires an LLM).
-    let completer: Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>> =
-        if autofix {
-            Some(build_completer(&body.model).await?)
-        } else {
-            None
-        };
+    //
+    // Issue #56: a lint with no autofix constructs no provider, so there is no
+    // instance to read a tier from and nothing a model can write. It reports
+    // Public and the ratchet is a no-op — the same reasoning as the test-mode
+    // branch of `build_completer`, and it is not a caller-supplied literal.
+    let (completer, caller_capability, caller_affiliation): (
+        Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>>,
+        biorouter::privacy::ProviderTier,
+        Option<biorouter::privacy::affiliation::ModelAffiliation>,
+    ) = if autofix {
+        let (c, tier, affiliation) = build_completer(&body.model).await?;
+        (Some(c), tier, affiliation)
+    } else {
+        // A read-only lint builds no provider, so there is no institution to
+        // read. `None` pairs with the Public tier beside it — the restrictive
+        // reading on both axes.
+        (None, biorouter::privacy::ProviderTier::Public, None)
+    };
+    assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
     let cancel = std::sync::Arc::new(tokio::sync::Notify::new());
 
@@ -1346,6 +1723,11 @@ pub async fn lint(
     let macro_handle = tokio::spawn(async move {
         let args = lint_macro::LintArgs {
             kb_id: id,
+            // Issue #56. The tier of the provider the autofix will run on.
+            caller_is_private: caller_capability.is_private(),
+            caller_affiliation: biorouter::privacy::affiliation::caller_affiliation(
+                caller_affiliation,
+            ),
             completer,
             autofix,
             bounds: SubAgentBounds::default(),
@@ -1573,8 +1955,17 @@ pub async fn import_brkb(
 
     let bytes = file_bytes.ok_or((StatusCode::BAD_REQUEST, "missing 'file' part".to_string()))?;
 
+    // Issue #56: the USER importing from the Knowledge view, not a model. The
+    // archive's own provenance marker still applies as a floor — on both axes:
+    // no model is bound here, so the importer contributes no institution
+    // (`Unstated`), but the owners the archive carries are still recorded, or
+    // routing an archive through this route would strip them (DR-26 / Task 50).
     let new_id = svc
-        .import_brkb(&bytes)
+        .import_brkb(
+            &bytes,
+            /* importer_is_private */ false,
+            &biorouter_mcp::knowledge::affiliation::CallerAffiliation::Unstated,
+        )
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "id": new_id })))
@@ -1644,4 +2035,108 @@ pub async fn override_credibility(
         .override_credibility(&id, &sid, cred)
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
     Ok(Json(CredibilityResponse { credibility }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::assert_conversations_readable;
+    use axum::http::StatusCode;
+    use biorouter::privacy::{ProviderTier, SessionClassification};
+    use biorouter::session::session_manager::{Session, SessionType};
+
+    /// ⚠ DEVIATION, recorded rather than hidden. Task 11 writes this row as a
+    /// `POST /bases/{id}/ingest-conversation` against the router in
+    /// `tests/knowledge_routes.rs`. It cannot live there: that route loads its
+    /// sessions from the process-global `SessionManager`, i.e. **the
+    /// developer's real session database** — which is exactly why Task 10B's
+    /// own ratchet matrix in that file excludes `ingest-conversation` by name.
+    /// So the row is spelled here instead, against the production function the
+    /// route calls, with sessions built in memory.
+    fn session(id: &str, tier: SessionClassification) -> Session {
+        Session {
+            id: id.into(),
+            working_dir: std::path::PathBuf::from("/tmp/x"),
+            name: format!("chat {id}"),
+            user_set_name: false,
+            session_type: SessionType::User,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            extension_data: Default::default(),
+            total_tokens: None,
+            input_tokens: None,
+            output_tokens: None,
+            accumulated_total_tokens: None,
+            accumulated_input_tokens: None,
+            accumulated_output_tokens: None,
+            schedule_id: None,
+            workflow: None,
+            user_workflow_values: None,
+            conversation: None,
+            message_count: 0,
+            provider_name: None,
+            model_config: None,
+            diverged_from: None,
+            branch_point_msg_uid: None,
+            parent_session_id: None,
+            privacy_tier: tier,
+            privacy_reason: None,
+        }
+    }
+
+    /// D8: this route is the same one-call private -> public laundering
+    /// primitive as the platform tool, behind nothing but the secret key.
+    #[test]
+    fn a_public_model_is_refused_another_sessions_private_conversation_with_409() {
+        let err = assert_conversations_readable(
+            ProviderTier::Public,
+            &[session("phi", SessionClassification::Private)],
+        )
+        .expect_err("a public model was handed a private transcript over HTTP");
+
+        assert_eq!(err.0, StatusCode::CONFLICT, "409, never 500: {}", err.1);
+        assert!(err.1.contains("private"), "{}", err.1);
+        assert!(
+            !err.1.contains("phi") && !err.1.contains("chat phi"),
+            "the refusal named the session: {}",
+            err.1
+        );
+    }
+
+    /// BOTH directions. Without this row, "refuse the public caller" is
+    /// satisfied by "refuse everyone" — a hardcoded `ProviderTier::Public` at
+    /// the call site passes every refusal assertion above and quietly breaks
+    /// the feature for exactly the sessions it was built for.
+    #[test]
+    fn a_private_model_may_ingest_its_own_private_conversation_over_http() {
+        assert_conversations_readable(
+            ProviderTier::Private,
+            &[session("phi", SessionClassification::Private)],
+        )
+        .expect("a private model was refused its own private chat");
+    }
+
+    /// The ratchet is `max`, not `set`: a public chat ingesting itself is the
+    /// overwhelmingly common call and must not regress.
+    #[test]
+    fn a_public_model_may_still_ingest_a_public_conversation_over_http() {
+        assert_conversations_readable(
+            ProviderTier::Public,
+            &[session("mine", SessionClassification::Public)],
+        )
+        .expect("a public chat may always ingest itself");
+    }
+
+    /// Per session, not once. A mixed list keeps the public chats and lets the
+    /// shared barrier drop the rest, so the route must NOT 409 here.
+    #[test]
+    fn a_mixed_list_is_not_refused_wholesale_at_the_route() {
+        assert_conversations_readable(
+            ProviderTier::Public,
+            &[
+                session("mine", SessionClassification::Public),
+                session("phi", SessionClassification::Private),
+            ],
+        )
+        .expect("one private chat in the list must not refuse the public ones");
+    }
 }

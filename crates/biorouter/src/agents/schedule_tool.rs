@@ -14,11 +14,25 @@ use crate::scheduler_trait::SchedulerTrait;
 use crate::workflow::Workflow;
 
 impl Agent {
-    /// Handle schedule management tool calls
+    /// Handle schedule management tool calls.
+    ///
+    /// `creator_session_id` is the chat this tool call is running inside, taken
+    /// from `dispatch_tool_call`'s own `session` argument. `create` records it on
+    /// the job so a scheduled run resolves the *creating chat's* model rather
+    /// than the global default (issue #56, R5) — see
+    /// `scheduler::resolve_scheduled_provider`.
+    /// `cap` is the caller's admitted capability, sampled by `dispatch_tool_call`
+    /// in the schedule branch. Two of the actions below read another chat's
+    /// content — `session_content` returns a whole transcript, `sessions` returns
+    /// LLM-generated titles and working directories — so this tool needs the same
+    /// capability its `workspace_*` siblings take. It shipped with none at all,
+    /// which is why the parameter looks bolted on: it is.
     pub async fn handle_schedule_management(
         &self,
         arguments: serde_json::Value,
         _request_id: String,
+        creator_session_id: &str,
+        cap: crate::privacy::CallCapability,
     ) -> ToolResult<Vec<Content>> {
         let scheduler = self.config.scheduler_service.clone().ok_or_else(|| {
             ErrorData::new(
@@ -41,15 +55,18 @@ impl Agent {
 
         match action {
             "list" => self.handle_list_jobs(scheduler).await,
-            "create" => self.handle_create_job(scheduler, arguments).await,
+            "create" => {
+                self.handle_create_job(scheduler, arguments, creator_session_id)
+                    .await
+            }
             "run_now" => self.handle_run_now(scheduler, arguments).await,
             "pause" => self.handle_pause_job(scheduler, arguments).await,
             "unpause" => self.handle_unpause_job(scheduler, arguments).await,
             "delete" => self.handle_delete_job(scheduler, arguments).await,
             "kill" => self.handle_kill_job(scheduler, arguments).await,
             "inspect" => self.handle_inspect_job(scheduler, arguments).await,
-            "sessions" => self.handle_list_sessions(scheduler, arguments).await,
-            "session_content" => self.handle_session_content(arguments).await,
+            "sessions" => self.handle_list_sessions(scheduler, arguments, cap).await,
+            "session_content" => self.handle_session_content(arguments, cap).await,
             _ => Err(ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
                 format!("Unknown action: {}", action),
@@ -80,6 +97,7 @@ impl Agent {
         &self,
         scheduler: Arc<dyn SchedulerTrait>,
         arguments: serde_json::Value,
+        creator_session_id: &str,
     ) -> ToolResult<Vec<Content>> {
         let workflow_path = arguments
             .get("workflow_path")
@@ -161,6 +179,19 @@ impl Agent {
             process_start_time: None,
             run_count: 0,
             max_runs: None,
+            // Issue #56 (R5), the third creation surface after `/loop` and
+            // `/schedule`. A schedule the agent makes on the user's behalf from
+            // a private chat must run on that chat's model, not the user's
+            // commercial default — `resolve_scheduled_provider` needs the id to
+            // do it.
+            //
+            // ⚠ Not `session_context::current_session_id()`. That task-local is
+            // scoped around a scheduled run and a subagent run and nowhere
+            // else — in particular not around `Agent::reply` on the ordinary
+            // chat path — so it reads `None` in exactly the case this closes.
+            // `dispatch_tool_call` holds the real `Session`; it is passed down.
+            creator_session_id: Some(creator_session_id.to_string()),
+            last_error: None,
         };
 
         match scheduler.add_scheduled_job(job, true).await {
@@ -363,11 +394,19 @@ impl Agent {
         }
     }
 
-    /// List execution sessions for a job
+    /// List execution sessions for a job.
+    ///
+    /// Rows the caller may not see are **omitted**, not redacted, for the reason
+    /// [`appears_in_list`](crate::privacy::visibility::appears_in_list) states:
+    /// a row here carries the session's name — LLM-generated from the
+    /// conversation — and its working directory, both content under §11.4. The
+    /// filter runs before the rows are rendered, so a private run is absent from
+    /// the list rather than present-but-blank.
     async fn handle_list_sessions(
         &self,
         scheduler: Arc<dyn SchedulerTrait>,
         arguments: serde_json::Value,
+        cap: crate::privacy::CallCapability,
     ) -> ToolResult<Vec<Content>> {
         let job_id = arguments
             .get("job_id")
@@ -387,6 +426,16 @@ impl Agent {
 
         match scheduler.sessions(job_id, limit).await {
             Ok(sessions) => {
+                let sessions: Vec<_> = sessions
+                    .into_iter()
+                    .filter(|(_, session)| {
+                        !cap.enforced()
+                            || crate::privacy::visibility::appears_in_list(
+                                cap.tier(),
+                                session.privacy_tier,
+                            )
+                    })
+                    .collect();
                 if sessions.is_empty() {
                     Ok(vec![Content::text(format!(
                         "No sessions found for job '{}'",
@@ -420,10 +469,18 @@ impl Agent {
         }
     }
 
-    /// Get the full content (metadata and messages) of a specific session
+    /// Get the full content (metadata and messages) of a specific session.
+    ///
+    /// ⚠ **This is `workspace_read_conversation` under another name**, and it
+    /// shipped without the gate that one has: an arbitrary caller-supplied
+    /// `session_id`, `get_session(id, true)`, and the whole session — every
+    /// message, tool call and tool response — serialised back to the model. The
+    /// §7 READ predicate is asked here through the one adapter, before the
+    /// transcript is loaded.
     async fn handle_session_content(
         &self,
         arguments: serde_json::Value,
+        cap: crate::privacy::CallCapability,
     ) -> ToolResult<Vec<Content>> {
         let session_id = arguments
             .get("session_id")
@@ -435,6 +492,18 @@ impl Agent {
                     None,
                 )
             })?;
+
+        // Ahead of the read, and phrased identically for private / unreadable /
+        // absent, so the refusal is not an existence oracle for private ids.
+        if let Err(refusal) = crate::privacy::visibility::refuse_unless_readable(
+            cap,
+            &self.config.session_manager,
+            session_id,
+        )
+        .await
+        {
+            return Err(ErrorData::new(ErrorCode::INVALID_REQUEST, refusal, None));
+        }
 
         let session = match self
             .config

@@ -105,6 +105,9 @@ async fn create_schedule(
         process_start_time: None,
         run_count: 0,
         max_runs: None,
+        // `POST /schedule/create` schedules a workflow file, not a chat.
+        creator_session_id: None,
+        last_error: None,
     };
     scheduler
         .add_scheduled_job(job.clone(), true)

@@ -1,0 +1,67 @@
+<!--
+  Fixture: three private cards, all affiliated — the next shape the real catalog
+  will take, one affiliated extension from now.
+
+  It exists for the WRAPPING, not for the parse. Two affiliated rows fit on one
+  indented line; three do not, and rustfmt's slice literals wrap by `array_width`
+  (60 columns between the brackets), not by the 100-column `max_width` everybody
+  reaches for. A generator that checked only the 100 emitted, for exactly this
+  input, text that `cargo fmt --check` rejected while `build-registry.mjs
+  --check` demanded it — two gates in `just check-everything` with no state
+  satisfying both. No fixture in this directory grew the table past two rows, so
+  nothing caught it.
+
+  All three name `ucsf` because INSTITUTIONS in the generator publishes only that
+  one, and an affiliation naming an unpublished institution is a build failure
+  (unknown-institution.html). The institution is not what this fixture varies.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="AlphaWideAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Alpha Wide Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/alpha-wide-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The first of three affiliated cards, so the generated affiliation table has more rows than fit on one line.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/alphawideagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="BetaWideAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Beta Wide Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/beta-wide-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The second of three affiliated cards.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/betawideagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="GammaWideAgent" data-affiliation="ucsf">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Gamma Wide Agent</h3>
+          <div class="ext-org">Fixtures · UCSF · v0.1.0</div>
+        </div>
+        <a href="https://example.invalid/gamma-wide-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">The third of three affiliated cards.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag affiliation" data-affiliation-badge="ucsf">UCSF data</span><span class="tag ucsf">UCSF</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/gammawideagent.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

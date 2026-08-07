@@ -55,12 +55,15 @@ use crate::permission::permission_inspector::PermissionInspector;
 use crate::permission::permission_judge::PermissionCheckResult;
 use crate::permission::tool_risk::ToolRiskRegistry;
 use crate::permission::PermissionConfirmation;
+use crate::privacy::refusal::PrivacyRefusal;
+use crate::privacy::{ProviderTier, SessionClassification};
 use crate::providers::base::Provider;
 use crate::providers::errors::ProviderError;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
 use crate::session::extension_data::{EnabledExtensionsState, ExtensionState};
 use crate::session::message_blobs;
+use crate::session::session_manager::BindOutcome;
 use crate::session::{Session, SessionManager, SessionType};
 use crate::tool_inspection::{InspectionAction, InspectionResult, ToolInspectionManager};
 use crate::tool_monitor::{FailureLoopConfig, RepetitionInspector, SemanticLoopConfig};
@@ -895,6 +898,26 @@ impl std::fmt::Display for InterruptRefused {
     }
 }
 
+/// Who is going to read the tool list [`Agent::list_tools_for`] builds.
+///
+/// Issue #56 Gate E hides a private extension's tool names, descriptions and
+/// JSON schemas from a public MODEL, because schema text is content and it
+/// reaches the model before any tool call exists for Gate C to refuse. It must
+/// NOT hide them from the HUMAN who installed that extension: the permission
+/// editors exist so that human can set a permission per tool, and a tool that is
+/// not listed cannot be configured.
+///
+/// The two audiences are an enum rather than a `bool` so that the answer at each
+/// call site reads as the privacy decision it is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolAudience {
+    /// The model's context. Gate E applies.
+    Model,
+    /// Settings → Extensions → tool permissions, and `biorouter configure`'s
+    /// tool selector. Gate E does not apply — see Task 16's ⚠.
+    PermissionEditor,
+}
+
 /// The outcome of the turn loop's take-and-close at its exit (#69).
 ///
 /// `pub` for the same reason [`Agent::open_for_turn`] is: the route-level tests
@@ -906,6 +929,123 @@ pub enum Drained {
     Some(Vec<QueuedInterrupt>),
     /// Nothing queued; the queue is now closed and the loop may exit.
     Empty,
+}
+
+/// Issue #56 Gate B'. The classification of the session this agent is serving,
+/// as last observed, plus the id it was observed for.
+///
+/// It exists because the transcript leaves the machine on three paths that
+/// never enter [`Agent::reply`] and therefore never meet Gate B: session
+/// auto-naming (`maybe_rename_session` → `maybe_update_name` →
+/// `generate_session_name` → `complete_fast`), compaction summarisation
+/// (`context_mgmt::compact_messages`) and the stall judge (`agents::stall`).
+/// [`Agent::provider`] is where the assertion goes because it is the accessor
+/// those paths reach the binding through — and an assertion needs the
+/// classification without a session id to look it up by, because none of those
+/// three call sites has one to give.
+///
+/// ⚠ **[`Agent::provider`] is not the only way to the binding, and the doc that
+/// said so was wrong.** `SharedProvider` is an `Arc<Mutex<..>>` that is handed
+/// out, and three production sites clone out of it directly:
+///
+/// * [`Agent::maybe_spawn_eager_compaction`] — the background half of a path
+///   this cache DOES claim to cover. It cannot block on the lock, so it cannot
+///   call the accessor; it asserts the same predicate inline instead. Covered.
+/// * `permission::permission_inspector`'s smart-approve judge, which sends tool
+///   names and arguments (not the transcript) to the model.
+/// * `hooks::HooksManager`'s prompt hooks, which send the hook's own payload.
+///
+/// The last two hold a `SharedProvider` and no `&Agent`, so they have no
+/// classification to consult and covering them is a signature change this task
+/// does not own. Their exposure today is bounded — both run during or after a
+/// turn Gate B has already repaired or refused — but neither is *asserted*, and
+/// a later task must not cite this cache as though they were.
+///
+/// The cache is sound because `AgentManager` holds one `Arc<Agent>` per session
+/// id, so "this agent" and "this session" are the same thing; it is re-synced
+/// from the row at every `reply` entry, and reconciled by a successful bind in
+/// between (see [`Agent::update_provider`]).
+///
+/// ⚠ It initialises to **`Private`**, not `Public`. It is read before the first
+/// `reply` on a rehydrated agent, and the restrictive value is the safe default
+/// there: a wrong `Private` costs one refused auto-naming, a wrong `Public`
+/// costs a private transcript sent to a public model.
+///
+/// A plain `Mutex` rather than an atomic: it carries a `String` as well, it is
+/// never held across an `await`, and every read is off the hot path.
+///
+/// # Known skews between this cache and the row
+///
+/// Both are narrow, both close at the next `reply`, and both are recorded here
+/// because the repair-card task inherits them.
+///
+/// 1. **A cache reading `Public` against a `Private` row.**
+///    [`Agent::update_provider`] stores `Public` on a successful public bind,
+///    which is sound at the instant it runs (Gate A's `WHERE` admits a public
+///    provider only against a public row). A ratchet that commits between that
+///    `UPDATE` and the store then privatises the row without touching the
+///    cache — the exact state
+///    `a_ratchet_that_commits_after_a_legal_bind_lands_in_the_state_gate_b_owns`
+///    constructs, since `raise_privacy` writes SQL and knows nothing about any
+///    agent. Until the next `reply` re-syncs, Gate B' would admit a public
+///    provider for an out-of-`reply` completion — and `maybe_rename_session` is
+///    called from outside `reply` (`workspace/turn.rs`, `routes/apps.rs`). It
+///    needs the bind task to be descheduled between two adjacent statements, so
+///    it is genuinely narrow, but it is fail-OPEN and so is written down. The
+///    alternative — leaving the cache at its `Private` default after a legal
+///    public bind — is not a privacy control but a startup failure on every
+///    fresh public session, because the CLI asserts `provider()` before its
+///    first turn.
+///
+/// 2. **A cache reading `Private` for a session with no row.** The
+///    `BindOutcome::NoSuchSession` arm deliberately does not refuse — an id
+///    naming no row must never be reported to a user as "this chat is private"
+///    — but it also stores nothing, so the cache stays at its fail-closed
+///    default and a later `provider()` on that agent refuses. The two arms
+///    disagree about the same non-existent session. Fail-CLOSED, and no traced
+///    caller binds before its row exists (`subagent_tool` creates the child row
+///    first; the CLI and the routes bind after `create_session`), so it is left
+///    as the safer inconsistency rather than papered over.
+#[derive(Debug)]
+pub(super) struct CachedClassification {
+    inner: std::sync::Mutex<(SessionClassification, Option<String>)>,
+}
+
+impl Default for CachedClassification {
+    fn default() -> Self {
+        Self {
+            inner: std::sync::Mutex::new((SessionClassification::Private, None)),
+        }
+    }
+}
+
+impl CachedClassification {
+    fn load(&self) -> SessionClassification {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .0
+    }
+
+    fn store(&self, session_id: &str, classification: SessionClassification) {
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = (classification, Some(session_id.to_string()));
+    }
+
+    /// The session the cached classification was read for. Diagnostics only —
+    /// it rides in the refusal so a handler can name the chat, and it is
+    /// deliberately absent from the refusal's own message text (§14.4).
+    fn session_id(&self) -> String {
+        self.inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .1
+            .clone()
+            .unwrap_or_default()
+    }
 }
 
 /// The main biorouter Agent
@@ -1002,6 +1142,8 @@ pub struct Agent {
     /// a session reload, a different session on a shared agent) simply misses and
     /// falls back to a full normalization.
     pub(super) normalizer: crate::conversation::SharedNormalizer,
+    /// Issue #56 Gate B'. See [`CachedClassification`].
+    pub(super) cached_classification: CachedClassification,
 }
 
 #[derive(Clone, Debug)]
@@ -1205,6 +1347,310 @@ pub(super) fn fire_compaction_hook_on(
     );
 }
 
+/// Rendezvous points inside the agent loop that a test needs to stop the world
+/// at, because the property under test is an ORDERING and no amount of
+/// `tokio::time::sleep` makes an ordering deterministic.
+///
+/// Issue #56. The first of them, [`hold_dispatch_queue`], parks a dispatched
+/// tool call exactly where a real queued call sits: after
+/// `Agent::dispatch_tool_call` has returned its future — so the capability has
+/// already been sampled — and before anything drives it. Tasks 12 and 14B/14D
+/// add their own rendezvous to this same module.
+///
+/// ⚠ The rendezvous is process-global, so it is KEYED rather than first-come.
+/// An unkeyed slot degrades the test that uses it to a SILENT PASS: `cargo test`
+/// runs `--lib` tests concurrently in one process, so any other test driving an
+/// `Agent::dispatch_tool_call` future would take the rendezvous meant for the
+/// armer, whose own call then sails through un-parked and completes before the
+/// provider swap it exists to order against — and still asserts green, because
+/// the capability it read was the one it started with either way. The ordering
+/// simply stops being tested. Keying on `(session id, tool name)` makes the
+/// caught call the intended call by construction, and holding a LIST of arms
+/// means two tests can be armed at once without clobbering each other.
+#[cfg(test)]
+pub(crate) mod seams {
+    use crate::providers::base::Provider;
+    use tokio::sync::oneshot;
+
+    /// One armed rendezvous: the caller session id and tool name it is waiting
+    /// for, and the channel the matching call announces itself on.
+    type ArmedDispatch = (String, String, oneshot::Sender<oneshot::Sender<()>>);
+
+    /// The rendezvous a test armed but no dispatch has matched yet.
+    static ARMED: std::sync::Mutex<Vec<ArmedDispatch>> = std::sync::Mutex::new(Vec::new());
+
+    /// Arm the rendezvous for ONE specific dispatch — the next call of
+    /// `tool_name` made from `session_id`. Await the returned receiver to learn
+    /// that call has arrived and to get the sender that releases it.
+    ///
+    /// `tool_name` is the wire name the agent dispatches, i.e. the prefixed
+    /// `"<extension>__<tool>"` form, because that is what reaches the hold
+    /// point. A key that matches nothing parks the caller forever, so a test
+    /// should await the receiver under a `tokio::time::timeout` and fail
+    /// loudly rather than hang.
+    pub fn hold_dispatch_queue(
+        session_id: &str,
+        tool_name: &str,
+    ) -> oneshot::Receiver<oneshot::Sender<()>> {
+        let (arrived_tx, arrived_rx) = oneshot::channel();
+        ARMED
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((session_id.to_string(), tool_name.to_string(), arrived_tx));
+        arrived_rx
+    }
+
+    /// The hold point itself. A no-op — one uncontended mutex lock — for every
+    /// dispatch except one a test armed for by name, and the arm is consumed as
+    /// it fires so only the first matching dispatch is caught.
+    pub(super) async fn dispatch_queue_hold(session_id: &str, tool_name: &str) {
+        let armed = {
+            let mut slots = ARMED
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slots
+                .iter()
+                .position(|(s, t, _)| s == session_id && t == tool_name)
+                .map(|i| slots.remove(i).2)
+        };
+        if let Some(arrived_tx) = armed {
+            let (release_tx, release_rx) = oneshot::channel();
+            if arrived_tx.send(release_tx).is_ok() {
+                let _ = release_rx.await;
+            }
+        }
+    }
+
+    // ─── Issue #56, Gate A: the two rendezvous on the provider-bind path ────
+    //
+    // `arm_*` returns a [`Rendezvous`] that fires when the bind path reaches
+    // it, carrying the sender that releases it — so a test can run a whole
+    // ratchet *inside* the window instead of hoping a `tokio::spawn` lands
+    // there. Two channels and not a `Barrier`: a 2-party `Barrier::wait`
+    // releases both sides at the rendezvous, which is the one thing this must
+    // not do.
+    //
+    // ⚠ THE TWO SEAMS SIT IN DIFFERENT FUNCTIONS, ON PURPOSE.
+    // `before_bind_write` is inside `SessionStorage::bind_provider_if_allowed`
+    // (`session_manager.rs`), between any read that function performs and the
+    // statement that writes — hence `pub(crate)`, and hence the name: it is
+    // *before the WRITE*, not merely before the call. `after_bind_before_swap`
+    // is in `Agent::update_provider`, between the persist and the in-memory
+    // swap. A seam at the call site instead of inside the helper cannot tell a
+    // conditional `UPDATE` from a `SELECT` followed by an unconditional one,
+    // which is the exact implementation Gate A exists to reject.
+    //
+    // ⚠ THE RENDEZVOUS IS PROCESS-GLOBAL, so — exactly as for
+    // `hold_dispatch_queue` above — it must not be first-come, and "first-come"
+    // has TWO forms here. Neither is hypothetical: the two forced-interleaving
+    // tests and the 200-iteration fuzz loop are `#[tokio::test]`s in one
+    // binary, which cargo runs on parallel threads with nothing serialising
+    // them. There is no session id at the write to key on (the seam call has to
+    // stay argument-free so the structural gate can pin its position), so
+    // identity travels with the CALLING TASK instead, in a task-local:
+    //
+    //   1. A bind nobody armed. Only a future wrapped in [`armed`] is eligible
+    //      at all. Without that, the fuzz loop's 400 bind arrivals over several
+    //      seconds would routinely take the arm meant for a forced test, whose
+    //      own bind then races the ratchet it was supposed to be ordered
+    //      against.
+    //   2. A bind armed for the OTHER seam. `after_bind_before_swap`'s test
+    //      still traverses `before_bind_write` on its way — EVERY bind does, it
+    //      is inside the storage helper — so a token that said only "this task
+    //      is armed" would let that bind consume `before_bind_write`'s arm. The
+    //      theft is invisible exactly where it matters: the robbed test's
+    //      `arrived()` resolves from the wrong task, its own bind is never
+    //      parked, and on a lucky schedule it passes having forced nothing —
+    //      the silent pass a seam exists to make impossible. So the token names
+    //      its seam and [`park`] compares before consuming.
+    //
+    // Identity is per-ARM rather than per-seam: `arm_*` mints a fresh id, so
+    // two tests arming the same seam coexist instead of clobbering each other's
+    // sender. An arm nobody consumes is inert — its token exists nowhere but
+    // inside the one future it was minted for.
+
+    /// Which of the two bind rendezvous a token authorizes.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Seam {
+        BeforeBindWrite,
+        AfterBindBeforeSwap,
+    }
+
+    /// What one `arm_*` call hands out: permission for one future to be caught
+    /// once, at one named seam. `Copy` because it rides in a task-local.
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    pub(crate) struct ArmToken {
+        seam: Seam,
+        id: u64,
+    }
+
+    type ArmedBind = (ArmToken, oneshot::Sender<oneshot::Sender<()>>);
+
+    /// Arms placed but not yet consumed.
+    static ARMED_BINDS: std::sync::Mutex<Vec<ArmedBind>> = std::sync::Mutex::new(Vec::new());
+    static NEXT_ARM_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    tokio::task_local! {
+        /// Set for the duration of a future wrapped in [`armed`]: the ONE arm
+        /// that future may consume, at the ONE seam that arm names.
+        static ARMED_TASK: ArmToken;
+    }
+
+    /// One armed rendezvous, handed back by `arm_before_bind_write` /
+    /// `arm_after_bind_before_swap`.
+    pub(crate) struct Rendezvous {
+        token: ArmToken,
+        arrived: oneshot::Receiver<oneshot::Sender<()>>,
+    }
+
+    impl Rendezvous {
+        /// The token to hand to [`armed`]. It comes from the rendezvous itself,
+        /// so a test cannot arm one seam and authorize its bind for the other.
+        pub(crate) fn token(&self) -> ArmToken {
+            self.token
+        }
+
+        /// Await arrival at this seam; yields the sender that releases it.
+        ///
+        /// Bounded, because the likeliest failure is that nothing ever arrives
+        /// — a seam call that drifted out of the function, or a bind armed for
+        /// the other one — and a test that hangs is a CI timeout with no
+        /// message instead of a failure with one.
+        pub(crate) async fn arrived(self) -> oneshot::Sender<()> {
+            const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+            tokio::time::timeout(WAIT, self.arrived)
+                .await
+                .expect(
+                    "nothing reached this seam within 10s: the seam call drifted out of the \
+                     function, or the bind was armed for the other seam",
+                )
+                .expect("the arm was dropped without firing")
+        }
+
+        /// Whether anything has announced itself here yet. The NEGATIVE is what
+        /// the cross-seam test asserts, so only a real arrival counts — an arm
+        /// still sitting unconsumed reads `false`.
+        pub(crate) fn has_fired(&mut self) -> bool {
+            // `is_ok()` and not "not Empty": a sender dropped without firing is
+            // `Err(Closed)`, and that is an arm nobody took.
+            self.arrived.try_recv().is_ok()
+        }
+    }
+
+    /// Mark `fut` as the ONE call that may consume `token`'s arm.
+    ///
+    /// Every other `update_provider` in the process walks through both seams
+    /// with one uncontended `try_with` and no await.
+    pub(crate) fn armed<F: std::future::Future>(
+        token: ArmToken,
+        fut: F,
+    ) -> impl std::future::Future<Output = F::Output> {
+        ARMED_TASK.scope(token, fut)
+    }
+
+    fn arm(seam: Seam) -> Rendezvous {
+        let (tx, rx) = oneshot::channel();
+        let token = ArmToken {
+            seam,
+            id: NEXT_ARM_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        };
+        ARMED_BINDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((token, tx));
+        Rendezvous { token, arrived: rx }
+    }
+
+    async fn park(seam: Seam) {
+        // Unarmed, or armed for the other seam — one `try_with`, no await, no
+        // lock. That is every bind in the process except the one under test.
+        let token = match ARMED_TASK.try_with(|token| *token) {
+            Ok(token) if token.seam == seam => token,
+            _ => return,
+        };
+        // The guard is dropped at the end of this statement, before the await:
+        // holding a std::sync::MutexGuard across an await point is the classic
+        // way to turn a test seam into a deadlock.
+        let armed = {
+            let mut arms = ARMED_BINDS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            arms.iter()
+                .position(|(armed, _)| *armed == token)
+                .map(|i| arms.remove(i).1)
+        };
+        if let Some(reached) = armed {
+            let (release_tx, release_rx) = oneshot::channel();
+            if reached.send(release_tx).is_ok() {
+                let _ = release_rx.await;
+            }
+        }
+    }
+
+    pub(crate) fn arm_before_bind_write() -> Rendezvous {
+        arm(Seam::BeforeBindWrite)
+    }
+
+    pub(crate) fn arm_after_bind_before_swap() -> Rendezvous {
+        arm(Seam::AfterBindBeforeSwap)
+    }
+
+    /// Called from `session_manager.rs`, hence `pub(crate)`.
+    pub(crate) async fn before_bind_write() {
+        park(Seam::BeforeBindWrite).await
+    }
+
+    pub(super) async fn after_bind_before_swap() {
+        park(Seam::AfterBindBeforeSwap).await
+    }
+
+    // ─── Issue #56, Gate B: the provider a repairing rebind constructs ───────
+    //
+    // Gate B's repair arm exists to build the provider the session ROW names,
+    // which in production means `providers::create` — a factory that reads the
+    // user's config file and their OS keyring, and whose products talk to real
+    // hosts. A unit test cannot go through it in either direction:
+    // `create("versa_azure", ..)` needs institutional credentials this machine
+    // may not have (and asking for them can raise a Keychain prompt), while
+    // `create("ollama", ..)` succeeds *offline* and then points the turn at
+    // whatever happens to be listening on localhost:11434.
+    //
+    // So the construction step — and only that step — is overridable in test
+    // builds. Keyed by `(session id, provider name)`, not by name alone: these
+    // tests are `#[tokio::test]`s in one binary on parallel threads, and a
+    // name-only key would let one test's rebind answer another's.
+    type RebindOverride = (String, String, std::sync::Arc<dyn Provider>);
+    static REBIND_OVERRIDES: std::sync::Mutex<Vec<RebindOverride>> =
+        std::sync::Mutex::new(Vec::new());
+
+    /// Register the provider `Agent::rebind_from_row` must hand back when the
+    /// row for `session_id` names `provider_name`.
+    pub(crate) fn override_rebind_provider(
+        session_id: &str,
+        provider_name: &str,
+        provider: std::sync::Arc<dyn Provider>,
+    ) {
+        REBIND_OVERRIDES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((session_id.to_string(), provider_name.to_string(), provider));
+    }
+
+    /// The registered override, if any. Not consumed: a session's rebind can
+    /// legitimately happen on more than one turn.
+    pub(super) fn rebind_override(
+        session_id: &str,
+        provider_name: &str,
+    ) -> Option<std::sync::Arc<dyn Provider>> {
+        REBIND_OVERRIDES
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .find(|(s, p, _)| s == session_id && p == provider_name)
+            .map(|(_, _, provider)| std::sync::Arc::clone(provider))
+    }
+}
+
 impl Agent {
     pub fn new() -> Self {
         Self::with_config(AgentConfig::new(
@@ -1277,6 +1723,7 @@ impl Agent {
             tool_risks,
             efforts: Default::default(),
             normalizer: Default::default(),
+            cached_classification: Default::default(),
         }
     }
 
@@ -1520,6 +1967,19 @@ impl Agent {
         // escalation-only, so its verdict wins from either position.
         tool_inspection_manager.add_inspector(Box::new(
             crate::security::global_memory::GlobalMemoryInspector,
+        ));
+
+        // Issue #56: refuse tool reads of the session database — `sessions.db`
+        // and its `-wal`/`-shm` siblings, the transcript store every
+        // conversation on this machine writes to. Every other privacy gate is a
+        // gate on a Biorouter API; `cat`/`sqlite3`/`text_editor` on that file
+        // walk around all of them. Path-argument aware, so a doc or a commit
+        // message that merely names the path is untouched, and deliberately
+        // blind to `privacy_tier`: reading the file discloses every other
+        // session too, so the refusal is about the channel and fires for a
+        // private-capability caller as well.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::security::session_store::SessionStoreInspector,
         ));
 
         // BR-71 §5: cross-session capability changes always confirm, in every
@@ -2135,6 +2595,10 @@ impl Agent {
         tool_name: &str,
         arguments: serde_json::Map<String, Value>,
     ) -> Result<String> {
+        // Issue #56: one of the four production entries that sample a capability.
+        // The pre-turn prefetch is its own entry because it dispatches outside
+        // `Self::dispatch_tool_call` entirely.
+        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
         let tool = self
             .extension_manager
             .dispatch_tool_call(
@@ -2145,6 +2609,7 @@ impl Agent {
                     meta: None,
                     task: None,
                 },
+                cap,
                 CancellationToken::default(),
             )
             .await
@@ -2853,6 +3318,32 @@ impl Agent {
             self.clear_eager_compaction(&session_config.id);
             return;
         };
+        // Issue #56 Gate B'. This is the ONE bypass of [`Agent::provider`] that
+        // is inside a path Gate B' names as covered: compaction summarisation
+        // reads the entire transcript, and its background half takes the
+        // binding straight off the `SharedProvider` because it must not block
+        // on the lock. The predicate is therefore asserted here by hand rather
+        // than inherited from the accessor.
+        //
+        // A refusal takes the same exit as a momentarily-locked provider,
+        // which is the honest outcome: eager compaction is a best-effort
+        // optimisation, and the synchronous fallback at the top of the next
+        // `reply` runs AFTER Gate B has repaired or refused the session, so
+        // skipping here loses nothing but a round-trip.
+        //
+        // DR-15's master opt-out. Read directly: eager compaction is not a tool
+        // call and has no admitted capability to inherit.
+        if crate::privacy::privacy_tiers_enabled()
+            && !crate::privacy::bind_allowed(provider.tier(), self.cached_classification.load())
+        {
+            tracing::warn!(
+                session_id = session_config.id,
+                provider = provider.get_name(),
+                "skipping eager compaction: the bound provider does not satisfy this session's classification"
+            );
+            self.clear_eager_compaction(&session_config.id);
+            return;
+        }
 
         let session_manager = self.config.session_manager.clone();
         let hooks_manager = Arc::clone(&self.hooks_manager);
@@ -3043,10 +3534,108 @@ impl Agent {
 
     /// Get a reference count clone to the provider
     pub async fn provider(&self) -> Result<Arc<dyn Provider>, anyhow::Error> {
-        match &*self.provider.lock().await {
-            Some(provider) => Ok(Arc::clone(provider)),
-            None => Err(anyhow!("Provider not set")),
+        let provider = self
+            .bound_provider_unchecked()
+            .await
+            .ok_or_else(|| anyhow!("Provider not set"))?;
+        // Issue #56 Gate B'. The non-`reply` completion paths — session
+        // auto-naming (`maybe_rename_session` -> `complete_fast`), compaction
+        // summarisation (`context_mgmt::compact_messages`) and the stall judge
+        // (`agents::stall`) — all read the entire transcript and none of them
+        // passes Gate B, because none of them goes through `reply`. They do all
+        // take their provider from here.
+        //
+        // The classification is the cached one rather than a fresh row read:
+        // this accessor is called several times per turn from inside the reply
+        // loop, and a database round-trip on each would be a real cost for a
+        // value `reply` has just read. See [`CachedClassification`] for why the
+        // cache is sound and why it fails closed.
+        //
+        // DR-15's master opt-out. Read directly: this accessor serves the
+        // non-`reply` completion paths, none of which is a tool call with an
+        // admitted capability to inherit.
+        let cached = self.cached_classification.load();
+        if crate::privacy::privacy_tiers_enabled()
+            && !crate::privacy::bind_allowed(provider.tier(), cached)
+        {
+            return Err(PrivacyRefusal::PublicModelOnPrivateSession {
+                session_id: self.cached_classification.session_id(),
+                provider: provider.get_name().to_string(),
+            }
+            .into());
         }
+        Ok(provider)
+    }
+
+    /// The bound provider WITHOUT Gate B'.
+    ///
+    /// Gate B itself must read the raw binding: asking [`Agent::provider`]
+    /// there would consult the very cached classification the gate is about to
+    /// replace, and would report "no provider" for the mismatch the gate exists
+    /// to repair.
+    ///
+    /// ⚠ Deliberately not `pub`, but do NOT read that as "the only way past
+    /// Gate B'" — an earlier draft of this comment claimed exactly that and it
+    /// was false. `SharedProvider` is a clonable `Arc<Mutex<..>>`; three
+    /// production sites hold one and go straight to the binding. See
+    /// [`CachedClassification`] for the enumeration and which of them are
+    /// asserted.
+    pub(super) async fn bound_provider_unchecked(&self) -> Option<Arc<dyn Provider>> {
+        self.provider.lock().await.clone()
+    }
+
+    /// Issue #56 Gate B, the repair arm: re-bind the provider the session ROW
+    /// records, when the live agent is holding one the row's classification
+    /// does not admit.
+    ///
+    /// Returns `Ok(true)` when the row's own provider was constructed, found to
+    /// satisfy the classification, and swapped in; `Ok(false)` when the row
+    /// names nothing usable, or names something still public. Errors from the
+    /// provider factory are `Err` and are treated by the caller exactly like
+    /// `Ok(false)` — a refusal — because a repair that did not happen must
+    /// never read as a repair that did.
+    ///
+    /// This is the COMMON case, not an exotic one: LRU rehydration,
+    /// `restore_provider_from_session`'s `Config::global()` fallback, a legacy
+    /// row written before #56, and every ratchet that commits after a legal
+    /// bind all leave exactly this state.
+    ///
+    /// ⚠ The swap is in-memory only and does NOT go through `update_provider`.
+    /// There is nothing to persist — the row already names this provider, byte
+    /// for byte — and re-entering Gate A to write a row's own value back to
+    /// itself would put a database write on the front of every turn of a
+    /// rehydrated session.
+    async fn rebind_from_row(&self, row: &Session) -> Result<bool> {
+        let Some(provider_name) = row.provider_name.clone() else {
+            return Ok(false);
+        };
+        // A row with a `provider_name` but no `model_config` is a legacy row:
+        // `update_provider` has always written both in one statement. Fall back
+        // the same way `restore_provider_from_session` does rather than
+        // refusing a session that is perfectly repairable.
+        let model_config = match row.model_config.clone() {
+            Some(model_config) => model_config,
+            None => {
+                let model_name = Config::global()
+                    .get_biorouter_model()
+                    .map_err(|e| anyhow!("no model recorded for this session: {e}"))?;
+                crate::model::ModelConfig::new(&model_name)?
+            }
+        };
+
+        #[cfg(test)]
+        let provider = match seams::rebind_override(&row.id, &provider_name) {
+            Some(provider) => provider,
+            None => crate::providers::create(&provider_name, model_config).await?,
+        };
+        #[cfg(not(test))]
+        let provider = crate::providers::create(&provider_name, model_config).await?;
+
+        if !crate::privacy::bind_allowed(provider.tier(), row.privacy_tier) {
+            return Ok(false);
+        }
+        *self.provider.lock().await = Some(provider);
+        Ok(true)
     }
 
     /// BR-63: set the session's sticky reasoning effort (`/effort <level>`).
@@ -3185,8 +3774,15 @@ impl Agent {
                 .arguments
                 .map(Value::Object)
                 .unwrap_or(Value::Object(serde_json::Map::new()));
+            // Issue #56: the schedule branch returns from `dispatch_tool_call`
+            // BEFORE the agent loop's own sample below, so `platform__manage_schedule`
+            // had no capability in scope at all — and two of its actions read
+            // another chat's content. Sampled here, on the same provider mutex and
+            // for the same reason: the value the call is granted must be fixed
+            // before the call runs, not re-read while it runs.
+            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
             let result = self
-                .handle_schedule_management(arguments, request_id.clone())
+                .handle_schedule_management(arguments, request_id.clone(), &session.id, cap)
                 .await;
             let wrapped_result = result.map(|content| CallToolResult {
                 content,
@@ -3333,12 +3929,20 @@ impl Agent {
             // resolved secret there would leak. No-op unless a vault is installed.
             self.apply_vault(&mut tool_call).await;
 
+            // Issue #56: THE sample for the agent loop's tool calls. Taken here,
+            // once, and carried the rest of the way — every barrier downstream
+            // reads this value rather than the provider mutex, so a swap that
+            // lands while the call sits behind the dispatch semaphore cannot
+            // change what the call already got permission to do.
+            let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+
             // Clone the result to ensure no references to extension_manager are returned
             let result = self
                 .extension_manager
                 .dispatch_tool_call(
                     &session.id,
                     tool_call.clone(),
+                    cap,
                     cancellation_token.unwrap_or_default(),
                 )
                 .await;
@@ -3411,6 +4015,18 @@ impl Agent {
             Ok(ToolCallResult {
                 notification_stream: result.notification_stream,
                 result: Box::new(Box::pin(async move {
+                    // Issue #56: the far side of the permit-to-execution gap.
+                    // A test parks here to prove that a provider swap landing
+                    // between admission and execution does NOT change what this
+                    // call may do. Keyed on this call's session and tool name so
+                    // it can only catch the dispatch that armed it. Compiled out
+                    // entirely in a non-test build.
+                    #[cfg(test)]
+                    seams::dispatch_queue_hold(
+                        &large_response_ctx.session_id,
+                        &large_response_ctx.tool_name,
+                    )
+                    .await;
                     let _dispatch_guard = if bound_dispatch {
                         Some(
                             super::tool_dispatch_limits::acquire(
@@ -3807,7 +4423,37 @@ impl Agent {
         }
     }
 
+    /// The tool list as the MODEL will see it. Issue #56 Gate E applies: a
+    /// public model gets no private extension's tool names, descriptions or JSON
+    /// schemas. Every model-facing caller — the turn's tool list, a subagent's,
+    /// the prompt builders — uses this one.
     pub async fn list_tools(&self, session_id: &str, extension_name: Option<String>) -> Vec<Tool> {
+        self.list_tools_for(session_id, extension_name, ToolAudience::Model)
+            .await
+    }
+
+    /// The tool list as the PERMISSION EDITOR will show it — Settings →
+    /// Extensions → tool permissions, and `biorouter configure`'s tool selector.
+    ///
+    /// ⚠ Not tier-filtered, by decision. See
+    /// [`ExtensionManager::get_prefixed_tools_unfiltered`] for why: the reader
+    /// here is the human who installed the private extension, not the model, and
+    /// a tool that is not listed cannot have its permission set.
+    pub async fn list_tools_for_permission_settings(
+        &self,
+        session_id: &str,
+        extension_name: Option<String>,
+    ) -> Vec<Tool> {
+        self.list_tools_for(session_id, extension_name, ToolAudience::PermissionEditor)
+            .await
+    }
+
+    async fn list_tools_for(
+        &self,
+        session_id: &str,
+        extension_name: Option<String>,
+        audience: ToolAudience,
+    ) -> Vec<Tool> {
         // BR-71 decision 21: the workspace extension is the ONE spawn
         // implementation, so a session that may delegate must have it LOADED
         // before the tool list is read. When the user enabled `workspace`
@@ -3833,11 +4479,19 @@ impl Agent {
             self.revoke_spawn_extension().await;
         }
 
-        let mut prefixed_tools = self
-            .extension_manager
-            .get_prefixed_tools(extension_name.clone())
-            .await
-            .unwrap_or_default();
+        let mut prefixed_tools = match audience {
+            ToolAudience::Model => {
+                self.extension_manager
+                    .get_prefixed_tools(extension_name.clone())
+                    .await
+            }
+            ToolAudience::PermissionEditor => {
+                self.extension_manager
+                    .get_prefixed_tools_unfiltered(extension_name.clone())
+                    .await
+            }
+        }
+        .unwrap_or_default();
 
         // Revoking the injection is necessary but not sufficient. `subagent` is
         // one of the workspace extension's OWN tools now, so a user who enabled
@@ -4089,6 +4743,126 @@ impl Agent {
                 NeverYielded::ClientAuthoredPrompt,
             );
             return Ok(Box::pin(stream::iter(published.into_iter().map(Ok))));
+        }
+
+        // Issue #56 Gate B. Placed AFTER the elicitation early-returns above:
+        // an elicitation answer is a user action on a parked tool call, not a
+        // disclosure, and refusing it at the literal top of `reply` silently
+        // drops the answer and the daemon-restart notice. Placed BEFORE
+        // `restore_goal` so nothing runs on a session we are about to refuse.
+        //
+        // Repair-first, and the repair is the common case: LRU rehydration,
+        // `restore_provider_from_session`'s Config::global() fallback, a
+        // pre-fix diverge and every legacy row all land here.
+        let privacy_row = session_manager
+            .get_session(&session_config.id, false)
+            .await
+            .ok();
+        let mut privacy_refusal: Option<String> = None;
+        // DR-15's master opt-out. ONE read for this seam, used by both halves —
+        // the turn barrier below and DR-4's turn ratchet under it — so the two
+        // cannot be observed at different instants and a turn cannot be refused
+        // while its classification write is skipped, or the reverse.
+        //
+        // A direct read, not a `CallCapability`: a turn is not a tool call and
+        // has no admitted capability to inherit. AR-7 is explicit that the
+        // toggle stops the classification ratchet along with the gates — a
+        // classification written while the user believes the feature is off is
+        // permanent, because `privacy_tier` is monotone and re-enabling never
+        // revisits a row.
+        let privacy_enforced = crate::privacy::privacy_tiers_enabled();
+        if let Some(row) = privacy_row.as_ref() {
+            let bound = self.bound_provider_unchecked().await;
+            // No provider bound at all reads as Public — the fail-SAFE side.
+            // Public is the less privileged tier, so an agent with nothing
+            // bound gets the repair attempt rather than a free pass.
+            let bound_tier = bound
+                .as_ref()
+                .map(|provider| provider.tier())
+                .unwrap_or(ProviderTier::Public);
+            if privacy_enforced && !crate::privacy::bind_allowed(bound_tier, row.privacy_tier) {
+                match self.rebind_from_row(row).await {
+                    // 2. The row still names a provider whose tier satisfies
+                    //    the classification: rebind and continue silently.
+                    Ok(true) => {}
+                    // 3. Otherwise refuse THIS TURN. The row is untouched, so
+                    //    the repair card can still offer the one-click fix.
+                    _ => privacy_refusal = Some(crate::privacy::refusal::turn_refusal(row)),
+                }
+            }
+            // 1. The ratchet. It fires HERE and on a permitted private-extension
+            //    dispatch (Gate C) — never on the bind (O5).
+            //
+            // ⚠ It samples the binding ONCE, at the seam. A `/model` switch to a
+            // private provider that lands mid-turn therefore runs that turn
+            // against a row still classified public, and the ratchet catches it
+            // on the NEXT turn. That is under-classification for one turn, never
+            // over-disclosure: Gate A independently refuses the dangerous
+            // direction (a public provider bound to a private row), so the only
+            // thing the window costs is that Gate D would let a public model
+            // read this turn's transcript before the ratchet lands. Inherent to
+            // "ratchet on the turn" rather than on the bind, which is O5's
+            // deliberate trade, and recorded here because it was not.
+            let mut classification = row.privacy_tier;
+            if privacy_enforced && privacy_refusal.is_none() {
+                if let Some(provider) = self.bound_provider_unchecked().await {
+                    let f = crate::privacy::floor(provider.tier());
+                    if f > row.privacy_tier {
+                        session_manager
+                            .update(&session_config.id)
+                            .raise_privacy(f, &format!("turn:{}", provider.get_name()))
+                            .apply()
+                            .await?;
+                        classification = f;
+                    }
+                }
+            }
+            // ⚠ The POST-ratchet classification, not the row's. A turn that
+            // has just raised the session to Private must not leave the cache
+            // saying Public, or the auto-naming call that runs the moment this
+            // stream ends is the first thing to walk through Gate B'.
+            self.cached_classification
+                .store(&session_config.id, classification);
+            // Issue #56 Gate H. The hooks manager resolves a prompt hook's own
+            // provider — an endpoint named by config.yaml or by an agent-writable
+            // `.biorouter/hooks.yaml`, which the session row never records — and
+            // the Stop hook it fires below carries `transcript_tail`. Mirrored
+            // from the SAME value stored above, at the same seam, so the two
+            // cannot disagree about this turn — and keyed by the SAME session
+            // id, so an agent shared across chats (`biorouter web`) cannot have
+            // one turn's classification answer another turn's hook.
+            self.hooks_manager
+                .set_session_classification(&session_config.id, classification);
+        } else {
+            // No row. There is no classification to honour and no content to
+            // protect, but there is also no way to tell "this id names nothing"
+            // from "the read failed" — so fail closed. It costs no liveness:
+            // `RewriteBasis::read_with_session` below reads the same row with a
+            // `?`, so a turn that gets here without one was already over.
+            self.cached_classification
+                .store(&session_config.id, SessionClassification::Private);
+            self.hooks_manager
+                .set_session_classification(&session_config.id, SessionClassification::Private);
+        }
+        // ⚠ A refusal is a YIELD, never an `Err` out of `reply`: `reply`
+        // returns `Result<BoxStream<..>>`, and an `Err` here surfaces as a 500
+        // from `/reply` instead of a message the user can act on. The precedent
+        // is the compaction-failure arm further down, which yields its message
+        // and returns rather than failing the stream.
+        //
+        // It returns its own stream rather than setting a flag the main
+        // `try_stream!` reads, and that is a DEVIATION from the plan's sketch
+        // with a reason: between this seam and that stream the prologue fires
+        // SessionStart/UserPromptSubmit hooks, runs `execute_command`, persists
+        // the prompt, and calls `self.provider().await?` for the compaction
+        // check — which, with Gate B' live, is exactly the `Err` out of `reply`
+        // the paragraph above forbids. "Nothing runs on a session we are about
+        // to refuse" is only true if the refusal returns here.
+        if let Some(text) = privacy_refusal {
+            let refused: BoxStream<'_, Result<AgentEvent>> = Box::pin(async_stream::try_stream! {
+                yield AgentEvent::Message(Message::assistant().with_text(text));
+            });
+            return Ok(refused);
         }
 
         // A daemon restart drops the in-memory goal registry and its Stop-hook
@@ -6558,19 +7332,300 @@ impl Agent {
     ) -> Result<()> {
         let provider_name = provider.get_name().to_string();
         let model_config = provider.get_model_config();
+        let tier = provider.tier();
+        let model_config_json = serde_json::to_string(&model_config)
+            .context("Failed to serialize the provider's model config")?;
 
-        let mut current_provider = self.provider.lock().await;
-        *current_provider = Some(provider);
-
-        self.config
+        // Issue #56 Gate A. Persist FIRST: the in-memory swap used to precede
+        // the persist, so a refused write would leave the chat running on the
+        // refused model. The invariant this establishes is one sentence, and it
+        // is narrower than it looks: **a bind is never accepted against a row
+        // that is already private.** NOT "the provider bound to a private
+        // session is always private" — a ratchet that commits after a legal
+        // bind produces (private, public provider), and that residual is Gate
+        // B's, not this gate's.
+        //
+        // ⚠ There is NO seam at this line. The before-write rendezvous lives
+        // inside the storage helper called below, between any read that function
+        // does and the statement that writes — see its doc comment. A seam here
+        // parks before the helper is entered and therefore cannot tell a
+        // conditional UPDATE from a SELECT-then-UPDATE, which is the exact
+        // implementation Gate A exists to reject.
+        match self
+            .config
             .session_manager
-            .clone()
-            .update(session_id)
-            .provider_name(&provider_name)
-            .model_config(model_config)
-            .apply()
+            .storage()
+            .bind_provider_if_allowed(
+                session_id,
+                &provider_name,
+                &model_config_json,
+                tier.is_private(),
+            )
             .await
-            .context("Failed to persist provider config to session")
+            .context("Failed to persist provider config to session")?
+        {
+            BindOutcome::Bound => {
+                // Issue #56 Gate B'. A bind Gate A's `WHERE` clause ACCEPTED is
+                // an observation about the row, and until this agent's next
+                // `reply` it is the only one it has: `AND (privacy_tier =
+                // 'public' OR ? = 1)` admits a PUBLIC provider only when the
+                // row is public. So a successful public bind *reads* the
+                // classification off the gate's own outcome — it does not
+                // derive one from a tier, which is what `privacy::floor` is for
+                // and why this is not a second crossing between the lattices.
+                //
+                // Without it the cache stays at its fail-closed `Private`
+                // default and `provider()` refuses the very provider that was
+                // just legally bound — which is a startup failure on every
+                // fresh public session (the CLI asserts `provider()` before its
+                // first turn), not a privacy control.
+                //
+                // A successful PRIVATE bind teaches nothing: it is admitted
+                // against either classification. The cache is left alone, and a
+                // private provider satisfies Gate B' whatever it says.
+                //
+                // ⚠ DR-15's master opt-out belongs in this condition, and it is
+                // not a refusal — it is what keeps the sentence above TRUE. With
+                // the toggle off the `WHERE` clause admits every bind, so an
+                // accepted public bind is no longer an observation about the
+                // row, and storing `Public` would leave the cache asserting
+                // something the gate never checked. Turning the feature back on
+                // would then hand Gate B' a stale `Public` for a row that is
+                // still marked private, until the next `reply` re-read it.
+                // Skipping the store instead leaves the fail-closed `Private`
+                // default, which `reply` repairs on the next turn.
+                if !tier.is_private() && crate::privacy::privacy_tiers_enabled() {
+                    self.cached_classification
+                        .store(session_id, SessionClassification::Public);
+                }
+            }
+            BindOutcome::RefusedByPrivacy => {
+                return Err(PrivacyRefusal::PublicModelOnPrivateSession {
+                    session_id: session_id.to_string(),
+                    provider: provider_name,
+                }
+                .into());
+            }
+            // ⚠ DEVIATION FROM THE PLAN, DELIBERATE. The plan returned
+            // `Err(anyhow!("No such session"))` here. That is not this task's
+            // change to make: an `UPDATE` matching no row has never been an
+            // error in this tree, and four existing tests depend on it — most
+            // explicitly `a_run_that_panics_before_the_stream_still_closes_its_bracket`
+            // (`subagent_handler.rs`), whose entire premise is that the two `?`
+            // exits in the bracket window "cannot be made to fail for any input
+            // a caller controls" *because* an UPDATE matching no row is not an
+            // error. Turning a silent no-op into a hard error is an unrelated
+            // behaviour change with a blast radius no test in this plan covers.
+            //
+            // The distinction the three-way outcome exists for is untouched and
+            // is what matters: an id that names no row must NEVER be reported
+            // as a privacy refusal, because a stale or mistyped id would then
+            // reach the user as "this chat is private". A row that does not
+            // exist has no classification to violate, so there is nothing to
+            // refuse — the persist is skipped and the in-memory swap proceeds,
+            // exactly as before #56.
+            BindOutcome::NoSuchSession => {
+                tracing::warn!(
+                    session_id,
+                    provider = provider_name,
+                    "bound a provider in memory for a session with no row; nothing persisted"
+                );
+            }
+        }
+
+        #[cfg(test)]
+        seams::after_bind_before_swap().await;
+        {
+            let mut current_provider = self.provider.lock().await;
+            *current_provider = Some(provider);
+        }
+
+        // Issue #56 Task 48, DR-26's third axis at the BIND surface. Binding a
+        // model covered by one institution's agreements into a chat holding
+        // another institution's connectors is the same mismatch the enable path
+        // sees from the other end, and it is discovered here first because the
+        // extensions were already attached.
+        //
+        // ⚠ **It warns; it does not refuse, and it must not.** Gate A above
+        // refuses a bind on the TIER axis because a public model in a private
+        // chat is a capability the row forbids. Affiliation is not that: both
+        // endpoints are Private, legitimate cross-institutional work under a
+        // real DUA exists, and a blocked-outright design is one researchers
+        // route around by turning the feature off (DR-19, DR-26). Refusing here
+        // would also strand a chat — the model is bound, so the only exit would
+        // be removing extensions the user cannot see the reason for.
+        //
+        // The log is not the product — it is the support transcript's copy of a
+        // statement the user gets separately. DR-26's user-facing statement at a
+        // bind is [`Self::cross_affiliation_notice`], which wraps the same query
+        // this loop reads and which `POST /agent/update_provider` returns in its
+        // 200 body for the model picker to show. Before that existed this loop
+        // WAS the whole of the bind surface's DR-26 story, and a user watching
+        // the screen was told nothing until they tried to use the connector.
+        //
+        // ⚠ **This loop must stay a log and must not become the surface.** It
+        // runs inside `update_provider`, which every non-HTTP bind path also
+        // calls — the CLI's `configure`/`web`/session builder, the scheduler,
+        // ACP, the apps runtime — and none of those has a user watching. The
+        // statement is *pulled* by the surface that has one, which is why the
+        // notice is a method rather than a side effect here.
+        //
+        // ⚠ On the RESTART path this can legitimately log nothing:
+        // `restore_provider_from_session` is `tokio::join!`ed with
+        // `load_extensions_from_session`, so the extension set may still be
+        // filling when this runs. That is why the query — not this loop — is
+        // what a surface asks; a log line that raced is a missing log line, and
+        // every gate that refuses reads the set at the moment it decides.
+        for (extension, warning) in self.cross_affiliation_warnings().await {
+            tracing::warn!(session_id, provider = provider_name, extension, "{warning}");
+        }
+        Ok(())
+    }
+
+    /// Every enabled extension the model bound **right now** is affiliation-
+    /// incompatible with, as `(extension key, the warning)` — DR-26.
+    ///
+    /// This is the bind surface's user-facing half: "this model is incompatible
+    /// with N enabled extensions", stated specifically enough to act on. It
+    /// decides nothing and blocks nothing; a mismatch warns and asks, and the
+    /// user may proceed.
+    ///
+    /// Empty is the normal answer — for every public model (the tier gates own
+    /// those), for every local model (`Local` reaches everything private,
+    /// because no transfer occurs at all), and for a model bound to the same
+    /// institution as the extensions it can see.
+    ///
+    /// ⚠ **Empty in `open`, too** (issue #56 Task 52, DR-27), through
+    /// [`crate::privacy::affiliation::refusing_mismatches`] — the ONE place that
+    /// setting is read. This is the sentence a user is shown so they can decide
+    /// whether to proceed, and DR-27's `open` is *allowed silently*; the log line
+    /// at the bind and `/agent/add_extension`'s are the same statement from the
+    /// two ends, so they must not disagree about whether to speak.
+    ///
+    /// ⚠ **The RESOLUTION behind it is not narrowed and must not be.** DR-27
+    /// requires the compatibility result to stay computed and available, so
+    /// `ExtensionManager::extension_reach` still marks in `open`, and
+    /// [`Self::cross_affiliation_grant_subject`] — which reads the extension
+    /// manager's list directly rather than through this method — still finds its
+    /// subject in all three modes.
+    pub async fn cross_affiliation_warnings(&self) -> Vec<(String, String)> {
+        crate::privacy::affiliation::refusing_mismatches(
+            self.extension_manager
+                .cross_affiliation_warnings(None)
+                .await,
+        )
+    }
+
+    /// What separates one warning from the next in
+    /// [`Self::cross_affiliation_notice`]'s body.
+    ///
+    /// ⚠ **A wire detail, mirrored in `ui/desktop/src/utils/crossAffiliation.ts`
+    /// as `CROSS_AFFILIATION_NOTICE_SEPARATOR`.** A blank line rather than a
+    /// newline, because each warning is a full sentence naming two institutions
+    /// and a run-together pair reads as one confused claim about three.
+    pub const CROSS_AFFILIATION_NOTICE_SEPARATOR: &'static str = "\n\n";
+
+    /// DR-26's statement for the two surfaces that **warn and proceed** — the
+    /// bind (`POST /agent/update_provider`) and the user's own enable
+    /// (`POST /agent/add_extension`) — as one body they return to the person who
+    /// just acted. Empty means there is nothing to say.
+    ///
+    /// ⚠ **This exists because the ruling was log-only where it mattered.**
+    /// [`Self::cross_affiliation_warnings`] has been correct since Task 48 and
+    /// was read by nothing a user could see: `update_provider`'s `tracing::warn!`
+    /// loop and `/agent/add_extension`'s were the only callers, so a researcher
+    /// enabling another institution's connector from Settings was told nothing at
+    /// all. The gate was fine; the sentence never left the daemon.
+    ///
+    /// ⚠ **It removes flows the user has already accepted, and `model` is what
+    /// makes that safe.** A grant is keyed on (session, extension, model
+    /// affiliation), so the affiliation passed here has to be the one the caller
+    /// actually bound or attached against — never a fresh sample. Both callers
+    /// hold the authoritative value: `update_provider` holds the provider it just
+    /// created, `add_extension` the one it read once for both privacy axes. A
+    /// re-read here would be the read-then-read `CallCapability` exists to
+    /// collapse, and getting it wrong in the permissive direction means
+    /// suppressing a warning against the wrong institution's acceptance.
+    ///
+    /// ⚠ **Suppression is narrow, and the narrowness is the point.** A bind to a
+    /// *different* institution's model produces a different key, so no earlier
+    /// acceptance can cover it and the user is asked again — which is DR-26's
+    /// intent, not a redundancy. What is suppressed is only the case where the
+    /// user has already said yes to this exact triple at a dispatch, where
+    /// repeating the warning would state a boundary the daemon has already agreed
+    /// to let them cross.
+    ///
+    /// ⚠ **Fail-loud, not fail-quiet.** [`crate::privacy::grant::is_granted`]
+    /// answers `false` for an unreadable store, so a database hiccup makes this
+    /// warn where it might not have needed to. That is the only acceptable
+    /// direction: the opposite would silently withhold a privacy statement.
+    ///
+    /// ⚠ **The one window this does NOT close, written down rather than left to
+    /// be discovered.** The warnings come from
+    /// [`Self::cross_affiliation_warnings`], which samples the provider mutex
+    /// itself, while `model` was read by the caller earlier in its own handler.
+    /// A concurrent `update_provider` on the SAME chat between those two reads
+    /// would have this suppress a warning about the newly bound model on an
+    /// acceptance recorded for the old one — and that direction fails OPEN, so it
+    /// is not a nicety. Closing it needs the warnings and the affiliation to come
+    /// off one [`crate::privacy::CallCapability`], the way
+    /// [`Self::cross_affiliation_grant_subject`] does; that is a change inside
+    /// `ExtensionManager::cross_affiliation_warnings`, not here. What bounds it
+    /// meanwhile: both callers are user actions on one chat, which the GUI
+    /// serialises, and the residue is one unshown warning for a connector the
+    /// same user already accepted under a neighbouring model.
+    pub async fn cross_affiliation_notice(
+        &self,
+        session_id: &str,
+        model: Option<crate::privacy::ModelAffiliation>,
+    ) -> String {
+        let mut speak: Vec<String> = Vec::new();
+        for (extension, warning) in self.cross_affiliation_warnings().await {
+            if crate::privacy::grant::is_granted(
+                &self.config.session_manager,
+                session_id,
+                &extension,
+                model,
+            )
+            .await
+            {
+                continue;
+            }
+            speak.push(warning);
+        }
+        speak.join(Self::CROSS_AFFILIATION_NOTICE_SEPARATOR)
+    }
+
+    /// Task 49 (DR-26): everything the grant route needs about ONE extension,
+    /// from ONE sample — the warning the user is being asked to accept, and the
+    /// model affiliation the grant will be keyed on.
+    ///
+    /// `None` means there is nothing to accept: the extension is not enabled in
+    /// this chat, or the model bound right now is compatible with it. The route
+    /// turns that into a refusal rather than recording a grant, because DR-26's
+    /// whole premise is that a user accepts a risk **that was stated to them** —
+    /// a grant with no live mismatch behind it is a pre-authorisation for a flow
+    /// nobody has described yet.
+    ///
+    /// ⚠ **The two values come from one `CallCapability`, and that is the point
+    /// of the method existing at all.** `Agent::update_provider` reassigns the
+    /// provider mutex with no turn lock, so asking for the warning and then
+    /// asking for the affiliation is the read-then-read that type exists to
+    /// collapse: the user would be shown institution A's statement and the grant
+    /// would be recorded against institution B's model — an acceptance of a
+    /// sentence the user never read.
+    pub async fn cross_affiliation_grant_subject(
+        &self,
+        extension: &str,
+    ) -> Option<(Option<crate::privacy::ModelAffiliation>, String)> {
+        let cap = crate::privacy::CallCapability::sample(&self.provider).await;
+        let key = crate::config::extensions::name_to_key(extension);
+        self.extension_manager
+            .cross_affiliation_warnings(Some(cap))
+            .await
+            .into_iter()
+            .find(|(name, _)| crate::config::extensions::name_to_key(name) == key)
+            .map(|(_, warning)| (cap.affiliation(), warning))
     }
 
     /// Restore the provider from session data or fall back to global config
@@ -6599,6 +7654,36 @@ impl Agent {
             .await
             .map_err(|e| anyhow!("Could not create provider: {}", e))?;
 
+        // ⚠ Issue #56. This re-binds the row's OWN recorded provider, and Gate A
+        // can refuse it: a row that is (private, public `provider_name`) makes
+        // this return `PrivacyRefusal`, which `?`-propagates into resume,
+        // restart and the injected-turn path, leaving the chat UNOPENABLE
+        // rather than repairable.
+        //
+        // ⚠ This comment used to say "unreachable today: nothing in production
+        // writes `privacy_tier = 'private'` yet", and addressed itself to Gate
+        // B's task. Gate B has landed — its ratchet in `reply` is now exactly
+        // that writer — so the premise is gone and the note is corrected rather
+        // than deleted. Gate B deliberately did NOT change this site, for a
+        // reason worth writing down: **Gate B's repair does not apply here.**
+        // That repair works by rebinding the provider the ROW names, which
+        // helps only when the live agent is holding something else. This site
+        // is already binding the row's own provider, so when the row itself is
+        // the inconsistent pair there is nothing to rebind to and no repair a
+        // rebind can perform.
+        //
+        // Reachability today is narrow but no longer nil. Every in-process
+        // sequence keeps the row's `provider_name` in step with the tier — the
+        // ratchet only fires with a private provider bound, and every bind path
+        // writes the row and the binding together — so producing the pair takes
+        // a row edited outside this agent's lifetime: a second process on the
+        // same session, a row restored from a backup, or a `provider_name` whose
+        // tier changed in the catalog under a session already ratcheted.
+        //
+        // Swallowing the refusal here is NOT the fix — it would run a public
+        // model against a private session, which is the one thing Gate A exists
+        // to stop. The fix is the repair card reaching this site and not only
+        // `reply`, which needs a UI surface that does not exist yet.
         self.update_provider(provider, &session.id).await
     }
 
@@ -8065,6 +9150,7 @@ mod tests {
                     ),
                     task: None,
                 },
+                crate::privacy::CallCapability::for_test_restricted(),
                 tokio_util::sync::CancellationToken::new(),
             )
             .await;
@@ -9247,6 +10333,1653 @@ mod persisted_ordering_guard {
             "the ordering seam grew (or lost) a shape. Each name is a claim \
              about when a `MessagesPersisted` may be emitted; adding one means \
              adding a case to the audit."
+        );
+    }
+}
+
+/// Issue #56, Gate A: the bind refuses a public model on a private session, and
+/// it does so in SQL rather than in Rust, so a concurrent ratchet cannot
+/// interleave into "private session, public provider bound".
+///
+/// The two forced-interleaving tests drive the rendezvous points in [`seams`].
+/// Both wrap the spawned bind in [`seams::armed`], under the token their own
+/// `arm_*` call minted — see the note above those statics for why a bind must
+/// opt in, and why the token has to name which seam it may be caught at.
+#[cfg(test)]
+mod gate_a_bind_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::privacy::refusal::PrivacyRefusal;
+    use crate::privacy::{bind_allowed, ProviderTier, SessionClassification};
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::{Session, SessionType};
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// A real `Provider` whose only interesting property is its tier. The gate
+    /// reads `tier()` and `get_name()`/`get_model_config()`, and nothing here
+    /// ever completes a turn.
+    struct TieredProvider {
+        name: &'static str,
+        model: &'static str,
+        tier: ProviderTier,
+    }
+
+    #[async_trait]
+    impl Provider for TieredProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("tiered", "Tiered", "", "tiered-model", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new(self.model.to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail(self.model)
+        }
+    }
+
+    fn private_provider() -> Arc<dyn Provider> {
+        Arc::new(TieredProvider {
+            name: "versa_azure",
+            model: "gpt-5.5",
+            tier: ProviderTier::Private,
+        })
+    }
+
+    fn private_provider2() -> Arc<dyn Provider> {
+        Arc::new(TieredProvider {
+            name: "ollama",
+            model: "qwen3.6",
+            tier: ProviderTier::Private,
+        })
+    }
+
+    fn public_provider() -> Arc<dyn Provider> {
+        Arc::new(TieredProvider {
+            name: "anthropic",
+            model: "claude-opus-4",
+            tier: ProviderTier::Public,
+        })
+    }
+
+    /// An agent over an isolated session store, already bound to `provider`.
+    ///
+    /// The `TempDir` is returned because dropping it deletes the SQLite file the
+    /// agent is still holding; every caller binds it for the test's lifetime.
+    /// `Arc<Agent>` because `Agent` is not `Clone` and the race tests hand a
+    /// handle to a spawned task.
+    async fn agent_on(provider: Arc<dyn Provider>) -> (TempDir, Arc<Agent>, Session) {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "gate-a".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        agent.update_provider(provider, &session.id).await.unwrap();
+        (dir, agent, session)
+    }
+
+    fn manager(agent: &Agent) -> Arc<SessionManager> {
+        agent.config.session_manager.clone()
+    }
+
+    async fn ratchet_to_private(sm: &SessionManager, id: &str) {
+        sm.update(id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+    }
+
+    async fn ratchet_to_private_owned(sm: Arc<SessionManager>, id: String) {
+        ratchet_to_private(&sm, &id).await;
+    }
+
+    async fn reread(sm: &SessionManager, id: &str) -> Session {
+        sm.get_session(id, false).await.unwrap()
+    }
+
+    fn model_name_of(row: &Session) -> String {
+        row.model_config
+            .as_ref()
+            .expect("a bound session carries a model config")
+            .model_name
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn a_public_provider_cannot_be_bound_to_a_private_session() {
+        let (_dir, agent, session) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &session.id).await;
+
+        let err = agent
+            .update_provider(public_provider(), &session.id)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<PrivacyRefusal>(),
+                Some(PrivacyRefusal::PublicModelOnPrivateSession { .. })
+            ),
+            "expected a typed privacy refusal, got: {err}"
+        );
+
+        // The half that catches the wrong implementation: before this task the
+        // in-memory swap PRECEDED the persist. A gate that checks the row but
+        // leaves that order alone refuses the write and still leaves the chat
+        // running on the public model in memory.
+        assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+        // And the row is untouched.
+        assert_eq!(
+            reread(&sm, &session.id).await.provider_name.as_deref(),
+            Some("versa_azure")
+        );
+    }
+
+    #[tokio::test]
+    async fn a_private_provider_binds_to_anything_at_the_agent_layer() {
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        // upward: user-only. Deliberately inverted by DR-16 (was `// upward:
+        // fine`). The AGENT-level bind stays legal, because it is below the
+        // gate: session restore, the CLI and the apps runtime all bind upward
+        // legitimately. The gate is one layer up, on the only channel a model
+        // can reach — see Task 18A, whose
+        // `all_four_raise_channels_call_the_guard` is the assertion that the
+        // HTTP raise is refused.
+        agent
+            .update_provider(private_provider(), &s.id)
+            .await
+            .unwrap();
+
+        let (_dir2, agent2, s2) = agent_on(private_provider()).await;
+        ratchet_to_private(&manager(&agent2), &s2.id).await;
+        agent2
+            .update_provider(private_provider2(), &s2.id)
+            .await
+            .unwrap(); // private->private
+    }
+
+    #[tokio::test]
+    async fn the_sql_predicate_and_bind_allowed_agree_on_every_combination() {
+        // `privacy::bind_allowed` reads as Gate A's predicate, but Gate A does
+        // not call it — the live gate is the `WHERE` clause, because a predicate
+        // evaluated in Rust leaves the window the tests above force a ratchet
+        // into. Two spellings of one rule, in two languages, with nothing making
+        // them agree: relaxing either alone is silent.
+        //
+        // It is not a cosmetic drift. `visible_to` (Gate D — which chats a
+        // caller may SEE, and which conversations may be ingested) delegates to
+        // `bind_allowed`, and the induction in `privacy::tests` uses it as its
+        // admission gate. That test says so itself: "whichever task first wires
+        // Gate A owes it one, and must not read this test as already covering
+        // it." This pays that debt, against the live statement rather than a
+        // second copy of the predicate.
+        for incoming in [ProviderTier::Public, ProviderTier::Private] {
+            for classification in [
+                SessionClassification::Public,
+                SessionClassification::Private,
+            ] {
+                let (_dir, agent, s) = agent_on(private_provider()).await;
+                let sm = manager(&agent);
+                if classification == SessionClassification::Private {
+                    ratchet_to_private(&sm, &s.id).await;
+                }
+
+                let outcome = sm
+                    .storage()
+                    .bind_provider_if_allowed(&s.id, "p", "{}", incoming.is_private())
+                    .await
+                    .unwrap();
+
+                assert_eq!(
+                    outcome == BindOutcome::Bound,
+                    bind_allowed(incoming, classification),
+                    "Gate A's WHERE clause and privacy::bind_allowed disagree for a \
+                     {incoming:?} provider on a {classification:?} session: the statement \
+                     said {outcome:?}"
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_nonexistent_session_is_not_reported_as_a_privacy_refusal() {
+        // `rows_affected == 0` means BOTH "the row is private and this model is
+        // public" AND "there is no row with that id". Collapsing them is the one
+        // way the first test in this module can lie: against a stale fixture id
+        // it would pass for entirely the wrong reason, and in production a
+        // mistyped id would reach the user as "this chat is private".
+        //
+        // Asserted at the layer that owns the distinction, which is stronger
+        // than a `downcast_ref(..).is_none()` on the caller's error: it names
+        // which of the three outcomes was produced.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &s.id).await;
+
+        assert_eq!(
+            sm.storage()
+                .bind_provider_if_allowed("no-such-session-id", "anthropic", "{}", false)
+                .await
+                .unwrap(),
+            BindOutcome::NoSuchSession
+        );
+        // …and the same zero, on a row that DOES exist, is the refusal.
+        assert_eq!(
+            sm.storage()
+                .bind_provider_if_allowed(&s.id, "anthropic", "{}", false)
+                .await
+                .unwrap(),
+            BindOutcome::RefusedByPrivacy
+        );
+
+        // The caller therefore sees no refusal for a bad id. It is not an error
+        // either — see the ⚠ on `update_provider`'s `NoSuchSession` arm.
+        agent
+            .update_provider(public_provider(), "no-such-session-id")
+            .await
+            .expect("a bind against an id with no row persists nothing and refuses nothing");
+    }
+
+    #[tokio::test]
+    async fn a_bind_is_never_accepted_against_a_row_that_is_already_private() {
+        // Interleaving (A), FORCED: the ratchet commits strictly BEFORE the
+        // bind's UPDATE runs. This is the case the conditional UPDATE exists
+        // for, and the one nothing could previously produce.
+        //
+        // The seam's position is the test. `before_bind_write` is called INSIDE
+        // `bind_provider_if_allowed`, as the last statement before `.execute`.
+        // Parked there, a `SELECT privacy_tier` + unconditional `UPDATE` helper
+        // reads Public, parks, lets the ratchet commit, and then writes anyway
+        // — which is the bug, and this assertion is what sees it. Parked before
+        // the helper was even entered (its previous position), that same wrong
+        // helper would run its SELECT after the ratchet and refuse for a
+        // right-looking reason.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+
+        let reached = seams::arm_before_bind_write();
+        let bind = tokio::spawn(seams::armed(reached.token(), {
+            let a = Arc::clone(&agent);
+            let id = s.id.clone();
+            async move { a.update_provider(public_provider(), &id).await }
+        }));
+        let release = reached.arrived().await; // parked INSIDE the helper, after any read
+        ratchet_to_private(&sm, &s.id).await; // runs alone, to completion
+        release.send(()).unwrap();
+
+        let err = bind.await.unwrap().unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<PrivacyRefusal>(),
+                Some(PrivacyRefusal::PublicModelOnPrivateSession { .. })
+            ),
+            "the WHERE clause did not see a ratchet that committed before it — \
+             either the predicate is evaluated in Rust before the UPDATE, or the \
+             seam drifted back out of bind_provider_if_allowed"
+        );
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(
+            row.provider_name.as_deref(),
+            Some("versa_azure"),
+            "a refused bind wrote anyway"
+        );
+        assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+    }
+
+    #[tokio::test]
+    async fn a_ratchet_that_commits_after_a_legal_bind_lands_in_the_state_gate_b_owns() {
+        // Interleaving (B), FORCED: the ratchet commits AFTER the bind's UPDATE
+        // and BEFORE the in-memory swap. Both statements were legal when they
+        // ran, so both succeed and the row ends (private, anthropic).
+        //
+        // THIS IS NOT A BUG. "The provider bound to a private session is always
+        // private" is not a sentence a conditional UPDATE can deliver. What it
+        // delivers is narrower and exact: *a bind is never accepted against a
+        // row that is already private*. A ratchet landing after a legal bind is
+        // a different event, and the state it produces — private row, public
+        // `provider_name` — is the SAME residual an LRU rehydration, a legacy
+        // row and `restore_provider_from_session`'s `Config::global()` fallback
+        // all produce. Task 13's
+        // `an_unrepairable_mismatch_refuses_this_turn_and_leaves_the_row_alone`
+        // is what owns it, and the repair card is what fixes it.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+
+        let reached = seams::arm_after_bind_before_swap();
+        let bind = tokio::spawn(seams::armed(reached.token(), {
+            let a = Arc::clone(&agent);
+            let id = s.id.clone();
+            async move { a.update_provider(public_provider(), &id).await }
+        }));
+        let release = reached.arrived().await;
+        ratchet_to_private(&sm, &s.id).await;
+        release.send(()).unwrap();
+        bind.await.unwrap().unwrap(); // the bind was legal when it ran: Ok
+
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+        // Not TORN: `provider_name` and `model_config_json` came from one
+        // UPDATE, so no reader can see one provider's name beside another's
+        // model config.
+        assert_eq!(
+            model_name_of(&row),
+            public_provider().get_model_config().model_name
+        );
+    }
+
+    #[tokio::test]
+    async fn a_bind_armed_for_one_seam_cannot_consume_the_other_seams_arm() {
+        // The two tests above run as `#[tokio::test]`s in one binary, on
+        // parallel threads, with nothing serialising them — and interleaving
+        // (B)'s bind traverses `before_bind_write` on its way to the seam it
+        // actually wants, because EVERY bind does: that seam is inside the
+        // storage helper. An arm keyed only on "this task is armed" therefore
+        // lets (B)'s bind consume (A)'s arm.
+        //
+        // What that costs is not a visible failure. (A)'s `arrived()` resolves
+        // from the wrong task, so (A) runs its ratchet while its OWN bind is
+        // unparked and racing it; if the ratchet happens to land first, (A)
+        // passes having forced nothing — a silent pass in the one test that
+        // exists to force an interleaving. This pins the fix: the token names
+        // its seam, and `park` compares before consuming.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+
+        // Interleaving (A)'s arm, placed and never used — it stands in for the
+        // other test being mid-flight on another thread.
+        let mut before = seams::arm_before_bind_write();
+        // …and interleaving (B)'s bind, authorized for the LATER seam only.
+        let after = seams::arm_after_bind_before_swap();
+        let bind = tokio::spawn(seams::armed(after.token(), {
+            let a = Arc::clone(&agent);
+            let id = s.id.clone();
+            async move { a.update_provider(public_provider(), &id).await }
+        }));
+
+        // It must arrive at its own seam. Stealing the other arm parks it at
+        // the earlier one instead, and this bounded await says so rather than
+        // hanging the binary.
+        let release = after.arrived().await;
+        release.send(()).unwrap();
+        bind.await.unwrap().unwrap();
+
+        assert!(
+            !before.has_fired(),
+            "a bind armed for after_bind_before_swap announced itself at \
+             before_bind_write — it consumed an arm belonging to another test, \
+             whose own bind then runs unforced"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_unconstrained_race_observes_both_outcomes() {
+        // The fuzz layer is KEPT — a seam only proves the two interleavings
+        // someone thought of. What changes is that it must PROVE it raced.
+        //
+        // `flavor = "multi_thread"` is load-bearing: `#[tokio::test]` defaults
+        // to `current_thread`, where two `tokio::spawn`s cannot preempt each
+        // other at all — they interleave only at `.await` points, in the same
+        // order every iteration. Two hundred iterations of a deterministic
+        // schedule is one iteration, run two hundred times.
+        //
+        // ⚠ The closing assertion is a claim about a SCHEDULER, and the minority
+        // arm is thin — 11, 13 and 20 refusals per 200 on three measured runs
+        // here (8 cores, load ~7). A runner that serialises the two spawns
+        // harder could go one-sided against a perfectly correct implementation,
+        // and that failure reads as a code defect. So the loop runs a FLOOR of
+        // 200 iterations always, and then keeps going while it has still seen
+        // only one outcome, up to a CEILING. This is NOT an early exit and
+        // cannot shorten the fuzz: the per-iteration invariant is checked on
+        // every iteration either way, so the ceiling only ever ADDS coverage,
+        // on the machines where the floor was not enough.
+        const FLOOR: usize = 200;
+        const CEILING: usize = 1000;
+        let (mut bound, mut refused) = (0usize, 0usize);
+        let mut iterations = 0usize;
+        while iterations < FLOOR || (iterations < CEILING && (bound == 0 || refused == 0)) {
+            iterations += 1;
+            let (_dir, agent, s) = agent_on(private_provider()).await;
+            let sm = manager(&agent);
+            let a = tokio::spawn({
+                let a = Arc::clone(&agent);
+                let id = s.id.clone();
+                async move { a.update_provider(public_provider(), &id).await }
+            });
+            let b = tokio::spawn(ratchet_to_private_owned(Arc::clone(&sm), s.id.clone()));
+            let (a, b) = tokio::join!(a, b);
+            b.unwrap();
+            let bind_ok = a.unwrap().is_ok();
+            if bind_ok {
+                bound += 1
+            } else {
+                refused += 1
+            }
+
+            // The invariant that holds in EVERY interleaving, asserted
+            // UNCONDITIONALLY — an `if row.is_private()` guard would make the
+            // whole assertion skippable, and the ratchet always wins the row, so
+            // it would be skipped in the only branch it could have caught.
+            let row = reread(&sm, &s.id).await;
+            assert_eq!(row.privacy_tier, SessionClassification::Private);
+            assert_eq!(
+                row.provider_name.as_deref() == Some("anthropic"),
+                bind_ok,
+                "a refused bind wrote the row, or an accepted one did not"
+            );
+        }
+        assert!(
+            bound > 0 && refused > 0,
+            "{iterations} iterations produced {bound} bound / {refused} refused — one-sided, so \
+             the loop raced nothing. That is the state this test used to report as a pass."
+        );
+    }
+}
+
+/// Issue #56 Gate B — the turn barrier, the ratchet, and Gate B' on the
+/// completions that never pass through `reply`.
+///
+/// The four wrong implementations these tests exist to reject, one each:
+///
+///  1. A refuse-only Gate B. The residual state (a private row whose live agent
+///     holds a public provider) is produced by LRU rehydration, by
+///     `restore_provider_from_session`'s `Config::global()` fallback, by a
+///     legacy row, and by any ratchet that commits after a legal bind. Refusing
+///     all of them bricks the majority of sessions on a private machine. The
+///     row still names a provider that satisfies the classification, so the
+///     repair is a silent rebind FROM THE ROW.
+///  2. A gate at the literal top of `reply`. The prologue has early returns
+///     before any provider contact, and one of them delivers a user's answer to
+///     a parked elicitation. Refusing there drops the answer.
+///  3. A ratchet on the BIND. Then a mis-click privatises a chat, and
+///     `POST /agent/call_tool` — which never binds — is missed entirely.
+///  4. A gate that lives only in `reply`. Session auto-naming, compaction
+///     summarisation and the stall judge each read the whole transcript through
+///     `complete_fast` without ever entering `reply`.
+#[cfg(test)]
+mod gate_b_turn_tests {
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::privacy::{ProviderTier, SessionClassification};
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::{Session, SessionType};
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tempfile::TempDir;
+
+    /// The one sentence every turn refusal contains. Spelled here as a literal
+    /// rather than imported, so that a change to `turn_refusal`'s wording that
+    /// silently stopped refusing would still have to get past these tests;
+    /// `privacy::refusal`'s own unit test asserts the marker is present.
+    const REFUSAL_MARKER: &str = "this turn was not sent";
+
+    /// A provider whose interesting properties are its tier and how many
+    /// completions it has been asked for. The count is what test 5 reads: Gate
+    /// B' is only meaningful if the transcript never reaches the model, and
+    /// "no error was returned" does not establish that.
+    struct CountingProvider {
+        name: &'static str,
+        model: &'static str,
+        tier: ProviderTier,
+        completions: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl Provider for CountingProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "counting",
+                "Counting",
+                "",
+                "counting-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            self.completions.fetch_add(1, Ordering::SeqCst);
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new(self.model.to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail(self.model)
+        }
+    }
+
+    fn counted(
+        name: &'static str,
+        model: &'static str,
+        tier: ProviderTier,
+    ) -> (Arc<dyn Provider>, Arc<AtomicUsize>) {
+        let completions = Arc::new(AtomicUsize::new(0));
+        let provider = Arc::new(CountingProvider {
+            name,
+            model,
+            tier,
+            completions: Arc::clone(&completions),
+        });
+        (provider, completions)
+    }
+
+    fn private_provider() -> Arc<dyn Provider> {
+        counted("versa_azure", "gpt-5.5", ProviderTier::Private).0
+    }
+
+    fn public_provider() -> Arc<dyn Provider> {
+        counted("anthropic", "claude-opus-4", ProviderTier::Public).0
+    }
+
+    /// An agent over an isolated session store, already bound to `provider`.
+    /// The `TempDir` outlives the test because dropping it deletes the SQLite
+    /// file the agent still holds.
+    async fn agent_on(provider: Arc<dyn Provider>) -> (TempDir, Arc<Agent>, Session) {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "gate-b".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        agent.update_provider(provider, &session.id).await.unwrap();
+        (dir, agent, session)
+    }
+
+    fn manager(agent: &Agent) -> Arc<SessionManager> {
+        agent.config.session_manager.clone()
+    }
+
+    /// Point the ROW at `provider` without touching the live agent's binding —
+    /// which is exactly the residual state Gate B has to deal with, and which
+    /// no ordinary call can produce because `update_provider` does both halves.
+    /// Goes through Gate A's own statement, so the fixture cannot construct a
+    /// state the production bind path would have refused.
+    async fn point_row_at(sm: &SessionManager, id: &str, provider: &Arc<dyn Provider>) {
+        let model_config_json = serde_json::to_string(&provider.get_model_config()).unwrap();
+        let outcome = sm
+            .storage()
+            .bind_provider_if_allowed(
+                id,
+                provider.get_name(),
+                &model_config_json,
+                provider.tier().is_private(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome,
+            BindOutcome::Bound,
+            "the fixture's own bind was refused"
+        );
+    }
+
+    async fn ratchet_to_private(sm: &SessionManager, id: &str) {
+        sm.update(id)
+            .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+            .apply()
+            .await
+            .unwrap();
+    }
+
+    async fn reread(sm: &SessionManager, id: &str) -> Session {
+        sm.get_session(id, false).await.unwrap()
+    }
+
+    fn cfg(session: &Session) -> SessionConfig {
+        SessionConfig {
+            id: session.id.clone(),
+            schedule_id: None,
+            max_turns: Some(2),
+            max_tool_calls: None,
+            budget: None,
+            retry_config: None,
+            reasoning_effort: None,
+        }
+    }
+
+    async fn drain(mut stream: BoxStream<'_, Result<AgentEvent>>) -> Vec<Result<AgentEvent>> {
+        let mut events = Vec::new();
+        while let Some(event) = stream.next().await {
+            events.push(event);
+        }
+        events
+    }
+
+    fn is_refusal(event: &Result<AgentEvent>) -> bool {
+        match event {
+            Ok(AgentEvent::Message(message)) => message.as_concat_text().contains(REFUSAL_MARKER),
+            _ => false,
+        }
+    }
+
+    fn rendered(events: &[Result<AgentEvent>]) -> String {
+        events
+            .iter()
+            .map(|event| match event {
+                Ok(AgentEvent::Message(m)) => format!("Message({:?})", m.as_concat_text()),
+                Ok(other) => format!("{other:?}"),
+                Err(e) => format!("Err({e})"),
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[tokio::test]
+    async fn a_repairable_mismatch_rebinds_silently_and_the_turn_runs() {
+        // The residual state: privacy_tier=private, live agent holds a public
+        // provider (LRU rehydration, the Config::global() fallback, a legacy
+        // row). The row still names a private provider, so Gate B rebinds FROM
+        // THE ROW and continues — the user never sees it. An implementation
+        // that only refuses fails this, and it is the majority case on a real
+        // machine.
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = private_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(&s.id, "versa_azure", Arc::clone(&row_provider));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            !events.iter().any(is_refusal),
+            "a repairable mismatch must not be refused:\n{}",
+            rendered(&events)
+        );
+        assert_eq!(agent.provider().await.unwrap().get_name(), "versa_azure");
+    }
+
+    #[tokio::test]
+    async fn an_unrepairable_mismatch_refuses_this_turn_and_leaves_the_row_alone() {
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        // The row names a PUBLIC provider, so there is nothing to repair to.
+        // The override is registered anyway, so the construction step is still
+        // hermetic and the refusal comes from the tier check rather than from
+        // a factory that happened to fail for a credential reason.
+        let row_provider = public_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(&s.id, "anthropic", Arc::clone(&row_provider));
+
+        let events = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            events.iter().any(is_refusal),
+            "an unrepairable mismatch must be refused:\n{}",
+            rendered(&events)
+        );
+        // A refusal, not a 500: the stream yields and returns.
+        assert!(
+            events.iter().all(|e| e.is_ok()),
+            "the refusal must be a yielded message, never an Err out of `reply`:\n{}",
+            rendered(&events)
+        );
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.provider_name.as_deref(), Some("anthropic"));
+    }
+
+    #[tokio::test]
+    async fn an_elicitation_answer_is_still_delivered_on_a_private_session() {
+        // The seam matters: at the literal top of `reply` this refuses, and the
+        // user's answer to a parked tool call is silently dropped.
+        let (_dir, agent, s) = agent_on(public_provider()).await;
+        let sm = manager(&agent);
+        let row_provider = public_provider();
+        point_row_at(&sm, &s.id, &row_provider).await;
+        ratchet_to_private(&sm, &s.id).await;
+        seams::override_rebind_provider(&s.id, "anthropic", row_provider);
+
+        let answer =
+            Message::user().with_content(MessageContent::action_required_elicitation_response(
+                "elicit-1",
+                serde_json::json!({"answer": "yes"}),
+            ));
+        let events = drain(agent.reply(answer, cfg(&s), None).await.unwrap()).await;
+        assert!(
+            !events.iter().any(is_refusal),
+            "an elicitation answer is a user action on a parked tool call, not a \
+             disclosure — the gate sits after this early return:\n{}",
+            rendered(&events)
+        );
+    }
+
+    #[tokio::test]
+    async fn the_first_turn_ratchets_and_a_permitted_bind_afterwards_is_refused() {
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        // The bind did NOT ratchet (O5): a mis-clicked model switch must not
+        // privatise a chat, and a ratchet there would still miss every turn
+        // that arrives through `POST /agent/call_tool`.
+        assert_eq!(
+            reread(&sm, &s.id).await.privacy_tier,
+            SessionClassification::Public
+        );
+
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await;
+
+        let row = reread(&sm, &s.id).await;
+        assert_eq!(row.privacy_tier, SessionClassification::Private);
+        assert_eq!(row.privacy_reason.as_deref(), Some("turn:versa_azure"));
+        assert!(agent
+            .update_provider(public_provider(), &s.id)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn auto_naming_a_private_transcript_on_a_public_provider_is_refused() {
+        // Gate B'. `maybe_rename_session` -> `maybe_update_name` ->
+        // `generate_session_name` -> `complete_fast` reads the entire
+        // transcript and never passes `reply`. Same for the stall judge and
+        // for the SYNCHRONOUS half of compaction summarisation, which reach
+        // the binding through the same accessor. Compaction's background half
+        // does not — see the test below it, which covers that one separately.
+        //
+        // The swap is done directly on the shared `Arc` rather than through
+        // `update_provider`, on purpose: `update_provider` is Gate A, and a
+        // test that went through it would be testing Gate A a third time.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let _ = drain(
+            agent
+                .reply(Message::user().with_text("hi"), cfg(&s), None)
+                .await
+                .unwrap(),
+        )
+        .await; // ratchets
+        assert_eq!(
+            reread(&manager(&agent), &s.id).await.privacy_tier,
+            SessionClassification::Private
+        );
+
+        let (public, public_completions) =
+            counted("anthropic", "claude-opus-4", ProviderTier::Public);
+        *agent.provider.lock().await = Some(public);
+
+        agent.maybe_rename_session(&s.id).await;
+        assert_eq!(
+            public_completions.load(Ordering::SeqCst),
+            0,
+            "the session's whole transcript was sent to a public model to be named"
+        );
+    }
+
+    /// Is a background compaction registered for this session right now?
+    fn eager_compaction_in_flight(agent: &Agent, id: &str) -> bool {
+        agent
+            .eager_compactions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(id)
+    }
+
+    #[tokio::test]
+    async fn background_compaction_of_a_private_transcript_on_a_public_provider_is_refused() {
+        // Gate B' lives in `Agent::provider`, but `maybe_spawn_eager_compaction`
+        // cannot call it — it must not block on the provider lock — so it clones
+        // the `SharedProvider` directly and asserts the predicate inline. That
+        // makes it the one bypass of the accessor inside a path Gate B' NAMES as
+        // covered, and this is the test that keeps it covered.
+        //
+        // The in-flight marker is the observable, and on a current-thread
+        // runtime it discriminates in both directions: a refusal clears it
+        // synchronously before returning, while a spawned task cannot be polled
+        // until the next await, so a permitted call leaves it set. There is no
+        // await between either call and its assertion, so the background task
+        // cannot interleave and clear the marker underneath us.
+        let (_dir, agent, s) = agent_on(private_provider()).await;
+        let sm = manager(&agent);
+        ratchet_to_private(&sm, &s.id).await;
+        agent
+            .cached_classification
+            .store(&s.id, SessionClassification::Private);
+
+        // Permitted: a private provider on a private session spawns. This half
+        // is not decoration — it is what stops the refusal assertion below from
+        // passing vacuously on a machine where `BIOROUTER_EAGER_COMPACT=false`,
+        // because a disabled feature returns before the marker is ever set.
+        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."));
+        assert!(
+            eager_compaction_in_flight(&agent, &s.id),
+            "eager compaction did not spawn for the PERMITTED case, so the \
+             refusal assertion below would prove nothing"
+        );
+        agent.clear_eager_compaction(&s.id);
+
+        // Refused: a public provider swapped in behind Gate B's back — the LRU
+        // rehydration residual, arriving between two turns.
+        *agent.provider.lock().await = Some(public_provider());
+        agent.maybe_spawn_eager_compaction(&cfg(&s), std::path::Path::new("."));
+        assert!(
+            !eager_compaction_in_flight(&agent, &s.id),
+            "a public provider was handed a private transcript to summarise in \
+             the background"
+        );
+    }
+}
+
+#[cfg(test)]
+mod gate_c_dispatch_tests {
+    //! Issue #56 Gate C, the caller half: every production path that reaches
+    //! `ExtensionManager::dispatch_tool_call` must surface the refusal to
+    //! whoever asked, in the caller's own error surface.
+    //!
+    //! FOUR paths converge on that function and only ONE of them carries a
+    //! `ToolInspector` — which is why Gate C is a branch inside the manager
+    //! rather than an inspector, and why one agent-loop test would not have
+    //! caught an inspector-shaped implementation. Three are exercised here:
+    //!
+    //! | # | path | exercised by |
+    //! |---|---|---|
+    //! | 1 | the agent loop (`Agent::dispatch_tool_call`) | `call_private_tool_via_agent_loop` |
+    //! | 2 | `POST /agent/call_tool` | `call_private_tool_as_the_http_route_does` |
+    //! | 3 | the `execute_code` JS bridge | `code_execution_extension::gate_c_bridge_tests` |
+    //! | 4 | `Agent::call_prefetch_tool`, which runs BEFORE the turn | `call_private_tool_via_call_prefetch_tool` |
+    //!
+    //! Path 3 lives beside its own function because `dispatch_sub_call` is
+    //! private to `code_execution_extension` and Rust does not let a sibling
+    //! module call it. Path 2's route handler lives in another crate; what is
+    //! asserted here is the capability it hands the manager
+    //! (`Public` + enforced) and the refusal that comes back, and that the
+    //! handler renders it rather than swallowing it is asserted in
+    //! `biorouter-server`'s `routes::agent::gate_c_call_tool_tests`.
+
+    use super::*;
+    use crate::agents::AgentConfig;
+    use crate::config::permission::PermissionManager;
+    use crate::config::BioRouterMode;
+    use crate::model::ModelConfig;
+    use crate::privacy::ProviderTier;
+    use crate::providers::base::{ProviderMetadata, ProviderUsage, Usage};
+    use crate::providers::errors::ProviderError;
+    use crate::session::session_manager::{Session, SessionType};
+    use crate::session::SessionManager;
+    use async_trait::async_trait;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    /// One of the two extensions the compiled-in BAAM baseline calls private.
+    const PRIVATE_EXTENSION: &str = "ucsfomopagent";
+    const PRIVATE_TOOL: &str = "ucsfomopagent__data_sources";
+
+    struct PlainProvider {
+        name: &'static str,
+        tier: ProviderTier,
+    }
+
+    #[async_trait]
+    impl Provider for PlainProvider {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new("plain", "Plain", "", "plain-model", vec![], "", vec![])
+        }
+
+        fn get_name(&self) -> &str {
+            self.name
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        /// ⚠ **A private double must state an affiliation, because every real
+        /// private provider does** — DR-26, Task 48.
+        ///
+        /// `Some(..)` exactly while a provider's tier is Private is a property
+        /// of this build, not an accident: both deciders route *through* the
+        /// tier predicate (`ucsf_gateway_affiliation`, `self_hosted_affiliation`)
+        /// and `LeadWorkerProvider` folds both halves. Leaving this on the trait
+        /// default produced the one pairing DR-26's vocabulary says cannot exist
+        /// — Private tier, affiliation `None` — which
+        /// `CallCapability::cross_affiliation_warning` treats as *unstated*
+        /// rather than as *unconstrained*, and rightly: reading `None` as "no
+        /// institution applies" is the fail-open this axis exists to prevent.
+        ///
+        /// `Local` rather than an institution, so these tests stay about the
+        /// TIER axis they were written for: it is DR-26's identity element, the
+        /// one model affiliation compatible with every extension. `self.name`
+        /// is a provider NAME and never decides an affiliation — see
+        /// `Provider::affiliation`'s doc for why a name-keyed table is wrong.
+        fn affiliation(&self) -> Option<crate::privacy::ModelAffiliation> {
+            match self.tier {
+                ProviderTier::Private => Some(crate::privacy::ModelAffiliation::Local),
+                ProviderTier::Public => None,
+            }
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("plain-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("plain-model")
+        }
+    }
+
+    fn public_provider() -> Arc<dyn Provider> {
+        Arc::new(PlainProvider {
+            name: "anthropic",
+            tier: ProviderTier::Public,
+        })
+    }
+
+    /// An agent bound to `provider`, over an isolated session store, with the
+    /// private extension already loaded. The `TempDir` outlives the test
+    /// because dropping it deletes the SQLite file the agent still holds.
+    async fn agent_with_the_private_extension(
+        provider: Arc<dyn Provider>,
+    ) -> (TempDir, Arc<Agent>, Session) {
+        let dir = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(dir.path().to_path_buf()));
+        let permission_manager = Arc::new(PermissionManager::new(dir.path().to_path_buf()));
+        let agent = Arc::new(Agent::with_config(AgentConfig::new(
+            session_manager,
+            permission_manager,
+            None,
+            BioRouterMode::Auto,
+        )));
+        let session = agent
+            .config
+            .session_manager
+            .create_session(PathBuf::from("."), "gate-c".to_string(), SessionType::User)
+            .await
+            .unwrap();
+        agent.update_provider(provider, &session.id).await.unwrap();
+        // A real in-process MCP server admitted under a private NAME, so the
+        // tier the gate reads is stamped by the production admission path
+        // rather than poked into the record by the fixture.
+        agent
+            .extension_manager
+            .add_inprocess_server(
+                PRIVATE_EXTENSION,
+                biorouter_mcp::datasql::server::DataSqlServer::new(std::collections::HashMap::new()),
+            )
+            .await
+            .expect("inject the private extension");
+        (dir, agent, session)
+    }
+
+    fn call(name: &str) -> CallToolRequestParams {
+        CallToolRequestParams {
+            task: None,
+            name: name.to_string().into(),
+            arguments: Some(rmcp::object!({})),
+            meta: None,
+        }
+    }
+
+    /// Path 1: the agent loop. `Agent::dispatch_tool_call` samples the
+    /// capability from the bound (public) provider and hands it down.
+    async fn call_private_tool_via_agent_loop() -> String {
+        let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
+        let (_id, result) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), "req-1".to_string(), None, &session)
+            .await;
+        match result
+            .expect("the agent loop wraps a dispatch refusal as a tool result")
+            .result
+            .await
+        {
+            Ok(ok) => panic!("a public model reached a private extension: {ok:?}"),
+            Err(e) => e.message.to_string(),
+        }
+    }
+
+    /// Path 2: `POST /agent/call_tool`. It arrives with no caller identity, so
+    /// it hands the manager the most restrictive pair — the value the route's
+    /// own constructor returns — built here with the test constructor so the
+    /// census of the two production spellings keeps counting production entries
+    /// only (`tests/privacy_capability.rs` pins that the two agree).
+    ///
+    /// ⚠ Do not spell that constructor here **in code**. Task 51's census
+    /// (`the_sites_that_decide_how_far_a_caller_reaches_are_exactly_these`) greps
+    /// `crates/*/src/` for its literal name followed by `(` and asserts the exact
+    /// (file, count) set — one production entry, in the route itself. A test
+    /// spelling it would be indistinguishable from a second entry nobody
+    /// classified, which is the one thing that check exists to catch. Prose is
+    /// safe: the census skips `//` lines, for the reason `grant.rs`'s twin audit
+    /// records — an audit that reads comments goes red over a sentence, and
+    /// teaches the next person to relax it.
+    async fn call_private_tool_as_the_http_route_does() -> String {
+        let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
+        // `ToolCallResult` is not `Debug`, so the outcome is matched rather
+        // than `expect_err`'d.
+        match agent
+            .extension_manager
+            .dispatch_tool_call(
+                &session.id,
+                call(PRIVATE_TOOL),
+                crate::privacy::CallCapability::for_test(ProviderTier::Public, true),
+                CancellationToken::default(),
+            )
+            .await
+        {
+            Ok(_) => panic!("an entry with no caller identity reached a private extension"),
+            Err(e) => e.to_string(),
+        }
+    }
+
+    /// Path 4: the pre-turn prefetch, which dispatches outside
+    /// `Agent::dispatch_tool_call` entirely and runs BEFORE the turn — so an
+    /// inspector-shaped gate would never see it.
+    async fn call_private_tool_via_call_prefetch_tool() -> String {
+        let (_dir, agent, session) = agent_with_the_private_extension(public_provider()).await;
+        let err = agent
+            .call_prefetch_tool(&session.id, PRIVATE_TOOL, serde_json::Map::new())
+            .await
+            .expect_err("the prefetch is a dispatch like any other");
+        err.to_string()
+    }
+
+    #[tokio::test]
+    async fn every_convergent_path_into_the_manager_is_refused() {
+        // Three separate assertions, one per production path reachable from
+        // this crate's `agents` module. A single agent-loop test passes an
+        // implementation written as a `ToolInspector`, which paths 2 and 4
+        // bypass entirely.
+        let text_from_agent_loop = call_private_tool_via_agent_loop().await;
+        let text_from_http_call_tool = call_private_tool_as_the_http_route_does().await;
+        let text_from_prefetch = call_private_tool_via_call_prefetch_tool().await;
+
+        // The WHOLE refusal, not merely the extension's name: `Tool
+        // 'ucsfomopagent__data_sources' not found` also contains the name, so a
+        // substring assertion on it alone would pass on a fixture that never
+        // loaded the extension — and would go on passing after Gate C was
+        // deleted.
+        let refusal = crate::privacy::refusal::privacy_refusal(
+            PRIVATE_EXTENSION,
+            ProviderTier::Private,
+            ProviderTier::Public,
+        )
+        .expect("the pure refusal")
+        .message
+        .to_string();
+
+        for t in [
+            text_from_agent_loop,
+            text_from_http_call_tool,
+            text_from_prefetch,
+        ] {
+            assert!(
+                t.contains(&refusal),
+                "refusal did not reach the caller intact: {t}"
+            );
+            assert!(
+                !t.contains("The user has declined"),
+                "laundered as a decline: {t}"
+            );
+        }
+    }
+
+    /// The other direction, so the three assertions above cannot be satisfied
+    /// by a gate that refuses everything: the same extension, the same tool,
+    /// the same agent loop, on a private model, runs.
+    #[tokio::test]
+    async fn a_private_model_still_reaches_the_private_extension() {
+        let private: Arc<dyn Provider> = Arc::new(PlainProvider {
+            name: "versa_azure",
+            tier: ProviderTier::Private,
+        });
+        let (_dir, agent, session) = agent_with_the_private_extension(private).await;
+        let (_id, result) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), "req-2".to_string(), None, &session)
+            .await;
+        result
+            .expect("dispatch")
+            .result
+            .await
+            .expect("a private model may call a private extension");
+    }
+
+    /// Issue #56 Task 48, DR-26 — **the bind surface**, driven through the real
+    /// `Agent::update_provider` rather than through a mutex write.
+    ///
+    /// Binding a model covered by one institution's agreements into a chat
+    /// already holding another institution's connector is the same mismatch the
+    /// enable path finds from the opposite end. It **warns**: unlike Gate A's
+    /// tier refusal it does not block, because both endpoints are Private,
+    /// legitimate cross-institutional work under a real DUA exists, and a
+    /// blocked-outright design is one researchers route around by turning the
+    /// feature off (DR-19).
+    ///
+    /// ⚠ The bind is asserted to SUCCEED before the warning is read. A version
+    /// of this test that only checked the warning would pass on an
+    /// implementation that had turned the bind into a refusal.
+    #[tokio::test]
+    async fn binding_a_foreign_institutions_model_warns_and_still_binds() {
+        let local: Arc<dyn Provider> = Arc::new(PlainProvider {
+            name: "ollama",
+            tier: ProviderTier::Private,
+        });
+        let (_dir, agent, session) = agent_with_the_private_extension(local).await;
+        assert!(
+            agent.cross_affiliation_warnings().await.is_empty(),
+            "a local model reaches everything private — no transfer occurs at all"
+        );
+
+        let elsewhere: Arc<dyn Provider> = Arc::new(ProviderCoveredBy {
+            tier: ProviderTier::Private,
+            affiliation: Some(crate::privacy::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new("stanford"),
+            )),
+        });
+        agent
+            .update_provider(elsewhere, &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+
+        let warnings = agent.cross_affiliation_warnings().await;
+        assert_eq!(
+            warnings.len(),
+            1,
+            "exactly the UCSF connector mismatches: {warnings:?}"
+        );
+        assert_eq!(warnings[0].0, PRIVATE_EXTENSION);
+        assert!(warnings[0].1.contains("ucsf"), "{}", warnings[0].1);
+        assert!(warnings[0].1.contains("stanford"), "{}", warnings[0].1);
+
+        // Issue #56 Task 52 (DR-27) — **the same bind, on a machine whose user
+        // asked for cross-institution reach to be silent**, driven end to end
+        // rather than at the pure gate.
+        //
+        // Two claims, and the second is the one that keeps `open` from becoming
+        // the master switch in miniature: the STATEMENT goes quiet, and the
+        // RESOLUTION does not. `/agent/add_extension` logs this same sentence
+        // from the other end and already goes quiet in `open`; a bind that went
+        // on speaking would be the second place to disagree that the
+        // single-reader design exists to prevent.
+        {
+            let _pin =
+                crate::privacy::mixing::pin_for_test(crate::privacy::mixing::MixingPolicy::Open);
+            assert!(
+                agent.cross_affiliation_warnings().await.is_empty(),
+                "`open` still stated a cross-institution warning at the bind, while the \
+                 enable path's identical statement goes quiet"
+            );
+            assert!(
+                agent
+                    .cross_affiliation_grant_subject(PRIVATE_EXTENSION)
+                    .await
+                    .is_some(),
+                "`open` short-circuited the resolver. Gate E's mark, the badges and the \
+                 grant route's subject all read through it, and `open -> standard` would \
+                 then have nothing to re-tighten"
+            );
+        }
+        // …and it comes straight back when the pin drops, which is that
+        // re-tightening.
+        assert_eq!(
+            agent.cross_affiliation_warnings().await.len(),
+            1,
+            "re-tightening did not restore the statement"
+        );
+    }
+
+    /// Issue #56, the "warn the user" half of DR-26 that shipped as a log line:
+    /// [`Agent::cross_affiliation_notice`], the body the bind and enable routes
+    /// hand back to the person who just acted.
+    ///
+    /// The test above proves the daemon *knows* about the mismatch. This one
+    /// proves the sentence a surface can actually show exists, says both
+    /// institutions, and respects the acceptance the user already gave — the
+    /// three ways this can be wrong that a caller cannot check for itself.
+    ///
+    /// ⚠ **Step 1 is the control that keeps the rest honest.** Without it every
+    /// assertion below is satisfied by a composer that returns the empty string
+    /// whenever it is confused, which is the failure mode of a privacy statement
+    /// nobody sees.
+    #[tokio::test]
+    async fn the_bind_notice_names_both_institutions_and_goes_quiet_once_accepted() {
+        let ucsf = Some(crate::privacy::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("ucsf"),
+        ));
+        let stanford = Some(crate::privacy::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("stanford"),
+        ));
+        let mayo = Some(crate::privacy::ModelAffiliation::institution(
+            crate::privacy::affiliation::InstitutionId::new("mayo"),
+        ));
+
+        // 1. The approved arrangement says nothing. A notice that spoke here
+        //    would train every user to dismiss it.
+        let (_dir, agent, session) = agent_with_the_private_extension(covered_by("ucsf")).await;
+        assert_eq!(
+            agent.cross_affiliation_notice(&session.id, ucsf).await,
+            "",
+            "a model covered by the connector's own institution crosses no boundary"
+        );
+
+        // 2. Bound to another institution's model: the notice is the statement,
+        //    and it names BOTH ends. Naming only one is the version of this a
+        //    user cannot act on.
+        agent
+            .update_provider(covered_by("stanford"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let notice = agent.cross_affiliation_notice(&session.id, stanford).await;
+        assert!(
+            notice.contains(PRIVATE_EXTENSION),
+            "the notice must name the connector the user has to decide about: {notice}"
+        );
+        assert!(
+            notice.contains("UCSF (ucsf)"),
+            "the institution that owns the connector's data: {notice}"
+        );
+        assert!(
+            notice.contains("stanford"),
+            "the institution whose agreements cover the bound model: {notice}"
+        );
+
+        // 3. The user accepts that exact flow at a dispatch. The bind surface
+        //    must then stop repeating a boundary the daemon has agreed to let
+        //    them cross — otherwise Settings and the model picker nag about a
+        //    decision that has already been made.
+        crate::privacy::grant::record_for_test(
+            &agent.config.session_manager,
+            &session.id,
+            PRIVATE_EXTENSION,
+            stanford,
+        )
+        .await
+        .expect("the user's acceptance is recorded against this chat");
+        assert_eq!(
+            agent.cross_affiliation_notice(&session.id, stanford).await,
+            "",
+            "the notice repeated a flow the user has already accepted"
+        );
+
+        // 4. …and a THIRD institution is a different flow, so the acceptance
+        //    does not carry over. Dropping this axis would turn one yes into a
+        //    standing permission that survives a model switch nobody reviewed —
+        //    the same axis step 5 of the end-to-end test guards at the dispatch.
+        agent
+            .update_provider(covered_by("mayo"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let after_switch = agent.cross_affiliation_notice(&session.id, mayo).await;
+        assert!(
+            after_switch.contains("mayo"),
+            "an acceptance for one institution silenced the warning for another: \
+             {after_switch:?}"
+        );
+    }
+
+    /// Issue #56: the finding this notice exists to fix was **a correct query
+    /// with no user-facing caller**, so the composer is worthless without one and
+    /// this is the assertion that says so.
+    ///
+    /// ⚠ **It reads the daemon's real source, not a copy.** The two surfaces the
+    /// ruling names are HTTP routes in another crate, which no unit test in this
+    /// crate can drive; what can be checked mechanically is that both of them
+    /// still ask. Deleting either call — the exact regression, since the routes
+    /// worked for years while only logging — turns this red.
+    #[test]
+    fn the_notice_is_read_by_both_warn_and_proceed_routes() {
+        let routes = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("crates/biorouter-server/src/routes/agent.rs");
+        let src = std::fs::read_to_string(&routes).unwrap_or_else(|e| {
+            panic!(
+                "the routes that surface DR-26's bind statement are missing at {} ({e})",
+                routes.display()
+            )
+        });
+        // Assembled, so this assertion is not itself the match a copy of this
+        // test in the routes file would find.
+        let needle = concat!("cross_affiliation", "_notice(");
+        let callers = src
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .filter(|l| l.contains(needle))
+            .count();
+        assert_eq!(
+            callers, 2,
+            "`Agent::cross_affiliation_notice` is read by {callers} routes, not by both \
+             warn-and-proceed surfaces. DR-26 requires the user be told at the bind \
+             (`POST /agent/update_provider`) AND at their own enable \
+             (`POST /agent/add_extension`); a composer with no caller is exactly the \
+             defect this method was added to fix, and it fails silently — the daemon \
+             keeps logging and the user keeps seeing nothing."
+        );
+    }
+
+    /// The wire detail neither side can check alone: the daemon joins the
+    /// warnings and the renderer splits them, and if the two ever spell the
+    /// separator differently **nothing fails** — two statements about two
+    /// different pairs of institutions render as one run-together paragraph, or
+    /// one statement is silently split in half.
+    ///
+    /// Modelled on `privacy::grant::tests::
+    /// the_scope_copy_the_user_reads_is_the_one_the_daemon_records`, which exists
+    /// for the same class of silent drift, and it has to live on the Rust side
+    /// for the same reason: the renderer's tests cannot see this constant.
+    #[test]
+    fn the_renderer_splits_the_notice_the_daemon_joins() {
+        assert_eq!(
+            Agent::CROSS_AFFILIATION_NOTICE_SEPARATOR,
+            "\n\n",
+            "the daemon changed how it joins warnings without the renderer being told"
+        );
+        let mirror = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("ui/desktop/src/utils/crossAffiliationNotice.ts");
+        let src = std::fs::read_to_string(&mirror).unwrap_or_else(|e| {
+            panic!(
+                "the renderer's notice module is missing at {} ({e}). Without it the bind and \
+                 enable surfaces are back to logging a warning nobody sees, which is the whole \
+                 of this fix.",
+                mirror.display()
+            )
+        });
+        // The escaped SPELLING, because the value itself is two newlines and a
+        // search for that matches every blank line in the file.
+        assert!(
+            src.contains(r"CROSS_AFFILIATION_NOTICE_SEPARATOR = '\n\n'"),
+            "the renderer no longer splits on the separator the daemon joins with, so a \
+             multi-warning notice renders as one confused claim. Re-mirror \
+             `Agent::CROSS_AFFILIATION_NOTICE_SEPARATOR` into {}.",
+            mirror.display()
+        );
+    }
+
+    /// A provider at a stated tier and affiliation. [`PlainProvider`] derives
+    /// its affiliation from its tier and so can only ever be `Local`, which is
+    /// DR-26's identity element — a fixture built from it can never produce a
+    /// mismatch.
+    struct ProviderCoveredBy {
+        tier: ProviderTier,
+        affiliation: Option<crate::privacy::ModelAffiliation>,
+    }
+
+    #[async_trait]
+    impl Provider for ProviderCoveredBy {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::new(
+                "covered",
+                "Covered",
+                "",
+                "covered-model",
+                vec![],
+                "",
+                vec![],
+            )
+        }
+
+        fn get_name(&self) -> &str {
+            "covered-by"
+        }
+
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+
+        fn affiliation(&self) -> Option<crate::privacy::ModelAffiliation> {
+            self.affiliation
+        }
+
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            Ok((
+                Message::assistant().with_text("ok"),
+                ProviderUsage::new("covered-model".to_string(), Usage::default()),
+            ))
+        }
+
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("covered-model")
+        }
+    }
+
+    /// A provider covered by `institution`'s agreements, private tier.
+    fn covered_by(institution: &str) -> Arc<dyn Provider> {
+        Arc::new(ProviderCoveredBy {
+            tier: ProviderTier::Private,
+            affiliation: Some(crate::privacy::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new(institution),
+            )),
+        })
+    }
+
+    /// The private tool, called through the agent loop, expecting a refusal.
+    async fn refusal_for(agent: &Arc<Agent>, session: &Session, request_id: &str) -> String {
+        let (_id, result) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), request_id.to_string(), None, session)
+            .await;
+        match result
+            .expect("the agent loop wraps a dispatch refusal as a tool result")
+            .result
+            .await
+        {
+            Ok(ok) => panic!("a cross-institutional dispatch was permitted: {ok:?}"),
+            Err(e) => e.message.to_string(),
+        }
+    }
+
+    /// **Issue #56 Task 51, Step 3 — the operator's scenario, end to end, in one
+    /// test.** Five moves in one chat, through the real agent: the approved flow
+    /// runs, the cross-institutional one is refused with a warning naming both
+    /// institutions, the user accepts it, the same call then proceeds, and
+    /// re-binding to a third institution's model does not inherit that
+    /// acceptance.
+    ///
+    /// ⚠ **It is driven through `Agent::update_provider` and
+    /// `Agent::dispatch_tool_call`, not by handing gates a hand-built
+    /// capability.** The grant's own dispatch tests
+    /// (`extension_manager::…::a_granted_triple_permits_the_dispatch_and_re_binding_does_not_reuse_it`)
+    /// pass their capability in, so they cannot fail if `sample` stops reading
+    /// `p.affiliation()` at all; the bind test above binds for real but never
+    /// dispatches. Nothing joined the two until this. The chain it exercises is
+    /// bind → sample → Gate C → grant, every link of it live.
+    ///
+    /// ⚠ **The roles of the two institutions are mirrored from DR-26's wording,
+    /// because this build cannot express the other arrangement.** The ruling
+    /// describes a UCSF-covered Versa model refused at *another* institution's
+    /// connector; `ucsf` is the only institution the compiled registry snapshot
+    /// publishes (`privacy::registry_private::INSTITUTIONS`, and
+    /// `providers::factory::tests::
+    /// every_institution_a_provider_claims_is_published_by_the_registry` is what
+    /// keeps a provider from claiming one that is not there), so a Stanford-owned
+    /// extension is not constructible and the foreign endpoint has to be the
+    /// model. The
+    /// mismatch is the same one — DR-26's table is symmetric in which side is
+    /// foreign — and move 1 keeps the half that matters most: the arrangement
+    /// everyone approved still runs.
+    ///
+    /// Without move 1 every assertion below is satisfied by a gate that refuses
+    /// everything, which is the design DR-26 explicitly rejects.
+    #[tokio::test]
+    async fn the_operators_cross_institutional_scenario_end_to_end() {
+        // 1. The UCSF-covered model reaching the UCSF OMOP agent: the
+        //    arrangement everyone approved. No warning, and the call runs.
+        let (_dir, agent, session) = agent_with_the_private_extension(covered_by("ucsf")).await;
+        assert!(
+            agent.cross_affiliation_warnings().await.is_empty(),
+            "a model covered by the connector's own institution crosses no boundary"
+        );
+        let (_id, approved) = agent
+            .dispatch_tool_call(call(PRIVATE_TOOL), "req-ucsf".to_string(), None, &session)
+            .await;
+        approved
+            .expect("dispatch")
+            .result
+            .await
+            .expect("UCSF's model may reach UCSF's connector — this is the approved flow");
+
+        // 2. Re-bound to another institution's model. The bind WARNS and still
+        //    succeeds (DR-19 on the third axis), and the very same call is now
+        //    refused with a statement naming both institutions.
+        agent
+            .update_provider(covered_by("stanford"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let refused = refusal_for(&agent, &session, "req-stanford").await;
+        assert!(refused.contains(PRIVATE_EXTENSION), "{refused}");
+        assert!(
+            refused.contains("UCSF (ucsf)"),
+            "the institution that owns the connector's data: {refused}"
+        );
+        assert!(
+            refused.contains("stanford"),
+            "the institution whose agreements cover the bound model: {refused}"
+        );
+
+        // 3. The user accepts that stated risk, through the module's own test
+        //    door. Nothing on a dispatch path can reach the real one: the proof
+        //    of user is `X-User-Action`, an HTTP header with no channel here,
+        //    which is exactly why the flow is refuse → tell the user → grant over
+        //    HTTP → retry.
+        crate::privacy::grant::record_for_test(
+            &agent.config.session_manager,
+            &session.id,
+            PRIVATE_EXTENSION,
+            Some(crate::privacy::ModelAffiliation::institution(
+                crate::privacy::affiliation::InstitutionId::new("stanford"),
+            )),
+        )
+        .await
+        .expect("the user's acceptance is recorded against this chat");
+
+        // 4. …and the identical call now proceeds. A grant that changed nothing
+        //    would leave DR-26 a blanket block.
+        let (_id, granted) = agent
+            .dispatch_tool_call(
+                call(PRIVATE_TOOL),
+                "req-granted".to_string(),
+                None,
+                &session,
+            )
+            .await;
+        granted
+            .expect("dispatch")
+            .result
+            .await
+            .expect("the user accepted this exact flow, so the next call proceeds");
+
+        // 5. Re-bound to a THIRD institution's model: same chat, same connector,
+        //    different third axis. The triple the user accepted no longer exists,
+        //    so the grant does not reach this call — the axis an implementer is
+        //    most likely to drop, and dropping it turns a one-time acceptance
+        //    into a standing permission that survives a model switch nobody
+        //    reviewed.
+        agent
+            .update_provider(covered_by("mayo"), &session.id)
+            .await
+            .expect("a mismatch warns; it must never refuse the bind");
+        let refused_again = refusal_for(&agent, &session, "req-mayo").await;
+        assert!(
+            refused_again.contains("mayo"),
+            "the refusal names the newly bound institution: {refused_again}"
+        );
+        assert!(
+            refused_again.contains("UCSF (ucsf)"),
+            "…and still the one that owns the data: {refused_again}"
+        );
+        assert!(
+            !refused_again.contains("stanford"),
+            "the accepted flow was about the model that is no longer bound: {refused_again}"
         );
     }
 }

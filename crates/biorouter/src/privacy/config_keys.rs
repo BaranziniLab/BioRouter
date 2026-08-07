@@ -1,0 +1,210 @@
+//! Which config keys decide a session's privacy capability, and the scan that
+//! keeps that list honest (issue #56, DR-16, open question 24).
+//!
+//! `restore_provider_from_session` falls back to `config.get_biorouter_provider()`
+//! when the session row names nothing usable (`agents/agent.rs`), so a write to
+//! `BIOROUTER_PROVIDER` is a tier raise for every session opened afterwards —
+//! with no `/agent/update_provider` call at all. DR-14 already makes
+//! `config.yaml` a filesystem deny root because *"a master switch a public model
+//! can edit is not a switch"*; `/config/upsert`, `/config/remove` and
+//! `/config/set_provider` are the HTTP channels to the same file.
+//!
+//! **Both verbs.** Deleting one of these keys is not the absence of a write, it
+//! is a write of the key's default — and for `OLLAMA_HOST` that default is
+//! `localhost`, which `self_hosted_tier` maps to Private. So the guard is on the
+//! key, not on the operation.
+//!
+//! The requirement is deliberately scoped to tier-relevant keys. A blanket rule
+//! would make every programmatic config write a user act — the GUI writes config
+//! on nearly every settings interaction — and a rule that fires constantly is a
+//! rule people route around.
+
+/// Keys whose value decides what privacy capability a session gets by default.
+/// Writing **or deleting** one of these over HTTP is a user act (DR-16, open
+/// question 24).
+pub const CAPABILITY_CONFIG_KEYS: &[&str] = &[
+    // The default provider itself. Read through `config_value!` (base.rs), so
+    // the literal never appears in a `get_param(` call — seeded, not scanned.
+    "BIOROUTER_PROVIDER",
+    // Its presence alone switches `create()` to the lead/worker path
+    // (factory.rs, BEFORE the registry lookup), which changes the tier of every
+    // provider name rather than of one.
+    "BIOROUTER_LEAD_MODEL",
+    // Names the lead half, whose tier is one of the two `least()` takes.
+    "BIOROUTER_LEAD_PROVIDER",
+    // Task 5's third test: a self-hosted provider is Private only while its base
+    // URL is loopback. These two keys ARE that base URL, so writing one moves
+    // `ollama`/`llamacpp` across the tier boundary in both directions.
+    "OLLAMA_HOST",
+    "LLAMACPP_EXTERNAL_HOST",
+];
+
+/// Every other key the tier-input files read, each with the reason it does not
+/// determine capability. A key must be in exactly one of these two lists.
+pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
+    ("BIOROUTER_CONTEXT_LIMIT", "token budget, not a tier input"),
+    (
+        "BIOROUTER_LEAD_TURNS",
+        "handoff policy between two already-tiered halves",
+    ),
+    ("BIOROUTER_LEAD_FAILURE_THRESHOLD", "handoff policy"),
+    ("BIOROUTER_LEAD_FALLBACK_TURNS", "handoff policy"),
+    ("BIOROUTER_WORKER_CONTEXT_LIMIT", "token budget"),
+    ("OLLAMA_TIMEOUT", "transport timeout"),
+    ("LLAMACPP_TIMEOUT", "transport timeout"),
+    ("LLAMACPP_STARTUP_TIMEOUT", "sidecar readiness deadline"),
+    ("LLAMACPP_CONTEXT_SIZE", "token budget"),
+    // ⚠ The four endpoint keys below MOVE where a Private-badged provider sends
+    //   traffic, but they cannot RAISE a tier: Task 5 name-keys versa_azure and
+    //   versa_bedrock Private regardless of endpoint, and azure.rs ships the
+    //   UCSF gateway as a PUBLIC provider's default for the same reason.
+    //   Pointing a private-badged provider off-site is a real and different
+    //   problem — it belongs to Task 5's tier definition and to Open question 5,
+    //   not to DR-16 — and it is recorded here rather than left unstated.
+    (
+        "AZURE_OPENAI_ENDPOINT",
+        "moves a Private provider's endpoint; does not raise a tier — see Task 5",
+    ),
+    ("AZURE_OPENAI_DEPLOYMENT_NAME", "deployment selection"),
+    ("AZURE_OPENAI_API_VERSION", "wire version"),
+    (
+        "AWS_ENDPOINT_URL_BEDROCK",
+        "moves a Private provider's endpoint; does not raise a tier — see Task 5",
+    ),
+    ("AWS_REGION", "region selection"),
+    ("BEDROCK_MAX_RETRIES", "retry policy"),
+    ("BEDROCK_INITIAL_RETRY_INTERVAL_MS", "retry policy"),
+    ("BEDROCK_BACKOFF_MULTIPLIER", "retry policy"),
+    ("BEDROCK_MAX_RETRY_INTERVAL_MS", "retry policy"),
+];
+
+/// The files whose `get_param` reads the scan covers: every provider file Task
+/// 5's Files table marks Modify to define `tier()`, plus the factory intercept
+/// it marks Reference. A new provider whose tier depends on config must be added
+/// here — and Task 5's `the_private_set_is_a_table_of_reviewed_decisions` is what
+/// fails if a new private provider is added without being classified at all.
+///
+/// ⚠ `#[cfg(test)]`, along with the two scans below: these `include_str!`s pull
+/// ~97 KB of provider source into the crate, and nothing outside this file's own
+/// test module reads them. The shipped `biorouterd`/`biorouter` binaries carry
+/// the key lists and [`is_capability_key`]; they have no reason to carry a copy
+/// of `ollama.rs`.
+#[cfg(test)]
+pub const TIER_INPUT_FILES: &[(&str, &str)] = &[
+    (
+        "providers/factory.rs",
+        include_str!("../providers/factory.rs"),
+    ),
+    (
+        "providers/ollama.rs",
+        include_str!("../providers/ollama.rs"),
+    ),
+    (
+        "providers/llamacpp.rs",
+        include_str!("../providers/llamacpp.rs"),
+    ),
+    (
+        "providers/versa_azure.rs",
+        include_str!("../providers/versa_azure.rs"),
+    ),
+    (
+        "providers/versa_bedrock.rs",
+        include_str!("../providers/versa_bedrock.rs"),
+    ),
+];
+
+/// Writing **or deleting** this key over HTTP requires the user-action proof.
+pub fn is_capability_key(key: &str) -> bool {
+    CAPABILITY_CONFIG_KEYS.contains(&key)
+}
+
+/// The `(path, source)` pairs the two scans below read. An accessor rather than
+/// the constant itself so a caller cannot accidentally iterate a *different*
+/// set than the one the classification test walks.
+#[cfg(test)]
+pub fn tier_input_sources() -> impl Iterator<Item = (&'static str, &'static str)> {
+    TIER_INPUT_FILES.iter().copied()
+}
+
+/// Every distinct config key the tier-input files read through a `get_param`
+/// **string literal**, sorted.
+///
+/// Literal-only by construction, which is exactly why
+/// [`computed_get_param_re`] exists beside it: a key built at runtime would be
+/// invisible here and the classification test would go quietly vacuous.
+#[cfg(test)]
+pub fn scan_get_param_keys() -> Vec<String> {
+    let literal = regex::Regex::new(r#"get_param(?:::<[^>]*>)?\s*\(\s*"([^"]+)""#)
+        .expect("the get_param literal scan is a compile-time-constant pattern");
+    let mut keys: Vec<String> = tier_input_sources()
+        .flat_map(|(_path, src)| {
+            literal
+                .captures_iter(src)
+                .map(|caps| caps[1].to_string())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+/// Matches a `get_param` whose key is **not** a string literal — a
+/// `get_param(&format!(..))` or a `get_param(some_var)`. The scan above cannot
+/// see those, so the test asserts there are none.
+#[cfg(test)]
+pub fn computed_get_param_re() -> regex::Regex {
+    regex::Regex::new(r#"get_param(?:::<[^>]*>)?\s*\(\s*[^"\s]"#)
+        .expect("the computed-key pattern is a compile-time constant")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_config_key_the_tier_resolver_reads_is_classified() {
+        // Scans the five files Task 5 touches to define `tier()` plus
+        // factory.rs's BIOROUTER_LEAD_MODEL intercept, extracts every
+        // `get_param("KEY")` literal, and requires each to appear in EXACTLY ONE
+        // of the two lists. Adding a config read to any of them fails this test
+        // until someone decides whether it determines capability. That is the
+        // checkable list: it does not depend on anyone remembering a rule.
+        let scanned = scan_get_param_keys(); // 22 today
+        assert_eq!(
+            scanned.len(),
+            22,
+            "the tier-input files' config surface changed: {scanned:?}"
+        );
+        for key in &scanned {
+            let cap = CAPABILITY_CONFIG_KEYS.contains(&key.as_str());
+            let not = NOT_CAPABILITY_CONFIG_KEYS
+                .iter()
+                .any(|(k, _why)| *k == key.as_str());
+            assert!(
+                cap ^ not,
+                "{key} is in neither list, or in both — classify it"
+            );
+        }
+        // BIOROUTER_PROVIDER is read through the `config_value!` macro
+        // (base.rs:1147), so the literal never appears in a `get_param(` call
+        // and the scan cannot see it. It is seeded, and this asserts the seed
+        // survives.
+        assert!(CAPABILITY_CONFIG_KEYS.contains(&"BIOROUTER_PROVIDER"));
+        assert_eq!(CAPABILITY_CONFIG_KEYS.len(), 5);
+    }
+
+    #[test]
+    fn the_scan_cannot_be_defeated_by_a_computed_key() {
+        // The scan reads string literals. A `get_param(&format!(..))` would be
+        // invisible to it, so the scan asserts there are none — measured: today
+        // every key in all five files is a literal.
+        let computed = computed_get_param_re();
+        for (path, src) in tier_input_sources() {
+            assert!(
+                !computed.is_match(src),
+                "{path} builds a config key at runtime; the key scan cannot see it"
+            );
+        }
+    }
+}

@@ -22,6 +22,21 @@ use regex::Regex;
 
 pub struct QueryArgs {
     pub kb_id: String,
+    /// The capability of the model this macro will run (issue #56). Required,
+    /// so every production caller is a compile error rather than an omission.
+    ///
+    /// ⚠ `query` **writes**. `file_as_page` commits a page when set, but the
+    /// deciding fact is harsher: `tool_specs()` hands the sub-agent
+    /// `kb_write_page`, `kb_append_log` **and** `kb_add_raw_source`
+    /// unconditionally, and the only thing between a `file_as_page: false`
+    /// query and a write is a sentence in the system prompt. A prompt is not a
+    /// control, so `query` raises like the other two macros.
+    pub caller_is_private: bool,
+    /// Whose agreements cover that model — DR-26's third axis (issue #56, Task
+    /// 50). Required for the same reason `caller_is_private` is: an omission
+    /// must be a compile error. `Unstated` is its `Default`, so a caller that
+    /// cannot determine one fails closed.
+    pub caller_affiliation: crate::knowledge::affiliation::CallerAffiliation,
     pub question: String,
     pub completer: Box<dyn Completer>,
     pub file_as_page: bool,
@@ -89,6 +104,25 @@ fn commit_txn_if_a_page_was_filed(
 
 pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResult> {
     let _lock = svc.lock_kb(&args.kb_id).await?;
+    // Issue #56. See `QueryArgs::caller_is_private`: this macro's sub-agent
+    // holds the same three write tools the ingest one does. Before the
+    // sub-agent, not after. Task 10C (CP2) puts the barrier on the line above:
+    // a `query` reads the whole base into a model's context, which is the
+    // disclosure this issue is about even when `file_as_page` is false.
+    crate::knowledge::tier::assert_reachable(
+        svc.root(),
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
+    // Issue #56, both axes in one call under one lock — see
+    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
+    // two.
+    svc.raise_tier_and_affiliation(
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Idempotently upgrade legacy schema.md files that pre-date the
@@ -307,6 +341,8 @@ mod tests {
             &svc,
             QueryArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "How does zone-2 affect HRV?".into(),
                 completer: Box::new(completer),
                 file_as_page: false,
@@ -355,6 +391,8 @@ mod tests {
             &svc,
             QueryArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "What is zone-2 HRV effect?".into(),
                 completer: Box::new(completer),
                 file_as_page: true,
@@ -414,6 +452,8 @@ mod tests {
             &svc,
             QueryArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "What is the zone-2 HRV effect?".into(),
                 completer: Box::new(completer),
                 file_as_page: true,
@@ -463,6 +503,8 @@ mod tests {
             &svc,
             QueryArgs {
                 kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
                 question: "What is HRV?".into(),
                 completer: Box::new(completer),
                 file_as_page: true,
@@ -491,6 +533,58 @@ mod tests {
         assert!(
             !has_query_commit,
             "no query commit should exist after step-budget abort; log: {log:?}"
+        );
+    }
+
+    // ── Issue #56, Task 10B: CP2 ────────────────────────────────────────────
+
+    /// A completer that never answers, so the sub-agent run fails immediately.
+    /// The test below says nothing about the macro's happy path and everything
+    /// about WHEN the raise runs.
+    struct RefusesImmediately;
+
+    #[async_trait]
+    impl Completer for RefusesImmediately {
+        async fn complete(
+            &self,
+            _system: &str,
+            _messages: &[LlmMessage],
+            _tools: &[Tool],
+        ) -> anyhow::Result<LlmReply> {
+            anyhow::bail!("no model here")
+        }
+    }
+
+    /// Ratcheted even though it is called "query": `tool_specs()` hands the
+    /// sub-agent `kb_write_page`, `kb_append_log` **and** `kb_add_raw_source`
+    /// unconditionally, and the only thing between a `file_as_page: false`
+    /// query and a write is a sentence in the system prompt. A prompt is not a
+    /// control.
+    #[tokio::test]
+    async fn the_query_macro_ratchets_even_when_it_is_not_filing_a_page() {
+        let (dir, svc) = fresh_svc();
+        let root = dir.path().to_path_buf();
+        assert!(!crate::knowledge::tier::is_private(&root, "k"));
+
+        let _ = query(
+            &svc,
+            QueryArgs {
+                kb_id: "k".into(),
+                caller_is_private: true,
+                caller_affiliation: Default::default(),
+                question: "what is n?".into(),
+                completer: Box::new(RefusesImmediately),
+                file_as_page: false,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await;
+
+        assert!(
+            crate::knowledge::tier::is_private(&root, "k"),
+            "the raise ran after the sub-agent, or not at all"
         );
     }
 }

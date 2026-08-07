@@ -16,7 +16,10 @@ import { PlusIcon, Edit, Trash2, AlertTriangle, Info } from '../../../icons/app-
 import ExtensionInfoFields from './ExtensionInfoFields';
 import ExtensionTimeoutField from './ExtensionTimeoutField';
 import { upsertConfig } from '../../../../api';
+import { userActionHeaders } from '../../../../utils/userAction';
 import { ConfirmationModal } from '../../../ui/ConfirmationModal';
+import { PrivacyBadge } from '../../../ui/PrivacyBadge';
+import { classifyExtension } from '../extensionPrivacy';
 
 interface ExtensionModalProps {
   title: string;
@@ -192,6 +195,11 @@ export default function ExtensionModal({
           key: key,
           value: value,
         },
+        // Issue #56 DR-16: same reason as `BrxtInstallModal` — the key is the
+        // extension author's, so it can collide with a capability key, and the
+        // guard does not look at `is_secret`. A person saving an extension's
+        // settings is a user act and carries the proof.
+        headers: await userActionHeaders(),
       });
       return true;
     } catch (error) {
@@ -312,6 +320,31 @@ export default function ExtensionModal({
   // Update title based on current state
   const modalTitle = showDeleteConfirmation ? `Delete Extension "${formData.name}"` : title;
 
+  /**
+   * Issue #56 §13.5: "The manual 'Add stdio extension' form carries the same
+   * line." This is the one install route with no bundle and no catalogue entry
+   * behind it, so nothing else on the screen hints at what the result will be.
+   *
+   * It tracks the NAME as it is typed, because on this form the name is the
+   * entire input to the tier — `classify_extension` keys on
+   * `name_to_key(name)` and nothing else. That makes DR-19's consequence
+   * visible at the one moment a person can trigger it through the GUI: a
+   * published private name produces a Private extension, any other spelling of
+   * it does not. It discloses; it does not restrict. Reserving names here would
+   * be the wrong repair (open question 28 wants provenance recorded at install,
+   * not a blocklist on a text field), and it would not stop the agent-writable
+   * `config.yaml` path this form is only one entrance to.
+   *
+   * Add only. On an edit the extension already exists and the two "installed
+   * how" sentences would be guesses — a marketplace install is edited through
+   * this same modal.
+   */
+  const resultingTier = classifyExtension(formData.name);
+  const tierNotice =
+    resultingTier === 'private'
+      ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
+      : 'Extensions you add by hand are always Public. Any model, including commercial models hosted outside UCSF, will be able to call this extension.';
+
   return (
     <>
       <Dialog open={true} onOpenChange={handleClose}>
@@ -384,6 +417,13 @@ export default function ExtensionModal({
                     onChange={(key, value) => setFormData({ ...formData, [key]: value })}
                     submitAttempted={submitAttempted}
                   />
+
+                  {modalType === 'add' && (
+                    <div className="biorouter-modal-panel rounded-lg p-3">
+                      <PrivacyBadge tier={resultingTier} />
+                      <p className="text-xs text-text-muted mt-1.5 leading-relaxed">{tierNotice}</p>
+                    </div>
+                  )}
 
                   <div className="h-px shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]" />
 

@@ -1,0 +1,34 @@
+<!--
+  Fixture: a private card whose download filename carries a version suffix, so
+  its id and its extension name are DIFFERENT.
+
+  Expected: exit 0, one extension, id "suffixagent-1.2.3" and extension_name
+  "suffixagent", and a compiled private set holding "suffixagent" — not the id.
+
+  This is the case the whole extension_name field exists for. Every private
+  entry in the real catalog happens to have id == extension_name today, so a
+  generator that emitted the download-derived id into the Rust const would pass
+  every other test in this directory. spokeagent-0.4.1 is the real precedent:
+  the day a private extension ships a version-suffixed filename, keying on id
+  classifies it Public and says nothing.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <div class="ext-card" data-license="Apache-2.0" data-privacy="private" data-extension-name="SuffixAgent">
+      <div class="ext-card-header">
+        <div class="ext-meta">
+          <h3>Suffix Agent</h3>
+          <div class="ext-org">Fixtures · v1.2.3</div>
+        </div>
+        <a href="https://example.invalid/suffix-agent" class="ext-gh-link">GitHub</a>
+      </div>
+      <p class="ext-desc">A private card published as a version-suffixed bundle, installed under an un-suffixed name.</p>
+      <div class="ext-footer">
+        <div class="ext-tags"><span class="tag private" data-privacy-badge>Private</span><span class="tag mcp">MCP</span></div>
+        <a href="https://example.invalid/suffixagent-1.2.3.brxt" class="brxt-chip">.brxt</a>
+      </div>
+    </div>
+
+  </div>
+</div>

@@ -605,6 +605,21 @@ enum SessionCommand {
         )]
         branch_name: Option<String>,
     },
+    /// Issue #56 Task 31 / §12.4. By id, and only by id: `list_sessions`
+    /// filters to (`user`, `scheduled`), so a private `Hidden`, `SubAgent` or
+    /// `Terminal` chat cannot be picked from any listing the app builds — this
+    /// is the only surface that can reach one.
+    #[command(
+        about = "Declassify a private session so it may run on any model",
+        long_about = "Lower a session's privacy classification from private to public, after a \
+                      confirmation at the terminal. The change is recorded in the \
+                      classification ledger. Works by session id, including for sessions that \
+                      no listing shows (subagent runs, --no-session runs, terminal sessions)."
+    )]
+    Declassify {
+        /// Session id to declassify.
+        session_id: String,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1209,9 +1224,17 @@ enum Command {
     },
 
     /// Start or resume interactive chat sessions
+    ///
+    /// ⚠ `sessions` is an alias, and it is not cosmetic. `session_watch.rs`'s
+    /// own error message told users to run `biorouter sessions watch <id>`, the
+    /// BR-71 plan wrote `biorouter sessions …` in roughly forty places, and
+    /// `docs/cli/command-reference.md` printed it — while the plural was never a
+    /// registered command, so every one of those instructions ended in
+    /// `unrecognized subcommand 'sessions'`. Registering it makes the
+    /// instructions true rather than making forty documents wrong.
     #[command(
         about = "Start or resume interactive chat sessions",
-        visible_alias = "s"
+        visible_aliases = ["s", "sessions"]
     )]
     Session {
         #[command(subcommand)]
@@ -1242,6 +1265,15 @@ enum Command {
 
         #[command(flatten)]
         extension_opts: ExtensionOptions,
+
+        // Issue #56 Task 31. `biorouter run` has had these since forever;
+        // `biorouter session` did not, so `build_session`'s first precedence
+        // slot (`--provider`) was permanently `None` on the interactive path.
+        // That is the repair every privacy refusal in this crate now prints —
+        // "re-run with `--provider versa_azure`" — and a refusal that names a
+        // flag the command does not accept is worse than one that names none.
+        #[command(flatten)]
+        model_opts: ModelOptions,
     },
 
     /// Open the last project directory
@@ -1694,8 +1726,48 @@ async fn handle_session_subcommand(command: SessionCommand) -> Result<()> {
             };
             crate::commands::session::handle_session_diverge(&session_id, branch_name).await?;
         }
+        SessionCommand::Declassify { session_id } => {
+            // No `lookup_session_id`, no interactive picker: both go through
+            // `list_sessions*`, which is exactly the filter this subcommand
+            // exists to route around.
+            crate::commands::session::declassify_command(&session_id).await?;
+        }
     }
     Ok(())
+}
+
+/// `biorouter session` — both of its forms, dispatched in one place.
+///
+/// ⚠ **Extracted from `cli()` rather than inlined, and the reason is mechanical.**
+/// Task 31 (issue #56) gave the interactive form a seventh field, `model_opts`,
+/// which pushed the call past one line and `cli()` past clippy's 100-line
+/// ceiling (`too_many_lines`, 103/100 — a NEW violation against
+/// `scripts/clippy-lint.sh`'s baseline, so CI fails on it). The honest fix is to
+/// move the arm's body out, not to `#[allow]` the lint on a function that has
+/// been growing an arm per feature for years.
+async fn handle_session_command(
+    command: Option<SessionCommand>,
+    identifier: Option<Identifier>,
+    resume: bool,
+    history: bool,
+    session_opts: SessionOptions,
+    extension_opts: ExtensionOptions,
+    model_opts: ModelOptions,
+) -> Result<()> {
+    match command {
+        Some(cmd) => handle_session_subcommand(cmd).await,
+        None => {
+            handle_interactive_session(
+                identifier,
+                resume,
+                history,
+                session_opts,
+                extension_opts,
+                model_opts,
+            )
+            .await
+        }
+    }
 }
 
 async fn handle_interactive_session(
@@ -1704,6 +1776,7 @@ async fn handle_interactive_session(
     history: bool,
     session_opts: SessionOptions,
     extension_opts: ExtensionOptions,
+    model_opts: ModelOptions,
 ) -> Result<()> {
     let session_start = std::time::Instant::now();
     let session_type = if resume { "resumed" } else { "new" };
@@ -1737,8 +1810,8 @@ async fn handle_interactive_session(
         builtins: extension_opts.builtins,
         workflow: None,
         additional_system_prompt: None,
-        provider: None,
-        model: None,
+        provider: model_opts.provider,
+        model: model_opts.model,
         debug: session_opts.debug,
         max_tool_repetitions: session_opts.max_tool_repetitions,
         max_turns: session_opts.max_turns,
@@ -2212,27 +2285,29 @@ pub async fn cli() -> anyhow::Result<()> {
             None => biorouter_acp::server::run(builtins).await,
         },
         Some(Command::Session {
-            command: Some(cmd), ..
-        }) => handle_session_subcommand(cmd).await,
-        Some(Command::Session {
-            command: None,
+            command,
             identifier,
             resume,
             history,
             session_opts,
             extension_opts,
+            model_opts,
         }) => {
-            handle_interactive_session(identifier, resume, history, session_opts, extension_opts)
-                .await
+            handle_session_command(
+                command,
+                identifier,
+                resume,
+                history,
+                session_opts,
+                extension_opts,
+                model_opts,
+            )
+            .await
         }
-        Some(Command::Project {}) => {
-            handle_project_default()?;
-            Ok(())
-        }
-        Some(Command::Projects) => {
-            handle_projects_interactive()?;
-            Ok(())
-        }
+        // Both already return `anyhow::Result<()>`, so `?` followed by `Ok(())`
+        // was a six-line restatement of the value the call hands back.
+        Some(Command::Project {}) => handle_project_default(),
+        Some(Command::Projects) => handle_projects_interactive(),
         Some(Command::Run {
             input_opts,
             identifier,
@@ -2280,5 +2355,59 @@ pub async fn cli() -> anyhow::Result<()> {
         }) => crate::commands::web::handle_web(port, host, open, auth_token, no_auth).await,
         Some(Command::Term { command }) => handle_term_subcommand(command).await,
         None => handle_default_session().await,
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    /// The parser is internally consistent (clap's own audit: duplicate
+    /// aliases, conflicting shorts, bad `value_parser`s).
+    ///
+    /// Not decoration — it is what makes the alias below a *parse* assertion
+    /// rather than a claim about an attribute nobody built.
+    #[test]
+    fn the_parser_is_well_formed() {
+        Cli::command().debug_assert();
+    }
+
+    /// BR-71 / issue #56: `biorouter sessions <verb>` really is a command.
+    ///
+    /// ⚠ Driven through the real parser, on the real argv, for every verb the
+    /// prose and the error messages tell people to type. An assertion that the
+    /// attribute is present would pass against an alias registered on the wrong
+    /// subcommand; this fails unless the argument vector a user actually types
+    /// produces the subcommand they meant.
+    ///
+    /// `session_watch.rs`'s missing-secret error printed `biorouter sessions
+    /// watch <id>` and the command reference printed it too, while `sessions`
+    /// was not registered anywhere — so following the instruction gave
+    /// `unrecognized subcommand`.
+    #[test]
+    fn sessions_is_a_real_alias_for_every_verb_the_product_prints() {
+        for argv in [
+            vec!["biorouter", "sessions", "watch", "20260801_7"],
+            vec!["biorouter", "sessions", "send", "20260801_7", "hello"],
+            vec!["biorouter", "sessions", "attach", "20260801_7"],
+            vec!["biorouter", "sessions", "cancel", "20260801_7"],
+            vec!["biorouter", "sessions", "list"],
+        ] {
+            let parsed = Cli::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("`{}` does not parse: {e}", argv.join(" ")));
+            assert!(
+                matches!(parsed.command, Some(Command::Session { .. })),
+                "`{}` parsed as something other than the session command",
+                argv.join(" ")
+            );
+        }
+
+        // …and the canonical spelling and the short alias still work, so the
+        // addition is additive rather than a rename.
+        for name in ["session", "s"] {
+            let parsed = Cli::try_parse_from(["biorouter", name, "list"])
+                .unwrap_or_else(|e| panic!("`biorouter {name} list` does not parse: {e}"));
+            assert!(matches!(parsed.command, Some(Command::Session { .. })));
+        }
     }
 }

@@ -1,0 +1,15 @@
+<!--
+  Fixture: the section is there, and it holds no extension cards.
+
+  Expected: exit 1 saying the section holds no cards. A catalog of nothing is
+  never a legitimate result: it is a renamed class, a broken slice or a
+  half-finished edit, and on a real run it silently rewrites the compiled-in
+  private set to EMPTY. "I found nothing" must be a failure, not an output.
+-->
+<div id="extensions-section">
+  <div class="ext-grid" id="extensions-grid">
+
+    <p class="ext-empty">Nothing here yet.</p>
+
+  </div>
+</div>

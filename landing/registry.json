@@ -1,6 +1,9 @@
 {
-  "version": 1,
+  "version": 2,
   "source": "https://biorouter.ucsf.edu/baam",
+  "institutions": {
+    "ucsf": "UCSF"
+  },
   "extensions": [
     {
       "id": "cdwagent",
@@ -17,7 +20,12 @@
       "github": "https://github.com/BaranziniLab/CDWAgent",
       "download": "https://github.com/BaranziniLab/CDWAgent/releases/download/v0.5.1-brxt/cdwagent.brxt",
       "filename": "cdwagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "private",
+      "extension_name": "cdwagent",
+      "affiliation": [
+        "ucsf"
+      ]
     },
     {
       "id": "ucsfomopagent",
@@ -34,7 +42,12 @@
       "github": "https://github.com/BaranziniLab/UCSFOMOPAgent",
       "download": "https://github.com/BaranziniLab/UCSFOMOPAgent/releases/download/v0.2.0-brxt/ucsfomopagent.brxt",
       "filename": "ucsfomopagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "private",
+      "extension_name": "ucsfomopagent",
+      "affiliation": [
+        "ucsf"
+      ]
     },
     {
       "id": "playwrightagent",
@@ -50,7 +63,8 @@
       "github": "https://github.com/BaranziniLab/PlaywrightAgent",
       "download": "https://github.com/BaranziniLab/PlaywrightAgent/releases/download/v0.1.0-brxt/playwrightagent.brxt",
       "filename": "playwrightagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "spokeagent-0.4.1",
@@ -66,7 +80,8 @@
       "github": "https://github.com/BaranziniLab/SPOKEAgent",
       "download": "https://github.com/BaranziniLab/SPOKEAgent/releases/download/v0.4.1/spokeagent-0.4.1.brxt",
       "filename": "spokeagent-0.4.1.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "codegraphagent",
@@ -83,7 +98,8 @@
       "github": "https://github.com/Broccolito/CodeGraphAgent",
       "download": "https://github.com/Broccolito/CodeGraphAgent/releases/download/v0.1.0/codegraphagent.brxt",
       "filename": "codegraphagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "bioroffice",
@@ -102,7 +118,8 @@
       "github": "https://github.com/BaranziniLab/BiorOffice",
       "download": "https://github.com/BaranziniLab/BiorOffice/releases/download/v1.0.0/bioroffice.brxt",
       "filename": "bioroffice.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "benchlingagent",
@@ -120,7 +137,8 @@
       "github": "https://github.com/BaranziniLab/BenchlingAgent",
       "download": "https://github.com/BaranziniLab/BenchlingAgent/releases/download/v0.1.0-brxt/benchlingagent.brxt",
       "filename": "benchlingagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "dnanexusagent",
@@ -138,7 +156,8 @@
       "github": "https://github.com/BaranziniLab/DNAnexusAgent",
       "download": "https://github.com/BaranziniLab/DNAnexusAgent/releases/download/v0.1.0-brxt/dnanexusagent.brxt",
       "filename": "dnanexusagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "latchbioagent",
@@ -156,7 +175,8 @@
       "github": "https://github.com/BaranziniLab/LatchBioAgent",
       "download": "https://github.com/BaranziniLab/LatchBioAgent/releases/download/v0.1.0-brxt/latchbioagent.brxt",
       "filename": "latchbioagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "labarchivesagent",
@@ -174,7 +194,8 @@
       "github": "https://github.com/BaranziniLab/LabArchivesAgent",
       "download": "https://github.com/BaranziniLab/LabArchivesAgent/releases/download/v0.1.0-brxt/labarchivesagent.brxt",
       "filename": "labarchivesagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "omeroagent",
@@ -192,7 +213,8 @@
       "github": "https://github.com/BaranziniLab/OMEROAgent",
       "download": "https://github.com/BaranziniLab/OMEROAgent/releases/download/v0.1.0-brxt/omeroagent.brxt",
       "filename": "omeroagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "protocolsioagent",
@@ -210,7 +232,8 @@
       "github": "https://github.com/BaranziniLab/ProtocolsIOAgent",
       "download": "https://github.com/BaranziniLab/ProtocolsIOAgent/releases/download/v0.1.0-brxt/protocolsioagent.brxt",
       "filename": "protocolsioagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "opennotebookagent",
@@ -228,7 +251,8 @@
       "github": "https://github.com/BaranziniLab/OpenNotebookAgent",
       "download": "https://github.com/BaranziniLab/OpenNotebookAgent/releases/download/v0.1.0-brxt/opennotebookagent.brxt",
       "filename": "opennotebookagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "modalagent",
@@ -246,7 +270,8 @@
       "github": "https://github.com/BaranziniLab/ModalAgent",
       "download": "https://github.com/BaranziniLab/ModalAgent/releases/download/v0.1.0-brxt/modalagent.brxt",
       "filename": "modalagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "idcagent",
@@ -264,7 +289,8 @@
       "github": "https://github.com/BaranziniLab/IDCAgent",
       "download": "https://github.com/BaranziniLab/IDCAgent/releases/download/v0.1.0-brxt/idcagent.brxt",
       "filename": "idcagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "literatureagent",
@@ -282,7 +308,8 @@
       "github": "https://github.com/BaranziniLab/LiteratureAgent",
       "download": "https://github.com/BaranziniLab/LiteratureAgent/releases/download/v0.1.0-brxt/literatureagent.brxt",
       "filename": "literatureagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "ncbiagent",
@@ -300,7 +327,8 @@
       "github": "https://github.com/BaranziniLab/NCBIAgent",
       "download": "https://github.com/BaranziniLab/NCBIAgent/releases/download/v0.1.0-brxt/ncbiagent.brxt",
       "filename": "ncbiagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "clinicalvariantagent",
@@ -318,7 +346,8 @@
       "github": "https://github.com/BaranziniLab/ClinicalVariantAgent",
       "download": "https://github.com/BaranziniLab/ClinicalVariantAgent/releases/download/v0.1.0-brxt/clinicalvariantagent.brxt",
       "filename": "clinicalvariantagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "workflowrunneragent",
@@ -336,7 +365,8 @@
       "github": "https://github.com/BaranziniLab/WorkflowRunnerAgent",
       "download": "https://github.com/BaranziniLab/WorkflowRunnerAgent/releases/download/v0.1.0-brxt/workflowrunneragent.brxt",
       "filename": "workflowrunneragent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "ucsfhpcagent",
@@ -354,7 +384,8 @@
       "github": "https://github.com/BaranziniLab/UCSFHPCAgent",
       "download": "https://github.com/BaranziniLab/UCSFHPCAgent/releases/download/v0.1.0-brxt/ucsfhpcagent.brxt",
       "filename": "ucsfhpcagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "chemoinformaticsagent",
@@ -372,7 +403,8 @@
       "github": "https://github.com/BaranziniLab/ChemoinformaticsAgent",
       "download": "https://github.com/BaranziniLab/ChemoinformaticsAgent/releases/download/v0.1.0-brxt/chemoinformaticsagent.brxt",
       "filename": "chemoinformaticsagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "proteinstructureagent",
@@ -390,7 +422,8 @@
       "github": "https://github.com/BaranziniLab/ProteinStructureAgent",
       "download": "https://github.com/BaranziniLab/ProteinStructureAgent/releases/download/v0.1.0-brxt/proteinstructureagent.brxt",
       "filename": "proteinstructureagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "singlecellomicsagent",
@@ -408,7 +441,8 @@
       "github": "https://github.com/BaranziniLab/SingleCellOmicsAgent",
       "download": "https://github.com/BaranziniLab/SingleCellOmicsAgent/releases/download/v0.1.0-brxt/singlecellomicsagent.brxt",
       "filename": "singlecellomicsagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "opentronsagent",
@@ -426,7 +460,8 @@
       "github": "https://github.com/BaranziniLab/OpentronsAgent",
       "download": "https://github.com/BaranziniLab/OpentronsAgent/releases/download/v0.1.0-brxt/opentronsagent.brxt",
       "filename": "opentronsagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "ginkgocloudlabagent",
@@ -444,7 +479,8 @@
       "github": "https://github.com/BaranziniLab/GinkgoCloudLabAgent",
       "download": "https://github.com/BaranziniLab/GinkgoCloudLabAgent/releases/download/v0.1.0-brxt/ginkgocloudlabagent.brxt",
       "filename": "ginkgocloudlabagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "lamindbagent",
@@ -462,7 +498,8 @@
       "github": "https://github.com/BaranziniLab/LaminDBAgent",
       "download": "https://github.com/BaranziniLab/LaminDBAgent/releases/download/v0.1.0-brxt/lamindbagent.brxt",
       "filename": "lamindbagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "cellxgenecensusagent",
@@ -480,7 +517,8 @@
       "github": "https://github.com/BaranziniLab/CellxGeneCensusAgent",
       "download": "https://github.com/BaranziniLab/CellxGeneCensusAgent/releases/download/v0.1.0-brxt/cellxgenecensusagent.brxt",
       "filename": "cellxgenecensusagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "depmapagent",
@@ -498,7 +536,8 @@
       "github": "https://github.com/BaranziniLab/DepMapAgent",
       "download": "https://github.com/BaranziniLab/DepMapAgent/releases/download/v0.1.0-brxt/depmapagent.brxt",
       "filename": "depmapagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "primekgagent",
@@ -516,7 +555,8 @@
       "github": "https://github.com/BaranziniLab/PrimeKGAgent",
       "download": "https://github.com/BaranziniLab/PrimeKGAgent/releases/download/v0.1.0-brxt/primekgagent.brxt",
       "filename": "primekgagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "zoteroagent",
@@ -534,7 +574,8 @@
       "github": "https://github.com/BaranziniLab/ZoteroAgent",
       "download": "https://github.com/BaranziniLab/ZoteroAgent/releases/download/v0.1.0-brxt/zoteroagent.brxt",
       "filename": "zoteroagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "markitdownagent",
@@ -552,7 +593,8 @@
       "github": "https://github.com/BaranziniLab/MarkItDownAgent",
       "download": "https://github.com/BaranziniLab/MarkItDownAgent/releases/download/v0.1.0-brxt/markitdownagent.brxt",
       "filename": "markitdownagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "adaptyvbiofoundryagent",
@@ -570,7 +612,8 @@
       "github": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent",
       "download": "https://github.com/BaranziniLab/AdaptyvBioFoundryAgent/releases/download/v0.1.0-brxt/adaptyvbiofoundryagent.brxt",
       "filename": "adaptyvbiofoundryagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "structuredpapersearchagent",
@@ -588,7 +631,8 @@
       "github": "https://github.com/BaranziniLab/StructuredPaperSearchAgent",
       "download": "https://github.com/BaranziniLab/StructuredPaperSearchAgent/releases/download/v0.1.0-brxt/structuredpapersearchagent.brxt",
       "filename": "structuredpapersearchagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "scientificwebresearchagent",
@@ -606,7 +650,8 @@
       "github": "https://github.com/BaranziniLab/ScientificWebResearchAgent",
       "download": "https://github.com/BaranziniLab/ScientificWebResearchAgent/releases/download/v0.1.0-brxt/scientificwebresearchagent.brxt",
       "filename": "scientificwebresearchagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "tamarindbioagent",
@@ -624,7 +669,8 @@
       "github": "https://github.com/BaranziniLab/TamarindBioAgent",
       "download": "https://github.com/BaranziniLab/TamarindBioAgent/releases/download/v0.1.0-brxt/tamarindbioagent.brxt",
       "filename": "tamarindbioagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "rowanmolecularmodelingagent",
@@ -642,7 +688,8 @@
       "github": "https://github.com/BaranziniLab/RowanMolecularModelingAgent",
       "download": "https://github.com/BaranziniLab/RowanMolecularModelingAgent/releases/download/v0.1.0-brxt/rowanmolecularmodelingagent.brxt",
       "filename": "rowanmolecularmodelingagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     },
     {
       "id": "unifiedpublicdatabaselookupagent",
@@ -660,7 +707,8 @@
       "github": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent",
       "download": "https://github.com/BaranziniLab/UnifiedPublicDatabaseLookupAgent/releases/download/v0.1.0-brxt/unifiedpublicdatabaselookupagent.brxt",
       "filename": "unifiedpublicdatabaselookupagent.brxt",
-      "license": "Apache-2.0"
+      "license": "Apache-2.0",
+      "privacy": "public"
     }
   ],
   "skills": [

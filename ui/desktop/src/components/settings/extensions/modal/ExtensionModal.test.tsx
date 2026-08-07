@@ -99,4 +99,51 @@ describe('ExtensionModal', () => {
     // `userEvent.setup({ delay: null })` in this file; this is the zero-risk
     // version of it.
   }, 60000);
+
+  /**
+   * Issue #56 §13.5: "The manual 'Add stdio extension' form carries the same
+   * line." It is the one install route with no bundle and no catalogue entry
+   * behind it, so nothing else on the screen hints at what the result will be.
+   *
+   * And it follows the NAME as it is typed, because on this form the name is the
+   * whole input to the tier. That is DR-19's consequence made visible at the one
+   * moment a person can trigger it through the GUI: type a published private
+   * name and the badge says Private; type anything else and it says Public.
+   * `delay: null` because this types 13 characters and the suite above documents
+   * what user-event's default inter-event delay costs.
+   */
+  it('the add form states the badge the name will produce', async () => {
+    const user = userEvent.setup({ delay: null });
+    const initialData: ExtensionFormData = {
+      name: '',
+      description: '',
+      type: 'stdio',
+      cmd: '',
+      endpoint: '',
+      enabled: true,
+      timeout: 300,
+      envVars: [],
+      headers: [],
+    };
+
+    render(
+      <ExtensionModal
+        title="Add custom extension"
+        initialData={initialData}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+        submitLabel="Add Extension"
+        modalType="add"
+      />
+    );
+
+    expect(
+      screen.getByText(/including commercial models hosted outside UCSF/i)
+    ).toBeInTheDocument();
+
+    await user.type(screen.getByPlaceholderText('Enter extension name...'), 'ucsfomopagent');
+
+    expect(await screen.findByText(/only private models/i)).toBeInTheDocument();
+    expect(screen.queryByText(/always Public/i)).toBeNull();
+  });
 });
