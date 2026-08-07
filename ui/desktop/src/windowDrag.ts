@@ -346,17 +346,70 @@ export interface ScreenGeometry {
   workAreaNearest(point: Point): Rect;
 }
 
-/** The `screen` module's shape, structurally — so this file imports no Electron. */
+/**
+ * The `screen` module's shape, structurally — so this file imports no Electron.
+ *
+ * THE TWO DIP CONVERTERS ARE OPTIONAL BECAUSE ON macOS THEY DO NOT EXIST.
+ *
+ * `screen.screenToDipPoint` and `screen.dipToScreenPoint` are `@platform
+ * win32,linux`: Electron compiles them out of the macOS build entirely (neither
+ * name appears anywhere in the strings of `Electron Framework` on darwin, while
+ * `getDisplayNearestPoint` and `getCursorScreenPoint` do). Reading one gives
+ * `undefined`; calling it throws `TypeError: screen.screenToDipPoint is not a
+ * function`.
+ *
+ * Electron's `.d.ts` declares them unconditionally, so `tsc` never noticed —
+ * and the throw landed in an `ipcMain` listener and an `ipcMain.handle`, where
+ * the first killed the preview silently and the second rejected into a
+ * `.catch(() => {})`. Tear-off and merge were dead on the primary platform with
+ * no visible error at all.
+ *
+ * Declaring them optional here is what makes the absence a fact the type system
+ * carries, so {@link electronScreenGeometry} is forced to answer for it.
+ */
 export interface ElectronScreenLike {
-  screenToDipPoint(point: Point): Point;
-  dipToScreenPoint(point: Point): Point;
+  screenToDipPoint?(point: Point): Point;
+  dipToScreenPoint?(point: Point): Point;
   getDisplayNearestPoint(point: Point): { workArea: Rect };
 }
 
+/**
+ * The conversion on a platform that does not scale screen coordinates.
+ *
+ * macOS reports pointer and window geometry in points, which ARE device
+ * independent pixels — the backing scale factor never enters the coordinate
+ * space the way it does under Windows per-monitor DPI. So identity is not a
+ * degraded fallback here, it is the correct conversion; the bug was calling a
+ * method that does not exist in order to compute it.
+ *
+ * A fresh object rather than the argument, so a caller can never alias a point
+ * it is about to mutate into the geometry's answer.
+ */
+function identityPoint(point: Point): Point {
+  return { x: point.x, y: point.y };
+}
+
+/**
+ * Adapt Electron's `screen` module, tolerating the platforms that only have
+ * part of it.
+ *
+ * Feature-detected once, at construction: whether a native method exists is
+ * fixed at Electron's build time, and `main.ts` builds this lazily on first use
+ * (after `app` is ready) so there is no window in which the module is only
+ * half-populated.
+ */
 export function electronScreenGeometry(screen: ElectronScreenLike): ScreenGeometry {
+  const screenToDip =
+    typeof screen.screenToDipPoint === 'function'
+      ? (point: Point) => screen.screenToDipPoint!(point)
+      : identityPoint;
+  const dipToScreen =
+    typeof screen.dipToScreenPoint === 'function'
+      ? (point: Point) => screen.dipToScreenPoint!(point)
+      : identityPoint;
   return {
-    screenToDip: (point) => screen.screenToDipPoint(point),
-    dipToScreen: (point) => screen.dipToScreenPoint(point),
+    screenToDip,
+    dipToScreen,
     workAreaNearest: (point) => screen.getDisplayNearestPoint(point).workArea,
   };
 }
@@ -385,6 +438,64 @@ export function resolveDropTargetForRawPoint(
   sourceWindowId: number
 ): CrossWindowPhase {
   return resolveDropTarget(normalizeToDip(rawScreenPoint, geometry), registry, sourceWindowId);
+}
+
+/**
+ * THE RENDERER'S POINT ON THE WIRE — `{screenX, screenY}`, NOT `{x, y}`.
+ *
+ * A pointer event names its screen coordinates `screenX`/`screenY`, and the
+ * renderer forwards them under those names (preload's `TabDragScreenPoint`).
+ * Every geometry function in this module speaks {@link Point}, whose fields are
+ * `x`/`y`. The two shapes share no field.
+ *
+ * They met in an `ipcMain` listener, whose payload argument is `any`, so the
+ * wire object was handed straight to {@link resolveDropTargetForRawPoint} and
+ * TypeScript said nothing. `undefined >= rect.x` is `false` for every rectangle,
+ * so EVERY drop resolved to `detach` — a merge was unreachable — and
+ * `Math.round(undefined - grabOffset.x)` made a torn-off window at `NaN, NaN`.
+ *
+ * This type and {@link screenPointFromWire} exist so the conversion has one
+ * name, one place, and a test. The seam cannot silently come back, because the
+ * IPC payloads in `main.ts` are typed `unknown` and only these functions can
+ * open them.
+ */
+export interface ScreenPointWire {
+  screenX: number;
+  screenY: number;
+}
+
+/**
+ * Validate a renderer-supplied wire point and convert it to geometry space.
+ *
+ * `null` for anything that is not two finite numbers — including the `NaN` and
+ * `Infinity` a renderer can put on the wire, which would otherwise poison every
+ * comparison downstream rather than failing here where the caller can answer
+ * "keep the tab".
+ */
+export function screenPointFromWire(input: unknown): Point | null {
+  const wire = input as Partial<ScreenPointWire> | null | undefined;
+  if (typeof wire?.screenX !== 'number' || typeof wire?.screenY !== 'number') return null;
+  if (!Number.isFinite(wire.screenX) || !Number.isFinite(wire.screenY)) return null;
+  return { x: wire.screenX, y: wire.screenY };
+}
+
+/** Geometry space back to the wire, for the messages a target renderer reads. */
+export function screenPointToWire(point: Point): ScreenPointWire {
+  return { screenX: point.x, screenY: point.y };
+}
+
+/**
+ * The grab offset, which IS `{x, y}` on the wire — but still arrives as `any`.
+ *
+ * `{0, 0}` rather than `null` for a malformed one: an offset is a refinement of
+ * where the new window lands, never a reason to refuse the drop, and dropping
+ * the tab at the cursor's top-left is a perfectly usable answer.
+ */
+export function grabOffsetFromWire(input: unknown): Point {
+  const offset = input as Partial<Point> | null | undefined;
+  if (typeof offset?.x !== 'number' || typeof offset?.y !== 'number') return { x: 0, y: 0 };
+  if (!Number.isFinite(offset.x) || !Number.isFinite(offset.y)) return { x: 0, y: 0 };
+  return { x: offset.x, y: offset.y };
 }
 
 /**

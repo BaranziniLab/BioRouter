@@ -4,16 +4,20 @@ import {
   bandScreenRects,
   clampToWorkArea,
   electronScreenGeometry,
+  grabOffsetFromWire,
   intersectRects,
   normalizeToDip,
   rectContains,
   resolveDropTarget,
   resolveDropTargetForRawPoint,
+  screenPointFromWire,
+  screenPointToWire,
   tornOffWindowBounds,
   tornOffWindowBoundsForRawPoint,
   type Point,
   type Rect,
   type ScreenGeometry,
+  type ScreenPointWire,
 } from './windowDrag';
 
 const STRIP_HEIGHT = 36;
@@ -446,5 +450,141 @@ describe('DIP normalisation and the screen shim (D4)', () => {
     expect(geometry.dipToScreen({ x: 50, y: 100 })).toEqual({ x: 100, y: 200 });
     expect(geometry.workAreaNearest({ x: 100, y: 0 }).width).toBe(200);
     expect(calls).toEqual(['screenToDipPoint', 'dipToScreenPoint', 'getDisplayNearestPoint']);
+  });
+});
+
+/**
+ * THE macOS `screen` MODULE, WHICH IS THE ONE THIS APP SHIPS ON MOST.
+ *
+ * Every geometry test above hands `electronScreenGeometry` a literal with all
+ * three methods present, so none of them could see that the real macOS module
+ * has only one. `screenToDipPoint`/`dipToScreenPoint` are `@platform
+ * win32,linux` and are compiled out of the darwin build — the strings do not
+ * even appear in `Electron Framework` on this machine, while
+ * `getDisplayNearestPoint` does.
+ *
+ * These cases model that module by OMITTING the two methods, which is the only
+ * faithful stand-in and the thing the stub above cannot be.
+ */
+function macScreenModule(workArea: Rect = SINGLE_DISPLAY) {
+  // Deliberately not `screenToDipPoint: undefined` — the property is ABSENT.
+  return { getDisplayNearestPoint: () => ({ workArea }) };
+}
+
+describe('electronScreenGeometry — macOS, where the DIP converters do not exist', () => {
+  it('does not throw normalising a point: identity, not a missing method', () => {
+    const geometry = electronScreenGeometry(macScreenModule());
+    expect(() => normalizeToDip({ x: 640, y: 26 }, geometry)).not.toThrow();
+    expect(normalizeToDip({ x: 640, y: 26 }, geometry)).toEqual({ x: 640, y: 26 });
+    expect(geometry.dipToScreen({ x: 640, y: 26 })).toEqual({ x: 640, y: 26 });
+  });
+
+  it('resolves a real merge instead of dying in the ipcMain listener', () => {
+    const geometry = electronScreenGeometry(macScreenModule());
+    const registry = registryOf([7, chatWindow({ x: 0, y: 0, width: 1000, height: 800 })]);
+    expect(
+      resolveDropTargetForRawPoint({ x: 500, y: 18 }, geometry, registry, 99)
+    ).toEqual({ kind: 'merge', targetWindowId: 7 });
+  });
+
+  it('places a torn-off window at the drop point rather than at NaN', () => {
+    const geometry = electronScreenGeometry(macScreenModule());
+    const bounds = tornOffWindowBoundsForRawPoint(
+      { x: 700, y: 300 },
+      { x: 40, y: 12 },
+      { x: 0, y: 0, width: 800, height: 600 },
+      geometry
+    );
+    expect(bounds).toEqual({ x: 660, y: 288, width: 800, height: 600 });
+  });
+
+  it('still uses the native converters wherever they DO exist', () => {
+    // The same assertion from the other side: the fallback must not shadow a
+    // platform that really can scale, or Windows per-monitor DPI silently
+    // regresses to the bug this fallback is fixing on macOS.
+    const geometry = electronScreenGeometry({
+      screenToDipPoint: (point) => ({ x: point.x / 2, y: point.y / 2 }),
+      dipToScreenPoint: (point) => ({ x: point.x * 2, y: point.y * 2 }),
+      getDisplayNearestPoint: () => ({ workArea: SINGLE_DISPLAY }),
+    });
+    expect(normalizeToDip({ x: 640, y: 26 }, geometry)).toEqual({ x: 320, y: 13 });
+  });
+});
+
+/**
+ * THE IPC SEAM — `{screenX, screenY}` IN, `{x, y}` OUT.
+ *
+ * The wire shape and the geometry shape share no field name, and an `ipcMain`
+ * listener's payload is `any`, so main handed one straight to the other and
+ * `tsc` was silent. `undefined >= rect.x` is false for every rectangle, so every
+ * drop resolved to `detach` and a merge was unreachable on all three platforms.
+ *
+ * Each case below feeds the EXACT object literal `ChatGroupsShell` puts on the
+ * wire, not a hand-written `{x, y}`.
+ */
+describe('screenPointFromWire — the shape the renderer actually sends', () => {
+  const geometry = electronScreenGeometry(macScreenModule());
+  /** Byte for byte what ChatGroupsShell sends (`{ screenX, screenY }`). */
+  const wirePoint: unknown = { screenX: 500, screenY: 18 };
+
+  it('converts the wire point into geometry space', () => {
+    expect(screenPointFromWire(wirePoint)).toEqual({ x: 500, y: 18 });
+  });
+
+  it('a wire point converted at the boundary resolves as a MERGE', () => {
+    const registry = registryOf([7, chatWindow({ x: 0, y: 0, width: 1000, height: 800 })]);
+    const converted = screenPointFromWire(wirePoint);
+    expect(converted).not.toBeNull();
+    expect(resolveDropTargetForRawPoint(converted!, geometry, registry, 99)).toEqual({
+      kind: 'merge',
+      targetWindowId: 7,
+    });
+  });
+
+  it('a wire point converted at the boundary gives finite torn-off bounds', () => {
+    const bounds = tornOffWindowBoundsForRawPoint(
+      screenPointFromWire({ screenX: 700, screenY: 300 })!,
+      grabOffsetFromWire({ x: 40, y: 12 }),
+      { x: 0, y: 0, width: 800, height: 600 },
+      geometry
+    );
+    expect(Number.isFinite(bounds.x)).toBe(true);
+    expect(Number.isFinite(bounds.y)).toBe(true);
+    expect(bounds).toEqual({ x: 660, y: 288, width: 800, height: 600 });
+  });
+
+  it('refuses a payload that is not two finite numbers', () => {
+    expect(screenPointFromWire(undefined)).toBeNull();
+    expect(screenPointFromWire(null)).toBeNull();
+    expect(screenPointFromWire({})).toBeNull();
+    // A geometry point is NOT a wire point. Rejecting it is the whole guarantee:
+    // if the two shapes were interchangeable the seam would still be open.
+    expect(screenPointFromWire({ x: 1, y: 2 })).toBeNull();
+    expect(screenPointFromWire({ screenX: 1 })).toBeNull();
+    expect(screenPointFromWire({ screenX: NaN, screenY: 2 })).toBeNull();
+    expect(screenPointFromWire({ screenX: 1, screenY: Infinity })).toBeNull();
+    expect(screenPointFromWire({ screenX: '1', screenY: '2' })).toBeNull();
+  });
+
+  it('round-trips back to the wire for the messages a target renderer reads', () => {
+    expect(screenPointToWire({ x: 500, y: 18 })).toEqual({ screenX: 500, screenY: 18 });
+  });
+
+  it('falls the grab offset back to the origin rather than poisoning the bounds', () => {
+    expect(grabOffsetFromWire({ x: 4, y: 9 })).toEqual({ x: 4, y: 9 });
+    expect(grabOffsetFromWire(undefined)).toEqual({ x: 0, y: 0 });
+    expect(grabOffsetFromWire({ x: NaN, y: 9 })).toEqual({ x: 0, y: 0 });
+    // The wire POINT shape is not an offset either — same trap, other direction.
+    expect(grabOffsetFromWire({ screenX: 4, screenY: 9 })).toEqual({ x: 0, y: 0 });
+  });
+
+  it('keeps the two shapes structurally incompatible (compile-time)', () => {
+    // `tsc --noEmit` runs in `lint:check`. If anyone ever widens `Point` to
+    // accept the wire fields — the change that would quietly reopen this seam —
+    // the expected error disappears and `@ts-expect-error` becomes the failure.
+    const wire: ScreenPointWire = { screenX: 1, screenY: 2 };
+    // @ts-expect-error a wire point is not a geometry Point and must never be
+    const notAPoint: Point = wire;
+    expect(notAPoint).toBe(wire);
   });
 });

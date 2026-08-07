@@ -44,10 +44,14 @@ import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './b
 import {
   StripBandRegistry,
   electronScreenGeometry,
+  grabOffsetFromWire,
   resolveDropTargetForRawPoint,
+  screenPointFromWire,
+  screenPointToWire,
   tornOffWindowBoundsForRawPoint,
   type Rect as DragRect,
   type ScreenGeometry,
+  type ScreenPointWire,
 } from './windowDrag';
 import { expandTilde } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
@@ -1560,6 +1564,27 @@ const tabDragPendingMerges = new Map<number, (inserted: boolean) => void>();
 /** How long the source waits for a target to confirm an insert before giving up. */
 const TAB_DRAG_MERGE_ACK_TIMEOUT_MS = 2000;
 
+/**
+ * `tab-drag:commit`'s payload as it arrives — every field still unproven.
+ *
+ * `point` and `grabOffset` are `unknown` rather than their wire shapes on
+ * purpose: they are geometry, and geometry only enters this process through
+ * `screenPointFromWire`/`grabOffsetFromWire`. Typing them here would let a
+ * future edit reach past the converters again.
+ */
+interface TabDragCommitRequestWire {
+  point?: unknown;
+  grabOffset?: unknown;
+  tab?: {
+    sessionId?: string;
+    title?: string;
+    userSetName?: boolean;
+    cwd?: string;
+    workflowId?: string;
+  };
+  isOnlyTab?: boolean;
+}
+
 /** A renderer-supplied band list, made safe to store. */
 function sanitizeStripBands(input: unknown): DragRect[] {
   if (!Array.isArray(input)) return [];
@@ -1617,10 +1642,7 @@ function refreshRegisteredContentBounds(): void {
  * would take the drag away from the source window that is holding the pointer
  * capture, and the gesture would die mid-air (design D3).
  */
-function setTabDragPreview(
-  targetWindowId: number | null,
-  point: { screenX: number; screenY: number }
-): void {
+function setTabDragPreview(targetWindowId: number | null, point: ScreenPointWire): void {
   if (tabDragPreviewWindowId !== null && tabDragPreviewWindowId !== targetWindowId) {
     const previous = windowMap.get(tabDragPreviewWindowId);
     if (previous && !previous.isDestroyed()) {
@@ -1660,7 +1682,7 @@ function clearTabDragPreview(): void {
 function requestTabMerge(
   target: BrowserWindow,
   tab: unknown,
-  point: { screenX: number; screenY: number }
+  point: ScreenPointWire
 ): Promise<boolean> {
   const requestId = ++tabDragMergeSeq;
   return new Promise<boolean>((resolve) => {
@@ -4639,18 +4661,27 @@ async function appMain() {
     });
   });
 
-  ipcMain.on('tab-drag:move', (event, point) => {
+  // EVERY IPC PAYLOAD BELOW IS TYPED `unknown` ON PURPOSE. `ipcMain`'s own
+  // signature says `any`, and that is exactly how a `{screenX, screenY}` wire
+  // point was handed to a function expecting `{x, y}` with `tsc` staying clean
+  // and every drop silently resolving to `detach`. `unknown` makes the
+  // converters in `windowDrag.ts` the only way in.
+  ipcMain.on('tab-drag:move', (event, point: unknown) => {
     const source = BrowserWindow.fromWebContents(event.sender);
     if (!source || source.isDestroyed()) return;
-    if (typeof point?.screenX !== 'number' || typeof point?.screenY !== 'number') return;
+    const rawPoint = screenPointFromWire(point);
+    if (!rawPoint) return;
     refreshRegisteredContentBounds();
     const phase = resolveDropTargetForRawPoint(
-      point,
+      rawPoint,
       tabDragGeometry(),
       stripBandRegistry,
       source.id
     );
-    setTabDragPreview(phase.kind === 'merge' ? phase.targetWindowId : null, point);
+    setTabDragPreview(
+      phase.kind === 'merge' ? phase.targetWindowId : null,
+      screenPointToWire(rawPoint)
+    );
   });
 
   ipcMain.on('tab-drag:end', () => clearTabDragPreview());
@@ -4659,21 +4690,21 @@ async function appMain() {
     tabDragPendingMerges.get(requestId)?.(!!inserted);
   });
 
-  ipcMain.handle('tab-drag:commit', async (event, request) => {
+  ipcMain.handle('tab-drag:commit', async (event, request: unknown) => {
     const source = BrowserWindow.fromWebContents(event.sender);
     // Every early return is `noop`, which means "keep the tab". There is no
     // failure here that should cost the user a chat.
     if (!source || source.isDestroyed()) return { outcome: 'noop' };
-    const point = request?.point;
-    if (typeof point?.screenX !== 'number' || typeof point?.screenY !== 'number') {
-      return { outcome: 'noop' };
-    }
+    const req = (request ?? {}) as TabDragCommitRequestWire;
+    const rawPoint = screenPointFromWire(req.point);
+    if (!rawPoint) return { outcome: 'noop' };
+    const wirePoint = screenPointToWire(rawPoint);
 
     // The caret goes the moment the button is released, whatever happens next.
     clearTabDragPreview();
     refreshRegisteredContentBounds();
     const phase = resolveDropTargetForRawPoint(
-      point,
+      rawPoint,
       tabDragGeometry(),
       stripBandRegistry,
       source.id
@@ -4683,7 +4714,7 @@ async function appMain() {
     if (phase.kind === 'merge') {
       const target = windowMap.get(phase.targetWindowId);
       if (!target || target.isDestroyed()) return { outcome: 'noop' };
-      const inserted = await requestTabMerge(target, request.tab, point);
+      const inserted = await requestTabMerge(target, req.tab, wirePoint);
       if (!inserted) return { outcome: 'noop' };
       // NOW it may be raised — the gesture is over, so there is no capture left
       // to steal (D3's "not raised, not focused" applies only during preview).
@@ -4696,11 +4727,11 @@ async function appMain() {
     // D5 — tearing out a window's ONLY tab is a no-op. Note this does not
     // apply to the merge branch above: moving a lone tab INTO another window is
     // exactly the gesture, and it closes the source window afterwards (D6a).
-    if (request.isOnlyTab) return { outcome: 'noop' };
+    if (req.isOnlyTab) return { outcome: 'noop' };
 
     const bounds = tornOffWindowBoundsForRawPoint(
-      point,
-      request.grabOffset ?? { x: 0, y: 0 },
+      rawPoint,
+      grabOffsetFromWire(req.grabOffset),
       source.getBounds(),
       tabDragGeometry()
     );
@@ -4711,19 +4742,19 @@ async function appMain() {
     const win = await createChat(
       app,
       undefined,
-      request.tab?.cwd,
+      req.tab?.cwd,
       undefined,
-      request.tab?.sessionId,
+      req.tab?.sessionId,
       'pair',
       undefined,
       undefined,
-      request.tab?.workflowId,
+      req.tab?.workflowId,
       undefined,
       {
         initialBounds: bounds,
         show: false,
         manageWindowState: false,
-        ...(request.tab?.title ? { resumeSessionTitle: request.tab.title } : {}),
+        ...(req.tab?.title ? { resumeSessionTitle: req.tab.title } : {}),
       }
     );
     if (!win) return { outcome: 'noop' };
