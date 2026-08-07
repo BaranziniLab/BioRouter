@@ -12,12 +12,15 @@ import { render, screen, waitFor, act } from '@testing-library/react';
  * not a cosmetic lag — it is a false claim in the direction that both walls a
  * working model and asserts a confidentiality guarantee the chat does not have.
  *
- * Two distinct failure modes, one effect:
+ * Three distinct failure modes:
  *   1. rebinding to another chat, where the old tier survives until (and, on a
  *      failed read, past) the new one resolves;
  *   2. two overlapping reads for the SAME chat — the initial fetch and the
  *      `message-stream-finished` refresh — where the slower one wins because it
- *      landed last.
+ *      landed last;
+ *   3. v1.89.0 F-12 — the daemon RAISES the tier when it starts a turn, after
+ *      the bind read and before the turn ends, so a chat that becomes private on
+ *      its first message reads `public` for the whole of that turn.
  */
 
 // Heavy children that are irrelevant here. The two tier consumers are replaced
@@ -96,12 +99,16 @@ beforeEach(() => {
   });
 });
 
-function renderChatInput(sessionId: string | null) {
-  return render(
+function chatInput(
+  sessionId: string | null,
+  chatState: ChatState = ChatState.Idle,
+  messagesLength = 0
+) {
+  return (
     <ChatInput
       sessionId={sessionId}
       handleSubmit={vi.fn()}
-      chatState={ChatState.Idle}
+      chatState={chatState}
       onStop={vi.fn()}
       initialValue=""
       setView={vi.fn()}
@@ -110,12 +117,20 @@ function renderChatInput(sessionId: string | null) {
       accumulatedOutputTokens={0}
       droppedFiles={[]}
       onFilesProcessed={vi.fn()}
-      messagesLength={0}
+      messagesLength={messagesLength}
       disableAnimation={false}
       toolCount={0}
       onWorkingDirChange={vi.fn()}
     />
   );
+}
+
+function renderChatInput(
+  sessionId: string | null,
+  chatState: ChatState = ChatState.Idle,
+  messagesLength = 0
+) {
+  return render(chatInput(sessionId, chatState, messagesLength));
 }
 
 // A promise whose resolution this test controls, so the order responses LAND
@@ -144,25 +159,7 @@ describe('ChatInput session privacy tier (#56)', () => {
     const { rerender } = renderChatInput('chat-a');
     await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('private'));
 
-    rerender(
-      <ChatInput
-        sessionId="chat-b"
-        handleSubmit={vi.fn()}
-        chatState={ChatState.Idle}
-        onStop={vi.fn()}
-        initialValue=""
-        setView={vi.fn()}
-        totalTokens={0}
-        accumulatedInputTokens={0}
-        accumulatedOutputTokens={0}
-        droppedFiles={[]}
-        onFilesProcessed={vi.fn()}
-        messagesLength={0}
-        disableAnimation={false}
-        toolCount={0}
-        onWorkingDirChange={vi.fn()}
-      />
-    );
+    rerender(chatInput('chat-b'));
 
     // chat-b's read has not landed (and may never land, if it throws). Until it
     // does, the composer knows nothing about chat-b — and "nothing" is the only
@@ -205,5 +202,104 @@ describe('ChatInput session privacy tier (#56)', () => {
     });
 
     expect(screen.getByTestId('tier-probe')).toHaveTextContent('public');
+  });
+
+  /**
+   * v1.89.0 F-12. The bind read is not enough on the path that creates the chat:
+   * a session is born `public` and the daemon RAISES it as it starts the turn,
+   * so the composer's answer is stale the moment it is fetched — and the tab's
+   * id does not change on that path, so nothing remounts to force a re-read.
+   *
+   * The chat is genuinely private for the whole of that turn while the extension
+   * menu says "Unavailable in this chat (public model)" under every private
+   * extension. Turn-END is where the old code refreshed, which is precisely too
+   * late.
+   */
+  it('re-reads once the running turn streams its first message back', async () => {
+    getSessionMock
+      // The working-directory effect's own read — settled, and irrelevant.
+      .mockResolvedValueOnce({ data: { working_dir: '/w' } } as never)
+      // Bind read — the daemon has not classified this turn yet.
+      .mockResolvedValueOnce({ data: { privacy_tier: 'public' } } as never)
+      .mockResolvedValue({ data: { privacy_tier: 'private' } } as never);
+
+    // The chat is created and a turn is already in flight — the composer mounts
+    // INTO a running turn, which is what the Home-composer submit does, so
+    // there is no idle→busy transition to observe.
+    const { rerender } = renderChatInput('chat-a', ChatState.Streaming, 1);
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('public'));
+
+    // The daemon streams the assistant's message back. That is emitted after the
+    // turn started, hence after the raise was written.
+    rerender(chatInput('chat-a', ChatState.Streaming, 2));
+
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('private'));
+  });
+
+  it('re-reads at most once per turn', async () => {
+    // `getSession` carries the whole transcript, and the ratchet fires once at
+    // the start of a turn — so a tool-heavy turn must not re-fetch the
+    // conversation on every message it appends.
+    getSessionMock
+      .mockResolvedValueOnce({ data: { working_dir: '/w' } } as never)
+      .mockResolvedValue({ data: { privacy_tier: 'public' } } as never);
+
+    const { rerender } = renderChatInput('chat-a', ChatState.Streaming, 1);
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('public'));
+    const afterBind = getSessionMock.mock.calls.length;
+
+    rerender(chatInput('chat-a', ChatState.Streaming, 2));
+    await waitFor(() => expect(getSessionMock.mock.calls.length).toBe(afterBind + 1));
+
+    for (const n of [3, 4, 5, 6]) {
+      rerender(chatInput('chat-a', ChatState.Thinking, n));
+      rerender(chatInput('chat-a', ChatState.Streaming, n));
+    }
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(getSessionMock.mock.calls.length).toBe(afterBind + 1);
+  });
+
+  it('stops re-reading once the answer is private', async () => {
+    // The ratchet only raises within a chat, so no further read during the turn
+    // can change the answer.
+    getSessionMock.mockResolvedValue({ data: { privacy_tier: 'private' } } as never);
+
+    const { rerender } = renderChatInput('chat-a', ChatState.Streaming, 1);
+    await waitFor(() => expect(screen.getByTestId('tier-probe')).toHaveTextContent('private'));
+    const afterBind = getSessionMock.mock.calls.length;
+
+    rerender(chatInput('chat-a', ChatState.Streaming, 2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(getSessionMock.mock.calls.length).toBe(afterBind);
+  });
+
+  it('does not let a turn in the previous chat answer for this one', async () => {
+    // The turn watcher shares the bind read's generation counter, so a read
+    // issued for chat-a cannot land on chat-b — the failure the whole
+    // `unresolved` posture exists to prevent, arriving through the new door.
+    const slowA = deferred<{ data: { privacy_tier: string } }>();
+    getSessionMock
+      // The working-directory effect's own read — settled, and irrelevant.
+      .mockResolvedValueOnce({ data: { working_dir: '/w' } } as never)
+      .mockReturnValueOnce(slowA.promise as never)
+      // chat-b's own reads never land, so `unresolved` is the only honest answer.
+      .mockReturnValue(new Promise(() => {}) as never);
+
+    const { rerender } = renderChatInput('chat-a');
+    rerender(chatInput('chat-b'));
+    expect(screen.getByTestId('tier-probe')).toHaveTextContent('unresolved');
+
+    await act(async () => {
+      slowA.resolve({ data: { privacy_tier: 'private' } });
+      await slowA.promise;
+    });
+
+    expect(screen.getByTestId('tier-probe')).toHaveTextContent('unresolved');
   });
 });

@@ -290,6 +290,34 @@ export default function ChatInput({
   const [sessionPrivacyTier, setSessionPrivacyTier] = useState<SessionClassification | undefined>(
     undefined
   );
+  // Which chat `sessionPrivacyTier` is a statement about, and the ordering of the
+  // reads that produced it. Refs rather than effect-locals because the reads are
+  // now issued from two effects (the bind below and the turn watcher after it)
+  // and both must share one generation counter — "last to land" is not "newest",
+  // and a slow read from before a rebind must not answer for the chat after it.
+  const tierSessionRef = useRef<string | null>(null);
+  const tierGenerationRef = useRef(0);
+
+  const readSessionPrivacyTier = useCallback(async () => {
+    if (!sessionId) return;
+    const issued = ++tierGenerationRef.current;
+    try {
+      const response = await getSession({
+        path: { session_id: sessionId },
+        // Issue #56 Task 58: and this read is *about* the tier, so it is
+        // exactly the read the gate refuses without the header.
+        headers: await userActionHeaders(),
+      });
+      if (issued !== tierGenerationRef.current) return;
+      if (tierSessionRef.current !== sessionId) return;
+      if (response.data?.privacy_tier) {
+        setSessionPrivacyTier(response.data.privacy_tier);
+      }
+    } catch (error) {
+      console.error('[ChatInput] Failed to read the session privacy tier:', error);
+    }
+  }, [sessionId]);
+
   useEffect(() => {
     // Clear FIRST, on every rebind and not only on the no-session case.
     // `BaseChat` is keyed by tab rather than by session, so this component
@@ -298,46 +326,82 @@ export default function ChatInput({
     // previous chat's tier about this one. In the private -> public direction
     // that greys out every model the new chat may legitimately run, and in the
     // reverse it paints a Private dot on a chat with no such guarantee.
+    tierSessionRef.current = sessionId;
+    tierGenerationRef.current += 1;
     setSessionPrivacyTier(undefined);
 
     if (!sessionId) {
       return;
     }
 
-    // Both of this effect's readers — the mount fetch and every
-    // `message-stream-finished` refresh — share this closure, so plain locals
-    // are enough and no ref is needed. `cancelled` retires the whole effect
-    // when the session rebinds; `latestIssued` orders the reads within it,
-    // because two can be in flight at once and they settle in whatever order
-    // the daemon answers. "Last to land" is not "newest": without this a slow
-    // first read overwrites the fresher answer that already arrived.
-    let cancelled = false;
-    let latestIssued = 0;
-
-    const readTier = async () => {
-      const issued = ++latestIssued;
-      try {
-        const response = await getSession({
-          path: { session_id: sessionId },
-          // Issue #56 Task 58: and this read is *about* the tier, so it is
-          // exactly the read the gate refuses without the header.
-          headers: await userActionHeaders(),
-        });
-        if (!cancelled && issued === latestIssued && response.data?.privacy_tier) {
-          setSessionPrivacyTier(response.data.privacy_tier);
-        }
-      } catch (error) {
-        console.error('[ChatInput] Failed to read the session privacy tier:', error);
-      }
-    };
-
-    void readTier();
-    window.addEventListener('message-stream-finished', readTier);
+    void readSessionPrivacyTier();
+    window.addEventListener('message-stream-finished', readSessionPrivacyTier);
     return () => {
-      cancelled = true;
-      window.removeEventListener('message-stream-finished', readTier);
+      window.removeEventListener('message-stream-finished', readSessionPrivacyTier);
     };
-  }, [sessionId]);
+  }, [sessionId, readSessionPrivacyTier]);
+
+  /**
+   * v1.89.0 F-12: re-read once the running turn has proved the daemon is past
+   * the point where it RAISES the tier.
+   *
+   * A session is created `public` (`privacy_tier TEXT NOT NULL DEFAULT 'public'`
+   * in `session_manager.rs`) and the daemon ratchets it as it starts a turn —
+   * the stored `privacy_reason` reads `turn:<provider>`. The bind read above
+   * fires between those two moments, and on the paths that create the chat
+   * (Home's composer submitting, or a blank tab's first message, which keeps its
+   * tab id and so does not remount this component) it reliably loses that race.
+   * Nothing then re-read until the turn ENDED, so for the whole of a turn — 12 s
+   * for a small local model, minutes for a real one — the extension menu labelled
+   * every private extension "Unavailable in this chat (public model)" on a chat
+   * the daemon had already classified private, and depressed its own
+   * "Enable all (N)" to match. That is F-12, and a reload cleared it because a
+   * reload re-reads.
+   *
+   * The composer cannot see the ratchet directly — no event announces it, which
+   * is the same missing signal already written up as a KNOWN GAP over the tab
+   * dot in `ChatGroupsShell.useSessionPrivacyTiers`. What it can see is the
+   * transcript growing: the first message the daemon streams back is emitted
+   * strictly after the turn started, hence strictly after the raise was written.
+   * So: arm on the turn, fire the single re-read when the transcript first grows
+   * under it.
+   *
+   * ⚠ **This only ever adopts the daemon's own answer, so it cannot make the
+   * label less restrictive than the daemon is.** It closes the window in which
+   * the composer was MORE restrictive than the truth; `extensionPairingRefused`
+   * still treats an unresolved tier as "judge nothing", and enforcement was never
+   * here at all (Gates C/E/F, `crates/biorouter/src/privacy/`).
+   *
+   * ⚠ **Once per turn, and never once the answer is `private`.** `GET
+   * /sessions/{id}` carries the whole transcript (`get_session(id, true)`), and
+   * within a chat the ratchet only ever raises — so a second read during the
+   * same turn cannot change the answer and would only re-fetch the conversation.
+   * A declassification lowers the tier by explicit user action and is still
+   * picked up by the turn-end refresh and the next bind, exactly as before;
+   * "still says private" is the safe direction to be wrong in meanwhile.
+   */
+  const turnTierProbeRef = useRef<{ armed: boolean; fired: boolean; messages: number }>({
+    armed: false,
+    fired: false,
+    messages: 0,
+  });
+  useEffect(() => {
+    const probe = turnTierProbeRef.current;
+    if (chatState === ChatState.Idle) {
+      probe.armed = false;
+      probe.fired = false;
+      return;
+    }
+    if (!probe.armed) {
+      probe.armed = true;
+      probe.messages = messagesLength;
+      return;
+    }
+    if (probe.fired || messagesLength === probe.messages) return;
+    probe.fired = true;
+    if (!sessionId || sessionPrivacyTier === 'private') return;
+    void readSessionPrivacyTier();
+  }, [chatState, messagesLength, sessionId, sessionPrivacyTier, readSessionPrivacyTier]);
 
   // Save queue state (paused/interrupted) to storage
   useEffect(() => {
