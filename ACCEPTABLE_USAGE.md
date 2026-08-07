@@ -1,5 +1,7 @@
 # Acceptable Usage Policy (AUP)
 
+**Last revised:** 2026-08-04
+
 ---
 
 We want everyone to use Biorouter safely and responsibly. You agree you will not use, or allow others to use, Biorouter to:
@@ -48,12 +50,24 @@ e. Plagiarism or other forms of academic dishonesty.
 
 f. Compromising security systems or gaining unauthorized access to computer systems or networks without authorization or permission from the affected party, such as spoofing.
 
+### 4. Substitute Biorouter for clinical judgement, or use it with patient or human-subjects data outside the approvals that govern that data, including use of Biorouter to:
+
+a. Inform diagnosis, treatment, prescribing, triage, or any other clinical decision about an identifiable person. **Biorouter is a research tool. It is not a medical device, it has not been cleared or approved as one, and its output must not be relied on for clinical decision-making.** Any output bearing on patient care must be independently verified by a qualified professional against primary sources.
+
+b. Process patient, clinical, or other human-subjects data outside the applicable IRB approval, Data Use Agreement, and institutional policy — including sending such data to a model provider your institution has not approved for it, or retaining it beyond what your protocol permits. De-identify or minimise the data where the protocol or the law requires it. See the [data privacy guide](docs/security/data-privacy-and-phi.md) for which providers are acceptable for PHI.
+
 ---
 
 You also agree that you will not use, or allow others to use, Biorouter in violation of any agreements that you have with, or commitments you have made to, third parties. This may include any licenses, agreements, and other terms that apply to the models you use with Biorouter.
 
 ---
 
-**Please report any violation of this Policy through the following means:**  [wanjun.gu@ucsf.edu](mailto:wanjun.gu@ucsf.edu) 
+**Consequences of a violation.** We may suspend or withdraw access to the Biorouter services we operate — including institution-managed model access and the BAAM marketplace — and remove contributed extensions, skills, or workflows. Violations may also be referred to your institution, and reported to the relevant authorities where the law requires it.
+
+---
+
+**Please report any violation of this Policy through the following means:**  [wanjun.gu@ucsf.edu](mailto:wanjun.gu@ucsf.edu)
+
+Security vulnerabilities are handled separately — report those privately per [SECURITY.md](SECURITY.md), not as a policy violation.
 
 

@@ -6,32 +6,41 @@ This guide covers building the Biorouter Desktop application from source on vari
 
 ### System Dependencies
 
+The reference set is the repo's own Linux build: the builder stage of the root `Dockerfile` installs `build-essential pkg-config libssl-dev libdbus-1-dev protobuf-compiler libprotobuf-dev ca-certificates`. Re-derive these lists from it rather than guessing. `libdbus-1-dev` is easy to miss — it is what the `keyring` crate's Linux Secret Service backend links against. `rpm` is needed because the RPM maker runs on a plain `npm run make` (see below).
+
 **Debian/Ubuntu:**
 ```bash
 sudo apt update
-sudo apt install -y dpkg fakeroot build-essential libxcb1-dev libxcb-util-dev protobuf-compiler
+sudo apt install -y dpkg fakeroot rpm build-essential pkg-config \
+  libssl-dev libdbus-1-dev libxcb1-dev libxcb-util-dev libbz2-dev protobuf-compiler
 ```
 
 **Arch/Manjaro:**
 ```bash
-sudo pacman -S --needed dpkg fakeroot base-devel
+sudo pacman -S --needed dpkg fakeroot base-devel pkgconf openssl dbus protobuf bzip2
 ```
 
 **Fedora/RHEL/CentOS:**
 ```bash
-sudo dnf install dpkg-dev fakeroot gcc gcc-c++ make libxcb-devel
+sudo dnf install dpkg-dev fakeroot rpm-build gcc gcc-c++ make pkgconf-pkg-config \
+  openssl-devel dbus-devel libxcb-devel bzip2-devel protobuf-compiler
 ```
 
 **openSUSE:**
 ```bash
-sudo zypper install dpkg fakeroot gcc gcc-c++ make
+sudo zypper install dpkg fakeroot rpm-build gcc gcc-c++ make pkg-config \
+  libopenssl-devel dbus-1-devel libbz2-devel protobuf-devel
 ```
 
 ### Development Tools
 
-- **Rust**: Install via [rustup](https://rustup.rs/)
-- **Node.js**: Version 24 or later (use [nvm](https://github.com/nvm-sh/nvm) for version management)
+- **Rust 1.92**: Install via [rustup](https://rustup.rs/) — the channel is pinned in `rust-toolchain.toml`, so rustup selects it automatically
+- **Node.js 24.x**: `ui/desktop/package.json` declares `engines: { "node": "^24.0.0" }`, and hermit pins 24.10.0. Newer majors break the Electron packaging step, so pin 24 rather than tracking latest (use [nvm](https://github.com/nvm-sh/nvm) for version management)
 - **npm**: Comes with Node.js
+
+### Runtime requirements
+
+The bundled `llama-server` sidecar (the Llama Server local-models provider) needs OpenSSL 3 and OpenMP at runtime. The deb and rpm declare them (`libssl3` + `libgomp1`, `openssl-libs` + `libgomp`), which implies **Debian 12+ / Ubuntu 22.04+**. If you install from the zip or a flatpak, install those yourself — and on Debian 11 the app will run but local models will not.
 
 ## Build Process
 
@@ -52,7 +61,7 @@ cargo build --release
 ### 3. Prepare the Desktop Application
 ```bash
 cd ui/desktop
-npm install
+npm ci   # not `npm install` — the committed package-lock.json is the reproducible source
 
 # Copy BOTH backend binaries to the expected location
 mkdir -p src/bin
@@ -84,10 +93,12 @@ npm run make -- --targets=@electron-forge/maker-deb
 
 Output: `out/make/deb/x64/biorouter_{version}_amd64.deb`
 
-#### Option C: Both Formats
+#### Option C: All Configured Makers
 ```bash
 npm run make
 ```
+
+This runs **every** maker configured in `forge.config.ts` for Linux — deb, rpm, zip and flatpak. The RPM maker is not gated by platform, so a bare `npm run make` will try to build an rpm and fail on a system without `rpm`/`rpmbuild`. Pass `--targets=` explicitly (Option A or B) if you only want one format.
 
 ### 5. Run the Application
 
@@ -133,11 +144,11 @@ If you see "Could not find biorouterd binary", ensure you've:
 ### Distribution-Specific Notes
 
 #### Arch/Manjaro
-- The RPM maker is disabled by default as it's not compatible with Arch-based systems
-- Use the ZIP distribution method for maximum compatibility
+- The RPM maker is **always enabled** — it carries no `platforms` gate in `forge.config.ts` — so a bare `npm run make` (Option C) will attempt an rpm and fail on a system without `rpm`/`rpmbuild`
+- Use the ZIP distribution with an explicit target for maximum compatibility: `npm run make -- --targets=@electron-forge/maker-zip`
 
 #### Flatpak
-Flatpak builds are supported via CI. To build locally:
+Flatpak is configured in `forge.config.ts` (runtime 25.08, with a libbz2 shim module), but **no CI workflow and no release phase builds or tests it** — it is not a shipped artifact. To build locally:
 ```bash
 # Install flatpak and flatpak-builder
 sudo apt install flatpak flatpak-builder

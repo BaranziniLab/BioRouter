@@ -18,7 +18,7 @@ docker run --rm biorouter:local --version
 # Run with LLM configuration
 docker run --rm \
   -e BIOROUTER_PROVIDER=openai \
-  -e BIOROUTER_MODEL=gpt-4o \
+  -e BIOROUTER_MODEL=gpt-5.6 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   biorouter:local run -t "Summarize the latest PubMed review on CRISPR gene therapy"
 ```
@@ -47,7 +47,7 @@ docker build -t biorouter:local .
 The build process:
 - Uses a multi-stage build to minimize final image size
 - Compiles with optimizations (LTO, stripping, size optimization)
-- Results in a ~340MB image containing the `biorouter` CLI binary
+- Results in a `debian:bookworm-slim`-based image containing the `biorouter` CLI binary (the `biorouterd` daemon is not included)
 
 ### Build Options
 
@@ -68,7 +68,7 @@ docker run --rm biorouter:local --help
 # Run a command
 docker run --rm \
   -e BIOROUTER_PROVIDER=openai \
-  -e BIOROUTER_MODEL=gpt-4o \
+  -e BIOROUTER_MODEL=gpt-5.6 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   biorouter:local run -t "Explain the mechanism of action of metformin"
 ```
@@ -79,7 +79,7 @@ docker run --rm \
   -v $(pwd):/workspace \
   -w /workspace \
   -e BIOROUTER_PROVIDER=openai \
-  -e BIOROUTER_MODEL=gpt-4o \
+  -e BIOROUTER_MODEL=gpt-5.6 \
   -e OPENAI_API_KEY=$OPENAI_API_KEY \
   biorouter:local run -t "Analyze the patient cohort CSV in this directory and report cohort demographics"
 ```
@@ -88,7 +88,7 @@ Interactive session mode with Databricks:
 ```bash
 docker run -it --rm \
   -e BIOROUTER_PROVIDER=databricks \
-  -e BIOROUTER_MODEL=databricks-dbrx-instruct \
+  -e BIOROUTER_MODEL=databricks-claude-sonnet-4-6 \
   -e DATABRICKS_HOST="$DATABRICKS_HOST" \
   -e DATABRICKS_TOKEN="$DATABRICKS_TOKEN" \
   biorouter:local session
@@ -101,14 +101,12 @@ docker run -it --rm \
 Create a `docker-compose.yml`:
 
 ```yaml
-version: '3.8'
-
 services:
   biorouter:
     image: biorouter:local
     environment:
       - BIOROUTER_PROVIDER=${BIOROUTER_PROVIDER:-openai}
-      - BIOROUTER_MODEL=${BIOROUTER_MODEL:-gpt-4o}
+      - BIOROUTER_MODEL=${BIOROUTER_MODEL:-gpt-5.6}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     volumes:
       - ./workspace:/workspace
@@ -132,9 +130,11 @@ docker-compose run --rm biorouter session
 
 The Docker image accepts all standard BioRouter environment variables:
 
-- `BIOROUTER_PROVIDER`: LLM provider (openai, anthropic, google, etc.)
-- `BIOROUTER_MODEL`: Model to use (gpt-4o, claude-sonnet-4, etc.)
+- `BIOROUTER_PROVIDER`: LLM provider (openai, anthropic, google, databricks, etc.)
+- `BIOROUTER_MODEL`: Model id to use
 - Provider-specific API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+
+> **Model ids move.** Providers retire endpoints and the built-in catalog tracks them — several ids that appeared in older copies of this guide (`gpt-4o`, `claude-sonnet-4`, `databricks-dbrx-instruct`) no longer resolve. The ids in the examples above are the current per-provider defaults; run `biorouter configure` to see the list your build actually serves rather than trusting any id written down here.
 
 ### Persistent Configuration
 
@@ -179,7 +179,7 @@ jobs:
       image: biorouter:local
       env:
         BIOROUTER_PROVIDER: openai
-        BIOROUTER_MODEL: gpt-4o
+        BIOROUTER_MODEL: gpt-5.6
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     steps:
       - uses: actions/checkout@v4
@@ -195,7 +195,7 @@ analyze:
   image: biorouter:local
   variables:
     BIOROUTER_PROVIDER: openai
-    BIOROUTER_MODEL: gpt-4o
+    BIOROUTER_MODEL: gpt-5.6
   script:
     - biorouter run -t "Generate a methods writeup for the analysis pipeline in this project"
 ```
@@ -204,16 +204,18 @@ analyze:
 
 ### Size and Optimization
 
-- **Base image**: Debian Bookworm Slim (minimal runtime dependencies)
-- **Final size**: ~340MB
-- **Optimizations**: Link-Time Optimization (LTO), binary stripping, size optimization
-- **Binary included**: `/usr/local/bin/biorouter` (32MB)
+- **Multi-stage build**: the `rust:1.92-bookworm` builder stage is discarded; only the compiled binary is copied forward
+- **Base image**: `debian:bookworm-slim`, pinned by digest, plus six runtime packages (`ca-certificates`, `libssl3`, `libdbus-1-3`, `libxcb1`, `curl`, `git`)
+- **Optimizations**: the `Dockerfile` overrides the release profile with LTO, one codegen unit, `opt-level=z`, and stripping
+- **Contents**: only the CLI (`/usr/local/bin/biorouter`) — it builds `--package biorouter-cli`, so the `biorouterd` daemon is **not** in the image
+
+Image and binary sizes are not stated here on purpose: they move with the profile settings and the dependency tree, and a stale number is worse than none. Measure your own build with `docker images biorouter:local`.
 
 ### Security
 
 - Runs as non-root user `biorouter` (UID 1000)
 - Minimal attack surface with only essential runtime dependencies
-- Regular security updates via automated builds
+- **No automated rebuilds.** Nothing builds or publishes this image on a schedule, so its base-image CVE exposure is whatever `debian:bookworm-slim` carried at the digest pinned in the `Dockerfile`. Rebuild the image yourself to pick up base-image updates.
 
 ### Included Tools
 
@@ -312,6 +314,5 @@ When contributing Docker-related changes:
 
 ## Related Documentation
 
-- [BioRouter in Docker Tutorial](http://biorouter.ucsf.edu/docs/tutorials/biorouter-in-docker) - Step-by-step tutorial
-- [Installation Guide](http://biorouter.ucsf.edu/docs/getting-started/installation) - All installation methods
-- [Configuration Guide](http://biorouter.ucsf.edu/docs/guides/config-files) - Detailed configuration options
+- [Documentation](https://biorouter.ucsf.edu/docs.html) - Installation, configuration, and usage
+- [Downloads](https://biorouter.ucsf.edu/download.html) - Prebuilt desktop and CLI packages

@@ -201,7 +201,7 @@ under the session that spawned it:
 
 Each child line carries its own label, its session id and its message count —
 enough to tell two siblings of one fan-out apart, and enough to hand the id to
-`biorouter session --resume` or `biorouter sessions watch`.
+`biorouter session --resume` or `biorouter session watch`.
 
 Two behaviours differ from a plain listing:
 
@@ -288,6 +288,128 @@ biorouter session export -n my-session --format yaml
 biorouter session export --path ./my-session.jsonl -o exported.md
 ```
 
+### Live-session commands and the daemon
+
+`session watch`, `session send`, `session attach`, and `session cancel` do not open an agent in your terminal. They talk to a running `biorouterd` over HTTP, and the daemon stays the only writer to the conversation — which is what makes it safe to join a session another process is already running.
+
+Each of them needs two things:
+
+- **A daemon listening on `127.0.0.1`.** The port comes from `BIOROUTER_PORT`, defaulting to `3000`. If nothing answers, the command stops with `no Biorouter daemon is listening on 127.0.0.1:<port>`.
+- **`BIOROUTER_SERVER__SECRET_KEY` set in your shell, matching the key the daemon was started with.** `biorouterd` generates a random key when the variable is unset, and no client can then authenticate. Start the daemon with a key you choose and reuse it:
+
+```bash
+BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent
+BIOROUTER_SERVER__SECRET_KEY=<key> biorouter session watch <session_id>
+```
+
+A mismatched key surfaces as `HTTP 401` with that hint attached.
+
+### session watch [options]
+
+Stream a session's live events into your terminal — the same frames biorouter Desktop renders, printed as lines. Watching is read-only: it never writes to the conversation, and stopping the watch never stops the session.
+
+**Requires a running daemon.** See [Live-session commands and the daemon](#live-session-commands-and-the-daemon).
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The session to observe
+
+**Options:**
+
+- **`--follow`**: Keep watching after the current turn ends. Without it, `watch` exits as soon as the session reports a finish or an error
+
+**Usage:**
+
+```bash
+# Watch the running turn and exit when it ends
+biorouter session watch 20251108_2
+
+# Keep watching across turns until you press Ctrl+C
+biorouter session watch 20251108_2 --follow
+```
+
+### session send [options]
+
+Send a prompt into an existing session and stream the resulting turn, without opening an interactive chat. This is the scriptable equivalent of typing one message into a session.
+
+**Requires a running daemon.** See [Live-session commands and the daemon](#live-session-commands-and-the-daemon).
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The session to send to
+- **`<TEXT>`** (required): The prompt text
+
+**Options:**
+
+- **`--no-wait`**: Return as soon as the turn starts, instead of streaming it to completion
+
+**Usage:**
+
+```bash
+# Send a prompt and watch the turn to completion
+biorouter session send 20251108_2 "summarize what you have found so far"
+
+# Kick off a turn and return immediately
+biorouter session send 20251108_2 "run the full test suite" --no-wait
+```
+
+### session attach [options]
+
+Join a session that is running *right now*. `attach` prints the conversation so far, then follows it live, and anything you type is delivered into the running turn (or starts a new one if the session is idle).
+
+**Requires a running daemon.** See [Live-session commands and the daemon](#live-session-commands-and-the-daemon).
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (optional): The session to attach to
+
+**Options:**
+
+- **`--name <NAME>`**: Attach by session name instead of ID. Refuses, and lists the candidates, if several sessions share that name
+- **`--of <PARENT_ID>`**: Attach to the running subagent of this parent session. Errors, listing what it found, if that parent has no subagent with a turn in flight or has more than one
+- **`--read-only`**: Observe only — do not read stdin and do not send anything
+
+Give **exactly one** target: a session ID, `--name`, or `--of`. Passing none, or more than one, is an error. `biorouter session list --subagents` lists the sessions and subagent runs you can address.
+
+`Ctrl+C` detaches and leaves the session running. If a turn *you* started from here is still streaming, the first `Ctrl+C` warns that leaving would cancel it; press it again to leave anyway.
+
+**Usage:**
+
+```bash
+# Join a running session by ID
+biorouter session attach 20251108_2
+
+# Join by name
+biorouter session attach --name migration-review
+
+# Join the running subagent of a parent session
+biorouter session attach --of 20251108_2
+
+# Follow a run without being able to steer it
+biorouter session attach 20251108_2 --read-only
+```
+
+> **Note.** Use `attach`, not `session --resume`, on a session that is running. Resuming builds a second agent over the same conversation inside your CLI process, and that agent does not share the daemon's turn lock — leaving two uncoordinated writers on one session. Reserve `--resume` for finished transcripts.
+
+### session cancel
+
+Stop the turn a session is currently running. This is the same action as the Stop button in biorouter Desktop.
+
+**Requires a running daemon.** See [Live-session commands and the daemon](#live-session-commands-and-the-daemon).
+
+**Arguments:**
+
+- **`<SESSION_ID>`** (required): The session whose running turn should be stopped
+
+Cancelling is idempotent: a session with no turn in flight is not an error, it reports `nothing to cancel: this session had no turn in flight`.
+
+**Usage:**
+
+```bash
+# Stop the turn a session is running
+biorouter session cancel 20251108_2
+```
+
 ### session diagnostics [options]
 
 Generate a comprehensive diagnostics bundle for troubleshooting issues with a specific session.
@@ -325,6 +447,60 @@ biorouter session diagnostics
 > **Warning.** Diagnostics bundles contain your session messages and system information. If your session includes sensitive data (API keys, personal information, proprietary code), review the contents before sharing publicly.
 
 > **Tip.** Generate diagnostics before reporting bugs to provide technical details that help with faster resolution. The ZIP file can be attached to GitHub issues or shared with support.
+
+### session rename [options]
+
+Rename a saved session. This reads and writes the local session store directly, so it needs no running daemon.
+
+**Options:**
+
+- **`--session-id <session_id>`**: Rename a specific session by ID
+- **`-n, --name <name>`**: Rename a specific session by its current name
+- **`--path <path>`**: Rename a specific session by file path (legacy)
+- **`--new-name <NAME>`** (required): The new name for the session
+
+If you supply no identifier, biorouter prompts you to choose a session. The new name is trimmed, must not be empty, and must be at most 200 characters.
+
+**Usage:**
+
+```bash
+# Rename a session by ID
+biorouter session rename --session-id 20251108_6 --new-name migration-review
+
+# Rename a session by its current name
+biorouter session rename -n old-project --new-name new-project
+
+# Interactive selection (prompts you to choose a session)
+biorouter session rename --new-name migration-review
+```
+
+### session diverge [options]
+
+Branch a stored conversation into a brand-new session that keeps the history up to the last complete assistant answer. The original session is left untouched. Like `rename`, this works against the local session store and needs no running daemon.
+
+The new session ID is printed to stdout (so it can be captured in a script); the human-readable summary goes to stderr.
+
+**Options:**
+
+- **`--session-id <session_id>`**: Diverge a specific session by ID
+- **`-n, --name <name>`**: Diverge a specific session by name
+- **`--path <path>`**: Diverge a specific session by file path (legacy)
+- **`--branch-name <NAME>`**: Name for the new branched session. Without it, the branch is named after its parent with a `(branch N)` suffix
+
+If you supply no identifier, biorouter prompts you to choose a session.
+
+**Usage:**
+
+```bash
+# Branch a session, letting biorouter name the branch
+biorouter session diverge --session-id 20251108_6
+
+# Branch a session and name the branch
+biorouter session diverge -n migration-review --branch-name try-covering-index
+
+# Resume the branch that was just created
+biorouter session --resume --session-id 20251108_7
+```
 
 ## Task execution
 
@@ -732,4 +908,5 @@ Use the `"GWAS summary"` or `"enrichment"` search term to find and rerun it.
 - [Configuration file reference](../configuration/config-file-reference.md) — the `config.yaml` keys behind `biorouter configure` and the theme setting.
 - [Environment variables](../configuration/environment-variables.md) — per-invocation overrides for the same settings, including `BIOROUTER_CLI_THEME`.
 - [Managing sessions](../getting-started/managing-sessions.md) — how sessions are stored, resumed, and pruned behind the `session` subcommands.
+- [Workspace control](../agent-loop/workspace-control.md) — the daemon routes behind `session watch`, `send`, `attach`, and `cancel`, and the agent-side tools that do the same things.
 - [Creating and sharing workflows](../workflows/creating-and-sharing-workflows.md) — how to author the workflow files that `run --workflow`, `workflow`, and `schedule` consume.

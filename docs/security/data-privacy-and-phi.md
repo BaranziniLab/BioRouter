@@ -4,10 +4,12 @@
 > protected health information (PHI), clinical records, and other sensitive research data,
 > plus the de-identification and data-minimisation practices expected before any such data
 > enters a BioRouter session.
-> **Status:** Current, with two caveats a reader must weigh. This page carries **no recorded
-> last-reviewed date**, and institutional data use agreements change; and its local-model
-> guidance names only Ollama, predating the bundled Llama Server provider (see the note
-> below). Verify with UCSF compliance before relying on it.
+> **Status:** Current. **Last reviewed 2026-08-06 — against the shipping provider inventory
+> only.** That review corrected the local-model guidance, which previously named only Ollama and
+> predated the bundled Llama Server provider. It did **not** re-confirm the institutional
+> guidance on this page — which providers UCSF approves for which data classification — with
+> UCSF compliance, and data use agreements change. Treat the provider names as current and the
+> approvals as needing confirmation; verify with UCSF compliance before relying on this page.
 > **Audience:** end users at UCSF handling patient, clinical, or otherwise regulated data.
 
 BioRouter routes your inputs and conversation context to a large language model (LLM) provider
@@ -15,13 +17,13 @@ for processing. The privacy properties of a session therefore depend entirely on
 provider you selected**, not on BioRouter itself. This page states which provider classes are
 acceptable for which data classifications, and what to do before sending data at all.
 
-> **Note — provider inventory drift.** The recommendations below treat Ollama as the local
-> option. BioRouter also bundles **Llama Server** (`llamacpp`), a llama.cpp sidecar that is now
-> the first-ranked local provider; see
-> [choosing a model provider](../getting-started/choosing-a-model-provider.md). This page has
-> not been re-reviewed against that provider, so the tables name Ollama as originally written.
-> Confirm the current approved local option with UCSF IT before treating either as authorised
-> for regulated data.
+> **Note — two local providers, one data-handling property.** BioRouter ships two local
+> options: **Llama Server** (`llamacpp`, a bundled llama.cpp sidecar, ranked first and the
+> first card a new user sees) and **Ollama**. Both run the model on your own device, so
+> neither transmits your data to an external service — that property is what the guidance
+> below rests on, and it holds for both. Which of them your institution *authorises* for
+> regulated data is a separate question this page cannot answer; confirm with UCSF IT. See
+> [choosing a model provider](../getting-started/choosing-a-model-provider.md).
 
 ## How provider choice determines data handling
 
@@ -33,8 +35,8 @@ Different providers have fundamentally different data handling policies:
 - **Institution-managed cloud services** (UCSF Azure OpenAI, UCSF Amazon Bedrock) — data is
   processed within infrastructure governed by UCSF's institutional agreements. These may offer
   stronger privacy protections than personal API accounts.
-- **Local models** (Ollama) — data is processed entirely on your own device. Nothing is
-  transmitted to any external service.
+- **Local models** (bundled Llama Server, Ollama) — data is processed entirely on your own
+  device. Nothing is transmitted to any external service.
 
 ## What a non-private model can reach
 
@@ -159,14 +161,14 @@ see [what happens to your existing chats](privacy-tiers-migration.md) and
 > - **Use only institution-managed services or fully local models.**
 > - Do NOT use personal commercial API accounts (for example, your personal Anthropic API key
 >   or personal OpenAI account) with patient or sensitive data.
-> - The safest option for data that must remain completely private is a **local model via
->   Ollama** — data never leaves your device.
+> - The safest option for data that must remain completely private is a **local model —
+>   bundled Llama Server or Ollama** — because the data never leaves your device.
 
 ### Providers recommended for sensitive data
 
 | Provider | Data stays within | Recommended for |
 |---|---|---|
-| **Ollama (local)** | Your device only — no external transmission | Highest sensitivity data, air-gapped requirements |
+| **Llama Server or Ollama (local)** | Your device only — no external transmission | Highest sensitivity data, air-gapped requirements |
 | **UCSF Azure OpenAI** | UCSF's institutional Azure tenant | Institution-approved use cases — verify with your institution |
 | **UCSF Amazon Bedrock** | UCSF's institutional AWS environment | Institution-approved use cases — verify with your institution |
 
@@ -213,8 +215,8 @@ identifiers present.
 datasets into the chat when a representative sample or summary would suffice.
 
 **Use local models when possible.** For exploratory work, algorithm development, or testing
-with real data, Ollama with a capable local model is the safest option — see the provider
-table above.
+with real data, a capable local model — through the bundled Llama Server or Ollama — is the
+safest option; see the provider table above.
 
 **Review session logs.** BioRouter logs sessions locally. Session history stored in
 `~/.config/biorouter/` on your device may contain data you entered. Protect access to your
@@ -227,12 +229,12 @@ workflows. Do not share sessions that contain patient data or other sensitive in
 
 | Data type | Recommended approach |
 |---|---|
-| De-identified research data | Institution-managed providers or local Ollama |
-| Patient data / PHI | Local Ollama only, or institution-managed with explicit compliance approval |
+| De-identified research data | Institution-managed providers, or a local model |
+| Patient data / PHI | A local model only, or institution-managed with explicit compliance approval |
 | Public / non-sensitive data | Any provider |
-| Proprietary unpublished research data | Local Ollama or institution-managed — verify confidentiality requirements |
+| Proprietary unpublished research data | A local model or institution-managed — verify confidentiality requirements |
 
-**When in doubt: use Ollama (local) or check with your institution.**
+**When in doubt: use a local model (Llama Server or Ollama) or check with your institution.**
 
 ## Who to contact
 

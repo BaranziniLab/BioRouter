@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**BioRouter** (v1.88.5) is an AI-powered integrated research environment for biomedical discovery built by UCSF's Baranzini Lab. It unifies multiple LLM providers, AI agents, MCP-based extensions, and customizable workflows into a single extensible tool. The architecture has three layers: Interface (Electron GUI or CLI) → Agent (reasoning loop with session state) → Extensions (pluggable MCP servers providing tools).
+**BioRouter** is an AI-powered integrated research environment for biomedical discovery built by UCSF's Baranzini Lab. It unifies multiple LLM providers, AI agents, MCP-based extensions, and customizable workflows into a single extensible tool. The architecture has three layers: Interface (Electron GUI or CLI) → Agent (reasoning loop with session state) → Extensions (pluggable MCP servers providing tools).
 
 ## Tech Stack
 
@@ -36,7 +36,7 @@ just debug-ui-main-process      # Run UI with Chrome DevTools on localhost:9229
 cargo test                                      # Run all Rust tests
 cargo test -p biorouter-mcp                     # Run tests for a single crate
 cargo test --test mcp_integration_test          # Run MCP integration tests
-BIOROUTER_RECORD_MCP=1 just record-mcp-tests    # Re-record MCP test cassettes
+just record-mcp-tests                           # Re-record MCP test cassettes
 cd ui/desktop && npm run test:run               # Run frontend unit tests (Vitest)
 cd ui/desktop && npm run test-e2e               # Run Playwright E2E tests
 ```
@@ -79,18 +79,23 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
 ### Releasing (cross-platform)
 
 **Automated path (preferred): `scripts/release.sh` and the `release` workflow.**
-The entire pipeline — version bump → compile all 4 backends → sign + **notarize**
-both macOS dmgs → package Windows zip + Linux deb/rpm → verify → publish to GitHub —
-is encoded in [`scripts/release.sh`](scripts/release.sh). It bakes in every
+The pipeline — version bump → compile all 4 backends → sign + **notarize** both
+macOS dmgs → package Windows zip + Linux deb/rpm + headless Linux tarball →
+verify → **draft** the GitHub release — is encoded in
+[`scripts/release.sh`](scripts/release.sh). Note where it stops: `all` ends at a
+*draft*, not a published release, because publication is gated on a native
+Windows smoke run (see the Publish bullet below). It bakes in every
 hard-won invariant below (Node-24 dmg maker, winpthread + `LZMA_API_STATIC`
 cross-compile fixes, one-platform-at-a-time staging, Linux-last node_modules
 order, auto-installing the `appdmg` dmg dep, notarization creds read from
 `notarization/APPLE_DEVELOPER_NOTES.md`).
 
 ```bash
-scripts/release.sh all 1.80.1          # whole release end-to-end
+scripts/release.sh all 1.80.1          # every build/verify phase, ending at the draft
+scripts/release.sh all patch           # same, version resolved from the current Cargo version
 # or one phase at a time (resumable):
 scripts/release.sh bump 1.80.1
+scripts/release.sh bump patch          # major | minor | patch also accepted
 scripts/release.sh backends 1.80.1     # mac arm64/x64 + windows + linux (docker)
 scripts/release.sh linux-backend 1.80.1 # just the linux x86_64 backend (re-runnable)
 scripts/release.sh mac-arm64 1.80.1    # sign + notarize
@@ -98,9 +103,22 @@ scripts/release.sh mac-intel 1.80.1
 scripts/release.sh windows 1.80.1
 scripts/release.sh linux 1.80.1        # GUI deb + rpm; run LAST (corrupts node_modules)
 scripts/release.sh cli-linux 1.80.1    # headless CLI-only deb + rpm (biorouter + biorouterd)
+scripts/release.sh headless-linux 1.80.1 # browser-served headless tarball (dist/)
+scripts/release.sh mac-manifest 1.80.1 # latest-mac.yml for electron-updater
 scripts/release.sh verify 1.80.1
-scripts/release.sh publish 1.80.1
+scripts/release.sh draft 1.80.1        # draft GitHub release with all 11 assets + notes
+scripts/release.sh publish 1.80.1      # flip the draft live (gated on the Windows smoke run)
 ```
+
+**Version arguments** (`bump` and `all` only):
+- `major` / `minor` / `patch` are resolved against the current `Cargo.toml`
+  version. `minor-minor` is an accepted alias for `patch`.
+- A bump that would move the version **backwards** dies with *"refusing to bump
+  BACKWARDS"* — electron-updater compares versions, so a regression would strand
+  clients. Pass the literal version again if the move is deliberate.
+- The keywords are rejected on every phase after `bump`, which needs the explicit
+  version the tree is **already at**: `bump` has rewritten the version, so `minor`
+  would now resolve against the new value and name a release that does not exist.
 
 For an agent-orchestrated run (each phase as a verified subagent that stops on
 the first failure), use the **`release` workflow** in
@@ -110,21 +128,25 @@ restore a mac-native node_modules: `cd ui/desktop && rm -rf node_modules && npm 
 
 The detailed manual steps and the reasoning behind each invariant follow.
 
-- **Version bump**: edit 5 files — `Cargo.toml`, `ui/desktop/package.json`, `ui/desktop/package-lock.json` (2 occurrences), `ui/desktop/openapi.json`. Then `cargo check` to refresh `Cargo.lock`. (`scripts/release.sh bump <ver>` does this.)
-- **One version, three binaries (CLI = daemon = GUI)**: the version lives in exactly one source of truth — `[workspace.package].version` in `Cargo.toml`. The CLI (`biorouter`), the daemon (`biorouterd`), and the core library all use `version.workspace = true`, so the three Rust binaries can **never** disagree at build time — they are compiled from the same workspace version (surfaced via `env!("CARGO_PKG_VERSION")`). The desktop GUI keeps its own copy in `ui/desktop/package.json` (+ two in `package-lock.json`, one in `openapi.json`); `release.sh bump` rewrites all of them in lockstep. `scripts/check-version-consistency.sh` (run by `just check-everything` / `just check-versions`) is the guard that fails CI if any desktop JSON drifts from the Cargo version, or if a crate ever hardcodes its own `version` instead of inheriting the workspace one. **Do not hand-edit a single version file** — always use `scripts/release.sh bump <ver>` so all five stay in sync.
+- **Version bump**: edit 6 files — `Cargo.toml`, `ui/desktop/package.json`, `ui/desktop/package-lock.json` (2 occurrences), `ui/desktop/openapi.json`, and `README.md` (the badge URL `badge/version-X.Y.Z-tan.svg` **and** the `alt="Version X.Y.Z"` text — two substitutions). Then `cargo check` to refresh `Cargo.lock`. (`scripts/release.sh bump <ver>` does all of it.)
+- **One version, three binaries (CLI = daemon = GUI)**: the version lives in exactly one source of truth — `[workspace.package].version` in `Cargo.toml`. The CLI (`biorouter`), the daemon (`biorouterd`), and the core library all use `version.workspace = true`, so the three Rust binaries can **never** disagree at build time — they are compiled from the same workspace version (surfaced via `env!("CARGO_PKG_VERSION")`). The desktop GUI keeps its own copy in `ui/desktop/package.json` (+ two in `package-lock.json`, one in `openapi.json`), and `README.md` carries a version badge; `release.sh bump` rewrites all of them in lockstep. `scripts/check-version-consistency.sh` (run by `just check-everything` / `just check-versions`) is the guard that fails CI if any desktop JSON **or the README badge** drifts from the Cargo version, or if a crate ever hardcodes its own `version` instead of inheriting the workspace one. The badge was brought under the tooling late, and the reason is instructive: unguarded, it had silently drifted to 1.87.2 while the tree was on 1.88.6 — three releases stale on the first thing a repo visitor reads. **Do not hand-edit a single version file** — always use `scripts/release.sh bump <ver>` so all six stay in sync.
 - **Runtime CLI-vs-app drift** (the "Biorouter CLI Update 1.20.0 → 1.85.1" prompt): the GUI bundles a `biorouterd` that always matches the app, but the user's terminal `biorouter` is a *separately installed* binary that can lag. This is an install-state mismatch, not a source-version bug — the in-app "Biorouter CLI Update" card re-installs/symlinks the matching CLI (in a dev tree it points `~/.local/bin/biorouter` at `target/debug/biorouter`). The source versions are already linked; only the on-PATH install can be stale.
 - **macOS dmg maker needs Node 24**: the `macos-alias` / `appdmg` native modules only build under hermit's Node (v24), not a newer Homebrew Node — run all packaging under `source bin/activate-hermit`. If the dmg maker dies with `Cannot find module 'appdmg'` or a `NODE_MODULE_VERSION` mismatch, `(cd ui/desktop && npm install && npm rebuild macos-alias ds-store)`.
 - **Cross-compile link fixes** (windows-gnu / linux-gnu, in the Justfile + `release.sh`): `aws-lc-sys` needs winpthread appended *after* the rlibs on the mingw link line (linker wrapper); `lzma-sys` (via `xz2`, the `.brkb` path) needs `LZMA_API_STATIC=1` so it statically builds bundled liblzma instead of the host one. Run the docker cross builds with the system docker (hermit does **not** shadow it).
 - **macOS sign + notarize**: set `APPLE_ID` and `APPLE_APP_SPECIFIC_PASSWORD` on the `npm run bundle:default` / `bundle:intel` invocation. Signing identity is the UCSF Developer ID Application (team `F3YYBXAFJ8`).
-- **Intel macOS requires `just release-intel` first**. `bundle:intel` does NOT cross-compile the Rust backend — it repackages whatever is in `ui/desktop/src/bin/`. Without `target/x86_64-apple-darwin/release/{biorouter,biorouterd}`, `prepare-platform-binaries.js` falls through to the arm64 build and ships an Intel dmg that crashes on Intel Macs with "bad CPU type." Always run `just release-intel` (or have a recent `target/x86_64-apple-darwin/release/` build) immediately before `npm run bundle:intel`. Verify with `file ui/desktop/out/BioRouter-darwin-x64/BioRouter.app/Contents/Resources/bin/biorouter` — must say `x86_64`, not `arm64`. Same rule applies symmetrically: `bundle:default` needs `target/release/` to be the arm64 build (`just release-binary` or `just copy-binary`).
+- **Intel macOS requires `just release-intel` first**. `bundle:intel` does NOT cross-compile the Rust backend — it repackages whatever is in `ui/desktop/src/bin/`. Without `target/x86_64-apple-darwin/release/{biorouter,biorouterd}`, `prepare-platform-binaries.js` falls through to the arm64 build and ships an Intel dmg that crashes on Intel Macs with "bad CPU type." Always run `just release-intel` (or have a recent `target/x86_64-apple-darwin/release/` build) immediately before `npm run bundle:intel`. Verify with `file ui/desktop/out/Biorouter-darwin-x64/Biorouter.app/Contents/Resources/bin/biorouter` — must say `x86_64`, not `arm64`. Same rule applies symmetrically: `bundle:default` needs `target/release/` to be the arm64 build (`just release-binary` or `just copy-binary`).
 - **Build platforms one at a time** — every bundle writes to `ui/desktop/src/bin/` and clobbers the others. After any non-mac build, run `just release-binary` (or `just copy-binary`) to restore the local arm64 binary.
 - **After Linux/Windows Docker builds**, the on-disk `ui/desktop/node_modules` is Linux-flavored — macOS bundle then fails with `@rollup/rollup-darwin-arm64` missing. Fix: `cd ui/desktop && rm -rf node_modules && npm install`.
 - **`macos-alias` `NODE_MODULE_VERSION` mismatch** during forge `make`: `cd ui/desktop && npm rebuild macos-alias`.
-- **Unmount any stale `/Volumes/BioRouter*` mounts before the dmg step** — leftover mounts cause `cp: Operation not permitted` and abort `electron-forge maker-dmg`.
+- **Unmount any stale `/Volumes/Biorouter*` mounts before the dmg step** — leftover mounts cause `cp: Operation not permitted` and abort `electron-forge maker-dmg`.
 - **Do not hand-roll the dmg via `hdiutil create`** — it skips the `Applications` symlink and the background-image layout that `electron-forge maker-dmg` adds. If `bundle:default` fails at the dmg step, fix the underlying cause (usually a stale `/Volumes` mount) and re-run, don't `hdiutil` over it.
-- **Release assets — exactly 10**: the 5 GUI artifacts `BioRouter-{ver}-arm64.dmg`, `BioRouter-{ver}-x64.dmg`, `biorouter_{ver}_amd64.deb`, `BioRouter-{ver}-1.x86_64.rpm`, `BioRouter-win32-x64-{ver}.zip`; the 2 **headless CLI-only** Linux packages `biorouter-cli_{ver}_amd64.deb` and `biorouter-cli-{ver}-1.x86_64.rpm` (just `biorouter` + `biorouterd`, built by `scripts/build-cli-linux-packages.sh` → `dist/cli/`, smoke-tested in clean Debian/Rocky containers); and the 3 **macOS auto-update** artifacts `BioRouter-darwin-arm64-{ver}.zip`, `BioRouter-darwin-x64-{ver}.zip`, and `latest-mac.yml`. The two darwin zips are the signed+notarized `maker-zip` app archives (Squirrel.Mac format, `BioRouter.app` at root); `latest-mac.yml` (generated by `ui/desktop/scripts/generate-update-manifests.js`, run from `scripts/release.sh publish` / the `mac-manifest` phase) lists both with base64 SHA-512 + size so `electron-updater` can do the in-app one-click "Restart & Update" on macOS — **without the zips + yml, clients 404 and drop to the assisted GitHub-download fallback**. electron-updater 6.x picks the arch by the `arm64`/`x64` token in the zip filename, so both clients share one manifest. Don't also upload the unversioned `BioRouter.zip` / `BioRouter_intel_mac.zip` from `out/<platform>/` — they're build intermediates, not release artifacts. Windows (plain zip) and Linux (deb/rpm) have no electron-updater in-place installer and keep using the assisted-download fallback. See `docs/releases/auto-update-test-checklist.md`.
+- **Release assets — exactly 11**: the 5 GUI artifacts `Biorouter-{ver}-arm64.dmg`, `Biorouter-{ver}-x64.dmg`, `biorouter_{ver}_amd64.deb`, `Biorouter-{ver}-1.x86_64.rpm`, `Biorouter-win32-x64-{ver}.zip`; the 2 **headless CLI-only** Linux packages `biorouter-cli_{ver}_amd64.deb` and `biorouter-cli-{ver}-1.x86_64.rpm` (just `biorouter` + `biorouterd`, built by `scripts/build-cli-linux-packages.sh` → `dist/cli/`, smoke-tested in clean Debian/Rocky containers); the **browser-served headless** build `biorouter-headless-linux-x64.tar.gz` (from `dist/`, built by the `headless-linux` phase via `scripts/package-headless-linux.sh`); and the 3 **macOS auto-update** artifacts `Biorouter-darwin-arm64-{ver}.zip`, `Biorouter-darwin-x64-{ver}.zip`, and `latest-mac.yml`. The two darwin zips are the signed+notarized `maker-zip` app archives (Squirrel.Mac format, `Biorouter.app` at root); `latest-mac.yml` (generated by `ui/desktop/scripts/generate-update-manifests.js`, run from the `mac-manifest` phase, which `draft` invokes) lists both with base64 SHA-512 + size so `electron-updater` can do the in-app one-click "Restart & Update" on macOS — **without the zips + yml, clients 404 and drop to the assisted GitHub-download fallback**. electron-updater 6.x picks the arch by the `arm64`/`x64` token in the zip filename, so both clients share one manifest. Don't also upload the unversioned `Biorouter.zip` / `Biorouter_intel_mac.zip` from `out/<platform>/` — they're build intermediates, not release artifacts. Windows (plain zip) and Linux (deb/rpm) have no electron-updater in-place installer and keep using the assisted-download fallback. See `docs/releases/auto-update-test-checklist.md`.
+- **`verify` checks more than file existence**: alongside the 10 on-disk artifacts it runs `scripts/check-brand-consistency.sh`, `scripts/verify-headless-artifact.sh` and `scripts/smoke-test-release-artifacts.sh`, and fails the phase if any of them does. `just check-everything` runs the brand check too — it asserts `"productName": "Biorouter"` and the BR-monogram brand assets, which is why every packaged artifact name above is `Biorouter`, lowercase `r`.
 - **Linux glibc baseline**: the linux backend is cross-compiled on `rust:1.92-bullseye` (glibc 2.31), NOT rolling `rust:latest` (now trixie, glibc 2.39, which yields binaries that fail to start on Debian 12 / Ubuntu 22.04 / RHEL-Rocky 9). The pin lives in `LINUX_RUST_IMG` in `scripts/release.sh`; `cli-linux`'s smoke test is what catches a regression here. `linux-backend` `rm -rf`s the target dir first to force a from-scratch compile against the pinned glibc (cached objects keep stale symbol versions).
-- **Publish**: `gh release create v{ver} --notes-file docs/releases/notes/v{ver}.md <5 assets>`. Verify macOS with `xcrun stapler validate <app>` and `codesign -dv <app>` before publishing.
+- **Publishing is two steps, and the gate between them is not optional.**
+  - `scripts/release.sh draft <ver>` runs `mac-manifest`, asserts all 11 assets exist (dying on the first missing one), then `gh release create v{ver} --draft --target main --title "Biorouter v{ver}" --notes-file docs/releases/notes/v{ver}.md <11 assets>`.
+  - `scripts/release.sh publish <ver>` re-runs `verify`, refuses unless `v{ver}` already exists **as a draft**, refuses unless `gh run list --workflow release-artifact-smoke.yml` shows a successful run titled `Release artifact smoke v{ver}`, and only then `gh release edit v{ver} --draft=false`.
+  - So `all` stops at the draft and prints *"draft created; run the native Windows smoke workflow, then: scripts/release.sh publish {ver}"*. Hand-rolling a `gh release create` bypasses the Windows smoke gate — don't. Verify macOS with `xcrun stapler validate <app>` and `codesign -dv <app>` as well.
 - **Release notes** live at `docs/releases/notes/v{ver}.md`, one file per version.
 
 ## Architecture
@@ -136,16 +158,26 @@ The detailed manual steps and the reasoning behind each invariant follow.
 | `biorouter` | — | Core agent library: main agent loop, LLM providers, MCP extension manager, session/conversation state, workflow execution, scheduling |
 | `biorouter-server` | `biorouterd` | Axum REST API + WebSocket server; routes in `src/routes/`; OpenAPI spec generated via utoipa |
 | `biorouter-cli` | `biorouter` | Interactive CLI; subcommands in `src/commands/` |
-| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial, Knowledge) |
+| `biorouter-mcp` | — | Built-in MCP servers (Developer, Computer Controller, Memory, Auto Visualiser, Tutorial, Knowledge, Agent Drafter, DataSQL, Files, Compute). Also hosts `active_work.rs`, which is *not* a server but the process-global registry of long-running work (background shell jobs + running subagents) that `GET /active_work` reads |
+| `biorouter-headless` | `biorouter-headless` | Browser-served headless Linux server (axum + tower-http static serving); packaged by `scripts/package-headless-linux.sh` into `dist/biorouter-headless-linux-x64.tar.gz`, a shipped release artifact |
+| `biorouter-sandbox` | — | Capability-scoped sandboxed execution (`docker.rs`, `seatbelt.rs`, `local.rs`, `environment.rs`, `shell_sandbox/`); a leaf crate with no engine deps |
 | `biorouter-acp` | — | Agent Communication Protocol for multi-agent orchestration |
 | `biorouter-bench` | — | Benchmarking harness |
 | `biorouter-test` | — | Integration tests |
 
+Only five of `biorouter-mcp`'s servers are spawnable as **subprocesses** via
+`biorouter mcp <name>` — `autovisualiser`, `computercontroller`, `developer`,
+`memory`, `tutorial` (the `McpCommand` enum in `mcp_server_runner.rs`).
+`agent_drafter` (as `appcontrol`), `datasql`, `files_server` and `compute_server`
+are injected **in-process** by `configure_agent` in `routes/apps.rs` via
+`add_inprocess_server`, and have no subprocess name; their absence from that enum
+is not dead code.
+
 ### Core Agent Library (`crates/biorouter/src/`)
 
-- **`agents/agent.rs`** (~77KB) — Main agent loop: LLM interaction, tool dispatch, context management
-- **`agents/extension_manager.rs`** (~71KB) — MCP extension lifecycle and tool registration
-- **`providers/`** — 43+ provider modules (Anthropic, OpenAI, Azure, AWS Bedrock, Databricks, Ollama, etc.); `factory.rs` creates providers, `base.rs` defines the abstract interface
+- **`agents/agent.rs`** — Main agent loop: LLM interaction, tool dispatch, context management
+- **`agents/extension_manager.rs`** — MCP extension lifecycle and tool registration
+- **`providers/`** — 45+ provider modules (Anthropic, OpenAI, Azure, AWS Bedrock, Databricks, Ollama, etc.); `factory.rs` creates providers, `base.rs` defines the abstract interface
 - **`session/`** — Session persistence (SQLite via sqlx)
 - **`workflow/`** — Workflow definition (YAML/JSON), Jinja-style templating (minijinja), and execution
 - **`context_mgmt/`** — Token counting (tiktoken-rs) and context window pruning
@@ -173,14 +205,13 @@ The detailed manual steps and the reasoning behind each invariant follow.
 - **`main.ts`** — Electron main process: spawns `biorouterd`, manages windows, IPC
 - **`preload.ts`** — IPC bridge between renderer and main process
 - **`api/`** — TypeScript API client auto-generated from OpenAPI spec (do not hand-edit)
-- **`components/`** — 64+ modular React UI components
+- **`components/`** — 75+ modular React UI components
 - **`contexts/`** — React Context for global state
 - **`workflow/`** — Workflow builder UI
 - **`components/knowledge/`** — Top-level Knowledge route in the sidebar
   (between Skills and Settings). Provides KB selector with cmd-K-style
   palette, ingest panel (dropzone / paste text with URL extraction / staged
   list), and live SSE-streamed digestion progress via `useIngestStream`.
-  Graph view + change-log drawer come in Plan 5.
 
 ### Privacy tiers (issue #56)
 
@@ -245,7 +276,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
 
 When working on the Knowledge feature:
-- Run `cargo test -p biorouter-mcp --lib knowledge::` (198 tests) and `cargo test -p biorouter-server --test knowledge_routes` (38 tests) for backend changes. Both counts are measured, not approximate — a stale figure here is worse than none, because a "pre + N" assertion against it reads a shortfall as a pass. Re-measure rather than trusting this line. The ingest stream's terminal-frame contract lives in its own binary, `cargo test -p biorouter-server --test knowledge_ingest_stream` (1 test), because it sets `BIOROUTER_KNOWLEDGE_TEST_MODE` and would race the un-mocked provider tests next door.
+- Run `cargo test -p biorouter-mcp --lib knowledge::` and `cargo test -p biorouter-server --test knowledge_routes` (38 tests) for backend changes. A count written here must be *measured*, not approximate — a stale figure is worse than none, because a "pre + N" assertion against it reads a shortfall as a pass. The `knowledge::` figure carried here had drifted, so it was deleted rather than guessed: measure it in your own run. Re-measure the 38 too rather than trusting this line. The ingest stream's terminal-frame contract lives in its own binary, `cargo test -p biorouter-server --test knowledge_ingest_stream` (1 test), because it sets `BIOROUTER_KNOWLEDGE_TEST_MODE` and would race the un-mocked provider tests next door.
 - After touching `routes/knowledge.rs`, regenerate the TS client with `just generate-openapi && cd ui/desktop && npm run generate-api`.
 - Graph derivation lives in `graph.rs` and depends on the sub-agent emitting `[[knowledge-link]]` markers in page bodies; the default `schema_default.md` reinforces this. If a graph has nodes but no edges, the underlying pages likely lack `[[…]]` cross-references.
 
@@ -437,7 +468,9 @@ Key invariants, each learned from a real bug:
 
 Design docs: [`docs/design/theming/theme-system-architecture.md`](docs/design/theming/theme-system-architecture.md)
 (architecture + the decisions and their reasons), plus one per family —
-`design.md` (Parchment), `alma-mater-theme.md`, `roche-limit-theme.md`.
+[`design.md`](design.md) at the **repo root** (Parchment; note it self-reports an
+older version than the tree), and `docs/design/theming/alma-mater-theme-tokens.md`
+and `docs/design/theming/roche-limit-theme.md`.
 
 ### Auto Visualiser feature
 
@@ -458,7 +491,7 @@ rendered inline in chat (sandboxed iframe via `@mcp-ui` + the `/mcp-ui-proxy`).
   global error card) → base64 `ui://` blob (`finish`). Every tool also enforces
   size limits + semantic checks and returns a friendly `INVALID_PARAMS` message
   instead of producing a broken figure.
-- **Tools (34):** charts (`show_chart`, `render_histogram`, `render_boxplot`,
+- **Tools (33):** charts (`show_chart`, `render_histogram`, `render_boxplot`,
   `render_bubble`, `render_area`, `render_radar`, `render_donut`, `render_gauge`);
   scientific (`render_volcano`, `render_manhattan`, `render_kaplan_meier`,
   `render_forest`); relationships/hierarchies (`render_network`, `render_sankey`,
@@ -533,7 +566,10 @@ per-app agent over `GET /apps/<id>/agent`. Full design in
   authoritative. New test gates: the SDK v2 harness self-test
   `node scripts/agent-drafter/ui-control-harness.mjs` (real `sdk.ts` in jsdom vs a
   mock daemon; needs esbuild + jsdom) and `cargo test -p biorouter-server --lib
-  routes::apps` (~54 tests: frames, KB grants, provider-class routing).
+  routes::apps` (frames, KB grants, provider-class routing). The test count that
+  used to sit here had roughly doubled while the line stood still, so it was
+  removed rather than guessed — measure it in your own run before asserting
+  "pre + N".
 
 - **The agent drives the app, it doesn't just answer in it.** A per-session
   in-process MCP server (`agent_drafter/control.rs`, injected as `appcontrol` by
@@ -581,13 +617,63 @@ per-app agent over `GET /apps/<id>/agent`. Full design in
   arrive). Examples: `scripts/agent-drafter-apps/examples/ui/` +
   `install-examples.sh`.
 
+### Workspace control (several conversations at once)
+
+Workspace control (BR-71) is the agent's tool surface over *other* conversations:
+running several chats side by side, delegating to subagents you can watch, and
+reaching into another chat to read it, steer it, or fix its setup. User-facing
+guides: [`docs/agent-loop/workspace-control.md`](docs/agent-loop/workspace-control.md)
+and the per-tool reference
+[`docs/agent-loop/workspace-control-tools.md`](docs/agent-loop/workspace-control-tools.md);
+delegation is covered by [`docs/agent-loop/subagents.md`](docs/agent-loop/subagents.md)
+and the extension itself by [`docs/extensions/built-in/workspace.md`](docs/extensions/built-in/workspace.md).
+
+- **The `workspace` platform extension** —
+  `crates/biorouter/src/agents/workspace_extension.rs`, registered
+  `default_enabled: false`. Enabling it is an explicit user decision, not a
+  default: its tools read and write conversations other than the one you are in.
+  Supporting modules: `agents/workspace_inspector.rs`,
+  `agents/workspace_summary.rs`, and `crates/biorouter/src/workspace_services.rs`
+  (the shared service the extension and the HTTP layer both call).
+- **HTTP surface:** `crates/biorouter-server/src/routes/workspace.rs`.
+- **CLI parity:** `crates/biorouter-cli/src/commands/workspace_parity.rs` — the
+  terminal reaches the same capabilities the GUI tabs expose.
+- **Subagent delegation:** `agents/subagent_tool.rs`,
+  `agents/subagent_execution_tool/`, `agents/subagent_handle.rs`.
+- **GUI tab/pane layer:** `ui/desktop/src/components/chatGroups/`.
+
+**The delegation gate** (`Agent::subagents_enabled`, `agents/agent.rs`): the
+generic `subagent` tool is offered only in **Completely Autonomous** mode, never
+*to* a subagent (a `SessionType::SubAgent` session cannot spawn its own), and
+never on a model whose name starts with `gemini`. Agent-Drafter apps with
+declared worker profiles also switch it off so `consult` stays the one delegation
+mechanism. If the tool is missing, check those four conditions before suspecting a
+registration bug.
+
 ### Communication Flow
 
 ```
-CLI → calls biorouter crate APIs directly
-GUI → Electron main spawns biorouterd → React renderer communicates via HTTP/WebSocket
-                                       (type-safe client from generated OpenAPI)
+CLI (offline)  → calls biorouter crate APIs / the on-disk session store directly
+CLI (live)     → HTTP + SSE to a running biorouterd
+GUI            → Electron main spawns biorouterd → React renderer communicates
+                 via HTTP/WebSocket (type-safe client from generated OpenAPI)
 ```
+
+The CLI is **two** things, and the split is the commonest CLI failure:
+
+- `session list` / `export` / rename / remove touch only the on-disk session store
+  and need nothing running.
+- `session send` / `watch` / `attach` / `cancel` require a **reachable
+  `biorouterd`**, because live turns are process state, not files.
+
+The trap: the desktop app starts its daemon on an *ephemeral* port under a
+per-launch random secret (`ui/desktop/src/biorouterd.ts`, `main.ts`), and writes
+neither of them anywhere the CLI can read. **Having the app open does not satisfy
+the requirement.** Starting your own `biorouterd agent` gives you a *second* daemon
+that shares the session store (a directory) but not live turns (process memory),
+so `session watch` will report nothing running while the GUI is visibly working.
+To make both halves share one process, use the external-backend setup in
+[`docs/agent-loop/workspace-control.md`](docs/agent-loop/workspace-control.md).
 
 After changing server routes, always run `just generate-openapi` to regenerate the TypeScript client.
 
@@ -612,7 +698,13 @@ Key environment variables:
 
 ## Documentation
 
-**All prose documentation goes under `docs/`. There is no other documentation folder — do not create one.** No `proposals/`, `plans/`, `notes/`, `rfcs/`, or a stray Markdown file at the repo root. A `proposals/` folder was created in July 2026, drifted into holding a stale duplicate of a document already migrated into `docs/`, and was deleted on 2026-07-26; that is the failure mode this rule exists to prevent. The only Markdown outside `docs/` is the small set of root files GitHub expects (`README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `BUILDING*.md`, this file) and per-package READMEs that ship next to the code they install (for example `integrations/jupyter-ai/README.md`, `landing/`).
+**All prose documentation goes under `docs/`. There is no other documentation folder — do not create one.** No `proposals/`, `plans/`, `notes/`, `rfcs/`, or a stray Markdown file at the repo root. A `proposals/` folder was created in July 2026, drifted into holding a stale duplicate of a document already migrated into `docs/`, and was deleted on 2026-07-26; that is the failure mode this rule exists to prevent. The only Markdown outside `docs/` is a **closed** list of root files plus per-package READMEs that ship next to the code they install (for example `integrations/jupyter-ai/README.md`, `landing/`). The root list, in full:
+
+- **What GitHub and the project's governance expect:** `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `BUILDING.md` / `BUILDING_DOCKER.md` / `BUILDING_LINUX.md`, `GOVERNANCE.md`, `MAINTAINERS.md`, `ACCEPTABLE_USAGE.md`, `RELEASE.md`.
+- **AI-contributor steering files:** `CLAUDE.md` (this file), `AGENTS.md`, `HOWTOAI.md`. These must sit at the repo root because the tools that read them look there — moving one under `docs/` would silently stop it being loaded.
+- **`design.md`** — the Parchment design system, cited by the theme-families section above.
+
+The list being closed is the point: adding a root Markdown file means amending this list, not appending quietly.
 
 Two docs govern the tree and both are binding:
 
@@ -623,7 +715,7 @@ A proposal or design is not an exception: write it in the subsystem folder it be
 
 ## Code Review Standards
 
-From `.github/copilot-instructions.md`: Reviews focus on **security, correctness, and architecture patterns** — not style (handled by CI) or refactoring suggestions. Flag issues only with >80% confidence. Security-sensitive code (auth, permissions, credential handling) requires human review regardless of AI assistance. Note: this file previously referenced old crate names but has been updated to use `biorouter`, `biorouter-cli`, `biorouter-server`, `biorouter-mcp`.
+From `.github/copilot-instructions.md`: Reviews focus on **security, correctness, and architecture patterns** — not style (handled by CI) or refactoring suggestions. Flag issues only with >80% confidence. Security-sensitive code (auth, permissions, credential handling) requires human review regardless of AI assistance.
 
 From `HOWTOAI.md`: Avoid using AI-generated code for security logic, complex business rules, or schema migrations without thorough human review. Always get human review for MCP protocol implementations and async/concurrency logic.
 

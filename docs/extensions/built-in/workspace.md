@@ -6,6 +6,8 @@
 
 Every BioRouter conversation is a session: its own agent, its own extensions, skills and knowledge bases, its own history, and — when the desktop app is running — its own tab. Workspace Control gives the agent tools over that layer. Instead of telling you "open Settings and enable the single-cell skill in that other chat", it can do it; instead of a subagent being an opaque spinner, the child runs in a tab you can read, talk to and stop.
 
+This page is the user-facing account — what each tool is for, what it asks you first, and how its writes are labelled. If you are trying to *arrange* work rather than look a tool up, start with [Workspace control](../../agent-loop/workspace-control.md), which covers the tab/pane/window layout, delegating to subagents, and the terminal path. If you need the exact contract — every argument and default, the precise refusal strings, the caps — that is [the Workspace Control tool reference](../../agent-loop/workspace-control-tools.md), written for developers and for diagnosing a tool that behaved unexpectedly.
+
 Workspace Control adds no network access of its own: every tool operates on sessions stored under `~/.config/biorouter/sessions/` and on the local daemon that runs them. What it can *grant* is another matter — pointing a conversation at a different provider sends that conversation's history to the provider's endpoint, and handing one an extension that talks to the network gives it the network. Those are exactly the changes that always ask you first; see [the always-confirm rule](#the-always-confirm-rule).
 
 ## Two tiers, and why they differ
@@ -151,16 +153,18 @@ There is nothing GUI-shaped in the contract, but the surface is not identical wi
 
 **Standalone `biorouter` in a terminal, with no daemon.** The tools that *inspect* work — `workspace_list`, `workspace_read_conversation`, `workspace_watch` (which reads the background-handle registry, so it still knows a child is running), `workspace_send_prompt mode:"note"`, and `subagent` itself. The tools that need something to *drive* a session do not, and each refuses by name rather than failing obscurely: starting a new session, `mode:"turn"`, `mode:"steer"`, setting knowledge bases, and `workspace_close` at `turn` or `agent` scope all answer *"requires the BioRouter daemon"*. Start `biorouterd` (or open the app) if you need them.
 
-The CLI covers the same ground from the other side. These are commands *you* run, and they talk to `biorouterd` — so they belong to the second configuration above, not the third; `session watch` says "requires a running daemon" in its own help for that reason:
+The CLI covers the same ground from the other side. These are commands *you* run, and they do **not** all sit in the same configuration: the two that only read the session store on disk are fine in the third, while the four that drive a live turn go over HTTP to `biorouterd` and need the second — which is why `session watch` says "requires a running daemon" in its own help.
 
-| Capability | CLI |
-|------------|-----|
-| List conversations, including subagent runs | `biorouter session list --subagents` |
-| Read a conversation | `biorouter session export --format …` |
-| Inject a prompt | `biorouter session send` |
-| Wait for a turn to finish | `biorouter session watch` (exits on Finish/Error; add `--follow` to keep watching past it) |
-| Cancel a turn | `biorouter session cancel` |
-| Watch or steer a live session | `biorouter session attach` (`--of` to pick a subagent, `--read-only` to observe without participating) |
+| Capability | CLI | Needs `biorouterd` |
+|------------|-----|--------------------|
+| List conversations, including subagent runs | `biorouter session list --subagents` | no — but the live/done marks do |
+| Read a conversation | `biorouter session export --format …` | no |
+| Inject a prompt | `biorouter session send` | yes |
+| Wait for a turn to finish | `biorouter session watch` (exits on Finish/Error; add `--follow` to keep watching past it) | yes |
+| Cancel a turn | `biorouter session cancel` | yes |
+| Watch or steer a live session | `biorouter session attach` (`--of` to pick a subagent, `--read-only` to observe without participating) | yes |
+
+The listing is the one hybrid. Its rows come off disk, so it always prints; only the `● live` / `○ done` marks beside subagent runs are the daemon's to answer, and a run whose state could not be asked for reads `· state unknown` instead of the command failing.
 
 Two capabilities deliberately have no CLI counterpart: spawning (it is a tool the model calls, and it already works inside `biorouter session`) and `workspace_set_tools` (reconfiguring another session from a terminal is out of scope; `biorouter extension` / `biorouter skill` are machine-wide, not session-scoped).
 
@@ -172,6 +176,8 @@ That is why enabling Workspace Control in the desktop app raises a one-time, dis
 
 ## Related documentation
 
+- [Workspace control](../../agent-loop/workspace-control.md) — the how-to companion to this page: arranging tabs, panes and windows, delegating, the caps you will meet, and the terminal path.
+- [Workspace Control tool reference](../../agent-loop/workspace-control-tools.md) — the developer-facing contract for the same eight tools: exact arguments, defaults and clamps, every refusal string, and the two places a tool reports success it did not earn.
 - [Subagents](../../agent-loop/subagents.md) — the glass-box tab, steering a child, the fan-out cap, and the `subagent_status` migration note.
 - [Chat Recall extension](chat-recall.md) — the complementary tool for searching past conversations by content.
 - [Tool routing](../../agent-loop/tool-routing.md) — the routing table that separates Workspace Control from Chat Recall, Memory and the knowledge base.
