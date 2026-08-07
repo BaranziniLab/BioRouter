@@ -1260,6 +1260,16 @@ impl WorkspaceClient {
     /// `workspace_result` so a refused split (MAX_GROUPS) comes back as a clear
     /// message, not silence. With no GUI attached the session still exists and
     /// the result says exactly that rather than claiming a tab.
+    ///
+    /// ⚠ **`open_tab` on a conversation that already has a tab opens nothing.**
+    /// The reducer's `openTab` dedupes by session id, and the planner answers
+    /// `ok:true, detail:"opened"` either way — so relaying that answer verbatim
+    /// told the model a tab had been opened when the tab was already there and,
+    /// with `focus:false`, nothing at all had happened. The daemon can tell the
+    /// two apart: [`gui_tab_for`] over the window's own layout echo is the same
+    /// evidence `workspace_list` reports a tab from. §4.3 already has the word
+    /// for what should happen instead — `activate_tab`, which until now was a
+    /// registered command with no emitter — so this is where it is sent.
     async fn place_in_gui(
         &self,
         session_id: &str,
@@ -1275,19 +1285,22 @@ impl WorkspaceClient {
             .unwrap_or_default();
         match services {
             Some(s) if s.gui_attached() => {
-                let open_frame = if placement == "window" {
-                    json!({
-                        "type": "workspace", "cmd": "open_window",
-                        "session_id": session_id,
-                    })
-                } else {
-                    json!({
-                        "type": "workspace", "cmd": "open_tab",
-                        "session_id": session_id,
-                        "placement": placement,
-                        "focus": focus,
-                    })
+                // Only a plain `placement:"tab"` on an EXISTING session can be a
+                // no-op. A session this call just created cannot already have a
+                // tab; `"window"` asks for a new surface whatever the tab state
+                // is; and `"split"` on a tab that already exists still MOVES it
+                // into a new pane (`moveTabToGroup`), so "nothing moved" would
+                // be false — the split is a real layout change and the renderer
+                // reports it in `detail` ("opened in split").
+                let had_tab = created.is_none()
+                    && placement == "tab"
+                    && gui_tab_for(s.layout_snapshot().as_ref(), session_id).is_some();
+                let outcome = match (had_tab, focus) {
+                    (false, _) => TabOutcome::Opened,
+                    (true, false) => TabOutcome::AlreadyOpen,
+                    (true, true) => TabOutcome::Focused,
                 };
+                let open_frame = Self::placement_frame(session_id, placement, focus, outcome);
                 // §8.1 / decision 7. Read ONCE, and used for both halves: the
                 // frame the GUI gets and the sentence the model gets must agree,
                 // or the model reports a tab the user cannot see.
@@ -1310,19 +1323,108 @@ impl WorkspaceClient {
                     // Nothing was created, so there is nothing to orphan.
                     Err(e) => return Err(e),
                 };
-                // `open_result_text` is pure and five-argument (its test pins the
-                // signature), so decision 5's directory note is appended rather
-                // than interleaved. It therefore survives on BOTH arms — the
-                // announce-only sentence still names where the session works.
+                let (outcome, result) = Self::repair_stale_activation(
+                    s,
+                    // The frame the repair would send: the create frame this
+                    // call would have sent had the echo not claimed a tab.
+                    || Self::placement_frame(session_id, placement, focus, TabOutcome::Opened),
+                    announce_only,
+                    outcome,
+                    result,
+                )
+                .await;
+                // `open_result_text` is pure, so decision 5's directory note is
+                // appended rather than interleaved. It therefore survives on
+                // BOTH arms — the announce-only sentence still names where the
+                // session works.
                 Ok(vec![Content::text(format!(
                     "{}{dir_note}",
-                    open_result_text(session_id, placement, focus, announce_only, &result)
+                    open_result_text(
+                        session_id,
+                        placement,
+                        focus,
+                        announce_only,
+                        outcome,
+                        &result
+                    )
                 ))])
             }
             _ => Ok(vec![Content::text(format!(
                 "Session {session_id} ready (gui_attached: false — no tab opened; \
                  the session exists headlessly).{dir_note}"
             ))]),
+        }
+    }
+
+    /// Which §4.3 frame says what is actually about to happen. Split out of
+    /// [`Self::place_in_gui`] so the vocabulary choice is one expression a test
+    /// can read, rather than three branches wrapped around a round trip.
+    fn placement_frame(
+        session_id: &str,
+        placement: &str,
+        focus: bool,
+        outcome: TabOutcome,
+    ) -> serde_json::Value {
+        if placement == "window" {
+            return json!({
+                "type": "workspace", "cmd": "open_window",
+                "session_id": session_id,
+            });
+        }
+        if outcome == TabOutcome::Focused {
+            // The tab exists and the caller asked for focus: the honest command
+            // is the one that moves the view, not the one that allocates a tab.
+            return json!({
+                "type": "workspace", "cmd": "activate_tab",
+                "session_id": session_id,
+            });
+        }
+        // `AlreadyOpen` still sends `open_tab`: it is a dedupe no-op in the
+        // renderer, and sending it is what repairs a layout echo that has gone
+        // stale in the other direction (the tab closed since the last echo).
+        // Only the SENTENCE changes — see [`open_result_text`].
+        json!({
+            "type": "workspace", "cmd": "open_tab",
+            "session_id": session_id,
+            "placement": placement,
+            "focus": focus,
+        })
+    }
+
+    /// The echo can be wrong about the tab in two ways, and the renderer reports
+    /// both the same way — `planWorkspaceCommand`'s `activate_tab` arm refuses
+    /// with `ok:false, detail:"session has no tab"`:
+    ///
+    ///  * it is debounced, so it can still name a tab the user closed a moment
+    ///    ago;
+    ///  * it is MERGED ACROSS WINDOWS, while `gui_command` addresses one
+    ///    (`focused_or_recent`). A tab that exists in another window is not a
+    ///    tab the frame's recipient can activate.
+    ///
+    /// Without this repair either case would turn a `workspace_open` that used
+    /// to open a tab into a refusal — a regression caused by the fix, not by the
+    /// user. With it, the second case does what the caller meant: the focused
+    /// window gets the tab, and the result says "opened", because it was.
+    ///
+    /// Announce-only is exempt: there the frame was deliberately downgraded to a
+    /// notification, so a `ok:false` means the *notification* was refused and
+    /// re-sending an `open_tab` would defeat the setting.
+    async fn repair_stale_activation(
+        services: &std::sync::Arc<dyn workspace_services::WorkspaceServices>,
+        create_frame: impl FnOnce() -> serde_json::Value,
+        announce_only: bool,
+        outcome: TabOutcome,
+        result: serde_json::Value,
+    ) -> (TabOutcome, serde_json::Value) {
+        if announce_only || outcome != TabOutcome::Focused || announcement_delivered(&result) {
+            return (outcome, result);
+        }
+        match services.gui_command(create_frame(), true).await {
+            Ok(retry) => (TabOutcome::Opened, retry),
+            // Keep the first answer: it is the one that names a real refusal,
+            // and reporting the transport failure of the retry instead would
+            // hide it.
+            Err(_) => (outcome, result),
         }
     }
 
@@ -2262,13 +2364,32 @@ impl WorkspaceClient {
         let services = workspace_services::get();
 
         match args.scope.as_str() {
+            // ⚠ **The round trip is not optional here.** This used to emit with
+            // `wait_result: false` — fire and forget — and then report the tab
+            // closed. It could not have known: the renderer's `close_tab` arm
+            // refuses outright when the session has no tab in this window
+            // (`planWorkspaceCommand`: `refuse('session has no tab')`), and a
+            // frame that arrives while no chat surface is mounted is QUEUED, not
+            // applied (`applyWorkspaceCommand`). Both cases produced the cheerful
+            // sentence below, so the model told the user a tab was gone while it
+            // was still on screen. Same shape as `place_in_gui`'s: ask, wait,
+            // and report the answer.
             "tab" => match services {
                 Some(s) if s.gui_attached() => {
-                    s.gui_command(
-                        json!({ "type": "workspace", "cmd": "close_tab", "session_id": args.session_id }),
-                        false,
-                    )
-                    .await?;
+                    let result = s
+                        .gui_command(
+                            json!({ "type": "workspace", "cmd": "close_tab", "session_id": args.session_id }),
+                            true,
+                        )
+                        .await?;
+                    if !announcement_delivered(&result) {
+                        return Ok(vec![Content::text(format!(
+                            "The GUI did NOT close the tab for session {} ({}). The session \
+                             is untouched — do not tell the user the tab is gone.",
+                            args.session_id,
+                            gui_detail(&result).unwrap_or("no reason given")
+                        ))]);
+                    }
                     Ok(vec![Content::text(format!(
                         "Tab for session {} closed (session survives).",
                         args.session_id
@@ -2953,6 +3074,13 @@ pub(crate) fn announce_only_enabled() -> bool {
 /// intrusion by a different route — the setting's promise is "don't take me
 /// somewhere I didn't ask to go", not "don't allocate a tab". Everything else
 /// (annotate, close, notify) is not a focus event and always reaches the GUI.
+///
+/// The `activate_tab` entry was forward protection when it landed (plan open
+/// question 6: "no daemon-side emitter constructs one today"). It has one now —
+/// [`WorkspaceClient::placement_frame`] sends it for a `workspace_open` on a
+/// conversation that already has a tab — so this entry is load-bearing, and
+/// `announce_only_downgrades_a_focus_of_an_existing_tab` is the test that walks
+/// the whole path rather than the transform alone.
 const FOCUS_STEALING_CMDS: [&str; 3] = ["open_tab", "open_window", "activate_tab"];
 
 /// Downgrade focus-stealing frames to a notification when announce-only is on.
@@ -2987,6 +3115,24 @@ pub(crate) fn apply_focus_etiquette(
     })
 }
 
+/// What `workspace_open` actually did to the GUI, as opposed to what it asked
+/// for. The distinction exists because `open_tab` is a dedupe/adopt command: on
+/// a conversation that already has a tab it opens nothing, and the renderer
+/// still answers `ok:true`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TabOutcome {
+    /// No tab existed for this conversation (or one is being created, or a
+    /// window was asked for): `open_tab` / `open_window` really places it.
+    Opened,
+    /// The layout echo already showed a tab and the caller did NOT ask for
+    /// focus. The frame is still `open_tab` — a no-op that repairs a stale echo
+    /// — but nothing on screen changed.
+    AlreadyOpen,
+    /// The layout echo already showed a tab and the caller asked for focus:
+    /// `activate_tab` moves the view to it. No tab is opened.
+    Focused,
+}
+
 /// What the MODEL is told. Pure, and separate from the frame, because the two
 /// can disagree in exactly one direction that matters: the frame was downgraded
 /// to a notification and the text still says "opened". A model that believes it
@@ -2994,15 +3140,20 @@ pub(crate) fn apply_focus_etiquette(
 /// nothing happened.
 ///
 /// Deviation from the plan's snippet: decision 5's `dir_note` is NOT a parameter
-/// here (the task's own test pins this five-argument signature), so
-/// [`WorkspaceClient::place_in_gui`] appends it to whatever this returns. That
-/// keeps the note on BOTH arms — a newly created session announced rather than
-/// opened still tells the model where it works.
+/// here, so [`WorkspaceClient::place_in_gui`] appends it to whatever this
+/// returns. That keeps the note on BOTH arms — a newly created session announced
+/// rather than opened still tells the model where it works.
+///
+/// ⚠ `outcome` was added after the five-argument form shipped, and it is the
+/// whole point of the addition: the previous signature could not express "the
+/// tab was already there", so every re-open was reported as an opening. A pinned
+/// signature is worth less than a true sentence.
 pub(crate) fn open_result_text(
     session_id: &str,
     placement: &str,
     focus: bool,
     announce_only: bool,
+    outcome: TabOutcome,
     gui_result: &serde_json::Value,
 ) -> String {
     if announce_only {
@@ -3031,6 +3182,17 @@ pub(crate) fn open_result_text(
                 gui_detail(gui_result).unwrap_or("no reason given")
             )
         };
+        // A conversation that already HAD a tab was never going to get one, so
+        // "no tab was opened" would be true for the wrong reason and would let
+        // the model conclude the view moved. Deny the thing the setting actually
+        // suppressed: the jump.
+        if outcome == TabOutcome::Focused {
+            return format!(
+                "Session {session_id} already has a {noun} in the GUI, but the user has \
+                 turned OFF automatic tab opening, so it was NOT brought to the front — \
+                 {handoff}. Do not tell the user you opened or switched to a {noun}."
+            );
+        }
         return format!(
             "Session {session_id} is ready, but the user has turned OFF automatic tab \
              opening, so no {noun} was opened — {handoff}. Do not tell the user you \
@@ -3044,15 +3206,38 @@ pub(crate) fn open_result_text(
     let detail = gui_detail(gui_result)
         .map(|d| format!(" {d}"))
         .unwrap_or_default();
-    format!(
-        "Session {session_id} {} in the GUI ({placement}{}).{detail}",
-        if announcement_delivered(gui_result) {
-            "opened"
+    let focus_note = if focus { ", focused" } else { ", background" };
+    // The round trip is the only evidence anything happened. Whatever was asked
+    // for, it did not happen — and the denial names what was asked for, so a
+    // refused `activate_tab` is not read as a refused opening.
+    if !announcement_delivered(gui_result) {
+        let denied = if outcome == TabOutcome::Focused {
+            "was NOT brought to the front"
         } else {
             "NOT opened"
-        },
-        if focus { ", focused" } else { ", background" },
-    )
+        };
+        return format!(
+            "Session {session_id} {denied} in the GUI ({placement}{focus_note}).{detail}"
+        );
+    }
+    match outcome {
+        TabOutcome::Opened => {
+            format!("Session {session_id} opened in the GUI ({placement}{focus_note}).{detail}")
+        }
+        // ⚠ Both arms below say "no new tab was opened" in words. The model is
+        // about to paraphrase this sentence to the user, and "opened" is the
+        // verb it will reach for unless it is told, explicitly, that nothing
+        // was opened.
+        TabOutcome::AlreadyOpen => format!(
+            "Session {session_id} was ALREADY open in the GUI ({placement}{focus_note}); \
+             no new tab was opened and nothing moved.{detail}"
+        ),
+        TabOutcome::Focused => format!(
+            "Session {session_id} was already open in the GUI; its existing tab was \
+             brought to the front ({placement}{focus_note}) — no new tab was \
+             opened.{detail}"
+        ),
+    }
 }
 
 /// Did the renderer accept the frame? Absent or non-boolean `ok` counts as a
@@ -3074,9 +3259,66 @@ fn gui_detail(gui_result: &serde_json::Value) -> Option<&str> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::agents::extension::PlatformExtensionContext;
+
+    /// ⚠ **The one list of idioms that must never come back, for every file
+    /// that guards against them.**
+    ///
+    /// Both this file and `extension_manager_extension.rs` carried an
+    /// anti-respelling scan, and each forbade only the idiom *its own* history
+    /// had produced: this file barred `resolve_extension(` / `privacy_refusal(`
+    /// / the affiliation helpers; the other barred `class.tier.is_private()` /
+    /// `ASK_THE_USER_TO_SWITCH`. So a re-derivation written in the *other*
+    /// file's vocabulary walked past both scans — the guard against duplicating
+    /// a rule had itself been duplicated, into two versions that disagreed. One
+    /// list, read by both, is the only shape that cannot drift.
+    ///
+    /// ⚠ **Do not put this in production text.** It contains the very literals
+    /// the scans search for, so a copy above the `#[cfg(test)]` boundary would
+    /// make both files fail on their own guard. It lives inside `mod tests`
+    /// (hence `pub(crate) mod`) precisely so each scan's production/test cut
+    /// removes it.
+    ///
+    /// New entries are cheap and belong here rather than in either caller: an
+    /// arm of the enable decision re-spelled anywhere is the defect, and which
+    /// file re-spelled it is an accident of who edited what.
+    pub(crate) const ENABLE_GATE_RESPELLINGS: &[&str] = &[
+        // This file's historic idiom (finding 13's oracle at `workspace_open`).
+        "resolve_extension(",
+        "privacy_refusal(",
+        "cross_affiliation_warning(",
+        "cross_affiliation_refusal(",
+        // `extension_manager_extension.rs`'s historic idiom.
+        "class.tier.is_private()",
+        "ASK_THE_USER_TO_SWITCH",
+    ];
+
+    /// The production half of a source file: everything above its `#[cfg(test)]`
+    /// boundary, as non-comment lines.
+    ///
+    /// Comments are dropped because both files DESCRIBE the forbidden idioms in
+    /// doc comments — `workspace_extension.rs`'s `refuse_gated_extension_enable`
+    /// spells `class.tier.is_private() && caller == Public` out in prose so the
+    /// next reader knows what the shared gate decides. A scan that cannot tell a
+    /// description from a re-derivation can only be satisfied by deleting the
+    /// description, which is the wrong direction.
+    pub(crate) fn asserts_no_respellings(production: &str, file: &str) {
+        for respelling in ENABLE_GATE_RESPELLINGS {
+            let hit = production
+                .lines()
+                .any(|l| !l.trim_start().starts_with("//") && l.contains(respelling));
+            assert!(
+                !hit,
+                "`{respelling}` is back in {file}'s production text: an arm of the enable \
+                 gate is being re-derived there instead of asked for. That is the \
+                 two-spellings shape, and last time it cost an install-state oracle at \
+                 `workspace_open {{new:{{extensions}}}}`. Ask \
+                 `crate::privacy::refusal::extension_enable_refusal` instead."
+            );
+        }
+    }
     use crate::agents::mcp_client::McpClientTrait;
     use tokio_util::sync::CancellationToken;
 
@@ -5174,8 +5416,12 @@ mod tests {
     #[test]
     fn every_gate_this_file_owns_is_wired_into_dispatch() {
         const SELF: &str = include_str!("workspace_extension.rs");
+        // Anchored on the WHOLE opening line, not on `#[cfg(test)]` alone: this
+        // file has a `#[cfg(test)] const RETIRED_TOOL_NAMES` up in production,
+        // and cutting there would drop most of the production text and make
+        // every assertion below vacuously true.
         let cut = SELF
-            .find("#[cfg(test)]\nmod tests {")
+            .find("#[cfg(test)]\npub(crate) mod tests {")
             .expect("workspace_extension.rs no longer has a `#[cfg(test)] mod tests`");
         let (production, tests) = SELF.split_at(cut);
         assert!(
@@ -5227,20 +5473,13 @@ mod tests {
             production.contains("crate::privacy::refusal::extension_enable_refusal("),
             "`refuse_gated_extension_enable` no longer asks the shared enable gate"
         );
-        for respelling in [
-            "resolve_extension(",
-            "privacy_refusal(",
-            "cross_affiliation_warning(",
-            "cross_affiliation_refusal(",
-        ] {
-            assert!(
-                !production.contains(respelling),
-                "`{respelling}` is back in this file's production text: an arm of the \
-                 enable gate is being re-derived here instead of asked for. That is the \
-                 two-spellings shape, and last time it cost an install-state oracle at \
-                 `workspace_open {{new:{{extensions}}}}`"
-            );
-        }
+        // ⚠ The list is [`ENABLE_GATE_RESPELLINGS`], shared with
+        // `extension_manager_extension.rs`'s scan. It used to be a literal here
+        // naming only THIS file's historic idiom, while the other file's scan
+        // named only its own — so a re-derivation written in the other
+        // vocabulary passed both. Adding an entry in one place now tightens
+        // both doors, which is the only property that makes the guard a guard.
+        asserts_no_respellings(production, "workspace_extension.rs");
 
         // …and Gate F1's UNLOAD half, at the one door in this file that takes an
         // extension AWAY (finding 14's second door). Spelled as the shared
@@ -5858,6 +6097,21 @@ mod tests {
         started: Mutex<Vec<(String, String, crate::conversation::message::Message)>>,
         /// Every `gui_command` frame.
         frames: Mutex<Vec<serde_json::Value>>,
+        /// The `wait_result` each of those frames was sent with, in the same
+        /// order. Recorded separately from `frames` so every existing frame
+        /// assertion keeps its shape — and recorded AT ALL because "did the tool
+        /// park for the renderer's answer?" is exactly the question `close_tab`
+        /// got wrong: a fire-and-forget emit returns `{"sent": true}`, which no
+        /// assertion about the frame itself can distinguish from a real reply.
+        waits: Mutex<Vec<bool>>,
+        /// Answers `gui_command` hands back, consumed in order; `{"ok": true}`
+        /// once the queue is empty. A renderer that REFUSES (`ok:false`) is not
+        /// an error — it is the normal way a split is declined, a tab is missing
+        /// or a frame is queued — and without this the fake could only ever say
+        /// yes.
+        gui_answers: Mutex<std::collections::VecDeque<serde_json::Value>>,
+        /// What `layout_snapshot` reports (§4.3 echo).
+        layout: Mutex<Option<serde_json::Value>>,
         /// Every `start_session(…)` call, whole and in order. Task 24 needs the
         /// ARGUMENTS, not just the returned id: decision 5's deliverable is
         /// *which* directory a new conversation gets, and an implementation that
@@ -5912,6 +6166,33 @@ mod tests {
         fn gui_fails(self, message: &str) -> Self {
             *self.gui_error.lock().unwrap() = Some(message.to_string());
             self
+        }
+        /// Queue the renderer's answers, in order. A REFUSAL is not a transport
+        /// failure: `planWorkspaceCommand` answers `ok:false` for a split it
+        /// declined, a tab that is not there, and a frame it had to queue.
+        fn gui_answers(self, answers: Vec<serde_json::Value>) -> Self {
+            *self.gui_answers.lock().unwrap() = answers.into();
+            self
+        }
+        /// A layout echo in which `session_id` already has a tab, in the shape
+        /// `gui_tab_for` reads (`workspace_echo.layout`, §4.3).
+        fn with_tab_for(self, session_id: &str) -> Self {
+            *self.layout.lock().unwrap() = Some(serde_json::json!([{
+                "window_id": "w-1",
+                "layout": [{
+                    "group_id": "g-1",
+                    "active_tab": "t-other",
+                    "tabs": [
+                        { "tab_id": "t-1", "session_id": session_id },
+                        { "tab_id": "t-other", "session_id": "s-someone-else" },
+                    ],
+                }],
+            }]));
+            self
+        }
+        /// The `wait_result` of every frame, in order.
+        fn waits(&self) -> Vec<bool> {
+            self.waits.lock().unwrap().clone()
         }
         fn install(self) -> std::sync::Arc<Self> {
             let me = std::sync::Arc::new(self);
@@ -5980,7 +6261,7 @@ mod tests {
             self.gui
         }
         fn layout_snapshot(&self) -> Option<serde_json::Value> {
-            None
+            self.layout.lock().unwrap().clone()
         }
         fn is_turn_active(&self, session_id: &str) -> bool {
             self.active.lock().unwrap().contains(session_id)
@@ -6073,15 +6354,22 @@ mod tests {
         async fn gui_command(
             &self,
             frame: serde_json::Value,
-            _wait_result: bool,
+            wait_result: bool,
         ) -> Result<serde_json::Value, String> {
             self.frames.lock().unwrap().push(frame);
+            self.waits.lock().unwrap().push(wait_result);
             // Bind out of the guard before the early return: a live `MutexGuard`
             // across the tail of an `async fn` makes the future `!Send`.
             let failure = self.gui_error.lock().unwrap().clone();
+            let queued = self.gui_answers.lock().unwrap().pop_front();
             match failure {
                 Some(message) => Err(message),
-                None => Ok(serde_json::json!({ "ok": true })),
+                // A fire-and-forget emit never carries an `ok` — the real
+                // `ServerWorkspaceServices` answers `{"sent": true}` — so a
+                // caller that did not wait cannot learn anything, and the fake
+                // must not hand it a verdict it could not have had.
+                None if !wait_result => Ok(serde_json::json!({ "sent": true })),
+                None => Ok(queued.unwrap_or_else(|| serde_json::json!({ "ok": true }))),
             }
         }
     }
@@ -6944,6 +7232,53 @@ mod tests {
         assert!(services.cancels().is_empty(), "tab scope must not cancel");
         assert!(services.stops().is_empty(), "tab scope must not stop");
         assert!(text_of(&result).contains(&target));
+        // ⚠ And it PARKED for the answer. This shipped as `wait_result: false`,
+        // which cannot fail any assertion about the frame — the frame is
+        // identical either way — while making the sentence below unfounded.
+        assert_eq!(
+            services.waits(),
+            vec![true],
+            "close_tab must wait for the renderer, or it cannot know the tab closed"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// ⚠ The renderer can REFUSE a close, and it routinely does: `close_tab` on
+    /// a session with no tab in this window is
+    /// `refuse('session has no tab')`, and a frame arriving while no chat
+    /// surface is mounted is queued rather than applied. Both used to come back
+    /// as "Tab for session X closed" because nothing was waiting for an answer.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn close_tab_reports_a_refusal_instead_of_claiming_the_tab_is_gone() {
+        let services = FakeServices::with_gui(true)
+            .gui_answers(vec![
+                serde_json::json!({ "ok": false, "detail": "session has no tab" }),
+            ])
+            .install();
+        let c = client();
+        let target = seeded_target(&c, "close-refused").await;
+
+        let result = close(
+            &c,
+            "closer",
+            serde_json::json!({ "session_id": target, "scope": "tab" }),
+        )
+        .await;
+
+        assert_ne!(result.is_error, Some(true), "got: {}", text_of(&result));
+        assert_eq!(services.waits(), vec![true]);
+        let text = text_of(&result);
+        assert!(
+            text.contains("did NOT close the tab"),
+            "a refused close must be reported as a refusal: {text}"
+        );
+        assert!(text.contains("session has no tab"), "got: {text}");
+        assert!(
+            !text.contains("closed (session survives)"),
+            "the success sentence must not survive a refusal: {text}"
+        );
 
         crate::workspace_services::clear_test_override();
     }
@@ -8122,6 +8457,193 @@ mod tests {
         crate::workspace_services::clear_test_override();
     }
 
+    /// ⚠ **The pure-text tests above cannot see this.** They prove
+    /// `open_result_text` is honest *given* an outcome; the defect was that
+    /// `place_in_gui` never computed one — it sent `open_tab` unconditionally
+    /// and passed the renderer's `ok:true` straight through, so a re-open of a
+    /// conversation that already had a tab was reported as an opening. This
+    /// walks the real dispatch path and asserts the FRAME, which is the only
+    /// evidence that the daemon changed its mind about what to send.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn reopening_a_conversation_that_already_has_a_tab_activates_it() {
+        let c = client();
+        let target = seeded_target(&c, "already-tabbed").await;
+        let services = FakeServices::with_gui(true).with_tab_for(&target).install();
+
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "session_id": target, "focus": true }),
+        )
+        .await;
+        assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
+
+        let frames = services.all_frames();
+        assert_eq!(frames.len(), 1, "expected one frame, got: {frames:?}");
+        assert_eq!(
+            frames[0]["cmd"], "activate_tab",
+            "a conversation that already has a tab is FOCUSED, not opened: {frames:?}"
+        );
+        assert_eq!(frames[0]["session_id"], target);
+        assert_eq!(
+            services.waits(),
+            vec![true],
+            "the answer is the only evidence the view moved, so the tool must park for it"
+        );
+
+        let text = text_of(&r);
+        assert!(text.contains("brought to the front"), "got: {text}");
+        assert!(
+            text.contains("no new tab was opened"),
+            "the model must be told, in words, that nothing was opened: {text}"
+        );
+        assert!(!text.contains(&format!("{target} opened")), "got: {text}");
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The `focus:false` half. Here the frame stays `open_tab` — it is a dedupe
+    /// no-op that also repairs a stale echo — and ONLY the sentence changes.
+    /// Asserting the frame as well is what stops a future "simplification" from
+    /// deciding the no-op can be skipped: skipping it is what makes a stale echo
+    /// unrecoverable.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_background_reopen_of_an_existing_tab_says_nothing_was_opened() {
+        let c = client();
+        let target = seeded_target(&c, "already-tabbed-bg").await;
+        let services = FakeServices::with_gui(true).with_tab_for(&target).install();
+
+        let r = open_as(&c, "caller", serde_json::json!({ "session_id": target })).await;
+        assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
+
+        let frames = services.all_frames();
+        assert_eq!(frames.len(), 1, "got: {frames:?}");
+        assert_eq!(frames[0]["cmd"], "open_tab", "got: {frames:?}");
+
+        let text = text_of(&r);
+        assert!(text.contains("ALREADY open"), "got: {text}");
+        assert!(
+            text.contains("no new tab was opened") && text.contains("nothing moved"),
+            "got: {text}"
+        );
+
+        // …but `placement:"split"` on a tab that already exists is NOT a no-op:
+        // the reducer MOVES it into a new pane. "nothing moved" would be false,
+        // so a split keeps the opening vocabulary — the layout really changed.
+        services.clear_frames();
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "session_id": target, "placement": "split" }),
+        )
+        .await;
+        let frames = services.all_frames();
+        assert_eq!(frames[0]["cmd"], "open_tab", "got: {frames:?}");
+        assert_eq!(frames[0]["placement"], "split", "got: {frames:?}");
+        let text = text_of(&r);
+        assert!(
+            !text.contains("nothing moved") && !text.contains("ALREADY open"),
+            "a split rearranges the layout even for a tab that exists: {text}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The echo is debounced and merged across windows, so it can name a tab the
+    /// user closed a moment ago. The renderer says so (`ok:false, "session has
+    /// no tab"`), and the tool must recover by opening — otherwise this fix
+    /// turns a `workspace_open` that used to work into a refusal.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_stale_layout_echo_falls_back_to_opening_the_tab_it_could_not_focus() {
+        let c = client();
+        let target = seeded_target(&c, "stale-echo").await;
+        let services = FakeServices::with_gui(true)
+            .with_tab_for(&target)
+            .gui_answers(vec![
+                serde_json::json!({ "ok": false, "detail": "session has no tab" }),
+                serde_json::json!({ "ok": true, "detail": "opened" }),
+            ])
+            .install();
+
+        let r = open_as(
+            &c,
+            "caller",
+            serde_json::json!({ "session_id": target, "focus": true }),
+        )
+        .await;
+        assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
+
+        let cmds: Vec<String> = services
+            .all_frames()
+            .iter()
+            .map(|f| f["cmd"].as_str().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(
+            cmds,
+            vec!["activate_tab", "open_tab"],
+            "the refusal must be repaired by the create frame"
+        );
+
+        let text = text_of(&r);
+        assert!(
+            text.contains("opened in the GUI"),
+            "the fallback's answer is what gets reported: {text}"
+        );
+        assert!(
+            !text.contains("brought to the front"),
+            "the focus that was refused must not be claimed: {text}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// §8.1 through the whole path, not just the transform. `activate_tab` now
+    /// has an emitter, so "is it in `FOCUS_STEALING_CMDS`?" is no longer the
+    /// question — "does the emitter route around the transform?" is. It must
+    /// also NOT fall back to `open_tab`: a refused notification is not a stale
+    /// echo, and re-sending the create frame would defeat the setting outright.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn announce_only_downgrades_a_focus_of_an_existing_tab() {
+        let c = client();
+        let target = seeded_target(&c, "announce-existing").await;
+        let services = FakeServices::with_gui(true)
+            .with_tab_for(&target)
+            .gui_answers(vec![
+                serde_json::json!({ "ok": false, "detail": "renderer error" }),
+            ])
+            .install();
+
+        let r = open_as_with_announce_only(
+            &c,
+            "caller",
+            serde_json::json!({ "session_id": target, "focus": true }),
+            true,
+        )
+        .await;
+        assert_ne!(r.is_error, Some(true), "got: {}", text_of(&r));
+
+        let frames = services.all_frames();
+        assert_eq!(
+            frames.len(),
+            1,
+            "a refused notification must not be retried as an open: {frames:?}"
+        );
+        assert_eq!(frames[0]["cmd"], "notify", "got: {frames:?}");
+
+        let text = text_of(&r);
+        assert!(text.contains("NOT brought to the front"), "got: {text}");
+        assert!(
+            !text.contains("they were notified"),
+            "the GUI refused the notification, so no handoff may be claimed: {text}"
+        );
+
+        crate::workspace_services::clear_test_override();
+    }
+
     /// The complete workspace surface. This is the ONE exact-set assertion in
     /// the plan: Tasks 12-18 each added a tool and each re-ran the extension's
     /// tests, so an exact assertion in any of them would have been a
@@ -8212,11 +8734,12 @@ mod tests {
 
         // …and so does activate_tab. It does not OPEN anything, but it is the
         // frame that yanks the user's view to a different conversation, which is
-        // the same intrusion the setting exists to prevent. No daemon emitter
-        // constructs one today (workspace_open always sends open_tab and lets
-        // the reducer's dedupe focus an existing tab), so this is forward
-        // protection: the next emitter that reaches for it inherits the
-        // etiquette instead of quietly bypassing it.
+        // the same intrusion the setting exists to prevent. This was forward
+        // protection when it landed; `placement_frame` now sends the frame for a
+        // `workspace_open` on a conversation that already has a tab, and
+        // `announce_only_downgrades_a_focus_of_an_existing_tab` walks that whole
+        // path — an assertion on the transform alone cannot see an emitter that
+        // reads the setting and then routes around the transform.
         let activate = json!({ "type": "workspace", "cmd": "activate_tab", "session_id": "s-a" });
         assert_eq!(apply_focus_etiquette(activate, true)["cmd"], "notify");
 
@@ -8240,7 +8763,7 @@ mod tests {
     fn the_result_text_never_claims_a_tab_that_was_not_opened() {
         let ok = json!({ "ok": true, "detail": "opened" });
 
-        let announced = open_result_text("s-child", "tab", false, true, &ok);
+        let announced = open_result_text("s-child", "tab", false, true, TabOutcome::Opened, &ok);
         assert!(announced.contains("s-child"));
         // The plan wrote this as `!announced.contains("opened")` alongside the
         // `contains("no tab was opened")` assertion below — which no string can
@@ -8272,7 +8795,7 @@ mod tests {
         // one noun removed: the model reports a handoff to a user who saw
         // nothing, and then stops mentioning the session at all.
         let unheard = json!({ "ok": false, "detail": "renderer error: socket closed" });
-        let silent = open_result_text("s-child", "tab", false, true, &unheard);
+        let silent = open_result_text("s-child", "tab", false, true, TabOutcome::Opened, &unheard);
         assert!(silent.contains("no tab was opened"), "{silent}");
         assert!(
             !silent.contains("they were notified"),
@@ -8288,7 +8811,7 @@ mod tests {
         // opened" is literally true and reads as a denial about tabs only — it
         // leaves the model free to conclude a window opened instead, which is
         // the exact false premise this function exists to prevent.
-        let windowed = open_result_text("s-w", "window", false, true, &ok);
+        let windowed = open_result_text("s-w", "window", false, true, TabOutcome::Opened, &ok);
         assert!(
             windowed.contains("no window was opened"),
             "a window request is denied in its own words: {windowed}"
@@ -8298,7 +8821,7 @@ mod tests {
             "{windowed}"
         );
 
-        let normal = open_result_text("s-child", "tab", false, false, &ok);
+        let normal = open_result_text("s-child", "tab", false, false, TabOutcome::Opened, &ok);
         assert!(normal.contains("opened") && !normal.contains("NOT opened"));
         assert!(
             normal.contains("background"),
@@ -8306,14 +8829,21 @@ mod tests {
         );
         assert!(normal.contains("tab"));
 
-        let focused = open_result_text("s-child", "split", true, false, &ok);
+        let focused = open_result_text("s-child", "split", true, false, TabOutcome::Opened, &ok);
         assert!(focused.contains("focused") && focused.contains("split"));
 
         // A GUI that refused the command is reported as a refusal, not as
         // success — the round trip returns `ok:false`, and the previous inline
         // code path had no test that this branch was ever reachable.
         let refused = json!({ "ok": false, "detail": "no room for another split" });
-        let text = open_result_text("s-child", "split", false, false, &refused);
+        let text = open_result_text(
+            "s-child",
+            "split",
+            false,
+            false,
+            TabOutcome::Opened,
+            &refused,
+        );
         assert!(text.contains("NOT opened"), "{text}");
         assert!(
             text.contains("no room for another split"),
@@ -8324,11 +8854,83 @@ mod tests {
         // `place_in_gui` appends decision 5's directory note to this string, so
         // a trailing space put a double space in the middle of the sentence the
         // model reads back to the user.
-        let bare = open_result_text("s-child", "tab", false, false, &json!({ "ok": true }));
+        let bare = open_result_text(
+            "s-child",
+            "tab",
+            false,
+            false,
+            TabOutcome::Opened,
+            &json!({ "ok": true }),
+        );
         assert!(bare.ends_with("(tab, background)."), "{bare}");
         assert!(
             !format!("{bare} Working directory: /p.").contains("  "),
             "the appended directory note must not double the space: {bare:?}"
         );
+    }
+
+    /// ⚠ The renderer answers `ok:true, detail:"opened"` for an `open_tab` on a
+    /// conversation that ALREADY has a tab — `openTab` dedupes by session id, so
+    /// nothing is allocated and, with `focus:false`, nothing moves either. The
+    /// old five-argument text could not express that and reported every re-open
+    /// as an opening. These are the two sentences that could not be written
+    /// before, and each is asserted to deny the opening **in words**, because
+    /// the model paraphrases this string to the user.
+    #[test]
+    fn a_conversation_that_already_had_a_tab_is_never_reported_as_newly_opened() {
+        let ok = json!({ "ok": true, "detail": "opened" });
+
+        let already = open_result_text("s-x", "tab", false, false, TabOutcome::AlreadyOpen, &ok);
+        assert!(
+            already.contains("no new tab was opened"),
+            "a dedupe no-op must say so: {already}"
+        );
+        assert!(
+            !already.contains("s-x opened"),
+            "…and must not use the verb the model will repeat: {already}"
+        );
+
+        let focused = open_result_text(
+            "s-x",
+            "tab",
+            true,
+            false,
+            TabOutcome::Focused,
+            &json!({ "ok": true }),
+        );
+        assert!(
+            focused.contains("brought to the front") && focused.contains("no new tab was opened"),
+            "an activate_tab reports a move, not an opening: {focused}"
+        );
+        assert!(!focused.contains("s-x opened"), "{focused}");
+
+        // A refused `activate_tab` is denied in ITS OWN vocabulary. "NOT opened"
+        // here would be true and misleading in the same way "no tab was opened"
+        // was for a window request: it invites the model to conclude the view
+        // moved anyway.
+        let refused = json!({ "ok": false, "detail": "session has no tab" });
+        let denied = open_result_text("s-x", "tab", true, false, TabOutcome::Focused, &refused);
+        assert!(denied.contains("was NOT brought to the front"), "{denied}");
+        assert!(denied.contains("session has no tab"), "{denied}");
+
+        // Announce-only, on a tab that already exists: the setting suppressed a
+        // JUMP, not an allocation, and the sentence has to deny the jump.
+        let hushed = open_result_text(
+            "s-x",
+            "tab",
+            true,
+            true,
+            TabOutcome::Focused,
+            &json!({ "ok": true }),
+        );
+        assert!(
+            hushed.contains("NOT brought to the front"),
+            "announce-only must deny the move it actually suppressed: {hushed}"
+        );
+        assert!(
+            hushed.contains("Do not tell the user you opened or switched"),
+            "{hushed}"
+        );
+        assert!(!hushed.contains("s-x opened"), "{hushed}");
     }
 }

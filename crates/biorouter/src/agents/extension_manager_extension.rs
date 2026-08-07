@@ -1265,18 +1265,20 @@ mod tests {
         // gate takes `persisted` as an argument precisely so it stays pure, and
         // asking that helper is this door's job. What must not come back is an
         // arm of the DECISION.
-        for respelling in [
-            "class.tier.is_private()",
-            "ASK_THE_USER_TO_SWITCH",
-            "cross_affiliation_warning(",
-        ] {
-            assert!(
-                !calls(respelling),
-                "`{respelling}` is back in this file's production text: an arm of the \
-                 enable gate is being re-derived here instead of asked for, which is \
-                 the two-spellings shape that reopened finding 13's oracle at \
-                 `workspace_open`"
-            );
-        }
+        //
+        // ⚠ **The list is shared, and that is the fix.** This scan used to carry
+        // its own literal naming only the idiom THIS file's history produced
+        // (`class.tier.is_private()` / `ASK_THE_USER_TO_SWITCH`), while
+        // `workspace_extension.rs`'s scan carried a different literal naming
+        // only ITS idiom (`resolve_extension(` / `privacy_refusal(` / the
+        // affiliation helpers). Two files, two lists, one rule — so a
+        // re-derivation written in the other file's vocabulary satisfied both
+        // scans and neither reported anything. The guard against duplicating a
+        // rule had been duplicated. One const, read by both, in
+        // `workspace_extension::tests::ENABLE_GATE_RESPELLINGS`.
+        crate::agents::workspace_extension::tests::asserts_no_respellings(
+            production,
+            "extension_manager_extension.rs",
+        );
     }
 }
