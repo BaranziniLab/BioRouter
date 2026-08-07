@@ -1655,39 +1655,56 @@ class ChatStreamController {
     this.reattachesThisTurn = 0;
     const fromSeq = this.lastAppliedSeq + 1;
 
-    this.updateSnapshot((prev) => ({
-      ...prev,
-      // A live turn is running: say so. `turnStartedAt` is only invented when
-      // we have nothing better — a re-attach keeps the original origin so the
-      // elapsed timer does not restart at zero in front of the user.
-      chatState: ChatState.Streaming,
-      turnStartedAt: prev.turnStartedAt ?? Date.now(),
-      turnError: undefined,
-    }));
-
-    this.abortController = new AbortController();
     const streamId = this.activeStreamId + 1;
     this.activeStreamId = streamId;
+
+    // The socket is held LOCALLY across the POST and only published to
+    // `this.abortController` once there is a stream on it.
+    //
+    // That ordering is the whole defence against an attach the user never
+    // asked for eating a message they did ask for. `hasLiveTurn()` — which is
+    // what `canSubmitMessage` consults — is true the moment `abortController`
+    // is set, so publishing it before the POST resolves would make a submit
+    // arriving in that window return silently, with the typed message dropped
+    // on the floor and no error anywhere. Most of these attaches are automatic
+    // (see `resumeActiveTurn`) and some of them fail, so "a turn is in flight"
+    // must not be claimed until it is known to be true. A submit that lands in
+    // the window instead bumps `activeStreamId` past this one, and the guard
+    // below stands the attach down.
+    const socket = new AbortController();
 
     try {
       const { stream } = await reply({
         body: buildAttachRequest(this.sessionId, turnId, fromSeq, this.messagesRef),
         throwOnError: true,
-        signal: this.abortController.signal,
+        signal: socket.signal,
         sseMaxRetryAttempts: 1,
       });
+      if (this.activeStreamId !== streamId) {
+        // Something real took the controller over while the POST was in flight
+        // — a user submit, a Stop. It wins; this attach never happened.
+        socket.abort();
+        return false;
+      }
+      this.abortController = socket;
+      this.updateSnapshot((prev) => ({
+        ...prev,
+        // Only now: the turn is known to exist. `turnStartedAt` is invented
+        // only when there is nothing better — a re-attach keeps the original
+        // origin so the elapsed timer does not restart in front of the user.
+        chatState: ChatState.Streaming,
+        turnStartedAt: prev.turnStartedAt ?? Date.now(),
+        turnError: undefined,
+      }));
       await this.streamFromResponse(stream, this.messagesRef, streamId);
       return true;
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') return false;
       console.warn(`Could not attach to turn ${turnId}:`, error);
-      // Settle back to Idle without a turnError — see the doc comment. The
-      // transcript stays exactly as the session load left it.
-      if (this.activeStreamId === streamId) {
-        this.abortController = null;
-        this.retireActiveTurn();
-        this.updateSnapshot((prev) => ({ ...prev, chatState: ChatState.Idle }));
-      }
+      // Nothing to undo in the transcript and no error to show — see the doc
+      // comment. `chatState` was never moved, so there is no flicker of a
+      // working indicator for a turn that turned out to be over.
+      if (this.activeStreamId === streamId) this.retireActiveTurn();
       return false;
     } finally {
       if (this.activeStreamId === streamId && this.abortController?.signal.aborted) {
@@ -1708,8 +1725,20 @@ class ChatStreamController {
     if (!this.sessionId || this.hasLiveTurn()) return false;
     const turnId = readActiveTurn(this.sessionId);
     if (!turnId) return false;
+    // At most one automatic attempt per turn. `loadSession` is a no-op once a
+    // session is painted, so it is called freely — `handleSubmit` awaits it on
+    // every send — and an un-latched auto-resume would therefore fire again on
+    // the way into a submit. That is not merely wasteful: the attach it starts
+    // races the submit for the controller, and if it gets there first the
+    // submit is refused as "a turn is already in flight" and the user's message
+    // disappears without a trace. A rejoin is a one-shot repair, not a policy.
+    if (this.autoResumedTurnIds.has(turnId)) return false;
+    this.autoResumedTurnIds.add(turnId);
     return this.attachToTurn(turnId);
   };
+
+  /** Turns this controller has already tried, once, to rejoin by itself. */
+  private autoResumedTurnIds = new Set<string>();
 
   private submitPreparedMessage = async (
     newMessage: Message,

@@ -362,6 +362,52 @@ describe('attaching to a turn this client did not start', () => {
     expect(replyBody()).toMatchObject({ turn_id: TURN });
   });
 
+  it('never eats a message typed while it is still trying to rejoin', async () => {
+    // The attach is automatic and can fail; the message is not and must not.
+    // If the attach claimed "a turn is in flight" before it knew one was, the
+    // submit below would be refused SILENTLY — no error, no bubble, nothing.
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(SID) } } as never);
+    rememberActiveTurn(SID, TURN);
+
+    let releaseAttachPost = () => {};
+    const attachPostHeld = new Promise<void>((resolve) => {
+      releaseAttachPost = resolve;
+    });
+    vi.mocked(reply)
+      // The attach POST: parked, as a real one is for a round trip.
+      .mockImplementationOnce(async () => {
+        await attachPostHeld;
+        throw new Error('409 that turn is over');
+      })
+      // The user's own turn.
+      .mockResolvedValueOnce({
+        stream: (async function* () {
+          yield {
+            type: 'Message',
+            message: assistantMessage('a1', 'answering the new question'),
+            token_state: tokenState,
+          } as MessageEvent;
+          yield { type: 'Finish', reason: 'stop', token_state: tokenState } as MessageEvent;
+        })(),
+      } as never);
+
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await vi.waitFor(() => expect(vi.mocked(reply)).toHaveBeenCalledTimes(1));
+
+    // Typed while the attach POST is still outstanding.
+    await controller.handleSubmit('a brand new question');
+    releaseAttachPost();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual([
+      'a brand new question',
+      'answering the new question',
+    ]);
+    expect(controller.getSnapshot().turnError).toBeUndefined();
+  });
+
   it('does not chase a turn when there is nothing to rejoin', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(SID) } } as never);
