@@ -424,7 +424,14 @@ const SessionItem = React.memo(function SessionItem({
           </div>
         )}
         <div className="flex items-center gap-3 mt-0.5 text-text-muted text-supporting">
-          <div className="flex items-center gap-2">
+          {/* A timestamp is one value, so it breaks as one or not at all. It had
+              neither `shrink-0` nor `nowrap`, and its min-content is the longest
+              WORD — so at 640px the rows broke "3:18 / AM" and "08/06/2026 10:14
+              / PM" across two lines, and a list whose rows are then two
+              different heights loses its rhythm exactly where it is most
+              cramped. The working directory beside it already truncates, which
+              is the right thing for that value to do under pressure. */}
+          <div className="flex flex-shrink-0 items-center gap-2 whitespace-nowrap">
             <Calendar className="w-3 h-3 flex-shrink-0" />
             <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
           </div>
