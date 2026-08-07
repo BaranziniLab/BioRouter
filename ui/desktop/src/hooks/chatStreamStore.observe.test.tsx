@@ -482,4 +482,51 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
       vi.useRealTimers();
     }
   });
+
+  it('does not auto-attach an observer tab to the turn it is already watching', async () => {
+    // BR-71 + the live turn stream: opening a running SUBAGENT's tab must not
+    // make it worse. `hasLiveTurn()` is `!observing && …`, so an observing tab
+    // did not block `resumeActiveTurn` — and `attachToTurn` calls
+    // `stopObserving()` as its first act, so the automatic rejoin TORE DOWN the
+    // working `/sessions/{id}/events` feed and replaced it with a `/reply`
+    // driver socket. On the turns most likely to be observed (an injected
+    // workspace turn, an app worker turn) that socket has nothing to carry:
+    // those turns have no pump, so the tab went from "showing the agent's
+    // output" to showing nothing at all.
+    vi.useFakeTimers();
+    try {
+      const observed = createControlledStream();
+      mocks.observeSessionEvents.mockResolvedValue({ stream: observed.stream });
+      mocks.reply.mockResolvedValue({ stream: createControlledStream().stream });
+
+      const registry = new ChatStreamRegistry();
+      const controller = registry.getController('obs-no-auto-attach');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      const feedConnects = mocks.observeSessionEvents.mock.calls.length;
+
+      // Exactly what `/agent/resume` triggers on this tab.
+      const attached = await controller.resumeActiveTurn('turn-42');
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(attached, 'an observer tab has nothing to rejoin').toBe(false);
+      expect(mocks.reply, 'and must not POST /reply at all').not.toHaveBeenCalled();
+      // The feed it already had is still the one it is using — not torn down,
+      // not re-subscribed.
+      expect(mocks.observeSessionEvents.mock.calls.length).toBe(feedConnects);
+      observed.push({
+        type: 'Message',
+        message: assistantMessage('a1', 'still watching'),
+        token_state: tokenState,
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(JSON.stringify(controller.getSnapshot().messages)).toContain('still watching');
+
+      controller.stopObserving();
+      observed.close();
+      await vi.advanceTimersByTimeAsync(1100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

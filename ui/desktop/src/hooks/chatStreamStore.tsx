@@ -754,14 +754,81 @@ class ChatStreamController {
     this.reattachesThisTurn = 0;
   }
 
-  private flushNotify(): void {
-    // A turn boundary reached mid-backlog must not force a partial paint: the
-    // release below delivers it, in the same commit as the rest of the replay.
-    if (this.notifySuspendDepth > 0) {
-      this.suspendedDirty = true;
-      return;
+  /**
+   * Per-message-id text reconstructed from the REPLAY frames of the current
+   * attach. Reset whenever an attach begins; see `dedupeReplayedMessage`.
+   */
+  private replayReconstruction = new Map<string, string>();
+
+  /**
+   * The second half of idempotent replay: drop what the SESSION STORE has
+   * already given us, not merely what we have already rendered.
+   *
+   * The sequence gate covers "frames I applied on an earlier socket". It cannot
+   * cover the other overlap, and nothing did: `agent.rs` persists each
+   * agent-loop ITERATION's rows as it goes, so a window reloading during round 2
+   * of any tool-using turn loads a transcript that already contains round 1 —
+   * and then attaches with `from_seq: 0`, because its high-water mark is -1 (it
+   * has rendered nothing), and is replayed round 1's deltas on top of the copy
+   * it just loaded. `pushMessage` cannot rescue it: the frame is a FRAGMENT of a
+   * message whose text is already complete, so neither its `startsWith` nor its
+   * `endsWith` guard matches and the fragment is appended — `"I loaded the
+   * data.I loaded the data."`.
+   *
+   * Why the CLIENT and not the server. Storage rows carry no `seq`, so the
+   * client cannot derive a watermark from a transcript it read back; but it does
+   * know, exactly, what it is holding. The server knows the converse — which
+   * frames it has persisted — and could skip them, except that its idea of "what
+   * this client holds" is a guess about when that client last read the store: too
+   * eager and it under-sends, which is R1 failing with no way to detect it. The
+   * contract already makes the client responsible for applying frames
+   * idempotently (§1/§R2). This is that responsibility, extended from "frames I
+   * rendered" to "rows I was given", which is the only place both facts are
+   * known at once. Over-sending stays harmless, which is the direction a wire
+   * protocol should fail in.
+   *
+   * Returns the message to apply, or `null` when the transcript already holds
+   * it. Only same-id single-text deltas are eligible — anything carrying
+   * structure passes straight through.
+   */
+  private dedupeReplayedMessage(
+    incoming: Message,
+    currentMessages: Message[],
+    replay: boolean
+  ): Message | null {
+    if (!replay || !incoming.id || incoming.content.length !== 1) return incoming;
+    const fragment = incoming.content[0];
+    if (fragment.type !== 'text') return incoming;
+
+    const reconstructed = (this.replayReconstruction.get(incoming.id) ?? '') + fragment.text;
+    this.replayReconstruction.set(incoming.id, reconstructed);
+
+    const held = [...currentMessages].reverse().find((m) => m.id === incoming.id);
+    const heldText =
+      held && held.content.length === 1 && held.content[0].type === 'text'
+        ? held.content[0].text
+        : undefined;
+    if (heldText === undefined) return incoming;
+
+    // Everything the replay has rebuilt for this message so far is already in
+    // the transcript.
+    if (heldText.startsWith(reconstructed)) return null;
+    // The replay has caught up with the stored row and gone past it: apply only
+    // the part that is genuinely new.
+    if (reconstructed.startsWith(heldText)) {
+      const residual = reconstructed.slice(heldText.length);
+      if (!residual) return null;
+      return { ...incoming, content: [{ ...fragment, text: residual }] };
     }
-    if (!this.notifyScheduled) return;
+    // Divergence — not the overlap this exists for. Apply it unchanged and let
+    // the ordinary merge decide.
+    return incoming;
+  }
+
+  private flushNotify(): void {
+    // Both arms of the rAF/timeout race are stood down first, on EVERY path.
+    // The suspended path below used to return before this, leaving a fired
+    // timer's `notifyScheduled` latched — see there.
     if (this.notifyTimeoutHandle !== null) {
       clearTimeout(this.notifyTimeoutHandle);
       this.notifyTimeoutHandle = null;
@@ -772,6 +839,27 @@ class ChatStreamController {
       }
       this.notifyRafHandle = null;
     }
+    // A turn boundary reached mid-backlog must not force a partial paint: the
+    // release below delivers it, in the same commit as the rest of the replay.
+    //
+    // ⚠ `notifyScheduled` is CLEARED here, not left set. It used to return with
+    // the latch still true, which is a permanent freeze rather than a deferral:
+    // a hold that outlives both the rAF and the 32 ms fallback consumes both
+    // arms of the race — and `attachToTurn` arms one on its `chatState:
+    // Streaming` write immediately before the first replay frame opens the
+    // hold, so it always does — after which every later `scheduleNotify()`
+    // early-returns on the latch and React is never told about anything again.
+    // The snapshot kept advancing and the screen did not, for the whole live
+    // tail, until `finishCurrentStream` flushed and the turn landed at once.
+    // Clearing it is safe precisely because nothing is lost: `suspendedDirty`
+    // makes `resumeNotifications` deliver the pending notification, and while
+    // suspended `updateSnapshot` sets the same flag instead of scheduling.
+    if (this.notifySuspendDepth > 0) {
+      this.suspendedDirty = true;
+      this.notifyScheduled = false;
+      return;
+    }
+    if (!this.notifyScheduled) return;
     this.notifyScheduled = false;
     this.notify();
   }
@@ -1314,7 +1402,13 @@ class ChatStreamController {
             break;
           }
           case 'Message': {
-            const msg = event.message;
+            // Drop the part of a replay the session store already gave us.
+            const msg = this.dedupeReplayedMessage(
+              event.message,
+              currentMessages,
+              isReplayFrame(event)
+            );
+            if (!msg) break;
             currentMessages = pushMessage(currentMessages, msg);
             // #22 — one snapshot swap (state + tokens + transcript + skeleton
             // cleanup) per streamed event, not three.
@@ -1652,6 +1746,9 @@ class ChatStreamController {
       this.lastAppliedSeq = -1;
     }
     this.reattachesThisTurn = 0;
+    // A fresh attach rebuilds its own replay accounting; carrying the previous
+    // one over would measure this backlog against another attach's progress.
+    this.replayReconstruction.clear();
     const fromSeq = this.lastAppliedSeq + 1;
 
     const streamId = this.activeStreamId + 1;
@@ -1722,6 +1819,16 @@ class ChatStreamController {
    */
   resumeActiveTurn = async (turnId: string): Promise<boolean> => {
     if (!this.sessionId || !turnId || this.hasLiveTurn()) return false;
+    // An OBSERVER tab already has everything an attach would give it, over a
+    // feed that is strictly better suited to it: `/sessions/{id}/events` carries
+    // the same `MessageEvent` frames for a session this window does not drive,
+    // survives the turn ending, and reconnects itself. `hasLiveTurn()` is
+    // `!observing && …`, so an observing tab did not block this — and
+    // `attachToTurn` calls `stopObserving()` first, so opening a running
+    // subagent's tab TORE DOWN a working feed and replaced it with a driver
+    // socket. A rejoin is a repair for a window that lost its stream; a tab that
+    // never had one has nothing to repair.
+    if (this.observing) return false;
     // At most one automatic attempt per turn. Both `/agent/resume` calls report
     // `active_turn`, and `loadSession` is a no-op once a session is painted, so
     // this can be reached repeatedly for one turn — `handleSubmit` awaits
