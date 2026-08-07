@@ -174,16 +174,46 @@ impl Provider for TieredProvider {
     }
 }
 
+const PUBLIC_DOUBLE: &str = "toggle-matrix-public";
+const PRIVATE_DOUBLE: &str = "toggle-matrix-private";
+
+/// ⚠ **A double's NAME must not be a registry entry, or this binary hangs
+/// forever.** `update_provider` writes the double's name onto the session row,
+/// and Gate B's repair arm (`Agent::rebind_from_row`) hands that name to the
+/// REAL `providers::create` — the seam that keeps `agent.rs`'s own unit tests
+/// off the factory (`seams::override_rebind_provider`) is `#[cfg(test)]`, so it
+/// does not exist for an integration binary, which links the library compiled
+/// WITHOUT `cfg(test)`.
+///
+/// Named `anthropic`, row 2 below therefore reached
+/// `AnthropicProvider::from_env` -> `Config::global().get_secret(..)` ->
+/// `SecKeychainFindGenericPassword`, and blocked in securityd waiting for an
+/// interactive Keychain authorization dialog that nothing answers. A fresh
+/// `cargo build` yields a new binary hash with no ACL grant, so the prompt
+/// returns on every rebuild — and a hang, unlike a failure, is invisible in
+/// `cargo test --workspace`, which reports nothing for a binary that never
+/// finishes. Measured: 1.3 s with these names, unbounded with `anthropic`.
+///
+/// With a name the registry does not know, `create` fails at the lookup —
+/// before any constructor, any secret and any host — and Gate B's caller treats
+/// that error exactly as it treats "the row names something still public": it
+/// refuses the turn, which is what row 2 asserts. Gate B's *repair* arms
+/// (`Ok(true)`/`Ok(false)`) are covered hermetically over the seam in
+/// `agent.rs`'s own `a_repairable_mismatch_rebinds_silently_and_the_turn_runs`
+/// and `an_unrepairable_mismatch_refuses_this_turn_and_leaves_the_row_alone`;
+/// what belongs HERE is the toggle governing the barrier, and that is
+/// unchanged. `the_matrix_doubles_are_not_registry_providers` fails fast if
+/// either name ever collides again.
 fn public_provider() -> Arc<dyn Provider> {
     Arc::new(TieredProvider {
-        name: "anthropic",
+        name: PUBLIC_DOUBLE,
         tier: ProviderTier::Public,
     })
 }
 
 fn private_provider() -> Arc<dyn Provider> {
     Arc::new(TieredProvider {
-        name: "versa_azure",
+        name: PRIVATE_DOUBLE,
         tier: ProviderTier::Private,
     })
 }
@@ -235,7 +265,10 @@ async fn agent_with_the_private_extension(
 
 async fn ratchet_to_private(sm: &SessionManager, id: &str) {
     sm.update(id)
-        .raise_privacy(SessionClassification::Private, "turn:versa_azure")
+        .raise_privacy(
+            SessionClassification::Private,
+            &format!("turn:{PRIVATE_DOUBLE}"),
+        )
         .apply()
         .await
         .unwrap();
@@ -886,6 +919,44 @@ async fn no_environment_variable_can_turn_protection_off() {
         !biorouter::privacy::resolve_privacy_tiers(&config),
         "the switch's own record is what the resolution reads"
     );
+}
+
+/// The guard on the naming rule above, spelled as an assertion because the
+/// failure it prevents cannot be seen any other way.
+///
+/// A double whose name IS a registry entry does not fail this binary — it
+/// **hangs** it, inside `providers::create`, on an OS credential prompt. Cargo
+/// reports nothing at all for a binary that never finishes and simply waits, so
+/// the whole workspace run stalls with no test named and no output; the last
+/// occurrence sat behind an unrelated failing binary for as long as that binary
+/// kept aborting the run first. This test turns that into a one-line failure in
+/// under a second.
+///
+/// Enumerating the registry does NOT construct anything: `providers()` reads
+/// metadata, and the declarative loader it initialises reads provider
+/// *definitions* only — no secret, no keyring, no host.
+#[tokio::test]
+async fn the_matrix_doubles_are_not_registry_providers() {
+    let registered: Vec<String> = biorouter::providers::providers()
+        .await
+        .into_iter()
+        .map(|(metadata, _)| metadata.name)
+        .collect();
+    // Not vacuous: an empty or unbuilt registry would clear every name below
+    // while the hang came straight back. `anthropic` is the entry the doubles
+    // used to be named after, and the one whose `from_env` reads the keyring.
+    assert!(
+        registered.iter().any(|name| name == "anthropic"),
+        "the registry did not enumerate, so the absence check below proves nothing: {registered:?}"
+    );
+    for double in [PUBLIC_DOUBLE, PRIVATE_DOUBLE] {
+        assert!(
+            !registered.contains(&double.to_string()),
+            "the test double `{double}` collides with a real provider, so Gate B's \
+             repair arm will construct that provider for real and block this binary \
+             on the developer's OS keyring — registered: {registered:?}"
+        );
+    }
 }
 
 /// The knowledge bases the Agent Drafter catalog offers a caller.
