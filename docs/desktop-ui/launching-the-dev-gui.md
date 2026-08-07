@@ -19,6 +19,10 @@ cd ui/desktop
 source ../../bin/activate-hermit
 
 # 1. Renderer dev server — MUST name the renderer config (see failure 3).
+#    The port and the URL in step 2 must AGREE, which is what `--strictPort`
+#    protects: without it vite silently takes the next free port when 5173 is
+#    busy, Electron still asks for 5173, and you get ERR_CONNECTION_REFUSED and a
+#    blank window — which reads as a broken app rather than a mis-launched one.
 BIOROUTER_NO_HMR=1 npx vite --config vite.renderer.config.mts \
   --port 5173 --strictPort > /tmp/vite.log 2>&1 &
 

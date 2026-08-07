@@ -21,6 +21,7 @@ that path.
 |---|---|
 | [Auto-update test checklist](auto-update-test-checklist.md) | The verification plan for the one-click "Restart & Update" flow on macOS and the assisted-download fallback on Windows and Linux. Sections B–H are the live pre-release QA script to work through each release; Section A is a completed evidence log frozen at the 1.86.0 cycle, most recently executed 2026-07-14. |
 | [Privacy and workspace test checklist](privacy-and-workspace-test-checklist.md) | The manual pass for privacy tiers, institutional affiliation and workspace control. States what a FAILURE looks like for each row, because several of these fail by doing nothing visible. |
+| [v1.89.0 visual review](v1.89.0-visual-review.md) | Findings from a screenshot-by-screenshot pass over the desktop GUI after the Astryx rebuild and the privacy-tiers merge — fourteen defects and nine taste items, each with the surface, the theme and the measurement that explains it. The class of failure the automated suite cannot see, because jsdom has no layout and never runs Tailwind. |
 | [Cross-compiling locally with `cross`](local-cross-compilation.md) | An optional local-QA recipe for building and smoke-testing release binaries for other architectures using the [`cross`](https://github.com/cross-rs/cross) tool, including running the result inside a matching container. Current, but not how releases are cut. |
 
 ## Subdirectories
