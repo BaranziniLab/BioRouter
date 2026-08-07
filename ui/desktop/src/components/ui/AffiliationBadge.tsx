@@ -1,4 +1,9 @@
-import { LandmarkIcon, LaptopIcon, CircleHelpIcon } from 'lucide-react';
+// The app's own set, never `lucide-react` directly: `light()` pins §3.8b's one
+// stroke weight (1.5) and `currentColor`. Imported raw, these three shipped at
+// lucide's default strokeWidth 2 — a heavier, denser mark than every glyph
+// beside them, which is exactly the "different icon language" this badge's
+// shape-match with `PrivacyBadge` exists to prevent.
+import { LandmarkIcon, LaptopIcon, CircleHelpIcon } from '../icons/app-icons';
 import { Badge } from './badge';
 import { cn } from '../../utils';
 import {

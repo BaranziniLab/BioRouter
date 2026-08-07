@@ -33,6 +33,7 @@ import {
   ChevronsDownUp as _ChevronsDownUp,
   Circle as _Circle,
   CircleDotDashed as _CircleDotDashed,
+  CircleHelp as _CircleHelp,
   Clipboard as _Clipboard,
   ClipboardList as _ClipboardList,
   Clock as _Clock,
@@ -70,6 +71,8 @@ import {
   Home as _Home,
   Image as _Image,
   Info as _Info,
+  Landmark as _Landmark,
+  Laptop as _Laptop,
   Layers as _Layers,
   Link as _Link,
   Loader2 as _Loader2,
@@ -105,6 +108,7 @@ import {
   Send as _Send,
   Settings as _Settings,
   Share2 as _Share2,
+  Shield as _Shield,
   Sliders as _Sliders,
   SlidersHorizontal as _SlidersHorizontal,
   Sparkles as _Sparkles,
@@ -180,6 +184,9 @@ export const ChevronLeft = light(_ChevronLeft);
 export const ChevronsDownUp = light(_ChevronsDownUp);
 export const CircleIcon = light(_Circle);
 export const CircleDotDashed = light(_CircleDotDashed);
+/** The privacy axes' "unstated" mark — see `Landmark` below for the trio. */
+export const CircleHelp = light(_CircleHelp);
+export const CircleHelpIcon = CircleHelp;
 export const Clipboard = light(_Clipboard);
 export const ClipboardList = light(_ClipboardList);
 export const Clock = light(_Clock);
@@ -217,6 +224,26 @@ export const HeartPulse = light(_HeartPulse);
 export const History = light(_History);
 export const Home = light(_Home);
 export const Image = light(_Image);
+// The three affiliation marks (`AffiliationBadge`) and the tier mark
+// (`PrivacyBadge`). They live here for the reason every other glyph does —
+// `light()` pins strokeWidth 1.5 and `currentColor` (§3.8b) — and they were the
+// exception that proved why the wrapper exists: both badges imported these four
+// straight from `lucide-react`, so they shipped at lucide's default
+// strokeWidth 2 and read as a heavier, denser icon language than the 115 files
+// drawing from this module. In the composer toolbar the affiliation glyph sat
+// at 2px beside `Plus`, `Brain` and `Send` at 1.5px, on a *smaller* box, which
+// nearly doubled its stroke-to-size ratio and made it look filled next to
+// outlines.
+//
+// ⚠ **The glyph-to-meaning mapping is argued in `AffiliationBadge` and must not
+// be re-decided here.** A laptop says where the work happens; a landmark is an
+// institution; and `local` must never take a landmark, because that would file
+// it as "an institution, but smaller" when it is in fact the most permissive
+// affiliation there is (DR-26).
+export const Landmark = light(_Landmark);
+export const LandmarkIcon = Landmark;
+export const Laptop = light(_Laptop);
+export const LaptopIcon = Laptop;
 export const Layers = light(_Layers);
 export const Link = light(_Link);
 export const Loader2 = light(_Loader2);
@@ -254,6 +281,9 @@ export const SearchIcon = Search;
 export const Send = light(_Send);
 export const Settings = light(_Settings);
 export const Share2 = light(_Share2);
+/** The Private-tier mark (`PrivacyBadge`). See `Landmark` above. */
+export const Shield = light(_Shield);
+export const ShieldIcon = Shield;
 export const Sliders = light(_Sliders);
 export const SlidersHorizontal = light(_SlidersHorizontal);
 export const Sparkles = light(_Sparkles);

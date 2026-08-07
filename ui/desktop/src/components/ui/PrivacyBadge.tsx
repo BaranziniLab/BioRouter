@@ -1,4 +1,7 @@
-import { ShieldIcon } from 'lucide-react';
+// The app's own set, never `lucide-react` directly — see `AffiliationBadge`'s
+// import for the defect this closes. The two badges are deliberately one
+// system, so they must also draw from one icon set at one stroke weight.
+import { ShieldIcon } from '../icons/app-icons';
 import { Badge } from './badge';
 import { cn } from '../../utils';
 import { usePrivacyTiersEnabled } from '../ConfigContext';
