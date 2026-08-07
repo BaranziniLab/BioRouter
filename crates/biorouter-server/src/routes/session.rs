@@ -3440,7 +3440,6 @@ mod declassify_tests {
     }
 }
 
-
 /// Deleting a chat stops its turn.
 ///
 /// This used to hold by accident, and the accident is exactly what the live turn
