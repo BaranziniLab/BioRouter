@@ -1935,11 +1935,26 @@ async fn call_tool(
     // Ahead of resolving the agent on purpose: whether this call is allowed does
     // not depend on any session state, and a decision that cannot be reached
     // without one is a decision that can be skipped by arriving without one.
-    if let Some(refusal) = biorouter::security::global_memory::uninspected_boundary_refusal(
+    //
+    // Issue #56 adds the second door of the same shape: the transcript store.
+    // `SessionStoreInspector` also runs only in the agent loop, so this route
+    // reached `~/.config/biorouter/sessions/sessions.db` — every conversation on
+    // the machine, private ones included — through any tool that takes a path,
+    // with no inspector anywhere. Both are decided here, ahead of the agent, and
+    // both are returned as tool errors for the same reason.
+    let boundary_refusal = biorouter::security::global_memory::uninspected_boundary_refusal(
         &payload.name,
         arguments.as_ref(),
-        biorouter::security::global_memory::UninspectedBoundary::AgentCallToolRoute,
-    ) {
+        biorouter::security::UninspectedBoundary::AgentCallToolRoute,
+    )
+    .or_else(|| {
+        biorouter::security::session_store::uninspected_boundary_refusal(
+            &payload.name,
+            arguments.as_ref(),
+            biorouter::security::UninspectedBoundary::AgentCallToolRoute,
+        )
+    });
+    if let Some(refusal) = boundary_refusal {
         return Ok(Json(CallToolResponse {
             content: vec![Content::text(refusal)],
             structured_content: None,

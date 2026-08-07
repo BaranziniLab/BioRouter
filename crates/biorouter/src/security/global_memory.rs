@@ -657,17 +657,15 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
     })
 }
 
-/// A production route that dispatches tool calls without passing them through
-/// the agent loop — and therefore without passing them through any
-/// [`ToolInspector`], this gate included (issue #63 review, finding 3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UninspectedBoundary {
-    /// The tool calls a script makes from inside `execute_code`. The JS host
-    /// hands them straight to `ExtensionManager::dispatch_tool_call`.
-    ExecuteCodeScript,
-    /// `POST /agent/call_tool`, which does the same from an HTTP handler.
-    AgentCallToolRoute,
-}
+/// The two dispatch boundaries no [`ToolInspector`] sees, this gate included
+/// (issue #63 review, finding 3).
+///
+/// ⚠ **Defined in [`crate::security`], not here, and re-exported for the call
+/// sites that already spell it `global_memory::UninspectedBoundary`.** It stopped
+/// being this module's private vocabulary the moment a second gate
+/// ([`crate::security::session_store`]) had to close the same two doors — see the
+/// type's own docs for why one list rather than two.
+pub use crate::security::UninspectedBoundary;
 
 impl UninspectedBoundary {
     /// How the refusal names where the call came from, and what to do instead.

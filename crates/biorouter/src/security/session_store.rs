@@ -69,26 +69,40 @@
 //!
 //! # What this is not
 //!
-//! It is a **literal-reference** barrier at the agent layer, with the same
+//! At the **inspector** door it is a *literal-reference* barrier, with the same
 //! stated limit as the global-memory one: a command that computes its path
-//! (`p="$HOME/.config"; cat "$p/biorouter/sessions/sessions.db"`) still reads
-//! the file, because nothing here resolves paths. The unforgeable half would be
-//! a refusal inside the filesystem tools themselves — `biorouter-mcp`'s
-//! developer and computer-controller servers, which is where
-//! `global_memory_file_barrier.rs` put it. That file is owned by another agent
-//! in this campaign and is reported as the open seam, not silently skipped.
+//! (`p="$HOME/.config"; cat "$p/biorouter/sessions/sessions.db"`) walks past,
+//! because nothing there resolves paths. [`SessionStoreInspector`] is the tool
+//! call a model *wrote*; that is all a `ToolInspector` can ever see.
 //!
-//! Likewise the two dispatch boundaries that never reach a [`ToolInspector`] —
-//! the tool calls a script makes from inside `execute_code`
-//! (`agents/code_execution_extension.rs`) and `POST /agent/call_tool`
-//! (`biorouter-server/src/routes/agent.rs`) — each call
-//! `global_memory::uninspected_boundary_refusal` explicitly. Adding a second
-//! call there means editing two files this task does not own, so no boundary
-//! helper is defined here: an exported guard with no caller is the failure this
-//! campaign has already shipped nine times. What *is* covered from the agent
-//! layer is the outer `execute_code` call itself, whose `code` argument is read
-//! as a script body — a literal store path inside the script is refused before
-//! the script ever runs.
+//! # Three doors, and which ones this closes
+//!
+//! [`crate::security::global_memory`] learned that a gate at the inspector chain
+//! alone is a gate at one door of three, and the other two are the ones a
+//! runtime-assembled reference walks through. The same three are closed here,
+//! and by the same instruments:
+//!
+//! | Door | What guards the store there |
+//! |---|---|
+//! | The agent loop | [`SessionStoreInspector`], in the inspector chain (`agents/agent.rs`) |
+//! | Tool calls a script makes from inside `execute_code` | [`uninspected_boundary_refusal`], in `agents/code_execution_extension.rs`'s JS-host loop |
+//! | `POST /agent/call_tool` | [`uninspected_boundary_refusal`], in `biorouter-server/src/routes/agent.rs` |
+//!
+//! The two boundary doors are **stronger** than the inspector, not weaker: they
+//! read the dispatched tool name and the already-evaluated arguments, so
+//! `cat "$p/…/sessions.db"` arrives there as the command it will actually run.
+//! The inspector still covers the outer `execute_code` call itself, whose `code`
+//! argument is read as a script body — a literal store path inside the script is
+//! refused before the script ever runs.
+//!
+//! ⚠ **The fourth seam is still open, and it is the unforgeable one.** A refusal
+//! inside the filesystem tools themselves — `biorouter-mcp`'s developer and
+//! computer-controller servers, which is where `global_memory_file_barrier.rs`
+//! put the equivalent for the memory root — would refuse the store whatever tool,
+//! whatever mode, and whatever route reached them, including an MCP client
+//! talking to `biorouter mcp developer` over stdio with no agent anywhere. That
+//! is a `biorouter-mcp` change and is reported as the open seam, not silently
+//! skipped.
 
 use std::path::PathBuf;
 
@@ -323,6 +337,46 @@ fn session_store_refusal() -> String {
 /// not name it" — which is every call but a handful.
 pub fn session_store_gate(args: &Map<String, Value>) -> Option<String> {
     references_session_store(args).then(session_store_refusal)
+}
+
+/// The refusal a dispatch boundary that never reaches a [`ToolInspector`] must
+/// return for a tool call naming the session store, or `None` if the call does
+/// not name it.
+///
+/// ⚠ **This is not a copy of [`SessionStoreInspector`] at another door; it is a
+/// strictly stronger check at a door the inspector cannot reach.** The inspector
+/// reads the tool call a model *wrote*, so the module docs' stated limit applies
+/// there: `p="$HOME/.config"; cat "$p/biorouter/sessions/sessions.db"` computes
+/// its path and walks past. A boundary reads the **dispatched** name and the
+/// **already-evaluated** arguments — the shell command line as it will actually
+/// run, the path as it will actually be opened — so at these two doors the
+/// runtime-assembled form is refused too. That walk-past is precisely what made
+/// [`crate::security::global_memory`]'s boundary refusals necessary, and it was
+/// this module's openly-declared gap until these doors were closed.
+///
+/// It returns the SAME sentence [`session_store_gate`] does, deliberately.
+/// `global_memory`'s boundary refusal varies its remedy by door because its
+/// remedy is *ask the user*, and neither door can; the session store has no such
+/// branch — it is refused in a conversation, in a script and over HTTP alike,
+/// and the one route that still works (`chatrecall`) is named in the one
+/// sentence. Two spellings of one refusal is how a rule becomes two
+/// slightly-different rules.
+///
+/// `boundary` is therefore not read by the decision at all — only logged, so an
+/// operator can tell which door a refusal came from.
+pub fn uninspected_boundary_refusal(
+    tool_name: &str,
+    args: Option<&Map<String, Value>>,
+    boundary: crate::security::UninspectedBoundary,
+) -> Option<String> {
+    let reason = session_store_gate(args?)?;
+    tracing::warn!(
+        counter.biorouter.session_store_uninspected_refused = 1,
+        tool_name = %tool_name,
+        boundary = ?boundary,
+        "Refused a tool that named the session database at a boundary no inspector sees"
+    );
+    Some(reason)
 }
 
 /// Inspector that refuses tool reads of the session database, in every mode
@@ -634,6 +688,106 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- the two uninspected boundaries -----------------------------------
+
+    /// The doors [`SessionStoreInspector`] never sees answer the same way it
+    /// does, at both boundaries and for every store file.
+    ///
+    /// ⚠ These are the *decision*'s corners. That the decision is actually
+    /// consulted at each door is a different claim and cannot be made here:
+    /// `crates/biorouter/tests/session_store_dispatch_boundary.rs` drives a
+    /// script's inner tool call through the real dispatcher, and
+    /// `crates/biorouter-server/tests/agent_call_tool_session_store.rs` drives
+    /// the real HTTP handler. A guard with no caller is this campaign's
+    /// signature failure, and a unit test cannot tell you it has one.
+    #[test]
+    fn both_uninspected_boundaries_refuse_every_store_file() {
+        for boundary in [
+            crate::security::UninspectedBoundary::ExecuteCodeScript,
+            crate::security::UninspectedBoundary::AgentCallToolRoute,
+        ] {
+            for file in store_files() {
+                for (label, arguments) in [
+                    ("cat", json!({ "command": format!("cat {file}") })),
+                    ("view", json!({ "command": "view", "path": file.clone() })),
+                    ("redirect", json!({ "command": format!("echo x > {file}") })),
+                ] {
+                    let refusal = uninspected_boundary_refusal(
+                        "developer__shell",
+                        Some(&args(arguments.clone())),
+                        boundary,
+                    );
+                    assert_eq!(
+                        refusal.as_deref(),
+                        Some(session_store_refusal().as_str()),
+                        "{label} reached the store at {boundary:?}, or answered it in words \
+                         the inspector does not use: {arguments}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The boundary is silent on everything else — including a call with no
+    /// arguments at all, which is the shape `POST /agent/call_tool` produces
+    /// from a non-object `arguments` field.
+    ///
+    /// A boundary that refused broadly would take out both doors at once: every
+    /// tool call a script makes and every call over the route.
+    #[test]
+    fn the_boundaries_are_silent_on_everything_but_the_store() {
+        let boundary = crate::security::UninspectedBoundary::ExecuteCodeScript;
+        assert_eq!(
+            uninspected_boundary_refusal("developer__shell", None, boundary),
+            None,
+            "a call with no arguments was refused"
+        );
+        for arguments in [
+            json!({ "command": "ls -la /tmp" }),
+            json!({ "command": "view", "path": "src/main.rs" }),
+            // The near miss: a directory whose name merely starts with the
+            // store's.
+            json!({ "command": format!(
+                "cat {}/sessions-archive/sessions.db",
+                Paths::data_dir().to_string_lossy()
+            ) }),
+        ] {
+            assert_eq!(
+                uninspected_boundary_refusal(
+                    "developer__shell",
+                    Some(&args(arguments.clone())),
+                    boundary
+                ),
+                None,
+                "{arguments} is not the session store and must not be refused"
+            );
+        }
+    }
+
+    /// The refusal is the SAME sentence at both doors and in the agent loop.
+    ///
+    /// `global_memory`'s boundary refusal varies its remedy by door because its
+    /// remedy is *ask the user*, and neither door can. The session store has no
+    /// such branch — it is refused everywhere — so two spellings would be two
+    /// rules waiting to drift apart, which is the failure this campaign names
+    /// most often.
+    #[test]
+    fn the_boundary_and_the_inspector_say_exactly_the_same_thing() {
+        let arguments = args(json!({ "command": format!("cat {}", store_files()[0]) }));
+        let script = uninspected_boundary_refusal(
+            "developer__shell",
+            Some(&arguments),
+            crate::security::UninspectedBoundary::ExecuteCodeScript,
+        );
+        let route = uninspected_boundary_refusal(
+            "developer__shell",
+            Some(&arguments),
+            crate::security::UninspectedBoundary::AgentCallToolRoute,
+        );
+        assert_eq!(script, route);
+        assert_eq!(script.as_deref(), session_store_gate(&arguments).as_deref());
     }
 
     // --- the inspector, end to end ----------------------------------------

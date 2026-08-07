@@ -75,6 +75,33 @@ pub(crate) fn is_command_argument_key(key: &str) -> bool {
     COMMAND_ARG_KEYS.iter().any(|candidate| key == *candidate)
 }
 
+/// A production route that dispatches tool calls without passing them through
+/// the agent loop — and therefore without passing them through **any**
+/// [`crate::tool_inspection::ToolInspector`] (issue #63 review, finding 3).
+///
+/// This enumeration lives here, not in one of its callers, for the reason
+/// [`PATH_ARG_KEYS`] does: more than one security check has to answer "which
+/// doors bypass the inspector chain?", and two copies of the answer are a gap in
+/// exactly one of them, silently. [`global_memory`] refuses machine-wide memory
+/// operations at these doors; [`session_store`] refuses reads of the transcript
+/// database at them. A third boundary added to the tree is one row here and a
+/// red build at every gate that has not decided about it, rather than a hole in
+/// whichever gate nobody remembered.
+///
+/// ⚠ **The refusal at these doors is not a worse version of the inspector — it
+/// is a stronger one, and that is the whole point.** An inspector sees the tool
+/// call a model *wrote*, so a path or a flag assembled at runtime walks past it
+/// (`const p = home + "/.config/…"`). A boundary sees the dispatched name and
+/// the already-evaluated arguments; there is nothing left to compute.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UninspectedBoundary {
+    /// The tool calls a script makes from inside `execute_code`. The JS host
+    /// hands them straight to `ExtensionManager::dispatch_tool_call`.
+    ExecuteCodeScript,
+    /// `POST /agent/call_tool`, which does the same from an HTTP handler.
+    AgentCallToolRoute,
+}
+
 /// Owner of the two always-on command controls: the non-bypassable
 /// catastrophic-command denylist (BR-20) and the enable gate for the auditable
 /// command policy engine (BR-21).

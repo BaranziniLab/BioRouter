@@ -1962,19 +1962,41 @@ impl CodeExecutionClient {
             // (`is_global: flag`). This is the same decision taken where there
             // is nothing left to compute: the dispatched name and the evaluated
             // arguments. A boundary that cannot ask the user refuses.
+            let evaluated = serde_json::from_str::<serde_json::Value>(&arguments).ok();
+            let evaluated = evaluated.as_ref().and_then(serde_json::Value::as_object);
             if let Some(refusal) = crate::security::global_memory::uninspected_boundary_refusal(
                 &tool_name,
-                serde_json::from_str::<serde_json::Value>(&arguments)
-                    .ok()
-                    .as_ref()
-                    .and_then(serde_json::Value::as_object),
-                crate::security::global_memory::UninspectedBoundary::ExecuteCodeScript,
+                evaluated,
+                crate::security::UninspectedBoundary::ExecuteCodeScript,
             ) {
                 Self::refuse_sub_call(
                     &collected_artifacts,
                     &tool_name,
                     &arguments,
                     "global_memory_consent",
+                    refusal,
+                    response_tx,
+                )
+                .await;
+                continue;
+            }
+            // Issue #56. The same boundary, the same reason, for the transcript
+            // store: `SessionStoreInspector` runs in the agent loop and never
+            // sees a script's inner calls, and its literal-path scan of the
+            // script text is out-computed by exactly one line
+            // (`const p = home + "/.config/biorouter/sessions/sessions.db"`).
+            // Here the path has already been assembled, so there is nothing left
+            // to compute. The store is every conversation on this machine.
+            if let Some(refusal) = crate::security::session_store::uninspected_boundary_refusal(
+                &tool_name,
+                evaluated,
+                crate::security::UninspectedBoundary::ExecuteCodeScript,
+            ) {
+                Self::refuse_sub_call(
+                    &collected_artifacts,
+                    &tool_name,
+                    &arguments,
+                    "session_store_read",
                     refusal,
                     response_tx,
                 )
