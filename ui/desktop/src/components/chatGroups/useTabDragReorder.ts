@@ -12,6 +12,17 @@ const DRAG_PROMOTION_THRESHOLD_PX = 5;
 const LOCAL_PHASE: CrossWindowPhase = { kind: 'local' };
 
 /**
+ * How a gesture ended, and therefore what it is allowed to commit.
+ *
+ * - `commit` — a real `pointerup`. Everything the drag aimed at happens.
+ * - `cancel` — Escape (D8). Nothing happens; any remote caret is cleared.
+ * - `cancel-cross-window` — `pointercancel`. The OS took the gesture away, so
+ *   nothing that creates or destroys a WINDOW may happen; the in-strip reorder
+ *   keeps its long-standing commit. See the handler for why they differ.
+ */
+type FinishMode = 'commit' | 'cancel' | 'cancel-cross-window';
+
+/**
  * THE ONE PLACE THAT ASSUMES ANYTHING ABOUT OS POINTER CAPTURE.
  *
  * Explicit capture is what the Pointer Events spec guarantees will keep
@@ -338,7 +349,7 @@ export function useTabDragReorder({
       setDropTarget(nextTarget);
     };
 
-    const finish = (cancelled = false) => {
+    const finish = (mode: FinishMode = 'commit') => {
       const sourceTabId = draggedTabIdRef.current;
       const targetTabId = dragOverTabIdRef.current;
       const target = dropTargetRef.current;
@@ -347,15 +358,22 @@ export function useTabDragReorder({
 
       if (gesture) releasePointer(gesture.captureEl, gesture.pointerId);
 
-      if (cancelled) {
-        // D8: no reorder, no move, no tear-off, no merge. The REMOTE preview is
-        // cleared by reporting `local` — that phase means "no cross-window
-        // preview" by definition, so there is no separate cancel message to
-        // invent and no way for the owner to be left holding a stale caret.
-        if (phase.kind !== 'local') {
-          onCrossWindowRef.current?.(LOCAL_PHASE, screenPointRef.current);
-        }
-      } else if (sourceTabId && phase.kind !== 'local' && onCrossWindowCommitRef.current) {
+      // Anything but a clean commit must un-point whatever window is showing a
+      // merge caret. Reporting `local` IS that message — the phase means "no
+      // cross-window preview" by definition, so there is no separate cancel to
+      // invent and no way for the owner to be left holding a stale caret.
+      if (mode !== 'commit' && phase.kind !== 'local') {
+        onCrossWindowRef.current?.(LOCAL_PHASE, screenPointRef.current);
+      }
+
+      if (mode === 'cancel') {
+        // D8: no reorder, no move, no tear-off, no merge.
+      } else if (
+        mode === 'commit' &&
+        sourceTabId &&
+        phase.kind !== 'local' &&
+        onCrossWindowCommitRef.current
+      ) {
         // The tab is leaving the window, so the local commits below are not just
         // unnecessary but wrong — they would move it twice.
         onCrossWindowCommitRef.current(phase, screenPointRef.current);
@@ -386,10 +404,33 @@ export function useTabDragReorder({
       setCrossWindow(LOCAL_PHASE);
     };
 
-    // pointerup/pointercancel COMMIT, both of them, exactly as they always have.
-    // Only Escape cancels (D8) — pointercancel's commit is long-standing shipped
-    // behaviour and changing it is not this feature's business.
-    const finishFromPointer = () => finish();
+    const commitOnPointerUp = () => finish('commit');
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // POINTERCANCEL IS NOT A RELEASE, AND SINCE TEAR-OFF IT CANNOT COMMIT ONE.
+    //
+    // `pointercancel` was bound to the same handler as `pointerup` for as long
+    // as this hook has existed, and while a commit only ever meant "reorder
+    // these two tabs" that was harmless — the interruption landed on a gesture
+    // whose worst outcome was a swapped tab order.
+    //
+    // Tear-off changed what a commit MEANS. With the cursor outside the window
+    // the identical interruption now spawns a window, or merges the tab into
+    // another one and — when it was this window's only tab — CLOSES this window
+    // (D6a). `pointercancel` fires when the OS pre-empts the gesture: a system
+    // drag takes over, a display is added or removed, the touch device changes
+    // mode. None of those is a user saying "tear this off", and none of them is
+    // recoverable once a window has been destroyed.
+    //
+    // So the cross-window half is cancelled and the LOCAL half is not. Keeping
+    // the local commit is deliberate: it is the long-standing behaviour, the
+    // only thing it can do is reorder tabs inside one strip, and a user can
+    // undo it by dragging back. (In practice the local branch is a no-op here
+    // anyway — while the pointer is outside, `move` nulls both the over-tab and
+    // the drop target precisely so a detach can never also carry a stale local
+    // target — so an interrupted OUTSIDE drag now does nothing at all.)
+    // ═══════════════════════════════════════════════════════════════════════
+    const cancelOnPointerCancel = () => finish('cancel-cross-window');
 
     const cancelOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key !== 'Escape') return;
@@ -397,17 +438,17 @@ export function useTabDragReorder({
       // not a gesture the user can see, so cancelling it would swallow an Escape
       // the rest of the app is entitled to (closing a menu, blurring a field).
       if (!draggedTabIdRef.current) return;
-      finish(true);
+      finish('cancel');
     };
 
     window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finishFromPointer);
-    window.addEventListener('pointercancel', finishFromPointer);
+    window.addEventListener('pointerup', commitOnPointerUp);
+    window.addEventListener('pointercancel', cancelOnPointerCancel);
     window.addEventListener('keydown', cancelOnEscape);
     return () => {
       window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finishFromPointer);
-      window.removeEventListener('pointercancel', finishFromPointer);
+      window.removeEventListener('pointerup', commitOnPointerUp);
+      window.removeEventListener('pointercancel', cancelOnPointerCancel);
       window.removeEventListener('keydown', cancelOnEscape);
       window.clearTimeout(suppressTabClickTimerRef.current ?? undefined);
     };

@@ -365,3 +365,118 @@ describe('useTabDragReorder — pointer capture', () => {
     }
   });
 });
+
+/**
+ * POINTERCANCEL — AN INTERRUPTION, NOT A DROP.
+ *
+ * The OS fires `pointercancel` when it takes the gesture away: a system drag
+ * starts, a display is attached or removed, the touch device changes mode. It
+ * was wired to the same handler as `pointerup` since this hook shipped, which
+ * was fine while a commit could only reorder two tabs.
+ *
+ * Tear-off redefined a commit. Outside the window, the SAME interruption now
+ * creates a window, or merges the tab into another and closes this one. These
+ * cases pin the split: the cross-window half is cancelled, the in-strip half is
+ * not.
+ */
+describe('useTabDragReorder — pointercancel does not commit a tear-off or a merge', () => {
+  it('does not commit the cross-window drop when the OS pre-empts the gesture', () => {
+    const onCrossWindowCommit = vi.fn();
+    const onCrossWindow = vi.fn();
+    render(
+      <Harness onCrossWindow={onCrossWindow} onCrossWindowCommit={onCrossWindowCommit} />
+    );
+    pressAndPromote();
+    moveOutside();
+    expect(screen.getByTestId('phase')).toHaveTextContent('detach');
+    onCrossWindow.mockClear();
+
+    fireEvent.pointerCancel(window, { pointerId: 1 });
+
+    // The whole defect: this used to fire, spawning a window (or merging the
+    // tab and closing this window when it was the only one).
+    expect(onCrossWindowCommit).not.toHaveBeenCalled();
+    // And the target window must not be left rendering a caret forever.
+    expect(onCrossWindow).toHaveBeenCalledWith({ kind: 'local' }, expect.anything());
+  });
+
+  it('clears the gesture completely, so the strip is not stuck mid-drag', () => {
+    render(<Harness onCrossWindow={vi.fn()} onCrossWindowCommit={vi.fn()} />);
+    pressAndPromote();
+    moveOutside();
+    fireEvent.pointerCancel(window, { pointerId: 1 });
+
+    expect(screen.getByTestId('dragging')).toHaveTextContent('none');
+    expect(screen.getByTestId('ghost')).toHaveTextContent('no');
+    expect(screen.getByTestId('phase')).toHaveTextContent('local');
+  });
+
+  it('a pointerup after a pointercancel commits nothing — the gesture is over', () => {
+    const onCrossWindowCommit = vi.fn();
+    render(<Harness onCrossWindowCommit={onCrossWindowCommit} />);
+    pressAndPromote();
+    moveOutside();
+    fireEvent.pointerCancel(window, { pointerId: 1 });
+    fireEvent.pointerUp(window, { pointerId: 1 });
+
+    expect(onCrossWindowCommit).not.toHaveBeenCalled();
+  });
+
+  it('an interrupted drag that never left the window still reorders (unchanged)', () => {
+    // The deliberate half of the choice: `pointercancel` keeps its long-standing
+    // local commit. Only the window-creating and window-destroying outcomes are
+    // withdrawn. A regression here would be a behaviour change nobody asked for.
+    const onReorder = vi.fn();
+    render(<Harness onReorder={onReorder} onCrossWindowCommit={vi.fn()} />);
+    pressAndPromote();
+    // jsdom has NO elementFromPoint at all, so the hook's over-tab hit test has
+    // to be fed. A real element, so the real `closest` does the matching.
+    const otherTab = document.createElement('div');
+    otherTab.setAttribute('data-tab-id', 'tab-2');
+    document.body.appendChild(otherTab);
+    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
+      otherTab;
+    try {
+      fireEvent.pointerMove(window, { pointerId: 1, clientX: 220, clientY: 20 });
+      fireEvent.pointerCancel(window, { pointerId: 1 });
+      expect(onReorder).toHaveBeenCalledWith('tab-1', 'tab-2');
+    } finally {
+      delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+      otherTab.remove();
+    }
+  });
+
+  it('does not commit locally either when the pointer was OUTSIDE', () => {
+    // While outside, `move` nulls the over-tab and the drop target on purpose,
+    // so an interrupted outside drag commits nothing at all.
+    const onReorder = vi.fn();
+    const onDropToGroup = vi.fn();
+    const onCrossWindowCommit = vi.fn();
+    render(
+      <Harness
+        onReorder={onReorder}
+        onDropToGroup={onDropToGroup}
+        onCrossWindowCommit={onCrossWindowCommit}
+      />
+    );
+    pressAndPromote();
+    moveOutside();
+    fireEvent.pointerCancel(window, { pointerId: 1 });
+
+    expect(onReorder).not.toHaveBeenCalled();
+    expect(onDropToGroup).not.toHaveBeenCalled();
+    expect(onCrossWindowCommit).not.toHaveBeenCalled();
+  });
+
+  it('pointerup is still the thing that commits a tear-off', () => {
+    // The other side of the guard: cancelling pointercancel must not have
+    // cancelled the feature.
+    const onCrossWindowCommit = vi.fn();
+    render(<Harness onCrossWindowCommit={onCrossWindowCommit} />);
+    pressAndPromote();
+    moveOutside();
+    fireEvent.pointerUp(window, { pointerId: 1 });
+
+    expect(onCrossWindowCommit).toHaveBeenCalledWith({ kind: 'detach' }, expect.anything());
+  });
+});
