@@ -506,6 +506,16 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::config_management::ConfigResponse,
         super::routes::config_management::ProvidersResponse,
         super::routes::config_management::ProviderDetails,
+        // `ProviderDetails.affiliation` is `Option<ProviderAffiliation>`, and
+        // utoipa does NOT register nested types transitively — it emits a `$ref`
+        // to a component that was never added. The spec then still generates
+        // (the Rust side is happy), and the failure lands on the *client*
+        // generator: `Missing $ref pointer "#/components/schemas/
+        // ProviderAffiliation"`, which reads like a tooling bug rather than a
+        // missing line here. All three levels of the tree need naming.
+        biorouter::providers::base::ProviderAffiliation,
+        biorouter::providers::base::ProviderAffiliationKind,
+        biorouter::providers::base::AffiliationInstitution,
         super::routes::config_management::SlashCommandsResponse,
         super::routes::config_management::SlashCommand,
         super::routes::config_management::CommandType,
@@ -704,6 +714,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::agent::CrossAffiliationGrantResponse,
         super::routes::agent::RemoveExtensionRequest,
         super::routes::agent::ResumeAgentResponse,
+        super::routes::agent::ActiveTurnRef,
         super::routes::agent::AgentInitializationError,
         super::routes::agent::RestartAgentResponse,
         biorouter::agents::ExtensionLoadResult,

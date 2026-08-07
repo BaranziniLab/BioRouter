@@ -147,7 +147,13 @@ export default function JsonSchemaForm({
           value={String(value ?? '')}
           onChange={(e) => handleChange(key, e.target.value)}
           disabled={disabled}
-          className="flex h-9 w-full rounded-md border focus:border-border-strong hover:border-border-strong bg-background-default px-3 py-1 text-base transition-colors disabled:cursor-not-allowed disabled:opacity-50 md:text-sm"
+          // The native <select> is a text field wearing a different tag, so it
+          // takes the <Input> chrome exactly (§3.2): the 32px md rung, an 8px
+          // inset, the derived `--border-emphasized` edge and the inset-ring
+          // hover whisper. `main.css` already owns focus for `select` alongside
+          // input and textarea, so the old `focus:border-border-strong` was a
+          // second, weaker answer to a question already settled globally.
+          className="flex h-8 w-full rounded-element border border-border-emphasized bg-background-default px-2 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 focus:inset-ring-0 disabled:cursor-not-allowed disabled:opacity-50"
         >
           {!isRequired && <option value="">Select...</option>}
           {prop.enum.map((option) => (
@@ -162,15 +168,23 @@ export default function JsonSchemaForm({
     if (prop.type === 'boolean') {
       return (
         <label className="flex items-center gap-2 cursor-pointer">
-          <input
-            type="checkbox"
-            id={key}
-            checked={Boolean(value)}
-            onChange={(e) => handleChange(key, e.target.checked)}
-            disabled={disabled}
-            className="h-4 w-4 rounded border-border-strong text-text-accent "
-          />
-          <span className="text-sm text-text-default">{prop.description || key}</span>
+          {/* §3.3, and the same construction CustomRadio uses so the two controls
+              are interchangeable in a form: a 22px visual box centred in a 24px
+              target box. `accent-background-accent` is what actually binds a
+              NATIVE checkbox to the theme — `border-*` and `rounded-*` on an
+              `appearance: auto` control are inert, which is why the old classes
+              looked like theming and were not. */}
+          <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center">
+            <input
+              type="checkbox"
+              id={key}
+              checked={Boolean(value)}
+              onChange={(e) => handleChange(key, e.target.checked)}
+              disabled={disabled}
+              className="h-[22px] w-[22px] cursor-pointer accent-background-accent disabled:cursor-not-allowed"
+            />
+          </span>
+          <span className="text-label text-text-default">{prop.description || key}</span>
         </label>
       );
     }
@@ -210,7 +224,7 @@ export default function JsonSchemaForm({
   };
 
   if (!schema.properties || Object.keys(schema.properties).length === 0) {
-    return <div className="text-text-muted text-sm">No fields to display</div>;
+    return <div className="text-text-muted text-body">No fields to display</div>;
   }
 
   return (
@@ -223,22 +237,22 @@ export default function JsonSchemaForm({
           return (
             <div key={key} className="flex flex-col gap-1">
               {renderField(key, prop)}
-              {error && <span className="text-text-danger text-xs">{error}</span>}
+              {error && <span className="text-text-danger text-supporting">{error}</span>}
             </div>
           );
         }
 
         return (
           <div key={key} className="flex flex-col gap-1">
-            <label htmlFor={key} className="text-sm font-medium text-text-default">
+            <label htmlFor={key} className="text-label text-text-default">
               {key}
               {isRequired && <span className="text-text-danger ml-1">*</span>}
             </label>
             {prop.description && prop.type !== 'boolean' && (
-              <span className="text-xs text-text-muted">{prop.description}</span>
+              <span className="text-supporting text-text-muted">{prop.description}</span>
             )}
             {renderField(key, prop)}
-            {error && <span className="text-text-danger text-xs">{error}</span>}
+            {error && <span className="text-text-danger text-supporting">{error}</span>}
           </div>
         );
       })}

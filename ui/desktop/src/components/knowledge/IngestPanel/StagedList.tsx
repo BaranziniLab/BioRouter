@@ -9,16 +9,16 @@ interface Props {
 
 export function StagedList({ items, onRemove, onClear }: Props) {
   if (items.length === 0) {
-    return <div className="text-xs text-text-muted py-3 text-center">Nothing staged yet.</div>;
+    return (
+      <div className="text-supporting text-text-muted py-3 text-center">Nothing staged yet.</div>
+    );
   }
 
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-[11px] uppercase tracking-wider text-text-muted">
-          Staged · {items.length}
-        </span>
-        <button onClick={onClear} className="text-[11px] text-text-muted hover:text-text-default">
+        <span className="text-caps text-text-muted">Staged · {items.length}</span>
+        <button onClick={onClear} className="text-label text-text-muted hover:text-text-default">
           clear all
         </button>
       </div>
@@ -47,9 +47,9 @@ export function StagedList({ items, onRemove, onClear }: Props) {
           >
             <Icon className="w-3.5 h-3.5 text-text-muted flex-shrink-0" />
             <div className="flex-1 min-w-0">
-              <div className="text-xs font-medium truncate">{label}</div>
+              <div className="text-label truncate">{label}</div>
               {s.status !== 'pending' && (
-                <div className="text-[11px] font-mono text-text-muted">
+                <div className="text-supporting font-mono text-text-muted">
                   {s.status}
                   {s.error ? `: ${s.error}` : ''}
                 </div>

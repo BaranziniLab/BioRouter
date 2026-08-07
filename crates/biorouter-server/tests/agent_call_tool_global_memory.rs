@@ -10,6 +10,11 @@
 //! lets this test drive the real handler without standing up an agent: a
 //! decision that needed one could be skipped by arriving without one.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use axum::{body::Body, http::Request, http::StatusCode};
 use serde_json::{json, Value};
 use tower::ServiceExt;

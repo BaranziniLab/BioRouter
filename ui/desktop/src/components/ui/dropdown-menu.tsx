@@ -35,7 +35,7 @@ function DropdownMenuContent({
       <DropdownMenuPrimitive.Content
         data-slot="dropdown-menu-content"
         sideOffset={sideOffset}
-        // design.md §4.5: --radius-xl (12px) surface, 4px padding, 6px trigger offset.
+        // design.md §4.5: --radius-container (12px) surface, 4px padding, 6px trigger offset.
         //
         // Z — deliberately --z-modal-dropdown (500), not --z-dropdown (200): this
         // content is portalled to <body>, making it a SIBLING of any dialog content
@@ -43,7 +43,7 @@ function DropdownMenuContent({
         // PermissionModal.tsx renders a DropdownMenuContent inside a DialogContent;
         // at 200 that menu would paint under the dialog that owns it.
         className={cn(
-          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-xl p-1 space-y-0.5',
+          'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] max-h-(--radix-dropdown-menu-content-available-height) min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-x-hidden overflow-y-auto rounded-container p-1 space-y-0.5',
           className
         )}
         {...props}
@@ -57,8 +57,8 @@ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMen
 }
 
 /**
- * design.md §4.5 — THE menu row: 32px tall, 12px horizontal padding, `--radius-md`,
- * 13/18 text, hover fill `--background-medium`.
+ * design.md §4.5 — THE menu row: 32px tall, 12px horizontal padding, `--radius-element`,
+ * `text-secondary` (13/18), highlight fill `--overlay-hover`.
  *
  * `min-h-8` is what actually lands the 32px spec: 13/18 text inside 6px of vertical
  * padding measures 30px, and `items-center` then optically centres the label in the
@@ -71,7 +71,7 @@ function DropdownMenuGroup({ ...props }: React.ComponentProps<typeof DropdownMen
  * call site that re-states padding or type size is reintroducing the drift.
  */
 export const DROPDOWN_ROW_CLASS_NAME =
-  "relative flex min-h-8 cursor-default items-center gap-2 rounded-md px-3 py-1.5 text-[13px] leading-[18px] select-none transition-colors duration-[var(--motion-fast)] focus:bg-background-medium focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
+  "relative flex min-h-8 cursor-default items-center gap-2 rounded-element px-3 py-1.5 text-secondary select-none transition-colors focus:bg-overlay-hover focus:text-text-default data-[disabled]:pointer-events-none data-[disabled]:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4";
 
 function DropdownMenuItem({
   className,
@@ -169,12 +169,10 @@ function DropdownMenuLabel({
     <DropdownMenuPrimitive.Label
       data-slot="dropdown-menu-label"
       data-inset={inset}
-      // design.md §4.5 section label: 11px caps, +0.08em, --text-muted, 8px×12px.
+      // design.md §4.5 section label: `text-caps` (11px, 500, +0.08em), --text-muted, 8px×12px.
       // It names a group; it is not a row, so it never takes the row height or hover.
-      className={cn(
-        'px-3 py-1.5 text-[11px] font-medium tracking-[0.08em] text-text-muted uppercase data-[inset]:pl-8',
-        className
-      )}
+      // No `uppercase` beside `text-caps` — the role carries the transform itself.
+      className={cn('px-3 py-1.5 text-caps text-text-muted data-[inset]:pl-8', className)}
       {...props}
     />
   );
@@ -198,7 +196,7 @@ function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<'spa
   return (
     <span
       data-slot="dropdown-menu-shortcut"
-      className={cn('text-text-muted ml-auto text-xs tracking-widest', className)}
+      className={cn('text-text-muted ml-auto text-supporting tracking-widest', className)}
       {...props}
     />
   );
@@ -222,7 +220,7 @@ function DropdownMenuSubTrigger({
       data-inset={inset}
       className={cn(
         DROPDOWN_ROW_CLASS_NAME,
-        'data-[state=open]:bg-background-medium data-[state=open]:text-text-default data-[inset]:pl-8',
+        'data-[state=open]:bg-overlay-hover data-[state=open]:text-text-default data-[inset]:pl-8',
         className
       )}
       {...props}
@@ -241,7 +239,7 @@ function DropdownMenuSubContent({
     <DropdownMenuPrimitive.SubContent
       data-slot="dropdown-menu-sub-content"
       className={cn(
-        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-xl p-1 space-y-0.5',
+        'biorouter-popover-surface bg-background-default text-text-default data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95 data-[state=open]:duration-[var(--motion-base)] data-[state=closed]:duration-[var(--motion-fast)] data-[side=bottom]:slide-in-from-top-2 data-[side=left]:slide-in-from-right-2 data-[side=right]:slide-in-from-left-2 data-[side=top]:slide-in-from-bottom-2 z-[var(--z-modal-dropdown)] min-w-[8rem] origin-(--radix-dropdown-menu-content-transform-origin) overflow-hidden rounded-container p-1 space-y-0.5',
         className
       )}
       {...props}

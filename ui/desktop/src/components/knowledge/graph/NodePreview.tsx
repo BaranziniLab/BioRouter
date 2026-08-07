@@ -62,7 +62,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
       ref={panelRef}
       role="dialog"
       aria-label={`Preview ${prettyLabel(node.label, node.kind)}`}
-      className="absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-2xl border border-border-subtle bg-background-default shadow-popover"
+      className="absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
     >
       <div className="flex items-center justify-between border-b border-border-subtle bg-background-muted px-4 py-3">
         <div className="flex items-center gap-2 min-w-0">
@@ -72,8 +72,8 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
             style={{ background: nodeFill(node) }}
           />
           <div className="flex flex-col min-w-0">
-            <div className="text-sm font-medium truncate">{prettyLabel(node.label, node.kind)}</div>
-            <div className="text-xs text-text-muted truncate">
+            <div className="text-label truncate">{prettyLabel(node.label, node.kind)}</div>
+            <div className="text-supporting text-text-muted truncate">
               {node.kind}
               {node.credibility_tier ? ` · ${node.credibility_tier.replace('_', ' ')}` : ''}
               {previewSha ? ` · ${previewSha.slice(0, 7)}` : ''}
@@ -90,24 +90,24 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
           <X className="h-4 w-4" />
         </Button>
       </div>
-      <div className="flex-1 overflow-y-auto px-4 py-3 text-xs leading-relaxed text-text-default">
+      <div className="flex-1 overflow-y-auto px-4 py-3 text-body text-text-default">
         {loading && <span className="text-text-muted">Loading…</span>}
         {error && <span className="text-text-danger">{error}</span>}
         {!loading && !error && content && (
           <div className="space-y-4">
             {parsed.frontmatter && (
-              <div className="overflow-hidden rounded-lg bg-background-muted">
-                <div className="flex items-center gap-2 px-3 py-1.5 text-[10px] font-medium uppercase tracking-wider text-text-muted">
+              <div className="overflow-hidden rounded-element bg-background-muted">
+                <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
                   <FileCode2 className="h-3 w-3" />
                   Overview
                 </div>
-                <pre className="overflow-x-auto px-3 py-2.5 font-mono text-[11px] leading-5 text-text-muted whitespace-pre-wrap">
+                <pre className="overflow-x-auto px-3 py-2.5 font-mono text-code text-text-muted whitespace-pre-wrap">
                   {parsed.frontmatter}
                 </pre>
               </div>
             )}
             {parsed.body ? (
-              <MarkdownContent content={parsed.body} className="text-sm" />
+              <MarkdownContent content={parsed.body} className="text-body" />
             ) : (
               <span className="text-text-muted">No body content.</span>
             )}
@@ -115,7 +115,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
         )}
         {!loading && !error && !content && <span className="text-text-muted">No content.</span>}
       </div>
-      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 text-xs text-text-muted break-all">
+      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 text-supporting text-text-muted break-all">
         {node.path}
       </div>
     </div>

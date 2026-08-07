@@ -122,9 +122,9 @@ export default function AppsView() {
         <div className="bg-background-default px-8 pt-12 pb-6 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <div className="flex justify-between items-center mb-1">
-              <h1 className="text-2xl font-semibold tracking-tight">Apps</h1>
+              <h1 className="text-title">Apps</h1>
             </div>
-            <p className="text-sm text-text-muted mb-0">
+            <p className="text-body text-text-muted mb-0">
               Applications from your MCP servers that can run in standalone windows.
             </p>
           </div>
@@ -138,8 +138,8 @@ export default function AppsView() {
           ) : apps.length === 0 ? (
             <div className="flex items-center justify-center h-64">
               <div className="text-center">
-                <h3 className="text-lg font-medium mb-2">No apps available</h3>
-                <p className="text-sm text-text-muted">
+                <h3 className="text-subheading mb-2">No apps available</h3>
+                <p className="text-body text-text-muted">
                   Install MCP servers that provide UI resources to see apps here.
                 </p>
               </div>
@@ -149,15 +149,15 @@ export default function AppsView() {
               {apps.map((app) => (
                 <div
                   key={`${app.uri}-${app.mcpServer}`}
-                  className="flex min-w-0 flex-col p-4 border border-border-subtle rounded-xl bg-background-default transition-colors duration-150 hover:bg-background-medium/40 hover:border-border-strong"
+                  className="flex min-w-0 flex-col p-4 border border-border-subtle rounded-container bg-background-default transition-colors hover:bg-overlay-hover hover:border-border-strong"
                 >
                   <div className="flex-1 min-w-0 mb-4">
                     <h3 className="font-medium text-text-default mb-2 break-words">{app.name}</h3>
                     {app.description && (
-                      <p className="text-sm text-text-muted mb-2">{app.description}</p>
+                      <p className="text-body text-text-muted mb-2">{app.description}</p>
                     )}
                     {app.mcpServer && (
-                      <span className="inline-block px-2 py-1 text-xs bg-background-medium text-text-muted rounded-md">
+                      <span className="inline-block px-2 py-1 text-supporting bg-background-medium text-text-muted rounded-inner">
                         {app.mcpServer}
                       </span>
                     )}

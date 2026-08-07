@@ -218,6 +218,56 @@ describe('chatGroupsReducer — reorder', () => {
   });
 });
 
+/**
+ * `openTab` gained a position for exactly one caller: a cross-window MERGE (tab
+ * tear-off, design §5). The user aimed between two tabs and a caret said so, so
+ * landing the tab at the end would contradict the preview they were just shown.
+ */
+describe('chatGroupsReducer — openTab at a position', () => {
+  const openAt = (sessionId: string, index: number): ChatGroupsAction => ({
+    type: 'openTab',
+    payload: { sessionId, title: sessionId, index },
+  });
+
+  it('still appends when no position is given — every existing caller', () => {
+    const state = run(createInitialChatGroupsState(), open('a'), open('b'), open('c'));
+    expect(state.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['a', 'b', 'c']);
+  });
+
+  it('inserts before the named index', () => {
+    const state = run(createInitialChatGroupsState(), open('a'), open('b'), openAt('x', 1));
+    expect(state.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['a', 'x', 'b']);
+  });
+
+  it('index 0 lands first, and length lands last', () => {
+    const first = run(createInitialChatGroupsState(), open('a'), open('b'), openAt('x', 0));
+    expect(first.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['x', 'a', 'b']);
+    const last = run(createInitialChatGroupsState(), open('a'), open('b'), openAt('x', 2));
+    expect(last.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['a', 'b', 'x']);
+  });
+
+  it('CLAMPS an index measured against a strip that has since changed', () => {
+    // The index arrives from ANOTHER window's measurement of this one, taken a
+    // few milliseconds ago. "Insert before a tab that has since closed" must mean
+    // "insert at the end", never "drop the tab on the floor".
+    const state = run(createInitialChatGroupsState(), open('a'), openAt('x', 99));
+    expect(state.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['a', 'x']);
+    const negative = run(createInitialChatGroupsState(), open('a'), openAt('y', -5));
+    expect(negative.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['y', 'a']);
+  });
+
+  it('activates the inserted tab, wherever it landed', () => {
+    const state = run(createInitialChatGroupsState(), open('a'), open('b'), openAt('x', 1));
+    expect(activeSessionIdOf(state)).toBe('x');
+  });
+
+  it('does NOT move a tab the dedupe found — its position is one the user can see', () => {
+    const state = run(createInitialChatGroupsState(), open('a'), open('b'), openAt('a', 1));
+    expect(state.groups['grp-1'].tabs.map((t) => t.sessionId)).toEqual(['a', 'b']);
+    expect(activeSessionIdOf(state)).toBe('a');
+  });
+});
+
 describe('chatGroupsReducer — rename mirroring', () => {
   it('mirrors a session rename into the tab title', () => {
     const a = run(createInitialChatGroupsState(), open('s1'), open('s2'));

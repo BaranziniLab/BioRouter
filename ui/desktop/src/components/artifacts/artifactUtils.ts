@@ -153,25 +153,35 @@ export function languageLabel(value: string, mimeType?: string): string {
 // markdown, git, notebook) so the strip reads in one voice instead of each
 // preview inventing its own sub-header.
 //
-// D-31 draws the line these three sit on: MONO FOR DATA, SANS FOR CHROME. The
-// panel had all of its strip text in mono, which made the preview's chrome read
-// in a different voice from the chat beside it. Mono is not decoration here; it
-// is a claim that the glyphs matter (you will read this character by character,
-// or the digits must not jitter). A word like "Modified" makes no such claim.
+// D-31 draws the line these three sit on: MONO FOR DATA, SANS FOR CHROME. Mono
+// is not decoration here; it is a claim that the glyphs matter (you will read
+// this character by character, or the digits must not jitter). A word like
+// "Modified" makes no such claim, so `STRIP_META_CLASS` stays sans.
+//
+// All three are `text-supporting` — the metadata role. The strip states what a
+// thing is, where it lives and how big it is; none of that is a section label,
+// so none of it takes `text-caps` (the ONE caps style). What separates them is
+// the FACE and the ink, not a fourth size.
 
-/** 11px caps SANS — the language chip and legend labels. Chrome: names a thing. */
-export const STRIP_LABEL_CLASS =
-  'text-[11px] font-semibold uppercase tracking-[0.09em] text-text-subtle';
 /**
- * 11px MONO — paths, git refs, and tabular counts.
+ * The language chip and legend labels — mono, because a format name ("R",
+ * "TSV", "JSON") is read as a token the way a path is, not as prose.
+ *
+ * This was an uppercase-tracked 11px style of its own, which made it a fourth
+ * caps treatment competing with `text-caps`. The strip does not need one: the
+ * chip is already distinguished from the path beside it by its ink.
+ */
+export const STRIP_LABEL_CLASS = 'font-mono text-supporting text-text-subtle';
+/**
+ * MONO — paths, git refs, and tabular counts.
  *
  * These earn it, which is exactly why D-31 left them alone: a path is read
  * character by character (l vs 1 vs I), and a count carrying `tabular-nums`
  * wants stable digit widths so it does not jitter as it changes.
  */
-export const STRIP_IDENT_CLASS = 'font-mono text-[11px] text-text-muted';
-/** 11px SANS — everything the strip states in prose (statuses, notes). */
-export const STRIP_META_CLASS = 'text-[11px] text-text-muted';
+export const STRIP_IDENT_CLASS = 'font-mono text-supporting text-text-muted';
+/** SANS — everything the strip states in prose (statuses, notes). */
+export const STRIP_META_CLASS = 'text-supporting text-text-muted';
 
 /** Splits a path so the strip can dim the directory and keep the filename legible. */
 export function splitPathForStrip(path: string) {

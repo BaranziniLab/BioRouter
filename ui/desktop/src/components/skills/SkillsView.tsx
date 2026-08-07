@@ -185,8 +185,8 @@ export default function SkillsView() {
         {/* Header */}
         <ReadableContent className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0">
           <div className="flex flex-col page-transition">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1">Skills</h1>
-            <p className="text-sm text-text-muted mb-0">
+            <h1 className="text-title mb-1">Skills</h1>
+            <p className="text-body text-text-muted mb-0">
               Reusable instruction sets that guide Biorouter's behavior. {getSearchShortcutText()}{' '}
               to search.
             </p>
@@ -227,7 +227,7 @@ export default function SkillsView() {
           <ReadableContent key={overrideTrigger} className="px-8 py-4">
             {totalBR > 0 && (
               <>
-                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+                <h2 className="text-caps text-text-muted uppercase mb-3 flex items-center gap-2">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-info flex-shrink-0" />
                   Biorouter Skills ({totalBR})
                 </h2>
@@ -259,7 +259,7 @@ export default function SkillsView() {
 
             {totalOther > 0 && (
               <>
-                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mt-6 mb-3 flex items-center gap-2">
+                <h2 className="text-caps text-text-muted uppercase mt-6 mb-3 flex items-center gap-2">
                   <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-strong flex-shrink-0" />
                   Skills From Other Agents ({totalOther})
                 </h2>
@@ -290,7 +290,7 @@ export default function SkillsView() {
             )}
 
             {totalBR === 0 && totalOther === 0 && (
-              <p className="text-sm text-text-muted mt-10 text-center">
+              <p className="text-body text-text-muted mt-10 text-center">
                 {searchTerm
                   ? 'No skills match your search.'
                   : 'No skills found. Add one to get started.'}
@@ -372,15 +372,15 @@ function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItem
     <div className="biorouter-list-row flex items-start gap-3 px-3 py-3 group">
       <button
         type="button"
-        className="flex-1 min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
         onClick={onClick}
         aria-label={`Open skill bundle ${bundle.bundleName}`}
       >
         <div className="flex items-center gap-1.5">
-          <p className="text-sm text-text-default">{bundle.bundleName}</p>
-          <span className="text-[11px] text-text-subtle">· {bundle.skills.length} skills</span>
+          <p className="text-label text-text-default">{bundle.bundleName}</p>
+          <span className="text-supporting text-text-subtle">· {bundle.skills.length} skills</span>
         </div>
-        <p className="text-xs text-text-subtle mt-1 font-mono leading-relaxed">
+        <p className="text-supporting text-text-subtle mt-1 font-mono">
           {bundle.skills.map((s) => s.name).join(' · ')}
         </p>
       </button>

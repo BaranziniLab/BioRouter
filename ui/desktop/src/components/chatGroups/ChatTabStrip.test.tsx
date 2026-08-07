@@ -350,3 +350,41 @@ describe('ChatTabStrip — rung 3: the ▾ overflow menu', () => {
     }
   });
 });
+
+/**
+ * The MERGE caret — a tab being dragged in from ANOTHER window.
+ *
+ * It needs its own prop because this window receives no pointer events at all
+ * while a cross-window drag is in flight: the OS delivers them to the window the
+ * drag started in (measured with real OS input, tear-off design §8 Phase 0). So
+ * `dragOverTabId` is empty for the whole gesture and the caret is driven by IPC.
+ */
+describe('ChatTabStrip — the cross-window merge caret', () => {
+  const twoTabs = [tab(), tab({ tabId: 'tab-2', sessionId: 's2', title: 'Second' })];
+
+  it('draws the SAME hairline the local reorder draws', () => {
+    // Merging into a strip IS inserting into a strip. A second visual for it
+    // would be a second answer to a question the strip already answers.
+    const { container } = renderStrip({ tabs: twoTabs, remoteDropBeforeTabId: 'tab-2' });
+    expect(tabNode(container, 'tab-2')).toHaveAttribute('data-dropbefore', 'true');
+    expect(tabNode(container, 'tab-1')).not.toHaveAttribute('data-dropbefore');
+  });
+
+  it('shows nothing when the caret belongs after the last tab', () => {
+    // `null` is what the bridge answers for "append": there is no tab to hang a
+    // leading-edge hairline on, which is exactly how the local reorder behaves.
+    const { container } = renderStrip({ tabs: twoTabs, remoteDropBeforeTabId: null });
+    expect(container.querySelectorAll('[data-dropbefore]')).toHaveLength(0);
+  });
+
+  it('defaults to no caret, so every existing caller is untouched', () => {
+    const { container } = renderStrip({ tabs: twoTabs });
+    expect(container.querySelectorAll('[data-dropbefore]')).toHaveLength(0);
+  });
+
+  it('names a tab this strip does not have without marking anything', () => {
+    // A stale caret from a window whose layout moved under the preview.
+    const { container } = renderStrip({ tabs: twoTabs, remoteDropBeforeTabId: 'tab-99' });
+    expect(container.querySelectorAll('[data-dropbefore]')).toHaveLength(0);
+  });
+});

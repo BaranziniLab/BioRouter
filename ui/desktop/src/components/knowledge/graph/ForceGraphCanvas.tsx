@@ -6,6 +6,7 @@ import type { Graph, GraphNode } from '../../../api/types.gen';
 import { nodeFill, retractedColor } from './credColors';
 import { prettyLabel, wrapLabel } from './labelText';
 import {
+  CANVAS_FONT_FALLBACK,
   DIMMED_OPACITY,
   edgeStyle,
   HUB_RADIUS,
@@ -13,6 +14,7 @@ import {
   LABEL_FONT_PX,
   LABEL_FONT_PX_HUB,
   NODE_BASE_RADIUS,
+  resolveCanvasFontFamily,
 } from './graphStyle';
 
 interface Props {
@@ -59,6 +61,27 @@ function useSize(): [React.RefObject<HTMLDivElement | null>, Sized] {
   return [ref, size];
 }
 
+/// The resolved UI font family, read off the graph container's computed style.
+///
+/// Read once on mount and again whenever the root's theme signal changes, so a
+/// family that re-points the face is picked up without re-reading a computed
+/// style on every node of every frame.
+function useCanvasFontFamily(ref: React.RefObject<HTMLDivElement | null>): string {
+  const [family, setFamily] = useState<string>(CANVAS_FONT_FALLBACK);
+  useEffect(() => {
+    const read = () => setFamily(resolveCanvasFontFamily(ref.current));
+    read();
+    if (typeof MutationObserver !== 'function') return;
+    const observer = new MutationObserver(read);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class', 'data-theme'],
+    });
+    return () => observer.disconnect();
+  }, [ref]);
+  return family;
+}
+
 export function ForceGraphCanvas({
   graph,
   selectedId,
@@ -69,6 +92,7 @@ export function ForceGraphCanvas({
 }: Props) {
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [containerRef, size] = useSize();
+  const fontFamily = useCanvasFontFamily(containerRef);
 
   // Convert API graph → force-graph data. react-force-graph mutates nodes
   // (adds x/y) and links — so we keep our own stable copies.
@@ -206,7 +230,7 @@ export function ForceGraphCanvas({
             ctx.fillStyle = retractedColor;
             ctx.fill();
             ctx.fillStyle = '#fff';
-            ctx.font = `700 ${br * 1.2}px ui-sans-serif`;
+            ctx.font = `700 ${br * 1.2}px ${fontFamily}`;
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             ctx.fillText('!', bx, by + 0.5);
@@ -221,7 +245,7 @@ export function ForceGraphCanvas({
             (!compactCanvas && globalScale >= 1.75);
           if (shouldShowLabel) {
             const fs = (isHub ? LABEL_FONT_PX_HUB : LABEL_FONT_PX) / globalScale;
-            ctx.font = `${isHub || isFocused ? '600' : '400'} ${fs}px ui-sans-serif, system-ui, -apple-system`;
+            ctx.font = `${isHub || isFocused ? '600' : '400'} ${fs}px ${fontFamily}`;
             ctx.fillStyle = '#1f242c';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';

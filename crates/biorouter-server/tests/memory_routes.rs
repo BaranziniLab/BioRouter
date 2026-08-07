@@ -5,6 +5,11 @@
 //! The routes are driven through a router bound to a throwaway global store, so
 //! nothing here reads or deletes the machine's real memories.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use axum::{body::Body, http::Request};
 use serde_json::{json, Value};
 use std::fs;

@@ -416,7 +416,76 @@ type ElectronAPI = {
   onExtensionUpdateEvent: (
     callback: (event: import('./utils/extensionUpdater').ExtensionUpdateEvent) => void
   ) => void;
+
+  // ── Tab tear-off and merge (docs/design/astryx-adoption/tab-tear-off-and-merge.md)
+  //
+  // Four sends and one invoke. The RECEIVE direction needs nothing new: the
+  // generic `on(channel, cb)` above already returns a disposer, and the two
+  // inbound channels — 'tab-drag:preview' and 'tab-drag:merge' — carry plain
+  // JSON.
+  //
+  // Why the source window is never told which window it is over: it does not
+  // render anything differently. D7 gives `detach` and `merge` the SAME ghost
+  // (flat, outlined, clamped to this window's frame) because the merge caret is
+  // painted by the TARGET, not here. Sending a phase back would be an IPC
+  // message per pointermove whose only consumer is a value nobody reads — and it
+  // would hand this renderer another window's id, which D3 deliberately keeps
+  // out of its reach.
+  tabDragRegisterBands: (bands: TabDragBand[]) => void;
+  tabDragMove: (point: TabDragScreenPoint) => void;
+  tabDragCommit: (request: TabDragCommitRequest) => Promise<TabDragCommitResult>;
+  /** Cancelled or returned inside: clear every window's preview. */
+  tabDragEnd: () => void;
+  /** Target → main: the insert this window was asked for is done (or refused). */
+  tabDragAckMerge: (requestId: number, inserted: boolean) => void;
 };
+
+/** A tab-strip rectangle in the reporting window's VIEWPORT coordinates. */
+type TabDragBand = { x: number; y: number; width: number; height: number };
+
+/** Raw `PointerEvent.screenX/screenY`. Main normalises to DIP (design D4). */
+type TabDragScreenPoint = { screenX: number; screenY: number };
+
+/**
+ * The serialisable subset of a tab — mirrors `TabMovePayload` in
+ * `components/chatGroups/tabTearOff.ts`, which is where the exclusions (`tabId`,
+ * the pending-message cargo) are justified. Restated structurally here rather
+ * than imported: preload must not pull renderer modules into the isolated
+ * world, and this type is a wire format, not shared logic.
+ */
+type TabDragTab = {
+  sessionId: string;
+  title: string;
+  userSetName: boolean;
+  cwd?: string;
+  workflowId?: string;
+};
+
+type TabDragCommitRequest = {
+  point: TabDragScreenPoint;
+  /** Where inside the tab the pointer grabbed it, so the new window lands under the cursor. */
+  grabOffset: { x: number; y: number };
+  tab: TabDragTab;
+  /**
+   * This is the source window's LAST tab, across every group in its layout.
+   *
+   * It rides the request rather than being decided in the renderer because the
+   * two outcomes disagree about it, and only main knows which one this is:
+   * a **tear-off** of the last tab is a no-op (D5 — destroying a window to
+   * rebuild an identical one costs a renderer boot and a per-session extension
+   * reload), while a **merge** of the last tab is allowed and closes the source
+   * window afterwards (D6a). The renderer cannot tell a tear-off from a merge;
+   * it only knows the pointer left.
+   */
+  isOnlyTab: boolean;
+};
+
+/**
+ * `merge` and `detach` both mean the source must now drop its tab. `noop` means
+ * it must NOT — the merge target refused the insert, or the drop resolved to
+ * nothing — and is the only answer that leaves the tab where it was.
+ */
+type TabDragCommitResult = { outcome: 'merge' | 'detach' | 'noop' };
 
 type AppConfigAPI = {
   get: (key: string) => unknown;
@@ -633,6 +702,16 @@ const electronAPI: ElectronAPI = {
   onExtensionUpdateEvent: (callback) => {
     ipcRenderer.on('extension-update-event', (_event, data) => callback(data));
   },
+
+  // Tab tear-off and merge. Append-only, and deliberately thin: every one of
+  // these is a pass-through, because the geometry lives in `windowDrag.ts`
+  // (main) and `tabTearOff.ts` (renderer) and preload is the wire, not a party.
+  tabDragRegisterBands: (bands) => ipcRenderer.send('tab-drag:register-bands', bands),
+  tabDragMove: (point) => ipcRenderer.send('tab-drag:move', point),
+  tabDragCommit: (request) => ipcRenderer.invoke('tab-drag:commit', request),
+  tabDragEnd: () => ipcRenderer.send('tab-drag:end'),
+  tabDragAckMerge: (requestId, inserted) =>
+    ipcRenderer.send('tab-drag:merge-ack', requestId, inserted),
 };
 
 const appConfigAPI: AppConfigAPI = {

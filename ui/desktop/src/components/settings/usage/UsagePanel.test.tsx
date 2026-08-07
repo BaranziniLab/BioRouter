@@ -189,7 +189,9 @@ describe('UsageReport', () => {
     const table = screen.getByTestId('usage-model-table');
     const glmRow = within(table).getByText('glm-5.2').closest('tr')!;
     expect(table).toHaveClass('border-collapse');
-    expect(within(glmRow).getByText('zai')).toHaveClass('uppercase');
+    // `text-caps` IS the caps style — it carries the transform as well as the
+    // 11/500/+0.08em metrics, so asserting the role covers the casing.
+    expect(within(glmRow).getByText('zai')).toHaveClass('text-caps');
     const glmCells = within(glmRow).getAllByRole('cell');
     expect(glmCells).toHaveLength(5);
     expect(glmCells[1]).toHaveTextContent('8');
@@ -294,8 +296,10 @@ describe('UsageReport', () => {
     expect(within(dayTable).queryByRole('progressbar')).toBeNull();
     expect(within(modelTable).getByRole('columnheader', { name: 'Token flow' })).toBeTruthy();
     expect(screen.getAllByTestId('usage-model-token-flow')).toHaveLength(2);
-    expect(dayTable.closest('section')).toHaveClass('rounded-xl', 'border-border-subtle');
-    expect(modelTable.closest('section')).toHaveClass('rounded-xl', 'border-border-subtle');
+    // A section card is a CONTAINER, named by its role on the radius ladder
+    // rather than by the deprecated size alias that happens to render 12px.
+    expect(dayTable.closest('section')).toHaveClass('rounded-container', 'border-border-subtle');
+    expect(modelTable.closest('section')).toHaveClass('rounded-container', 'border-border-subtle');
   });
 
   it('marks the dollar gauge unavailable when MTD cost is unknown', () => {
@@ -381,7 +385,7 @@ describe('UsageReport', () => {
     for (const label of ['Fresh in', 'Cache read', 'Cache write', 'Out']) {
       expect(within(flow).getByText(label)).toBeTruthy();
     }
-    expect(within(flow).getByText('Cache write')).toHaveClass('whitespace-nowrap', 'text-[8px]');
+    expect(within(flow).getByText('Cache write')).toHaveClass('whitespace-nowrap', 'text-caps');
     expect(within(row).getAllByRole('cell')).toHaveLength(5);
     expect(within(row).getAllByRole('cell')[3]).toHaveTextContent('1,800');
     expect(within(row).getAllByRole('cell')[4]).toHaveTextContent('$0.01');

@@ -43,7 +43,7 @@ export default function ProviderLogo({ providerName }: ProviderLogoProps) {
 
   return (
     <div className="flex justify-center mb-2">
-      <div className="w-12 h-12 bg-black rounded-lg overflow-hidden flex items-center justify-center">
+      <div className="w-12 h-12 bg-black rounded-element overflow-hidden flex items-center justify-center">
         <img
           src={logo}
           alt={`${providerName} logo`}

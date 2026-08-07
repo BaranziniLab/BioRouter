@@ -26,17 +26,17 @@ export default function SkillItem({
     <div className="biorouter-list-row flex items-start gap-3 px-3 py-3 group">
       <button
         type="button"
-        className="flex-1 min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+        className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
         onClick={onClick}
         aria-label={`Open skill ${skill.name}`}
       >
         <div className="flex items-center gap-1.5">
-          <p className="text-sm text-text-default">{skill.name}</p>
+          <p className="text-label text-text-default">{skill.name}</p>
           {builtin && <BuiltInBadge />}
         </div>
-        <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{skill.description}</p>
+        <p className="text-supporting text-text-muted mt-0.5 line-clamp-1">{skill.description}</p>
         {skill.sourceDir !== BIOROUTER_SKILLS_DIR && (
-          <p className="text-[11px] text-text-subtle mt-0.5 font-mono">{skill.sourceDir}</p>
+          <p className="text-supporting text-text-subtle mt-0.5 font-mono">{skill.sourceDir}</p>
         )}
       </button>
       <div className="flex items-center gap-2 flex-shrink-0 mt-0.5">

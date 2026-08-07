@@ -138,10 +138,12 @@ describe('AppSidebar chat navigation', () => {
     expect(homeButton).toHaveClass('gap-2', 'px-3');
     expect(homeButton.querySelector('svg')).toHaveClass('h-4', 'w-4');
 
-    expect(wordmark.compareDocumentPosition(newSessionButton)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING
-    );
-    expect(newSessionButton.compareDocumentPosition(homeButton)).toBe(
+    // Astryx §4.1.3 REVERSED THIS PAIR. Home is first because it is where the
+    // rail returns you; New Session is beneath it because it is the one thing
+    // the rail does. An action in the top slot claims the position the eye reads
+    // as "the top of the map".
+    expect(wordmark.compareDocumentPosition(homeButton)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(homeButton.compareDocumentPosition(newSessionButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
     expect(homeButton).toHaveClass('h-8', 'px-3', 'py-2', 'text-sm');
@@ -152,24 +154,22 @@ describe('AppSidebar chat navigation', () => {
     expect(settingsButton).toHaveClass('h-8', 'w-full', 'px-3', 'py-2', 'text-sm');
     expect(settingsButton).not.toHaveClass('text-text-muted');
     expect(screen.getByTestId('sidebar-biorouter-mark')).toBeInTheDocument();
-    // A full-width inset rule, not the old 32px sliver, so the menu and the
-    // history read as two zones.
-    expect(screen.getByTestId('sidebar-nav-divider')).toHaveClass(
-      'h-px',
-      'bg-sidebar-border',
-      'mx-3.5'
-    );
-    expect(screen.getByTestId('sidebar-nav-divider')).not.toHaveClass('!w-8');
-    // The footer rule matches the nav rule exactly. It used to be the 32px
-    // sliver, which left two dividers ~100px apart at different widths —
-    // that reads as an accident rather than a system.
+    // §4.1.4 — the UPPER rule is gone. The Components row and the Recents header
+    // do the zoning between destinations and history, so a rule between them was
+    // a third answer to a question two elements already answered.
+    expect(screen.queryByTestId('sidebar-nav-divider')).toBeNull();
+    // The one remaining rule, HALVED: `my-1` + the hairline is a 10px block. At
+    // `my-2` it was 18px of rail spent on a 1px mark.
     expect(screen.getByTestId('sidebar-footer-divider')).toHaveClass(
       'h-px',
       'bg-sidebar-border',
-      'mx-3.5'
+      'mx-3.5',
+      'my-1'
     );
-    expect(screen.getByTestId('sidebar-footer-divider')).not.toHaveClass('!w-8');
-    expect(screen.getByText('Menu')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-footer-divider')).not.toHaveClass('!w-8', 'my-2');
+    // §4.1.2 — no "MENU" header. 32px labelling something self-evident.
+    expect(screen.queryByText('Menu')).toBeNull();
+    expect(screen.queryByTestId('sidebar-menu-label')).toBeNull();
     expect(screen.getByText('Recents')).toBeInTheDocument();
     expect(screen.getByTestId('view-all-chat-history')).toBeInTheDocument();
     expect(await screen.findByTestId('recent-chat-session-1')).toBeInTheDocument();
@@ -189,5 +189,127 @@ describe('AppSidebar chat navigation', () => {
 
     fireEvent.click(settingsButton);
     expect(screen.getByTestId('location-state')).toHaveTextContent('/settings');
+  });
+});
+
+/**
+ * ASTRYX §4.1.3 — the rail carries one destination and one action, and the other
+ * six live behind one disclosure.
+ *
+ * This is where the 240px comes from: nine 32px nav rows become three. jsdom
+ * cannot measure that, so what is pinned here is the STRUCTURE that produces it
+ * — how many rows exist, which of them are children, and whether the group
+ * remembers what the user chose.
+ */
+describe('AppSidebar — the Components disclosure', () => {
+  const renderSidebar = (path = '/pair') =>
+    render(
+      <MemoryRouter initialEntries={[path]}>
+        <SidebarHarness />
+      </MemoryRouter>
+    );
+
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it('collapses by default, so the rail opens with three rows and not nine', () => {
+    renderSidebar();
+    expect(screen.getByTestId('sidebar-home-button')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-new-session-button')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-components-disclosure')).toBeInTheDocument();
+    // The six destinations are reachable, not resident.
+    expect(screen.queryByTestId('sidebar-components-group')).toBeNull();
+    expect(screen.queryByTestId('sidebar-workflows-button')).toBeNull();
+    expect(screen.queryByTestId('sidebar-knowledge-button')).toBeNull();
+  });
+
+  it('opens on click, indents its children, and keeps them at the same 32px height', () => {
+    renderSidebar();
+    fireEvent.click(screen.getByTestId('sidebar-components-disclosure'));
+
+    const workflows = screen.getByTestId('sidebar-workflows-button');
+    expect(screen.getByTestId('sidebar-components-group')).toContainElement(workflows);
+    // Hierarchy by INDENT, never by size (§4.1.3): the text edge moves 24px, the
+    // row height and type do not move at all.
+    expect(workflows).toHaveClass('h-8', 'pl-9', 'text-sm');
+    expect(workflows).not.toHaveClass('h-7', 'text-xs');
+    // The parent rows keep the unindented edge, so the indent reads as a step.
+    expect(screen.getByTestId('sidebar-home-button')).toHaveClass('px-3');
+  });
+
+  it('remembers being opened', () => {
+    const first = renderSidebar();
+    fireEvent.click(screen.getByTestId('sidebar-components-disclosure'));
+    expect(screen.getByTestId('sidebar-workflows-button')).toBeInTheDocument();
+    first.unmount();
+
+    renderSidebar();
+    expect(screen.getByTestId('sidebar-workflows-button')).toBeInTheDocument();
+  });
+
+  it('opens itself when the current route is one of its children — without overwriting the preference', () => {
+    // A lit row inside a collapsed section is an invisible one, so being ON a
+    // component route forces the group open. It must NOT persist that: leaving
+    // the route has to collapse back to whatever the user chose.
+    const onRoute = renderSidebar('/knowledge');
+    expect(screen.getByTestId('sidebar-knowledge-button')).toBeInTheDocument();
+    expect(window.localStorage.getItem('biorouter:sidebar-components-expanded')).toBeNull();
+    onRoute.unmount();
+
+    renderSidebar('/pair');
+    expect(screen.queryByTestId('sidebar-knowledge-button')).toBeNull();
+  });
+
+  it('hides the MCP Apps row until an extension advertises one', async () => {
+    mocks.listApps.mockResolvedValue({ data: { apps: [{ id: 'a' }] } });
+    renderSidebar();
+    fireEvent.click(screen.getByTestId('sidebar-components-disclosure'));
+    expect(await screen.findByTestId('sidebar-apps-button')).toBeInTheDocument();
+  });
+});
+
+describe('AppSidebar — actions do not stay lit (§4.1.3)', () => {
+  it('never gives New Session the selected wash, even standing on /pair', () => {
+    render(
+      <MemoryRouter initialEntries={['/pair']}>
+        <SidebarHarness />
+      </MemoryRouter>
+    );
+    const newSession = screen.getByTestId('sidebar-new-session-button');
+    // A destination keeps the wash because you are still there. New Session
+    // fires and the view moves on, so a lit row would claim a location that is
+    // no longer true — which is how a two-row rail came to show two selections.
+    expect(newSession).toHaveAttribute('data-active', 'false');
+    expect(screen.getByTestId('sidebar-home-button')).toHaveAttribute('data-active', 'false');
+  });
+
+  it('still lights Home when Home is where you are', () => {
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <SidebarHarness />
+      </MemoryRouter>
+    );
+    expect(screen.getByTestId('sidebar-home-button')).toHaveAttribute('data-active', 'true');
+  });
+
+  it('drops focus after a POINTER click and keeps it after a keyboard activation', () => {
+    render(
+      <MemoryRouter initialEntries={['/pair']}>
+        <SidebarHarness />
+      </MemoryRouter>
+    );
+    const newSession = screen.getByTestId('sidebar-new-session-button');
+
+    newSession.focus();
+    // `detail > 0` is the mouse/touch signature.
+    fireEvent.click(newSession, { detail: 1 });
+    expect(document.activeElement).not.toBe(newSession);
+
+    newSession.focus();
+    // Enter and Space report detail 0. Blurring here would strand a Tab user
+    // mid-rail with no visible focus and nowhere obvious to resume from.
+    fireEvent.click(newSession, { detail: 0 });
+    expect(document.activeElement).toBe(newSession);
   });
 });

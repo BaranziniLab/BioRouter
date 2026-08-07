@@ -22445,6 +22445,946 @@ Established by reconnaissance against the branch, not assumed. Each contradicts 
 
 ---
 
+## DR-27 — the user chooses the mixing policy, from three named modes
+
+> **Ruled 2026-08-04**, from the operator. [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions)
+> shipped exactly one policy: a cross-institution mismatch refuses, and the user clears it with one
+> in-app confirmation. That is the right **default** and the wrong **only option**. This adds
+> **Task 52**.
+
+### Why one fixed policy is wrong
+
+Three real deployments want three different answers, and none of them is unreasonable:
+
+- **A lab doing sanctioned multi-site work** under a Data Use Agreement already has the paperwork.
+  Every cross-institution prompt is friction that teaches them to click through, which is the prompt
+  fatigue [DR-19](#decisions-of-record) warns about — and a control people click through is not a
+  control.
+- **An ordinary researcher** wants today's behaviour: warn, let me decide, remember the answer.
+- **A clinical deployment** wants the barrier to cost something real, so that mixing is a deliberate
+  act rather than a reflex click.
+
+### The three modes
+
+| Mode | Public ↔ private | Institution mixing | Proof to mix |
+| --- | --- | --- | --- |
+| **`open`** | still enforced | allowed **silently** | none |
+| **`standard`** ← default | still enforced | allowed after a prompt | in-app `X-User-Action` |
+| **`strict`** | still enforced | allowed after a prompt | **system password** (DR-24's prompter) |
+
+⚠ **All three keep the public/private barrier.** This setting governs the **affiliation** axis only.
+The operator's phrase for `open` was *"all models and extensions become identical in terms of their
+privacy levels"* — that means identical **among private things**, not that a public model gains
+private reach. Turning off the tier system entirely is what the **master switch** does, it already
+exists, and Task 52 must not duplicate or weaken it.
+
+### Where the setting lives, and why it is not a preference like any other
+
+⚠ **It goes where [DR-22](#dr-22--the-master-switch-does-not-live-in-configyaml) put the master
+switch — NOT in `config.yaml`.** DR-17 left that file agent-writable, so a setting stored there is
+one a public model can set to `open`, erasing every affiliation check on the next launch. That is
+DR-14's sentence again: *a master switch a public model can edit is not a switch.* This setting is
+a security control wearing a preference's clothes, and it must be stored like one.
+
+### The asymmetry: loosening costs, tightening is free
+
+- **`strict` → `standard` → `open`** is a **downgrade**. It requires the **system password**,
+  exactly like declassification and the master switch, whatever mode you are currently in.
+- **`open` → `standard` → `strict`** is a **tightening**. It requires nothing.
+
+⚠ **Read the direction carefully.** Requiring the password to *leave* `strict` is the whole point of
+`strict`; requiring it to *enter* `strict` would be a control that punishes the careful user. The
+same ratchet governs classification and the KB tier — raising is free, lowering is gated.
+
+### What each mode does at the gate
+
+`open` must **not** be implemented by granting everything. It suppresses the *mismatch* — the
+compatibility check still runs, still resolves, and the result is still available to the UI for
+display. A mode that short-circuits the resolver would also blind the badges and the audit trail, and
+would make `open → standard` fail to re-tighten anything already in flight.
+
+⚠ **`open` is not the master switch and must not read like it.** The disclosure copy must say what it
+actually does: cross-institution reach becomes silent, and *nothing else changes*.
+
+### An agent may never change this setting
+
+[DR-19](#decisions-of-record) applies unchanged. The setting is user-only in every mode, and the
+existing single-writer discipline is how that is enforced — not a new mechanism.
+
+---
+
+### Task 52: The mixing-policy setting — DR-27
+
+Implements [DR-27](#dr-27--the-user-chooses-the-mixing-policy-from-three-named-modes). Depends on
+Tasks 42 (the protected store), 44 (the platform prompters) and 49 (the grant).
+
+- [ ] **Step 1: The mode, stored where the master switch is**
+
+A three-valued setting — `open` / `standard` / `strict` — in the DR-22 store, **not** `config.yaml`.
+Default `standard`, so no existing install changes behaviour on upgrade.
+
+- [ ] **Step 2: The direction-aware guard**
+
+Loosening requires DR-24's system prompt; tightening requires nothing. ⚠ The comparison is on the
+**ordering of the modes**, not on "is this a write" — a guard that prompts for every change makes
+tightening expensive and is wrong in the direction that matters.
+
+- [ ] **Step 3: Wire the three behaviours at ONE place**
+
+The mode is read where `compatible()`'s result is turned into a refusal — not at each call site. Three
+call sites reading a mode is three places to disagree.
+
+- `open` — the mismatch resolves and is still reported for display; it does not refuse.
+- `standard` — today's behaviour, unchanged.
+- `strict` — the grant route additionally requires the system prompt, on top of `X-User-Action`.
+
+- [ ] **Step 4: The gate, and it must fail a plausible wrong implementation**
+
+```bash
+cargo test -p biorouter --lib privacy:: 2>&1 | grep "test result:"
+cargo test -p biorouter-server --lib routes::agent 2>&1 | grep "test result:"
+```
+
+1. **Per mode, the mismatch outcome** — `open` allows, `standard` refuses-then-grants on
+   `X-User-Action`, `strict` refuses and rejects a grant carrying only `X-User-Action`.
+2. **The direction asymmetry, both ways** — `strict → open` refused without the system prompt;
+   `open → strict` succeeds with no prompt at all. A test for only the first passes an
+   implementation that prompts on every change.
+3. **`open` does not become the master switch** — with mode `open`, a **public** model is still
+   refused a private extension. This is the test that fails the most likely wrong implementation,
+   which is to make `open` skip the whole privacy check rather than only the affiliation one.
+4. **`open` still resolves** — the compatibility result is still computed and still available, so
+   badges and the audit trail keep working.
+5. **An agent cannot change the mode** in any of the three modes.
+
+### Task 53: Pin the fail-safe default, and make every provider's tier a deliberate statement
+
+> **Operator ruling, 2026-08-04:** *"if a provider cannot be verified, then it is public (always
+> assume the least permission)."*
+
+⚠ **An earlier draft of this task got the direction backwards and is corrected here**, because the
+error is the kind a reader would otherwise inherit. It claimed the Public default "fails in the unsafe
+direction". It does not. **Public is the least-permission answer**: a model tagged Public is *refused*
+private data. So the two mistakes are not symmetric —
+
+| Mistake | Consequence |
+| --- | --- |
+| A genuinely **private** provider tagged Public | Over-restricted. The model cannot reach private data it was entitled to. A **usability** loss. |
+| A genuinely **public** provider tagged Private | It is handed PHI. A **disclosure**. |
+
+Only the second is dangerous, and `the_private_set_is_the_four_the_operator_named` already closes it:
+declaring a *new* provider Private fails until the operator's list is updated. `ProviderTier::default()
+= Public` is therefore **correct and must stay** — this task's first job is to say so mechanically,
+not to change it.
+
+What is genuinely missing is a *deliberate statement*. Affiliation has a completeness census
+(`every_registered_provider_is_classified_for_affiliation`); tier has none, so "nobody ever decided"
+is indistinguishable from "we decided Public". That is a bookkeeping gap, not a security hole, and
+the task is sized accordingly.
+
+- [ ] **Step 1: Pin the fail-safe default itself**
+
+A test asserting a provider that declares no tier resolves **Public** — at both levels, the
+`ProviderMetadata` default and the `Provider::tier()` trait default. This is the operator's rule made
+mechanical, and it is what stops a future refactor from "helpfully" inferring Private from a local
+base URL or a familiar hostname.
+
+- [ ] **Step 2: The census, for deliberateness**
+
+Mirror the affiliation census: every registered provider appears in exactly one of a private or an
+explicitly-public table, each row carrying a one-line reason. ⚠ **The census must not change any
+provider's tier** — it records decisions, it does not make them. A row reading `public: general
+commercial endpoint` is a complete and correct answer.
+
+- [ ] **Step 3: Verify the test can fail**
+
+Remove a provider from the table, watch it fail, restore it, and record the observed failure in the
+commit message. A completeness test never seen to fail is not known to work — this plan has already
+shipped a grep gate, a file-exists check and a filter matching nothing, each of which passed by
+accident.
+
+### Task 54: The private set is a closed list, not a guess from prose
+
+> **Operator ruling, 2026-08-04:** *"the description don't matter — only cdw agent and omop agent
+> should be private and are both of institution (ucsf)."*
+
+This **replaces** an earlier draft of this task that would have extended the description-keyword
+heuristic. That draft was wrong in kind, not just in detail. `build-registry.mjs` currently refuses a
+card whose description mentions `patient`, `clinical record`, `ehr`, `phi`, `medical record` or
+`de-identified clinical` — but only when `data-privacy` is absent (`if (!declaresPrivacy)`). Widening
+it looked like closing a hole; it is really doubling down on inferring a security property from
+marketing prose.
+
+**A keyword net is a guess. A closed set is a fact, and the operator has stated it.** The whole
+private set is two entries, both `ucsf`, and it changes only when someone decides it should. That is
+exactly the discipline this plan already uses for providers in
+`the_private_set_is_the_four_the_operator_named`.
+
+- [ ] **Step 1: Assert the closed set in the generator**
+
+`build-registry.mjs` fails the build unless the private set it produces is **exactly**
+`{cdwagent, ucsfomopagent}` and **each carries `affiliation: ["ucsf"]`**. A third private card, a
+missing one, or a private card affiliated elsewhere is a hard failure naming the difference.
+
+⚠ **This is deliberately annoying to change, and that is the feature.** Adding a private extension
+should be an edit someone reviews, not a side effect of writing a card. The failure message must say
+so, and say which file to edit — a gate that only says "unexpected" teaches people to delete the
+gate.
+
+- [ ] **Step 2: Delete the description heuristic**
+
+Remove the keyword list and its `if (!declaresPrivacy)` check. With Step 1 in place it protects
+nothing, and it can only produce **false failures** — a public extension whose description honestly
+mentions clinical data (SPOKE describes diseases; a future imaging or literature tool easily could)
+would be refused for saying a true thing.
+
+⚠ **Record what this trades away, so it is a decision and not an oversight.** The heuristic's one real
+use was a *future* clinical extension whose author forgets to tag it: the closed-set assertion does
+not catch that, because the set simply stays at two. The operator has ruled that prose is not the
+place to catch it. If that case needs covering later, the answer is an explicit field on the card, not
+a return to guessing from the description.
+
+- [ ] **Step 3: The gate**
+
+```bash
+node --test landing/scripts/build-registry.test.mjs
+node landing/scripts/build-registry.mjs --check
+```
+
+Fixtures in the `REJECTED` table, each wrapped in `<div id="extensions-section">` like the others:
+a **third** private card; one of the two **missing**; a private card affiliated to something other
+than `ucsf`. Plus the anti-vacuity pass — flip the real `baam.html` to produce each failure, watch it
+fail, revert, and record the observed failures in the commit message.
+
+⚠ And one case that must **pass**: a public card whose description says "patient". That is the
+false failure Step 2 exists to prevent, and without this test someone will reinstate the keyword list.
+
+## DR-32 — affiliation must be visible, not only enforced
+
+> **Ruled 2026-08-06.** Task 79.
+
+**Measured asymmetry.** Tier is stated wherever a user looks — `PrivacyBadge` renders from **13
+non-test call sites**: the chat's name pill, the tab strip, the sidebar, History rows, the composer,
+Settings → Extensions (item and modal), Settings → Privacy, the `.brxt` install modal, and the
+first-run notice.
+
+**Affiliation renders nowhere.** The only renderer file that mentions it is
+`ui/desktop/src/utils/crossAffiliation.ts`, which exists to turn a **refused** tool call into an
+accept card. So a user learns their chat's institution **only at the moment something is refused** —
+after they have already tried.
+
+⚠ **And no UI could show it today even if one wanted to.** `ProviderMetadata` carries no affiliation
+field, and `GET /config/providers` serves `tier` and `runs_locally` and nothing else. Affiliation
+exists only as the instance-level `Provider::affiliation()`. The plumbing has to come first.
+
+⚠ **Also unread: the extension side.** `registry.json` carries per-extension `affiliation` and an
+`institutions` display-name map. The desktop reads neither; affiliation reaches enforcement only
+through the compiled Rust constant.
+
+### What must NOT change
+
+⚠ **The accept card's request deliberately carries no client-supplied institution**, and that must
+stay. Its own comment says why:
+
+> *"The institution is read by the daemon from the same sample that produced the warning; a
+> client-supplied one would let a caller record an acceptance for a triple the user was never shown."*
+
+That is about the **grant payload**. Displaying a chat's own affiliation is a different question, and
+this task must not blur them: **render** affiliation freely, **never** send one back as authority.
+
+### Task 79: Affiliation becomes visible, in the app and on the marketplace
+
+- [ ] **Step 1: Expose it from the daemon.** An affiliation on the provider metadata and on
+      `GET /config/providers`, resolved from the same instance-level source the gates use — never a
+      name-keyed table (DR-26 rejected that: a Versa module repointed elsewhere must lose Private and
+      `ucsf` together).
+- [ ] **Step 2: Render it beside the tier badge**, at the surfaces where a user decides something —
+      at minimum the model picker, the composer, and the chat's name pill. Reuse `PrivacyBadge`'s
+      shape so the two axes read as one system rather than two features.
+- [ ] **Step 3: Render the extension side too**, from `registry.json`'s `affiliation` and the
+      `institutions` display-name map — the fields the desktop currently ignores.
+- [ ] **Step 4: Get the three non-obvious states right.** Each is a real value, and each will be
+      rendered wrong by a naive mapping:
+      - **`Local`** is the **most permissive** affiliation, not the narrowest. A user seeing `Local`
+        beside `UCSF` must not read it as more restricted. ⚠ This is DR-26's central inversion showing
+        up in the visual hierarchy.
+      - **Private with no stated institution** is meaningful, not missing — such a model clears only
+        `Any` extensions. `affiliation::unstated_model` already names this case.
+      - **Public** has no affiliation at all, and should show none rather than an empty one.
+- [ ] **Step 5: Be honest about enforcement**, exactly as [Task 66](#task-66-the-extension-badge-stops-overpromising-d5)
+      requires for the tier badge. A catalogue-declared affiliation the daemon does not enforce must
+      not render identically to one it does.
+- [ ] **Step 6: The gate.**
+      - The three states of Step 4 render distinguishably, asserted per state.
+      - ⚠ A client-supplied affiliation is still refused by the grant route — assert the security
+        property this task must not erode.
+      - The renderer's value agrees with the daemon's for the same provider. Two sources that agree
+        today diverge on the first edit to one of them.
+      - Visual: legible in all three theme families, light and dark. Colour is what a theme changes,
+        and these badges are colour-carrying.
+
+- [ ] **Step 7: The landing site and BAAM.** Measured 2026-08-06: **privacy already ships there** —
+      43 `data-privacy` attributes on `baam.html`, badges rendering, and a Private/Public facet on the
+      shelf (Task 35). **Affiliation does not.** It is declared as `data-affiliation` on the two UCSF
+      cards and carried in `registry.json` alongside the `institutions` map, and **nothing on the page
+      reads it, renders it, or filters by it.**
+      - Render the institution on a card, from `institutions`' display name rather than the raw id.
+      - ⚠ **The JS shelf that re-renders cards from `registry.json` emits only `data-privacy` and
+        `data-extension-name` — it does not re-emit `data-affiliation`.** So the JS-rendered DOM and
+        the authored static DOM already differ on that attribute. Fix that before rendering from it,
+        or the badge appears on a first paint and vanishes on a re-render.
+      - ⚠ Keep the generator's rules intact: absent means unconstrained, an empty list is a build
+        failure, and an id absent from `institutions` is a build failure. Rendering must not
+        soften what the build already refuses.
+
+⚠ **This is a new surface, not a bug fix.** Enforcement already works; nothing leaks because it is
+invisible. The argument for shipping it is that *"the user should know what regime their chat is
+under"* is the premise of the whole axis — and today they find out only when it is too late to matter.
+
+⚠ **Both surfaces move together.** Shipping the app badge without the marketplace one leaves a user
+unable to tell, before installing, whether a connector will be reachable from the model they use —
+which is the decision the badge exists to inform.
+
+---
+
+## DR-31 — a subagent inherits its parent's affiliation, and cannot change it
+
+> **Ruled 2026-08-06**, in the operator's words: *"the subagents should also inherit the affiliations
+> as well and its access should not be elevated (possible to be elevated either). So a UCSF session
+> should not be able to spin up local subagents without the user's permission."* Task 78.
+
+**Measured gap.** The spawn path checks **only the tier axis**. `child_tier = task_config.provider.tier()`
+is compared against `parent_cap` in both directions (`spawn_upgrade`, `spawn_downgrade`), and
+**nothing compares affiliation**. The `settings` object on the `subagent` tool — *"Override
+model/provider settings"* — lets the spawning model name any `provider`, so a UCSF-affiliated chat
+can spawn a `Local`-affiliated child today.
+
+⚠ **`Local` is the TOP of the affiliation lattice, so UCSF → Local is an ELEVATION**, not a lateral
+move. A local model reaches everything private. This is the same shape as the tier upgrade the spawn
+path already refuses, on an axis it never learned to look at.
+
+### The rule: equality, in both directions
+
+A child's affiliation must **equal** its parent's. Any change is refused.
+
+| Parent | Child | | Why |
+| --- | --- | --- | --- |
+| `Institution(ucsf)` | `Local` | ❌ | **Elevation.** Local reaches everything; the child would out-reach the chat that spawned it. |
+| `Institution(ucsf)` | `Institution(stanford)` | ❌ | The child gains reach the parent lacks. |
+| `Local` | `Institution(ucsf)` | ❌ | **Disclosure.** The parent's data was never leaving the machine; the child would send it to a gateway. |
+| same | same | ✅ | Inherit — the default when `settings` is absent. |
+
+⚠ **Both directions, deliberately, and this mirrors the tier rule rather than inventing a new shape.**
+The tier rule already refuses *both* the upgrade (escalation) and the downgrade (private text reaching
+a public model). Affiliation has exactly those two failure modes: gaining reach, and sending data
+somewhere the parent was not sending it. A subset rule would permit `Local → Institution(x)`, which is
+the second one.
+
+### Refused, not escalated to the user
+
+⚠ **The operator's phrase "without the user's permission" resolves to a refusal here**, and the reason
+is already written into this file at `spawn_upgrade`: a spawn is a **tool call**, there is no surface
+on which a human spawns one and picks its provider, and there is no request on that path to carry a
+proof of user. An approval an agent can author the approver for is not an approval.
+
+So the refusal says what the user can do instead — start a chat on that model themselves — which is
+the same remedy `spawn_downgrade` offers.
+
+### Task 78: A subagent inherits its parent's affiliation
+
+- [ ] **Step 1** Compare the child's affiliation against the parent's, beside the two existing tier
+      checks, reading it off the **constructed instance** exactly as `child_tier` is — a provider
+      name is not a tier and it is not an affiliation either.
+- [ ] **Step 2** Refuse on any difference, with a refusal naming both affiliations and the remedy.
+      ⚠ Reuse `PrivacyRefusal`'s existing shape; do not add a fourth spelling of "refused because of
+      who you are".
+- [ ] **Step 3** ⚠ **Say what this costs, in the refusal and in the docs.** A UCSF chat may still
+      switch its child between `versa_azure` and `versa_bedrock` — both `ucsf`. It may **not** switch
+      to `llamacpp`. That is a real narrowing of `settings.provider`, and a user who meets it should
+      learn why rather than think the override is broken.
+- [ ] **Step 4: The gate.** All four rows of the table above, each as its own named test. Plus:
+      - the default path (no `settings`) inherits and is permitted — ⚠ without this, an
+        implementation that refuses every spawn passes every other case;
+      - a composite lead/worker parent, whose affiliation is the fold of both halves, is compared as
+        the fold and not as the lead alone — this is where the tier check needed its own reasoning
+        and the affiliation check will too.
+
+---
+
+## DR-30 — the remaining eleven audit findings are all in scope
+
+> **Ruled 2026-08-06.** After [DR-29](#dr-29--the-five-audit-rulings) took the top five, the operator
+> folded in **every** remaining finding — the six further leaks and the five inconsistencies.
+> Tasks 67–77.
+
+⚠ **I under-scoped this once already.** Findings 14–18 were called "small items to fold in", and
+finding **4** was wrongly swept in with them — it is ranked a **leak**, not a nicety. Two ungated
+extension-enable doors is not a tidying item.
+
+### The pattern that produced three of these
+
+⚠ **A refusal that closes one door pushes the user through an adjacent open one.** Three instances now:
+
+| Refused | Where the user goes instead | Guarded? |
+| --- | --- | --- |
+| `spawn_downgrade` (private→public spawn) | `workspace_open {new:{prompt}}` | ❌ (DR-29 D2 closes it) |
+| Gate F1 (enable a private extension) | `workspace_set_tools` | ❌ (Task 70) |
+| The global-memory write from a private chat | **project-local memory** | ❌ (Task 67) |
+
+⚠ **Task 63's gate does not catch the third.** That gate finds refusals whose *text advises* a
+forbidden action. Nothing advises project memory — the user simply does the next obvious thing. So
+the class is wider than "bad refusal copy": **whenever a control is added, ask what the user will do
+instead, and whether that is guarded.** Task 77 makes this a review question rather than a hope.
+
+### The migration cluster — rows that end up silently public
+
+Findings 9, 10 and 11 share one shape and are the most likely of all of these to bite a real user,
+because none of them requires anybody to do anything unusual. A chat is simply mis-labelled.
+⚠ For a release whose headline is privacy, a wrongly-public row is worse than a missing feature.
+
+### The findings
+
+| # | Finding | Task |
+| --- | --- | --- |
+| 4 | `workspace_set_tools` and `workspace_open {new:{extensions}}` are ungated extension-enable doors; the latter also discards the operator's `enabled:false` | 70 |
+| 6 | Project-local memory written from a private chat is inlined **in full** into every future session's system prompt in that directory, on any model | 67 |
+| 9 | The backfill reads only the last-bound provider, and nothing surfaces the rows it mis-classified | 68 |
+| 10 | Legacy-JSONL import lands **Public** and skips the backfill — the fresh-database branch stamps the schema version before `import_legacy` runs, so migration arm 19 never fires | 69 |
+| 11 | With the master switch off, a private parent mints **permanently public** children, and re-enabling never revisits them | 71 |
+| 13 | `search_available_extensions` prints private connectors' names **and marketplace descriptions** to a public model, while Gate E hides their tools | 72 |
+| 14 | `manage_extensions {disable}` is ungated — a public chat can drop the clinical connector | 73 |
+| 15 | `workspace_watch` / `workspace_close` are ungated — an activity oracle, and cross-conversation cancel | 74 |
+| 16 | The cross-affiliation warning is **log-only** at bind and at user-enable; the accept card exists only at dispatch, and the grant clears only the tool-call door | 75 |
+| 17 | `kb_is_out_of_reach` asks one axis where `assert_kb_reachable` asks two, so cross-institution KB **names** list while content is refused | 76 |
+| 18 | `privacy-tiers.md`'s "Did not ship" is false for four handlers and understates the still-open set | 77 |
+
+### Tasks 67–77
+
+Each closes its row above. Shared requirements, so they are not restated eleven times:
+
+- [ ] **The gate must fail a plausible wrong implementation.** Break the fix, watch the test fail,
+      restore it, record the observed failure in the commit message.
+- [ ] **Enumerate siblings.** Every one of these was a path someone missed while fixing its neighbour.
+      Before reporting done, list the other entry points to the same capability and say whether each
+      is guarded.
+- [ ] ⚠ **Do not add a guard without a caller.** Nine unwired guards have shipped in this campaign.
+      If the fix is a new predicate, its gate must assert it has live callers.
+- [ ] For 68, 69 and 71: assert against rows created **before** the fix. "Correct going forward"
+      leaves exactly the mis-labelled data these findings are about.
+- [ ] **Task 77** additionally: make "what will the user do instead?" an explicit checklist item in
+      the privacy design doc's review section, so the pattern above is caught by process rather than
+      by a fourth incident.
+
+---
+
+## DR-29 — the five audit rulings
+
+> **Ruled 2026-08-06.** A six-surface audit found nine unwired guards and a set of cross-surface
+> inconsistencies. The operator accepted all five recommendations. Tasks 62–66.
+
+⚠ **Read [the campaign state record](privacy-tiers-campaign-state.md) first.** These rulings assume
+the safety-not-security posture already settled there; none of them attempts to close the accepted
+filesystem residuals.
+
+### D1 — the ungated transcript read is deleted, not gated
+
+`platform__manage_schedule {action: "session_content"}` reads **any** conversation's full transcript
+with no privacy check. `handle_session_content` (`schedule_tool.rs:448-495`) takes only `arguments` —
+no `CallCapability` in its signature — and is intercepted at `agent.rs:3759` **before**
+`dispatch_tool_call`, so it never meets a gate. `is_workspace_tool_refused_for` matches only the
+workspace names, so **subagents can call it too**, which is the one context every other cross-session
+reach was carefully closed in.
+
+**Ruled: delete the action.** It duplicates `workspace_read_conversation`, which is now gated and
+better shaped. Threading a capability into it is the fallback if deletion turns out to break a real
+workflow — but two implementations of one capability is what produced the hole.
+
+⚠ **Fix the refusal copy in the same change.** `workspace_out_of_reach` says *"not through another
+workspace tool"* — true, and actively misleading, because four of the six doors to a transcript are
+not workspace tools.
+
+### D2 — the private→public write is refused, like the spawn already is
+
+The same act gets opposite rulings depending on the tool: `subagent` with a public override is
+**refused** (`spawn_downgrade`), while `workspace_send_prompt` into a public chat and
+`workspace_open {new:{prompt}}` are **permitted and silent** — the latter minting a permanently
+public row holding private-origin text.
+
+**Ruled: refuse the downgrade write.** One branch, and it removes the contradiction rather than
+documenting it.
+
+⚠ **Amend `spawn_downgrade`'s advice text in the same change.** It currently reads *"start a new chat
+on it and give it the task directly"* — which points at exactly the path being closed. This is the
+audit's sharpest finding: **the refusals were routing cooperative agents into the ungated paths.** A
+model that reads its refusals carefully was *more* likely to find the bypass than one that gave up.
+
+Deleting `requires_first_crossing_approval`, `may_write` and `lineage_of` is in scope here — refusing
+makes all three unnecessary, and shipping a fifth correct-but-uncalled guard is worse than shipping
+none.
+
+### D3 — private payloads stay out of the logs, and diagnostics stop being cross-session
+
+`RequestLog` writes full payloads unconditionally, private providers included. The diagnostics bundle
+zips the last ten `llm_request.*.jsonl` **regardless of which session produced them**, plus a verbatim
+`config.yaml`.
+
+⚠ **This is the only path in the entire audit where private transcripts leave the machine to a third
+party** — a user hits a bug, saves the zip, and emails it to support believing they sent a bug report.
+
+**Ruled: fix both.** Metadata-only logging for private-tier providers (model, timings, tokens, error),
+and filter the diagnostics sweep to the named session. Neither needs lattice reasoning; both are
+filters on two call sites.
+
+### D4 — forks carry their affiliations
+
+`create_derived_session` carries `privacy_tier` via `raise_privacy` but never copies
+`session_affiliations`; `import_session` does the same. **Editing a message forks a session** — the
+most ordinary gesture in the product — and the fork then reads as *"no institution has touched
+this,"* which `owners_compatible` treats as compatible with every model.
+
+**Ruled: carry it.** One monotone `UPDATE`, in the safe direction. Recorded as a ruling only because
+it changes behaviour for rows that already forked.
+
+### D5 — the badge tells the truth
+
+The renderer derives privacy from the live BAAM catalogue; the daemon's private set is two
+compile-time strings and implements only the first union term. So after a catalogue update tags a new
+connector private, Settings shows a **Private** badge on an extension a public model may enable and
+call. The renderer's own comment calls this *"a promise the daemon is not yet keeping."*
+
+**Ruled: at minimum make the badge honest** — mark catalogue-only entries as not yet enforced. The
+full fix, a Rust reader for the second union term, is the real answer and is larger; it is not
+required for this release.
+
+---
+
+### Task 62: Delete the ungated transcript read (D1)
+
+- [ ] Remove `session_content` from `manage_schedule`; keep the `sessions` action (names, working
+      dirs, counts) and gate it like its siblings.
+- [ ] Correct `workspace_out_of_reach`'s copy so it does not imply workspace tools are the only doors.
+- [ ] **Gate:** a test asserting no tool reachable from a public chat returns another session's
+      message bodies. ⚠ Enumerate the doors — this bug existed because one door was found and four
+      were not.
+
+### Task 63: Refuse the private→public write (D2)
+
+- [ ] `workspace_send_prompt` and `workspace_open {new:{prompt}}` refuse a private→public downgrade,
+      reusing `spawn_downgrade`'s predicate and shape.
+- [ ] Amend `spawn_downgrade`'s advice text.
+- [ ] Delete `requires_first_crossing_approval`, `may_write`, `lineage_of` — refusing makes them dead.
+- [ ] **Gate:** the same downgrade is refused through spawn, send-prompt and open, asserted per path.
+      Plus: no privacy refusal in the tree advises an action another gate forbids — this is the
+      finding, made mechanical.
+
+### Task 64: Keep private payloads out of logs and bug reports (D3)
+
+- [ ] `RequestLog` records metadata only for private-tier providers.
+- [ ] The diagnostics bundle includes only the named session's logs.
+- [ ] **Gate:** a private turn leaves no payload on disk; a diagnostics zip built from a public
+      session contains no private session's log. ⚠ Assert on the zip's **contents**, not on the
+      filter's return value.
+
+### Task 65: Forks carry their affiliations (D4)
+
+- [ ] `create_derived_session` and `import_session` copy `session_affiliations`.
+- [ ] **Gate:** fork a two-institution session, assert the child carries both; assert a model matching
+      one is still refused. Verify against a row forked *before* the fix — the migration case.
+
+### Task 66: The extension badge stops overpromising (D5)
+
+- [ ] A catalogue-only Private entry renders as not-yet-enforced, distinctly from a daemon-enforced one.
+- [ ] **Gate:** the two states render differently, and the copy names which is which.
+
+---
+
+## DR-28 — capability governs reach, and exporting is a declassifying act
+
+> **Ruled 2026-08-05**, from the operator, in three parts. This corrects
+> [Task 58](#task-58-session-addressing-routes-bypass-the-tier-barrier-entirely-47) as shipped and
+> adds Tasks 59–61.
+
+**(a) Capability governs reach, not proof-of-human.** *"If the CLI is using a private model (with the
+tagging right with respect to the privacy policy), then it should have all the access to opening new
+chats in the background and injecting prompts in it — all the capabilities of the GUI, just not shown
+as another window, same idea under the hood."*
+
+⚠ **Task 58 shipped the opposite test and must be inverted.** It gates session reach on the
+`X-User-Action` proof, so a CLI running Versa is refused while a GUI running Versa is allowed. That is
+backwards: the two-lattice model asks *what may this model reach*, and a private-capability caller may
+reach private data wherever it runs. Proof-of-human is the right instrument for **raising a tier**
+(DR-16) and for **lowering one** (DR-20); it is the wrong instrument for *reach*.
+
+**(b) Export is gated on capability AND is an act of declassification.** *"The export command should
+only work if the privacy setting and the private model inference setup is aligned to make the user
+qualified to export it. And exporting is one of the actions of declassifying, since all of its
+contents will be on the machine and reachable by other agents."*
+
+**(c) The chat stays private; the act is recorded.** Ruled explicitly: export does **not** move the
+ratchet. The original remains protected, and silently flipping a chat to public would surprise someone
+who exported once for a colleague. The *act* is audited.
+
+**(d) One implementation, both surfaces.** The operator asked for this in the daemon. ⚠ **It goes in
+the shared `biorouter` library instead**, which both the CLI and the daemon link. Daemon-only would
+force the CLI to require a running daemon for export, which it does not today — the CLI opens the
+store in-process, and that is what makes headless work. Same intent, correct placement.
+
+### The tension this ruling accepts, stated so it is not discovered later
+
+⚠ **Over HTTP, capability can be asserted but not verified.** The daemon has no principal (issue #47's
+root), so a caller claiming private capability cannot be checked. This is acceptable **only because**
+[DR-17](#scope-ruling--dr-17-narrows-this-plan-to-the-session-store) descoped the filesystem barrier —
+the same caller can read `sessions.db` directly, so gating the API buys friction rather than security.
+**If the filesystem barrier ever returns to scope, this becomes the weak point and must be revisited.**
+
+---
+
+### Task 59: Nothing protects the session store from a plain file read
+
+Measured 2026-08-05. `crates/biorouter/src/security/` contains exactly **one** filesystem inspector —
+`global_memory.rs`, which protects `~/.config/biorouter/memory`. **Nothing protects
+`~/.config/biorouter/sessions/sessions.db`** (`session_manager.rs:32`, `DB_NAME`).
+
+⚠ **This is the hole underneath every other gate in this plan.** Gates A–H enforce reach through
+Biorouter's own APIs — chatrecall, the workspace tools, the session store. A `cat`, a `sqlite3`, or a
+`text_editor` read of that file walks around all of them, and it does so for a **public** model just
+as easily as a private one.
+
+⚠ **This is NOT the general filesystem barrier DR-17 descoped.** It is one specific path, with a
+working template beside it: `GlobalMemoryInspector` (`security/global_memory.rs:741`, registered at
+`agents/agent.rs:1969`) already does exactly this job for the memory store.
+
+- [ ] **Step 1: Mirror the memory inspector for the session store**
+
+A `ToolInspector` refusing tool reads of the session database and its journal/WAL siblings.
+
+⚠ **Copy the distinction the memory inspector already makes**, which is the hard part and is already
+solved there: *reading* the store is refused, while *talking about the path* — a doc that mentions it,
+a commit message, a test fixture naming it — is not. `global_memory.rs:395-396` carries both cases as
+worked examples. Getting this wrong makes the inspector fire constantly and someone will disable it.
+
+- [ ] **Step 2: Cover the sibling paths, not just the one filename**
+
+SQLite writes `sessions.db-wal` and `sessions.db-shm`. A barrier on the exact filename leaves the WAL
+readable, and a WAL holds recent transactions — i.e. the newest private turns.
+
+- [ ] **Step 3: The gate**
+
+1. A tool read of `sessions.db` is refused; so are the `-wal` and `-shm` siblings.
+2. **Anti-vacuity:** a doc or commit message *mentioning* the path is NOT refused. Without this the
+   inspector is unshippable.
+3. A shell command reading it (`cat`, `sqlite3`, `strings`) is refused, not just `text_editor`.
+4. ⚠ Assert the refusal fires for a **private-capability** caller too. This inspector is about the
+   channel, not the tier: even a private model should use the APIs, so that reach stays observable in
+   the audit trail rather than happening invisibly through the filesystem.
+
+### Task 60: Export is gated on capability and audited, in the shared library
+
+Implements [DR-28](#dr-28--capability-governs-reach-and-exporting-is-a-declassifying-act) (b), (c), (d).
+
+- [ ] **Step 1: One implementation both surfaces call**
+
+In `crates/biorouter`, not in the CLI and not in the daemon. `handle_session_export`
+(`biorouter-cli/src/commands/session.rs:340`) and the GUI's export path both route through it.
+⚠ Measured: the CLI's export has **zero** privacy checks today, and the GUI reaches the same store.
+
+- [ ] **Step 2: Refuse a public-capability caller outright**
+
+Exporting a private chat requires private capability. This is the capability test from DR-28(a), not a
+user-proof.
+
+- [ ] **Step 3: A private export carries declassification's authorization**
+
+The system prompt from [Task 55](#task-55-wire-dr-20s-system-password-to-something--it-currently-has-no-callers),
+plus an audit row in the same ledger. ⚠ **The chat's tier does NOT change** — DR-28(c), ruled
+explicitly. The ledger records an *export*, distinct from a declassification, so the two are never
+conflated when reading the trail.
+
+- [ ] **Step 4: Say what the file is**
+
+Copy stating plainly that the exported file is **not protected** and can be read by anything on the
+machine, including a public-model agent. One constant, like the disclosure's.
+
+- [ ] **Step 5: The gate**
+
+```bash
+cargo test -p biorouter --lib session::export 2>&1 | grep "test result:"
+cargo test -p biorouter-cli --lib 2>&1 | grep "test result:"
+cd ui/desktop && npm run test:run 2>&1 | tail -3
+```
+
+1. Public capability + private chat → refused, both surfaces.
+2. Private capability + private chat → prompts, then exports, and writes **one** ledger row.
+3. **The chat is still private afterwards.** This is the ruling's explicit half and the one a
+   well-meaning implementer is most likely to "improve".
+4. A public chat exports with no prompt and no row — the common case stays free.
+5. ⚠ **Parity, asserted rather than assumed:** the same fixture drives both surfaces and both give the
+   same answer. Two implementations that agree today diverge on the first fix applied to one of them.
+
+### Task 61: Invert Task 58's gate from proof-of-human to capability
+
+Implements [DR-28](#dr-28--capability-governs-reach-and-exporting-is-a-declassifying-act) (a).
+⚠ This **changes shipped behaviour from Task 58** — read that task first, then this.
+
+- [ ] **Step 1: Give the CLI a capability at all**
+
+Measured: the CLI resolves **no** privacy tier for its own session. It loads a provider and runs. The
+GUI's sessions carry `privacy_tier`; the CLI's do not. Nothing downstream is implementable until this
+exists, so it is Step 1 rather than a detail.
+
+- [ ] **Step 2: Replace the predicate on the five gated routes**
+
+From "carries `X-User-Action`" to "caller capability ≥ target session tier". A private-capability CLI
+regains `watch`, `send`, `attach` and `cancel`, and can open background chats and inject prompts —
+the GUI's behaviour without a window, which is the ruling.
+
+⚠ **Do not remove the user-action requirement from the raise and lower paths.** DR-16 (raising a
+session's tier) and DR-20 (declassifying) still need proof-of-human. Only *reach* moves to capability.
+Conflating the three is how this gets undone.
+
+- [ ] **Step 3: The gate**
+
+1. Private-capability caller + private session → allowed, on each of the five routes.
+2. Public-capability caller + private session → refused.
+3. **Regression:** DR-16's raise and DR-20's declassification still demand the user-action proof, and
+   still refuse without it. This is the test that catches an over-broad inversion.
+4. The refusal still does not leak existence — Task 58's ordering requirement survives unchanged.
+
+---
+
+### Task 58: Session-addressing routes bypass the tier barrier entirely (#47)
+
+> **Operator ruling, 2026-08-04:** fix it in this release rather than after.
+
+⚠ **I characterised this as "contained" when proposing it. That was wrong, and the correction matters
+more than the original claim.** [Issue #47](https://github.com/BaranziniLab/biorouter/issues/47) says
+so in its own words: *"This is a property of the daemon's API surface as a whole, not of one
+endpoint."*
+
+**The concrete bypass.** `session_id` is a plain request parameter, not a credential. Authorization is
+one daemon-wide shared secret, and no session-scoped route checks that the caller has any relationship
+to the session it names. Measured on this branch:
+
+- `POST /reply` — **no privacy check of any kind.** A caller may run an agent turn, with tools, in any
+  session.
+- `GET /sessions/{session_id}` — privacy checks exist only on the diverge/copy paths
+  (`session.rs:840`, `:1123`). Reading a private transcript is ungated.
+- `POST /knowledge/active`, `POST /agent/update_working_dir`, `/agent/add_extension` — same shape.
+
+⚠ **Why this is load-bearing for THIS release rather than backlog hygiene.**
+[AR-11](#ar-11--amended-by-dr-17--the-daemons-own-api-secret-is-recoverable) already measured the
+daemon's own secret to be **recoverable by the agent**. So a public-tier agent can recover the secret
+and then read a private session's transcript, or run a turn inside it — defeating Gates A through H
+without touching any of them. The release's headline claim has a hole underneath it.
+
+`/reply` strictly dominates the rest: a caller who can run a turn in a session can already do anything
+that session can do.
+
+- [ ] **Step 1: Scope, stated so it is not over-read**
+
+⚠ **This task does NOT fix issue #47.** The general problem is that the daemon has no principal, and
+solving that is an authorization redesign, not a release fix. This task closes the **privacy slice**:
+a session-addressing route that reaches a **private** session must carry the user-action proof. #47
+stays open, with its residual narrowed and re-stated.
+
+- [ ] **Step 2: The mechanism already exists — do not invent one**
+
+`X-User-Action` (`auth.rs:106-118`). It is the right instrument here for a reason worth writing down:
+the daemon holds only the **digest**, while the key lives in the Electron main process and is never
+in the daemon's environment. So the very recoverability AR-11 measured does **not** hand an agent this
+proof. That asymmetry is the whole reason the mechanism works, and it must not be undone by caching
+the key daemon-side for convenience.
+
+- [ ] **Step 3: Apply at the routes, fail closed**
+
+Every session-addressing route resolves the target session's tier first, and requires the proof when
+that tier is Private. ⚠ **Resolve the tier before doing anything else** — an unproven caller must not
+learn whether a session exists, or anything about it, from the shape of the refusal. Task 49's grant
+route already does this and says why; copy that ordering.
+
+⚠ **A keyless daemon refuses rather than allows.** `just run-server` and a hand-run `biorouterd` are
+handed no key, so private sessions become unreachable over HTTP there. That is the fail-closed
+direction open question 23 already accepted, and it must not be softened with an env-var escape —
+the daemon's environment is exactly what AR-11 measured to be recoverable.
+
+- [ ] **Step 4: The gate**
+
+```bash
+cargo test -p biorouter-server --lib routes:: 2>&1 | grep "test result:"
+```
+
+1. Per route in the table above: a **private** target without the proof is refused; **with** it,
+   allowed; a **public** target is unaffected. `/reply` first — it dominates.
+2. **The bypass itself, as a named regression test:** hold the secret, name a private session, and
+   assert you cannot read its transcript or run a turn in it. This is the test that would have caught
+   the hole, and it is the one that must never be deleted.
+3. **Refusal ordering** — an unproven caller cannot distinguish "no such session" from "private
+   session" from the response.
+
+### Task 57: The cross-affiliation grant has no UI, so the warning is really a hard block
+
+Found 2026-08-04 while drafting the release notes — by trying to write the sentence *"here is how you
+accept a cross-institution warning"* and discovering there is no answer.
+
+`POST /agent/cross_affiliation_grant` exists, is `X-User-Action`-gated, is session-scoped, and appears
+in the generated client (`ui/desktop/src/api/sdk.gen.ts:125`). **No component calls it.** Measured:
+zero references outside `api/`.
+
+⚠ **This inverts [DR-26](#dr-26--affiliation-is-a-third-axis-and-hipaa-compliance-does-not-transfer-between-institutions).**
+The ruling is *warn, then allow if the user insists* — the whole reason a mismatch refuses rather than
+blocks. Today the refusal arrives, the model is told to ask the user, and the user has **no affordance
+to say yes**. Their only route past it is to switch the chat's model entirely. That is a hard block
+wearing a warning's clothes, and it is the failure [DR-19](#decisions-of-record) exists to prevent: a
+control people route around, because the only way through is to abandon the work.
+
+⚠ **This is the third instance of one pattern in this campaign** — the mechanism built, the entry point
+never wired. The knowledge backfill was unreachable and its notice never rendered; DR-20's system
+prompter has no callers ([Task 55](#task-55-wire-dr-20s-system-password-to-something--it-currently-has-no-callers));
+and now this. Worth naming as a class, because a code review passes all three: every unit is correct,
+and nothing calls it.
+
+- [ ] **Step 1: The affordance, where the refusal lands**
+
+The refusal already carries the warning text naming both institutions. It needs an accept control on
+the same surface, posting the grant with the user-action proof — the shape `USER_ACTION_REFUSAL_MARKER`
+already uses to turn a refusal into an actionable card.
+
+⚠ **The agent must not be able to press it.** DR-19 is unchanged: the model may *ask*, never answer.
+
+- [ ] **Step 2: Respect the mixing mode**
+
+Under [the mixing-policy setting](#task-52-the-mixing-policy-setting--dr-27): `open` never shows this
+at all, `standard` accepts on the in-app proof, `strict` additionally requires the system prompt. One
+control, three behaviours, read from the mode in one place.
+
+- [ ] **Step 3: The gate**
+
+```bash
+cd ui/desktop && npm run test:run 2>&1 | tail -5
+```
+
+1. A mismatch refusal renders an accept control; pressing it posts the grant; the next call succeeds.
+2. **Anti-vacuity, and this is the one that matters:** assert the control is reachable from the
+   refusal a user actually sees — not merely that a handler exists. The bug being fixed is precisely
+   a correct handler nobody can reach.
+3. Under `open`, no control appears because no mismatch is raised.
+4. No tool-facing surface can trigger the grant.
+
+### Task 55: Wire DR-20's system password to something — it currently has no callers
+
+Found 2026-08-04. [Task 44](#task-44-windows-hello-and-polkit--dr-24) built the prompter properly on
+all three platforms — `LAContext`, `UserConsentVerifier`, polkit, behind one `AuthOutcome` seam, with
+tests. **Nothing calls it.** A tree-wide search for `system_auth::` outside its own modules returns
+nothing.
+
+So [DR-20](#decisions-of-record) — *"the user types their system password for each declassify
+operation"* — is **not honoured today**. Declassification demands `X-User-Action` plus a typed phrase;
+the master switch demands `X-User-Action` alone; neither reaches the OS.
+
+The cause is visible in the branch history: Task 29 landed before DR-20 was ruled (its own commit says
+*"record that Task 29 shipped its pre-DR-20 design"*), DR-20 never got a wiring task, and Task 44 built
+a mechanism with no consumer. ⚠ Without this task, [Task 52](#task-52-the-mixing-policy-setting--dr-27)'s
+`strict` mode becomes the **first and only** thing in the product that asks for the OS password —
+which is backwards, since declassification is the more consequential act.
+
+- [ ] **Step 1: Declassification demands the system prompt**
+
+On top of the existing `X-User-Action`. ⚠ **The typed phrase stays** for `mcp:`-grade chats — it proves
+*which* chat you meant, which a password cannot. Two proofs answering two different questions is not
+redundancy.
+
+⚠ **A `turn:*` chat keeps its single click** and gains no password prompt. Making the common case
+expensive is how you teach people to stop privatising at all, which costs more than it protects.
+
+- [ ] **Step 2: The master switch demands it too**
+
+Disabling the whole tier system is at least as consequential as declassifying one chat.
+
+- [ ] **Step 3: Batch stays one prompt**
+
+DR-20 says a declassification may cover many chats. One prompt for the batch, not one per chat.
+
+- [ ] **Step 4: The gate**
+
+A refusal from the prompter must leave the chat **private** and write no audit row — the failure mode
+worth testing is a UI that reports success because the request was well-formed. Assert `Unavailable`
+(a platform with no prompter) refuses rather than proceeds, and that the test seam is compiled out of
+release builds per Task 44 Step 3.
+
+### Task 56: Make the affiliation model extensible — more providers, more institutions
+
+> **Operator ruling, 2026-08-04:** *"in the future we might add more providers that are private and
+> potentially are of different institution affiliations. please make sure that code design reflects
+> this flexibility."*
+
+Today's build hard-stops at one institution, deliberately and visibly:
+`factory::tests::this_build_knows_exactly_one_institution` fails unless every affiliated provider is
+`Local` or `Institution(ucsf)`. It exists because `composite_affiliation` has **no representable
+answer** for a lead/worker pair spanning two institutions — it currently returns a sentinel,
+`Institution(*SPANS_INSTITUTIONS_ID)`, whose only virtue is that no real extension is tagged with it.
+
+⚠ **That sentinel is the actual blocker, and it is fragile in a specific way:** it is a fake
+institution id doing the work of a missing variant, so it silently becomes wrong the day someone
+registers an institution with that id. A closed-set count is also the wrong shape of guard — a gate
+that only says *"there should be four"* is one people delete rather than update.
+
+- [ ] **Step 1: Model affiliation becomes set-valued**
+
+`ModelAffiliation::Institution(id)` → a set, mirroring the extension side, so a composite that spans
+two institutions is **representable** rather than sentinel-encoded. `Local` stays a distinct variant
+and keeps its early return.
+
+⚠ **`ModelAffiliation` must stay `Copy`** — `CallCapability` depends on it (`capability.rs:30-34`) and
+threads into `async move` blocks. Intern the set the way `InstitutionId` is already interned, rather
+than putting a `BTreeSet` on the capability.
+
+- [ ] **Step 2: The compatibility rule becomes SUBSET, not membership**
+
+```
+compatible(model, ext) =
+    model is Local                      -> true          (unchanged)
+    ext is Any                          -> true          (unchanged)
+    otherwise                           -> model_institutions ⊆ ext_allowlist
+```
+
+⚠ **Subset, and the direction matters.** A model spanning `{ucsf, stanford}` reaching a `{ucsf}`
+extension must be **refused** — the Stanford half is in the pipeline, so UCSF data reaches Stanford.
+Membership (`ext.contains(any_of_model)`) would allow it. For a single-institution model the subset
+check reduces exactly to today's `contains`, so nothing currently shipping changes behaviour.
+
+- [ ] **Step 3: Institutions become data, with referential integrity instead of a count**
+
+The generator's `INSTITUTIONS = { ucsf: 'UCSF' }` literal becomes a declared list that adding an
+institution edits. Replace `this_build_knows_exactly_one_institution` with an integrity check that
+scales: every institution a card names exists in the map, and every mapped institution is either used
+or carries an explicit "retained, unused" note. That catches the real error — a typo'd or orphaned
+institution — at any size.
+
+- [ ] **Step 4: The private provider set becomes a table of decisions**
+
+Replace the "exactly the four the operator named" count with the shape Task 53 uses for the census:
+every provider appears with a **reason**, and the test asserts completeness rather than cardinality.
+Adding a fifth private provider is then a reviewed row, not a fight with an arithmetic assertion.
+
+- [ ] **Step 5: The gate**
+
+```bash
+cargo test -p biorouter --lib privacy::affiliation 2>&1 | grep "test result:"
+cargo test -p biorouter --lib providers:: 2>&1 | grep "test result:"
+```
+
+1. **A two-institution build works end to end** — register a second institution in a fixture, build a
+   lead/worker pair spanning both, and assert it reaches an `Any` extension and is refused by a
+   single-institution one. This is the test the current build cannot even express.
+2. **The subset direction** — `{ucsf, stanford}` model vs `{ucsf}` extension → **refused**;
+   `{ucsf}` model vs `{ucsf, stanford}` extension → allowed.
+3. **No behaviour change for the shipping single-institution case** — every existing affiliation
+   assertion still passes untouched.
+4. **The sentinel is gone** — assert `SPANS_INSTITUTIONS_ID` no longer exists, so it cannot be
+   reintroduced as a shortcut.
+
+---
+
 ## Operator rulings DR-21 – DR-25 — the five open questions, answered
 
 > **Ruled 2026-08-03.** Open questions 25/26, 27, 28, 29 and 30 accumulated across Phases 3 and 4

@@ -20,7 +20,7 @@ export function BaseModal({
           {/* Header */}
           {title && (
             <div className="flex">
-              <h2 className="text-base font-semibold text-text-default">{title}</h2>
+              <h2 className="text-subheading text-text-default">{title}</h2>
             </div>
           )}
 

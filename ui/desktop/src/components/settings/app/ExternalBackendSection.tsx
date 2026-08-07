@@ -167,7 +167,7 @@ export default function ExternalBackendSection() {
                 </p>
               </div>
 
-              <div className="bg-background-warning/10 border border-border-warning/40 rounded-md p-3">
+              <div className="bg-background-warning/10 border border-border-warning/40 rounded-element p-3">
                 <p className="text-xs text-text-warning">
                   <strong>Note:</strong> Changes require restarting Biorouter to take effect. New
                   chat windows will connect to the external server.

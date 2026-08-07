@@ -7,11 +7,13 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::tunnel::TunnelManager;
+use crate::turn_stream::TurnStream;
 use biorouter::agents::ExtensionLoadResult;
 
 type ExtensionLoadingTasks =
@@ -21,7 +23,21 @@ type ExtensionLoadingTasks =
 /// in-flight turn a rejected concurrent `/reply` collided with.
 static TURN_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// The turn currently in flight for a session.
+/// How long a FINISHED turn's entry is kept so a re-POST of its idempotency key
+/// attaches to its replay instead of starting a second turn.
+///
+/// The window that matters is the same one the orphan reaper is sized for: a
+/// renderer that reloads (~4.6 s) while the turn is completing must re-POST into
+/// the finished turn's replay, not into a fresh turn that spends the tokens
+/// again. Five minutes matches
+/// [`crate::turn_stream::DEFAULT_ORPHAN_TIMEOUT`], so "the turn is still
+/// addressable by its key" has ONE duration rather than two that can disagree.
+/// The retained log is trimmed on close (see `CLOSED_REPLAY_BYTE_BUDGET`), so
+/// the memory cost of the window is bounded per session.
+const FINISHED_TURN_RETENTION: Duration = Duration::from_secs(300);
+
+/// The turn currently in flight for a session — or, briefly, the one that just
+/// ended (see [`FINISHED_TURN_RETENTION`]).
 #[derive(Debug, Clone)]
 struct ActiveTurn {
     /// Server-assigned id, surfaced to a client whose `/reply` was rejected.
@@ -36,6 +52,17 @@ struct ActiveTurn {
     /// and `/agent/stop` merely evicted the agent from the LRU while the turn
     /// kept running on its own `Arc<Agent>`.
     cancel: CancellationToken,
+    /// This turn's sequence-numbered, replayable frame log. Created WITH the
+    /// turn rather than by the request that happens to start it, because the
+    /// stream belongs to the turn: every observer, including the POST that
+    /// began it, is just a reader of this.
+    stream: Arc<TurnStream>,
+    /// `Some` once the turn's guard has dropped — i.e. the turn is OVER. The
+    /// entry survives its turn only so a re-POST of the same idempotency key
+    /// can be answered from the replay above instead of starting a second turn;
+    /// a finished entry blocks nothing and is swept after
+    /// [`FINISHED_TURN_RETENTION`].
+    finished_at: Option<Instant>,
 }
 
 /// Why `AppState::try_begin_turn_idempotent` refused to start a turn.
@@ -47,6 +74,15 @@ pub struct TurnConflict {
     /// POST is a *re-delivery of that same turn*, not a second one. Clients treat
     /// it as "your turn is still running, re-attach" instead of an error.
     pub duplicate: bool,
+    /// The colliding turn's frame log, so a `duplicate` caller can be ATTACHED
+    /// to it — answered 200 with the whole turn replayed from seq 0 and then the
+    /// live tail — rather than told 409 and left with no way back into a turn
+    /// that is still spending its tokens.
+    pub stream: Arc<TurnStream>,
+    /// True when the colliding turn has already ENDED and is only being held for
+    /// its replay. Attaching to it yields the complete turn and a terminal
+    /// frame; nothing is still running.
+    pub finished: bool,
 }
 
 /// RAII guard marking that a session has an interactive turn in flight. Held by
@@ -56,9 +92,12 @@ pub struct TurnConflict {
 #[derive(Debug)]
 pub struct TurnGuard {
     session_id: String,
-    /// The turn this guard owns. Checked on drop so a guard can only ever remove
+    /// The turn this guard owns. Checked on drop so a guard can only ever retire
     /// *its own* entry, never a successor's.
     turn_id: String,
+    /// This turn's frame log, so the runner can publish into it without a second
+    /// registry lookup — and so `Drop` can close it.
+    stream: Arc<TurnStream>,
     active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
 }
 
@@ -80,22 +119,58 @@ impl TurnGuard {
     pub fn session_id(&self) -> &str {
         &self.session_id
     }
+
+    /// This turn's frame log. The runner's SSE pump publishes into it and every
+    /// HTTP response that watches the turn reads from it.
+    pub fn stream(&self) -> Arc<TurnStream> {
+        Arc::clone(&self.stream)
+    }
 }
 
 impl Drop for TurnGuard {
     fn drop(&mut self) {
+        // ⚠ This does NOT close the turn's stream, and must not.
+        //
+        // The guard drops the instant the RUNNER returns, but the runner's last
+        // act was to *publish* `TurnFinished` onto the session bus — the pump
+        // has not necessarily consumed it yet. Closing here would race that
+        // read, `publish` would refuse the frame as post-terminal, and every
+        // healthy turn would end in the synthesized "stream ended without a
+        // result" error instead of a clean `Finish`. The pump owns the log's
+        // lifetime and closes it on every one of its exit paths
+        // (`pump_bus_into_stream`); a turn with no pump is only ever attached to
+        // through the retired path, which closes on demand.
         let mut turns = self
             .active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        // Only clear the slot if it is still ours.
-        if turns
-            .get(&self.session_id)
-            .is_some_and(|turn| turn.turn_id == self.turn_id)
-        {
-            turns.remove(&self.session_id);
+        // Only touch the slot if it is still ours.
+        if let Some(turn) = turns.get_mut(&self.session_id) {
+            if turn.turn_id == self.turn_id {
+                // NOT `remove`. The entry is retired, not deleted: a re-POST of
+                // this turn's idempotency key inside FINISHED_TURN_RETENTION
+                // must attach to the replay above, not start a second turn and
+                // spend the tokens twice. `finished_at` is what every "is a turn
+                // running?" reader below filters on, so a retired entry blocks
+                // nothing.
+                turn.finished_at = Some(Instant::now());
+            }
         }
+        prune_finished_turns(&mut turns);
     }
+}
+
+/// Drop retired entries once nothing can still be addressing them by key.
+///
+/// Called from the two places that already hold the registry lock — a guard
+/// dropping and a turn beginning — so there is no sweeper task to leak, and the
+/// map stays bounded by "sessions that ran a turn in the last five minutes"
+/// rather than by every session id the process has ever seen.
+fn prune_finished_turns(turns: &mut HashMap<String, ActiveTurn>) {
+    turns.retain(|_, turn| {
+        turn.finished_at
+            .is_none_or(|at| at.elapsed() < FINISHED_TURN_RETENTION)
+    });
 }
 
 #[derive(Clone)]
@@ -178,7 +253,10 @@ impl AppState {
     /// the server cannot distinguish that from a genuine second turn, so the
     /// retry either starts a duplicate turn (double token spend, interleaved
     /// output) or is rejected as a hard error. With one, the conflict comes back
-    /// flagged `duplicate` and the client knows its turn is simply still running.
+    /// flagged `duplicate` — carrying the turn's [`TurnStream`], so `/reply` can
+    /// ATTACH the caller to the running turn (200 + its replay) instead of
+    /// answering 409 and leaving it with no way back into a turn that is still
+    /// spending its tokens.
     pub fn try_begin_turn_idempotent(
         &self,
         session_id: &str,
@@ -189,29 +267,53 @@ impl AppState {
             .active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        prune_finished_turns(&mut turns);
 
         if let Some(running) = turns.get(session_id) {
             // A key only marks a duplicate when the client actually supplied one
             // *and* it names the running turn. Two keyless turns are two turns.
-            let duplicate = idempotency_key.is_some() && idempotency_key == running.idempotency_key;
-            return Err(TurnConflict {
-                running_turn_id: running.turn_id.clone(),
-                duplicate,
-            });
+            //
+            // EITHER NAME identifies the turn: the key the client chose, or the
+            // server-assigned `turn-N`. A client that reloaded did not keep its
+            // own key — what it has is the `turn_id` stamped on the last frame it
+            // rendered, or the one `POST /agent/resume` handed it, and both of
+            // those are the server's. Matching only the client's key would 409
+            // every reload-then-reattach, which is the case this exists for.
+            let duplicate = idempotency_key.is_some()
+                && (idempotency_key == running.idempotency_key
+                    || idempotency_key.as_deref() == Some(running.turn_id.as_str()));
+            let finished = running.finished_at.is_some();
+            // A RUNNING turn always conflicts. A FINISHED one conflicts only for
+            // the client re-POSTing its own key — that caller is re-delivering a
+            // turn it already paid for and must be given the replay, while
+            // anyone else is simply sending the next message and gets a fresh
+            // turn (the insert below replaces the retired entry).
+            if !finished || duplicate {
+                return Err(TurnConflict {
+                    running_turn_id: running.turn_id.clone(),
+                    duplicate,
+                    stream: Arc::clone(&running.stream),
+                    finished,
+                });
+            }
         }
 
         let turn_id = format!("turn-{}", TURN_SEQ.fetch_add(1, Ordering::Relaxed));
+        let stream = TurnStream::new(session_id, &turn_id);
         turns.insert(
             session_id.to_string(),
             ActiveTurn {
                 turn_id: turn_id.clone(),
                 idempotency_key,
                 cancel,
+                stream: Arc::clone(&stream),
+                finished_at: None,
             },
         );
         Ok(TurnGuard {
             session_id: session_id.to_string(),
             turn_id,
+            stream,
             active_turns: Arc::clone(&self.active_turns),
         })
     }
@@ -233,6 +335,10 @@ impl AppState {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(session_id)
+            // A retired entry is not a turn: cancelling a turn that already
+            // ended must stay the 200 `cancelled: false` no-op it has always
+            // been, not report that it stopped something.
+            .filter(|turn| turn.finished_at.is_none())
             .cloned()?;
         turn.cancel.cancel();
         Some(turn.turn_id)
@@ -242,11 +348,16 @@ impl AppState {
     /// turn lock is held). BR-61 uses it to reject a soft interrupt that has no
     /// running turn to steer — queueing it on the agent would otherwise strand
     /// the text until some later turn injected it out of nowhere.
+    ///
+    /// A retired entry (a turn that has ended, kept only so its key can be
+    /// re-POSTed into its replay) is NOT active. Every reader below filters the
+    /// same way, so "the map has an entry" and "a turn is running" never drift.
     pub fn is_turn_active(&self, session_id: &str) -> bool {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(session_id)
+            .get(session_id)
+            .is_some_and(|turn| turn.finished_at.is_none())
     }
 
     /// Every session with a turn in flight right now (BR-71 CLI parity).
@@ -258,17 +369,66 @@ impl AppState {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .keys()
-            .cloned()
+            .iter()
+            .filter(|(_, turn)| turn.finished_at.is_none())
+            .map(|(session_id, _)| session_id.clone())
             .collect()
     }
 
-    pub fn has_active_turns(&self) -> bool {
-        !self
-            .active_turns
+    /// The id of the turn in flight for `session_id`, if there is one.
+    ///
+    /// Exists so `POST /agent/resume` can hand a reloading window the turn it
+    /// should re-attach to. Without it the client has to publish its own turn
+    /// pointer through `localStorage` and survive a reload with it — and a
+    /// pointer the client keeps is a pointer that can go stale, which makes
+    /// "attached to a turn that no longer exists" a category of bug rather than
+    /// an impossible state. The server always knows; asking it removes the
+    /// class. Returns `None` for a retired (already finished) turn: there is
+    /// nothing live to attach to.
+    ///
+    /// It also returns `None` for a turn whose stream has no WRITER, and that
+    /// filter is not an optimisation. Several callers take this same turn lock
+    /// for reasons that have nothing to do with streaming — an in-place edit and
+    /// a working-directory change hold it as a plain mutex, and the workspace
+    /// and app turn runners hold it without a `/reply` pump. Advertising one of
+    /// those as attachable told a reloading window to follow a log that nothing
+    /// will ever write to and nothing will ever close: the window parked on it,
+    /// set `chatState: Streaming`, and its composer was dead until the user
+    /// reloaded. What a client may attach to and what a pump is writing are the
+    /// same set, by construction, here.
+    pub fn active_turn_id(&self, session_id: &str) -> Option<String> {
+        self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .is_empty()
+            .get(session_id)
+            .filter(|turn| turn.finished_at.is_none() && turn.stream.has_writer())
+            .map(|turn| turn.turn_id.clone())
+    }
+
+    /// Does this session hold a turn — running or retained for replay — that
+    /// `turn_id` names?
+    ///
+    /// Read-only, and that is the point: `/reply` uses it to tell an ATTACH
+    /// whose turn is gone from a first POST, and it must be able to ask without
+    /// minting a turn entry to find out. Matches EITHER name, exactly as
+    /// [`Self::try_begin_turn_idempotent`] does — the client's own idempotency
+    /// key, or the server-assigned `turn-N` a reloaded window read off a frame.
+    pub fn knows_turn(&self, session_id: &str, turn_id: &str) -> bool {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .is_some_and(|turn| {
+                turn.turn_id == turn_id || turn.idempotency_key.as_deref() == Some(turn_id)
+            })
+    }
+
+    pub fn has_active_turns(&self) -> bool {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .any(|turn| turn.finished_at.is_none())
     }
 
     pub async fn clear_cached_agents(&self) -> usize {
@@ -511,6 +671,78 @@ mod tests {
             .try_begin_turn_idempotent("tg-session-test", CancellationToken::new(), None)
             .unwrap();
         assert_eq!(guard.session_id(), "tg-session-test");
+    }
+
+    /// A turn that has ENDED is retired, not deleted — its entry survives so a
+    /// re-POST of its idempotency key attaches to the replay instead of starting
+    /// a second turn. But a retired entry must be invisible to every "is a turn
+    /// running?" reader, or the session would look permanently busy: no new
+    /// turn, no steer, and a Stop button reporting it stopped something.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_retired_turn_blocks_nothing_and_is_not_reported_as_running() {
+        let state = AppState::new().await.unwrap();
+        let token = CancellationToken::new();
+
+        let guard = state
+            .try_begin_turn_idempotent("retired", token.clone(), Some("k-1".into()))
+            .expect("turn starts");
+        assert!(state.is_turn_active("retired"));
+        drop(guard);
+
+        assert!(
+            !state.is_turn_active("retired"),
+            "a finished turn is not active"
+        );
+        assert!(state.active_turn_id("retired").is_none());
+        assert!(!state
+            .active_turn_session_ids()
+            .contains(&"retired".to_string()));
+        assert!(
+            state.cancel_turn("retired").is_none(),
+            "nothing left to stop"
+        );
+
+        // The same key still names the finished turn, so a reconnect is answered
+        // from its replay rather than re-running it.
+        let conflict = state
+            .try_begin_turn_idempotent("retired", CancellationToken::new(), Some("k-1".into()))
+            .expect_err("the retired turn is still addressable by its key");
+        assert!(conflict.duplicate && conflict.finished);
+        // The guard deliberately did NOT close the log — closing there would
+        // race the pump's read of the runner's own terminal frame. Closing is
+        // the pump's job, or (for a turn with no pump) the retired-attach path's.
+        assert!(!conflict.stream.is_closed());
+
+        // A DIFFERENT key is simply the next message, and starts a fresh turn.
+        let next = state
+            .try_begin_turn_idempotent("retired", CancellationToken::new(), Some("k-2".into()))
+            .expect("a retired entry must never block the next turn");
+        assert_ne!(next.turn_id(), conflict.running_turn_id);
+        assert!(state.is_turn_active("retired"));
+    }
+
+    /// The server-assigned id is an attach pointer too — it is what a reloaded
+    /// window holds, since it never kept the key it originally chose.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_turn_is_addressable_by_its_server_assigned_id() {
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent("by-server-id", CancellationToken::new(), Some("k".into()))
+            .expect("turn starts");
+        let server_id = guard.turn_id().to_string();
+
+        let conflict = state
+            .try_begin_turn_idempotent(
+                "by-server-id",
+                CancellationToken::new(),
+                Some(server_id.clone()),
+            )
+            .expect_err("no second turn starts");
+        assert!(
+            conflict.duplicate,
+            "the id a reloaded window actually holds must identify the turn"
+        );
+        assert_eq!(conflict.stream.turn_id(), server_id);
     }
 
     /// A guard may only ever clear its own turn. If a guard outlived its slot and

@@ -1,3 +1,8 @@
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 /// End-to-end integration test that drives the /knowledge router through a
 /// realistic, multi-step flow without requiring a live LLM provider:
 ///

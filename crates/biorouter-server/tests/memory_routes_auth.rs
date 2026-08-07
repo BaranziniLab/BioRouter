@@ -20,6 +20,11 @@
 //! `biorouter_mcp::global_memory_dir` honours, so the production wiring reads a
 //! temporary directory rather than `~/.config/biorouter/memory`.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use axum::{body::Body, http::Request, http::StatusCode, middleware, Router};
 use biorouter_server::auth::check_token;
 use tower::ServiceExt;

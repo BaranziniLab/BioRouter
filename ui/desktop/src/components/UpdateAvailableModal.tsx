@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from './ui/dialog';
+import { ModalShell } from './ModalShell';
 import { Download, ExternalLink, Loader2, AlertCircle, Rocket } from './icons/app-icons';
 import { UPDATES_ENABLED } from '../updates';
 import {
@@ -112,77 +112,31 @@ export default function UpdateAvailableModal() {
   const isError = state.phase === 'error';
 
   return (
-    <Dialog open={open} onOpenChange={(o) => (!o ? dismiss() : setOpen(true))}>
-      <DialogContent className="sm:max-w-[460px]">
-        <DialogHeader>
-          <DialogTitle className="flex items-center gap-2">
-            {downloaded ? (
-              <Rocket className="w-5 h-5 text-background-accent" />
-            ) : isError ? (
-              <AlertCircle className="w-5 h-5 text-text-danger" />
-            ) : (
-              <Download className="w-5 h-5 text-background-accent" />
-            )}
-            {downloaded
-              ? 'Update ready to install'
-              : isError
-                ? 'Update download failed'
-                : 'Downloading update…'}
-          </DialogTitle>
-        </DialogHeader>
-
-        <div className="py-2 space-y-3">
-          {(state.latestVersion || currentVersion) && (
-            <div className="bg-background-muted rounded-lg px-3 py-2 space-y-1">
-              <div className="flex items-center justify-between">
-                <span className="text-xs text-text-muted">Current</span>
-                <span className="text-sm font-mono text-text-default">{currentVersion}</span>
-              </div>
-              {state.latestVersion && (
-                <div className="flex items-center justify-between">
-                  <span className="text-xs text-text-muted">New version</span>
-                  <span className="text-sm font-mono font-semibold text-text-default">
-                    {state.latestVersion}
-                  </span>
-                </div>
-              )}
-            </div>
+    <ModalShell
+      open={open}
+      onOpenChange={(o) => (!o ? dismiss() : setOpen(true))}
+      size="md"
+      purpose="info"
+      title={
+        <span className="flex items-center gap-2">
+          {downloaded ? (
+            <Rocket className="w-5 h-5 flex-none text-background-accent" />
+          ) : isError ? (
+            <AlertCircle className="w-5 h-5 flex-none text-text-danger" />
+          ) : (
+            <Download className="w-5 h-5 flex-none text-background-accent" />
           )}
-
-          {downloaded && (
-            <p className="text-sm text-text-default">
-              The update has been downloaded. Click <strong>Restart &amp; Update</strong> and
-              Biorouter will reopen on the new version automatically. Your settings, sessions, and
-              extensions are preserved.
-            </p>
-          )}
-
-          {state.phase === 'available' && (
-            <div className="space-y-2">
-              <p className="text-sm text-text-default">
-                A new version is downloading in the background. You can keep working. We&apos;ll let
-                you know the moment it&apos;s ready to install.
-              </p>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
-                <div
-                  className="h-full rounded-full bg-background-accent transition-all duration-300"
-                  style={{ width: `${Math.max(4, state.percent)}%` }}
-                />
-              </div>
-              <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
-            </div>
-          )}
-
-          {isError && (
-            <p className="text-xs font-mono text-text-muted bg-background-muted rounded px-2 py-1">
-              {state.error || 'Something went wrong while downloading the update.'}
-            </p>
-          )}
-        </div>
-
-        <DialogFooter className="flex-wrap gap-2">
+          {downloaded
+            ? 'Update ready to install'
+            : isError
+              ? 'Update download failed'
+              : 'Downloading update…'}
+        </span>
+      }
+      footer={
+        <>
           <Button variant="outline" size="sm" onClick={dismiss}>
-            {downloaded ? 'Later' : 'Not Now'}
+            {downloaded ? 'Later' : 'Not now'}
           </Button>
           <Button
             variant="secondary"
@@ -209,8 +163,57 @@ export default function UpdateAvailableModal() {
               Preparing…
             </Button>
           ) : null}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      }
+    >
+      <div className="py-3 space-y-3">
+        {(state.latestVersion || currentVersion) && (
+          <div className="bg-background-muted rounded-lg px-3 py-2 space-y-1">
+            <div className="flex items-center justify-between">
+              <span className="text-xs text-text-muted">Current</span>
+              <span className="text-sm font-mono text-text-default">{currentVersion}</span>
+            </div>
+            {state.latestVersion && (
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-text-muted">New version</span>
+                <span className="text-sm font-mono font-semibold text-text-default">
+                  {state.latestVersion}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {downloaded && (
+          <p className="text-sm text-text-default">
+            The update has been downloaded. Click <strong>Restart &amp; Update</strong> and
+            Biorouter will reopen on the new version automatically. Your settings, sessions, and
+            extensions are preserved.
+          </p>
+        )}
+
+        {state.phase === 'available' && (
+          <div className="space-y-2">
+            <p className="text-sm text-text-default">
+              A new version is downloading in the background. You can keep working. We&apos;ll let
+              you know the moment it&apos;s ready to install.
+            </p>
+            <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
+              <div
+                className="h-full rounded-full bg-background-accent transition-all duration-300"
+                style={{ width: `${Math.max(4, state.percent)}%` }}
+              />
+            </div>
+            <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
+          </div>
+        )}
+
+        {isError && (
+          <p className="text-xs font-mono text-text-muted bg-background-muted rounded px-2 py-1">
+            {state.error || 'Something went wrong while downloading the update.'}
+          </p>
+        )}
+      </div>
+    </ModalShell>
   );
 }

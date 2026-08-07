@@ -481,9 +481,28 @@ async fn a_private_capability_may_not_write_a_global_memory_through_the_real_dis
     )
     .await;
     assert!(!is_error, "the local write must still be allowed: {text}");
+    // AR-3 was CLOSED, not merely disclosed, and that is why this assertion
+    // moved. It used to demand the phrase "including one on a public model" —
+    // the wording of a *conceded residual*, back when a private chat's local
+    // note still reached the system prompt of every session opened in that
+    // directory and all the user got was a warning. `compose_instructions` now
+    // withholds private-written entries from that prompt (counted, never shown,
+    // fetchable only from a chat that is itself on a private model), so the
+    // sentence the test was demanding is one the code should no longer say.
+    //
+    // Assert the two halves of the PROMISE rather than a phrase, so a build that
+    // quietly stops honouring it fails here — the direction that matters. A
+    // disclosure claiming a public model cannot read something it can is worse
+    // than no disclosure, because the user acts on it.
     assert!(
-        text.contains("including one on a public model"),
-        "AR-3's disclosure did not reach the transcript: {text}"
+        text.contains("kept OUT of the system prompt"),
+        "the disclosure no longer promises the note is withheld from the system \
+         prompt: {text}"
+    );
+    assert!(
+        text.contains("public model") && text.contains("cannot read it back"),
+        "the disclosure no longer tells the user a public-model chat cannot read \
+         this back — the half they act on: {text}"
     );
 
     // And the same two calls on a PUBLIC capability, or the assertions above

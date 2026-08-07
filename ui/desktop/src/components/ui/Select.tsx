@@ -14,8 +14,10 @@ import ReactSelect from 'react-select';
  * own close button.
  *
  * `unstyled` strips react-select's Emotion base styles, but Emotion still injects
- * `fontSize: inherit` on options AFTER Tailwind's layer. Pinning `text-sm` on the
- * menu makes the inherit chain resolve to 14px instead of the <body>'s 16px.
+ * `fontSize: inherit` on options AFTER Tailwind's layer. Pinning a 14px type role
+ * on the menu makes the inherit chain resolve to 14px instead of the <body>'s 16px.
+ * That role is `text-body` (14/20/400), NOT `text-label` — a 500 weight on the menu
+ * would erase the weight contrast the selected option uses to mark itself.
  *
  * D-08 selected a full migration to Radix Select + Command. That is staged
  * separately: three of the four call sites are plain selects, but the model
@@ -39,39 +41,55 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
       classNames={{
         container: () => 'w-full cursor-pointer relative',
         indicatorSeparator: () => 'h-0',
+        // The trigger IS the <Input> chrome, class for class (§3.2): the 32px md
+        // rung, 8px text inset, the derived `--border-emphasized` edge and the
+        // same inset-ring hover whisper. react-select gives us no `:focus` to
+        // hang the global rule on — it moves focus to a hidden input — so the
+        // focused branch reproduces main.css's surface shift by hand, and stands
+        // the whisper down at the same time so the two never stack.
         control: ({ isFocused, isDisabled }) =>
           [
-            'flex h-9 w-full items-center rounded-md border bg-background-default px-3',
-            'text-sm text-text-default transition-colors',
-            isDisabled
-              ? 'cursor-not-allowed opacity-50'
-              : 'cursor-pointer hover:border-border-strong',
-            isFocused
-              ? 'border-[var(--border-focus)] bg-[var(--background-focus)]'
-              : 'border-border-input',
+            'flex h-8 w-full items-center rounded-element border bg-background-default px-2',
+            'text-label text-text-default transition-[color,background-color,border-color,box-shadow]',
+            isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+            isFocused ? 'border-border-focus bg-background-focus' : 'border-border-emphasized',
+            !isDisabled && !isFocused
+              ? 'hover:inset-ring-2 hover:inset-ring-border-emphasized/30'
+              : '',
           ].join(' '),
         placeholder: () => 'text-text-muted',
         singleValue: () => 'text-text-default',
         input: () => 'text-text-default',
-        dropdownIndicator: () =>
-          'text-text-muted transition-transform duration-[var(--motion-fast)]',
-        // --radius-xl (12px), matching every other floating surface (§4.5).
+        dropdownIndicator: () => 'text-text-muted transition-transform',
+        // --radius-container (12px), matching every other floating surface (§4.5).
         menu: () =>
-          'biorouter-popover-surface mt-1.5 bg-background-default rounded-xl text-sm select__menu absolute',
+          'biorouter-popover-surface mt-1.5 bg-background-default rounded-container text-body select__menu absolute',
         menuList: () => 'max-h-60 overflow-y-auto p-1',
-        groupHeading: () =>
-          'px-3 pt-2 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-text-muted',
-        noOptionsMessage: () => 'px-3 py-2 text-sm text-text-muted',
+        // `text-caps` carries the uppercase transform itself — a second
+        // `uppercase` beside it is the redundancy the type roles exist to end.
+        groupHeading: () => 'px-2 pt-2 pb-1.5 text-caps text-text-muted',
+        noOptionsMessage: () => 'px-2 py-2 text-body text-text-muted',
         option: ({ isFocused, isSelected, isDisabled }) => {
-          const base = 'flex h-8 items-center rounded-md px-3 text-sm cursor-pointer';
+          // 32px rows at 8px inset — the shared menu-row geometry (§3.8), which
+          // is also what makes the option row and the trigger above it agree.
+          const base = 'flex h-8 items-center rounded-element px-2 text-body cursor-pointer';
           if (isDisabled) return `${base} opacity-50 cursor-not-allowed pointer-events-none`;
           if (isSelected) {
             // A selected row is emphasised, not inverted. It used to fill with
             // bg-background-accent — a near-black block in a menu of neutral rows.
-            return `${base} bg-background-medium font-medium text-text-default pointer-events-auto`;
+            //
+            // `tint-selected tint-interactive` is the pair, not two independent
+            // choices: on its own the selected wash (14%) would be REPLACED by a
+            // plain hover (5%) and the row would visibly un-select under the
+            // pointer. The pair rule in main.css resolves it to 19% instead.
+            return `${base} tint-selected tint-interactive font-medium text-text-default pointer-events-auto`;
           }
-          if (isFocused) return `${base} bg-background-muted text-text-default pointer-events-auto`;
-          return `${base} text-text-default hover:bg-background-muted pointer-events-auto`;
+          // `isFocused` is react-select's keyboard/pointer highlight — a state
+          // class, not a pseudo — so it cannot come from `tint-interactive`.
+          // The row has no fill of its own, so a translucent background COLOUR is
+          // safe here: there is nothing for it to replace.
+          if (isFocused) return `${base} bg-overlay-hover text-text-default pointer-events-auto`;
+          return `${base} text-text-default tint-interactive pointer-events-auto`;
         },
       }}
       menuShouldBlockScroll={false}

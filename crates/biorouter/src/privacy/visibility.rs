@@ -262,9 +262,29 @@ mod tests {
     #[test]
     fn the_matrix_has_production_callers() {
         const WORKSPACE: &str = include_str!("../agents/workspace_extension.rs");
+        // The module's VISIBILITY is not this scan's business, and pinning one
+        // spelling of it made this test a tripwire for an unrelated change. The
+        // workspace lane made that module `pub(crate)` so a sibling file could
+        // share a test helper; this `find` was looking for exactly
+        // `#[cfg(test)]\nmod tests {`, stopped matching, and panicked — taking
+        // the entire `biorouter` test binary down before any other test ran, so
+        // one cosmetic edit hid 2443 results. Step over an optional visibility
+        // modifier instead; the negative control below is what actually proves
+        // the cut landed, and it does that for any spelling.
         let cut = WORKSPACE
-            .find("#[cfg(test)]\nmod tests {")
-            .expect("workspace_extension.rs no longer has a `#[cfg(test)] mod tests`");
+            .match_indices("mod tests {")
+            .find_map(|(i, _)| {
+                let before = WORKSPACE[..i].trim_end();
+                let before = before.strip_suffix("pub(crate)").unwrap_or(before).trim_end();
+                let before = before.strip_suffix("pub").unwrap_or(before).trim_end();
+                before
+                    .ends_with("#[cfg(test)]")
+                    .then(|| before.len() - "#[cfg(test)]".len())
+            })
+            .expect(
+                "workspace_extension.rs no longer has a `#[cfg(test)]` test module — this scan \
+                 cuts the file there, so it cannot run without one",
+            );
         let (production, tests) = WORKSPACE.split_at(cut);
 
         // The control, FIRST. `for_test_restricted` is spelled only by tests —

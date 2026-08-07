@@ -25,12 +25,12 @@ describe('ParameterInputModal', () => {
       />
     );
 
-    expect(screen.getByText('Workflow Parameters')).toBeInTheDocument();
+    expect(screen.getByText('Workflow parameters')).toBeInTheDocument();
     await user.keyboard('{Escape}');
-    expect(screen.getByText('Cancel Workflow Setup')).toBeInTheDocument();
+    expect(screen.getByText('Cancel workflow setup?')).toBeInTheDocument();
 
     await user.keyboard('{Escape}');
-    expect(screen.getByText('Workflow Parameters')).toBeInTheDocument();
+    expect(screen.getByText('Workflow parameters')).toBeInTheDocument();
     expect(onClose).not.toHaveBeenCalled();
   });
 });

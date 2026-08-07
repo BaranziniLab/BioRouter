@@ -66,10 +66,7 @@ export default function ProviderSettings({
           <div className="flex items-center mb-4 no-drag">
             <BackButton onClick={onClose} />
           </div>
-          <h1
-            className="text-2xl font-semibold tracking-tight mb-1"
-            data-testid="provider-selection-heading"
-          >
+          <h1 className="text-title mb-1" data-testid="provider-selection-heading">
             {isOnboarding ? 'Other Providers' : 'Provider Configuration'}
           </h1>
           <p className="text-sm text-text-muted">

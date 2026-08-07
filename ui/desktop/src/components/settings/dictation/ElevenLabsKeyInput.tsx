@@ -69,7 +69,7 @@ export const ElevenLabsKeyInput = () => {
   };
 
   return (
-    <div className="py-2 px-2 bg-background-muted rounded-lg">
+    <div className="py-2 px-2 bg-background-muted rounded-element">
       <div className="mb-2">
         <h4 className="text-text-default text-sm">ElevenLabs API Key</h4>
         <p className="text-xs text-text-muted mt-[2px]">

@@ -182,16 +182,16 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
             onDrop={handleDrop}
             onClick={() => mdInputRef.current?.click()}
             className={[
-              'biorouter-modal-panel rounded-xl p-10 text-center cursor-pointer select-none transition-colors duration-150',
+              'biorouter-modal-panel rounded-container p-10 text-center cursor-pointer select-none transition-colors',
               isDragging
                 ? 'border-border-accent bg-background-accent/5'
                 : error
                   ? 'border-border-danger bg-background-danger/10'
-                  : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-background-medium',
+                  : 'border-border-subtle bg-background-muted hover:border-border-strong hover:bg-overlay-hover',
             ].join(' ')}
           >
-            <p className="text-sm font-medium text-text-default mb-1">Drop a skill file here</p>
-            <p className="text-xs text-text-muted">
+            <p className="text-label text-text-default mb-1">Drop a skill file here</p>
+            <p className="text-supporting text-text-muted">
               or click to browse. Accepts <code>.md</code> or <code>.zip</code>
             </p>
           </div>
@@ -204,16 +204,16 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
           />
 
           {error && (
-            <div className="text-sm text-text-danger bg-background-danger/10 rounded-lg px-4 py-3">
+            <div className="text-body text-text-danger bg-background-danger/10 rounded-element px-4 py-3">
               {error}
             </div>
           )}
 
           {preview && !preview.isBundle && (
-            <div className="biorouter-modal-panel rounded-lg px-4 py-3">
-              <p className="text-sm font-semibold">{preview.name}</p>
-              <p className="text-xs text-text-muted mt-0.5">{preview.description}</p>
-              <p className="text-[11px] text-text-subtle mt-1 font-mono">
+            <div className="biorouter-modal-panel rounded-element px-4 py-3">
+              <p className="text-label">{preview.name}</p>
+              <p className="text-supporting text-text-muted mt-0.5">{preview.description}</p>
+              <p className="text-supporting text-text-subtle mt-1 font-mono">
                 {preview.files.length} file{preview.files.length !== 1 ? 's' : ''} · from{' '}
                 {preview.label}
               </p>
@@ -221,22 +221,22 @@ export default function AddSkillModal({ onClose, onSaved }: Props) {
           )}
 
           {preview && preview.isBundle && (
-            <div className="biorouter-modal-panel rounded-lg px-4 py-3">
-              <p className="text-sm font-semibold">
+            <div className="biorouter-modal-panel rounded-element px-4 py-3">
+              <p className="text-label">
                 Bundle: {preview.bundleName}
-                <span className="ml-2 text-xs text-text-subtle font-normal">
+                <span className="ml-2 text-supporting text-text-subtle">
                   {preview.bundleSkills.length} skills
                 </span>
               </p>
               <div className="mt-1.5 max-h-[120px] overflow-y-auto">
                 {preview.bundleSkills.map((s) => (
-                  <p key={s.name} className="text-xs text-text-muted leading-relaxed">
+                  <p key={s.name} className="text-supporting text-text-muted">
                     · {s.name}
                     {s.description && <span className="text-text-subtle">: {s.description}</span>}
                   </p>
                 ))}
               </div>
-              <p className="text-[11px] text-text-subtle mt-1.5 font-mono">
+              <p className="text-supporting text-text-subtle mt-1.5 font-mono">
                 {preview.files.length} file{preview.files.length !== 1 ? 's' : ''} · from{' '}
                 {preview.label}
               </p>

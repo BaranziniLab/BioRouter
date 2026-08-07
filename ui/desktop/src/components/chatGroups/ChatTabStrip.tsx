@@ -75,6 +75,22 @@ export interface ChatTabStripProps {
   reserveTitlebar: boolean;
   isCompactSidebarOverlayOpen: boolean;
   endSlot?: React.ReactNode;
+  /**
+   * The insertion caret for a CROSS-WINDOW merge — a tab being dragged into this
+   * strip from another window.
+   *
+   * It needs its own prop because `dragOverTabId` cannot supply it. While the
+   * mouse button is held, the OS delivers every pointer event to the window the
+   * drag STARTED in; this window receives nothing at all (measured with real OS
+   * input, design §8 Phase 0), so its own drag state stays empty for the whole
+   * gesture. The caret is driven by IPC from the main process instead.
+   *
+   * The rendering is deliberately identical — the same `[data-dropbefore]`
+   * hairline the local reorder draws. Merging into a strip IS inserting into a
+   * strip; a second visual for it would be a second answer to a question the
+   * strip already answers.
+   */
+  remoteDropBeforeTabId?: ChatTabId | null;
 }
 
 export function ChatTabStrip({
@@ -91,6 +107,7 @@ export function ChatTabStrip({
   reserveTitlebar,
   isCompactSidebarOverlayOpen,
   endSlot,
+  remoteDropBeforeTabId = null,
 }: ChatTabStripProps) {
   // The shell provides ONE gesture for every strip, because a cross-group drag
   // must tint a group this strip does not render. Bare (as in this component's
@@ -305,7 +322,15 @@ export function ChatTabStrip({
               data-tab-id={tab.tabId}
               data-active={isActive ? 'true' : undefined}
               data-dragging={draggedTabId === tab.tabId ? 'true' : undefined}
-              data-dropbefore={dragOverTabId === tab.tabId ? 'true' : undefined}
+              // One attribute, two sources: this window's own drag, or a merge
+              // arriving from another window. They are mutually exclusive in
+              // time — a cross-window drag delivers no pointer events here, so
+              // `dragOverTabId` is null for its whole duration.
+              data-dropbefore={
+                dragOverTabId === tab.tabId || remoteDropBeforeTabId === tab.tabId
+                  ? 'true'
+                  : undefined
+              }
               className={cn('br-tab group')}
               style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
             >
@@ -316,7 +341,11 @@ export function ChatTabStrip({
                 aria-selected={isActive}
                 tabIndex={isActive ? 0 : -1}
                 title={tab.title}
-                className="flex min-w-0 flex-1 items-center gap-[7px] bg-transparent text-left"
+                // Astryx §4.3: ONE icon-label gap across the app, 8px. The 7px
+                // here was the last arbitrary one in the strip — a document tab
+                // and a nav row now measure the same distance from glyph to
+                // word. `gap-2` is the token, not a magic number.
+                className="flex min-w-0 flex-1 items-center gap-2 bg-transparent text-left"
                 onPointerDown={(event) => beginDrag(event, tab.tabId, tab.title, groupId)}
                 onKeyDown={(event) => handleKeyDown(event, index)}
                 onClick={() => {

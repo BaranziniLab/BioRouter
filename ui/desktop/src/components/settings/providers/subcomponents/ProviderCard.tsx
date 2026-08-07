@@ -37,15 +37,15 @@ export const ProviderCard = function ProviderCard({
       data-testid={`provider-card-${provider.name.toLowerCase()}`}
       onClick={!isGrayedOut ? handleCardClick : undefined}
       className={[
-        'flex items-center gap-3 py-3 px-4 rounded-xl',
-        'transition-colors duration-150 group',
-        isGrayedOut ? 'cursor-default' : 'cursor-pointer hover:bg-background-medium',
+        'flex items-center gap-3 py-3 px-4 rounded-container',
+        'transition-colors group',
+        isGrayedOut ? 'cursor-default' : 'cursor-pointer tint-interactive',
       ].join(' ')}
     >
       {/* Provider initial avatar (dimmed when unconfigured, but not the action buttons) */}
       <div
         className={[
-          'w-8 h-8 rounded-lg bg-background-medium flex items-center justify-center flex-shrink-0 text-sm font-semibold text-text-muted select-none',
+          'w-8 h-8 rounded-element bg-background-medium flex items-center justify-center flex-shrink-0 text-sm font-semibold text-text-muted select-none',
           isGrayedOut ? 'opacity-50' : '',
         ].join(' ')}
       >

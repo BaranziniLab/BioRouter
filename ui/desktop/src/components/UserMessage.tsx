@@ -5,6 +5,7 @@ import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils
 import { getTextContent } from '../types/message';
 import { Message } from '../api';
 import MessageCopyLink from './MessageCopyLink';
+import { MessageMeta, MessageMetaAction } from './MessageMeta';
 import { ProvenanceChip } from './ProvenanceChip';
 import { formatMessageTimestamp } from '../utils/timeUtils';
 import { Edit } from './icons/app-icons';
@@ -187,7 +188,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
         )}
         {isEditing ? (
           // Truly wide, centered, in-place edit box replacing the bubble
-          <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-xl border border-border-subtle py-4 px-4 my-2 transition-all duration-200 ease-in-out">
+          <div className="w-full max-w-4xl mx-auto bg-background-default text-text-default rounded-container border border-border-subtle p-3 my-2">
             {editRefs.length > 0 && (
               <div
                 data-testid="edit-reference-rail"
@@ -207,13 +208,11 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
               value={editBody}
               onChange={handleContentChange}
               onKeyDown={handleKeyDown}
-              className="w-full resize-none bg-transparent text-text-default placeholder:text-text-muted border border-border-subtle rounded-lg focus:border-border-strong transition-all duration-200 text-base leading-relaxed"
+              className="w-full resize-none bg-transparent text-body text-text-default placeholder:text-text-muted border border-border-emphasized rounded-element p-3 transition-colors focus:border-border-strong"
               style={{
                 minHeight: '120px',
                 maxHeight: '300px',
-                padding: '16px',
                 fontFamily: 'inherit',
-                lineHeight: '1.6',
                 wordBreak: 'break-word',
                 overflowWrap: 'break-word',
               }}
@@ -225,19 +224,19 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
             {error && (
               <div
                 id={`error-${message.id}`}
-                className="text-text-danger text-xs mt-2 mb-2"
+                className="text-text-danger text-supporting mt-2 mb-2"
                 role="alert"
                 aria-live="polite"
               >
                 {error}
               </div>
             )}
-            <div className="flex justify-between items-center mt-4">
-              <div className="text-xs text-text-muted">
+            <div className="flex justify-between items-center gap-3 mt-3">
+              <div className="text-supporting text-text-muted min-w-0">
                 <span className="font-semibold">Edit in Place</span> updates this session •{' '}
                 <span className="font-semibold">Diverge Session</span> creates a new session
               </div>
-              <div className="flex gap-3">
+              <div className="flex shrink-0 gap-2">
                 <Button onClick={handleCancel} variant="ghost" aria-label="Cancel editing">
                   Cancel
                 </Button>
@@ -266,8 +265,12 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
               <div className="flex flex-col group min-w-0">
                 {/* The user's turn is tinted only so the eye can find the boundary
                     when scrolling. It is NOT an accent surface — a solid coral block
-                    shouts on a canvas whose whole thesis is calm (design.md §4.18). */}
-                <div className="flex min-w-0 rounded-xl border border-border-subtle bg-background-medium px-4 py-2.5">
+                    shouts on a canvas whose whole thesis is calm (design.md §4.18).
+                    The fill IS the boundary, so the border it also carried was the
+                    edge stated twice; it goes, and the radius joins the ladder at
+                    `--radius-container` (12px) rather than sitting on Tailwind's
+                    stock `rounded-xl`. Padding is the specified 10×14. */}
+                <div className="flex min-w-0 rounded-container bg-background-medium px-3.5 py-2.5">
                   {/* min-w-0 is required on this flex item: overflow-wrap:break-word
                       (break-words) prevents *visual* overflow but does NOT reduce the
                       element's intrinsic min-content width, so a long unbroken token
@@ -283,7 +286,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                       too. */}
                   <div
                     ref={contentRef}
-                    className="min-w-0 text-sm text-text-default whitespace-pre-wrap break-words leading-relaxed"
+                    className="min-w-0 text-body text-text-default whitespace-pre-wrap break-words"
                   >
                     <ResourceRefText text={displayText} />
                   </div>
@@ -314,29 +317,23 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                   </div>
                 )}
 
-                <div className="relative h-[22px] flex justify-end text-right">
-                  <div className="absolute w-40 font-sans right-0 text-sm text-text-muted pt-1 transition-[transform,opacity] duration-150 group-hover:-translate-y-4 group-hover:opacity-0">
-                    {timestamp}
-                  </div>
-                  <div className="absolute right-0 pt-1 flex items-center gap-2">
-                    <button
-                      onClick={handleEditClick}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handleEditClick();
-                        }
-                      }}
-                      className="flex items-center gap-1 font-sans text-sm text-text-muted hover:cursor-pointer hover:text-text-default transition-[transform,opacity,color] duration-150 opacity-0 group-hover:opacity-100 -translate-y-4 group-hover:translate-y-0 rounded"
-                      aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
-                      aria-expanded={isEditing}
-                    >
-                      <Edit className="h-3 w-3" />
-                      <span>Edit</span>
-                    </button>
-                    <MessageCopyLink text={displayText} contentRef={contentRef} />
-                  </div>
-                </div>
+                <MessageMeta align="end" timestamp={timestamp}>
+                  <MessageMetaAction
+                    onClick={handleEditClick}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        handleEditClick();
+                      }
+                    }}
+                    icon={<Edit />}
+                    aria-label={`Edit message: ${displayText.substring(0, 50)}${displayText.length > 50 ? '...' : ''}`}
+                    aria-expanded={isEditing}
+                  >
+                    Edit
+                  </MessageMetaAction>
+                  <MessageCopyLink text={displayText} contentRef={contentRef} />
+                </MessageMeta>
               </div>
             </div>
           </div>
@@ -344,9 +341,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
 
         {/* Edited indicator */}
         {hasBeenEdited && !isEditing && (
-          <div className="font-sans text-sm text-text-muted mt-1 text-right transition-opacity duration-200">
-            Edited
-          </div>
+          <div className="text-supporting text-text-muted mt-1 text-right">Edited</div>
         )}
       </div>
     </div>

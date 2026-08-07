@@ -78,19 +78,19 @@ export default function CustomSkillModal({ onClose, onSaved }: Props) {
         </div>
 
         <div className="p-6 flex flex-col gap-3 flex-1 overflow-hidden">
-          <p className="text-xs text-text-muted">
+          <p className="text-supporting text-text-muted">
             Edit the YAML frontmatter (<code>name</code> and <code>description</code> required),
             then write your skill instructions below. A folder named after the skill will be created
             in Biorouter Skills with a <code>SKILL.md</code> inside.
           </p>
           <textarea
-            className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-sm rounded-lg p-3 resize-none"
+            className="biorouter-modal-panel flex-1 min-h-[300px] font-mono text-code rounded-element p-3 resize-none"
             value={content}
             onChange={(e) => setContent(e.target.value)}
             spellCheck={false}
           />
           {error && (
-            <div className="text-sm text-text-danger bg-background-danger/10 rounded-lg px-4 py-2">
+            <div className="text-body text-text-danger bg-background-danger/10 rounded-element px-4 py-2">
               {error}
             </div>
           )}

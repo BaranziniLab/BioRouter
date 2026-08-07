@@ -6,6 +6,12 @@ mod openapi;
 mod routes;
 mod state;
 mod tunnel;
+// `main.rs` re-declares the module tree rather than using the lib, so the bin's
+// dead-code analysis walks only from `main` and does not see the accessors the
+// lib's own tests use (`observer_count`, `is_closed`, `next_seq`, `session_id`).
+// Same situation, same remedy, as `mod workspace` below.
+#[allow(dead_code)]
+mod turn_stream;
 // BR-71 Task 6: the daemon compiles the turn runner, but nothing reachable from
 // `main` calls it until Task 8 switches `/reply` onto it. `main.rs` re-declares
 // the module tree rather than using the lib, so the bin's dead-code analysis
@@ -13,6 +19,12 @@ mod tunnel;
 // `allow` with the Task 8 cutover.
 #[allow(dead_code)]
 mod workspace;
+
+/// `main.rs` re-declares the module tree, so `cargo test` runs a *second* copy
+/// of the route tests inside the `biorouterd` binary. Sandbox it exactly like
+/// the lib's copy, or that copy alone keeps writing to the real `sessions.db`.
+#[cfg(test)]
+mod test_sandbox;
 
 use biorouter::config::paths::Paths;
 use biorouter_mcp::{

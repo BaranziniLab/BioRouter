@@ -9,7 +9,7 @@ export const ProviderInfo = ({ provider }: ProviderInfoProps) => {
   if (!provider) return null;
 
   return (
-    <div className="p-3 bg-background-muted rounded-md">
+    <div className="p-3 bg-background-muted rounded-element">
       {provider === 'openai' && (
         <p className="text-xs text-text-muted">
           Uses OpenAI's Whisper API for high-quality transcription. Requires an OpenAI API key

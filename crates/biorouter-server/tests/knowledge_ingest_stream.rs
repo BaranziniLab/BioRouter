@@ -13,6 +13,11 @@
 //! path (`ingest_rejects_invalid_model_with_400` and friends). Setting the
 //! variable beside them would race.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use axum::{body::Body, http::Request};
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use std::sync::Arc;

@@ -48,7 +48,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [deployment](deployment/README.md) | Running BioRouter as a shared server rather than a desktop app: building the Linux headless artifact, deploying it, and migrating secrets. |
 | [releases](releases/README.md) | Shipping to users: the auto-update QA checklist, a local cross-compilation recipe, and the published per-version release notes. |
 | [troubleshooting](troubleshooting/README.md) | Known problems and their fixes, the diagnostics bundle, and how to file a useful bug report. |
-| [design](design/README.md) | Visual design specifications and their rendered companions: brand marks, theme families, chat-group design spikes, the desktop UI overhaul, and the browser-only design-system and boot-splash studios. |
+| [design](design/README.md) | Visual design specifications and their rendered companions: brand marks, theme families, chat-group design spikes, the desktop UI overhaul, the proposed Astryx interface revision, and the browser-only design-system and boot-splash studios. |
 | [research](research/README.md) | External research — studies of other agentic coding tools, written to inform BioRouter's own design. |
 | [contributing](contributing/README.md) | How this documentation tree itself is written and maintained: the house style every file follows, and the live register of unresolved problems found in it. |
 

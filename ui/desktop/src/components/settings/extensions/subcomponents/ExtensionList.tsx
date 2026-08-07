@@ -62,7 +62,7 @@ export default function ExtensionList({
     <div className="space-y-8">
       {sortedEnabledExtensions.length > 0 && (
         <div>
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+          <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
             <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0"></span>
             Default Extensions ({sortedEnabledExtensions.length})
           </h2>
@@ -84,7 +84,7 @@ export default function ExtensionList({
 
       {sortedDisabledExtensions.length > 0 && (
         <div>
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+          <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
             <span className="w-1.5 h-1.5 bg-background-strong rounded-full flex-shrink-0"></span>
             Available Extensions ({sortedDisabledExtensions.length})
           </h2>

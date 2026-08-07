@@ -72,8 +72,6 @@ export default {
       sidebar: '#f3ede1',
       'sidebar-foreground': '#2a2520',
       'sidebar-icon': '#2a2520',
-      'sidebar-primary': '#b85a32',
-      'sidebar-primary-foreground': '#ffffff',
       'sidebar-hover': '#ece4d4',
       'sidebar-active': '#e4d9c3',
       'sidebar-accent': '#ece4d4',
@@ -87,8 +85,6 @@ export default {
         '0px 8px 24px 0px rgba(32, 25, 15, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.15)',
       'shadow-modal':
         '0px 22px 60px -18px rgba(32, 25, 15, 0.22), 0px 8px 24px -18px rgba(32, 25, 15, 0.16), 0px 0px 0px 1px rgba(32, 25, 15, 0.045)',
-      'shadow-modal-chrome-bottom': 'none',
-      'shadow-modal-chrome-top': 'none',
       scrim: 'rgba(32, 25, 15, 0.18)',
     },
     syntax: {
@@ -181,8 +177,6 @@ export default {
       sidebar: '#282217',
       'sidebar-foreground': '#f4f0e6',
       'sidebar-icon': '#f4f0e6',
-      'sidebar-primary': '#e8895f',
-      'sidebar-primary-foreground': '#16120c',
       'sidebar-hover': '#322b1d',
       'sidebar-active': '#3d3524',
       'sidebar-accent': '#322b1d',
@@ -195,8 +189,6 @@ export default {
       'shadow-popover': '0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5)',
       'shadow-modal':
         '0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055)',
-      'shadow-modal-chrome-bottom': 'none',
-      'shadow-modal-chrome-top': 'none',
       scrim: 'rgba(0, 0, 0, 0.48)',
     },
     syntax: {

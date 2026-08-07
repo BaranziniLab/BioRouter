@@ -10,71 +10,112 @@ const buttonVariants = cva(
   // NB: Tailwind v4 maps scale-*/hover:scale-*/active:scale-* to the standalone
   // `scale` property (not `transform`), so `scale` must be in the transition list
   // for the press/hover scale to ease rather than snap.
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-sm font-medium transition-[color,background-color,border-color,transform,scale,opacity] duration-[var(--motion-fast)] ease-[var(--ease-out)] active:scale-[0.97] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
+  // `--tint-ink` is in the list for the same class of reason: four of the five
+  // variants take their hover/press from `tint-interactive`, which carries the
+  // tint in that registered custom property (background-image does not animate in
+  // Chrome — see main.css). Omitting it made `default` ease its own fill while
+  // destructive/outline/secondary/ghost snapped: two hover behaviours in one
+  // component. An explicit `transition-[…]` list REPLACES the utility's own
+  // fallback, so this is the only place the button can declare it.
+  // `text-label` IS 14/20/500 — it replaces `text-sm font-medium` exactly, and is
+  // the one type role every control in the app now shares.
+  // The duration/easing annotations are gone: `--default-transition-duration` and
+  // `--default-transition-timing-function` are already `--dur-fast` / `--ease-out`
+  // in main.css, so any `transition-*` utility picks them up unannotated.
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-label transition-[color,background-color,border-color,transform,scale,opacity,--tint-ink] active:scale-[0.98] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
   {
     variants: {
+      // One state stack, four fills (§3.1). Hover and press are NOT authored per
+      // variant any more: `tint-interactive` carries both, as a background-IMAGE
+      // that composites over whatever fill the variant already set. This is the
+      // whole reason a filled control may not use `bg-overlay-*` — a background
+      // COLOUR replaces the fill, so `secondary` would get LIGHTER on hover
+      // (5% ink over the PARENT's ground) instead of darker.
+      //
+      // The two exceptions are deliberate and both are solid accent/hue fills:
+      // `default` brightens its own token (`--background-accent-hover`), which is
+      // §3.1's "solid fills brighten rather than take an overlay"; `link` has no
+      // box to tint at all.
       variant: {
         default: 'bg-background-accent text-text-on-accent hover:bg-background-accent-hover',
-        destructive: 'bg-background-danger text-text-on-status hover:opacity-90',
+        // Not a solid red block (§3.1). A translucent danger wash with the deep
+        // danger ink on top reads as consequence without shouting, and — because
+        // the fill is now translucent rather than opaque — the tint composites
+        // correctly. This also retires `hover:opacity-90`, which faded the whole
+        // button and let a modal scrim ghost straight through it.
+        destructive: 'bg-background-danger/22 text-text-danger tint-interactive',
         outline:
-          'bg-transparent border border-border-strong text-text-default hover:bg-background-medium',
-        secondary: 'bg-background-medium text-text-default hover:bg-background-strong',
-        ghost: 'bg-transparent text-text-default hover:bg-background-medium',
+          'bg-transparent border border-border-emphasized text-text-default tint-interactive',
+        secondary: 'bg-background-medium text-text-default tint-interactive',
+        ghost: 'bg-transparent text-text-default tint-interactive',
         link: 'text-text-accent underline-offset-4 hover:underline',
       },
+      // The control ladder (§2.3): sm 28 / md 32 / lg 36, with `default` = md,
+      // plus the sanctioned 24px compact tier as `xs`. Font size does NOT change
+      // with height — every rung is `text-label` — so only the box moves. This
+      // retires the old 24/32/36/40 ladder and, with it, the off-scale 28px that
+      // row actions were hand-rolling because no rung offered it.
       size: {
         xs: 'h-6 gap-1 [&_svg:not([class*=size-])]:size-3',
-        default: 'h-9',
-        sm: 'h-8 gap-1.5',
-        lg: 'h-10',
+        default: 'h-8',
+        sm: 'h-7 gap-1.5',
+        lg: 'h-9',
       },
-      // 'pill' is a misnomer — it maps to rounded-md (8px), not a full pill.
-      // 'round' is a square icon button (w==h via compound variants) also at rounded-md.
+      // 'pill' is a misnomer — it maps to rounded-element (8px), not a full pill.
+      // 'round' is a square icon button (w==h via compound variants), also rounded-element.
       shape: {
-        pill: 'rounded-md',
+        pill: 'rounded-element',
         round: '',
       },
     },
+    // Horizontal padding is 12px at every rung (§3.1) — the four values it
+    // replaces (16/16/24 plus three `has-[>svg]` forks) were the reason two
+    // buttons of the same height could still be different widths for the same
+    // label. Vertical padding is gone entirely: the height token owns the box and
+    // `items-center` owns the 20px line inside it, which is what lets a rung stay
+    // on the ladder when a call site adds an icon.
     compoundVariants: [
       {
         shape: 'pill',
         size: 'xs',
-        className: 'px-2 has-[>svg]:px-2',
+        className: 'px-2',
       },
       {
         shape: 'pill',
         size: 'default',
-        className: 'px-4 py-2 has-[>svg]:px-4',
+        className: 'px-3',
       },
       {
         shape: 'pill',
         size: 'sm',
-        className: 'px-4 has-[>svg]:px-3',
+        className: 'px-3',
       },
       {
         shape: 'pill',
         size: 'lg',
-        className: 'px-6 has-[>svg]:px-6',
+        className: 'px-3',
       },
+      // Icon buttons are square on the same ladder: 32×32 with a 16px icon is the
+      // one row-action size, and 24×24 is the compact tier (code-block chrome).
       {
         shape: 'round',
         size: 'xs',
-        className: 'w-6 h-6 p-0 rounded-md',
+        className: 'w-6 h-6 p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'default',
-        className: 'w-9 h-9 p-0 rounded-md',
+        className: 'w-8 h-8 p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'sm',
-        className: 'w-8 h-8 p-0 rounded-md',
+        className: 'w-7 h-7 p-0 rounded-element',
       },
       {
         shape: 'round',
         size: 'lg',
-        className: 'w-10 h-10 p-0 rounded-md',
+        className: 'w-9 h-9 p-0 rounded-element',
       },
     ],
     defaultVariants: {

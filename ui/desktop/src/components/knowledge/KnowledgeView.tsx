@@ -45,29 +45,29 @@ function KnowledgeViewInner() {
         className="relative flex min-w-0 flex-1 flex-col overflow-hidden"
         data-search-scroll-area
       >
+        {/* §4.2 — the hairline is FULL-BLEED, not capped to the reading column. */}
+        <div className="flex-shrink-0 border-b border-border-subtle">
+          <ReadableContent size="text" className="px-4 pb-4 pt-8 sm:px-6 lg:px-8 lg:pb-6 lg:pt-12">
+            <div className="page-transition">
+              <h1 className="text-title">Knowledge</h1>
+              <p className="mt-1 text-secondary text-text-muted">
+                Personal, LLM-maintained knowledge bases.
+              </p>
+            </div>
+          </ReadableContent>
+        </div>
         <ReadableContent
           size="text"
-          className="flex-shrink-0 border-b border-border-subtle px-4 pb-4 pt-8 sm:px-6 lg:px-8 lg:pb-6 lg:pt-12"
+          className="mb-4 mt-2 grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] items-stretch gap-3 overflow-hidden px-4 sm:px-6 lg:mb-6 lg:grid-cols-[minmax(280px,360px)_minmax(0,1fr)] lg:grid-rows-1 lg:gap-4 lg:px-8"
         >
-          <div className="page-transition">
-            <h1 className="text-2xl font-semibold tracking-tight">Knowledge</h1>
-            <p className="mt-1 text-sm text-text-muted">
-              Personal, LLM-maintained knowledge bases.
-            </p>
-          </div>
-        </ReadableContent>
-        <ReadableContent
-          size="text"
-          className="mb-4 mt-2 grid min-h-0 flex-1 grid-cols-1 grid-rows-[auto_minmax(0,1fr)] items-stretch gap-3 overflow-hidden px-4 sm:px-6 lg:mb-6 lg:grid-cols-[360px_minmax(0,1fr)] lg:grid-rows-1 lg:gap-4 lg:px-8"
-        >
-          <div className="flex min-w-0 items-center gap-3 rounded-xl border border-border-subtle bg-background-default p-3 lg:hidden">
+          <div className="flex min-w-0 items-center gap-3 rounded-container border border-border-subtle bg-background-default p-3 lg:hidden">
             <div className="min-w-0 flex-1">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
             </div>
             <div
               role="tablist"
               aria-label="Knowledge workspace"
-              className="grid shrink-0 grid-cols-2 rounded-md bg-background-medium p-0.5"
+              className="flex shrink-0 items-center gap-1"
             >
               {(['digest', 'graph'] as const).map((view) => (
                 <button
@@ -77,10 +77,10 @@ function KnowledgeViewInner() {
                   aria-selected={compactView === view}
                   aria-controls={`knowledge-${view}-panel`}
                   onClick={() => setCompactView(view)}
-                  className={`h-7 rounded px-3 text-xs transition-colors duration-150 ${
+                  className={`h-control-md rounded-element px-3 text-label transition-colors ${
                     compactView === view
-                      ? 'bg-background-default text-text-default'
-                      : 'text-text-muted hover:text-text-default'
+                      ? 'tint-selected tint-interactive text-text-default'
+                      : 'tint-interactive text-text-muted'
                   }`}
                 >
                   {view === 'digest' ? 'Digest' : 'Graph'}
@@ -93,7 +93,7 @@ function KnowledgeViewInner() {
             id="knowledge-digest-panel"
             data-testid="knowledge-digest-panel"
             role="tabpanel"
-            className={`${compactView === 'digest' ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:flex lg:h-full`}
+            className={`${compactView === 'digest' ? 'flex' : 'hidden'} min-h-0 flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default lg:flex lg:h-full`}
           >
             <div className="hidden flex-col gap-3 p-4 lg:flex">
               <KBSelectorTrigger open={paletteOpen} onOpenChange={setPaletteOpen} />
@@ -115,7 +115,7 @@ function KnowledgeViewInner() {
             id="knowledge-graph-panel"
             data-testid="knowledge-graph-panel"
             role="tabpanel"
-            className={`${compactView === 'graph' ? 'flex' : 'hidden'} min-h-0 min-w-0 overflow-hidden rounded-xl border border-border-subtle bg-background-default lg:flex lg:h-full`}
+            className={`${compactView === 'graph' ? 'flex' : 'hidden'} min-h-0 min-w-0 overflow-hidden rounded-container border border-border-subtle bg-background-default lg:flex lg:h-full`}
           >
             <KnowledgeGraphPanel
               onOpenChangeLog={() => setChangeLogOpen(true)}

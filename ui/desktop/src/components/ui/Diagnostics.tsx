@@ -151,7 +151,7 @@ Add any other context about the problem here.
       <DialogContent dismissible={!isBusy} className="sm:max-w-lg">
         <DialogHeader className="mb-0">
           <div className="flex items-start gap-3">
-            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-border-subtle bg-background-warning/40 text-text-warning">
+            <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-container border border-border-subtle bg-background-warning/40 text-text-warning">
               <AlertTriangle size={20} />
             </div>
             <div className="min-w-0 flex-1">
@@ -164,7 +164,7 @@ Add any other context about the problem here.
             </div>
           </div>
         </DialogHeader>
-        <div className="space-y-3 text-sm text-text-muted">
+        <div className="space-y-3 text-body text-text-muted">
           <ul className="list-inside list-disc space-y-1">
             <li>Basic system info</li>
             <li>Your current session messages</li>
@@ -179,7 +179,7 @@ Add any other context about the problem here.
         </div>
         {isDownloading && (
           <div
-            className="flex items-center gap-3 rounded-xl border border-border-subtle bg-background-muted px-3 py-2.5 text-sm text-text-muted"
+            className="flex items-center gap-3 rounded-container border border-border-subtle bg-background-muted px-3 py-2.5 text-body text-text-muted"
             role="status"
           >
             <Loader2 className="h-4 w-4 shrink-0 animate-spin" />

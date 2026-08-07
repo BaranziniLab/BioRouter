@@ -10,6 +10,13 @@ import { ChatGroupSplitter } from './ChatGroupSplitter';
 import { ChatDropOverlay, ChatTabGhost } from './ChatDropOverlay';
 import { ChatTabDragProvider } from './ChatTabDragContext';
 import { useTabDragReorder } from './useTabDragReorder';
+import { CrossWindowPhase, ScreenPoint, payloadFromTab } from './tabTearOff';
+import {
+  countWindowTabs,
+  measureStripBands,
+  resolveMergeInsertion,
+  type MergeInsertion,
+} from './tabTearOffBridge';
 import { DropTarget } from './dropZones';
 import { groupCountOf } from './chatGroupsLayout';
 import { GroupLayoutSnapshot, snapshotGroupLayout } from './chatGroupsReducer';
@@ -197,10 +204,255 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
     [dispatch]
   );
 
+  // ═════════════════════════════════════════════════════════════════════════
+  // TAB TEAR-OFF AND MERGE — the renderer's half of the cross-window gesture.
+  //
+  // docs/design/astryx-adoption/tab-tear-off-and-merge.md, Phase 3. This window
+  // plays BOTH roles and they never overlap in time:
+  //
+  //   as SOURCE — it holds the pointer capture, reports the screen point on
+  //   every move that leaves its own content rect, and commits on release.
+  //
+  //   as TARGET — it receives no pointer events at all (measured, Phase 0), so
+  //   its caret and its insert are driven entirely by IPC from main.
+  //
+  // NOTHING HERE ASKS WHETHER A TAB IS RUNNING. Design D1 refused to move a tab
+  // with a turn in flight; it is superseded (§3.1) — the turn stream now has as
+  // many subscribers as it likes, and the destination window rejoins the turn
+  // off `/agent/resume` on load, from the sequence it has already painted.
+  // ═════════════════════════════════════════════════════════════════════════
+
+  const desktop = typeof window !== 'undefined' ? window.electron : undefined;
+  const stateRefForDrag = useRef(groups?.state);
+  stateRefForDrag.current = groups?.state;
+
+  // `commitCrossWindow` needs the dragged tab and the grab offset, both of which
+  // live in the hook it is an ARGUMENT to. A ref breaks that cycle without
+  // making the callback identity change per pointermove — which would re-run the
+  // hook's effect and drop its window listeners in the middle of a gesture.
+  const dragRef = useRef<{ draggedTabId: string | null; grabOffset: { x: number; y: number } }>({
+    draggedTabId: null,
+    grabOffset: { x: 0, y: 0 },
+  });
+
+  /** The caret a MERGE is currently previewing in this window, if any. */
+  const [remoteDrop, setRemoteDrop] = useState<MergeInsertion | null>(null);
+
+  const reportCrossWindow = useCallback(
+    (phase: CrossWindowPhase, point: ScreenPoint) => {
+      if (!desktop?.tabDragMove) return;
+      // `local` is reported exactly once, on the way back in — the hook
+      // guarantees that. It means "no cross-window preview anywhere", which is
+      // the same message `tabDragEnd` carries, so it uses the same door.
+      if (phase.kind === 'local') desktop.tabDragEnd?.();
+      else desktop.tabDragMove({ screenX: point.screenX, screenY: point.screenY });
+    },
+    [desktop]
+  );
+
+  const commitCrossWindow = useCallback(
+    (phase: CrossWindowPhase, point: ScreenPoint) => {
+      const state = stateRefForDrag.current;
+      const dispatchNow = dispatch;
+      if (!state || !dispatchNow || !desktop?.tabDragCommit) return;
+      const draggedTabId = phase.kind === 'local' ? null : dragRef.current?.draggedTabId;
+      if (!draggedTabId) return;
+      const tab = leafGroupIds(state.layout)
+        .flatMap((gid) => state.groups[gid]?.tabs ?? [])
+        .find((candidate) => candidate.tabId === draggedTabId);
+      if (!tab) return;
+
+      // Obligation 2 / D5. `isOnlyTab` is sent rather than acted on here because
+      // a tear-off of the last tab is a no-op while a MERGE of it is allowed and
+      // closes this window — and only main knows which of those this drop is.
+      const isOnlyTab = countWindowTabs(state) <= 1;
+
+      void desktop
+        .tabDragCommit({
+          point: { screenX: point.screenX, screenY: point.screenY },
+          grabOffset: dragRef.current?.grabOffset ?? { x: 0, y: 0 },
+          tab: payloadFromTab(tab),
+          isOnlyTab,
+        })
+        .then((result) => {
+          // `noop` is the answer to everything that went wrong, and it means
+          // exactly one thing: the tab stays. Never remove it speculatively.
+          if (!result || result.outcome === 'noop') return;
+          if (result.outcome === 'merge' && isOnlyTab) {
+            // D6a — the target has ACKNOWLEDGED the insert, so this window is
+            // now empty and closing it loses nothing. Closing outright rather
+            // than closing the tab first: `closeTab` on the last tab would bounce
+            // this window Home (useEmptyPairRedirect) for the frame before it
+            // disappears.
+            desktop.closeWindow?.();
+            return;
+          }
+          dispatchNow({ type: 'closeTab', tabId: draggedTabId });
+        })
+        .catch(() => {
+          // An IPC failure is not a reason to lose a chat.
+        });
+    },
+    [desktop, dispatch]
+  );
+
   // ONE gesture for every strip: the tint has to appear over the TARGET group,
   // which is a sibling of the source strip, so the drag cannot live inside a
   // strip. Handed down through ChatTabDragProvider.
-  const drag = useTabDragReorder({ onReorder: handleReorder, onDropToGroup: handleDropToGroup });
+  const drag = useTabDragReorder({
+    onReorder: handleReorder,
+    onDropToGroup: handleDropToGroup,
+    onCrossWindow: reportCrossWindow,
+    onCrossWindowCommit: commitCrossWindow,
+  });
+  dragRef.current = {
+    draggedTabId: drag.draggedTabId,
+    grabOffset: drag.ghost
+      ? { x: drag.ghost.grabOffsetX, y: drag.ghost.grabOffsetY }
+      : { x: 0, y: 0 },
+  };
+
+  const layoutForBands = groups?.state.layout;
+
+  /**
+   * Tell main where this window's tab strips are.
+   *
+   * Viewport-relative — main translates with `getContentBounds()`, which the
+   * renderer cannot do for itself (`window.screenX` is the WINDOW origin, and
+   * the difference from the content origin is the title bar, which is precisely
+   * the band being measured).
+   *
+   * Reported on mount, on resize, and whenever the layout tree changes, because
+   * a split gives this window a second strip and each one is an independent
+   * merge target. NOT on window MOVE: bands are viewport-relative, so a move
+   * cannot change them, and main re-reads the content rect on every pointermove
+   * anyway.
+   */
+  useEffect(() => {
+    const report = () => desktop?.tabDragRegisterBands?.(measureStripBands(document));
+    // One frame late so the strips have been laid out — a `getBoundingClientRect`
+    // taken in the same commit that added a pane measures the pane before flex
+    // has divided the row.
+    const raf = window.requestAnimationFrame(report);
+    window.addEventListener('resize', report);
+    return () => {
+      window.cancelAnimationFrame(raf);
+      window.removeEventListener('resize', report);
+    };
+    // `layoutForBands` alone: the group COUNT is derived from the tree, so a
+    // split that adds a strip already changes this identity.
+  }, [desktop, layoutForBands]);
+
+  /**
+   * TARGET-SIDE. Main forwards the source's screen point; this window converts
+   * it to its own client coordinates and paints the ordinary insertion caret.
+   *
+   * `screenX − window.screenX` is the conversion, and it was measured to the
+   * pixel in Phase 0 rather than assumed. This window must NOT raise or focus
+   * itself here: it does not hold the pointer, and coming forward would take the
+   * capture away from the window that does (design D3).
+   */
+  useEffect(() => {
+    if (!desktop?.on) return;
+    return desktop.on('tab-drag:preview', (_event, ...args) => {
+      const payload = args[0] as
+        | { active?: boolean; screenX?: number; screenY?: number }
+        | undefined;
+      if (!payload?.active || typeof payload.screenX !== 'number') {
+        setRemoteDrop(null);
+        return;
+      }
+      setRemoteDrop(
+        resolveMergeInsertion(
+          document,
+          payload.screenX - window.screenX,
+          (payload.screenY ?? 0) - window.screenY
+        )
+      );
+    });
+  }, [desktop]);
+
+  /**
+   * TARGET-SIDE, the commit. Insert at the caret the preview was showing, then
+   * acknowledge — and only then does the source drop its copy (D6a). A refusal
+   * (`false`) leaves the tab where it was, which is the right answer for every
+   * way this can fail: no strip under the point, a layout that changed between
+   * the preview and the release, a window mid-reload.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE DEADLINE IS THE OTHER HALF OF D6a, AND IT USED TO BE MISSING HERE.
+   *
+   * Main gives up on an unanswered merge after a couple of seconds and tells
+   * the source to KEEP its tab. This window had no deadline at all — so a
+   * window busy with a heavy streaming turn could process the request long
+   * after that, insert the tab, and acknowledge into a request that no longer
+   * existed. The ack was dropped, the source kept its tab, and the SAME
+   * SESSION was then open in two windows.
+   *
+   * `expiresAt` is main's deadline already backed off by a grace period, so a
+   * request accepted here still has time on main's clock for the ack to get
+   * back. Past it, refusing is not a degraded outcome: the tab simply stays
+   * where the user last saw it.
+   * ═══════════════════════════════════════════════════════════════════════
+   */
+  useEffect(() => {
+    if (!desktop?.on || !dispatch) return;
+    return desktop.on('tab-drag:merge', (_event, ...args) => {
+      const payload = args[0] as
+        | {
+            requestId: number;
+            tab?: {
+              sessionId: string;
+              title: string;
+              userSetName: boolean;
+              cwd?: string;
+              workflowId?: string;
+            };
+            screenX: number;
+            screenY: number;
+            expiresAt?: number;
+          }
+        | undefined;
+      setRemoteDrop(null);
+      if (!payload?.tab) return;
+      if (typeof payload.expiresAt === 'number' && Date.now() >= payload.expiresAt) {
+        // Refuse EXPLICITLY rather than staying silent: main is still holding
+        // the source's commit open, and an answer now ends it immediately
+        // instead of making the user watch out the rest of the timeout.
+        desktop.tabDragAckMerge?.(payload.requestId, false);
+        return;
+      }
+      const insertion = resolveMergeInsertion(
+        document,
+        payload.screenX - window.screenX,
+        payload.screenY - window.screenY
+      );
+      if (!insertion) {
+        desktop.tabDragAckMerge?.(payload.requestId, false);
+        return;
+      }
+      dispatch({
+        type: 'openTab',
+        payload: {
+          sessionId: payload.tab.sessionId,
+          title: payload.tab.title,
+          userSetName: payload.tab.userSetName,
+          cwd: payload.tab.cwd,
+          workflowId: payload.tab.workflowId,
+          groupId: insertion.groupId,
+          index: insertion.index,
+        },
+      });
+      dispatch({ type: 'setActiveGroup', groupId: insertion.groupId });
+      desktop.tabDragAckMerge?.(payload.requestId, true);
+    });
+  }, [desktop, dispatch]);
+
+  // A gesture that ends any way at all must leave no caret in any window. The
+  // hook reports `local` on Escape and on re-entry, but a pointerup outside goes
+  // straight to the commit path — which clears main's preview itself — and an
+  // unmount mid-drag reports nothing at all.
+  useEffect(() => () => desktop?.tabDragEnd?.(), [desktop]);
 
   /**
    * Mirror the loaded session's real name onto its tab.
@@ -366,6 +618,11 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         runningSessionIds={groups.runningSessionIds}
         tabAnnotations={groups.tabAnnotations}
         privacyTiers={privacyTiers}
+        // The MERGE caret. It cannot come from `dragOverTabId` like the local
+        // one does: while a cross-window drag is in flight this window receives
+        // no pointer events at all, so its own drag state is empty and the caret
+        // is driven entirely by IPC from main (design D3, Phase 0).
+        remoteDropBeforeTabId={remoteDrop?.groupId === groupId ? remoteDrop.beforeTabId : null}
         onSelect={handleSelect}
         onClose={handleClose}
         onReorder={handleReorder}
@@ -445,7 +702,14 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
       </div>
       {/* The ghost renders at the SHELL, not in the source strip: it is fixed to
           the viewport and must not be clipped by the strip's overflow-x:auto. */}
-      {drag.ghost && <ChatTabGhost ghost={drag.ghost} />}
+      {/* `detached` is D7's "this will become a window" state: the tilt goes to
+          0, it takes the dashed accent outline, and it CLAMPS to this window's
+          frame — Electron cannot paint outside it, so an unclamped ghost simply
+          flies past the edge and is clipped, which reads as the tab having been
+          eaten rather than as one about to become a window. */}
+      {drag.ghost && (
+        <ChatTabGhost ghost={drag.ghost} detached={drag.crossWindow.kind !== 'local'} />
+      )}
     </ChatTabDragProvider>
   );
 }

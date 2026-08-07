@@ -75,9 +75,18 @@ const MANUAL_COMPACT_TRIGGER = '/compact';
 // Client-side slash command: branch the conversation into a new chat. Handled
 // entirely in the renderer (never sent to the agent).
 const DIVERGE_TRIGGER = '/diverge';
-const TOOLBAR_DIVIDER_CLASS = 'h-4 w-px flex-shrink-0 bg-border-default/70';
+/**
+ * The composer toolbar's spacing is made to MEAN something.
+ *
+ * It used to run at one flat rhythm — `gap-1.5` between every child, divider or
+ * not — so the row read as an undifferentiated run of glyphs and the three
+ * things it actually holds (where the agent works · what it can reach · which
+ * model answers) were indistinguishable. Now: chips inside a group sit at 2px,
+ * and a divider opens a 21px channel between groups. Nothing was added or
+ * reordered; only the spacing changed, and the spacing is now the grouping.
+ */
+const TOOLBAR_DIVIDER_CLASS = 'h-4 w-px flex-shrink-0 bg-border-subtle mx-[10px]';
 const TOOLBAR_GROUP_CLASS = 'flex flex-shrink-0 items-center gap-0.5';
-const SEND_BUTTON_CLASS = 'bg-background-accent text-text-on-accent hover:bg-background-accent/90';
 
 function canonicalMimeType(mimeType: string): string {
   const normalized = mimeType.toLowerCase().trim();
@@ -494,6 +503,28 @@ export default function ChatInput({
     };
     window.addEventListener('restore-chat-input', handler);
     return () => window.removeEventListener('restore-chat-input', handler);
+  }, [sessionId]);
+
+  // The landing state's suggestion chips write into the composer through this,
+  // NOT through `initialValue`. `initialValue` is a MOUNT value whose effect also
+  // deletes every pasted image (see above), so re-pointing it at a suggestion
+  // would silently discard an attachment the user had already added. This only
+  // sets text, and it FILLS rather than SENDS: a suggestion the user cannot edit
+  // before it runs is a button pretending to be a prompt. Matched by sessionId
+  // (`null === null` for the pre-session composer) exactly like the restore
+  // channel, so a broadcast can never land in a sibling chat.
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ sessionId?: string | null; value?: string }>).detail;
+      if ((detail?.sessionId ?? null) !== (sessionId ?? null)) return;
+      if (typeof detail?.value !== 'string' || !detail.value) return;
+      setDisplayValue(detail.value);
+      setValue(detail.value);
+      setHasUserTyped(true);
+      textAreaRef.current?.focus();
+    };
+    window.addEventListener('insert-chat-input', handler);
+    return () => window.removeEventListener('insert-chat-input', handler);
   }, [sessionId]);
 
   // Use shared file drop hook for ChatInput
@@ -1685,7 +1716,33 @@ export default function ChatInput({
 
   return (
     <div
-      className={`flex flex-col relative h-auto px-4 pt-3 pb-3 transition-colors ${disableAnimation ? '' : 'page-transition'} ${isDraggingOver ? 'border-border-strong bg-background-medium/80 shadow-[var(--shadow-composer)] ring-2 ring-border-strong/30' : isFocused ? 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default' : 'border-border-subtle hover:border-border-subtle shadow-[var(--shadow-composer)] bg-background-default'} z-10 rounded-2xl border`}
+      className={cn(
+        // ONE 12px inset grid. Four used to meet inside this card — `px-4 pt-3
+        // pb-3` on the shell, `px-3 pt-3 pb-1.5` on the textarea, `px-2 pt-2
+        // pb-1` on the toolbar and `p-4` on the attachments — so the placeholder,
+        // the first toolbar chip and an attachment thumbnail each started at a
+        // different x. The shell now owns the inset and the children own only
+        // the vertical rhythm between them.
+        'relative z-10 flex h-auto flex-col p-3 rounded-container',
+        // ELEVATION OR A BORDER, NEVER BOTH. The composer was the one element in
+        // the app stating its edge twice: a 1px border AND --shadow-composer.
+        // The shadow is what lifts it off the canvas; the border was the
+        // redundant half. It becomes the shared floating-surface recipe —
+        // elevation plus a 1px INSET ring, which is what keeps the edge crisp in
+        // dark families where a shadow alone disappears, and which (being inside
+        // the box) costs no layout.
+        'bg-background-default shadow-composer inset-shadow-hairline',
+        'transition-[box-shadow,background-color]',
+        // Focus stops being a border-COLOUR shift and becomes the same 2px inset
+        // accent ring every other input in the system uses (§3.2) — the
+        // `inset-shadow-accent` token, composed with the elevation rather than
+        // replacing it. Nothing shifts, so drag-over can now speak the same
+        // language one step louder instead of inventing an outset `ring-2` that
+        // painted OUTSIDE the composer's box and overlapped the canvas.
+        (isFocused || isDraggingOver) && 'inset-shadow-accent',
+        isDraggingOver && 'bg-background-medium/80',
+        !disableAnimation && 'page-transition'
+      )}
       data-drop-zone="true"
       data-drag-active={isDraggingOver ? 'true' : 'false'}
       onDrop={handleLocalDrop}
@@ -1712,7 +1769,7 @@ export default function ChatInput({
       {/* Vision-mismatch banner: shown when the user has images attached but the
  current model does not support vision. Blocks Send until resolved. */}
       {visionMismatch && (
-        <div className="flex items-start gap-2 px-3 py-2 mb-2 bg-background-medium/60 border border-border-subtle rounded-lg text-xs text-text-muted">
+        <div className="flex items-start gap-2 px-3 py-2 mb-2 bg-background-medium/60 border border-border-subtle rounded-element text-supporting text-text-muted">
           <svg
             className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-60"
             viewBox="0 0 24 24"
@@ -1779,14 +1836,17 @@ export default function ChatInput({
               maxHeight: `${maxHeight}px`,
               overflowY: 'auto',
             }}
-            className="w-full border-none bg-transparent px-3 pt-3 pb-1.5 pr-3 text-sm resize-none text-text-default placeholder:text-text-muted"
+            // No inset of its own: the shell's 12px IS the composer's left edge,
+            // and the placeholder has to start on it so the first toolbar chip
+            // below can line up with the text above it.
+            className="w-full resize-none border-none bg-transparent p-0 pb-1.5 text-body text-text-default placeholder:text-text-muted"
           />
         </div>
       </form>
 
       {/* Combined files and images preview */}
       {(pastedImages.length > 0 || allDroppedFiles.length > 0) && (
-        <div className="flex flex-wrap gap-2 p-4 mt-2 border-t border-border-subtle">
+        <div className="flex flex-wrap gap-2 pt-3 mt-2 border-t border-border-subtle">
           {/* Render pasted images first */}
           {pastedImages.map((img) => (
             <div key={img.id} className="relative group w-20 h-20">
@@ -1794,17 +1854,17 @@ export default function ChatInput({
                 <img
                   src={img.dataUrl}
                   alt={`Pasted image ${img.id}`}
-                  className={`w-full h-full object-cover rounded border ${img.error ? 'border-border-danger' : 'border-border-subtle'}`}
+                  className={`w-full h-full object-cover rounded-element border ${img.error ? 'border-border-danger' : 'border-border-subtle'}`}
                 />
               )}
               {img.isLoading && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded">
+                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-element">
                   <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-white"></div>
                 </div>
               )}
               {img.error && !img.isLoading && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded p-1 text-center">
-                  <p className="text-text-danger text-[11px] leading-tight break-all mb-1">
+                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded-element p-1 text-center">
+                  <p className="text-text-danger text-supporting leading-tight break-all mb-1">
                     {img.error.substring(0, 50)}
                   </p>
                   {img.dataUrl && (
@@ -1846,17 +1906,17 @@ export default function ChatInput({
                     <img
                       src={file.dataUrl}
                       alt={file.name}
-                      className={`w-full h-full object-cover rounded border ${file.error ? 'border-border-danger' : 'border-border-subtle'}`}
+                      className={`w-full h-full object-cover rounded-element border ${file.error ? 'border-border-danger' : 'border-border-subtle'}`}
                     />
                   )}
                   {file.isLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded">
+                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-element">
                       <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-white"></div>
                     </div>
                   )}
                   {file.error && !file.isLoading && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded p-1 text-center">
-                      <p className="text-text-danger text-[11px] leading-tight break-all">
+                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded-element p-1 text-center">
+                      <p className="text-text-danger text-supporting leading-tight break-all">
                         {file.error.substring(0, 30)}
                       </p>
                     </div>
@@ -1864,15 +1924,15 @@ export default function ChatInput({
                 </div>
               ) : (
                 // File box preview
-                <div className="flex items-center gap-2 px-3 py-2 bg-background-medium border border-border-subtle rounded-lg min-w-[120px] max-w-[200px]">
-                  <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-border-subtle rounded flex items-center justify-center text-xs font-mono text-text-muted">
+                <div className="flex items-center gap-2 px-3 py-2 bg-background-medium border border-border-subtle rounded-element min-w-[120px] max-w-[200px]">
+                  <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-border-subtle rounded-inner flex items-center justify-center text-supporting font-mono text-text-muted">
                     {file.name.split('.').pop()?.toUpperCase() || 'FILE'}
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm text-text-default truncate" title={file.name}>
+                    <p className="text-secondary text-text-default truncate" title={file.name}>
                       {file.name}
                     </p>
-                    <p className="text-xs text-text-muted">{file.type || 'Unknown type'}</p>
+                    <p className="text-supporting text-text-muted">{file.type || 'Unknown type'}</p>
                   </div>
                 </div>
               )}
@@ -1898,7 +1958,7 @@ export default function ChatInput({
       <div
         ref={toolbarRef}
         data-testid="chat-input-toolbar"
-        className="flex flex-row flex-nowrap items-center gap-1.5 px-2 pt-2 pb-1 relative min-w-0 overflow-hidden"
+        className="relative flex min-w-0 flex-row flex-nowrap items-center overflow-hidden pt-2"
       >
         {(() => {
           // Defined once, arranged two ways: inline when the row is wide enough,
@@ -1906,17 +1966,17 @@ export default function ChatInput({
           // branch mounts, and each control reads its own state, so composing
           // them here rather than duplicating the JSX keeps the two layouts from
           // drifting.
+          // #44: the working dir is choosable only while the chat is completely
+          // empty (pre-session #39 path included); the first message locks it for
+          // the session's lifetime. Prefer the authoritative lock from BaseChat
+          // (hydration- and failed-submit-aware); fall back to the transcript
+          // length for callers that do not track session metadata.
+          const workingDirIsLocked = workingDirLocked ?? messagesLength > 0;
           const dirSwitcher = (
             <DirSwitcher
               className="mr-0"
               sessionId={sessionId ?? undefined}
-              // #44: the working dir is choosable only while the chat is
-              // completely empty (pre-session #39 path included); the first
-              // message locks it for the session's lifetime. Prefer the
-              // authoritative lock from BaseChat (hydration- and
-              // failed-submit-aware); fall back to the transcript length for
-              // callers that do not track session metadata.
-              locked={workingDirLocked ?? messagesLength > 0}
+              locked={workingDirIsLocked}
               workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
               onWorkingDirChange={(newDir) => {
                 setSessionWorkingDir(newDir);
@@ -1976,45 +2036,77 @@ export default function ChatInput({
 
           if (composerToolbarCollapsed) {
             return (
-              <Popover>
-                <PopoverTrigger asChild>
-                  <button
-                    type="button"
-                    aria-label="Chat tools and settings"
-                    title="Chat tools and settings"
-                    data-testid="composer-tools-collapsed"
-                    className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
-                  >
-                    <Plus className="h-4 w-4" />
-                  </button>
-                </PopoverTrigger>
-                {/* Portaled, so the enclosing overflow-hidden never clips it.
+              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+                <Popover>
+                  <PopoverTrigger asChild>
+                    <button
+                      type="button"
+                      aria-label="Chat tools and settings"
+                      title="Chat tools and settings"
+                      data-testid="composer-tools-collapsed"
+                      // The 32px icon-button box, so the collapsed row is exactly
+                      // as tall as the expanded one — the composer does not
+                      // resize when the artifact panel opens, only its contents
+                      // change. It was 28px, which shortened the row by 4px at
+                      // the exact moment the layout was already moving.
+                      className="flex size-8 flex-shrink-0 items-center justify-center rounded-element text-text-muted tint-interactive transition-colors hover:text-text-default"
+                    >
+                      <Plus className="size-4" />
+                    </button>
+                  </PopoverTrigger>
+                  {/* Portaled, so the enclosing overflow-hidden never clips it.
                     side/align place it above the "+", growing up out of the row. */}
-                <PopoverContent
-                  side="top"
-                  align="start"
-                  className="flex w-64 max-w-[80vw] flex-col gap-1.5 p-2"
-                  data-testid="composer-tools-popover"
-                >
-                  {dirSwitcher}
-                  <div className="h-px w-full bg-border-default/70" />
-                  <div className="flex flex-wrap items-center gap-0.5">
-                    {extensionsSkillsKnowledge}
-                  </div>
-                  <div className="h-px w-full bg-border-default/70" />
-                  <div className="flex flex-wrap items-center gap-0.5">
-                    {reasoning}
-                    {model}
-                    {contextGauge}
-                    {cost}
-                  </div>
-                </PopoverContent>
-              </Popover>
+                  <PopoverContent
+                    side="top"
+                    align="start"
+                    // The standard §3.8 menu container — 4px padding, 2px between
+                    // items — rather than the bespoke `w-64 p-2` it carried. The
+                    // width now follows the content instead of pinning every
+                    // collapsed composer to 256px regardless of what is in it.
+                    className="flex min-w-[15rem] max-w-[80vw] flex-col gap-0.5 p-1"
+                    data-testid="composer-tools-popover"
+                  >
+                    {/* The menu changes with the session, exactly as the expanded
+                        row does. While the chat is still empty the directory is a
+                        CONTROL and sits with the other controls. Once a turn has
+                        run it is a FACT — everything the agent did is relative to
+                        it — so it moves above the divider into a stated context
+                        block with its reason beneath it. It is not greyed out;
+                        it stops being a menu item. State what is true, don't
+                        disable what was once offered. */}
+                    {workingDirIsLocked ? (
+                      <div className="flex flex-col gap-0.5 px-2 py-1.5">
+                        {dirSwitcher}
+                        <p className="text-supporting text-text-muted">
+                          Set when this session started. Start a new session to work somewhere else.
+                        </p>
+                      </div>
+                    ) : (
+                      dirSwitcher
+                    )}
+                    <div className="my-0.5 h-px w-full bg-border-subtle" />
+                    <div className="flex flex-wrap items-center gap-0.5">
+                      {extensionsSkillsKnowledge}
+                    </div>
+                    <div className="my-0.5 h-px w-full bg-border-subtle" />
+                    <div className="flex flex-wrap items-center gap-0.5">
+                      {reasoning}
+                      {contextGauge}
+                      {cost}
+                    </div>
+                  </PopoverContent>
+                </Popover>
+                {/* The model NEVER collapses. It changes what the next message
+                    costs and what it can do, so hiding it behind a disclosure at
+                    exactly the width where the artifact panel is competing for
+                    attention is when it matters most. */}
+                {model}
+              </div>
             );
           }
 
           return (
-            <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">
+            <div className="flex min-w-0 flex-1 items-center overflow-hidden">
               {dirSwitcher}
               <div className={TOOLBAR_DIVIDER_CLASS} />
               <div className={TOOLBAR_GROUP_CLASS}>{extensionsSkillsKnowledge}</div>
@@ -2029,33 +2121,34 @@ export default function ChatInput({
           );
         })()}
 
-        {/* Send / Stop button — on far right of picker row. */}
-        <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-1">
+        {/* Send / Stop — the row's one primary action, and NEVER collapsed.
+            Both were `variant="outline"` repainted into an accent fill by a
+            className override, which is the system's own primary variant spelled
+            out longhand: the override could (and did) drift from
+            `--background-accent-hover`, and a reader had to diff two class
+            strings to learn the button was primary. `variant="default"` IS that
+            fill. */}
+        <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-2">
           {isLoading && !hasSubmittableContent ? (
             <Button
               type="button"
               onClick={stopAck.trigger}
               size="sm"
               shape="round"
-              variant="outline"
-              className={cn(
-                SEND_BUTTON_CLASS,
-                'relative transition-transform duration-[var(--motion-fast)] ease-[var(--ease-out)]',
-                stopAck.acknowledged && 'scale-90'
-              )}
+              className={cn('relative', stopAck.acknowledged && 'scale-90')}
               data-testid="chat-stop-button"
               data-stop-acknowledged={stopAck.acknowledged}
               aria-label={stopAck.acknowledged ? 'Stopping response' : 'Stop response'}
               title={stopAck.acknowledged ? 'Stopping…' : 'Stop response'}
             >
-              <Stop size={14} />
+              <Stop size={16} />
               {/* The press recoils the button and sends one ring outward from
                   it — motion that reads as "received", distinct from the
                   looping pulses that mean "still working". */}
               {stopAck.acknowledged && (
                 <span
                   aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 rounded-full ring-2 ring-current animate-ping"
+                  className="pointer-events-none absolute inset-0 rounded-element ring-2 ring-current animate-ping"
                 />
               )}
             </Button>
@@ -2068,16 +2161,11 @@ export default function ChatInput({
                     form="bior-chat-form"
                     size="sm"
                     shape="round"
-                    variant="outline"
                     disabled={isSubmitButtonDisabled}
                     aria-label="Send message"
-                    className={
-                      isSubmitButtonDisabled
-                        ? `${SEND_BUTTON_CLASS} cursor-not-allowed opacity-50`
-                        : `${SEND_BUTTON_CLASS} hover:cursor-pointer`
-                    }
+                    className={cn(isSubmitButtonDisabled && 'cursor-not-allowed')}
                   >
-                    <Send className="w-3.5 h-3.5" />
+                    <Send className="size-4" />
                   </Button>
                 </span>
               </TooltipTrigger>

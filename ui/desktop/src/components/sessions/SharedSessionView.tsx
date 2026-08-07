@@ -26,7 +26,7 @@ const SessionHeader: React.FC<{
 }> = ({ children, title }) => {
   return (
     <div className="biorouter-page-header -mx-8 flex flex-col px-8 pb-8">
-      <h1 className="text-2xl font-semibold tracking-tight mb-4 pt-6">{title}</h1>
+      <h1 className="text-title mb-4 pt-6">{title}</h1>
       <div className="flex items-center">{children}</div>
     </div>
   );
@@ -44,7 +44,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
         <div className="biorouter-page-header -mx-8 mb-6 flex items-center px-8 py-4">
           <div className="flex items-center text-text-muted">
             <Share2 className="w-5 h-5 mr-2" />
-            <span className="text-sm font-medium">Shared Session</span>
+            <span className="text-label">Shared Session</span>
           </div>
         </div>
 
@@ -52,7 +52,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
           <div className="flex flex-col">
             {!isLoading && session && session.messages.length > 0 ? (
               <>
-                <div className="flex items-center text-text-muted text-sm space-x-5 font-mono">
+                <div className="flex items-center text-text-muted text-supporting gap-5 font-mono tabular-nums">
                   <span className="flex items-center">
                     <Calendar className="w-4 h-4 mr-1" />
                     {formatMessageTimestamp(session.messages[0]?.created)}
@@ -71,7 +71,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
                     </span>
                   )}
                 </div>
-                <div className="flex items-center text-text-muted text-sm mt-1 font-mono">
+                <div className="flex items-center text-text-muted text-supporting mt-1 font-mono">
                   <span className="flex items-center">
                     <Folder className="w-4 h-4 mr-1" />
                     {session.working_dir}
@@ -79,7 +79,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
                 </div>
               </>
             ) : (
-              <div className="flex items-center text-text-muted text-sm">
+              <div className="flex items-center text-secondary text-text-muted">
                 <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
                 <span>Loading session details...</span>
               </div>

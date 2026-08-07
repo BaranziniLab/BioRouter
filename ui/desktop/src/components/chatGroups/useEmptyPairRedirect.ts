@@ -8,7 +8,7 @@ import { hasPendingNewTab } from './newTabRegistry';
 /**
  * No tabs → Home (issue #38). The empty "New Session" pane is never the
  * resting state: when the ENTIRE layout has zero tabs and nothing is en route
- * to becoming one, /pair redirects to '/' (the Hub — heatmap + recent chats).
+ * to becoming one, /pair redirects to '/' (the Hub — greeting + usage heatmap).
  *
  * One effect covers both roads there: closing the last tab (the state update
  * re-renders /pair with zero tabs) and arriving on /pair via a stale deep

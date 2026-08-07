@@ -1,3 +1,8 @@
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 /// Integration tests for the /knowledge HTTP routes.
 ///
 /// The router under test takes `Arc<KnowledgeService>` directly, so we don't

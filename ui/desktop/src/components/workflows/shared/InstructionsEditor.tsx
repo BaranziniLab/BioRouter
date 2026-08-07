@@ -71,19 +71,20 @@ Use {{parameter_name}} syntax for any user-provided values.`;
         <div className="flex-1 flex flex-col min-h-0">
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-text-default">Instructions</label>
+              <label className="block text-label text-text-default">Instructions</label>
               <Button
                 type="button"
                 onClick={insertExample}
                 variant="ghost"
                 size="sm"
-                className="text-xs"
+                className="text-supporting"
               >
                 Insert Example
               </Button>
             </div>
-            <p className="text-xs text-text-muted mb-3">
-              Use <code className="bg-background-muted px-1 rounded">{`{{parameter_name}}`}</code>{' '}
+            <p className="text-supporting text-text-muted mb-3">
+              Use{' '}
+              <code className="bg-background-muted px-1 rounded-inner">{`{{parameter_name}}`}</code>{' '}
               syntax to define parameters that users can fill in
             </p>
           </div>
@@ -92,10 +93,10 @@ Use {{parameter_name}} syntax for any user-provided values.`;
             <textarea
               value={localValue}
               onChange={(e) => setLocalValue(e.target.value)}
-              className={`biorouter-modal-panel w-full h-full min-h-[500px] px-3 py-2 text-sm rounded-lg text-text-default placeholder:text-text-muted transition-colors duration-150 resize-none font-mono ${error ? '!border-border-danger' : ''}`}
+              className={`biorouter-modal-panel w-full h-full min-h-[500px] px-3 py-2 text-code rounded-element text-text-default placeholder:text-text-muted transition-colors resize-none font-mono ${error ? '!border-border-danger' : ''}`}
               placeholder="Detailed instructions for the AI, hidden from the user"
             />
-            {error && <p className="text-text-danger text-sm mt-2">{error}</p>}
+            {error && <p className="text-text-danger text-body mt-2">{error}</p>}
           </div>
         </div>
 

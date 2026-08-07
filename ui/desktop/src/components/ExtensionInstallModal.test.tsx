@@ -60,8 +60,8 @@ describe('ExtensionInstallModal', () => {
       });
 
       expect(screen.getByRole('dialog')).toBeInTheDocument();
-      expect(screen.getByText('Confirm Extension Installation')).toBeInTheDocument();
-      expect(screen.getByText(/TestExt extension/)).toBeInTheDocument();
+      expect(screen.getByText('Install TestExt?')).toBeInTheDocument();
+      expect(screen.getByText(/npx test-extension/)).toBeInTheDocument();
       expect(screen.getAllByRole('button')).toHaveLength(3);
     });
 
@@ -76,7 +76,7 @@ describe('ExtensionInstallModal', () => {
         await eventHandler({}, 'biorouter://extension?cmd=npx&arg=test-extension&name=AllowedExt');
       });
 
-      expect(screen.getByText('Confirm Extension Installation')).toBeInTheDocument();
+      expect(screen.getByText('Install AllowedExt?')).toBeInTheDocument();
       expect(screen.getAllByRole('button')).toHaveLength(3);
     });
 
@@ -97,8 +97,8 @@ describe('ExtensionInstallModal', () => {
         );
       });
 
-      expect(screen.getByText('Install Untrusted Extension?')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Install Anyway' })).toBeInTheDocument();
+      expect(screen.getByText('Install untrusted extension UntrustedExt?')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Install anyway' })).toBeInTheDocument();
       expect(screen.getAllByRole('button')).toHaveLength(3);
     });
 
@@ -117,8 +117,8 @@ describe('ExtensionInstallModal', () => {
       });
 
       expect(screen.getByRole('dialog')).toBeInTheDocument();
-      expect(screen.getByText('Confirm Extension Installation')).toBeInTheDocument();
-      expect(screen.getByText(/I Ching extension/)).toBeInTheDocument();
+      expect(screen.getByText('Install I Ching?')).toBeInTheDocument();
+      expect(screen.getByText(/i-ching-mcp-server/)).toBeInTheDocument();
       expect(screen.getAllByRole('button')).toHaveLength(3);
     });
     it('should handle blocked extension', async () => {
@@ -135,8 +135,8 @@ describe('ExtensionInstallModal', () => {
         );
       });
 
-      expect(screen.getByText('Extension Installation Blocked')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'OK' })).toBeInTheDocument();
+      expect(screen.getByText('Cannot install BlockedExt')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Got it' })).toBeInTheDocument();
       expect(screen.getAllByRole('button')).toHaveLength(2);
       expect(screen.getByText(/Contact your administrator/)).toBeInTheDocument();
     });
@@ -157,7 +157,7 @@ describe('ExtensionInstallModal', () => {
       expect(screen.getByRole('dialog')).toBeInTheDocument();
 
       await act(async () => {
-        screen.getByRole('button', { name: 'No' }).click();
+        screen.getByRole('button', { name: 'Cancel' }).click();
       });
 
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
@@ -176,7 +176,7 @@ describe('ExtensionInstallModal', () => {
       });
 
       await act(async () => {
-        screen.getByRole('button', { name: 'Yes' }).click();
+        screen.getByRole('button', { name: 'Install' }).click();
       });
 
       expect(addExtensionFromDeepLink).toHaveBeenCalledWith(

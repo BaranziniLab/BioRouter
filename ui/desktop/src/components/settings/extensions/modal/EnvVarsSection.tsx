@@ -142,7 +142,7 @@ export default function EnvVarsSection({
               <Button
                 onClick={() => handleEdit(index)}
                 variant="ghost"
-                className="group p-2 h-auto text-text-muted hover:bg-background-medium"
+                className="group p-2 h-auto text-text-muted"
               >
                 <Edit className="h-3 w-3 text-text-muted group-hover:text-text-default transition-all" />
               </Button>
@@ -153,7 +153,7 @@ export default function EnvVarsSection({
             <Button
               onClick={() => onRemove(index)}
               variant="ghost"
-              className="group p-2 h-auto text-text-muted hover:bg-background-medium"
+              className="group p-2 h-auto text-text-muted"
             >
               <X className="h-3 w-3 text-text-muted group-hover:text-text-default transition-all" />
             </Button>
@@ -189,7 +189,7 @@ export default function EnvVarsSection({
           <Button
             onClick={handleAdd}
             variant="ghost"
-            className="flex items-center justify-start gap-1 px-2 pr-4 text-sm rounded-md text-text-default bg-background-default border border-border-subtle hover:border-border-default transition-colors min-w-[60px] h-9 [&>svg]:!size-4"
+            className="flex items-center justify-start gap-1 px-2 pr-4 text-sm rounded-element text-text-default bg-background-default border border-border-subtle hover:border-border-default transition-colors min-w-[60px] h-9 [&>svg]:!size-4"
           >
             <Plus /> Add
           </Button>

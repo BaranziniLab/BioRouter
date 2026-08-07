@@ -15,9 +15,17 @@ import { PrivacyBadge } from '../ui/PrivacyBadge';
 const LOAD_MORE_THRESHOLD_PX = 64;
 const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
 
-/** The scroll well is one calm step deeper than the rail — the same two-tone
- *  device the sidebar itself uses against the canvas, not a card. */
-const RECENTS_WELL_BACKGROUND = 'color-mix(in srgb, var(--sidebar-border) 42%, transparent)';
+/*
+ * THE WELL IS GONE (Astryx §4.1.5).
+ *
+ * This list used to sit on a one-off surface — `color-mix(in srgb,
+ * var(--sidebar-border) 42%, transparent)` with a 12px top radius — arguing it
+ * was "one calm step deeper than the rail". Every other list in the app sits
+ * directly on its ground, so the well was the sidebar answering a question no
+ * other surface asks, with a colour no other surface uses and a radius the
+ * radius ladder does not have. Deleting it is the compaction's cheapest win: the
+ * rows are already distinguishable by their hover and their selected wash.
+ */
 
 export type SessionKind = 'chat' | 'branch' | 'app';
 
@@ -199,7 +207,7 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
           onClick={() => onOpen(session.id, session.name.trim() || undefined)}
           aria-label={accessibleLabel}
           aria-current={isActive ? 'page' : undefined}
-          className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover ${
+          className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
             isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
           }`}
         >
@@ -338,8 +346,7 @@ export default function RecentChats({
         id="recent-chat-scroll"
         data-testid="recent-chat-scroll"
         hidden={!isExpanded}
-        style={{ backgroundColor: RECENTS_WELL_BACKGROUND }}
-        className="mx-1 min-h-0 min-w-0 shrink overflow-y-auto overflow-x-hidden rounded-t-xl p-1"
+        className="mx-1 min-h-0 min-w-0 shrink overflow-y-auto overflow-x-hidden p-1"
         onScroll={handleScroll}
       >
         {groups.length === 0 ? (

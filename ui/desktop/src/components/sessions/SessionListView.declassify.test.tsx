@@ -116,6 +116,31 @@ async function openRowMenu(trigger: RegExp | string) {
   });
 }
 
+/**
+ * A public row must not be OFFERED declassification. It asserts the absence of
+ * the item, not of the `⋯` trigger.
+ *
+ * Those were the same assertion once, and are not any more. When this file was
+ * written the tier gated the whole button, because a "More actions" trigger
+ * opening a one-item menu — empty on every public row — was worse than no
+ * trigger. §3.10 then folded Open-in-new-tab, Open-in-new-window and Delete
+ * behind that same `⋯`, so the trigger is now on every row and only the ITEM is
+ * gated. Asserting `queryByLabelText(/More actions for/)` is null would now fail
+ * for a reason that has nothing to do with privacy, and — worse — would have
+ * gone on passing if the item had leaked onto public rows while the trigger
+ * happened to be hidden. The item is the invariant; the trigger never was.
+ */
+async function expectNoDeclassifyItem() {
+  // Open it for real: an item cannot be absent from a menu that never rendered,
+  // so a check that skips this passes for the wrong reason.
+  fireEvent.pointerDown(screen.getByLabelText(/More actions for/), {
+    button: 0,
+    ctrlKey: false,
+  });
+  await screen.findByText(/Open in new tab/);
+  expect(screen.queryByText(/Make this chat public/)).toBeNull();
+}
+
 describe('SessionListView declassification entry point', () => {
   it('offers "Make this chat public" from the row overflow menu of a private chat', async () => {
     mocks.listSessions.mockResolvedValue({
@@ -210,7 +235,7 @@ describe('SessionListView declassification entry point', () => {
     // to declassify.
     await waitFor(() => expect(mocks.declassifySession).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByTestId('privacy-badge')).toBeNull());
-    expect(screen.queryByLabelText(/More actions for/)).toBeNull();
+    await expectNoDeclassifyItem();
   });
 
   it('leaves a public chat without the control at all', async () => {
@@ -221,6 +246,6 @@ describe('SessionListView declassification entry point', () => {
     renderList();
 
     await screen.findByText('Public notes');
-    expect(screen.queryByLabelText(/More actions for/)).toBeNull();
+    await expectNoDeclassifyItem();
   });
 });

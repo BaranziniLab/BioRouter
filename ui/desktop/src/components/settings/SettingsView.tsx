@@ -76,12 +76,17 @@ export default function SettingsView({
     <>
       <MainPanelLayout>
         <div className="flex-1 flex flex-col min-h-0">
-          <ReadableContent className="px-8 pt-12 pb-6 border-b border-border-subtle flex-shrink-0">
-            <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">Settings</h1>
-            <p className="text-sm text-text-muted">
-              Manage models, chat behavior, and application preferences
-            </p>
-          </ReadableContent>
+          {/* §4.2 — the hairline is FULL-BLEED. It used to sit on the
+              ReadableContent itself, so it stopped at the reading column while
+              every other view's ran edge to edge. */}
+          <div className="flex-shrink-0 border-b border-border-subtle">
+            <ReadableContent className="px-8 pt-12 pb-6">
+              <h1 className="text-title mb-1 page-transition">Settings</h1>
+              <p className="text-secondary text-text-muted">
+                Manage models, chat behavior, and application preferences
+              </p>
+            </ReadableContent>
+          </div>
 
           <div className="flex-1 min-h-0 flex flex-col">
             <Tabs
@@ -90,10 +95,13 @@ export default function SettingsView({
               className="h-full flex flex-col"
             >
               <ReadableContent className="px-8 pt-4">
-                <TabsList className="biorouter-settings-tabs justify-start w-fit">
+                {/* §4.2 — one rule, not two. `TabsList` carries its own bottom
+                    hairline, which landed a few pixels under the header's and
+                    read as a double rule unique to Settings. */}
+                <TabsList className="biorouter-settings-tabs justify-start w-fit border-b-0">
                   <TabsTrigger
                     value="models"
-                    className="flex gap-2 text-sm"
+                    className="flex gap-2 text-label"
                     data-testid="settings-models-tab"
                   >
                     <Brain className="h-4 w-4" />
@@ -101,7 +109,7 @@ export default function SettingsView({
                   </TabsTrigger>
                   <TabsTrigger
                     value="chat"
-                    className="flex gap-2 text-sm"
+                    className="flex gap-2 text-label"
                     data-testid="settings-chat-tab"
                   >
                     <MessageSquare className="h-4 w-4" />
@@ -117,7 +125,7 @@ export default function SettingsView({
                   </TabsTrigger>
                   <TabsTrigger
                     value="app"
-                    className="flex gap-2 text-sm"
+                    className="flex gap-2 text-label"
                     data-testid="settings-app-tab"
                   >
                     <Monitor className="h-4 w-4" />

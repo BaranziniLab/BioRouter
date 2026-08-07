@@ -12,7 +12,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import type { DependencyInfo, DependencyEvent } from '../utils/dependencyChecker';
-import { Dialog, DialogContent, DialogTitle } from './ui/dialog';
+import { ModalShell } from './ModalShell';
 
 type InstallState = 'idle' | 'running' | 'done' | 'error' | 'installed';
 
@@ -286,183 +286,34 @@ export default function DependencySetupModal() {
   };
 
   return (
-    <Dialog open={visible} onOpenChange={(open) => !open && handleDismiss()}>
-      <DialogContent
-        dismissible={!isBusy}
-        showCloseButton={!allDone && !isBusy}
-        className="flex max-h-[85vh] w-[560px] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]"
-      >
-        {/* Header */}
-        <div className="px-6 pt-5 pb-4 pr-14 border-b border-border-subtle">
-          <div>
-            <DialogTitle>
-              {deps.length === 0 && cliIsUpdate
-                ? cli?.brokenOnPath
-                  ? 'Biorouter CLI Needs Repair'
-                  : 'Biorouter CLI Update'
-                : 'Missing Dependencies'}
-            </DialogTitle>
-            <p className="text-xs text-text-muted mt-0.5">
-              {deps.length === 0 && cliIsUpdate
-                ? cli?.brokenOnPath
-                  ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
-                  : 'Your terminal `biorouter` is older than this app. Update it to match.'
-                : 'The following tools are required for Biorouter features. Install them to continue.'}
-            </p>
-          </div>
-        </div>
-
-        {/* Dep list */}
-        <div className="flex flex-col gap-3 p-6 overflow-y-auto">
-          {/* Biorouter CLI install card */}
-          {(showCli || cliState === 'done') && (
-            <div
-              className={`rounded-xl border px-4 py-3 ${
-                cliState === 'done'
-                  ? 'border-border-success/40 bg-background-success/10'
-                  : cliState === 'error'
-                    ? 'border-border-danger/30 bg-background-danger/5'
-                    : 'biorouter-modal-panel bg-background-medium/20'
-              }`}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-sm font-semibold flex items-center gap-1.5">
-                    {cliState === 'done' && <span className="text-text-success">✓</span>}
-                    {cliState === 'error' && <span className="text-text-danger">✗</span>}
-                    {cliState === 'running' && (
-                      <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
-                    )}
-                    Biorouter CLI
-                  </p>
-                  <p className="text-[11px] text-text-muted mt-0.5">
-                    {cliState === 'done'
-                      ? 'Installed. Open a new terminal and run `biorouter`.'
-                      : cli?.brokenOnPath
-                        ? 'The `biorouter` on your PATH won’t run. Reinstall it.'
-                        : cliIsUpdate
-                          ? `Update ${cli?.pathVersion ?? 'older'} → ${cli?.bundledVersion ?? 'latest'} to match this app.`
-                          : 'Call `biorouter` from any terminal.'}
-                  </p>
-                </div>
-                {cliState !== 'running' && cliState !== 'done' && (
-                  <Button
-                    variant="default"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={handleInstallCli}
-                  >
-                    {cliButtonLabel}
-                  </Button>
-                )}
-                {cliState === 'running' && (
-                  <span className="text-xs text-text-muted">{cliProgressLabel}</span>
-                )}
-              </div>
-              {cliOutput && (
-                <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
-                  {cliOutput}
-                </div>
-              )}
-              {cliState === 'error' && cliError && (
-                <p className="mt-2 text-xs text-text-danger">{cliError}</p>
-              )}
-            </div>
-          )}
-
-          {deps.map(({ info, installState, output, errorMsg }) => {
-            const installed = installState === 'done' || info.installed;
-            return (
-              <div
-                key={info.name}
-                className={`rounded-lg border px-4 py-3 ${
-                  installed
-                    ? 'border-border-success/40 bg-background-success/10'
-                    : installState === 'error'
-                      ? 'border-border-danger/30 bg-background-danger/5'
-                      : 'border-border-subtle bg-background-medium/20'
-                }`}
-              >
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-semibold flex items-center gap-1.5">
-                      {installed && <span className="text-text-success">✓</span>}
-                      {installState === 'error' && <span className="text-text-danger">✗</span>}
-                      {installState === 'running' && (
-                        <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
-                      )}
-                      {info.displayName}
-                    </p>
-                    {installed && info.version && (
-                      <p className="text-[11px] text-text-muted mt-0.5">{info.version}</p>
-                    )}
-                    {!installed && installState === 'idle' && (
-                      <p className="text-[11px] text-text-muted font-mono mt-0.5 break-all">
-                        {info.installCmd}
-                      </p>
-                    )}
-                  </div>
-                  <div className="flex items-center gap-2 shrink-0 ml-3">
-                    {!installed && info.downloadUrl && installState !== 'running' && (
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-7 text-xs text-text-muted"
-                        onClick={() => handleOpenUrl(info.downloadUrl)}
-                        title="Open download page"
-                      >
-                        Download
-                      </Button>
-                    )}
-                    {!installed && installState !== 'running' && (
-                      <Button
-                        variant="default"
-                        size="sm"
-                        className="h-7 text-xs"
-                        onClick={() => handleInstall(info.name)}
-                      >
-                        Install
-                      </Button>
-                    )}
-                    {installState === 'running' && (
-                      <span className="text-xs text-text-muted">Installing…</span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Live output */}
-                {output && (
-                  <div
-                    ref={(el) => {
-                      outputRefs.current[info.name] = el;
-                    }}
-                    className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
-                  >
-                    {output}
-                  </div>
-                )}
-
-                {/* Error */}
-                {installState === 'error' && errorMsg && (
-                  <p className="mt-2 text-xs text-text-danger">{errorMsg}</p>
-                )}
-
-                {/* Linux sudo note */}
-                {info.requiresSudo && !installed && installState !== 'running' && (
-                  <p className="mt-1 text-[11px] text-text-warning">
-                    Requires sudo. You may be prompted for your password in a terminal.
-                  </p>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-border-subtle flex items-center justify-between">
-          <p className="text-xs text-text-muted">
+    <ModalShell
+      open={visible}
+      onOpenChange={(open) => !open && handleDismiss()}
+      // A report with a list: width L. An install in flight makes it
+      // `required`, so a backdrop click cannot walk away from a running
+      // subprocess whose output is only visible here.
+      size="lg"
+      purpose={isBusy ? 'required' : 'form'}
+      scrollBody
+      title={
+        deps.length === 0 && cliIsUpdate
+          ? cli?.brokenOnPath
+            ? 'Repair the Biorouter CLI'
+            : 'Update the Biorouter CLI'
+          : 'Install missing dependencies'
+      }
+      subtitle={
+        deps.length === 0 && cliIsUpdate
+          ? cli?.brokenOnPath
+            ? 'The `biorouter` on your PATH no longer runs. Reinstall it from this app.'
+            : 'Your terminal `biorouter` is older than this app. Update it to match.'
+          : 'The following tools are required for Biorouter features. Install them to continue.'
+      }
+      footer={
+        <div className="flex w-full min-w-0 items-center justify-between gap-3">
+          <p className="min-w-0 text-supporting text-text-muted">
             {allDone
-              ? 'All dependencies installed. ✓'
+              ? 'All dependencies installed.'
               : deps.length === 0 && cliIsUpdate
                 ? 'Updating keeps the terminal CLI in sync with the desktop app.'
                 : deps.length === 0
@@ -473,7 +324,153 @@ export default function DependencySetupModal() {
             {allDone ? 'Done' : 'Dismiss'}
           </Button>
         </div>
-      </DialogContent>
-    </Dialog>
+      }
+    >
+      {/* Dep list */}
+      <div className="flex flex-col gap-3 py-3">
+        {/* Biorouter CLI install card */}
+        {(showCli || cliState === 'done') && (
+          <div
+            className={`rounded-xl border px-4 py-3 ${
+              cliState === 'done'
+                ? 'border-border-success/40 bg-background-success/10'
+                : cliState === 'error'
+                  ? 'border-border-danger/30 bg-background-danger/5'
+                  : 'biorouter-modal-panel bg-background-medium/20'
+            }`}
+          >
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm font-semibold flex items-center gap-1.5">
+                  {cliState === 'done' && <span className="text-text-success">✓</span>}
+                  {cliState === 'error' && <span className="text-text-danger">✗</span>}
+                  {cliState === 'running' && (
+                    <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
+                  )}
+                  Biorouter CLI
+                </p>
+                <p className="text-[11px] text-text-muted mt-0.5">
+                  {cliState === 'done'
+                    ? 'Installed. Open a new terminal and run `biorouter`.'
+                    : cli?.brokenOnPath
+                      ? 'The `biorouter` on your PATH won’t run. Reinstall it.'
+                      : cliIsUpdate
+                        ? `Update ${cli?.pathVersion ?? 'older'} → ${cli?.bundledVersion ?? 'latest'} to match this app.`
+                        : 'Call `biorouter` from any terminal.'}
+                </p>
+              </div>
+              {cliState !== 'running' && cliState !== 'done' && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  className="h-7 text-xs"
+                  onClick={handleInstallCli}
+                >
+                  {cliButtonLabel}
+                </Button>
+              )}
+              {cliState === 'running' && (
+                <span className="text-xs text-text-muted">{cliProgressLabel}</span>
+              )}
+            </div>
+            {cliOutput && (
+              <div className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all">
+                {cliOutput}
+              </div>
+            )}
+            {cliState === 'error' && cliError && (
+              <p className="mt-2 text-xs text-text-danger">{cliError}</p>
+            )}
+          </div>
+        )}
+
+        {deps.map(({ info, installState, output, errorMsg }) => {
+          const installed = installState === 'done' || info.installed;
+          return (
+            <div
+              key={info.name}
+              className={`rounded-lg border px-4 py-3 ${
+                installed
+                  ? 'border-border-success/40 bg-background-success/10'
+                  : installState === 'error'
+                    ? 'border-border-danger/30 bg-background-danger/5'
+                    : 'border-border-subtle bg-background-medium/20'
+              }`}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-sm font-semibold flex items-center gap-1.5">
+                    {installed && <span className="text-text-success">✓</span>}
+                    {installState === 'error' && <span className="text-text-danger">✗</span>}
+                    {installState === 'running' && (
+                      <span className="inline-block w-3 h-3 rounded-full border-2 border-text-muted border-t-transparent animate-spin" />
+                    )}
+                    {info.displayName}
+                  </p>
+                  {installed && info.version && (
+                    <p className="text-[11px] text-text-muted mt-0.5">{info.version}</p>
+                  )}
+                  {!installed && installState === 'idle' && (
+                    <p className="text-[11px] text-text-muted font-mono mt-0.5 break-all">
+                      {info.installCmd}
+                    </p>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 shrink-0 ml-3">
+                  {!installed && info.downloadUrl && installState !== 'running' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-7 text-xs text-text-muted"
+                      onClick={() => handleOpenUrl(info.downloadUrl)}
+                      title="Open download page"
+                    >
+                      Download
+                    </Button>
+                  )}
+                  {!installed && installState !== 'running' && (
+                    <Button
+                      variant="default"
+                      size="sm"
+                      className="h-7 text-xs"
+                      onClick={() => handleInstall(info.name)}
+                    >
+                      Install
+                    </Button>
+                  )}
+                  {installState === 'running' && (
+                    <span className="text-xs text-text-muted">Installing…</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Live output */}
+              {output && (
+                <div
+                  ref={(el) => {
+                    outputRefs.current[info.name] = el;
+                  }}
+                  className="mt-2 font-mono text-[11px] text-text-muted bg-background-medium/40 rounded p-2 max-h-28 overflow-y-auto whitespace-pre-wrap break-all"
+                >
+                  {output}
+                </div>
+              )}
+
+              {/* Error */}
+              {installState === 'error' && errorMsg && (
+                <p className="mt-2 text-xs text-text-danger">{errorMsg}</p>
+              )}
+
+              {/* Linux sudo note */}
+              {info.requiresSudo && !installed && installState !== 'running' && (
+                <p className="mt-1 text-[11px] text-text-warning">
+                  Requires sudo. You may be prompted for your password in a terminal.
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </ModalShell>
   );
 }

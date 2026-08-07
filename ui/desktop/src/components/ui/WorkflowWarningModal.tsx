@@ -59,10 +59,10 @@ export function WorkflowWarningModal({
 
           {hasSecurityWarnings && (
             <div className="px-6">
-              <div className="rounded-xl border border-border-warning/40 bg-background-warning/10 p-4">
+              <div className="rounded-container border border-border-warning/40 bg-background-warning/10 p-4">
                 <div className="flex items-start">
                   <div className="ml-3">
-                    <div className="mt-2 text-sm text-text-warning">
+                    <div className="mt-2 text-body text-text-warning">
                       <p>
                         This workflow contains hidden characters that will be ignored for your
                         safety, as they could be used for malicious purposes.
@@ -75,7 +75,7 @@ export function WorkflowWarningModal({
           )}
 
           <div className="flex-1 overflow-y-auto p-6 pt-4">
-            <div className="biorouter-modal-panel p-4 rounded-xl">
+            <div className="biorouter-modal-panel p-4 rounded-container">
               <h3 className="font-medium mb-3 text-text-default">Workflow Preview:</h3>
               <div className="space-y-4">
                 {workflowDetails.title && (
@@ -91,7 +91,7 @@ export function WorkflowWarningModal({
                 {workflowDetails.instructions && (
                   <div>
                     <h4 className="font-medium text-text-default mb-1">Instructions:</h4>
-                    <MarkdownContent content={workflowDetails.instructions} className="text-sm" />
+                    <MarkdownContent content={workflowDetails.instructions} className="text-body" />
                   </div>
                 )}
               </div>

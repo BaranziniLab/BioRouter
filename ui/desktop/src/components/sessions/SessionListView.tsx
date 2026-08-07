@@ -12,7 +12,9 @@ import {
   NewWindow,
   Puzzle,
   GitBranch,
+  MessageSquare,
   MoreHorizontal,
+  LoaderCircle,
 } from '../icons/app-icons';
 import { useNavigate } from 'react-router-dom';
 import { toastError, toastSuccess } from '../../toasts';
@@ -20,6 +22,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Button } from '../ui/button';
@@ -169,7 +172,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
                 type="text"
                 value={description}
                 onChange={handleInputChange}
-                className="biorouter-modal-panel w-full p-3 rounded-lg text-text-default "
+                className="biorouter-modal-panel w-full p-3 rounded-element text-body text-text-default"
                 placeholder="Enter session description"
                 autoFocus
                 maxLength={200}
@@ -239,7 +242,7 @@ function HistoryLoading() {
       {HISTORY_LOADING_GROUPS.map((rowCount, groupIndex) => (
         <div key={groupIndex} className="space-y-4" aria-hidden="true">
           <Skeleton
-            className="biorouter-history-loading-cell h-3 w-16 rounded-sm bg-background-medium"
+            className="biorouter-history-loading-cell h-3 w-16 rounded-inner bg-background-medium"
             style={{ animationDelay: `${-groupIndex * 180}ms` }}
           />
           <div className="session-grid biorouter-list-shell overflow-hidden">
@@ -251,26 +254,26 @@ function HistoryLoading() {
                 <div
                   key={index}
                   data-testid="history-loading-row"
-                  className="flex min-h-10 items-center gap-3 border-b border-border-subtle px-4 py-2 last:border-b-0"
+                  className="flex min-h-row items-center gap-3 border-b border-border-subtle px-4 py-2 last:border-b-0"
                 >
                   <div className="min-w-0 flex-1">
                     <Skeleton
-                      className={`biorouter-history-loading-cell mb-1.5 h-4 ${HISTORY_LOADING_TITLE_WIDTHS[currentRow % HISTORY_LOADING_TITLE_WIDTHS.length]} rounded-sm bg-background-medium`}
+                      className={`biorouter-history-loading-cell mb-1.5 h-4 ${HISTORY_LOADING_TITLE_WIDTHS[currentRow % HISTORY_LOADING_TITLE_WIDTHS.length]} rounded-inner bg-background-medium`}
                       style={{ animationDelay: `${delay}ms` }}
                     />
                     <div className="flex items-center gap-3">
                       <Skeleton
-                        className="biorouter-history-loading-cell h-3 w-20 rounded-sm bg-background-medium"
+                        className="biorouter-history-loading-cell h-3 w-20 rounded-inner bg-background-medium"
                         style={{ animationDelay: `${delay - 70}ms` }}
                       />
                       <Skeleton
-                        className="biorouter-history-loading-cell h-3 w-32 rounded-sm bg-background-medium"
+                        className="biorouter-history-loading-cell h-3 w-32 rounded-inner bg-background-medium"
                         style={{ animationDelay: `${delay - 140}ms` }}
                       />
                     </div>
                   </div>
                   <Skeleton
-                    className="biorouter-history-loading-cell h-3 w-14 rounded-sm bg-background-medium"
+                    className="biorouter-history-loading-cell h-3 w-14 rounded-inner bg-background-medium"
                     style={{ animationDelay: `${delay - 210}ms` }}
                   />
                 </div>
@@ -763,6 +766,17 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         onSelectSession(session.id);
       }, [session.id]);
 
+      // The menu's "Open in new tab" is the same call the row's own click makes.
+      // It exists because that behaviour was undiscoverable, not because it was
+      // missing — so it must stay the SAME path, not a second one that can drift.
+      const handleOpenInNewTabClick = useCallback(
+        (e: React.MouseEvent) => {
+          e.stopPropagation();
+          onSelectSession(session.id);
+        },
+        [session.id]
+      );
+
       const handleExportClick = useCallback(
         (e: React.MouseEvent) => {
           onExportClick(session, e);
@@ -797,7 +811,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             <span
               data-testid="subagent-badge"
               title="Subagent run"
-              className="flex-shrink-0 rounded bg-background-code px-1 text-[10px] text-text-subtle"
+              className="flex-shrink-0 rounded-inner bg-background-code px-1 text-chip text-text-subtle"
             >
               sub
             </span>
@@ -807,7 +821,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           <button
             type="button"
             onClick={handleCardClick}
-            className="flex-1 min-w-0 cursor-pointer rounded-sm text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
+            className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
             aria-label={`Open session ${session.name}`}
           >
             {/* This row's SessionItem SHADOWS the exported
@@ -817,11 +831,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 the marker would depend on which of the two a surface happened
                 to mount. */}
             <div className="flex min-w-0 items-center gap-1.5">
-              <h3 className="text-sm font-medium truncate">{session.name}</h3>
+              <h3 className="text-label truncate">{session.name}</h3>
               {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
             </div>
             {session.diverged_from && (
-              <div className="flex items-center gap-1 mt-0.5 text-text-muted text-xs min-w-0">
+              <div className="flex items-center gap-2 mt-0.5 text-text-muted text-supporting min-w-0">
                 <GitBranch className="w-3 h-3 flex-shrink-0" />
                 <span className="truncate max-w-[320px]">
                   branched from{' '}
@@ -829,28 +843,33 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </span>
               </div>
             )}
-            <div className="flex items-center gap-3 mt-0.5 text-text-muted text-xs">
-              <div className="flex items-center gap-1">
+            <div className="flex items-center gap-3 mt-0.5 text-text-muted text-supporting">
+              <div className="flex items-center gap-2">
                 <Calendar className="w-3 h-3 flex-shrink-0" />
                 <span>{formatMessageTimestamp(Date.parse(session.updated_at) / 1000)}</span>
               </div>
-              <div className="flex items-center gap-1 min-w-0">
+              <div className="flex items-center gap-2 min-w-0">
                 <Folder className="w-3 h-3 flex-shrink-0" />
                 <span className="truncate max-w-[240px]">{session.working_dir}</span>
               </div>
             </div>
           </button>
 
-          {/* Right-side stats + hover actions */}
-          <div className="flex items-center gap-3 flex-shrink-0">
-            <div className="flex items-center gap-3 text-xs text-text-muted font-mono">
-              <div className="flex items-center gap-1">
+          {/* Right-side stats + hover actions.
+              §3.10 "one optical axis per row": each right-hand cluster gets its
+              own 20px-high centred box rather than trusting a 32px button and a
+              12px glyph to agree on a baseline. The figures are `tabular-nums`
+              inside fixed-width boxes so the counts form real columns down the
+              list instead of drifting with each value's width. */}
+          <div className="flex h-5 items-center gap-3 flex-shrink-0">
+            <div className="flex h-5 items-center gap-3 text-supporting text-text-muted font-mono tabular-nums">
+              <div className="flex items-center gap-2">
                 <MessageSquareText className="w-3 h-3" />
-                <span>{session.message_count}</span>
+                <span className="w-8 text-right">{session.message_count}</span>
               </div>
               {billedTokenEstimate && (
                 <div
-                  className="flex items-center gap-1"
+                  className="flex items-center gap-2"
                   title={
                     billedTokenEstimate.lowerBound
                       ? 'At least this many tokens; only last-turn usage is available for this legacy session'
@@ -859,24 +878,23 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 >
                   <Target className="w-3 h-3" />
                   <span className="sr-only">Billed tokens: </span>
-                  <span>{formatBilledTokenEstimate(billedTokenEstimate)}</span>
+                  <span className="w-12 text-right">
+                    {formatBilledTokenEstimate(billedTokenEstimate)}
+                  </span>
                 </div>
               )}
               {extensionNames.length > 0 && (
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
-                      <div
-                        className="flex items-center gap-0.5"
-                        onClick={(e) => e.stopPropagation()}
-                      >
+                      <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                         <Puzzle className="w-3 h-3" />
-                        <span>{extensionNames.length}</span>
+                        <span className="w-4 text-right">{extensionNames.length}</span>
                       </div>
                     </TooltipTrigger>
                     <TooltipContent side="top" className="max-w-xs">
-                      <div className="text-xs">
-                        <div className="font-medium mb-1">Extensions:</div>
+                      <div className="text-supporting">
+                        <div className="text-label mb-1">Extensions:</div>
                         <ul className="list-disc list-inside">
                           {extensionNames.map((name) => (
                             <li key={name}>{name}</li>
@@ -888,38 +906,18 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </TooltipProvider>
               )}
             </div>
+            {/* §3.10: at most three visible actions, all 32px with 16px icons —
+                this is where the 28-vs-32px fork between the outlined trio and
+                the delete button ended. Everything else, and every DESTRUCTIVE
+                action, lives behind the one `⋯` overflow, so a hover-revealed
+                cluster can never put Delete under a stray click. */}
             <div className="flex gap-1 opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
-              <DropdownMenu>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <DropdownMenuTrigger asChild>
-                      <Button
-                        onClick={(e) => e.stopPropagation()}
-                        variant="outline"
-                        size="sm"
-                        className="h-7 w-7 p-0"
-                        aria-label={`Launch options for ${session.name}`}
-                      >
-                        <NewWindow className="w-4 h-4" />
-                      </Button>
-                    </DropdownMenuTrigger>
-                  </TooltipTrigger>
-                  <TooltipContent side="top">Launch session</TooltipContent>
-                </Tooltip>
-                <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
-                  <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
-                    <NewWindow className="w-4 h-4" />
-                    Open in new window
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
                     onClick={handleEditClick}
                     variant="outline"
-                    size="sm"
-                    className="h-7 w-7 p-0"
+                    shape="round"
                     aria-label={`Edit ${session.name}`}
                   >
                     <Edit2 className="w-4 h-4" />
@@ -932,8 +930,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   <Button
                     onClick={handleExportClick}
                     variant="outline"
-                    size="sm"
-                    className="h-7 w-7 p-0"
+                    shape="round"
                     aria-label={`Export ${session.name}`}
                   >
                     <Download className="w-4 h-4" />
@@ -941,54 +938,64 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                 </TooltipTrigger>
                 <TooltipContent side="top">Export session</TooltipContent>
               </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    onClick={handleDeleteClick}
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 w-8 p-0 text-text-danger hover:bg-background-danger/10"
-                    aria-label={`Delete ${session.name}`}
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent side="top">Delete session</TooltipContent>
-              </Tooltip>
-              {/* Issue #56 §12.1. The row's own overflow menu, and the ONLY
-                  place declassification is offered besides the session page's
-                  action bar — deliberately not `SessionNamePill`'s title menu,
-                  which is one careless click from the chat title.
+              <DropdownMenu>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        onClick={(e) => e.stopPropagation()}
+                        variant="outline"
+                        shape="round"
+                        aria-label={`More actions for ${session.name}`}
+                      >
+                        <MoreHorizontal className="w-4 h-4" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                  </TooltipTrigger>
+                  <TooltipContent side="top">More actions</TooltipContent>
+                </Tooltip>
+                <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                  {/* Clicking the row already opens the session in a tab — this
+                      item is discoverability, not new behaviour, and it calls
+                      the same `onSelectSession` the row's own click does. The
+                      glyph is the one the tab strip uses for a tab. */}
+                  <DropdownMenuItem onClick={handleOpenInNewTabClick}>
+                    <MessageSquare className="w-4 h-4" />
+                    Open in new tab
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={(e) => handleOpenInNewWindowClick(e)}>
+                    <NewWindow className="w-4 h-4" />
+                    Open in new window
+                  </DropdownMenuItem>
+                  {/* Issue #56 §12.1. The row's own overflow menu, and the ONLY
+                      place declassification is offered besides the session
+                      page's action bar — deliberately not `SessionNamePill`'s
+                      title menu, which is one careless click from the chat
+                      title.
 
-                  Private rows only: this menu has exactly one item today, and a
-                  "More actions" button that opens an empty menu on every public
-                  chat in History is worse than no button. It appears where the
-                  private badge already is, so the two read as one thing. */}
-              {session.privacy_tier === 'private' && (
-                <DropdownMenu>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          onClick={(e) => e.stopPropagation()}
-                          variant="outline"
-                          size="sm"
-                          className="h-7 w-7 p-0"
-                          aria-label={`More actions for ${session.name}`}
-                        >
-                          <MoreHorizontal className="w-4 h-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                    </TooltipTrigger>
-                    <TooltipContent side="top">More actions</TooltipContent>
-                  </Tooltip>
-                  <DropdownMenuContent align="end" onClick={(e) => e.stopPropagation()}>
+                      Private rows only: a public chat has nothing to
+                      declassify. Before §3.10 folded every row action behind
+                      this one `⋯`, the tier gated the whole BUTTON, because a
+                      "More actions" trigger that opened a one-item menu — and
+                      an empty one on every public row — was worse than no
+                      trigger at all. The menu now always carries the open and
+                      delete items, so only the ITEM is gated. */}
+                  {session.privacy_tier === 'private' && (
                     <DropdownMenuItem onSelect={() => onDeclassifyClick(session)}>
                       Make this chat public
                     </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
+                  )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={handleDeleteClick}
+                    aria-label={`Delete ${session.name}`}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    Delete session
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
           </div>
         </div>
@@ -997,15 +1004,22 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
     const renderActualContent = () => {
       if (error) {
+        // The error state is the empty state with a different cause: same icon
+        // plate, same title/description/action stack, same quiet register. It
+        // used to be a hand-rolled column with its own icon size, its own type
+        // ramp and a Title Case sentence — one of the four error dialects §4.5
+        // exists to close.
         return (
-          <div className="flex flex-col items-center justify-center h-full text-text-muted">
-            <AlertCircle className="h-12 w-12 text-text-danger mb-4" />
-            <p className="text-lg mb-2">Error Loading Sessions</p>
-            <p className="text-sm text-center mb-4">{error}</p>
-            <Button onClick={loadSessions} variant="default">
-              Try Again
-            </Button>
-          </div>
+          <EmptyState
+            icon={AlertCircle}
+            title="Couldn't load your chat history"
+            description={error}
+            actions={
+              <Button onClick={loadSessions} variant="outline">
+                Try again
+              </Button>
+            }
+          />
         );
       }
 
@@ -1044,9 +1058,11 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
           {visibleDateGroups.map((group) => (
             <div key={group.label} className="space-y-4">
               <div className="sticky top-0 z-10 bg-background-canvas pt-2 pb-2">
-                <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider">
-                  {group.label}
-                </h2>
+                {/* `text-caps` IS the caps style — it carries the transform as
+                    well as the 11/500/+0.08em metrics, so `uppercase` and
+                    `tracking-wider` beside it were spelling out what the role
+                    already says. */}
+                <h2 className="text-caps text-text-muted">{group.label}</h2>
               </div>
               <div className="session-grid biorouter-list-shell">
                 {group.sessions.map((session) => {
@@ -1089,8 +1105,8 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
           {visibleSessionCount < topLevelSessions.length && (
             <div className="flex justify-center py-8">
-              <div className="flex items-center space-x-2 text-text-muted">
-                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-text-muted"></div>
+              <div className="flex items-center gap-2 text-secondary text-text-muted">
+                <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
                 <span>Loading more sessions...</span>
               </div>
             </div>
@@ -1106,22 +1122,26 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             {/* Flat page header */}
             <div className="flex-shrink-0 border-b border-border-subtle">
               <ReadableContent className="px-8 pt-12 pb-6">
-                <div className="flex justify-between items-center mb-1 page-transition">
-                  <h1 className="text-2xl font-semibold tracking-tight">Chat history</h1>
+                {/* §4.2 header recipe: full-bleed hairline, `text-title`,
+                    description in `text-secondary` muted, and the view's actions
+                    right-aligned ON the title row rather than in a button row
+                    below it. */}
+                <div className="flex justify-between items-center gap-4 mb-1 page-transition">
+                  <h1 className="text-title">Chat history</h1>
                   <Button
                     onClick={handleImportClick}
                     variant="outline"
-                    className="flex items-center gap-2"
+                    className="flex flex-shrink-0 items-center gap-2"
                   >
                     <Upload className="w-4 h-4" />
                     Import Session
                   </Button>
                 </div>
-                <p className="text-sm text-text-muted">
+                <p className="text-secondary text-text-muted">
                   View and search your past conversations with Biorouter. {getSearchShortcutText()}{' '}
                   to search.
                 </p>
-                <label className="mt-3 flex items-center gap-1 text-xs text-text-subtle">
+                <label className="mt-3 flex items-center gap-2 text-supporting text-text-muted">
                   <input
                     type="checkbox"
                     checked={showSubagents}

@@ -40,7 +40,7 @@ export default function WorkflowInfoModal({
         <div className="flex flex-col flex-grow overflow-y-auto space-y-8">
           <textarea
             ref={textareaRef}
-            className="biorouter-modal-panel w-full flex-grow resize-none min-h-[300px] max-h-[calc(100vh-300px)] rounded-lg p-3 text-text-default "
+            className="biorouter-modal-panel w-full flex-grow resize-none min-h-[300px] max-h-[calc(100vh-300px)] rounded-element p-3 text-text-default "
             value={value}
             onChange={(e) => setValue(e.target.value)}
             placeholder={`Enter ${infoLabel.toLowerCase()}...`}
@@ -48,14 +48,14 @@ export default function WorkflowInfoModal({
         </div>
         <Button
           onClick={onSave}
-          className="w-full h-[60px] rounded-none border-b border-border-subtle bg-transparent hover:bg-background-medium text-text-default font-medium text-base"
+          className="w-full h-[60px] rounded-none border-b border-border-subtle bg-transparent hover:bg-overlay-hover text-text-default font-medium text-base"
         >
           Save Changes
         </Button>
         <Button
           onClick={onClose}
           variant="ghost"
-          className="w-full h-[60px] rounded-none hover:bg-background-medium text-text-muted hover:text-text-default text-base font-normal"
+          className="w-full h-[60px] rounded-none hover:bg-overlay-hover text-text-muted hover:text-text-default text-base font-normal"
         >
           Cancel
         </Button>

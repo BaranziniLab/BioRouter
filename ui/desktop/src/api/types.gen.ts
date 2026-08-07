@@ -45,6 +45,18 @@ export type ActiveKbResponse = {
 };
 
 /**
+ * A pointer to a live turn, handed to a client that needs to attach to it.
+ */
+export type ActiveTurnRef = {
+    /**
+     * Post this as `ChatRequest.turn_id` to attach. `POST /reply` accepts
+     * either this server-assigned id or the idempotency key the turn's original
+     * caller chose, so a client can use whichever it happens to hold.
+     */
+    turn_id: string;
+};
+
+/**
  * One active unit of work, kind-tagged so the GUI can render/route uniformly.
  */
 export type ActiveWorkItemDto = {
@@ -110,6 +122,35 @@ export type ActivityWindow = {
 export type AddExtensionRequest = {
     config: ExtensionConfig;
     session_id: string;
+};
+
+/**
+ * One institution, as a surface that has to *print* it needs it (issue #56,
+ * DR-26).
+ *
+ * Both halves travel, and neither is derivable from the other. The `id` is the
+ * normalised slug — what `registry.json` publishes, what `baam.html`'s
+ * `data-affiliation` carries, what every cross-affiliation warning prints and
+ * what a user quotes in a support conversation. The `display_name` is what the
+ * registry publishes for it, and is **absent** for an institution the registry
+ * does not know.
+ *
+ * ⚠ **An absent display name is not an error and must never render as
+ * nothing.** Task 47 rules that an affiliation naming an unpublished
+ * institution is a *mismatch* whose raw id is surfaced; dropping the row
+ * because it has no pretty name would make a real constraint disappear from the
+ * one surface a user can see it on. This mirrors `privacy::affiliation::label`,
+ * which falls back to the bare id for exactly that reason.
+ */
+export type AffiliationInstitution = {
+    /**
+     * The registry's published display name (`UCSF`), or `None`.
+     */
+    display_name?: string | null;
+    /**
+     * The normalised slug (`ucsf`).
+     */
+    id: string;
 };
 
 export type AgentInitializationError = {
@@ -193,6 +234,21 @@ export type ChatRequest = {
      * [`apply_client_writeback`]. The desktop app has never sent this field.
      */
     conversation_so_far?: Array<Message> | null;
+    /**
+     * Attach only from this per-turn sequence number, when `turn_id` names a
+     * turn already in flight.
+     *
+     * A pure OPTIMISATION and deliberately so: a client that already rendered
+     * frames `0..N` skips re-receiving them, but one that omits the field gets
+     * the whole turn replayed and its own sequence gate makes that idempotent.
+     * Nothing about correctness depends on the server honouring it.
+     *
+     * It lives in the BODY rather than in `?from_seq=`, because `/reply` is
+     * generated with `query?: never` in `api/types.gen.ts` — a query parameter
+     * could only be smuggled past the typed client, while a `ChatRequest` field
+     * appears properly the next time the OpenAPI spec is regenerated.
+     */
+    from_seq?: number | null;
     reasoning_effort?: ReasoningEffort | null;
     session_id: string;
     /**
@@ -201,6 +257,12 @@ export type ChatRequest = {
      * flaky network — should send the same key it sent the first time. The retry
      * then comes back as a 409 with `duplicate: true`, meaning "that turn is
      * still running", instead of being mistaken for a genuine second turn.
+     *
+     * Since the live-turn-stream work this is also the ATTACH pointer: posting
+     * a `turn_id` that names a turn already in flight is answered 200 with that
+     * turn's stream instead of 409. Either name works — the key the client
+     * chose, or the server-assigned `turn-N` it read off a frame's `turn_id` /
+     * `POST /agent/resume`'s `active_turn`.
      */
     turn_id?: string | null;
     user_message: Message;
@@ -1635,7 +1697,57 @@ export type PrivacyDisclosureResponse = {
 
 export type ProvenanceKind = 'agent_injection' | 'user_direct' | 'spawn_context';
 
+/**
+ * DR-26's third axis for one provider **instance**, in the shape a UI can
+ * render (issue #56).
+ *
+ * ⚠ **Resolved from the instance, never from a name.** [`Self::of`] is the only
+ * constructor a caller should reach for, and it reads
+ * [`Provider::tier`] and [`Provider::affiliation`] off one `&dyn Provider` —
+ * the same two instance methods every gate reads. A `versa_* => ucsf` table
+ * would keep claiming the institution for a Versa module repointed at another
+ * host, which `tier()` has already demoted to Public: a private-looking
+ * institution chip on a public flow. Both Versa providers derive `ucsf` from
+ * the same gateway-host check that decides their tier
+ * (`providers::ucsf_gateway_affiliation`), so a repointed instance loses
+ * Private and `ucsf` **together**, and this type is what carries that pairing
+ * out to the UI.
+ *
+ * ⚠ **`Option<ProviderAffiliation>::None` is "public — no affiliation at all",
+ * and it is a fourth state distinct from all three
+ * [`ProviderAffiliationKind`]s.** See [`Self::resolved`] for the table.
+ */
+export type ProviderAffiliation = {
+    /**
+     * The covering institutions, ascending by id. Non-empty exactly for
+     * [`ProviderAffiliationKind::Institutions`], and **never** empty there:
+     * `InstitutionSet` cannot be constructed empty, for the reason its own doc
+     * records (an empty model set is a subset of every allowlist and so reaches
+     * every private extension).
+     */
+    institutions?: Array<AffiliationInstitution>;
+    kind: ProviderAffiliationKind;
+};
+
+/**
+ * Which of DR-26's three model-side affiliations this is.
+ *
+ * ⚠ **There is no `Public` variant, and that is the whole shape of the type.**
+ * A public model's affiliation is not a value here, it is the *absence* of a
+ * [`ProviderAffiliation`] — `Option::None` — exactly as
+ * [`ModelAffiliation`] has no public variant. Giving "public" a seat would
+ * invite a renderer to draw a chip for it, and a chip that says "no
+ * institution" on a public model reads as a *constraint* on a model that has
+ * none of the private tier's protections at all.
+ *
+ * A closed enum rather than a free string so a renderer can switch on it
+ * totally: a fourth affiliation must be a compile error at the badge, not a
+ * silently-unhandled branch that renders as the safest-looking of the three.
+ */
+export type ProviderAffiliationKind = 'local' | 'institutions' | 'unstated';
+
 export type ProviderDetails = {
+    affiliation?: ProviderAffiliation | null;
     is_configured: boolean;
     metadata: ProviderMetadata;
     name: string;
@@ -1875,6 +1987,7 @@ export type ResumeAgentRequest = {
 };
 
 export type ResumeAgentResponse = {
+    active_turn?: ActiveTurnRef | null;
     extension_results?: Array<ExtensionLoadResult> | null;
     initialization_error?: AgentInitializationError | null;
     session: Session;
@@ -2927,7 +3040,7 @@ export type AgentAddExtensionErrors = {
 
 export type AgentAddExtensionResponses = {
     /**
-     * Extension added
+     * Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.
      */
     200: string;
 };
@@ -3361,10 +3474,12 @@ export type UpdateAgentProviderError = UpdateAgentProviderErrors[keyof UpdateAge
 
 export type UpdateAgentProviderResponses = {
     /**
-     * Provider updated successfully
+     * Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when the bind crosses no institutional boundary, which is the normal case.
      */
-    200: unknown;
+    200: string;
 };
+
+export type UpdateAgentProviderResponse = UpdateAgentProviderResponses[keyof UpdateAgentProviderResponses];
 
 export type UpdateWorkingDirData = {
     body: UpdateWorkingDirRequest;
@@ -5116,7 +5231,7 @@ export type ReplyErrors = {
      */
     403: unknown;
     /**
-     * A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
+     * A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)
      */
     409: unknown;
     /**
@@ -5131,7 +5246,7 @@ export type ReplyErrors = {
 
 export type ReplyResponses = {
     /**
-     * Streaming response initiated
+     * Streaming response initiated — either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live
      */
     200: MessageEvent;
 };
@@ -5909,6 +6024,10 @@ export type ObserveSessionEventsErrors = {
      */
     401: unknown;
     /**
+     * Out of reach - a private or unreadable session named without the user-action proof
+     */
+    403: unknown;
+    /**
      * No such session
      */
     404: unknown;
@@ -5940,6 +6059,10 @@ export type ExportSessionErrors = {
      * Unauthorized - Invalid or missing API key
      */
     401: unknown;
+    /**
+     * Out of reach - a private or unreadable session named without the user-action proof
+     */
+    403: unknown;
     /**
      * Session not found
      */

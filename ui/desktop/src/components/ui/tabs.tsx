@@ -10,7 +10,7 @@ const Tabs = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <TabsPrimitive.Root
     ref={ref}
-    className={cn('flex flex-col rounded-md text-text-muted', className)}
+    className={cn('flex flex-col rounded-element text-text-muted', className)}
     {...props}
   />
 ));
@@ -36,7 +36,7 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "relative inline-flex items-center h-9 whitespace-nowrap text-sm font-medium text-text-muted transition-colors duration-[var(--motion-fast)] hover:text-text-default data-[state=active]:text-text-default disabled:pointer-events-none disabled:opacity-50 after:content-[''] after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-transparent after:transition-[background-color] after:duration-[var(--motion-base)] after:ease-[var(--ease-out)] data-[state=active]:after:bg-accent-bar",
+      "relative inline-flex items-center h-9 whitespace-nowrap text-label text-text-muted transition-colors hover:text-text-default data-[state=active]:text-text-default disabled:pointer-events-none disabled:opacity-50 after:content-[''] after:absolute after:inset-x-0 after:-bottom-px after:h-0.5 after:bg-transparent after:transition-[background-color] after:duration-[var(--motion-base)] data-[state=active]:after:bg-accent-bar",
       className
     )}
     {...props}

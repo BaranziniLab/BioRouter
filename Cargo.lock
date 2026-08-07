@@ -1289,6 +1289,7 @@ dependencies = [
  "chrono",
  "clap",
  "config",
+ "ctor",
  "env-lock",
  "fs2",
  "futures",

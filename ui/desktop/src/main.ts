@@ -41,6 +41,18 @@ import {
   type RegisteredTerminalSession,
 } from './terminalSessionRegistry';
 import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
+import {
+  StripBandRegistry,
+  electronScreenGeometry,
+  grabOffsetFromWire,
+  resolveDropTargetForRawPoint,
+  screenPointFromWire,
+  screenPointToWire,
+  TabDragBroker,
+  tornOffWindowBoundsForRawPoint,
+  type Rect as DragRect,
+  type ScreenGeometry,
+} from './windowDrag';
 import { expandTilde } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import { isFilePathAllowedForPreview } from './utils/pathContainment';
@@ -1433,9 +1445,39 @@ const createChat = async (
 
   windowMap.set(windowId, mainWindow);
 
+  // ── Tab tear-off: keep the strip-band registry's view of this window honest.
+  //
+  // Z-ORDER HAS NO SOURCE IN ELECTRON (design D3). There is no z-order query and
+  // `getAllWindows()` order is not documented as one, so focus recency stands in
+  // for it — which only works if something actually raises. Without these five
+  // listeners the "topmost window wins" rule silently degrades to REGISTRATION
+  // order, and is wrong the first time a user clicks between two windows.
+  //
+  // `hidden` is the other half: a minimised or hidden window is neither a merge
+  // target nor an OCCLUDER, so it must not shadow a visible window behind it.
+  // Window MOVES need no listener here — see refreshRegisteredContentBounds.
+  mainWindow.on('focus', () => stripBandRegistry.raise(windowId));
+  mainWindow.on('show', () => {
+    stripBandRegistry.setHidden(windowId, false);
+    stripBandRegistry.raise(windowId);
+  });
+  mainWindow.on('restore', () => {
+    stripBandRegistry.setHidden(windowId, false);
+    stripBandRegistry.raise(windowId);
+  });
+  mainWindow.on('hide', () => stripBandRegistry.setHidden(windowId, true));
+  mainWindow.on('minimize', () => stripBandRegistry.setHidden(windowId, true));
+
+  // `closed` is not enough on its own: a reload or a renderer crash keeps the
+  // window and kills the drag. See registerTabDragOwnerTeardown.
+  registerTabDragOwnerTeardown(mainWindow, windowId);
+
   // Handle window closure
   mainWindow.on('closed', () => {
     windowMap.delete(windowId);
+    // A closed window stops being a merge target on the very next pointermove
+    // (design §6), and cannot be left holding a caret nobody will clear.
+    forgetWindowFromTabDrag(windowId, 'window closed');
 
     // Clean up pending initial message
     pendingInitialMessages.delete(windowId);
@@ -1535,6 +1577,161 @@ async function openDivergedChatWindow(
     win.focus();
     win.moveTop();
   }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// TAB TEAR-OFF AND MERGE — the main-process half of the gesture (Phase 3).
+//
+// docs/design/astryx-adoption/tab-tear-off-and-merge.md. The pure geometry is
+// `windowDrag.ts`; everything here is the Electron it needs plus the ownership
+// rules it cannot express. Main is in this at all for one reason: while the
+// mouse button is held, the OS delivers every pointer event to the SOURCE
+// window. The window being dragged over receives nothing (measured in Phase 0
+// with real OS input), so it cannot hit-test itself, and `getBounds()` has no
+// renderer equivalent. Main is the only party that can answer "which window is
+// under this point".
+// ═══════════════════════════════════════════════════════════════════════════
+
+const stripBandRegistry = new StripBandRegistry();
+
+/** Built lazily: Electron's `screen` module is only usable after `app` is ready. */
+let cachedScreenGeometry: ScreenGeometry | null = null;
+function tabDragGeometry(): ScreenGeometry {
+  if (!cachedScreenGeometry) cachedScreenGeometry = electronScreenGeometry(screen);
+  return cachedScreenGeometry;
+}
+
+/**
+ * Who is showing a merge caret, who is holding the pointer, and which merges are
+ * still unanswered. The rules live in `windowDrag.ts` where they can be tested;
+ * this supplies the Electron they need and nothing else.
+ */
+const tabDragBroker = new TabDragBroker({
+  resolveWindow: (windowId) => {
+    const win = windowMap.get(windowId);
+    if (!win) return null;
+    return {
+      webContentsId: win.isDestroyed() ? -1 : win.webContents.id,
+      isAlive: () => !win.isDestroyed(),
+      send: (channel, payload) => {
+        if (!win.isDestroyed()) win.webContents.send(channel, payload);
+      },
+    };
+  },
+});
+
+/**
+ * `tab-drag:commit`'s payload as it arrives — every field still unproven.
+ *
+ * `point` and `grabOffset` are `unknown` rather than their wire shapes on
+ * purpose: they are geometry, and geometry only enters this process through
+ * `screenPointFromWire`/`grabOffsetFromWire`. Typing them here would let a
+ * future edit reach past the converters again.
+ */
+interface TabDragCommitRequestWire {
+  point?: unknown;
+  grabOffset?: unknown;
+  tab?: {
+    sessionId?: string;
+    title?: string;
+    userSetName?: boolean;
+    cwd?: string;
+    workflowId?: string;
+  };
+  isOnlyTab?: boolean;
+}
+
+/** A renderer-supplied band list, made safe to store. */
+function sanitizeStripBands(input: unknown): DragRect[] {
+  if (!Array.isArray(input)) return [];
+  const bands: DragRect[] = [];
+  // A split window has at most MAX_GROUPS strips; the cap is a bound on what a
+  // compromised renderer can make main hold, not a layout rule.
+  for (const raw of input.slice(0, 16)) {
+    const band = raw as Partial<DragRect>;
+    if (
+      typeof band?.x !== 'number' ||
+      typeof band?.y !== 'number' ||
+      typeof band?.width !== 'number' ||
+      typeof band?.height !== 'number'
+    ) {
+      continue;
+    }
+    if (![band.x, band.y, band.width, band.height].every(Number.isFinite)) continue;
+    bands.push({ x: band.x, y: band.y, width: band.width, height: band.height });
+  }
+  return bands;
+}
+
+/**
+ * Re-read every registered window's content rect from the live `BrowserWindow`.
+ *
+ * Bands are viewport-relative and change only when the layout does, so the
+ * renderer re-registers them itself. The CONTENT RECT is different: a window
+ * dragged to a new position by its title bar fires no renderer resize at all, so
+ * a stored rect goes stale with nothing to invalidate it — and a stale rect
+ * means a merge resolved against where a window USED to be. Refreshing on every
+ * move costs one `getContentBounds()` per window per pointermove and removes the
+ * whole class of staleness, which no amount of renderer-side reporting could.
+ */
+function refreshRegisteredContentBounds(): void {
+  for (const [windowId, win] of windowMap) {
+    const entry = stripBandRegistry.get(windowId);
+    if (!entry) continue;
+    if (win.isDestroyed()) {
+      stripBandRegistry.remove(windowId);
+      continue;
+    }
+    // `register` preserves stackOrder and hidden — see its doc comment. This is
+    // a measurement update, not a raise.
+    stripBandRegistry.register(windowId, {
+      contentBounds: win.getContentBounds(),
+      bands: entry.bands,
+    });
+  }
+}
+
+/**
+ * A window has stopped being able to take part in a drag — it closed, its render
+ * process died, or a reload replaced its document.
+ *
+ * ALL THREE MATTER, and only the first was handled. `tab-drag:end` is sent by
+ * the SOURCE renderer's unmount cleanup, and a document swap runs no React
+ * effect cleanups at all — so a source that was reloaded (Cmd+R is wired to
+ * `mainWindow.reload()` in `createChat`) or crashed never sends it, and the
+ * target window it had pointed at kept painting an insertion caret forever. This
+ * is the same failure `registerTerminalOwnerTeardown` exists for, and it is
+ * fixed the same way.
+ */
+function forgetWindowFromTabDrag(windowId: number, reason: string): void {
+  stripBandRegistry.remove(windowId);
+  const wasInDrag =
+    tabDragBroker.previewWindow === windowId ||
+    tabDragBroker.dragSourceWindow === windowId ||
+    tabDragBroker.pendingMergeCount > 0;
+  tabDragBroker.forgetWindow(windowId);
+  if (wasInDrag) log.info(`[tab-drag] released window ${windowId}:`, reason);
+}
+
+/**
+ * Free a chat window from any in-flight drag once its document goes away.
+ *
+ * Mirrors `registerTerminalOwnerTeardown` line for line, including the two
+ * filters that were each learned from a real bug there: `isSameDocument`,
+ * because the app is a hash router and `#/pair -> #/settings` fires this event
+ * too; and `isAppOrigin`, because `did-start-navigation` fires before the
+ * navigation throttles that cancel an off-origin navigation, so a navigation
+ * that never commits would otherwise tear the drag down.
+ */
+function registerTabDragOwnerTeardown(win: BrowserWindow, windowId: number): void {
+  win.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    if (!isAppOrigin(details.url, rendererEntryUrl())) return;
+    forgetWindowFromTabDrag(windowId, 'document replaced');
+  });
+  win.webContents.on('render-process-gone', () =>
+    forgetWindowFromTabDrag(windowId, 'render process gone')
+  );
 }
 
 const createLauncher = () => {
@@ -4538,6 +4735,145 @@ async function appMain() {
       await openDivergedChatWindow(resumeSessionId, dir, senderWindow, resumeSessionTitle);
     }
   );
+
+  // ── Tab tear-off and merge ────────────────────────────────────────────────
+  // Four channels in, two out. See the block above `createLauncher` for the
+  // registry and the ownership rules; these are only the doors.
+
+  ipcMain.on('tab-drag:register-bands', (event, bands) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    // ONLY CHAT WINDOWS REGISTER. A launcher, artifact or app window has no tab
+    // strip and must never become a merge target — `windowMap` is exactly the
+    // set `createChat` builds, so membership is the test. (The converse is a
+    // known limitation stated in D3: one of OUR non-chat windows sitting above a
+    // chat window's strip cannot occlude it, because it is not here to be seen.)
+    if (!win || win.isDestroyed() || !windowMap.has(win.id)) return;
+    stripBandRegistry.register(win.id, {
+      contentBounds: win.getContentBounds(),
+      bands: sanitizeStripBands(bands),
+    });
+  });
+
+  // EVERY IPC PAYLOAD BELOW IS TYPED `unknown` ON PURPOSE. `ipcMain`'s own
+  // signature says `any`, and that is exactly how a `{screenX, screenY}` wire
+  // point was handed to a function expecting `{x, y}` with `tsc` staying clean
+  // and every drop silently resolving to `detach`. `unknown` makes the
+  // converters in `windowDrag.ts` the only way in.
+  ipcMain.on('tab-drag:move', (event, point: unknown) => {
+    const source = BrowserWindow.fromWebContents(event.sender);
+    if (!source || source.isDestroyed()) return;
+    const rawPoint = screenPointFromWire(point);
+    if (!rawPoint) return;
+    // The only message that says who is holding the pointer, so it is the only
+    // place the broker can learn the drag SOURCE — which is what lets a source
+    // that dies mid-drag take its caret with it (D4).
+    tabDragBroker.noteDragSource(source.id);
+    refreshRegisteredContentBounds();
+    const phase = resolveDropTargetForRawPoint(
+      rawPoint,
+      tabDragGeometry(),
+      stripBandRegistry,
+      source.id
+    );
+    if (phase.kind === 'merge') {
+      tabDragBroker.showPreview(phase.targetWindowId, screenPointToWire(rawPoint));
+    } else {
+      tabDragBroker.clearPreview();
+    }
+  });
+
+  ipcMain.on('tab-drag:end', () => tabDragBroker.endDrag());
+
+  // ATTRIBUTED TO THE SENDER. `tabDragAckMerge` is on every renderer's preload,
+  // so a bare request id from anyone would do: the broker believes an ack only
+  // from the webContents the request was actually sent to.
+  ipcMain.on('tab-drag:merge-ack', (event, requestId: unknown, inserted: unknown) => {
+    if (typeof requestId !== 'number') return;
+    const accepted = tabDragBroker.ackMerge(requestId, !!inserted, event.sender.id);
+    if (!accepted) {
+      log.warn(
+        `[tab-drag] ignored merge ack ${requestId} from webContents ${event.sender.id}` +
+          ' (unknown, already settled, or not the window it was sent to)'
+      );
+    }
+  });
+
+  ipcMain.handle('tab-drag:commit', async (event, request: unknown) => {
+    const source = BrowserWindow.fromWebContents(event.sender);
+    // Every early return is `noop`, which means "keep the tab". There is no
+    // failure here that should cost the user a chat.
+    if (!source || source.isDestroyed()) return { outcome: 'noop' };
+    const req = (request ?? {}) as TabDragCommitRequestWire;
+    const rawPoint = screenPointFromWire(req.point);
+    if (!rawPoint) return { outcome: 'noop' };
+    const wirePoint = screenPointToWire(rawPoint);
+
+    // The caret goes the moment the button is released, whatever happens next.
+    tabDragBroker.endDrag();
+    refreshRegisteredContentBounds();
+    const phase = resolveDropTargetForRawPoint(
+      rawPoint,
+      tabDragGeometry(),
+      stripBandRegistry,
+      source.id
+    );
+    if (phase.kind === 'local') return { outcome: 'noop' };
+
+    if (phase.kind === 'merge') {
+      const inserted = await tabDragBroker.requestMerge(phase.targetWindowId, req.tab, wirePoint);
+      if (!inserted) return { outcome: 'noop' };
+      // NOW it may be raised — the gesture is over, so there is no capture left
+      // to steal (D3's "not raised, not focused" applies only during preview).
+      // Re-read the window: the ack round trip is the one place in this handler
+      // where the target can have gone away since it was resolved.
+      const target = windowMap.get(phase.targetWindowId);
+      if (target && !target.isDestroyed()) {
+        target.show();
+        target.focus();
+        target.moveTop();
+      }
+      return { outcome: 'merge' };
+    }
+
+    // D5 — tearing out a window's ONLY tab is a no-op. Note this does not
+    // apply to the merge branch above: moving a lone tab INTO another window is
+    // exactly the gesture, and it closes the source window afterwards (D6a).
+    if (req.isOnlyTab) return { outcome: 'noop' };
+
+    const bounds = tornOffWindowBoundsForRawPoint(
+      rawPoint,
+      grabOffsetFromWire(req.grabOffset),
+      source.getBounds(),
+      tabDragGeometry()
+    );
+    // Seeded through the proven path — the same one Diverge and "Open in new
+    // window" already use daily. `show: false` then show/focus/moveTop mirrors
+    // openDivergedChatWindow so the window does not flash at its default
+    // position before moving to the drop point.
+    const win = await createChat(
+      app,
+      undefined,
+      req.tab?.cwd,
+      undefined,
+      req.tab?.sessionId,
+      'pair',
+      undefined,
+      undefined,
+      req.tab?.workflowId,
+      undefined,
+      {
+        initialBounds: bounds,
+        show: false,
+        manageWindowState: false,
+        ...(req.tab?.title ? { resumeSessionTitle: req.tab.title } : {}),
+      }
+    );
+    if (!win) return { outcome: 'noop' };
+    win.show();
+    win.focus();
+    win.moveTop();
+    return { outcome: 'detach' };
+  });
 
   ipcMain.on('close-window', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);

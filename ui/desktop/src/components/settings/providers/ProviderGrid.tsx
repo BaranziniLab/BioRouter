@@ -23,14 +23,14 @@ const CustomProviderCard = memo(function CustomProviderCard({ onClick }: { onCli
     <button
       data-testid="add-custom-provider-card"
       onClick={onClick}
-      className="w-full flex items-center gap-3 py-3 px-4 rounded-xl
-        cursor-pointer hover:bg-background-medium
-        transition-colors duration-150 text-left"
+      className="w-full flex items-center gap-3 py-3 px-4 rounded-container
+        cursor-pointer tint-interactive
+        transition-colors text-left"
     >
-      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0">
+      <div className="w-8 h-8 rounded-element flex items-center justify-center flex-shrink-0">
         <Plus className="w-4 h-4 text-text-muted" />
       </div>
-      <p className="text-sm text-text-muted">Add Custom Provider</p>
+      <p className="text-label text-text-muted">Add Custom Provider</p>
     </button>
   );
 });
@@ -214,13 +214,18 @@ function ProviderCards({
 
           return (
             <div key={section.key}>
-              <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-1 flex items-center gap-2">
+              {/* `text-caps` is the ONE caps style — it carries the 11/500,
+                  the +0.08em tracking and the uppercase transform the four
+                  utilities here were spelling out by hand. The `mb-1` (rather
+                  than main's `mb-3`) is because the section NOTE sits directly
+                  under the heading and owns the gap below the pair. */}
+              <h2 className="text-caps text-text-muted mb-1 flex items-center gap-2">
                 <span
                   className={`w-1.5 h-1.5 ${section.accentClassName} rounded-full flex-shrink-0`}
                 />
                 {section.label}
               </h2>
-              <p className="text-xs text-text-muted mb-3">{section.note}</p>
+              <p className="text-supporting text-text-muted mb-3">{section.note}</p>
               {/*
                 Issue #56, DR-17 requirement 3. The Commercial section — and only
                 it — carries the standing one-line disclosure of what a model
@@ -230,7 +235,7 @@ function ProviderCards({
                 of its two homes and stays wrong.
               */}
               {alwaysVisible && (
-                <NonPrivateModelDisclosureNote className="text-xs text-text-muted mb-3" />
+                <NonPrivateModelDisclosureNote className="text-supporting text-text-muted mb-3" />
               )}
               <div className="divide-y divide-border-subtle">
                 {section.cards}

@@ -75,7 +75,7 @@ function NotebookOutputView({
     const traceback =
       output.traceback?.join('\n') || [output.ename, output.evalue].filter(Boolean).join(': ');
     return (
-      <pre className="overflow-auto whitespace-pre-wrap rounded-md bg-status-danger/10 p-3 font-mono text-xs text-status-danger">
+      <pre className="overflow-auto whitespace-pre-wrap rounded-element bg-status-danger/10 p-3 font-mono text-code text-status-danger">
         {traceback || 'Notebook execution failed.'}
       </pre>
     );
@@ -84,7 +84,7 @@ function NotebookOutputView({
   const stream = joined(output.text);
   if (stream) {
     return (
-      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs text-text-default">
+      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-code text-text-default">
         {stream}
       </pre>
     );
@@ -148,7 +148,7 @@ function NotebookOutputView({
   const plain = joined(data['text/plain']);
   if (plain) {
     return (
-      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs text-text-default">
+      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-code text-text-default">
         {plain}
       </pre>
     );
@@ -157,7 +157,7 @@ function NotebookOutputView({
   const json = data['application/json'];
   if (json !== undefined) {
     return (
-      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-xs text-text-default">
+      <pre className="overflow-auto whitespace-pre-wrap px-3 py-2 font-mono text-code text-text-default">
         {typeof json === 'string' ? json : JSON.stringify(json, null, 2)}
       </pre>
     );
@@ -189,7 +189,7 @@ export default function NotebookPreview({
 
   if (!parsed.notebook) {
     return (
-      <div className="flex h-full items-center justify-center p-6 text-sm text-text-muted">
+      <div className="flex h-full items-center justify-center p-6 text-body text-text-muted">
         Could not preview this notebook: {parsed.error}
       </div>
     );
@@ -235,7 +235,7 @@ export default function NotebookPreview({
                 <section
                   key={index}
                   aria-label={`Markdown cell ${index + 1}`}
-                  className="rounded-lg border border-border-subtle bg-background-default px-4 py-3"
+                  className="rounded-container border border-border-subtle bg-background-default px-4 py-3"
                 >
                   <MarkdownContent content={source} />
                 </section>
@@ -247,10 +247,12 @@ export default function NotebookPreview({
                 <section
                   key={index}
                   aria-label={`Code cell ${index + 1}`}
-                  className="overflow-hidden rounded-lg border border-border-subtle bg-background-default"
+                  className="overflow-hidden rounded-container border border-border-subtle bg-background-default"
                 >
                   <div className="flex min-w-0">
-                    <div className="w-[72px] shrink-0 px-2 py-3 text-right font-mono text-[11px] text-text-muted">
+                    {/* The execution gutter: mono metadata, `tabular-nums` so the
+                        counter does not shift the code as it widens. */}
+                    <div className="w-[72px] shrink-0 px-2 py-3 text-right font-mono text-supporting tabular-nums text-text-muted">
                       In [{executionLabel}]:
                     </div>
                     <div className="min-w-0 flex-1 overflow-auto border-l border-border-subtle">
@@ -291,7 +293,7 @@ export default function NotebookPreview({
               <section
                 key={index}
                 aria-label={`Raw cell ${index + 1}`}
-                className="overflow-auto whitespace-pre-wrap rounded-lg border border-border-subtle bg-background-default p-4 font-mono text-xs"
+                className="overflow-auto whitespace-pre-wrap rounded-container border border-border-subtle bg-background-default p-4 font-mono text-code"
               >
                 {source}
               </section>

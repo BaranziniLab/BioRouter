@@ -124,7 +124,7 @@
         },
         "responses": {
           "200": {
-            "description": "Extension added",
+            "description": "Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -688,7 +688,14 @@
         },
         "responses": {
           "200": {
-            "description": "Provider updated successfully"
+            "description": "Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when the bind crosses no institutional boundary, which is the normal case.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "description": "Bad request - missing or invalid parameters"
@@ -3005,7 +3012,7 @@
         },
         "responses": {
           "200": {
-            "description": "Streaming response initiated",
+            "description": "Streaming response initiated — either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -3018,7 +3025,7 @@
             "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
           },
           "409": {
-            "description": "A turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
+            "description": "A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
           },
           "424": {
             "description": "Agent not initialized"
@@ -4026,6 +4033,9 @@
           "401": {
             "description": "Unauthorized - invalid secret key"
           },
+          "403": {
+            "description": "Out of reach - a private or unreadable session named without the user-action proof"
+          },
           "404": {
             "description": "No such session"
           }
@@ -4062,6 +4072,9 @@
           },
           "401": {
             "description": "Unauthorized - Invalid or missing API key"
+          },
+          "403": {
+            "description": "Out of reach - a private or unreadable session named without the user-action proof"
           },
           "404": {
             "description": "Session not found"
@@ -5060,6 +5073,19 @@
           }
         }
       },
+      "ActiveTurnRef": {
+        "type": "object",
+        "description": "A pointer to a live turn, handed to a client that needs to attach to it.",
+        "required": [
+          "turn_id"
+        ],
+        "properties": {
+          "turn_id": {
+            "type": "string",
+            "description": "Post this as `ChatRequest.turn_id` to attach. `POST /reply` accepts\neither this server-assigned id or the idempotency key the turn's original\ncaller chose, so a client can use whichever it happens to hold."
+          }
+        }
+      },
       "ActiveWorkItemDto": {
         "type": "object",
         "description": "One active unit of work, kind-tagged so the GUI can render/route uniformly.",
@@ -5184,6 +5210,24 @@
           },
           "session_id": {
             "type": "string"
+          }
+        }
+      },
+      "AffiliationInstitution": {
+        "type": "object",
+        "description": "One institution, as a surface that has to *print* it needs it (issue #56,\nDR-26).\n\nBoth halves travel, and neither is derivable from the other. The `id` is the\nnormalised slug — what `registry.json` publishes, what `baam.html`'s\n`data-affiliation` carries, what every cross-affiliation warning prints and\nwhat a user quotes in a support conversation. The `display_name` is what the\nregistry publishes for it, and is **absent** for an institution the registry\ndoes not know.\n\n⚠ **An absent display name is not an error and must never render as\nnothing.** Task 47 rules that an affiliation naming an unpublished\ninstitution is a *mismatch* whose raw id is surfaced; dropping the row\nbecause it has no pretty name would make a real constraint disappear from the\none surface a user can see it on. This mirrors `privacy::affiliation::label`,\nwhich falls back to the bare id for exactly that reason.",
+        "required": [
+          "id"
+        ],
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "description": "The registry's published display name (`UCSF`), or `None`.",
+            "nullable": true
+          },
+          "id": {
+            "type": "string",
+            "description": "The normalised slug (`ucsf`)."
           }
         }
       },
@@ -5384,6 +5428,13 @@
             "description": "The client's own copy of the session's history, which REPLACES what the\nserver has stored.\n\nDEPRECATED as an authoritative overwrite (#51 W5). It is now conditional:\nthe copy must already contain every message the server holds, and the\nrequest is refused with 409 if it does not. See\n[`apply_client_writeback`]. The desktop app has never sent this field.",
             "nullable": true
           },
+          "from_seq": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Attach only from this per-turn sequence number, when `turn_id` names a\nturn already in flight.\n\nA pure OPTIMISATION and deliberately so: a client that already rendered\nframes `0..N` skips re-receiving them, but one that omits the field gets\nthe whole turn replayed and its own sequence gate makes that idempotent.\nNothing about correctness depends on the server honouring it.\n\nIt lives in the BODY rather than in `?from_seq=`, because `/reply` is\ngenerated with `query?: never` in `api/types.gen.ts` — a query parameter\ncould only be smuggled past the typed client, while a `ChatRequest` field\nappears properly the next time the OpenAPI spec is regenerated.",
+            "nullable": true,
+            "minimum": 0
+          },
           "reasoning_effort": {
             "allOf": [
               {
@@ -5397,7 +5448,7 @@
           },
           "turn_id": {
             "type": "string",
-            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` — an SSE reconnect, a fetch retry on a\nflaky network — should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.",
+            "description": "Client-generated idempotency key naming *this* turn (BR-62). Optional, but\na client that retries `/reply` — an SSE reconnect, a fetch retry on a\nflaky network — should send the same key it sent the first time. The retry\nthen comes back as a 409 with `duplicate: true`, meaning \"that turn is\nstill running\", instead of being mistaken for a genuine second turn.\n\nSince the live-turn-stream work this is also the ATTACH pointer: posting\na `turn_id` that names a turn already in flight is answered 200 with that\nturn's stream instead of 409. Either name works — the key the client\nchose, or the server-assigned `turn-N` it read off a frame's `turn_id` /\n`POST /agent/resume`'s `active_turn`.",
             "nullable": true
           },
           "user_message": {
@@ -8585,6 +8636,34 @@
           "spawn_context"
         ]
       },
+      "ProviderAffiliation": {
+        "type": "object",
+        "description": "DR-26's third axis for one provider **instance**, in the shape a UI can\nrender (issue #56).\n\n⚠ **Resolved from the instance, never from a name.** [`Self::of`] is the only\nconstructor a caller should reach for, and it reads\n[`Provider::tier`] and [`Provider::affiliation`] off one `&dyn Provider` —\nthe same two instance methods every gate reads. A `versa_* => ucsf` table\nwould keep claiming the institution for a Versa module repointed at another\nhost, which `tier()` has already demoted to Public: a private-looking\ninstitution chip on a public flow. Both Versa providers derive `ucsf` from\nthe same gateway-host check that decides their tier\n(`providers::ucsf_gateway_affiliation`), so a repointed instance loses\nPrivate and `ucsf` **together**, and this type is what carries that pairing\nout to the UI.\n\n⚠ **`Option<ProviderAffiliation>::None` is \"public — no affiliation at all\",\nand it is a fourth state distinct from all three\n[`ProviderAffiliationKind`]s.** See [`Self::resolved`] for the table.",
+        "required": [
+          "kind"
+        ],
+        "properties": {
+          "institutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AffiliationInstitution"
+            },
+            "description": "The covering institutions, ascending by id. Non-empty exactly for\n[`ProviderAffiliationKind::Institutions`], and **never** empty there:\n`InstitutionSet` cannot be constructed empty, for the reason its own doc\nrecords (an empty model set is a subset of every allowlist and so reaches\nevery private extension)."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ProviderAffiliationKind"
+          }
+        }
+      },
+      "ProviderAffiliationKind": {
+        "type": "string",
+        "description": "Which of DR-26's three model-side affiliations this is.\n\n⚠ **There is no `Public` variant, and that is the whole shape of the type.**\nA public model's affiliation is not a value here, it is the *absence* of a\n[`ProviderAffiliation`] — `Option::None` — exactly as\n[`ModelAffiliation`] has no public variant. Giving \"public\" a seat would\ninvite a renderer to draw a chip for it, and a chip that says \"no\ninstitution\" on a public model reads as a *constraint* on a model that has\nnone of the private tier's protections at all.\n\nA closed enum rather than a free string so a renderer can switch on it\ntotally: a fourth affiliation must be a compile error at the badge, not a\nsilently-unhandled branch that renders as the safest-looking of the three.",
+        "enum": [
+          "local",
+          "institutions",
+          "unstated"
+        ]
+      },
       "ProviderDetails": {
         "type": "object",
         "required": [
@@ -8594,6 +8673,14 @@
           "provider_type"
         ],
         "properties": {
+          "affiliation": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ProviderAffiliation"
+              }
+            ],
+            "nullable": true
+          },
           "is_configured": {
             "type": "boolean"
           },
@@ -9196,6 +9283,14 @@
           "session"
         ],
         "properties": {
+          "active_turn": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ActiveTurnRef"
+              }
+            ],
+            "nullable": true
+          },
           "extension_results": {
             "type": "array",
             "items": {

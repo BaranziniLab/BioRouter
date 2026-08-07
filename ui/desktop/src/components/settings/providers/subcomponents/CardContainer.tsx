@@ -19,7 +19,7 @@ export default function CardContainer({
     <div
       data-testid={testId}
       className={[
-        'rounded-xl p-3 flex flex-col transition-[background-color,border-color,transform,scale] duration-[var(--motion-base)] ease-[var(--ease-out)] h-[160px]',
+        'rounded-container p-3 flex flex-col transition-[background-color,border-color,transform,scale] duration-[var(--motion-base)] ease-[var(--ease-out)] h-[160px]',
         'bg-background-card text-text-default border border-border-subtle',
         header ? 'justify-between' : 'justify-center',
         grayedOut

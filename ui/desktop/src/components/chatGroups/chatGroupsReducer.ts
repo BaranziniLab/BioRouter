@@ -28,6 +28,23 @@ export interface OpenTabPayload {
   cwd?: string;
   /** Target group; defaults to activeGroupId. */
   groupId?: ChatGroupId;
+  /**
+   * Where in the target group's strip the tab goes. Omitted — every caller but
+   * one — appends, which is what "open a tab" has always meant.
+   *
+   * The one caller that supplies it is a cross-window MERGE (tab tear-off,
+   * design §5): the user aimed at a position between two tabs and the caret said
+   * so, so landing the tab at the end instead would contradict the preview they
+   * were just shown. Clamped into range rather than validated, because the index
+   * arrives from another window's measurement of this one and a stale strip is a
+   * normal event, not an error.
+   *
+   * Only the APPEND branch honours it. Dedupe (the session is already open here)
+   * and adopt (the pre-session submit filling a blank tab) both land on an
+   * existing tab, which already has a position the user can see; moving it would
+   * be a reorder nobody asked for.
+   */
+  index?: number;
 }
 
 export type ChatGroupsAction =
@@ -357,10 +374,21 @@ function openTab(state: ChatGroupsState, action: ChatGroupsAction & { type: 'ope
   }
 
   const tabId = `tab-${state.seq + 1}`;
+  // Append unless a position was asked for. `index` is CLAMPED, not rejected:
+  // it is measured in another window against a strip that may have changed
+  // between the measurement and this commit, and the honest response to "insert
+  // before a tab that has since closed" is "insert at the end", not "drop the
+  // tab on the floor". See OpenTabPayload.index.
+  const tabs = [...group.tabs];
+  const at =
+    payload.index === undefined || !Number.isFinite(payload.index)
+      ? tabs.length
+      : Math.min(Math.max(Math.trunc(payload.index), 0), tabs.length);
+  tabs.splice(at, 0, nextTab(tabId));
   return {
     ...withGroup(state, groupId, {
       ...group,
-      tabs: [...group.tabs, nextTab(tabId)],
+      tabs,
       activeTabId: tabId,
     }),
     activeGroupId: groupId,
