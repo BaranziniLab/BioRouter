@@ -36,8 +36,21 @@ is now closed.
   section of this page** — this page's own sections are referred to by name. Three documents with
   three numbering schemes is how the earlier synthesis's `§7` came to mean two different things.
 
-Every line reference in this document was read in the working tree at commit `bbcfdb06` on
-2026-08-07. Where the code and the campaign's own prose disagree, the code is reported.
+Every line reference in this document is to the **committed** content of `feat/privacy-tiers` at
+commit `bbcfdb06`, read on 2026-08-07. Where the code and the campaign's own prose disagree, the
+code is reported.
+
+> ⚠ **The worktree was mid-merge when this was written, and that changed how it had to be read.**
+> `/Users/wgu/Desktop/BioRouter-privacy` held an unfinished merge (`MERGE_HEAD` `af2b8f3b`) with
+> seven conflicted files, five of which this document cites — including
+> `SessionListView.tsx`, `routes/session.rs`, `ModelsBottomBar.tsx` and `ChatGroupsShell.tsx`,
+> which carry the evidence for `N-01`, `N-02`, `O-14` and `O-17`. A file with conflict markers in
+> it is not a state of the program: half its lines belong to one side of a merge and half to the
+> other, and a line number means nothing. Every claim resting on those five files was therefore
+> re-verified against `git show bbcfdb06:<path>` rather than the file on disk, and all of them
+> hold with the cited line numbers intact. **A later reader re-checking this document against a
+> working tree may see different content for those files, and that is the merge, not a
+> correction.**
 
 ## The innocent-mistake ranking
 
@@ -412,12 +425,20 @@ This document merges all six and then re-checks every finding by reading the wor
 raised that could not be re-confirmed in the current tree are recorded as closed above, with the
 mechanism that closed them, not silently dropped.
 
-Two limits are worth stating. First, this is a **reading** of the tree, not an execution of it: no
+Three limits are worth stating. First, this is a **reading** of the tree, not an execution of it: no
 test was run and no build was made as part of this synthesis, so a finding whose disposition depends
 on runtime behaviour (the macOS `LAContext` prompt actually appearing from a daemon spawned by
 Electron, for instance) is reported as the earlier audit left it. Second, `session_reach`'s own
 residual list is a snapshot of an enumeration rather than a proof of completeness, and O-13 inherits
 that limit — the routes named there are the ones someone enumerated, and the module says so.
+
+Third, and most important for anyone re-checking this: **the worktree was mid-merge**, as the
+warning under *Identifiers used here* records. That was discovered late, after the findings were
+written, and it invalidated the first pass over five cited files — the working copies contained
+conflict markers, so the "current state" they appeared to show was two states interleaved. The
+affected claims were re-derived from committed content and survived unchanged, but the general
+lesson is worth keeping: an audit that reads a working tree is reading whatever another agent
+happens to have left there, and `git status` is part of the method, not a formality before it.
 
 ## Related documentation
 
