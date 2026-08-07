@@ -1,4 +1,23 @@
-import { ipcMain, app, BrowserWindow } from 'electron';
+// THIS MODULE OWNS WORKFLOW HASHES AND NOTHING ELSE.
+//
+// It used to also register a second `ipcMain.on('close-window')` listener that
+// closed `BrowserWindow.getFocusedWindow()`. `ipcMain.on` is additive, so ONE
+// `close-window` message ran both that handler and the real one in main.ts —
+// and the two disagreed about which window they meant. The real one closes the
+// SENDER; this one closed whatever happened to be focused.
+//
+// For years that was invisible, because the window asking to close is normally
+// the focused one, so both handlers closed the same window. The tab-merge path
+// is the first caller where they differ: main focuses the TARGET window
+// (`target.show(); target.focus(); target.moveTop()`) immediately before the
+// SOURCE renderer asks to close itself (D6a). The focused window is then the
+// target, so this handler closed the target and the real one closed the source
+// — a merge drop took BOTH windows down, and merging the last two left the app
+// with zero windows and no way back except relaunching.
+//
+// Do not add window-lifecycle IPC here. `close-window` has exactly one owner,
+// in main.ts, and it is scoped to `event.sender`.
+import { ipcMain, app } from 'electron';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import crypto from 'crypto';
@@ -36,11 +55,4 @@ ipcMain.handle('record-workflow-hash', async (_event, workflow) => {
   const timestamp = new Date().toISOString();
   await fs.writeFile(filePath, timestamp);
   return true;
-});
-
-ipcMain.on('close-window', () => {
-  const currentWindow = BrowserWindow.getFocusedWindow();
-  if (currentWindow) {
-    currentWindow.close();
-  }
 });

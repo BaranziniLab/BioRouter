@@ -4875,12 +4875,37 @@ async function appMain() {
     return { outcome: 'detach' };
   });
 
+  // THE ONE OWNER OF `close-window`, and it closes the SENDER — never
+  // `getFocusedWindow()`. The two are the same window almost always, which is
+  // why a second handler in utils/workflowHash.ts that closed the focused
+  // window sat here undetected: the only caller where they DIFFER is the tab
+  // merge above, which focuses the target immediately before the source asks
+  // to close itself. Both handlers ran, each closed a different window, and a
+  // merge drop took down the target as well as the source — down to zero
+  // windows when those were the last two.
   ipcMain.on('close-window', (event) => {
     const window = BrowserWindow.fromWebContents(event.sender);
     if (window && !window.isDestroyed()) {
       window.close();
     }
   });
+
+  // `ipcMain.on` is ADDITIVE: a second module registering this channel does not
+  // replace this handler, it runs alongside it, and nothing anywhere reports
+  // that. Assert single ownership at startup so the next duplicate is loud on
+  // the first launch instead of surfacing years later as windows vanishing.
+  // Window-lifecycle channels are the ones where a second opinion is
+  // destructive, so they are the ones guarded.
+  for (const soleOwnerChannel of ['close-window'] as const) {
+    const owners = ipcMain.listenerCount(soleOwnerChannel);
+    if (owners !== 1) {
+      log.error(
+        `[ipc] '${soleOwnerChannel}' has ${owners} listeners, expected exactly 1. ` +
+          'A duplicate handler will act on a window this one did not mean. ' +
+          'See utils/workflowHash.ts for the original offender.'
+      );
+    }
+  }
 
   ipcMain.on('notify', (event, data) => {
     try {
