@@ -26,19 +26,21 @@ async fn system_info() -> Json<SystemInfo> {
     Json(get_system_info())
 }
 
-/// `GET /diagnostics/{session_id}` — the support bundle for one chat.
-///
-/// ⚠ **This route returns the transcript.** `generate_diagnostics` writes
-/// `session.json` into the zip from `SessionManager::export_session`, which is
-/// `get_session(id, true)` — byte for byte the payload `GET /sessions/{id}` and
-/// `GET /sessions/{id}/export` return, both of which have been gated since
-/// Task 58. It ships this session's log files beside it, which carry its prompts.
-/// So it is a third spelling of the same read, and `routes::session_reach`'s own
-/// header names that shape: *an unguarded sibling of a guarded read is the defect
-/// this campaign keeps shipping.*
-///
-/// The gate is the first thing in the body, ahead of `generate_diagnostics`,
-/// because that call loads the very transcript being refused.
+// `GET /diagnostics/{session_id}` — the support bundle for one chat.
+//
+// ⚠ **This route returns the transcript.** `generate_diagnostics` writes
+// `session.json` into the zip from `SessionManager::export_session`, which is
+// `get_session(id, true)` — byte for byte the payload `GET /sessions/{id}` and
+// `GET /sessions/{id}/export` return, both of which have been gated since
+// Task 58. It ships this session's log files beside it, which carry its
+// prompts. So it is a third spelling of the same read, and
+// `routes::session_reach`'s own header names that shape: an unguarded sibling
+// of a guarded read is the defect this campaign keeps shipping.
+//
+// ⚠ Deliberately `//` and not `///`: utoipa publishes a handler's doc comment
+// as the operation's `description` in `ui/desktop/openapi.json`, and this is
+// internal reasoning about a defect, not something to ship to every consumer of
+// the spec. The sibling `session::export_session` is written the same way.
 #[utoipa::path(get, path = "/diagnostics/{session_id}",
     responses(
         (status = 200, description = "Diagnostics zip file", content_type = "application/zip", body = Vec<u8>),

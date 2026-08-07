@@ -4100,6 +4100,10 @@ export type DiagnosticsData = {
 
 export type DiagnosticsErrors = {
     /**
+     * Out of reach - a private or unreadable session named without the user-action proof
+     */
+    403: unknown;
+    /**
      * Failed to generate diagnostics
      */
     500: unknown;
