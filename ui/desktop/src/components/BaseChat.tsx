@@ -64,6 +64,7 @@ import { getInitialWorkingDir } from '../utils/workingDir';
 import { useConfig } from './ConfigContext';
 import { useTerminalDock } from '../contexts/TerminalDockContext';
 import { SessionNamePill } from './SessionNamePill';
+import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
@@ -948,6 +949,10 @@ function BaseChatContent({
   const [searchParams] = useSearchParams();
   const scrollRef = useRef<ScrollAreaHandle>(null);
   const { extensionsList, getProviders } = useConfig();
+  // Issue #56, DR-26. The bound model's institution, for the pill beside the
+  // tier badge. Resolved by the daemon from a live instance, so a Versa module
+  // repointed elsewhere loses Private and `ucsf` together.
+  const boundAffiliation = useBoundAffiliation();
   // Per-session vision capability. The global ModelAndProviderContext tracks
   // the user's default model, but each chat session (especially with several
   // open at once) can be bound to a different provider/model. Look up vision support
@@ -2156,6 +2161,9 @@ function BaseChatContent({
                       // Undefined until the session loads — the pill stays
                       // silent rather than asserting Public (issue #56).
                       privacyTier={session?.privacy_tier}
+                      // DR-26's third axis. Null for a public model — which has
+                      // no affiliation — and null until the provider row loads.
+                      affiliation={boundAffiliation}
                       className="w-fit max-w-[min(520px,calc(100%-16px))]"
                     />
                   </div>

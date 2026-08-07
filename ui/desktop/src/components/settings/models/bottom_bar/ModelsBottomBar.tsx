@@ -17,10 +17,13 @@ import { Alert } from '../../../alerts';
 import BottomMenuAlertPopover from '../../../bottom_menu/BottomMenuAlertPopover';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../../../ui/Tooltip';
 import { PrivacyBadge } from '../../../ui/PrivacyBadge';
+import { AffiliationBadge } from '../../../ui/AffiliationBadge';
 import {
-  disclosureRequiredForTier,
-  useDisclosure,
-} from '../../../privacy/disclosureCopy';
+  affiliationPresentation,
+  readProviderAffiliation,
+  type ProviderAffiliation,
+} from '../../../privacy/providerAffiliation';
+import { disclosureRequiredForTier, useDisclosure } from '../../../privacy/disclosureCopy';
 import type { SessionClassification } from '../../../../api/types.gen';
 
 interface ModelsBottomBarProps {
@@ -88,6 +91,12 @@ export default function ModelsBottomBar({
    * re-rendered on every keystroke in the composer.
    */
   const [needsDisclosure, setNeedsDisclosure] = useState<boolean | null>(null);
+  /**
+   * Issue #56, DR-26 — *under whose agreements?* for the model bound to this
+   * chat. `null` renders nothing, which is both the "not resolved yet" answer
+   * and the correct answer for a public model.
+   */
+  const [affiliation, setAffiliation] = useState<ProviderAffiliation | null>(null);
 
   // Check if lead/worker mode is active
   useEffect(() => {
@@ -204,20 +213,41 @@ export default function ModelsBottomBar({
 
   // Task 30A. The bound provider's own tier, resolved from the registry the
   // daemon serves — never a list kept here.
+  //
+  // ⚠ Issue #56 DR-26: the same fetch now also yields the bound model's
+  // AFFILIATION. One fetch and one row, deliberately — the two axes are decided
+  // by one endpoint resolution in the daemon (`ProviderAffiliation::of` takes
+  // both off a single `&dyn Provider`), and two fetches here could pair one
+  // provider's tier with another's institution across a model switch.
   useEffect(() => {
     if (!currentProvider) {
       setNeedsDisclosure(null);
+      setAffiliation(null);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const metadata = await getProviderMetadata(currentProvider, getProviders);
-        if (!cancelled) setNeedsDisclosure(disclosureRequiredForTier(metadata.tier));
+        const rows = await getProviders(false);
+        const row = rows.find((candidate) => candidate.name === currentProvider);
+        if (!row) throw new Error(`No match for provider: ${currentProvider}`);
+        if (cancelled) return;
+        setNeedsDisclosure(disclosureRequiredForTier(row.metadata.tier));
+        // Read off the ROW, never `row.metadata`: the metadata's tier is the
+        // type-level claim, and affiliation is served beside it precisely
+        // because DR-26 requires an instance-resolved value.
+        setAffiliation(readProviderAffiliation(row));
       } catch {
         // A provider Biorouter cannot classify is one it cannot vouch for.
         // Fail-safe here means fail towards telling the user.
-        if (!cancelled) setNeedsDisclosure(true);
+        if (!cancelled) {
+          setNeedsDisclosure(true);
+          // ...but NOT towards claiming an affiliation. Failing safe on the
+          // disclosure means saying more; failing safe on the third axis means
+          // saying nothing, because every value here is a claim about whose
+          // agreements cover a transcript.
+          setAffiliation(null);
+        }
       }
     })();
     return () => {
@@ -241,6 +271,11 @@ export default function ModelsBottomBar({
         ? 'Public chat'
         : null;
 
+  // DR-26's third axis, in the same two places the tier's WORD goes: this chip
+  // has room for a glyph and nothing more. `null` for a public model, which has
+  // no affiliation, so a public chat's chip is byte-for-byte what it was.
+  const affiliationWords = affiliationPresentation(affiliation);
+
   return (
     <div className="relative flex items-center" ref={dropdownRef}>
       {!hideAlertPopover && <BottomMenuAlertPopover alerts={alerts} />}
@@ -248,19 +283,27 @@ export default function ModelsBottomBar({
         <Tooltip>
           <TooltipTrigger asChild>
             <DropdownMenuTrigger
-              aria-label={`Current model: ${fullModelLabel}${privacyLine ? ` (${privacyLine})` : ''}`}
+              aria-label={`Current model: ${fullModelLabel}${privacyLine ? ` (${privacyLine})` : ''}${
+                affiliationWords ? ` (Affiliation: ${affiliationWords.label})` : ''
+              }`}
               className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-md px-0.5 hover:cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default transition-colors"
             >
               <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
                 <Brain className="size-[18px] flex-shrink-0" />
                 <span className="truncate text-xs">{inlineModelLabel}</span>
                 {privacyTier && <PrivacyBadge tier={privacyTier} dense className="ml-1" />}
+                {/* Beside the tier dot, in its dense form — the chip is
+                    `max-w-[120px]` with an already-truncated label, so the WORDS
+                    go where there is room for them (the tooltip and the dropdown
+                    header below), exactly as the tier's do. */}
+                <AffiliationBadge affiliation={affiliation} dense className="ml-0.5" />
               </div>
             </DropdownMenuTrigger>
           </TooltipTrigger>
           <TooltipContent side="top">
             Model: {fullModelLabel}
             {privacyLine && ` · ${privacyLine}`}
+            {affiliationWords && ` · ${affiliationWords.label}`}
             {disclosureLine && (
               <span className="mt-1 block max-w-[280px] [overflow-wrap:anywhere]">
                 {disclosureLine}
@@ -277,6 +320,17 @@ export default function ModelsBottomBar({
             </div>
             {privacyLine && (
               <div className="mt-1 text-[11px] leading-4 text-text-muted">{privacyLine}</div>
+            )}
+            {/*
+              DR-26's third axis, with room for the full pill — the one place on
+              this chip where the affiliation gets its word rather than its
+              glyph. It sits directly under the tier line so the two axes read as
+              one statement about this chat.
+            */}
+            {affiliationWords && (
+              <div className="mt-1.5 flex items-center gap-1.5">
+                <AffiliationBadge affiliation={affiliation} className="max-w-full" />
+              </div>
             )}
             {/*
               Issue #56, DR-17 requirement 3 — the standing one-line disclosure,

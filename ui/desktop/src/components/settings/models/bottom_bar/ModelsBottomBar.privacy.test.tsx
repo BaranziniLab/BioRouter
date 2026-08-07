@@ -70,12 +70,25 @@ function renderBar(privacyTier?: 'public' | 'private') {
   );
 }
 
-const providerEntry = (name: string, tier: 'private' | 'public') => ({
+const providerEntry = (
+  name: string,
+  tier: 'private' | 'public',
+  // Issue #56 DR-26: served BESIDE the metadata, never inside it. The metadata's
+  // tier is the type-level claim; the affiliation is resolved by the daemon from
+  // a live instance, which is what makes it safe to state as a badge.
+  affiliation?: unknown
+) => ({
   name,
   is_configured: true,
   provider_type: 'Builtin',
   metadata: { name, display_name: name, tier, runs_locally: tier === 'private' },
+  affiliation: affiliation ?? null,
 });
+
+const ucsfAffiliation = {
+  kind: 'institutions',
+  institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
+};
 
 describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
   beforeEach(() => {
@@ -85,7 +98,7 @@ describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
     __resetDisclosureStoreForTests();
     mocks.currentProvider = 'versa_azure';
     mocks.getProviders.mockResolvedValue([
-      providerEntry('versa_azure', 'private'),
+      providerEntry('versa_azure', 'private', ucsfAffiliation),
       providerEntry('openai', 'public'),
     ]);
     mocks.getPrivacyDisclosure.mockResolvedValue({
@@ -148,5 +161,44 @@ describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
     fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
     await screen.findByText(/Current model/);
     expect(screen.queryByTestId('non-private-model-chip-note')).toBeNull();
+  });
+
+  /**
+   * Issue #56, DR-26 — the second axis on the composer.
+   *
+   * ⚠ It hangs off the bound PROVIDER's row, exactly as the disclosure above
+   * does and for the same reason: `privacyTier` is the chat's ratcheted
+   * classification, and a fresh chat on Versa is classified `public` while its
+   * model is covered by UCSF's agreements. A chip keyed on the chat's tier would
+   * say nothing about the institution on precisely the chat where it matters.
+   */
+  it('marks the bound model’s institution on the chip, and says it in the dropdown', async () => {
+    mocks.currentProvider = 'versa_azure';
+    renderBar('public');
+
+    const dense = await screen.findByTestId('affiliation-badge');
+    expect(dense).toHaveAttribute('data-affiliation', 'institutions');
+    expect(dense.getAttribute('aria-label')).toContain('UCSF');
+
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+    // The dropdown header is where the WORD goes — the trigger is
+    // `max-w-[120px]` and already truncating the model name.
+    const badges = await screen.findAllByTestId('affiliation-badge');
+    expect(badges.some((badge) => /UCSF/.test(badge.textContent ?? ''))).toBe(true);
+  });
+
+  /**
+   * ⚠ **A public model has no affiliation at all, and renders none.** Not an
+   * empty chip: a constraint-shaped ornament on the one kind of model that has
+   * none of the private tier's protections is worse than silence.
+   */
+  it('shows no affiliation for a public model', async () => {
+    mocks.currentProvider = 'openai';
+    renderBar('public');
+    // Wait for the same effect the affiliation would have arrived on, so this is
+    // an assertion about the resolved state rather than about a race.
+    fireEvent.pointerDown(screen.getByLabelText(/Current model/), { button: 0, ctrlKey: false });
+    await screen.findByTestId('non-private-model-chip-note');
+    expect(screen.queryByTestId('affiliation-badge')).toBeNull();
   });
 });

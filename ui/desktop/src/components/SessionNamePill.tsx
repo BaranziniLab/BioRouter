@@ -7,6 +7,8 @@ import {
   DropdownMenuTrigger,
 } from './ui/dropdown-menu';
 import { PrivacyBadge } from './ui/PrivacyBadge';
+import { AffiliationBadge } from './ui/AffiliationBadge';
+import type { ProviderAffiliation } from './privacy/providerAffiliation';
 import type { SessionClassification } from '../api';
 
 interface Props {
@@ -27,6 +29,23 @@ interface Props {
    * that owes its own confirmed surface.
    */
   privacyTier?: SessionClassification;
+  /**
+   * DR-26's third axis for the model this chat is bound to — *under whose
+   * agreements?* (issue #56).
+   *
+   * ⚠ **It is the BOUND PROVIDER's, not the chat's**, and that is not the same
+   * kind of value as {@link privacyTier} beside it. The tier here is the
+   * session's ratcheted classification; affiliation is a property of the
+   * endpoint the transcript is going to right now, so it changes the moment the
+   * model changes and does not ratchet. Rendering them together is the point —
+   * they are the two questions a user has about one chat — but they are answered
+   * by different objects, which is why this arrives as its own prop rather than
+   * being derived from the tier.
+   *
+   * `null`/`undefined` renders nothing: a public model has no affiliation, and
+   * neither does one whose provider row has not loaded.
+   */
+  affiliation?: ProviderAffiliation | null;
   className?: string;
 }
 
@@ -36,6 +55,7 @@ export const SessionNamePill: React.FC<Props> = ({
   onDiverge,
   canDiverge = false,
   privacyTier,
+  affiliation,
   className,
 }) => {
   const [editing, setEditing] = useState(false);
@@ -100,6 +120,11 @@ export const SessionNamePill: React.FC<Props> = ({
             <span className="truncate no-drag">{name}</span>
           </span>
           {privacyTier && <PrivacyBadge tier={privacyTier} className="no-drag" />}
+          {/* The two axes, side by side and in the same visual language —
+              DR-26's "how sensitive?" and "under whose agreements?". The
+              affiliation badge renders nothing at all for a public model, so a
+              public chat is unchanged from before this landed. */}
+          <AffiliationBadge affiliation={affiliation} className="no-drag min-w-0 max-w-[160px]" />
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button

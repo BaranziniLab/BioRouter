@@ -18,6 +18,11 @@ import { useModelAndProvider } from '../../../ModelAndProviderContext';
 import type { View } from '../../../../utils/navigationUtils';
 import Model, { getProviderMetadata, fetchModelsForProviders } from '../modelInterface';
 import { getPredefinedModelsFromEnv, shouldShowPredefinedModels } from '../predefinedModelsUtils';
+import { AffiliationBadge } from '../../../ui/AffiliationBadge';
+import {
+  affiliationPresentation,
+  readProviderAffiliation,
+} from '../../../privacy/providerAffiliation';
 import {
   llamacppStatus,
   ProviderType,
@@ -271,6 +276,31 @@ export const SwitchModelModal = ({
       ),
     [activeProviders]
   );
+
+  /**
+   * DR-26's third axis for the provider selected in this modal (issue #56) —
+   * *under whose agreements?*, answered **before** the switch rather than after
+   * a refusal, which is the same "pre-flight, not post-refusal" rule the tier
+   * pre-flight above follows.
+   *
+   * ⚠ **Read off the `ProviderDetails` ROW, never `metadata`.** The daemon
+   * resolves this field from a live instance (`ProviderAffiliation::of`, through
+   * `providers::create`), which is what makes it safe to render as a claim; the
+   * metadata beside it is the type-level tier that `publicProviderNames` above
+   * documents at length as unsafe to badge.
+   *
+   * ⚠ **The tier is deliberately NOT badged here.** The only tier this modal has
+   * is `metadata.tier`, the type-level claim, and a Private pill hung on it would
+   * read Private for an `ollama` re-pointed off this machine — exactly the
+   * demotion the tier exists to catch. The tier's pre-flight on this surface is
+   * the greyed-out row and its inline reason; the affiliation is a resolved
+   * instance value and can be stated outright.
+   */
+  const selectedAffiliation = useMemo(
+    () => readProviderAffiliation(activeProviders.find((row) => row.name === provider)),
+    [activeProviders, provider]
+  );
+  const selectedAffiliationWords = affiliationPresentation(selectedAffiliation);
 
   const blockedReasonFor = useCallback(
     (providerName: string | undefined | null) =>
@@ -713,6 +743,23 @@ export const SwitchModelModal = ({
                 />
                 {attemptedSubmit && validationErrors.provider && (
                   <div className="text-text-danger text-sm mt-1">{validationErrors.provider}</div>
+                )}
+                {/*
+                  Issue #56, DR-26. Whose agreements cover the models under this
+                  provider, stated before the user picks one. Nothing renders for
+                  a public provider — it has no affiliation — so this row appears
+                  exactly when there is something to say.
+                */}
+                {selectedAffiliationWords && (
+                  <div
+                    data-testid="switch-model-affiliation"
+                    className="mt-2 flex items-start gap-2"
+                  >
+                    <AffiliationBadge affiliation={selectedAffiliation} className="mt-0.5" />
+                    <p className="min-w-0 flex-1 text-[11px] leading-4 text-text-muted [overflow-wrap:anywhere]">
+                      {selectedAffiliationWords.title}
+                    </p>
+                  </div>
                 )}
               </div>
 

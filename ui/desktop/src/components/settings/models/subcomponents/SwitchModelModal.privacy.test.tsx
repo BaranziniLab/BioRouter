@@ -47,12 +47,18 @@ vi.mock('../predefinedModelsUtils', () => ({
 function provider(
   name: string,
   tier: ProviderTier | undefined,
-  displayName = name
+  displayName = name,
+  // Issue #56 DR-26. Served BESIDE the metadata, never inside it: the metadata's
+  // tier is the type-level claim (which is why this file has a whole test about
+  // an absent one), and the affiliation is resolved by the daemon from a live
+  // instance. `undefined` is a provider with none — a public model.
+  affiliation?: unknown
 ): ProviderDetails {
   return {
     name,
     is_configured: true,
     provider_type: 'Builtin',
+    affiliation: affiliation ?? null,
     metadata: {
       config_keys: [],
       default_model: '',
@@ -162,6 +168,86 @@ describe('SwitchModelModal — pre-flight, not post-refusal', () => {
     const row = await screen.findByRole('option', { name: /Claude Opus/ });
     expect(row).toHaveAttribute('aria-disabled', 'true');
     expect(row).toHaveTextContent(/private chat/i);
+  });
+
+  /**
+   * Issue #56, DR-26 — the third axis, stated in the picker BEFORE the switch.
+   *
+   * ⚠ The tier is deliberately NOT badged on this surface: the only tier the
+   * modal has is `metadata.tier`, the type-level claim, and a Private pill hung
+   * on it would read Private for an `ollama` re-pointed off this machine. The
+   * affiliation is resolved by the daemon from a live instance, so it can be
+   * stated outright — and its absence for a public provider is equally
+   * meaningful.
+   */
+  it('states the selected provider’s institution before the switch', async () => {
+    mocks.getProviders.mockResolvedValue([
+      provider('anthropic', 'public', 'Anthropic'),
+      provider('versa_azure', 'private', 'Versa', {
+        kind: 'institutions',
+        institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
+      }),
+    ]);
+
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="private"
+        initialProvider="versa_azure"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByTestId('switch-model-affiliation');
+    expect(row).toHaveTextContent('UCSF');
+    expect(row).toHaveTextContent(/compliance does not transfer/i);
+  });
+
+  // The control case: a public provider has no affiliation at all, so the row is
+  // absent rather than empty. Without this, the assertion above passes for a
+  // modal that prints a chip for every provider.
+  it('says nothing about affiliation for a public provider', async () => {
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="public"
+        initialProvider="anthropic"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    await openModelMenu();
+    expect(screen.queryByTestId('switch-model-affiliation')).toBeNull();
+  });
+
+  /**
+   * ⚠ **`local` is the MOST permissive affiliation, not the narrowest.** A local
+   * model reaches every private extension, because no transfer occurs at all. A
+   * picker that rendered it as a narrower-sounding institution beside UCSF would
+   * invert the axis for the one user who most needs it right.
+   */
+  it('does not render a local model as a narrower institution', async () => {
+    mocks.getProviders.mockResolvedValue([
+      provider('llamacpp', 'private', 'Llama Server', { kind: 'local', institutions: [] }),
+      provider('versa_azure', 'private', 'Versa'),
+    ]);
+
+    render(
+      <SwitchModelModal
+        sessionId="s1"
+        privacyTier="private"
+        initialProvider="llamacpp"
+        onClose={vi.fn()}
+        setView={vi.fn()}
+      />
+    );
+
+    const row = await screen.findByTestId('switch-model-affiliation');
+    expect(row).toHaveTextContent('On this machine');
+    expect(row).toHaveTextContent(/least restricted/i);
+    expect(row).toHaveTextContent(/every private extension/i);
   });
 
   // The other half of the same predicate: a declared-private provider stays

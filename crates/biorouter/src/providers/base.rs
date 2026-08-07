@@ -291,6 +291,174 @@ impl ProviderMetadata {
     }
 }
 
+/// One institution, as a surface that has to *print* it needs it (issue #56,
+/// DR-26).
+///
+/// Both halves travel, and neither is derivable from the other. The `id` is the
+/// normalised slug — what `registry.json` publishes, what `baam.html`'s
+/// `data-affiliation` carries, what every cross-affiliation warning prints and
+/// what a user quotes in a support conversation. The `display_name` is what the
+/// registry publishes for it, and is **absent** for an institution the registry
+/// does not know.
+///
+/// ⚠ **An absent display name is not an error and must never render as
+/// nothing.** Task 47 rules that an affiliation naming an unpublished
+/// institution is a *mismatch* whose raw id is surfaced; dropping the row
+/// because it has no pretty name would make a real constraint disappear from the
+/// one surface a user can see it on. This mirrors `privacy::affiliation::label`,
+/// which falls back to the bare id for exactly that reason.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct AffiliationInstitution {
+    /// The normalised slug (`ucsf`).
+    pub id: String,
+    /// The registry's published display name (`UCSF`), or `None`.
+    #[serde(default)]
+    pub display_name: Option<String>,
+}
+
+/// Which of DR-26's three model-side affiliations this is.
+///
+/// ⚠ **There is no `Public` variant, and that is the whole shape of the type.**
+/// A public model's affiliation is not a value here, it is the *absence* of a
+/// [`ProviderAffiliation`] — `Option::None` — exactly as
+/// [`ModelAffiliation`] has no public variant. Giving "public" a seat would
+/// invite a renderer to draw a chip for it, and a chip that says "no
+/// institution" on a public model reads as a *constraint* on a model that has
+/// none of the private tier's protections at all.
+///
+/// A closed enum rather than a free string so a renderer can switch on it
+/// totally: a fourth affiliation must be a compile error at the badge, not a
+/// silently-unhandled branch that renders as the safest-looking of the three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAffiliationKind {
+    /// [`ModelAffiliation::Local`] — inference runs on this machine.
+    ///
+    /// ⚠ **The MOST permissive affiliation, not the narrowest.** It reaches
+    /// every private extension, because no transfer occurs at all and there is
+    /// therefore nothing for an agreement to govern
+    /// (`privacy::affiliation::compatible`'s first arm, which returns *before*
+    /// any comparison). A surface that renders this beside an institution's name
+    /// and lets it read as "even more restricted than UCSF" has inverted the
+    /// axis — see `ProviderAffiliation`'s own note.
+    Local,
+    /// [`ModelAffiliation::Institutions`] — covered by the named institutions'
+    /// agreements. [`ProviderAffiliation::institutions`] is non-empty exactly
+    /// for this variant.
+    Institutions,
+    /// A **private** model that states no institution at all.
+    ///
+    /// ⚠ **Meaningful, not missing.** DR-26 gives "no affiliation" one meaning —
+    /// a public model — so a Private tier with no affiliation is a combination
+    /// the vocabulary says cannot exist, and it is nevertheless reachable (a
+    /// provider that overrides `tier()` and forgets `affiliation()` inherits the
+    /// trait default). `privacy::affiliation::unstated_model` treats such a model
+    /// as mismatching **every** named institution, so it clears only extensions
+    /// with no institutional constraint. Rendering it as an empty affiliation, or
+    /// as no affiliation at all, would show the least-reaching private model as
+    /// the least-constrained one.
+    Unstated,
+}
+
+/// DR-26's third axis for one provider **instance**, in the shape a UI can
+/// render (issue #56).
+///
+/// ⚠ **Resolved from the instance, never from a name.** [`Self::of`] is the only
+/// constructor a caller should reach for, and it reads
+/// [`Provider::tier`] and [`Provider::affiliation`] off one `&dyn Provider` —
+/// the same two instance methods every gate reads. A `versa_* => ucsf` table
+/// would keep claiming the institution for a Versa module repointed at another
+/// host, which `tier()` has already demoted to Public: a private-looking
+/// institution chip on a public flow. Both Versa providers derive `ucsf` from
+/// the same gateway-host check that decides their tier
+/// (`providers::ucsf_gateway_affiliation`), so a repointed instance loses
+/// Private and `ucsf` **together**, and this type is what carries that pairing
+/// out to the UI.
+///
+/// ⚠ **`Option<ProviderAffiliation>::None` is "public — no affiliation at all",
+/// and it is a fourth state distinct from all three
+/// [`ProviderAffiliationKind`]s.** See [`Self::resolved`] for the table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ProviderAffiliation {
+    /// Which affiliation this is.
+    pub kind: ProviderAffiliationKind,
+    /// The covering institutions, ascending by id. Non-empty exactly for
+    /// [`ProviderAffiliationKind::Institutions`], and **never** empty there:
+    /// `InstitutionSet` cannot be constructed empty, for the reason its own doc
+    /// records (an empty model set is a subset of every allowlist and so reaches
+    /// every private extension).
+    #[serde(default)]
+    pub institutions: Vec<AffiliationInstitution>,
+}
+
+impl ProviderAffiliation {
+    /// The one mapping from the two instance reads to what a surface renders.
+    ///
+    /// | `tier()` | `affiliation()` | result |
+    /// |---|---|---|
+    /// | Public | anything | `None` — no affiliation to show |
+    /// | Private | `Some(Local)` | `Local` |
+    /// | Private | `Some(Institutions(M))` | `Institutions(M)` |
+    /// | Private | `None` | `Unstated` |
+    ///
+    /// ⚠ **The tier is asked FIRST, and that ordering is the third of the four
+    /// states.** It mirrors `privacy::affiliation::gate_cross_affiliation`, whose
+    /// first line returns `None` for a non-private model tier before it looks at
+    /// affiliation at all — so a public model has no third axis, in the gate and
+    /// on the badge alike. Asking `affiliation()` first would collapse Public and
+    /// `Unstated` into one rendering, and those are opposite facts: a public
+    /// model is one the tier gates already keep away from private data, while an
+    /// unstated private model is one that *may* reach unconstrained private
+    /// extensions and nothing else.
+    pub fn resolved(tier: ProviderTier, affiliation: Option<ModelAffiliation>) -> Option<Self> {
+        if !tier.is_private() {
+            // Public. Not `Unstated`, and not an empty institution list — see
+            // `ProviderAffiliationKind`'s own doc for why there is deliberately
+            // no variant to put here.
+            return None;
+        }
+        Some(match affiliation {
+            Some(ModelAffiliation::Local) => Self {
+                kind: ProviderAffiliationKind::Local,
+                institutions: Vec::new(),
+            },
+            Some(ModelAffiliation::Institutions(set)) => Self {
+                kind: ProviderAffiliationKind::Institutions,
+                // `InstitutionSet::iter` is ascending, so the rendered order is
+                // stable across calls rather than a hash order that reshuffles
+                // the chip between two renders of the same model.
+                institutions: set
+                    .iter()
+                    .map(|id| AffiliationInstitution {
+                        id: id.as_str().to_string(),
+                        display_name: crate::privacy::affiliation::institution_display_name(id)
+                            .map(str::to_string),
+                    })
+                    .collect(),
+            },
+            // Private with nothing stated. The arm
+            // `privacy::affiliation::unstated_model` exists for, surfaced rather
+            // than smoothed over.
+            None => Self {
+                kind: ProviderAffiliationKind::Unstated,
+                institutions: Vec::new(),
+            },
+        })
+    }
+
+    /// [`Self::resolved`] taken off one live provider — **the** spelling every
+    /// caller should use.
+    ///
+    /// Both reads come off the same `&dyn Provider`, in one place, so a surface
+    /// cannot pair one instance's tier with another instance's affiliation. That
+    /// is the same collapsing `privacy::CallCapability` performs for the gates,
+    /// and for the same reason: the two axes are decided by one endpoint
+    /// resolution and must be sampled together.
+    pub fn of(provider: &dyn Provider) -> Option<Self> {
+        Self::resolved(provider.tier(), provider.affiliation())
+    }
+}
+
 /// Configuration key metadata for provider setup
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ConfigKey {
@@ -906,6 +1074,232 @@ pub type MessageStream =
 pub fn stream_from_single_message(message: Message, usage: ProviderUsage) -> MessageStream {
     let stream = futures::stream::once(async move { Ok((Some(message), Some(usage), None)) });
     Box::pin(stream)
+}
+
+#[cfg(test)]
+mod affiliation_view_tests {
+    //! DR-26's third axis as `GET /config/providers` renders it (issue #56).
+    //!
+    //! One named test per row of [`ProviderAffiliation::resolved`]'s table, plus
+    //! the three states the task brief calls out as the ones a naive mapping
+    //! gets wrong. The rows are the whole specification; anything else here
+    //! exists to catch a mapping that satisfies the table and is still wrong.
+
+    use super::*;
+    use crate::privacy::affiliation::{InstitutionId, ModelAffiliation};
+    use async_trait::async_trait;
+
+    fn ucsf() -> ModelAffiliation {
+        ModelAffiliation::institution(InstitutionId::new("ucsf"))
+    }
+
+    /// Row 1: a public model has **no** affiliation — not an empty one, and not
+    /// `Unstated`.
+    ///
+    /// Breaking the tier guard in `resolved` (dropping the early return, so a
+    /// public model falls through to the `affiliation()` match) fails here and
+    /// nowhere else: every other row is about a private model.
+    #[test]
+    fn a_public_provider_has_no_affiliation_at_all() {
+        assert_eq!(
+            ProviderAffiliation::resolved(ProviderTier::Public, None),
+            None
+        );
+        // ...and still nothing even if the instance somehow states one. The
+        // gates ask the tier first (`gate_cross_affiliation`'s first line), so
+        // the badge must too, or Public and `Unstated` collapse into one chip.
+        assert_eq!(
+            ProviderAffiliation::resolved(ProviderTier::Public, Some(ucsf())),
+            None
+        );
+        assert_eq!(
+            ProviderAffiliation::resolved(ProviderTier::Public, Some(ModelAffiliation::Local)),
+            None
+        );
+    }
+
+    /// Row 2: `Local`. Its own kind, with no institutions — never folded onto
+    /// `Unstated` because both happen to name nobody.
+    #[test]
+    fn a_local_provider_is_local_and_not_unstated() {
+        let view =
+            ProviderAffiliation::resolved(ProviderTier::Private, Some(ModelAffiliation::Local))
+                .expect("a private local model has an affiliation to show");
+        assert_eq!(view.kind, ProviderAffiliationKind::Local);
+        assert!(view.institutions.is_empty());
+        assert_ne!(view.kind, ProviderAffiliationKind::Unstated);
+    }
+
+    /// Row 3: institutions, carried with the registry's display name beside the
+    /// raw id so a renderer never has to choose between them.
+    #[test]
+    fn an_institution_provider_carries_the_id_and_the_published_name() {
+        let view = ProviderAffiliation::resolved(ProviderTier::Private, Some(ucsf()))
+            .expect("a private institutional model has an affiliation to show");
+        assert_eq!(view.kind, ProviderAffiliationKind::Institutions);
+        assert_eq!(view.institutions.len(), 1);
+        assert_eq!(view.institutions[0].id, "ucsf");
+    }
+
+    /// An institution the registry does not publish keeps its raw id rather than
+    /// vanishing (Task 47: an unpublished institution is a *mismatch* surfaced
+    /// raw, never silently dropped).
+    #[test]
+    fn an_unpublished_institution_still_renders_as_its_raw_id() {
+        let obscure =
+            ModelAffiliation::institution(InstitutionId::new("no-such-institution-in-registry"));
+        let view = ProviderAffiliation::resolved(ProviderTier::Private, Some(obscure))
+            .expect("an institutional model has an affiliation to show");
+        assert_eq!(view.institutions.len(), 1);
+        assert_eq!(view.institutions[0].id, "no-such-institution-in-registry");
+        assert_eq!(view.institutions[0].display_name, None);
+    }
+
+    /// A model covered by two institutions renders **both**, ascending. Picking
+    /// a representative is what `InstitutionSet::sole` refuses to do for the
+    /// gates, and a badge that named one of the two would tell the user the
+    /// chat is covered by an institution it only half is.
+    #[test]
+    fn a_spanning_provider_renders_every_institution_in_a_stable_order() {
+        let spans = ModelAffiliation::institutions([
+            InstitutionId::new("ucsf"),
+            InstitutionId::new("stanford"),
+        ])
+        .expect("two institutions is a representable affiliation");
+        let view = ProviderAffiliation::resolved(ProviderTier::Private, Some(spans))
+            .expect("a private institutional model has an affiliation to show");
+        let ids: Vec<&str> = view.institutions.iter().map(|i| i.id.as_str()).collect();
+        assert_eq!(ids, vec!["stanford", "ucsf"]);
+    }
+
+    /// Row 4, and the state the brief calls out: a **private** model that states
+    /// nothing is `Unstated`, which is a fact, not an absence. Folding it to
+    /// `None` would show the least-reaching private model (it clears only
+    /// unconstrained extensions) as the one with no constraint at all.
+    #[test]
+    fn a_private_provider_that_states_nothing_is_unstated_not_absent() {
+        let view = ProviderAffiliation::resolved(ProviderTier::Private, None)
+            .expect("a private model with no stated institution still has something to say");
+        assert_eq!(view.kind, ProviderAffiliationKind::Unstated);
+        assert!(view.institutions.is_empty());
+    }
+
+    /// A provider whose module states neither axis. The trait defaults are
+    /// Public + `None`, so it renders nothing — fail-safe in the same direction
+    /// `tier()`'s and `affiliation()`'s defaults are.
+    struct SaysNothing;
+
+    #[async_trait]
+    impl Provider for SaysNothing {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            "says-nothing"
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("test-model")
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            unreachable!("this fixture exists only to be asked its two privacy axes")
+        }
+    }
+
+    /// A provider that resolved an institution, and one whose endpoint moved.
+    /// The pair is what pins `of` to the INSTANCE: both have the same type and
+    /// the same `get_name()`, so any name-keyed lookup answers identically for
+    /// the two and this test fails.
+    struct Resolved {
+        tier: ProviderTier,
+        affiliation: Option<ModelAffiliation>,
+    }
+
+    #[async_trait]
+    impl Provider for Resolved {
+        fn metadata() -> ProviderMetadata {
+            ProviderMetadata::empty()
+        }
+        fn get_name(&self) -> &str {
+            // Deliberately identical for both instances below.
+            "versa_azure"
+        }
+        fn tier(&self) -> ProviderTier {
+            self.tier
+        }
+        fn affiliation(&self) -> Option<ModelAffiliation> {
+            self.affiliation
+        }
+        fn get_model_config(&self) -> ModelConfig {
+            ModelConfig::new_or_fail("test-model")
+        }
+        async fn complete_with_model(
+            &self,
+            _model_config: &ModelConfig,
+            _system: &str,
+            _messages: &[Message],
+            _tools: &[Tool],
+        ) -> Result<(Message, ProviderUsage), ProviderError> {
+            unreachable!("this fixture exists only to be asked its two privacy axes")
+        }
+    }
+
+    #[test]
+    fn a_provider_that_states_neither_axis_renders_nothing() {
+        assert_eq!(ProviderAffiliation::of(&SaysNothing), None);
+    }
+
+    /// ⚠ **The point of the whole task.** Two instances of one provider *type*
+    /// with one `get_name()`: the shipped one on the UCSF gateway, and one whose
+    /// endpoint was repointed. The repointed instance must lose Private and
+    /// `ucsf` **together** — a name-keyed table would hand both instances
+    /// `ucsf`, and this is the assertion that catches it.
+    #[test]
+    fn a_repointed_instance_loses_private_and_its_institution_together() {
+        let shipped = Resolved {
+            tier: ProviderTier::Private,
+            affiliation: Some(ucsf()),
+        };
+        let repointed = Resolved {
+            tier: ProviderTier::Public,
+            affiliation: None,
+        };
+        assert_eq!(shipped.get_name(), repointed.get_name());
+
+        let shipped_view =
+            ProviderAffiliation::of(&shipped).expect("the shipped instance is UCSF's");
+        assert_eq!(shipped_view.kind, ProviderAffiliationKind::Institutions);
+        assert_eq!(shipped_view.institutions[0].id, "ucsf");
+
+        assert_eq!(
+            ProviderAffiliation::of(&repointed),
+            None,
+            "a repointed Versa is Public, so it has no institution to claim"
+        );
+    }
+
+    /// The wire shape the renderer parses, pinned so a serde rename does not
+    /// silently turn every badge into the unrecognised-kind fallback.
+    #[test]
+    fn the_wire_words_are_the_ones_the_renderer_switches_on() {
+        let kinds = [
+            (ProviderAffiliationKind::Local, "\"local\""),
+            (ProviderAffiliationKind::Institutions, "\"institutions\""),
+            (ProviderAffiliationKind::Unstated, "\"unstated\""),
+        ];
+        for (kind, expected) in kinds {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), expected);
+        }
+        let view = ProviderAffiliation::resolved(ProviderTier::Private, Some(ucsf())).unwrap();
+        let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(json["kind"], "institutions");
+        assert_eq!(json["institutions"][0]["id"], "ucsf");
+    }
 }
 
 #[cfg(test)]

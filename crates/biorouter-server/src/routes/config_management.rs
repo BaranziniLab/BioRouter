@@ -12,7 +12,7 @@ use biorouter::config::ExtensionEntry;
 use biorouter::config::{Config, ConfigError};
 use biorouter::model::ModelConfig;
 use biorouter::providers::auto_detect::{detect_provider_from_api_key, detectable_providers};
-use biorouter::providers::base::{ProviderMetadata, ProviderType};
+use biorouter::providers::base::{ProviderAffiliation, ProviderMetadata, ProviderType};
 use biorouter::providers::create_with_default_model;
 use biorouter::providers::errors::ProviderError;
 use biorouter::providers::pricing::{resolved_provider_model_pricing, ProviderModelPricing};
@@ -93,6 +93,21 @@ pub struct ProviderDetails {
     pub metadata: ProviderMetadata,
     pub is_configured: bool,
     pub provider_type: ProviderType,
+    /// DR-26's third axis for this provider, resolved from a live **instance**
+    /// (issue #56). `None` = a public provider, which has no affiliation at all,
+    /// or one this daemon could not resolve — see [`resolve_provider_affiliation`].
+    ///
+    /// ⚠ **Here rather than on [`ProviderMetadata`], deliberately.** That struct
+    /// is documented top to bottom as the *type-level* claim — its own `tier`
+    /// field carries the warning "do not hang a badge on this field", because a
+    /// re-pointed `ollama` still ships `Private` there while its instance
+    /// resolves Public. Affiliation is the opposite kind of value: DR-26 requires
+    /// it come off the instance, so that a Versa module repointed elsewhere loses
+    /// Private and `ucsf` together. Putting an instance-resolved field inside a
+    /// type-level struct is how the next reader comes to believe the tier beside
+    /// it is instance-resolved too.
+    #[serde(default)]
+    pub affiliation: Option<ProviderAffiliation>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -817,6 +832,59 @@ fn privacy_tiers_wire_value() -> Value {
     )
 }
 
+/// How long one provider gets to construct itself before its affiliation is
+/// given up on.
+///
+/// Construction is supposed to be config reads, but it is not guaranteed to be:
+/// `bedrock.rs` runs the AWS default credential chain, which can reach for IMDS
+/// and sit on a connect timeout. A listing route may not inherit that. Giving up
+/// costs a badge (`None`, rendered as nothing) and never a claim.
+const AFFILIATION_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// DR-26's third axis for one provider, taken off a live instance (issue #56).
+///
+/// ⚠ **It builds the provider through `providers::create` — the same function
+/// `POST /agent/update_provider` calls before reading `new_provider.affiliation()`
+/// for the grant lookup.** That is the point: this route must answer with the
+/// affiliation of the instance that *would be bound*, not with a claim derived
+/// from the provider's name. A name-keyed table (`versa_* => ucsf`) would keep
+/// claiming the institution for a module repointed at another host, which
+/// `tier()` has already demoted to Public. `create` also applies the lead/worker
+/// interception, so with `BIOROUTER_LEAD_MODEL` set each row reports the
+/// **composite's** affiliation — the meet of the pair, which is what binding that
+/// row would actually give the chat.
+///
+/// ⚠ **`None` here means "nothing to show", and it is deliberately the answer to
+/// three different questions**: the provider is public (the honest answer — a
+/// public model has no third axis), its model config is unusable, or it could
+/// not be constructed. The renderer draws nothing for all three, which is the
+/// only safe collapse available: an unresolvable provider must not be *given* an
+/// affiliation, and the one state that would be lost by drawing nothing —
+/// `Unstated`, a private model that names no institution — is reachable only
+/// when construction SUCCEEDED, so it is never confused with a failure here.
+///
+/// ⚠ **Only for a configured provider.** An unconfigured one cannot be
+/// constructed (its keys are missing) and cannot be bound to a chat, so building
+/// it would buy nothing and would run every provider module's constructor —
+/// including the ones with process-global side effects — on a plain GET.
+async fn resolve_provider_affiliation(metadata: &ProviderMetadata) -> Option<ProviderAffiliation> {
+    let model = ModelConfig::new(&metadata.default_model).ok()?;
+    let created = tokio::time::timeout(
+        AFFILIATION_RESOLVE_TIMEOUT,
+        biorouter::providers::create(&metadata.name, model),
+    )
+    .await
+    .inspect_err(|_| {
+        tracing::warn!(
+            provider = %metadata.name,
+            "timed out resolving provider affiliation; the row will show none"
+        );
+    })
+    .ok()?
+    .ok()?;
+    ProviderAffiliation::of(created.as_ref())
+}
+
 #[utoipa::path(
     get,
     path = "/config/providers",
@@ -826,19 +894,31 @@ fn privacy_tiers_wire_value() -> Value {
 )]
 pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, StatusCode> {
     let providers = get_providers().await;
-    let providers_response: Vec<ProviderDetails> = providers
-        .into_iter()
-        .map(|(metadata, provider_type)| {
-            let is_configured = check_provider_configured(&metadata, provider_type);
+    // Concurrently, because each row may construct a provider and a serial pass
+    // would add every constructor's latency together on a route the settings
+    // grid blocks on.
+    let providers_response: Vec<ProviderDetails> =
+        futures::future::join_all(providers.into_iter().map(
+            |(metadata, provider_type)| async move {
+                let is_configured = check_provider_configured(&metadata, provider_type);
+                // Issue #56, DR-26. Resolved from the instance, never from the name
+                // — see `resolve_provider_affiliation`.
+                let affiliation = if is_configured {
+                    resolve_provider_affiliation(&metadata).await
+                } else {
+                    None
+                };
 
-            ProviderDetails {
-                name: metadata.name.clone(),
-                metadata,
-                is_configured,
-                provider_type,
-            }
-        })
-        .collect();
+                ProviderDetails {
+                    name: metadata.name.clone(),
+                    metadata,
+                    is_configured,
+                    provider_type,
+                    affiliation,
+                }
+            },
+        ))
+        .await;
 
     Ok(Json(providers_response))
 }
@@ -1581,6 +1661,86 @@ mod tests {
 /// (`routes::agent::working_dir_lock_tests`). Calling the handlers directly is
 /// how the rest of this file's tests reach `read_config` and
 /// `get_detectable_providers`, and it exercises the same guard the router would.
+#[cfg(test)]
+mod affiliation_wire_tests {
+    //! What `GET /config/providers` actually puts on the wire for DR-26's third
+    //! axis (issue #56).
+    //!
+    //! The mapping itself is pinned in `providers::base::affiliation_view_tests`,
+    //! where it lives. These assert the two things only this route can get
+    //! wrong: which key the field arrives under, and that "no affiliation" is a
+    //! rendered `null` rather than a silently missing key — the renderer's
+    //! `readProviderAffiliation` reads `row.affiliation`, and a key that moved
+    //! would make every badge disappear with nothing failing.
+
+    use super::*;
+    use biorouter::providers::base::{ProviderAffiliation, ProviderAffiliationKind};
+
+    fn row(affiliation: Option<ProviderAffiliation>) -> ProviderDetails {
+        ProviderDetails {
+            name: "versa_azure".to_string(),
+            metadata: ProviderMetadata::empty(),
+            is_configured: true,
+            provider_type: ProviderType::Builtin,
+            affiliation,
+        }
+    }
+
+    /// ⚠ **Beside the metadata, not inside it.** `ProviderMetadata` is the
+    /// type-level claim — its own `tier` field carries "do not hang a badge on
+    /// this field" — and this value is instance-resolved. A renderer that read
+    /// `row.metadata.affiliation` would find nothing, so the two must not be
+    /// allowed to swap silently.
+    #[test]
+    fn the_affiliation_travels_beside_the_metadata_not_inside_it() {
+        let json = serde_json::to_value(row(Some(ProviderAffiliation {
+            kind: ProviderAffiliationKind::Institutions,
+            institutions: vec![biorouter::providers::base::AffiliationInstitution {
+                id: "ucsf".to_string(),
+                display_name: Some("UCSF".to_string()),
+            }],
+        })))
+        .expect("a provider row serialises");
+
+        assert_eq!(json["affiliation"]["kind"], "institutions");
+        assert_eq!(json["affiliation"]["institutions"][0]["id"], "ucsf");
+        assert_eq!(
+            json["affiliation"]["institutions"][0]["display_name"],
+            "UCSF"
+        );
+        assert!(
+            json["metadata"].get("affiliation").is_none(),
+            "the type-level metadata must not carry an instance-resolved value"
+        );
+    }
+
+    /// A public provider has no affiliation at all, and the key is present and
+    /// `null` rather than absent — the renderer treats both the same, but an
+    /// absent key is indistinguishable from a daemon that predates the field,
+    /// and this route is the one that knows the difference.
+    #[test]
+    fn a_provider_with_no_affiliation_serialises_an_explicit_null() {
+        let json = serde_json::to_value(row(None)).expect("a provider row serialises");
+        assert!(json.as_object().unwrap().contains_key("affiliation"));
+        assert!(json["affiliation"].is_null());
+    }
+
+    /// A row from a daemon that predates the field still deserialises — the
+    /// `#[serde(default)]` that makes the addition non-breaking for any client
+    /// or test fixture round-tripping this type.
+    #[test]
+    fn a_row_without_the_field_still_reads() {
+        let parsed: ProviderDetails = serde_json::from_value(serde_json::json!({
+            "name": "openai",
+            "metadata": serde_json::to_value(ProviderMetadata::empty()).unwrap(),
+            "is_configured": false,
+            "provider_type": "Builtin",
+        }))
+        .expect("a row predating the field is still a row");
+        assert!(parsed.affiliation.is_none());
+    }
+}
+
 #[cfg(test)]
 mod privacy_disclosure_tests {
     use super::*;
