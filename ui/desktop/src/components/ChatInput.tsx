@@ -1821,7 +1821,14 @@ export default function ChatInput({
             data-testid="chat-input"
             autoFocus
             id="dynamic-textarea"
-            placeholder={getNavigationShortcutText()}
+            // The navigation hint is only true once there is something to
+            // navigate. On Home and in a brand-new session the app's primary
+            // input used to invite nothing and explain a shortcut that did
+            // nothing yet; `messagesLength` is already a prop here (#22), so the
+            // placeholder can simply tell the truth in both states.
+            placeholder={
+              (messagesLength ?? 0) > 0 ? getNavigationShortcutText() : 'Ask Biorouter anything…'
+            }
             value={composerBody}
             onChange={handleChange}
             onCompositionStart={handleCompositionStart}
