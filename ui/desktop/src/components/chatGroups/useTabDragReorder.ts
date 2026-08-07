@@ -1,7 +1,56 @@
 import { useEffect, useRef, useState, PointerEvent } from 'react';
 import { DropTarget, dropTargetAtPoint } from './dropZones';
+import { CrossWindowPhase, ScreenPoint, isOutsideViewport } from './tabTearOff';
 
 const DRAG_PROMOTION_THRESHOLD_PX = 5;
+
+/**
+ * `local`, the phase every drag starts and (unless it leaves the window) ends
+ * in. A shared constant so an identity comparison is a valid "nothing changed"
+ * test for the common case.
+ */
+const LOCAL_PHASE: CrossWindowPhase = { kind: 'local' };
+
+/**
+ * THE ONE PLACE THAT ASSUMES ANYTHING ABOUT OS POINTER CAPTURE.
+ *
+ * Explicit capture is what the Pointer Events spec guarantees will keep
+ * delivering `pointermove`/`pointerup` to the capturing element regardless of
+ * where the cursor is hit-testing (design D2). The gesture worked before it
+ * because implicit capture covers the in-window case; it is made explicit here
+ * because a drag that leaves the window is precisely the case implicit capture
+ * was never asked about.
+ *
+ * That capture survives the cursor crossing ANOTHER WINDOW OF THE SAME APP is
+ * asserted from the spec, not measured — design §8 Phase 0 exists to measure it
+ * with real OS input, which an agent shell cannot generate and jsdom does not
+ * implement at all. Both calls are therefore confined to this pair of helpers:
+ * if Phase 0 comes back with a different answer (say, capture must be taken on
+ * `document.body`, or dropped in favour of a main-process pointer hook), one
+ * function changes and the gesture above it does not.
+ *
+ * Failures are swallowed on purpose. `setPointerCapture` throws
+ * `NotFoundError` for a pointer that is no longer active, and jsdom does not
+ * implement it at all; in both cases the drag must carry on exactly as it did
+ * before capture existed rather than dying in a pointerdown handler.
+ */
+function capturePointer(el: Element, pointerId: number): Element | null {
+  try {
+    (el as HTMLElement).setPointerCapture?.(pointerId);
+    return el;
+  } catch {
+    return null;
+  }
+}
+
+function releasePointer(el: Element | null, pointerId: number): void {
+  if (!el) return;
+  try {
+    (el as HTMLElement).releasePointerCapture?.(pointerId);
+  } catch {
+    // Already released, element gone, or unimplemented. Nothing to undo.
+  }
+}
 
 export interface DragGhost {
   tabId: string;
@@ -17,6 +66,49 @@ interface TabDragReorderArgs {
    * the strip's unit tests) => reorder-only, exactly the Stage-2 behaviour.
    */
   onDropToGroup?: (tabId: string, target: DropTarget) => void;
+  /**
+   * The pointer left this window's content rect during a promoted drag, or came
+   * back. Called with `{kind:'detach'}` on EVERY move while outside — the main
+   * process must re-resolve the live screen point against its window registry to
+   * decide whether this is really a merge (tabTearOff.ts, design D3) — and with
+   * `{kind:'local'}` exactly ONCE when the pointer returns, since that phase
+   * carries no point-dependent information and re-sending it per move would put
+   * an IPC message on the wire at pointer rate for the overwhelmingly common
+   * drag that never leaves the window at all.
+   *
+   * ABSENT (today, and in every existing test) => the pointer position outside
+   * the window is not consulted at all and the gesture behaves byte for byte as
+   * it always has.
+   */
+  onCrossWindow?: (phase: CrossWindowPhase, point: ScreenPoint) => void;
+  /**
+   * Release, outside the window. Called INSTEAD of `onReorder`/`onDropToGroup` —
+   * the tab is leaving, so there is nothing local to commit. The phase is
+   * whatever the last move derived, which is `detach` from the renderer's side;
+   * the owner resolves it against main's registry, which is also the party that
+   * knows whether tearing off would empty this window (design D5, a no-op).
+   */
+  onCrossWindowCommit?: (phase: CrossWindowPhase, point: ScreenPoint) => void;
+  /**
+   * D1: a tab whose session has a turn in flight cannot leave the window, because
+   * `/reply` has exactly one subscriber and moving it either freezes the
+   * transcript or kills the turn (design §2).
+   *
+   * INJECTED, not assumed. The hook has no idea what makes a tab locked and must
+   * not learn — the running set lives in the chat-stream layer, and D9/Phase 5
+   * are expected to remove this restriction entirely. When that lands, the policy
+   * changes at the call site and this file is not edited.
+   *
+   * Consulted on every move, not once at `beginDrag`: a turn that finishes
+   * mid-drag unlocks the tab, and one that starts mid-drag locks it.
+   *
+   * A locked tab still reorders, still moves between panes, still splits. Only
+   * the cross-window half is refused: no phase is emitted, no preview appears,
+   * and a release outside returns the tab to its slot — which is what today's
+   * code already does, because `elementFromPoint` outside the viewport finds
+   * nothing to drop on.
+   */
+  isTabLocked?: (tabId: string) => boolean;
 }
 
 export interface TabDragReorder {
@@ -25,6 +117,13 @@ export interface TabDragReorder {
   /** The live drop target, updated on POINTERMOVE — see the note below. */
   dropTarget: DropTarget | null;
   ghost: DragGhost | null;
+  /**
+   * The cross-window phase, for rendering: `detach` is what puts the ghost into
+   * its "this will become a window" state (design D7). Stays `local` for the
+   * whole gesture unless a cross-window callback is wired, so no consumer that
+   * does not ask for the feature can be affected by it.
+   */
+  crossWindow: CrossWindowPhase;
   /**
    * Attach to each tab's pointer-down target. Records origin only — no drag yet.
    * `sourceGroupId` rides along with the GESTURE rather than being a hook
@@ -74,12 +173,23 @@ export interface TabDragReorder {
  * (jsdom computes no layout and returns null), getBoundingClientRect (all zeroes
  * in jsdom, so every zone would read `center`), and pointer capture. Those are
  * browser-verified, per the plan's §6 row 2.
+ *
+ * The cross-window half (tear-off and merge) is bolted on the same way the
+ * cross-group half was: OPTIONAL callbacks, and with none of them supplied the
+ * gesture is bit-for-bit the one that shipped. See TabDragReorderArgs.
  */
-export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderArgs): TabDragReorder {
+export function useTabDragReorder({
+  onReorder,
+  onDropToGroup,
+  onCrossWindow,
+  onCrossWindowCommit,
+  isTabLocked,
+}: TabDragReorderArgs): TabDragReorder {
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [ghost, setGhost] = useState<DragGhost | null>(null);
+  const [crossWindow, setCrossWindow] = useState<CrossWindowPhase>(LOCAL_PHASE);
 
   const gestureRef = useRef<{
     tabId: string;
@@ -91,10 +201,16 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
     // same point rather than hanging off the cursor's lower-right.
     grabOffsetX: number;
     grabOffsetY: number;
+    // The element holding the OS pointer capture, and the pointer it holds. Kept
+    // so `finish` can release exactly what `beginDrag` took — see capturePointer.
+    captureEl: Element | null;
+    pointerId: number;
   } | null>(null);
   const draggedTabIdRef = useRef<string | null>(null);
   const dragOverTabIdRef = useRef<string | null>(null);
   const dropTargetRef = useRef<DropTarget | null>(null);
+  const crossWindowRef = useRef<CrossWindowPhase>(LOCAL_PHASE);
+  const screenPointRef = useRef<ScreenPoint>({ screenX: 0, screenY: 0 });
   const suppressTabClickRef = useRef(false);
   const suppressTabClickTimerRef = useRef<number | null>(null);
 
@@ -102,6 +218,12 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
   onReorderRef.current = onReorder;
   const onDropToGroupRef = useRef(onDropToGroup);
   onDropToGroupRef.current = onDropToGroup;
+  const onCrossWindowRef = useRef(onCrossWindow);
+  onCrossWindowRef.current = onCrossWindow;
+  const onCrossWindowCommitRef = useRef(onCrossWindowCommit);
+  onCrossWindowCommitRef.current = onCrossWindowCommit;
+  const isTabLockedRef = useRef(isTabLocked);
+  isTabLockedRef.current = isTabLocked;
 
   useEffect(() => {
     const move = (event: globalThis.PointerEvent) => {
@@ -126,6 +248,40 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
         x: event.clientX - gesture.grabOffsetX,
         y: event.clientY - gesture.grabOffsetY,
       });
+
+      // ===================================================================
+      // IS THE POINTER STILL IN THIS WINDOW? (design D2, D1)
+      //
+      // Gated on a cross-window callback being supplied. With none — the
+      // shipped configuration, ChatTabStrip's bare fallback instance, and every
+      // existing test — `outside` is false forever and not one line below this
+      // block behaves differently than it did before tear-off existed.
+      //
+      // The lock (D1) is asked EVERY TIME THE POINTER IS OUTSIDE, rather than
+      // once at pointerdown: a turn can start or finish mid-drag, and the
+      // question only means anything at the moment the cross-window half would
+      // engage. A locked tab simply never reaches it; its drag stays local,
+      // which is a working gesture, not a dead one.
+      // ===================================================================
+      const crossWindowEnabled = !!(onCrossWindowRef.current || onCrossWindowCommitRef.current);
+      const outside =
+        crossWindowEnabled &&
+        isOutsideViewport(
+          { x: event.clientX, y: event.clientY },
+          { width: window.innerWidth, height: window.innerHeight }
+        ) &&
+        !(isTabLockedRef.current?.(gesture.tabId) ?? false);
+
+      screenPointRef.current = { screenX: event.screenX, screenY: event.screenY };
+      const nextPhase: CrossWindowPhase = outside ? { kind: 'detach' } : LOCAL_PHASE;
+      const phaseChanged = nextPhase.kind !== crossWindowRef.current.kind;
+      crossWindowRef.current = nextPhase;
+      if (phaseChanged) setCrossWindow(nextPhase);
+      // Every move while outside (main must re-resolve the live point against its
+      // window registry), but only the transition back in — see onCrossWindow.
+      if (outside || phaseChanged) {
+        onCrossWindowRef.current?.(nextPhase, screenPointRef.current);
+      }
 
       // ===================================================================
       // THE STRIP IS ALWAYS INSIDE ITS GROUP'S `top` EDGE BAND.
@@ -153,7 +309,13 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
       let nextOverTab: string | null = null;
       let nextTarget: DropTarget | null = null;
 
-      if (!onDropToGroupRef.current) {
+      if (outside) {
+        // Nothing local to aim at. elementFromPoint would answer null out here
+        // anyway; saying it on purpose means a detach can never also carry a
+        // stale local target into `finish` and commit both halves of the gesture.
+        nextOverTab = null;
+        nextTarget = null;
+      } else if (!onDropToGroupRef.current) {
         // Reorder-only: no cross-group handler, so this is a bare strip. Exactly
         // the Stage-2 behaviour, unchanged.
         nextOverTab = overOtherTab ? targetTabId : null;
@@ -171,12 +333,28 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
       setDropTarget(nextTarget);
     };
 
-    const finish = () => {
+    const finish = (cancelled = false) => {
       const sourceTabId = draggedTabIdRef.current;
       const targetTabId = dragOverTabIdRef.current;
       const target = dropTargetRef.current;
+      const phase = crossWindowRef.current;
+      const gesture = gestureRef.current;
 
-      if (sourceTabId && targetTabId) {
+      if (gesture) releasePointer(gesture.captureEl, gesture.pointerId);
+
+      if (cancelled) {
+        // D8: no reorder, no move, no tear-off, no merge. The REMOTE preview is
+        // cleared by reporting `local` — that phase means "no cross-window
+        // preview" by definition, so there is no separate cancel message to
+        // invent and no way for the owner to be left holding a stale caret.
+        if (phase.kind !== 'local') {
+          onCrossWindowRef.current?.(LOCAL_PHASE, screenPointRef.current);
+        }
+      } else if (sourceTabId && phase.kind !== 'local' && onCrossWindowCommitRef.current) {
+        // The tab is leaving the window, so the local commits below are not just
+        // unnecessary but wrong — they would move it twice.
+        onCrossWindowCommitRef.current(phase, screenPointRef.current);
+      } else if (sourceTabId && targetTabId) {
         onReorderRef.current(sourceTabId, targetTabId);
       } else if (sourceTabId && target && onDropToGroupRef.current) {
         onDropToGroupRef.current(sourceTabId, target);
@@ -192,19 +370,40 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
       draggedTabIdRef.current = null;
       dragOverTabIdRef.current = null;
       dropTargetRef.current = null;
+      crossWindowRef.current = LOCAL_PHASE;
       setDraggedTabId(null);
       setDragOverTabId(null);
       setDropTarget(null);
       setGhost(null);
+      // LOCAL_PHASE is a module constant, so React bails out of this update by
+      // identity when the phase never left `local` — which is every drag in the
+      // shipped configuration. No extra render is added to today's gesture.
+      setCrossWindow(LOCAL_PHASE);
+    };
+
+    // pointerup/pointercancel COMMIT, both of them, exactly as they always have.
+    // Only Escape cancels (D8) — pointercancel's commit is long-standing shipped
+    // behaviour and changing it is not this feature's business.
+    const finishFromPointer = () => finish();
+
+    const cancelOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      // Only a PROMOTED drag. A press that has not passed the 5px threshold is
+      // not a gesture the user can see, so cancelling it would swallow an Escape
+      // the rest of the app is entitled to (closing a menu, blurring a field).
+      if (!draggedTabIdRef.current) return;
+      finish(true);
     };
 
     window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', finish);
-    window.addEventListener('pointercancel', finish);
+    window.addEventListener('pointerup', finishFromPointer);
+    window.addEventListener('pointercancel', finishFromPointer);
+    window.addEventListener('keydown', cancelOnEscape);
     return () => {
       window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
+      window.removeEventListener('pointerup', finishFromPointer);
+      window.removeEventListener('pointercancel', finishFromPointer);
+      window.removeEventListener('keydown', cancelOnEscape);
       window.clearTimeout(suppressTabClickTimerRef.current ?? undefined);
     };
   }, []);
@@ -229,6 +428,17 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
       startY: event.clientY,
       grabOffsetX: event.clientX - rect.left,
       grabOffsetY: event.clientY - rect.top,
+      // CAPTURE ON THE ELEMENT THAT RECEIVED THE POINTERDOWN, NOT ON `.br-tab`.
+      // The wrapper looks like the more natural owner and is the wrong choice:
+      // pointer capture retargets the compatibility mouse events too, so
+      // capturing on the wrapper would fire `click` on the wrapper — a plain
+      // click on a tab would then never reach the label button's onClick that
+      // selects it, and selecting a tab by clicking it would quietly stop
+      // working. jsdom does not implement capture, so no test here would catch
+      // that; only a real browser would. Capturing on the pointerdown target
+      // leaves the click exactly where it already was.
+      captureEl: capturePointer(event.currentTarget, event.pointerId),
+      pointerId: event.pointerId,
     };
   };
 
@@ -240,5 +450,5 @@ export function useTabDragReorder({ onReorder, onDropToGroup }: TabDragReorderAr
     return true;
   };
 
-  return { draggedTabId, dragOverTabId, dropTarget, ghost, beginDrag, guardClick };
+  return { draggedTabId, dragOverTabId, dropTarget, ghost, crossWindow, beginDrag, guardClick };
 }

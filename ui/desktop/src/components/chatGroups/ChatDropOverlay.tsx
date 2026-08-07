@@ -51,8 +51,22 @@ export function ChatDropOverlay({ zone }: { zone: DropZone }) {
  * (.br-tab[data-dragging]). main.css's drag block explains why that matters:
  * .br-tab's divider is adjacent-sibling based, so pulling the real tab out of
  * the DOM would re-flow every divider in the strip mid-drag.
+ *
+ * `detached` marks the moment the drag left the window and the drop would make a
+ * new one (tear-off design D7). Electron cannot paint outside a window's frame,
+ * so the ghost cannot follow the cursor onto the desktop; instead it changes
+ * what it IS — the tilt returns to 0 and it takes the dashed accent outline the
+ * drop zones already use, because a flat, outlined rectangle detached from the
+ * strip reads as a window and a tilted one riding the strip reads as a tab.
+ *
+ * THE ATTRIBUTE IS HERE AND THE CSS IS NOT. `.br-tab-ghost[data-detach='true']`
+ * lands with the rest of the tear-off visuals (Phase 4); main.css is contested
+ * by another campaign in flight. Until then this renders an attribute nothing
+ * styles, which is inert rather than half-done: no consumer passes `detached`
+ * yet either, and the attribute is absent (not `"false"`) when it is not set, so
+ * the selector cannot half-match in the meantime.
  */
-export function ChatTabGhost({ ghost }: { ghost: DragGhost }) {
+export function ChatTabGhost({ ghost, detached }: { ghost: DragGhost; detached?: boolean }) {
   // PORTALED TO document.body, and that is load-bearing, not tidiness. The ghost
   // is `position: fixed`, so its left/top are meant to be viewport coordinates —
   // which is exactly what useTabDragReorder computes (clientX/Y minus the grab
@@ -68,6 +82,7 @@ export function ChatTabGhost({ ghost }: { ghost: DragGhost }) {
     <div
       className="br-tab br-tab-ghost"
       data-testid="chat-tab-ghost"
+      data-detach={detached ? 'true' : undefined}
       aria-hidden="true"
       style={{ left: ghost.x, top: ghost.y }}
     >
