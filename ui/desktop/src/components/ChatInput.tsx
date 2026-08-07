@@ -1787,6 +1787,13 @@ export default function ChatInput({
         // the first toolbar chip and an attachment thumbnail each started at a
         // different x. The shell now owns the inset and the children own only
         // the vertical rhythm between them.
+        //
+        // "Only the rhythm" is now literally true, and it is ONE declaration:
+        // the textarea carries no padding at all (so its box is exactly its line
+        // box, which is what keeps the placeholder centred) and the toolbar's
+        // `pt-3` is the entire gap between them. The textarea kept a `pb-1.5`
+        // through the first pass of this refactor, which both mis-centred the
+        // placeholder and made the gap a sum of two numbers on two elements.
         'relative z-10 flex h-auto flex-col p-3 rounded-container',
         // ELEVATION OR A BORDER, NEVER BOTH. The composer was the one element in
         // the app stating its edge twice: a 1px border AND --shadow-composer.
@@ -1907,10 +1914,39 @@ export default function ChatInput({
               maxHeight: `${maxHeight}px`,
               overflowY: 'auto',
             }}
-            // No inset of its own: the shell's 12px IS the composer's left edge,
-            // and the placeholder has to start on it so the first toolbar chip
-            // below can line up with the text above it.
-            className="w-full resize-none border-none bg-transparent p-0 pb-1.5 text-body text-text-default placeholder:text-text-muted"
+            // No inset of its own, on EITHER axis. Horizontally: the shell's
+            // 12px IS the composer's left edge, and the placeholder has to start
+            // on it so the first toolbar chip below can line up with the text
+            // above it.
+            //
+            // Vertically `p-0` is now literal, where it used to be `p-0 pb-1.5`.
+            // That 6px was the tail of the pre-grid `px-3 pt-3 pb-1.5` recipe:
+            // when the shell took over the inset, `pt-3` moved out and `pb-1.5`
+            // was left behind with no partner. A textarea is a one-line box
+            // whose text starts at the top of its content box, so bottom-only
+            // padding does not push the text down — it grows the box underneath
+            // it. Measured: a 20px line box in a 26px border box put the
+            // placeholder's optical centre at 10px against the box's 13px, i.e.
+            // sitting 3px HIGH, which is what reads as "the placeholder is not
+            // centred". With `p-0` the border box IS the line box, so the text
+            // is centred by construction and cannot drift again.
+            //
+            // The gap down to the toolbar is not lost, it is just owned once
+            // now: the toolbar's own `pt-3` is the whole of it (it was the
+            // double-declared `pb-1.5` here + `pt-2` there), and 12px puts that
+            // rhythm on the same grid as the shell's inset.
+            //
+            // `block` is the other half of the same bug, one level up. A
+            // textarea is `inline-block` by default and sits on its parent's
+            // BASELINE, so the wrapping line box reserves descender room under
+            // it: the `relative flex-1` div measured 27px around a 20px control
+            // and the placeholder was 3.5px high *in the row the user sees*,
+            // which is the box that reads as the input. Removing the padding
+            // alone would have left that, and it is invisible to any test that
+            // measures the textarea rather than its wrapper. `block` takes the
+            // control out of the baseline flow, so wrapper height == control
+            // height == line height, and the 7px of dead space goes away.
+            className="block w-full resize-none border-none bg-transparent p-0 text-body text-text-default placeholder:text-text-muted"
           />
         </div>
       </form>
@@ -2029,7 +2065,11 @@ export default function ChatInput({
       <div
         ref={toolbarRef}
         data-testid="chat-input-toolbar"
-        className="relative flex min-w-0 flex-row flex-nowrap items-center overflow-hidden pt-2"
+        // `pt-3`, not `pt-2`: this row is now the SOLE owner of the gap up to
+        // the prose (the textarea's `pb-1.5` used to supply 6px of it), and
+        // 12px is the shell's own inset, so the composer's one internal rhythm
+        // matches the grid the card is built on.
+        className="relative flex min-w-0 flex-row flex-nowrap items-center overflow-hidden pt-3"
       >
         {(() => {
           // Defined once, arranged two ways: inline when the row is wide enough,
