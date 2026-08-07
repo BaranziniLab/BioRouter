@@ -20,13 +20,19 @@
 //! # The two binding requirements
 //!
 //! **R1 — no progress is ever lost.** Every frame is appended to a replay
-//! buffer that is sized to hold a whole turn ([`REPLAY_BYTE_BUDGET`]). If a
-//! pathological turn overruns it, the OLDEST frames are dropped and the reader
-//! is told so ([`StreamReader::take_gap`]); `/reply` then prepends a
-//! whole-conversation snapshot read from the session store before the retained
-//! tail. Eviction is therefore never a loss: the evicted prefix is exactly the
-//! part that has already been persisted, and the un-persisted part (the running
-//! assistant message) is exactly the part that is retained.
+//! buffer sized to hold a whole turn ([`REPLAY_BYTE_BUDGET`]). Past that size
+//! the buffer evicts, and eviction is **restricted to frames the session store
+//! has already absorbed** — the ones, and only the ones, that the storage
+//! resync can put back. A reader whose prefix was evicted is told
+//! ([`StreamReader::take_gap`]) and `/reply` prepends a whole-conversation
+//! snapshot read from the store before the retained tail.
+//!
+//! R1 therefore holds exactly, with one stated bound rather than an assumed
+//! one: a turn is only ever short of its own opening past
+//! [`REPLAY_HARD_BYTE_CEILING`], reached only by a SINGLE un-persisted message
+//! of ~280k streamed deltas — beyond any provider's context window. See that
+//! constant for why the earlier one-level design silently violated R1 on a long
+//! answer.
 //!
 //! **R2 — seamless in the UI.** Frames carry a monotonic per-turn `seq` so a
 //! client can apply them idempotently after re-attaching, and replayed frames
@@ -61,6 +67,30 @@
 //! subscribe is guaranteed to arrive on the broadcast, and one published before
 //! it is guaranteed to be in the snapshot. Cloning the sender out and
 //! subscribing afterwards would open a window in which a frame is in neither.
+//!
+//! # Who may end a turn's log — ONE owner, ONE critical section
+//!
+//! This is the module's most expensive lesson, learned three times: a turn's
+//! terminal was closed out from under its own writer in `TurnGuard::drop`, then
+//! again from `drain_stream_to_client`, then again by `close`'s own
+//! check-then-act. Each instance was individually defensible and each cost a
+//! healthy turn its real `Finish`. The rules that replace those three patches:
+//!
+//! 1. **A log has at most one writer**, taken with [`TurnStream::claim_writer`]
+//!    and held as a [`TurnWriter`] for the writer's whole life. Its `Drop`
+//!    closes the log, so a pump that returns, breaks, is cancelled mid-`await`
+//!    or PANICS still ends the turn exactly once.
+//! 2. **Nobody else closes.** A reader that finds [`TurnStream::has_writer`]
+//!    false knows no frame is coming and answers its client from what is there;
+//!    it never mutates the log to make that true. "This turn has no writer" and
+//!    "this turn's writer has not finished draining" are now different
+//!    questions with different answers, instead of both being inferred from
+//!    `terminal_frame().is_none()`.
+//! 3. **Appending and closing share one critical section** ([`append_locked`]),
+//!    so a terminal cannot be duplicated by, or lost to, a concurrent publish.
+//! 4. **Nothing follows the terminal.** `publish` refuses once `terminal_seq`
+//!    is set, which is what makes [`TurnStream::terminal_frame`] able to name an
+//!    ending rather than hand back whatever landed last.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,7 +102,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::routes::reply::MessageEvent;
 
-/// How much serialized frame text one turn may retain for replay.
+/// How much serialized frame text one turn may retain for replay **before
+/// eviction starts** — and eviction at this level may only drop frames the
+/// session store has already absorbed.
 ///
 /// A turn is bounded by the context window, so a normal one — even a long
 /// tool-heavy one — is a few hundred KB of frames. 8 MiB is roughly an order of
@@ -80,12 +112,38 @@ use crate::routes::reply::MessageEvent;
 /// for every turn a user will actually run, while still bounding the pathology
 /// (an un-coalesced 100k-token answer is one frame per provider chunk and can
 /// reach tens of MB). At most one turn per session is live, so the real ceiling
-/// is 8 MiB × concurrent chats.
+/// is [`REPLAY_HARD_BYTE_CEILING`] × concurrent chats.
 pub const REPLAY_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
 /// Frame-count companion to [`REPLAY_BYTE_BUDGET`], so a turn that emits an
 /// enormous number of tiny frames is bounded too.
 pub const REPLAY_FRAME_BUDGET: usize = 200_000;
+
+/// The point past which the replay buffer evicts frames that are **not** yet
+/// persisted — accepting a hole and reporting it as a [`ReaderEvent::Gap`].
+///
+/// Why two levels rather than one. The module used to claim that "the evicted
+/// prefix is exactly the part that has already been persisted, and the
+/// un-persisted part (the running assistant message) is exactly the part that is
+/// retained". That is false for a single assistant message whose own frames
+/// exceed the budget: it evicts its OWN earlier deltas, and the storage resync
+/// cannot restore them, because the message is un-persisted *precisely because
+/// it is still streaming*. The client is then handed the tail of a message whose
+/// opening nothing on the machine still holds — R1 failing silently.
+///
+/// So the soft budget above is now a *persisted-only* eviction level: it drops
+/// exactly the frames whose rows storage already has, which is the only eviction
+/// the storage fallback can actually repair. This ceiling is the bound on the
+/// pathology, and it is set where no real turn can reach it: at ~120 bytes per
+/// streamed delta, 32 MiB is ~280k deltas in ONE un-persisted message, which is
+/// an order of magnitude beyond any context window a provider offers. R1 holds
+/// for every turn that can physically be produced; past this the gap is reported
+/// rather than hidden.
+pub const REPLAY_HARD_BYTE_CEILING: usize = 32 * 1024 * 1024;
+
+/// Frame-count companion to [`REPLAY_HARD_BYTE_CEILING`], in the same 4:1 ratio
+/// as the byte levels.
+pub const REPLAY_HARD_FRAME_CEILING: usize = REPLAY_FRAME_BUDGET * 4;
 
 /// What a *finished* turn keeps, once its result is persisted.
 ///
@@ -121,6 +179,23 @@ pub const DEFAULT_ORPHAN_TIMEOUT: Duration = Duration::from_secs(300);
 fn reaper_tick(timeout: Duration) -> Duration {
     (timeout / 10).clamp(Duration::from_millis(20), Duration::from_secs(5))
 }
+
+/// How long a reader may be unable to hand a frame to its client before it
+/// stops counting as somebody watching (see [`StreamReader::mark_stalled`]).
+///
+/// `observers` used to count ATTACHMENTS, which is not the same question the
+/// orphan reaper asks. A client that is connected but not draining — a frozen
+/// renderer, a suspended VM, a half-open TCP connection, a zero-window peer —
+/// never drops its receiver, so the send never fails, the 100-slot response
+/// channel fills, the drain parks inside `send` forever, and `observers` stays
+/// at one. Nobody is watching and nothing can end the turn.
+///
+/// A second is far beyond any healthy loopback delivery (the whole backlog is
+/// written in one or two reads) and far below the five-minute orphan timeout, so
+/// crossing it costs a legitimately busy renderer nothing: the reader is still
+/// attached, still parked in the same send, and re-counts itself the moment the
+/// frame lands. All that changes is that the reaper's clock is allowed to start.
+pub const OBSERVER_STALL_GRACE: Duration = Duration::from_secs(1);
 
 /// [`DEFAULT_ORPHAN_TIMEOUT`], or the `BIOROUTER_TURN_ORPHAN_TIMEOUT_MS`
 /// override. An unparseable or zero value falls back to the default rather than
@@ -192,10 +267,30 @@ struct Inner {
     /// The lowest seq still retained. Anything below this was evicted, and a
     /// reader asking for it gets [`ReaderEvent::Gap`].
     oldest_seq: u64,
-    /// True once a `Finish`/`Error` frame has been logged, so [`TurnStream::close`]
-    /// knows whether it must synthesize one.
-    terminal_logged: bool,
+    /// The seq of this turn's terminal frame, once one has been logged. `Some`
+    /// is what makes the log FINAL: [`TurnStream::publish`] refuses everything
+    /// after it, so the terminal is always the last frame in the log and
+    /// [`TurnStream::terminal_frame`] can name it exactly.
+    terminal_seq: Option<u64>,
+    /// The seq of the newest frame whose rows the session store has already
+    /// absorbed (a `MessagesPersisted`). Everything at or below it is
+    /// recoverable from storage, which is what makes evicting it safe; see
+    /// [`REPLAY_HARD_BYTE_CEILING`].
+    persisted_through: Option<u64>,
     closed: bool,
+    /// True once somebody has taken responsibility for WRITING this turn's log
+    /// — publishing its frames and closing it when the turn ends.
+    ///
+    /// The distinction the code lacked. A `TurnStream` is minted by the turn
+    /// LOCK (`state.rs`), which several callers take for reasons that have
+    /// nothing to do with streaming: an in-place edit and a working-directory
+    /// change hold it as a plain mutex, and the workspace/app turn runners hold
+    /// it without a `/reply` pump. Those turns' logs have no writer at all, and
+    /// an observer attaching to one would park forever on frames that will never
+    /// come and an end that will never be signalled. Inferring "no writer" from
+    /// "no frames yet" or "no terminal yet" is exactly the mistake that let a
+    /// late attach close a healthy turn's log out from under its pump.
+    writer_claimed: bool,
     /// Live readers right now. Zero is an ordinary state, not an error.
     observers: usize,
     /// True once anything has EVER attached. The orphan reaper will not fire
@@ -231,8 +326,10 @@ impl TurnStream {
                 replay: VecDeque::new(),
                 replay_bytes: 0,
                 oldest_seq: 0,
-                terminal_logged: false,
+                terminal_seq: None,
+                persisted_through: None,
                 closed: false,
+                writer_claimed: false,
                 observers: 0,
                 ever_attached: false,
                 idle_since: None,
@@ -276,15 +373,50 @@ impl TurnStream {
     /// The whole answer for a client re-POSTing a turn that has already
     /// finished: its transcript was read back from the session store and already
     /// contains the turn, so all it still needs is the fact that the turn ended.
-    /// The last retained frame IS the terminal — `close` guarantees a terminal
-    /// exists and nothing may be appended after it (`publish` refuses once
-    /// closed), and eviction only ever drops from the FRONT.
+    ///
+    /// Named by `terminal_seq`, never by "the last retained frame". The old
+    /// version returned `replay.back()` on the premise that nothing can follow a
+    /// terminal — a premise `publish` did not enforce, so a `Message` published
+    /// after an `Error` (the runner panics, the supervisor logs its
+    /// `internal_error`, the pump drains events queued before the panic) was
+    /// handed back as this turn's ending. A client re-POSTing that id then
+    /// received one `Message` and an ended response: never told the turn was
+    /// over, thinking forever. `publish` now refuses post-terminal frames, and
+    /// this reads the seq rather than a position, so neither half can drift.
     pub fn terminal_frame(&self) -> Option<SeqFrame> {
         let inner = self.lock();
-        if !inner.terminal_logged {
+        let seq = inner.terminal_seq?;
+        inner.replay.iter().rev().find(|f| f.seq == seq).cloned()
+    }
+
+    /// Has somebody taken responsibility for writing (and ending) this log?
+    ///
+    /// The question every attach has to ask. `false` means no frame will ever
+    /// arrive and no terminal will ever be logged, so following this stream is
+    /// waiting for something that cannot happen — see [`Inner::writer_claimed`].
+    pub fn has_writer(&self) -> bool {
+        self.lock().writer_claimed
+    }
+
+    /// Take ownership of this turn's log. `None` when somebody already has it.
+    ///
+    /// The returned [`TurnWriter`] closes the log when it drops, which is the
+    /// point: a pump cannot exit — return, break, be cancelled mid-`await`, or
+    /// PANIC — without the log ending. Before this, `stream.close()` sat at the
+    /// bottom of the pump's body, so a panicking pump left every attached
+    /// response parked on a turn that was already dead, and the orphan reaper
+    /// could not help because the only consumer of its token was the pump that
+    /// was gone.
+    pub fn claim_writer(self: &Arc<Self>) -> Option<TurnWriter> {
+        let mut inner = self.lock();
+        if inner.writer_claimed {
             return None;
         }
-        inner.replay.back().cloned()
+        inner.writer_claimed = true;
+        drop(inner);
+        Some(TurnWriter {
+            stream: Arc::clone(self),
+        })
     }
 
     /// Append one frame and fan it out. Returns its sequence number.
@@ -293,33 +425,16 @@ impl TurnStream {
     /// state, and a broadcast send with no receivers is a no-op. This is the
     /// single most important property in the module — it is what makes "nobody
     /// is listening" stop meaning "stop working".
+    ///
+    /// Refused once the log is CLOSED **or once its terminal has been logged**.
+    /// Both halves matter: the second is what makes "the terminal is the last
+    /// frame" true rather than merely intended.
     pub fn publish(&self, event: &MessageEvent) -> u64 {
-        let terminal = matches!(
-            event,
-            MessageEvent::Finish { .. } | MessageEvent::Error { .. }
-        );
         let mut inner = self.lock();
-        if inner.closed {
-            // The turn is over; nothing may be appended after its terminal
-            // frame or a late attach would see a frame past the end.
-            return inner.next_seq;
-        }
-        let seq = inner.next_seq;
-        let json: Arc<str> = Arc::from(encode_frame(event, seq, &self.turn_id));
-        let frame = SeqFrame { seq, json };
-
-        inner.next_seq += 1;
-        inner.terminal_logged |= terminal;
-        inner.replay_bytes += frame.json.len();
-        inner.replay.push_back(frame.clone());
-        evict_to_budget(&mut inner, REPLAY_BYTE_BUDGET, REPLAY_FRAME_BUDGET);
-
-        // Under the same lock as the append — see the module docs.
-        let _ = self.tx.send(frame);
-        seq
+        append_locked(&mut inner, &self.tx, &self.turn_id, event)
     }
 
-    /// End the turn's log.
+    /// End the turn's log, in ONE critical section.
     ///
     /// Guarantees a terminal frame exists: a pump that exits on cancellation
     /// without ever seeing the runner's `TurnFinished` would otherwise leave a
@@ -328,25 +443,48 @@ impl TurnStream {
     /// ended without its runner saying why did not finish normally, and telling
     /// a client "stop, all good" when the turn's fate is unknown is the worse
     /// lie of the two.
+    ///
+    /// ⚠ **The lock is not released between the check and the act, and must not
+    /// be.** This used to read `!closed && !terminal_logged`, drop the lock,
+    /// publish the synthetic terminal, then re-take the lock to latch `closed`.
+    /// Two writers exist on every turn (the pump and `supervise_turn`), so a
+    /// real terminal landing in that window either produced two terminals or —
+    /// when close won the race — was refused as post-terminal, and a perfectly
+    /// healthy turn ended in "The stream for this turn ended without a result".
+    /// A barrier test measured that at 3000 runs out of 3000.
     pub fn close(&self) {
-        let synthetic = {
-            let inner = self.lock();
-            !inner.closed && !inner.terminal_logged
-        };
-        if synthetic {
-            self.publish(&MessageEvent::error(
-                "The stream for this turn ended without a result. Please retry.",
-                "stream_ended_without_terminal",
-                crate::routes::reply::TurnErrorScope::Internal,
-                true,
-                None,
-            ));
-        }
         let mut inner = self.lock();
+        if inner.closed {
+            return;
+        }
+        if inner.terminal_seq.is_none() {
+            append_locked(
+                &mut inner,
+                &self.tx,
+                &self.turn_id,
+                &MessageEvent::error(
+                    "The stream for this turn ended without a result. Please retry.",
+                    "stream_ended_without_terminal",
+                    crate::routes::reply::TurnErrorScope::Internal,
+                    true,
+                    None,
+                ),
+            );
+        }
         inner.closed = true;
-        // A finished turn's output is persisted; keep only enough to replay a
-        // normal turn verbatim (see CLOSED_REPLAY_BYTE_BUDGET).
-        evict_to_budget(&mut inner, CLOSED_REPLAY_BYTE_BUDGET, REPLAY_FRAME_BUDGET);
+        // A finished turn's output is in the store, so its retained log can be
+        // trimmed hard (see CLOSED_REPLAY_BYTE_BUDGET). Still only the PERSISTED
+        // prefix, on the same rule as during the turn: a turn that ended without
+        // ever publishing a `MessagesPersisted` has nothing in storage to fall
+        // back to, and trimming it here would lose the very frames a client
+        // attaching a moment later still needs.
+        evict_to_budget(
+            &mut inner,
+            CLOSED_REPLAY_BYTE_BUDGET,
+            REPLAY_HARD_BYTE_CEILING,
+            REPLAY_FRAME_BUDGET,
+            REPLAY_HARD_FRAME_CEILING,
+        );
         drop(inner);
         // Wake every parked reader so it observes `closed` and ends its
         // response instead of blocking on a channel nothing will send to.
@@ -360,8 +498,16 @@ impl TurnStream {
     ///
     /// Subscribes and snapshots the replay buffer under one lock, so no frame
     /// can fall between the backlog and the live tail.
+    ///
+    /// `from_seq` is CLAMPED to the frames the turn actually has. It is a
+    /// client-supplied field on a public route, and an out-of-range value used
+    /// to silence the whole turn for that observer: every later frame was below
+    /// `next`, so each was dropped as "already delivered" and `next` never
+    /// walked back. Honouring the hint is an optimisation; honouring it out of
+    /// range is not optional.
     pub fn attach(self: &Arc<Self>, from_seq: u64) -> StreamReader {
         let mut inner = self.lock();
+        let from_seq = from_seq.min(inner.next_seq);
         let rx = self.tx.subscribe();
         let gap = from_seq < inner.oldest_seq;
         let backlog: VecDeque<SeqFrame> = inner
@@ -387,6 +533,7 @@ impl TurnStream {
             next,
             gap,
             closed,
+            counted: true,
         }
     }
 
@@ -409,17 +556,30 @@ impl TurnStream {
                     () = cancel.cancelled() => return,
                     () = tokio::time::sleep(tick) => {}
                 }
-                let idle_for = {
+                // The decision AND the cancel happen under one lock. Reading the
+                // idle time, releasing the lock and only then logging (real I/O)
+                // and cancelling left a window in which an `attach()` — a user
+                // reopening the window at exactly the wrong moment — was
+                // answered and then had its turn killed underneath it. `attach`
+                // takes this same lock, so it either lands before the re-check
+                // (and the turn lives) or after the cancel (and reads a
+                // cancelled turn, whose pump closes the log and answers it).
+                let reaped = {
                     let inner = stream.lock();
                     if inner.closed {
                         return;
                     }
-                    if !inner.ever_attached || inner.observers > 0 {
-                        continue;
+                    let idle_long_enough = inner.ever_attached
+                        && inner.observers == 0
+                        && inner
+                            .idle_since
+                            .is_some_and(|since| since.elapsed() >= timeout);
+                    if idle_long_enough {
+                        cancel.cancel();
                     }
-                    inner.idle_since.map(|since| since.elapsed())
+                    idle_long_enough
                 };
-                if idle_for.is_some_and(|elapsed| elapsed >= timeout) {
+                if reaped {
                     tracing::warn!(
                         counter.biorouter.turn_orphan_reaped = 1,
                         session_id = %stream.session_id,
@@ -427,14 +587,14 @@ impl TurnStream {
                         timeout_ms = timeout.as_millis() as u64,
                         "no client has observed this turn for the orphan timeout; cancelling"
                     );
-                    cancel.cancel();
                     return;
                 }
             }
         })
     }
 
-    fn detach(&self) {
+    /// Stop counting one observer, recording when the audience fell to zero.
+    fn drop_observer(&self) {
         let mut inner = self.lock();
         inner.observers = inner.observers.saturating_sub(1);
         if inner.observers == 0 {
@@ -443,13 +603,126 @@ impl TurnStream {
         self.observers
             .store(inner.observers as u64, Ordering::Relaxed);
     }
+
+    /// Count one observer again (a stalled reader whose client started reading).
+    fn add_observer(&self) {
+        let mut inner = self.lock();
+        inner.observers += 1;
+        inner.ever_attached = true;
+        inner.idle_since = None;
+        self.observers
+            .store(inner.observers as u64, Ordering::Relaxed);
+    }
+}
+
+/// Ownership of a turn's log: the right to write it, and the duty to end it.
+///
+/// Held by the turn's pump for the pump's whole life. `Drop` closes the log, so
+/// EVERY way out — a clean return, a `break`, cancellation dropping the future
+/// mid-`await`, or a panic unwinding the task — ends the turn's log exactly
+/// once. Terminal-and-close has one owner; this is it.
+#[derive(Debug)]
+pub struct TurnWriter {
+    stream: Arc<TurnStream>,
+}
+
+impl TurnWriter {
+    /// The log this writer owns.
+    pub fn stream(&self) -> &Arc<TurnStream> {
+        &self.stream
+    }
+}
+
+impl Drop for TurnWriter {
+    fn drop(&mut self) {
+        self.stream.close();
+    }
+}
+
+/// Append one frame under a lock the caller already holds, and fan it out.
+///
+/// The ONE place a frame enters the log — `publish` and `close`'s synthetic
+/// terminal both come through here — so "nothing follows the terminal" is a
+/// property of a single function rather than an agreement between two.
+fn append_locked(
+    inner: &mut Inner,
+    tx: &broadcast::Sender<SeqFrame>,
+    turn_id: &str,
+    event: &MessageEvent,
+) -> u64 {
+    if inner.closed || inner.terminal_seq.is_some() {
+        // The turn is over; nothing may be appended after its terminal frame or
+        // a late attach would read past the end of the turn — and
+        // `terminal_frame()` would hand back something that is not an ending.
+        return inner.next_seq;
+    }
+    let seq = inner.next_seq;
+    let json: Arc<str> = Arc::from(encode_frame(event, seq, turn_id));
+    let frame = SeqFrame { seq, json };
+
+    inner.next_seq += 1;
+    if matches!(
+        event,
+        MessageEvent::Finish { .. } | MessageEvent::Error { .. }
+    ) {
+        inner.terminal_seq = Some(seq);
+    }
+    if matches!(event, MessageEvent::MessagesPersisted { .. }) {
+        // Everything logged up to here is now recoverable from the session
+        // store, which is what makes evicting it safe.
+        inner.persisted_through = Some(seq);
+    }
+    inner.replay_bytes += frame.json.len();
+    inner.replay.push_back(frame.clone());
+    evict_to_budget(
+        inner,
+        REPLAY_BYTE_BUDGET,
+        REPLAY_HARD_BYTE_CEILING,
+        REPLAY_FRAME_BUDGET,
+        REPLAY_HARD_FRAME_CEILING,
+    );
+
+    // Under the same lock as the append — see the module docs.
+    let _ = tx.send(frame);
+    seq
 }
 
 /// Drop frames from the front until the buffer fits, remembering how far the
 /// eviction reached so a reader asking for an evicted seq gets a
 /// [`ReaderEvent::Gap`] rather than a silently short stream.
-fn evict_to_budget(inner: &mut Inner, byte_budget: usize, frame_budget: usize) {
-    while (inner.replay_bytes > byte_budget || inner.replay.len() > frame_budget)
+///
+/// Two levels, and the difference between them is R1 (see
+/// [`REPLAY_HARD_BYTE_CEILING`]):
+///
+///  - at the SOFT budget only frames at or below `persisted_through` are
+///    dropped, because those — and only those — are the ones the storage resync
+///    can actually put back;
+///  - at the HARD ceiling anything goes, and the resulting hole is reported as a
+///    gap rather than hidden.
+fn evict_to_budget(
+    inner: &mut Inner,
+    soft_bytes: usize,
+    hard_bytes: usize,
+    soft_frames: usize,
+    hard_frames: usize,
+) {
+    let persisted_through = inner.persisted_through;
+    // Soft pass: recoverable frames only.
+    while (inner.replay_bytes > soft_bytes || inner.replay.len() > soft_frames)
+        && inner.replay.len() > 1
+        && inner
+            .replay
+            .front()
+            .is_some_and(|f| persisted_through.is_some_and(|p| f.seq <= p))
+    {
+        if let Some(dropped) = inner.replay.pop_front() {
+            inner.replay_bytes -= dropped.json.len();
+            inner.oldest_seq = dropped.seq + 1;
+        }
+    }
+    // Hard pass: the bound on the pathology. Unreachable for any turn a
+    // provider can actually produce, and honest — the reader is told.
+    while (inner.replay_bytes > hard_bytes || inner.replay.len() > hard_frames)
         && inner.replay.len() > 1
     {
         if let Some(dropped) = inner.replay.pop_front() {
@@ -493,6 +766,10 @@ pub struct StreamReader {
     next: u64,
     gap: bool,
     closed: bool,
+    /// Whether this reader is currently counted in `Inner::observers`. A reader
+    /// whose client has stopped draining stops counting (see
+    /// [`Self::mark_stalled`]) without detaching, so `Drop` must know which.
+    counted: bool,
 }
 
 impl StreamReader {
@@ -501,6 +778,30 @@ impl StreamReader {
     /// Cleared once reported.
     pub fn take_gap(&mut self) -> bool {
         std::mem::take(&mut self.gap)
+    }
+
+    /// This reader's client has not accepted a frame for
+    /// [`OBSERVER_STALL_GRACE`]: stop counting it as somebody watching.
+    ///
+    /// Not a detach — the reader stays attached and keeps trying, so nothing is
+    /// dropped and no client is disconnected. All that changes is that the
+    /// orphan reaper's clock is allowed to start on a turn whose only audience
+    /// is a socket nobody is reading.
+    pub fn mark_stalled(&mut self) {
+        if !self.counted {
+            return;
+        }
+        self.counted = false;
+        self.stream.drop_observer();
+    }
+
+    /// This reader's client accepted a frame: it is watching again.
+    pub fn mark_active(&mut self) {
+        if self.counted {
+            return;
+        }
+        self.counted = true;
+        self.stream.add_observer();
     }
 
     pub fn turn_id(&self) -> &str {
@@ -519,6 +820,13 @@ impl StreamReader {
                 return ReaderEvent::Frame(frame, true);
             }
             if self.closed {
+                // A gap discovered on the way to the end is still a gap. Report
+                // it before ending, or a client whose prefix was evicted is left
+                // silently short of it with no resync — the one repair R1's
+                // fallback exists to trigger.
+                if self.gap {
+                    return ReaderEvent::Gap;
+                }
                 return ReaderEvent::Closed;
             }
             match self.rx.recv().await {
@@ -581,7 +889,9 @@ impl StreamReader {
 
 impl Drop for StreamReader {
     fn drop(&mut self) {
-        self.stream.detach();
+        if self.counted {
+            self.stream.drop_observer();
+        }
     }
 }
 
@@ -813,7 +1123,8 @@ mod tests {
         }
         {
             let mut inner = stream.lock();
-            evict_to_budget(&mut inner, 0, usize::MAX);
+            inner.persisted_through = Some(u64::MAX);
+            evict_to_budget(&mut inner, 0, 0, usize::MAX, usize::MAX);
         }
         let mut reader = stream.attach(0);
         assert!(reader.take_gap(), "an evicted prefix must be reported");

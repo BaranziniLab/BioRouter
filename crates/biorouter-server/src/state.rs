@@ -385,13 +385,42 @@ impl AppState {
     /// an impossible state. The server always knows; asking it removes the
     /// class. Returns `None` for a retired (already finished) turn: there is
     /// nothing live to attach to.
+    ///
+    /// It also returns `None` for a turn whose stream has no WRITER, and that
+    /// filter is not an optimisation. Several callers take this same turn lock
+    /// for reasons that have nothing to do with streaming — an in-place edit and
+    /// a working-directory change hold it as a plain mutex, and the workspace
+    /// and app turn runners hold it without a `/reply` pump. Advertising one of
+    /// those as attachable told a reloading window to follow a log that nothing
+    /// will ever write to and nothing will ever close: the window parked on it,
+    /// set `chatState: Streaming`, and its composer was dead until the user
+    /// reloaded. What a client may attach to and what a pump is writing are the
+    /// same set, by construction, here.
     pub fn active_turn_id(&self, session_id: &str) -> Option<String> {
         self.active_turns
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(session_id)
-            .filter(|turn| turn.finished_at.is_none())
+            .filter(|turn| turn.finished_at.is_none() && turn.stream.has_writer())
             .map(|turn| turn.turn_id.clone())
+    }
+
+    /// Does this session hold a turn — running or retained for replay — that
+    /// `turn_id` names?
+    ///
+    /// Read-only, and that is the point: `/reply` uses it to tell an ATTACH
+    /// whose turn is gone from a first POST, and it must be able to ask without
+    /// minting a turn entry to find out. Matches EITHER name, exactly as
+    /// [`Self::try_begin_turn_idempotent`] does — the client's own idempotency
+    /// key, or the server-assigned `turn-N` a reloaded window read off a frame.
+    pub fn knows_turn(&self, session_id: &str, turn_id: &str) -> bool {
+        self.active_turns
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(session_id)
+            .is_some_and(|turn| {
+                turn.turn_id == turn_id || turn.idempotency_key.as_deref() == Some(turn_id)
+            })
     }
 
     pub fn has_active_turns(&self) -> bool {

@@ -620,6 +620,23 @@ async fn delete_session(
     if !is_valid_session_id(&session_id) {
         return Err(StatusCode::BAD_REQUEST);
     }
+
+    // Deleting a chat stops its turn. This used to happen by accident and the
+    // accident is gone: the UI unmounted the deleted chat, which dropped its SSE
+    // socket, and a failed `tx.send` cancelled the turn. Now a turn survives its
+    // listeners by design — which is the whole feature — so nothing was left
+    // stopping a turn from running for up to five more minutes (the orphan
+    // timeout), spending tokens and writing into a session that no longer
+    // exists. Cancel BEFORE the delete, so the runner unwinds against a session
+    // that is still readable rather than erroring its way out of a missing one.
+    if let Some(turn_id) = state.cancel_turn(&session_id) {
+        tracing::info!(
+            session_id = %session_id,
+            turn_id = %turn_id,
+            "cancelled the in-flight turn of a session being deleted"
+        );
+    }
+
     state
         .session_manager()
         .delete_session(&session_id)
