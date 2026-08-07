@@ -31,27 +31,79 @@ pub const SUBAGENT_TOOL_PREFIXED: &str = "workspace__subagent";
 
 // --- Fork-bomb guard -------------------------------------------------------
 // The model is told it can spawn many subagents in parallel, and a subagent can
-// itself spawn subagents, so spawning was previously unbounded. Two caps bound
+// itself spawn subagents, so spawning was previously unbounded. Three caps bound
 // it: the semaphore throttles *concurrent* subagents; the in-flight ceiling
 // refuses outright once too many are queued+running so a recursive spawn storm
-// can't accumulate unbounded tasks. Both env-overridable.
+// can't accumulate unbounded tasks; and the pending ceiling bounds the QUEUE
+// itself (see `max_pending_subagents`). All three are overridable.
 fn max_concurrent_subagents() -> usize {
     std::env::var("BIOROUTER_SUBAGENT_MAX_CONCURRENT")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(8)
+        .unwrap_or(DEFAULT_MAX_CONCURRENT_SUBAGENTS)
 }
 fn max_inflight_subagents() -> usize {
     std::env::var("BIOROUTER_SUBAGENT_MAX_INFLIGHT")
         .ok()
         .and_then(|v| v.parse().ok())
         .filter(|&n| n > 0)
-        .unwrap_or(64)
+        .unwrap_or(DEFAULT_MAX_INFLIGHT_SUBAGENTS)
 }
+pub const DEFAULT_MAX_CONCURRENT_SUBAGENTS: usize = 8;
+pub const DEFAULT_MAX_INFLIGHT_SUBAGENTS: usize = 64;
+
+// --- The pending queue -----------------------------------------------------
+//
+// **What happened before this bound existed.** A spawn that could not get one
+// of the `max_concurrent_subagents()` permits parked on
+// `SUBAGENT_SEMAPHORE.acquire()` while still holding its `InflightGuard`, on
+// both the blocking and the detached path. So the queue *was* bounded — but
+// only transitively, and only by `max_inflight_subagents()`: at shipped
+// defaults the deepest reachable queue is 64 in flight minus the 8 that hold a
+// permit and are running, i.e. **56**. Nothing measured that depth, nothing
+// refused on it, and nothing reported it.
+//
+// That transitive bound is not one to rest on, for one specific reason: the
+// in-flight refusal's own text ends "…or raise BIOROUTER_SUBAGENT_MAX_INFLIGHT."
+// An operator (or a model reading its own tool error) who follows that advice
+// raises the *only* thing bounding the queue, and the pending side becomes
+// genuinely unbounded — `BIOROUTER_SUBAGENT_MAX_INFLIGHT=100000` buys a queue
+// of 99_992 parked spawns, each one an unreturned tool call with no session
+// row, no handle, no History entry and no timeout.
+//
+/// **Why 56, and why that is not a behaviour change.** 56 is exactly the
+/// deepest queue reachable today at shipped defaults
+/// (`DEFAULT_MAX_INFLIGHT_SUBAGENTS` − `DEFAULT_MAX_CONCURRENT_SUBAGENTS`), so
+/// a spawn that queues today still queues: at defaults this refuses nothing
+/// that was previously accepted. What changes is that the queue now has a bound
+/// *of its own* that survives someone raising the in-flight ceiling. It is a
+/// deliberate constant rather than a derived `inflight - concurrent`, because
+/// deriving it would re-couple it to the knob it exists to be independent of.
+///
+/// An operator who genuinely wants a deeper queue raises
+/// `BIOROUTER_SUBAGENT_MAX_PENDING`, which the refusal names.
+pub const DEFAULT_MAX_PENDING_SUBAGENTS: usize = 56;
+pub const MAX_PENDING_SUBAGENTS_ENV: &str = "BIOROUTER_SUBAGENT_MAX_PENDING";
+
+/// Read through [`crate::config::Config::get_param`], not `std::env::var`, so
+/// the cap in force can be scoped to one task (`with_config_overrides`) as well
+/// as set from the environment or `config.yaml`. That matters beyond tests: the
+/// value is read in the REQUESTING task and passed down, so the detached
+/// background path sees the same cap the caller saw (a `tokio::spawn` does not
+/// inherit task-locals).
+fn max_pending_subagents() -> usize {
+    crate::config::Config::global()
+        .get_param::<usize>(MAX_PENDING_SUBAGENTS_ENV)
+        .ok()
+        .filter(|&n| n > 0)
+        .unwrap_or(DEFAULT_MAX_PENDING_SUBAGENTS)
+}
+
 static SUBAGENT_SEMAPHORE: LazyLock<Semaphore> =
     LazyLock::new(|| Semaphore::new(max_concurrent_subagents()));
 static SUBAGENT_INFLIGHT: AtomicUsize = AtomicUsize::new(0);
+static SUBAGENT_PENDING: AtomicUsize = AtomicUsize::new(0);
 
 /// RAII counter for total in-flight subagents (queued + running).
 struct InflightGuard;
@@ -68,9 +120,96 @@ impl Drop for InflightGuard {
     }
 }
 
+/// RAII counter for subagents parked on the concurrency semaphore — the
+/// *pending* queue, a strict subset of the in-flight set. Held only across the
+/// wait: a spawn that gets a permit immediately is never counted, and one that
+/// gets it after waiting stops being counted the instant it does.
+struct PendingGuard;
+impl PendingGuard {
+    /// Increment and return the new queue depth, including this spawn.
+    fn enter() -> (Self, usize) {
+        let prev = SUBAGENT_PENDING.fetch_add(1, Ordering::SeqCst);
+        (Self, prev + 1)
+    }
+}
+impl Drop for PendingGuard {
+    fn drop(&mut self) {
+        SUBAGENT_PENDING.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// Current number of in-flight subagents (test/introspection helper).
 pub fn inflight_subagent_count() -> usize {
     SUBAGENT_INFLIGHT.load(Ordering::SeqCst)
+}
+
+/// Current number of subagents queued for a concurrency slot
+/// (test/introspection helper).
+pub fn pending_subagent_count() -> usize {
+    SUBAGENT_PENDING.load(Ordering::SeqCst)
+}
+
+/// The pure half of the pending gate, so the rule is testable without a
+/// semaphore, a runtime or the process environment.
+///
+/// `depth` is the queue depth *including the spawn being judged*, which is what
+/// [`PendingGuard::enter`] returns — so `depth == max_pending` is the last
+/// accepted spawn and the refusal starts at `max_pending + 1`, matching the
+/// in-flight ceiling's `>` exactly.
+fn pending_refusal(depth: usize, max_pending: usize) -> Option<String> {
+    if depth <= max_pending {
+        return None;
+    }
+    Some(format!(
+        "Subagent queue full: {depth} spawns are already waiting for a free concurrency slot \
+         (max {max_pending}, {MAX_PENDING_SUBAGENTS_ENV}). Nothing was started for this one. \
+         Wait for running subagents to finish before spawning more, or raise \
+         {MAX_PENDING_SUBAGENTS_ENV}."
+    ))
+}
+
+/// **The one door onto the concurrency semaphore.** Both spawn paths — the
+/// blocking one in `execute_subagent` and the detached one inside
+/// `spawn_background_subagent`'s `tokio::spawn` — go through here; there is no
+/// other `SUBAGENT_SEMAPHORE.acquire()` in the tree. Adding a third path means
+/// calling this, not the semaphore.
+///
+/// `max_pending` is passed in rather than read here so that both doors use the
+/// value read in the requesting task (see [`max_pending_subagents`]).
+async fn acquire_subagent_permit(
+    max_pending: usize,
+) -> Result<tokio::sync::SemaphorePermit<'static>, ErrorData> {
+    acquire_permit_bounded(&SUBAGENT_SEMAPHORE, max_pending).await
+}
+
+/// The gate's body, over an explicit semaphore so a test can drive it with a
+/// permit count it controls (the global one is a `LazyLock` fixed at first use).
+async fn acquire_permit_bounded(
+    semaphore: &'static Semaphore,
+    max_pending: usize,
+) -> Result<tokio::sync::SemaphorePermit<'static>, ErrorData> {
+    // Fast path: a free permit means this spawn never joins the queue, so it is
+    // never counted against the queue bound and can never be refused by it.
+    if let Ok(permit) = semaphore.try_acquire() {
+        return Ok(permit);
+    }
+    let (_pending, depth) = PendingGuard::enter();
+    if let Some(message) = pending_refusal(depth, max_pending) {
+        // INVALID_PARAMS, like the in-flight refusal next to it: this is a
+        // condition the model can act on (wait, then retry), not an internal
+        // fault. The guard drops on this return, so a refused spawn does not
+        // itself occupy a queue slot.
+        return Err(ErrorData {
+            code: ErrorCode::INVALID_PARAMS,
+            message: Cow::from(message),
+            data: None,
+        });
+    }
+    semaphore.acquire().await.map_err(|e| ErrorData {
+        code: ErrorCode::INTERNAL_ERROR,
+        message: Cow::from(format!("Subagent semaphore closed: {e}")),
+        data: None,
+    })
 }
 
 // --- BR-71 decisions 24 + 26: glass-box children, bounded ------------------
@@ -699,13 +838,19 @@ async fn execute_subagent(
     cancellation_token: Option<CancellationToken>,
 ) -> Result<rmcp::model::CallToolResult, ErrorData> {
     // Fork-bomb guard: count this spawn, refuse if too many are already in
-    // flight, then throttle concurrency. The guard + permit are held until the
-    // subagent finishes — on the blocking path that is when this function
-    // returns; on the background path the guard moves into the detached task, so
-    // a storm of background spawns is bounded exactly like a storm of blocking
-    // ones.
+    // flight, then throttle concurrency — and, if every concurrency slot is
+    // taken, refuse rather than join an unbounded queue (`acquire_subagent_permit`).
+    // The guard + permit are held until the subagent finishes — on the blocking
+    // path that is when this function returns; on the background path the guard
+    // moves into the detached task, so a storm of background spawns is bounded
+    // exactly like a storm of blocking ones.
     let (inflight, inflight_count) = InflightGuard::enter();
     let max_inflight = max_inflight_subagents();
+    // Read HERE, in the requesting task, and carried to whichever door claims
+    // the permit. The detached path claims its permit inside a `tokio::spawn`,
+    // which does not inherit this task's config scope, so reading it there would
+    // silently ignore a per-task override the caller set.
+    let max_pending = max_pending_subagents();
     if inflight_count > max_inflight {
         return Err(ErrorData {
             code: ErrorCode::INVALID_PARAMS,
@@ -739,14 +884,13 @@ async fn execute_subagent(
             &params,
             session.id,
             inflight,
+            max_pending,
         ));
     }
 
-    let _permit = SUBAGENT_SEMAPHORE.acquire().await.map_err(|e| ErrorData {
-        code: ErrorCode::INTERNAL_ERROR,
-        message: Cow::from(format!("Subagent semaphore closed: {e}")),
-        data: None,
-    })?;
+    // Door 1 of 2 onto the concurrency semaphore (door 2 is inside
+    // `spawn_background_subagent`'s detached task). Both call the same gate.
+    let _permit = acquire_subagent_permit(max_pending).await?;
     let _inflight = inflight;
 
     // Issue #56: resolve the child's provider and tier BEFORE creating its row,
@@ -1086,6 +1230,7 @@ fn spawn_background_subagent(
     params: &SubagentParams,
     child_session_id: String,
     inflight: InflightGuard,
+    max_pending: usize,
 ) -> CallToolResult {
     let summary = params.summary;
     let title = background_title(&workflow);
@@ -1114,12 +1259,17 @@ fn spawn_background_subagent(
         // Held for the child's whole life, exactly as on the blocking path.
         let _inflight = inflight;
         let _visible = visible_guard;
-        let _permit = match SUBAGENT_SEMAPHORE.acquire().await {
+        // Door 2 of 2 onto the concurrency semaphore. A queue-full refusal here
+        // cannot be returned to the parent — this function already returned the
+        // handle — so it completes the handle with the refusal instead, which is
+        // what `workspace_watch` / `workspace_read_conversation` will report. The
+        // child session row already exists (it is created before the spawn so the
+        // handle can name it) and is left as a zero-turn session, exactly as it
+        // would be for any other run that never started.
+        let _permit = match acquire_subagent_permit(max_pending).await {
             Ok(permit) => permit,
             Err(e) => {
-                task_handle.complete(SubagentResult::from_error(format!(
-                    "Subagent semaphore closed: {e}"
-                )));
+                task_handle.complete(SubagentResult::from_error(e.message.to_string()));
                 return;
             }
         };
@@ -1597,6 +1747,30 @@ pub async fn apply_settings_overrides(
     Ok(task_config)
 }
 
+/// Hold **every** concurrency permit until the returned vector is dropped, so a
+/// test can put the process into the every-slot-taken state the pending queue
+/// exists for. The global semaphore's permit count is fixed at first use
+/// (`LazyLock`), so it cannot be shrunk instead.
+///
+/// It waits for the full set rather than taking whatever is free right now: a
+/// sibling test holding one permit would otherwise leave a slot that frees
+/// mid-test, letting a spawn this test expects to stay queued escape and run.
+#[cfg(test)]
+async fn hold_every_subagent_permit() -> Vec<tokio::sync::SemaphorePermit<'static>> {
+    let total = max_concurrent_subagents();
+    let mut held = Vec::with_capacity(total);
+    for _ in 0..20_000 {
+        if held.len() == total {
+            return held;
+        }
+        match SUBAGENT_SEMAPHORE.try_acquire() {
+            Ok(permit) => held.push(permit),
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(1)).await,
+        }
+    }
+    panic!("another test has held a subagent concurrency permit for 20s");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1604,6 +1778,355 @@ mod tests {
     #[test]
     fn test_tool_name() {
         assert_eq!(SUBAGENT_TOOL_NAME, "subagent");
+    }
+
+    // --- the pending queue ------------------------------------------------
+
+    /// Poll `cond` until it holds, with a ceiling so a wiring mistake fails as a
+    /// timeout instead of hanging the suite.
+    async fn wait_until(mut cond: impl FnMut() -> bool, what: &str) {
+        for _ in 0..2000 {
+            if cond() {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        panic!("timed out waiting for {what}");
+    }
+
+    /// The bound is `>`, not `>=`: `depth` counts the spawn being judged, so a
+    /// cap of N admits N waiters and refuses the N+1th. Matching the in-flight
+    /// ceiling's comparison exactly matters — off by one here silently halves
+    /// or doubles a queue nobody can see.
+    #[test]
+    fn the_queue_bound_admits_exactly_its_cap_and_refuses_the_next() {
+        assert!(pending_refusal(1, 2).is_none());
+        assert!(
+            pending_refusal(2, 2).is_none(),
+            "the cap itself is admitted"
+        );
+        let refused = pending_refusal(3, 2).expect("one past the cap is refused");
+
+        // The refusal must NAME the limit and the knob. A spawn refused by a
+        // number the caller cannot see or change reads as a hang.
+        assert!(refused.contains("Subagent queue full"), "got: {refused}");
+        assert!(refused.contains("max 2"), "the cap is named: {refused}");
+        assert!(
+            refused.contains(MAX_PENDING_SUBAGENTS_ENV),
+            "the knob is named: {refused}"
+        );
+        assert!(
+            refused.contains("Nothing was started"),
+            "the caller is told no child exists: {refused}"
+        );
+    }
+
+    /// 56 is not arbitrary: it is exactly the deepest queue reachable at shipped
+    /// defaults before this bound existed (in-flight ceiling minus the spawns
+    /// that hold a permit and are running). Keeping it equal to that is what
+    /// makes the bound a no-op at defaults rather than a behaviour change — if
+    /// either sibling default moves, this fails and the choice gets re-made
+    /// deliberately instead of drifting into refusing spawns that used to queue.
+    #[test]
+    fn the_queue_bound_is_the_deepest_queue_that_was_already_reachable() {
+        assert_eq!(DEFAULT_MAX_CONCURRENT_SUBAGENTS, 8);
+        assert_eq!(DEFAULT_MAX_INFLIGHT_SUBAGENTS, 64);
+        assert_eq!(
+            DEFAULT_MAX_PENDING_SUBAGENTS,
+            DEFAULT_MAX_INFLIGHT_SUBAGENTS - DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+            "the default queue bound must equal the queue depth today's code already \
+             permits, or it refuses spawns that used to be accepted"
+        );
+    }
+
+    /// `SUBAGENT_PENDING` is process-global, so the two tests that assert on
+    /// queue DEPTH must not overlap. Observed, not theorised: without this the
+    /// first run of these tests read a depth of 3 where it expected 0, because
+    /// the doors test's parked spawns were queued at the same moment.
+    ///
+    /// `unwrap_or_else(PoisonError::into_inner)`: a panic in one of these tests
+    /// must fail that test, not turn every later one into a poisoned-lock panic
+    /// that hides the original.
+    static QUEUE_DEPTH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The gate's real body, driven concurrently over a semaphore this test
+    /// owns: a spawn that gets a permit at once is never counted as pending, a
+    /// full queue refuses without itself occupying a slot, and freeing permits
+    /// drains the queue.
+    ///
+    /// Deliberately ONE test rather than four, for the same reason as the mutex:
+    /// four tests asserting on one global counter would race each other.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn the_pending_queue_is_counted_bounded_and_drained() {
+        let _serialised = QUEUE_DEPTH_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let semaphore: &'static Semaphore = Box::leak(Box::new(Semaphore::new(1)));
+        const MAX_PENDING: usize = 2;
+
+        // A free permit: taken immediately, never queued, never counted.
+        let held = acquire_permit_bounded(semaphore, MAX_PENDING)
+            .await
+            .expect("the first spawn finds a free slot");
+        assert_eq!(
+            pending_subagent_count(),
+            0,
+            "a spawn that never waits must not be counted against the queue bound"
+        );
+
+        // Two more fill the queue to its bound and park.
+        let first = tokio::spawn(acquire_permit_bounded(semaphore, MAX_PENDING));
+        wait_until(|| pending_subagent_count() == 1, "the first spawn to queue").await;
+        let second = tokio::spawn(acquire_permit_bounded(semaphore, MAX_PENDING));
+        wait_until(
+            || pending_subagent_count() == 2,
+            "the queue to reach its bound",
+        )
+        .await;
+
+        // The third is refused rather than queued.
+        let refused = acquire_permit_bounded(semaphore, MAX_PENDING)
+            .await
+            .expect_err("a full queue refuses instead of growing");
+        assert_eq!(
+            refused.code,
+            ErrorCode::INVALID_PARAMS,
+            "a full queue is something the model can act on, not an internal fault"
+        );
+        assert!(
+            refused.message.contains("Subagent queue full")
+                && refused.message.contains("max 2")
+                && refused.message.contains(MAX_PENDING_SUBAGENTS_ENV),
+            "got: {}",
+            refused.message
+        );
+        assert_eq!(
+            pending_subagent_count(),
+            2,
+            "a REFUSED spawn must release its queue slot, or a storm of refusals \
+             would keep the queue full forever"
+        );
+
+        // Freeing the permit drains the queue, one waiter at a time.
+        drop(held);
+        let first = first
+            .await
+            .unwrap()
+            .expect("a queued spawn gets in when a slot frees");
+        wait_until(
+            || pending_subagent_count() == 1,
+            "the first waiter to leave the queue",
+        )
+        .await;
+        drop(first);
+        let second = second.await.unwrap().expect("and so does the next");
+        drop(second);
+        wait_until(|| pending_subagent_count() == 0, "the queue to empty").await;
+    }
+
+    /// **Both** spawn doors, through the real tool entry point, with every
+    /// concurrency slot taken so the queue is the only thing left to hit.
+    ///
+    /// One test rather than two because it holds every permit in the
+    /// process-global semaphore, and two tests doing that would starve each
+    /// other.
+    ///
+    /// Every spawn here passes `visible: false`. `announce_subagent_tab` writes
+    /// to the process-global `workspace_services` override, so a visible child
+    /// spawned while a sibling test has its recorder installed lands frames in
+    /// that sibling's assertions — observed:
+    /// `an_opted_out_or_headless_child_claims_nothing_and_sends_nothing` failed
+    /// with `got: ["open_tab", "annotate_tab"]`, frames it never sent.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn both_spawn_doors_refuse_a_full_queue() {
+        let _serialised = QUEUE_DEPTH_TESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Every slot taken: from here nothing starts, everything queues.
+        let held = hold_every_subagent_permit().await;
+        assert_eq!(SUBAGENT_SEMAPHORE.available_permits(), 0);
+
+        let temp = tempfile::TempDir::new().unwrap();
+        let root = temp.path().to_path_buf();
+
+        // One spawn parked in the queue, under the DEFAULT cap so it queues
+        // rather than being refused. It never gets a permit and is aborted below.
+        // Its own store, so a row it might create cannot be mistaken for one the
+        // refused spawns left behind.
+        let parked_temp = tempfile::TempDir::new().unwrap();
+        let parked_root = parked_temp.path().to_path_buf();
+        let parked = tokio::spawn(async move {
+            let sm = std::sync::Arc::new(crate::session::SessionManager::new(parked_root.clone()));
+            let config = AgentConfig::new(
+                sm,
+                crate::config::permission::PermissionManager::instance(),
+                None,
+                crate::config::BioRouterMode::Auto,
+            );
+            let provider: std::sync::Arc<dyn crate::providers::base::Provider> =
+                std::sync::Arc::new(TieredParent {
+                    tier: ProviderTier::Public,
+                });
+            let task_config = TaskConfig::new(provider, "parent-parked", &parked_root, vec![]);
+            handle_subagent_tool(
+                &config,
+                json!({ "instructions": "park in the queue", "visible": false }),
+                task_config,
+                HashMap::new(),
+                parked_root,
+                None,
+            )
+            .result
+            .await
+        });
+        wait_until(
+            || pending_subagent_count() >= 1,
+            "a spawn to reach the queue",
+        )
+        .await;
+
+        let sm = std::sync::Arc::new(crate::session::SessionManager::new(root.clone()));
+        let config = AgentConfig::new(
+            sm.clone(),
+            crate::config::permission::PermissionManager::instance(),
+            None,
+            crate::config::BioRouterMode::Auto,
+        );
+        let public_parent = || -> std::sync::Arc<dyn crate::providers::base::Provider> {
+            std::sync::Arc::new(TieredParent {
+                tier: ProviderTier::Public,
+            })
+        };
+
+        // --- Door 1: the blocking path in `execute_subagent`. ---
+        let blocking = handle_subagent_tool(
+            &config,
+            json!({ "instructions": "refused at the blocking door", "visible": false }),
+            TaskConfig::new(public_parent(), "parent-blocking", &root, vec![]),
+            HashMap::new(),
+            root.clone(),
+            None,
+        );
+        let err = crate::config::with_config_overrides(
+            HashMap::from([(MAX_PENDING_SUBAGENTS_ENV.to_string(), "1".to_string())]),
+            blocking.result,
+        )
+        .await
+        .expect_err("the blocking door refuses once the queue is full");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(
+            err.message.contains("Subagent queue full") && err.message.contains("max 1"),
+            "the blocking door must refuse with the queue's own wording, got: {}",
+            err.message
+        );
+        assert_eq!(
+            sm.count_all_sessions().await.unwrap(),
+            0,
+            "a spawn refused by the queue must leave no session behind — the \
+             blocking door refuses before `create_subagent_session`"
+        );
+
+        // --- Door 2: the detached path inside `spawn_background_subagent`. ---
+        // It has already returned a handle by the time it queues, so the refusal
+        // lands on the handle instead of on the tool call.
+        let background = handle_subagent_tool(
+            &config,
+            json!({
+                "instructions": "refused at the background door",
+                "background": true,
+                "visible": false,
+            }),
+            TaskConfig::new(public_parent(), "parent-background", &root, vec![]),
+            HashMap::new(),
+            root.clone(),
+            None,
+        );
+        crate::config::with_config_overrides(
+            HashMap::from([
+                (MAX_PENDING_SUBAGENTS_ENV.to_string(), "1".to_string()),
+                (
+                    "BIOROUTER_SUBAGENT_BACKGROUND".to_string(),
+                    "true".to_string(),
+                ),
+            ]),
+            background.result,
+        )
+        .await
+        .expect("the background door returns its handle before it ever queues");
+
+        let handle_error = {
+            let mut found = None;
+            for _ in 0..2000 {
+                if let Some(result) =
+                    crate::agents::subagent_handle::list_for_session("parent-background")
+                        .into_iter()
+                        .find_map(|h| h.result())
+                {
+                    found = Some(result);
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+            found
+                .expect("the detached task must complete its handle, not park forever")
+                .error
+                .expect("a queue refusal is an error result")
+        };
+        assert!(
+            handle_error.contains("Subagent queue full") && handle_error.contains("max 1"),
+            "the background door must report the same refusal on its handle, got: {handle_error}"
+        );
+
+        parked.abort();
+        drop(held);
+        // Release the serialising lock only once the queue is empty again: a
+        // sibling test's spawn that parked while this test held every permit is
+        // still counted until it gets one, and the next queue-depth test reads
+        // the same global counter.
+        wait_until(
+            || pending_subagent_count() == 0,
+            "the queue to drain after the permits are released",
+        )
+        .await;
+    }
+
+    /// The seam this whole change turns on. There must be exactly ONE place that
+    /// takes a permit off `SUBAGENT_SEMAPHORE`, and it must be
+    /// `acquire_permit_bounded`. A future third spawn path that calls the
+    /// semaphore directly would look correct, compile, pass every behavioural
+    /// test in this file, and queue without bound — the bound is invisible until
+    /// the queue is full, which is exactly when nobody is running tests.
+    ///
+    /// Source-shaped on purpose: the thing being asserted is that no OTHER code
+    /// exists, which no amount of exercising the code that does exist can show.
+    #[test]
+    fn the_semaphore_has_exactly_one_door() {
+        const SENTINEL: &str = "fn the_semaphore_has_exactly_one_door";
+        let source = include_str!("subagent_tool.rs");
+        let body = source
+            .split(SENTINEL)
+            .next()
+            .expect("the file contains this test");
+
+        // Code only — the prose above deliberately names the semaphore.
+        let uses: Vec<&str> = body
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| l.contains("SUBAGENT_SEMAPHORE") && !l.starts_with("//"))
+            .collect();
+        // The declaration, the one bounded door, and the two test helpers.
+        assert_eq!(
+            uses,
+            vec![
+                "static SUBAGENT_SEMAPHORE: LazyLock<Semaphore> =",
+                "acquire_permit_bounded(&SUBAGENT_SEMAPHORE, max_pending).await",
+                "match SUBAGENT_SEMAPHORE.try_acquire() {",
+                "assert_eq!(SUBAGENT_SEMAPHORE.available_permits(), 0);",
+            ],
+            "someone added a use of the concurrency semaphore outside the bounded \
+             gate. Call `acquire_subagent_permit(max_pending)` instead — a direct \
+             `acquire()` queues without bound."
+        );
     }
 
     #[test]
