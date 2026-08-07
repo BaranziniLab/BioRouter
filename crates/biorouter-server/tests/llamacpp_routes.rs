@@ -5,6 +5,11 @@
 //! status/catalog contract the GUI onboarding card depends on, and input
 //! validation on /llamacpp/ensure and /llamacpp/warmup.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use axum::{body::Body, http::Request};
 use tower::ServiceExt;
 

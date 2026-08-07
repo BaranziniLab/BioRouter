@@ -49,6 +49,11 @@
 //! cargo test -p biorouter-server --test workspace_socket
 //! ```
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use futures::{SinkExt, StreamExt};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Error as WsError;

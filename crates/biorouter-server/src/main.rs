@@ -14,6 +14,12 @@ mod tunnel;
 #[allow(dead_code)]
 mod workspace;
 
+/// `main.rs` re-declares the module tree, so `cargo test` runs a *second* copy
+/// of the route tests inside the `biorouterd` binary. Sandbox it exactly like
+/// the lib's copy, or that copy alone keeps writing to the real `sessions.db`.
+#[cfg(test)]
+mod test_sandbox;
+
 use biorouter::config::paths::Paths;
 use biorouter_mcp::{
     mcp_server_runner::{serve, McpCommand},

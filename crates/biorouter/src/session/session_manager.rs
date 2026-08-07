@@ -4352,16 +4352,17 @@ impl SessionStorage {
         let pool = self.pool().await?;
         let mut tx = pool.begin().await?;
 
-        let exists =
-            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?)")
-                .bind(session_id)
-                .fetch_one(&mut *tx)
-                .await?;
-
-        if !exists {
-            return Err(anyhow::anyhow!("Session not found"));
-        }
-
+        // Write FIRST, then decide whether the session existed. `pool.begin()`
+        // issues a DEFERRED transaction, so the statement that opens it decides
+        // what lock it takes: a leading `SELECT` pins a WAL read snapshot, and
+        // the later `DELETE` then has to *upgrade* to the write lock. If any
+        // other connection committed in between, SQLite refuses that upgrade
+        // with SQLITE_BUSY_SNAPSHOT — and the busy handler is NOT consulted for
+        // it, so the pool's five-second `busy_timeout` cannot save it. That
+        // surfaced as `(code: 5) database is locked` on roughly one in three
+        // concurrent test runs, and would surface the same way in the daemon
+        // whenever a delete raced a message write. Opening with the `DELETE`
+        // takes the write lock up front, where the busy handler does apply.
         sqlx::query("DELETE FROM messages WHERE session_id = ?")
             .bind(session_id)
             .execute(&mut *tx)
@@ -4373,10 +4374,16 @@ impl SessionStorage {
             .execute(&mut *tx)
             .await?;
 
-        sqlx::query("DELETE FROM sessions WHERE id = ?")
+        let removed = sqlx::query("DELETE FROM sessions WHERE id = ?")
             .bind(session_id)
             .execute(&mut *tx)
             .await?;
+
+        if removed.rows_affected() == 0 {
+            // Dropping `tx` rolls back, so the deletes above are undone and an
+            // unknown id still writes nothing — same contract as before.
+            return Err(anyhow::anyhow!("Session not found"));
+        }
 
         tx.commit().await?;
         Ok(())

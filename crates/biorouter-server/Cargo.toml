@@ -69,6 +69,7 @@ name = "generate_schema"
 path = "src/bin/generate_schema.rs"
 
 [dev-dependencies]
+ctor = "0.2"
 tower = "0.5"
 tempfile = "3.15.0"
 env-lock = { workspace = true }
