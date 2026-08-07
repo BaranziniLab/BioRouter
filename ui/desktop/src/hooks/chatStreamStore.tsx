@@ -1538,6 +1538,15 @@ class ChatStreamController {
     if (!turnId) return false;
     if (this.reattachesThisTurn >= ChatStreamController.MAX_REATTACHES_PER_TURN) return false;
     if (this.activeStreamId !== streamId) return false;
+
+    // Resolved BEFORE any of this controller's state is taken over. It is the
+    // same proof the attach above sends and for the same reason (`/reply` is on
+    // the gated list), but here it is also an `await`, and taking the socket and
+    // the stream id first would leave a window in which this reattach claims the
+    // turn with no stream on it. The guard is re-run afterwards because the
+    // await is a window in which a submit or a Stop can arrive.
+    const headers = await userActionHeaders();
+    if (this.activeStreamId !== streamId) return false;
     this.reattachesThisTurn += 1;
 
     this.abortController = new AbortController();
@@ -1546,6 +1555,7 @@ class ChatStreamController {
 
     try {
       const { stream } = await reply({
+        headers,
         body: buildAttachRequest(this.sessionId, turnId, this.lastAppliedSeq + 1, this.messagesRef),
         throwOnError: true,
         signal: this.abortController.signal,
@@ -1614,12 +1624,32 @@ class ChatStreamController {
       while (this.observing && this.observerGeneration === generation) {
         const streamId = ++this.activeStreamId;
         this.abortController?.abort();
-        this.abortController = new AbortController();
+        // Held in a local as well as on the field. The `headers` await below is
+        // the first suspension point in this iteration, and a submit landing in
+        // it replaces `this.abortController`; binding the signal off the field
+        // afterwards would hand this subscription the OTHER turn's socket.
+        const socket = new AbortController();
+        this.abortController = socket;
         try {
           const { stream } = await observeSessionEvents({
+            // `GET /sessions/{id}/events` is on the gated list too (it is the
+            // stored transcript plus a live tail), so an observer tab on a
+            // PRIVATE chat is refused without the user-action proof — and
+            // because a refusal reaches this loop as a stream that simply ended,
+            // it would have reconnected against the same 403 forever, backing
+            // off to 15s, with nothing on screen. See `userActionHeaders`.
+            //
+            // Read here rather than before the socket is taken, and per
+            // iteration rather than once outside the loop (which outlives any
+            // one key read). Reading it earlier would put an `await` between
+            // this loop's entry and its `abortController` write, so a
+            // `stopObserving()` arriving in that window would abort the OLD
+            // socket and then be overwritten by a fresh un-aborted one —
+            // leaving `hasLiveTurn()` true for a loop that is being torn down.
+            headers: await userActionHeaders(),
             path: { session_id: this.sessionId },
             throwOnError: true,
-            signal: this.abortController.signal,
+            signal: socket.signal,
             // NOT optional. Without it the generated SSE client retries forever
             // on its own (`api/core/serverSentEvents.gen.ts` — `sseMaxRetryAttempts`
             // has no default) and the loop below never regains control on a
@@ -1775,6 +1805,14 @@ class ChatStreamController {
 
     try {
       const { stream } = await reply({
+        // Issue #56 Task 58 / #47: `/reply` is on the gated list, so REACHING a
+        // private chat over it takes either a caller capability that covers the
+        // chat or the user-action proof — see `routes/session_reach.rs`. An
+        // attach is the same route, into the same chat, on behalf of the same
+        // person: `submitPreparedMessage` sends the proof here and this did not,
+        // which made every mid-turn reload of a private chat a 403 that the SSE
+        // client turns into an empty stream. See `userActionHeaders`.
+        headers: await userActionHeaders(),
         body: buildAttachRequest(this.sessionId, turnId, fromSeq, this.messagesRef),
         throwOnError: true,
         signal: socket.signal,
