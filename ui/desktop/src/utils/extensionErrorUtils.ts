@@ -4,23 +4,19 @@
 
 import { ExtensionLoadResult } from '../api/types.gen';
 import { toastService, ExtensionLoadingStatus } from '../toasts';
-import bundledExtensions from '../components/settings/extensions/bundled-extensions.json';
+import { isCapabilityExtension } from '../components/settings/capabilities/capabilities';
 
 export const MAX_ERROR_MESSAGE_LENGTH = 70;
 
-// The built-in (bundled) MCP servers ship with the app and effectively always
-// load, so counting them makes "15 of 16 loaded" where the user only cares that
-// "4 of 5" of THEIR extensions came up. Match by a normalized name so a display
-// name ("Auto Visualiser") still maps to its key ("autovisualiser").
-const normalizeExtensionName = (name: string) => name.toLowerCase().replace(/[^a-z0-9]/g, '');
-const BUILTIN_EXTENSION_KEYS = new Set(
-  (bundledExtensions as Array<{ name: string; type: string }>)
-    .filter((entry) => entry.type === 'builtin')
-    .map((entry) => normalizeExtensionName(entry.name))
-);
-export function isBuiltinExtension(name: string): boolean {
-  return BUILTIN_EXTENSION_KEYS.has(normalizeExtensionName(name));
-}
+// ⚠ **There is deliberately no second "is this built-in?" predicate here.**
+//
+// One lived at this spot, reading `bundled-extensions.json` for entries typed
+// `builtin` — seven of them — while the composer's extension menu asked the
+// capability catalog, which has twelve. Two answers to one question, five
+// extensions apart, on two surfaces the user reads against each other. The
+// catalog (`isCapabilityExtension`) is the only definition now, and it lives
+// with the list the menu renders, so a capability added there cannot silently
+// go on being counted here as something the user installed.
 
 /**
  * Creates recovery hints for the "Ask biorouter" feature when extension loading fails
@@ -101,17 +97,39 @@ export function showExtensionLoadResults(
     return;
   }
 
-  // Drop the built-ins that loaded, so the count reflects the user's own
-  // extensions (a failed built-in is rare but still worth surfacing, so it
-  // stays). If nothing user-facing remains, there is nothing to report.
-  const results = allResults.filter((r) => !(r.success && isBuiltinExtension(r.name)));
-  if (results.length === 0) {
+  // ⚠ **The toast's denominator and the composer's chip must count the same
+  // population, because the user reads them against each other.** They did not.
+  //
+  // This filter used to ask `isBuiltinExtension`, whose set is the SEVEN entries
+  // of `bundled-extensions.json` with `type: "builtin"`. The composer's
+  // extension menu asks `isCapabilityExtension`, whose set is the TWELVE entries
+  // of the capability catalog. The five in the gap — code_execution,
+  // extensionmanager, skills, todo, chatrecall — ship with Biorouter, are hidden
+  // by the chip, and were counted here as if the user had installed them.
+  //
+  // Worse, a *failed* shipped capability was deliberately kept in the ratio
+  // ("rare but still worth surfacing"), which is right about the surfacing and
+  // wrong about the ratio: it makes the denominator exactly one larger than the
+  // list the user can see, which is how "2 of 3 extensions loaded" appeared over
+  // a menu showing two. The failure does still need saying — so it is said, by
+  // name, outside the count.
+  //
+  // One predicate now, from the catalog the chip uses, so the two cannot drift
+  // apart again.
+  const shipsWithBiorouter = (name: string) => isCapabilityExtension({ name });
+  const results = allResults.filter((r) => !shipsWithBiorouter(r.name));
+  const shippedFailures = allResults.filter((r) => shipsWithBiorouter(r.name) && !r.success);
+  if (results.length === 0 && shippedFailures.length === 0) {
     return;
   }
 
   const failedExtensions = results.filter((r) => !r.success);
+  // A shipped capability that failed to load is still a failure for both rules
+  // below: it must not be silenced as a background success, and it must not be
+  // overwritten by a later clean run. It is only excluded from the *ratio*.
+  const anyFailure = failedExtensions.length > 0 || shippedFailures.length > 0;
 
-  if (failedExtensions.length === 0) {
+  if (!anyFailure) {
     // Rule 1: a background chat's clean load is silent.
     const isBackgroundChat =
       sessionId !== undefined &&
@@ -123,9 +141,12 @@ export function showExtensionLoadResults(
     }
   }
 
-  extensionToastIsFailure = failedExtensions.length > 0;
+  extensionToastIsFailure = anyFailure;
 
-  if (results.length === 1 && failedExtensions.length === 1) {
+  // ⚠ `shippedFailures.length === 0` guards the single-error fast path: it
+  // renders ONE extension and returns, so taking it while a built-in capability
+  // had also failed would drop that failure on the floor entirely.
+  if (results.length === 1 && failedExtensions.length === 1 && shippedFailures.length === 0) {
     const failed = failedExtensions[0];
     const errorMsg = failed.error || 'Unknown error';
     const recoverHints = createExtensionRecoverHints(errorMsg);
@@ -150,5 +171,10 @@ export function showExtensionLoadResults(
     };
   });
 
-  toastService.extensionLoading(extensionStatuses, results.length, true);
+  toastService.extensionLoading(
+    extensionStatuses,
+    results.length,
+    true,
+    shippedFailures.map((r) => r.name)
+  );
 }

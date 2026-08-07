@@ -101,7 +101,11 @@ class ToastService {
   extensionLoading(
     extensions: ExtensionLoadingStatus[],
     totalCount: number,
-    isComplete: boolean = false
+    isComplete: boolean = false,
+    // Built-in capabilities that failed. Carried separately from `extensions`
+    // so the toast's ratio stays over the same population the composer's
+    // extension menu shows; see `showExtensionLoadResults`.
+    builtinFailures: string[] = []
   ): string | number {
     if (this.silent) {
       return 'silent';
@@ -112,7 +116,8 @@ class ToastService {
     // Drive react-toastify's own icon + theme (same as toastSuccess/toastError,
     // i.e. the model-change toast) so this toast looks consistent: a spinner
     // while loading, a green check when all loaded, the error theme on failure.
-    const hasErrors = extensions.some((ext) => ext.status === 'error');
+    const hasErrors =
+      extensions.some((ext) => ext.status === 'error') || builtinFailures.length > 0;
     const type: 'success' | 'error' | 'default' = !isComplete
       ? 'default'
       : hasErrors
@@ -127,6 +132,7 @@ class ToastService {
             extensions={extensions}
             totalCount={totalCount}
             isComplete={isComplete}
+            builtinFailures={builtinFailures}
           />
         ),
         isLoading: !isComplete,
@@ -147,6 +153,7 @@ class ToastService {
           extensions={extensions}
           totalCount={totalCount}
           isComplete={isComplete}
+          builtinFailures={builtinFailures}
         />,
         {
           ...commonToastOptions,

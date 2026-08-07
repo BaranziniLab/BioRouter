@@ -17,9 +17,22 @@ export interface ExtensionLoadingStatus {
 }
 
 interface ExtensionLoadingToastProps {
+  /**
+   * The extensions the RATIO is over — the user's own, i.e. exactly the
+   * population the composer's extension menu lists. Anything that ships with
+   * Biorouter is excluded upstream so the two surfaces can be read against each
+   * other; see `showExtensionLoadResults`.
+   */
   extensions: ExtensionLoadingStatus[];
   totalCount: number;
   isComplete: boolean;
+  /**
+   * Names of built-in capabilities that failed to load. Reported by name and
+   * NEVER folded into the ratio: they are real news (a broken capability
+   * resurfaces later as a broken tool call) but they are not things the user
+   * installed, so counting them makes the denominator disagree with the menu.
+   */
+  builtinFailures?: string[];
 }
 
 // Per-row markers: 8px status dots (design.md §4.16), tokenised for both themes.
@@ -131,6 +144,7 @@ function ExtensionLoadReport({
 export function GroupedExtensionLoadingToast({
   extensions,
   isComplete,
+  builtinFailures = [],
 }: ExtensionLoadingToastProps) {
   const [reportOpen, setReportOpen] = useState(false);
   const setView = useNavigation();
@@ -139,25 +153,39 @@ export function GroupedExtensionLoadingToast({
   const failedNames = extensions
     .filter((ext) => ext.status === 'error')
     .map((ext) => formatExtensionName(ext.name));
+  const builtinFailureNames = builtinFailures.map(formatExtensionName);
 
   // Summary line. On success we deliberately say "All extensions loaded" rather
-  // than a count (many built-ins are now capabilities, so a number is
-  // misleading). On PARTIAL failure a bare "N failed" hides how much still
-  // works, so we lead with what landed — "3 of 4 extensions loaded" — and name
-  // the casualties underneath. `extensions.length` is the number actually
-  // attempted for this session, so the ratio is honest even though the
-  // all-success case has no meaningful denominator.
+  // than a count (the all-success case has no meaningful denominator). On
+  // PARTIAL failure a bare "N failed" hides how much still works, so we lead
+  // with what landed — "3 of 4 extensions loaded" — and name the casualties
+  // underneath.
+  //
+  // ⚠ The ratio is over the USER's extensions only, which is the same set the
+  // composer's extension menu lists, so the two numbers can be read against
+  // each other. A built-in capability that failed gets its own sentence rather
+  // than a slot in the denominator — see the props above for why.
   const summary = !isComplete
     ? 'Loading extensions…'
-    : errorCount === 0
-      ? 'All extensions loaded'
-      : `${extensions.length - errorCount} of ${extensions.length} extension${
-          extensions.length !== 1 ? 's' : ''
-        } loaded`;
+    : extensions.length === 0
+      ? // Nothing of the user's own was involved, so there is no ratio to give:
+        // the built-in failure IS the whole message.
+        `${builtinFailureNames.length} built-in ${
+          builtinFailureNames.length === 1 ? 'capability' : 'capabilities'
+        } failed to load`
+      : errorCount === 0 && builtinFailureNames.length === 0
+        ? 'All extensions loaded'
+        : errorCount === 0
+          ? // Every extension the user added is fine; only a built-in broke. Say
+            // so, rather than an "All extensions loaded" title under an error chip.
+            'All extensions loaded, but a built-in capability failed'
+          : `${extensions.length - errorCount} of ${extensions.length} extension${
+              extensions.length !== 1 ? 's' : ''
+            } loaded`;
 
   const status: NotificationStatus = !isComplete
     ? 'loading'
-    : errorCount === 0
+    : errorCount === 0 && builtinFailureNames.length === 0
       ? 'success'
       : 'error';
 
@@ -166,7 +194,18 @@ export function GroupedExtensionLoadingToast({
       <NotificationContent
         status={status}
         title={summary}
-        message={errorCount > 0 ? `Failed: ${failedNames.join(', ')}` : undefined}
+        message={
+          [
+            failedNames.length > 0 ? `Failed: ${failedNames.join(', ')}` : null,
+            // Marked as built-in so the extra name cannot be mistaken for an
+            // extension missing from the menu.
+            builtinFailureNames.length > 0 && extensions.length > 0
+              ? `Built-in: ${builtinFailureNames.join(', ')}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join(' · ') || undefined
+        }
         clampMessage
         actions={
           errorCount > 0 ? (
