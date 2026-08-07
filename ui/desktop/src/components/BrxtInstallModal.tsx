@@ -1,7 +1,7 @@
 // ui/desktop/src/components/BrxtInstallModal.tsx
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { Package } from './icons/app-icons';
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
+import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
 import { BrxtEnvVar, BrxtManifest } from '../types/brxt';
 import { useConfig } from './ConfigContext';
@@ -187,215 +187,214 @@ export function BrxtInstallModal({ onClose, onInstalled, preloadedFilePath }: Pr
   const isBusy = isValidating || isInstalling;
 
   return (
-    <Dialog open onOpenChange={(open) => !open && !isBusy && onClose()}>
-      <DialogContent
-        dismissible={!isBusy}
-        className="sm:max-w-[560px] max-h-[90vh] overflow-y-auto"
-      >
-        <DialogHeader>
-          <DialogTitle>
-            {step === 'drop' ? 'Add Extension' : `Configure ${manifest?.display_name ?? ''}`}
-          </DialogTitle>
-        </DialogHeader>
-
-        {step === 'drop' && (
-          <div className="py-4 space-y-4">
-            <p className="text-sm text-text-muted">
-              Install a Biorouter extension bundle (.brxt file).
-            </p>
-
-            {/* Drop zone */}
-            <div
-              className={[
-                'biorouter-modal-panel rounded-xl p-10 text-center transition-colors cursor-pointer select-none',
-                isDragging
-                  ? '!border-block-teal bg-block-teal/5'
-                  : error
-                    ? '!border-border-danger bg-background-danger/10'
-                    : 'hover:bg-background-medium',
-              ].join(' ')}
-              onDragOver={(e) => {
-                e.preventDefault();
-                setIsDragging(true);
-              }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
-              onClick={() => fileInputRef.current?.click()}
+    <ModalShell
+      open
+      onOpenChange={(open) => !open && onClose()}
+      // A form: Escape and the × still leave, but a misclick on the scrim can
+      // no longer throw away typed credentials. While a bundle is being read or
+      // installed it is `required` — nothing may interrupt it.
+      size="md"
+      purpose={isBusy ? 'required' : 'form'}
+      scrollBody
+      title={step === 'drop' ? 'Add extension' : `Configure ${manifest?.display_name ?? ''}`}
+      subtitle={
+        step === 'drop'
+          ? 'Install a Biorouter extension bundle (.brxt file).'
+          : 'Fill in required credentials. Optional fields are pre-filled with defaults.'
+      }
+      footer={
+        step === 'drop' ? (
+          <>
+            <Button variant="outline" onClick={onClose} disabled={isBusy}>
+              Cancel
+            </Button>
+            <Button
+              disabled={!manifest || !!error || isValidating || isInstalling}
+              onClick={handleNext}
             >
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept=".brxt"
-                className="hidden"
-                onChange={handleFileInput}
-              />
-              {isValidating ? (
-                <p className="text-sm text-text-muted animate-pulse">Reading bundle…</p>
-              ) : (
-                <>
-                  <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
-                  <p className="text-sm font-medium mb-1">Drop your .brxt file here</p>
-                  <p className="text-xs text-text-muted mb-3">or click to browse</p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const fp = await window.electron.openBrxtFilePicker();
-                      if (fp) processFile(fp);
-                    }}
-                  >
-                    Browse file…
-                  </Button>
-                </>
+              {isInstalling ? 'Installing…' : 'Next: configure'}
+            </Button>
+          </>
+        ) : (
+          <>
+            <Button
+              variant="outline"
+              disabled={isBusy}
+              onClick={() => {
+                setStep('drop');
+                setError(null);
+              }}
+            >
+              Back
+            </Button>
+            <Button variant="outline" onClick={onClose} disabled={isBusy}>
+              Cancel
+            </Button>
+            <Button disabled={requiredMissing || isInstalling} onClick={handleInstall}>
+              {isInstalling ? 'Installing…' : 'Install extension'}
+            </Button>
+          </>
+        )
+      }
+    >
+      {step === 'drop' && (
+        <div className="py-3 space-y-4">
+          {/* Drop zone */}
+          <div
+            className={[
+              'biorouter-modal-panel rounded-xl p-10 text-center transition-colors cursor-pointer select-none',
+              isDragging
+                ? '!border-block-teal bg-block-teal/5'
+                : error
+                  ? '!border-border-danger bg-background-danger/10'
+                  : 'hover:bg-background-medium',
+            ].join(' ')}
+            onDragOver={(e) => {
+              e.preventDefault();
+              setIsDragging(true);
+            }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={handleDrop}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".brxt"
+              className="hidden"
+              onChange={handleFileInput}
+            />
+            {isValidating ? (
+              <p className="text-sm text-text-muted animate-pulse">Reading bundle…</p>
+            ) : (
+              <>
+                <Package className="w-10 h-10 mx-auto mb-2 text-text-muted" />
+                <p className="text-sm font-medium mb-1">Drop your .brxt file here</p>
+                <p className="text-xs text-text-muted mb-3">or click to browse</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    const fp = await window.electron.openBrxtFilePicker();
+                    if (fp) processFile(fp);
+                  }}
+                >
+                  Browse file…
+                </Button>
+              </>
+            )}
+          </div>
+
+          {/* Error banner */}
+          {error && (
+            <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
+              <p className="text-sm text-text-danger">{error}</p>
+            </div>
+          )}
+
+          {/* Manifest preview card */}
+          {manifest && !error && (
+            <div className="biorouter-modal-panel rounded-xl p-4">
+              <p className="text-xs text-text-muted uppercase tracking-wide mb-2">
+                Detected from bundle
+              </p>
+              <p className="text-sm font-semibold">{manifest.display_name}</p>
+              <p className="text-xs text-text-muted mt-0.5">
+                v{manifest.version}
+                {manifest.tools_count ? ` · ${manifest.tools_count} tools` : ''}
+                {skillsPreview.length > 0
+                  ? ` · ${skillsPreview.length} skill${skillsPreview.length !== 1 ? 's' : ''}`
+                  : ''}
+                {' · '}
+                {requiredVars.length} required env var
+                {requiredVars.length !== 1 ? 's' : ''}
+              </p>
+              <p className="text-sm text-text-default mt-2">{manifest.description}</p>
+              {skillsPreview.length > 0 && (
+                <div className="mt-2 pt-2 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]">
+                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
+                    Skills included
+                  </p>
+                  {skillsPreview.map((skill) => (
+                    <p key={skill.slug} className="text-xs text-text-muted leading-relaxed">
+                      · <span className="font-medium">{skill.name}</span>: {skill.description}
+                    </p>
+                  ))}
+                </div>
               )}
             </div>
+          )}
+        </div>
+      )}
 
-            {/* Error banner */}
-            {error && (
-              <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
-                <p className="text-sm text-text-danger">{error}</p>
-              </div>
-            )}
+      {step === 'configure' && manifest && (
+        <div className="py-3 space-y-4">
+          {requiredVars.length > 0 && (
+            <div className="space-y-3">
+              <p className="text-xs font-semibold text-text-default uppercase tracking-wide">
+                Required
+              </p>
+              {requiredVars.map((entry) => (
+                <div key={entry.key}>
+                  <label className="block text-xs font-semibold mb-1">
+                    {entry.key} <span className="text-text-danger">*</span>
+                  </label>
+                  <input
+                    type={entry.secret ? 'password' : 'text'}
+                    className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
+                    placeholder={entry.description}
+                    value={entry.value}
+                    onChange={(e) => setEnvValue(entry.key, e.target.value)}
+                    autoComplete="off"
+                  />
+                </div>
+              ))}
+            </div>
+          )}
 
-            {/* Manifest preview card */}
-            {manifest && !error && (
-              <div className="biorouter-modal-panel rounded-xl p-4">
-                <p className="text-xs text-text-muted uppercase tracking-wide mb-2">
-                  Detected from bundle
-                </p>
-                <p className="text-sm font-semibold">{manifest.display_name}</p>
-                <p className="text-xs text-text-muted mt-0.5">
-                  v{manifest.version}
-                  {manifest.tools_count ? ` · ${manifest.tools_count} tools` : ''}
-                  {skillsPreview.length > 0
-                    ? ` · ${skillsPreview.length} skill${skillsPreview.length !== 1 ? 's' : ''}`
-                    : ''}
-                  {' · '}
-                  {requiredVars.length} required env var
-                  {requiredVars.length !== 1 ? 's' : ''}
-                </p>
-                <p className="text-sm text-text-default mt-2">{manifest.description}</p>
-                {skillsPreview.length > 0 && (
-                  <div className="mt-2 pt-2 shadow-[inset_0_1px_0_color-mix(in_srgb,var(--border-subtle)_45%,transparent)]">
-                    <p className="text-xs font-semibold text-text-muted uppercase tracking-wide mb-1">
-                      Skills included
-                    </p>
-                    {skillsPreview.map((skill) => (
-                      <p key={skill.slug} className="text-xs text-text-muted leading-relaxed">
-                        · <span className="font-medium">{skill.name}</span>: {skill.description}
-                      </p>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            <DialogFooter>
-              <Button variant="outline" onClick={onClose} disabled={isBusy}>
-                Cancel
-              </Button>
-              <Button
-                disabled={!manifest || !!error || isValidating || isInstalling}
-                onClick={handleNext}
+          {optionalVars.length > 0 && (
+            <div>
+              <button
+                type="button"
+                className="text-xs text-text-muted underline"
+                onClick={() => setShowOptional((v) => !v)}
               >
-                {isInstalling ? 'Installing…' : 'Next: Configure →'}
-              </Button>
-            </DialogFooter>
-          </div>
-        )}
+                {showOptional ? 'Hide' : 'Show'} {optionalVars.length} optional variable
+                {optionalVars.length !== 1 ? 's' : ''} (pre-filled with defaults)
+              </button>
+              {showOptional && (
+                <div className="space-y-3 mt-3">
+                  <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
+                    Optional
+                  </p>
+                  {optionalVars.map((entry) => (
+                    <div key={entry.key}>
+                      <label className="block text-xs font-medium text-text-muted mb-1">
+                        {entry.key}
+                      </label>
+                      <input
+                        type={entry.secret ? 'password' : 'text'}
+                        className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
+                        placeholder={entry.description}
+                        value={entry.value}
+                        onChange={(e) => setEnvValue(entry.key, e.target.value)}
+                        autoComplete="off"
+                      />
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
-        {step === 'configure' && manifest && (
-          <div className="py-4 space-y-4">
-            <p className="text-sm text-text-muted">
-              Fill in required credentials. Optional fields are pre-filled with defaults.
-            </p>
-
-            {requiredVars.length > 0 && (
-              <div className="space-y-3">
-                <p className="text-xs font-semibold text-text-default uppercase tracking-wide">
-                  Required
-                </p>
-                {requiredVars.map((entry) => (
-                  <div key={entry.key}>
-                    <label className="block text-xs font-semibold mb-1">
-                      {entry.key} <span className="text-text-danger">*</span>
-                    </label>
-                    <input
-                      type={entry.secret ? 'password' : 'text'}
-                      className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
-                      placeholder={entry.description}
-                      value={entry.value}
-                      onChange={(e) => setEnvValue(entry.key, e.target.value)}
-                      autoComplete="off"
-                    />
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {optionalVars.length > 0 && (
-              <div>
-                <button
-                  type="button"
-                  className="text-xs text-text-muted underline"
-                  onClick={() => setShowOptional((v) => !v)}
-                >
-                  {showOptional ? 'Hide' : 'Show'} {optionalVars.length} optional variable
-                  {optionalVars.length !== 1 ? 's' : ''} (pre-filled with defaults)
-                </button>
-                {showOptional && (
-                  <div className="space-y-3 mt-3">
-                    <p className="text-xs font-semibold text-text-muted uppercase tracking-wide">
-                      Optional
-                    </p>
-                    {optionalVars.map((entry) => (
-                      <div key={entry.key}>
-                        <label className="block text-xs font-medium text-text-muted mb-1">
-                          {entry.key}
-                        </label>
-                        <input
-                          type={entry.secret ? 'password' : 'text'}
-                          className="biorouter-modal-panel w-full rounded-md px-3 py-2 text-sm "
-                          placeholder={entry.description}
-                          value={entry.value}
-                          onChange={(e) => setEnvValue(entry.key, e.target.value)}
-                          autoComplete="off"
-                        />
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            )}
-
-            {error && (
-              <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
-                <p className="text-sm text-text-danger">{error}</p>
-              </div>
-            )}
-
-            <DialogFooter>
-              <Button
-                variant="outline"
-                disabled={isBusy}
-                onClick={() => {
-                  setStep('drop');
-                  setError(null);
-                }}
-              >
-                ← Back
-              </Button>
-              <Button variant="outline" onClick={onClose} disabled={isBusy}>
-                Cancel
-              </Button>
-              <Button disabled={requiredMissing || isInstalling} onClick={handleInstall}>
-                {isInstalling ? 'Installing…' : 'Install Extension'}
-              </Button>
-            </DialogFooter>
-          </div>
-        )}
-      </DialogContent>
-    </Dialog>
+          {error && (
+            <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
+              <p className="text-sm text-text-danger">{error}</p>
+            </div>
+          )}
+        </div>
+      )}
+    </ModalShell>
   );
 }

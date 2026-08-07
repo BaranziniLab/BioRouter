@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from './ui/collapsible';
-import { ChevronDown, ChevronUp, Loader2 } from './icons/app-icons';
+import { Loader2 } from './icons/app-icons';
 import { Button } from './ui/button';
+import { ModalShell } from './ModalShell';
 import { NotificationContent, type NotificationStatus } from './alerts/NotificationSurface';
 import { startNewSession } from '../sessions';
 import { useNavigation } from '../hooks/useNavigation';
@@ -22,30 +22,123 @@ interface ExtensionLoadingToastProps {
   isComplete: boolean;
 }
 
+// Per-row markers: 8px status dots (design.md §4.16), tokenised for both themes.
+function StatusDot({ status }: { status: ExtensionLoadingStatus['status'] }) {
+  if (status === 'loading') {
+    return <Loader2 className="w-3.5 h-3.5 animate-spin text-text-info" />;
+  }
+  return (
+    <span
+      className={`block w-2 h-2 rounded-full ${
+        status === 'success' ? 'bg-background-success' : 'bg-background-danger'
+      }`}
+    />
+  );
+}
+
+/**
+ * The extension-load report: everything the toast is not allowed to carry.
+ *
+ * §3.7's tier model draws the line at "anything with a list, a disclosure, or
+ * per-item actions" — this panel is all three (one row per extension, each with
+ * its own pair of buttons), and it used to live *inside* a 400px-tall
+ * collapsible toast in the transient layer, where a 5s timer could take the
+ * failure report away mid-read.
+ */
+function ExtensionLoadReport({
+  open,
+  onOpenChange,
+  extensions,
+  onAskBiorouter,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  extensions: ExtensionLoadingStatus[];
+  onAskBiorouter: ((hints: string) => void) | null;
+}) {
+  const [copiedExtension, setCopiedExtension] = useState<string | null>(null);
+  const errorCount = extensions.filter((ext) => ext.status === 'error').length;
+
+  return (
+    <ModalShell
+      open={open}
+      onOpenChange={onOpenChange}
+      // A report with a list: width L.
+      size="lg"
+      purpose="info"
+      scrollBody
+      title="Extension load report"
+      subtitle={`${errorCount} of ${extensions.length} extension${
+        extensions.length !== 1 ? 's' : ''
+      } failed to load.`}
+      footer={
+        <Button variant="outline" size="sm" onClick={() => onOpenChange(false)}>
+          Close
+        </Button>
+      }
+    >
+      <div className="space-y-3 py-3">
+        {extensions.map((ext) => (
+          <div key={ext.name} className="flex items-start gap-2.5 text-[13px]">
+            <span className="flex-none mt-1">
+              <StatusDot status={ext.status} />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="truncate text-text-default">{formatExtensionName(ext.name)}</div>
+              {ext.status === 'error' && ext.error && (
+                <>
+                  <div className="mt-1 text-supporting text-text-muted [overflow-wrap:anywhere]">
+                    {formatExtensionErrorMessage(ext.error, 'Failed to add extension')}
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-2">
+                    {ext.recoverHints && onAskBiorouter && (
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => onAskBiorouter(ext.recoverHints!)}
+                      >
+                        Ask biorouter
+                      </Button>
+                    )}
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        navigator.clipboard.writeText(ext.error!);
+                        setCopiedExtension(ext.name);
+                        setTimeout(() => setCopiedExtension(null), 2000);
+                      }}
+                    >
+                      {copiedExtension === ext.name ? 'Copied!' : 'Copy error'}
+                    </Button>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </ModalShell>
+  );
+}
+
+/**
+ * The grouped extension-load toast, held to the toast tier's ceiling: a status
+ * chip, a title, at most three wrapped lines, and at most two quiet actions.
+ * The per-extension detail is one click away in {@link ExtensionLoadReport}
+ * rather than nested inside the toast.
+ */
 export function GroupedExtensionLoadingToast({
   extensions,
   isComplete,
 }: ExtensionLoadingToastProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [copiedExtension, setCopiedExtension] = useState<string | null>(null);
+  const [reportOpen, setReportOpen] = useState(false);
   const setView = useNavigation();
 
   const errorCount = extensions.filter((ext) => ext.status === 'error').length;
   const failedNames = extensions
     .filter((ext) => ext.status === 'error')
     .map((ext) => formatExtensionName(ext.name));
-
-  // Per-row markers: 8px status dots (design.md §4.16), tokenised for both themes.
-  const getStatusIcon = (status: 'loading' | 'success' | 'error') => {
-    switch (status) {
-      case 'loading':
-        return <Loader2 className="w-3.5 h-3.5 animate-spin text-text-info" />;
-      case 'success':
-        return <span className="block w-2 h-2 rounded-full bg-background-success" />;
-      case 'error':
-        return <span className="block w-2 h-2 rounded-full bg-background-danger" />;
-    }
-  };
 
   // Summary line. On success we deliberately say "All extensions loaded" rather
   // than a count (many built-ins are now capabilities, so a number is
@@ -54,24 +147,14 @@ export function GroupedExtensionLoadingToast({
   // the casualties underneath. `extensions.length` is the number actually
   // attempted for this session, so the ratio is honest even though the
   // all-success case has no meaningful denominator.
-  const getSummaryText = () => {
-    if (!isComplete) {
-      return 'Loading extensions…';
-    }
-    if (errorCount === 0) {
-      return 'All extensions loaded';
-    }
-    const loadedCount = extensions.length - errorCount;
-    return `${loadedCount} of ${extensions.length} extension${extensions.length !== 1 ? 's' : ''} loaded`;
-  };
+  const summary = !isComplete
+    ? 'Loading extensions…'
+    : errorCount === 0
+      ? 'All extensions loaded'
+      : `${extensions.length - errorCount} of ${extensions.length} extension${
+          extensions.length !== 1 ? 's' : ''
+        } loaded`;
 
-  // Show the per-extension detail / toggle only when something failed — a clean
-  // all-loaded toast needs no list (matching the model-change toast's simplicity).
-  const showDetails = errorCount > 0;
-
-  // The toast's own status chip + summary now come from the shared primitive
-  // (icon: false disables react-toastify's floating glyph). The expandable
-  // failure list lives in the primitive's children region.
   const status: NotificationStatus = !isComplete
     ? 'loading'
     : errorCount === 0
@@ -79,92 +162,39 @@ export function GroupedExtensionLoadingToast({
       : 'error';
 
   return (
-    <Collapsible open={isOpen} onOpenChange={setIsOpen} className="w-full">
+    <>
       <NotificationContent
         status={status}
-        title={getSummaryText()}
+        title={summary}
         message={errorCount > 0 ? `Failed: ${failedNames.join(', ')}` : undefined}
-      >
-        {showDetails && (
-          <>
-            <CollapsibleContent className="overflow-hidden">
-              <div className="mt-3 pt-3 border-t border-border-subtle">
-                <div className="space-y-3 max-h-64 overflow-y-auto pr-2 [scroll-padding-block:6px]">
-                  {extensions.map((ext) => {
-                    const friendlyName = formatExtensionName(ext.name);
-
-                    return (
-                      <div key={ext.name} className="flex items-start gap-2.5 text-[13px]">
-                        <span className="flex-none mt-1">{getStatusIcon(ext.status)}</span>
-                        <div className="flex-1 min-w-0">
-                          <div className="truncate text-text-default">{friendlyName}</div>
-                          {ext.status === 'error' && ext.error && (
-                            <>
-                              <div className="mt-1 text-xs text-text-muted [overflow-wrap:anywhere]">
-                                {formatExtensionErrorMessage(ext.error, 'Failed to add extension')}
-                              </div>
-                              <div className="mt-1.5 flex flex-wrap gap-2">
-                                {ext.recoverHints && setView && (
-                                  <Button
-                                    size="sm"
-                                    variant="secondary"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      startNewSession(
-                                        getInitialWorkingDir(),
-                                        ext.recoverHints,
-                                        setView
-                                      );
-                                    }}
-                                  >
-                                    Ask biorouter
-                                  </Button>
-                                )}
-                                <Button
-                                  size="sm"
-                                  variant="secondary"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigator.clipboard.writeText(ext.error!);
-                                    setCopiedExtension(ext.name);
-                                    setTimeout(() => setCopiedExtension(null), 2000);
-                                  }}
-                                >
-                                  {copiedExtension === ext.name ? 'Copied!' : 'Copy error'}
-                                </Button>
-                              </div>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </CollapsibleContent>
-
-            {/* Toggle button — only when there are failures to inspect */}
-            <CollapsibleTrigger asChild>
-              <button
-                className="mt-2 flex w-full items-center justify-center gap-1 py-1.5 text-xs text-text-subtle transition-colors hover:text-text-default"
-                aria-label={isOpen ? 'Collapse details' : 'Expand details'}
-              >
-                {isOpen ? (
-                  <>
-                    <span>Show less</span>
-                    <ChevronUp className="w-3 h-3" />
-                  </>
-                ) : (
-                  <>
-                    <span>Show details</span>
-                    <ChevronDown className="w-3 h-3" />
-                  </>
-                )}
-              </button>
-            </CollapsibleTrigger>
-          </>
-        )}
-      </NotificationContent>
-    </Collapsible>
+        clampMessage
+        actions={
+          errorCount > 0 ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={(e) => {
+                // The toast is the click target for dismissal; opening the
+                // report must not also close the thing that reports it.
+                e.stopPropagation();
+                setReportOpen(true);
+              }}
+            >
+              View details
+            </Button>
+          ) : undefined
+        }
+      />
+      {errorCount > 0 && (
+        <ExtensionLoadReport
+          open={reportOpen}
+          onOpenChange={setReportOpen}
+          extensions={extensions}
+          onAskBiorouter={
+            setView ? (hints) => startNewSession(getInitialWorkingDir(), hints, setView) : null
+          }
+        />
+      )}
+    </>
   );
 }

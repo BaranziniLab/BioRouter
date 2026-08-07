@@ -1,13 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { IpcRendererEvent } from 'electron';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from './ui/dialog';
+import { ModalShell } from './ModalShell';
 import { Button } from './ui/button';
 import { extractExtensionName } from './settings/extensions/utils';
 import { addExtensionFromDeepLink } from './settings/extensions/deeplink';
@@ -122,23 +115,25 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
     const { name, command, remoteUrl } = extensionInfo;
 
     switch (modalType) {
+      // One confirmation recipe (Astryx §3.6): the title is the verb phrase the
+      // primary button performs, and the buttons name that action — never
+      // "Yes"/"No", which force the reader back up to the title to find out
+      // what they are agreeing to.
       case 'blocked':
         return {
-          title: 'Extension Installation Blocked',
-          message: `\n\nThis extension command is not in the allowed list and its installation is blocked.\n\nExtension: ${name}\nCommand: ${command || remoteUrl}\n\nContact your administrator to request approval for this extension.`,
-          confirmLabel: 'OK',
+          title: `Cannot install ${name}`,
+          message: `This extension command is not in the allowed list, so its installation is blocked.\n\nCommand: ${command || remoteUrl}\n\nContact your administrator to request approval for this extension.`,
+          confirmLabel: 'Got it',
           cancelLabel: '',
           showSingleButton: true,
           isBlocked: true,
         };
 
       case 'untrusted': {
-        const securityMessage = `\n\nThis extension command is not in the allowed list and will be able to access your conversations and provide additional functionality.\n\nInstalling extensions from untrusted sources may pose security risks.`;
-
         return {
-          title: 'Install Untrusted Extension?',
-          message: `${securityMessage}\n\nExtension: ${name}\n${remoteUrl ? `URL: ${remoteUrl}` : `Command: ${command}`}\n\nContact your administrator if you are unsure about this.`,
-          confirmLabel: 'Install Anyway',
+          title: `Install untrusted extension ${name}?`,
+          message: `This extension command is not in the allowed list. Once installed it can read your conversations.\n\n${remoteUrl ? `URL: ${remoteUrl}` : `Command: ${command}`}\n\nInstalling extensions from untrusted sources may pose security risks. Contact your administrator if you are unsure about this.`,
+          confirmLabel: 'Install anyway',
           cancelLabel: 'Cancel',
           showSingleButton: false,
           isBlocked: false,
@@ -148,10 +143,10 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
       case 'trusted':
       default:
         return {
-          title: 'Confirm Extension Installation',
-          message: `Are you sure you want to install the ${name} extension?\n\nCommand: ${command || remoteUrl}`,
-          confirmLabel: 'Yes',
-          cancelLabel: 'No',
+          title: `Install ${name}?`,
+          message: `This extension will be added to Biorouter and enabled for new chats.\n\nCommand: ${command || remoteUrl}`,
+          confirmLabel: 'Install',
+          cancelLabel: 'Cancel',
           showSingleButton: false,
           isBlocked: false,
         };
@@ -307,43 +302,50 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
   };
 
   return (
-    <Dialog
+    <ModalShell
       open={modalState.isOpen}
-      onOpenChange={(open) => !open && !modalState.isPending && dismissModal()}
-    >
-      <DialogContent dismissible={!modalState.isPending} className="sm:max-w-[500px]">
-        <DialogHeader>
-          <DialogTitle className={getTitleClassName()}>{config.title}</DialogTitle>
-          <DialogDescription className="text-left whitespace-pre-wrap min-w-0 [overflow-wrap:anywhere]">
-            {config.message}
-          </DialogDescription>
-        </DialogHeader>
-
-        <DialogFooter className="pt-4">
-          {config.showSingleButton ? (
+      onOpenChange={(open) => !open && dismissModal()}
+      // A confirmation is width S. While the install is in flight the dialog
+      // becomes `required` so no dismissal can orphan it half-done.
+      size="sm"
+      purpose={modalState.isPending ? 'required' : 'info'}
+      title={config.title}
+      titleClassName={getTitleClassName()}
+      footer={
+        config.showSingleButton ? (
+          <Button
+            onClick={dismissModal}
+            disabled={modalState.isPending}
+            variant={getConfirmButtonVariant()}
+          >
+            {config.confirmLabel}
+          </Button>
+        ) : (
+          <>
+            <Button variant="outline" onClick={dismissModal} disabled={modalState.isPending}>
+              {config.cancelLabel}
+            </Button>
             <Button
-              onClick={dismissModal}
+              onClick={confirmInstall}
               disabled={modalState.isPending}
               variant={getConfirmButtonVariant()}
             >
-              {config.confirmLabel}
+              {modalState.isPending ? 'Installing…' : config.confirmLabel}
             </Button>
-          ) : (
-            <>
-              <Button variant="outline" onClick={dismissModal} disabled={modalState.isPending}>
-                {config.cancelLabel}
-              </Button>
-              <Button
-                onClick={confirmInstall}
-                disabled={modalState.isPending}
-                variant={getConfirmButtonVariant()}
-              >
-                {modalState.isPending ? 'Installing...' : config.confirmLabel}
-              </Button>
-            </>
-          )}
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </>
+        )
+      }
+    >
+      <p className="text-body text-text-muted text-left whitespace-pre-wrap min-w-0 [overflow-wrap:anywhere]">
+        {config.message}
+      </p>
+      {/* The install failure was recorded but never shown: the dialog simply
+          stayed open with no explanation. */}
+      {modalState.error && (
+        <p className="mt-3 text-supporting text-text-danger [overflow-wrap:anywhere]">
+          {modalState.error}
+        </p>
+      )}
+    </ModalShell>
   );
 }

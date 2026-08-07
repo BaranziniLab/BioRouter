@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { BaseModal } from './ui/BaseModal';
+import { ModalShell } from './ModalShell';
 import MarkdownContent from './MarkdownContent';
 import { ANNOUNCEMENTS_ENABLED } from '../updates';
 import packageJson from '../../package.json';
@@ -127,30 +127,24 @@ export default function AnnouncementModal() {
   }
 
   return (
-    <BaseModal
-      isOpen={showAnnouncementModal}
+    <ModalShell
+      open={showAnnouncementModal}
+      // Escape, the backdrop and the × all mean the same thing here as the
+      // button does: the announcements have been shown, so they are seen.
+      onOpenChange={(open) => !open && handleCloseAnnouncement()}
+      size="md"
+      purpose="info"
+      scrollBody
       title={
         unseenAnnouncements.length === 1
           ? unseenAnnouncements[0].title
-          : `${unseenAnnouncements.length}`
+          : `${unseenAnnouncements.length} new announcements`
       }
-      actions={
-        <div className="flex justify-end pb-4">
-          <Button
-            variant="ghost"
-            onClick={handleCloseAnnouncement}
-            className="w-full h-[60px] rounded-none border-b border-border-subtle bg-transparent hover:bg-background-medium text-text-default font-medium text-base"
-          >
-            Got it!
-          </Button>
-        </div>
-      }
+      footer={<Button onClick={handleCloseAnnouncement}>Got it</Button>}
     >
-      <div className="max-h-96 overflow-y-auto -mx-12">
-        <div className="px-4 py-10">
-          <MarkdownContent content={combinedAnnouncementContent} />
-        </div>
+      <div className="py-3">
+        <MarkdownContent content={combinedAnnouncementContent} />
       </div>
-    </BaseModal>
+    </ModalShell>
   );
 }

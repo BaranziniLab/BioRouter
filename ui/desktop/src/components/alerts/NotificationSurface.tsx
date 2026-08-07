@@ -75,6 +75,12 @@ export interface NotificationContentProps {
   children?: React.ReactNode;
   /** Override the default status glyph. */
   icon?: React.ReactNode;
+  /**
+   * Toast tier only: three wrapped lines is the hard ceiling (§3.7) — a fourth
+   * is what promotes a notice to a banner or to the detail dialog. Inline
+   * banners are not clamped, because there the full text IS the content.
+   */
+  clampMessage?: boolean;
   className?: string;
 }
 
@@ -92,6 +98,7 @@ export function NotificationContent({
   actions,
   children,
   icon,
+  clampMessage = false,
   className,
 }: NotificationContentProps) {
   const Icon = STATUS_ICON[status];
@@ -117,9 +124,13 @@ export function NotificationContent({
           // With a title the message is secondary (muted); on its own it IS the
           // content and reads at full strength.
           <div
+            // A clamped message keeps its full text reachable on hover; the
+            // durable copy of an error is the detail dialog or "Copy error".
+            title={clampMessage && typeof message === 'string' ? message : undefined}
             className={cn(
               'text-[13px] leading-[18px] [overflow-wrap:anywhere]',
-              hasText(title) ? 'mt-0.5 text-text-muted' : 'text-text-default'
+              hasText(title) ? 'mt-0.5 text-text-muted' : 'text-text-default',
+              clampMessage && 'line-clamp-3'
             )}
           >
             {message}

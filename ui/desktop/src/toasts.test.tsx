@@ -27,16 +27,29 @@ describe('toastService.success', () => {
     toastService.configure({ silent: false });
   });
 
-  it('keeps the shared 3s auto-close by default', () => {
+  // ONE dwell time across the tier (Astryx §3.7): 5s for everything that
+  // expires. Four different numbers used to mean four different notifications
+  // felt like four different systems.
+  it('keeps the shared 5s auto-close by default', () => {
     toastService.success({ title: 'Saved', msg: 'All good' });
 
     expect(mocks.success).toHaveBeenCalledTimes(1);
-    expect(mocks.success.mock.calls[0][1]).toMatchObject({ autoClose: 3000 });
+    expect(mocks.success.mock.calls[0][1]).toMatchObject({ autoClose: 5000 });
+  });
+
+  // Dedup by key is policy, not an exception: a content-identical toast fired
+  // twice coalesces onto one id instead of stacking.
+  it('derives a content dedup key so identical toasts coalesce', () => {
+    toastService.success({ title: 'Saved', msg: 'All good' });
+    toastService.success({ title: 'Saved', msg: 'All good' });
+
+    expect(mocks.success.mock.calls[0][1].toastId).toBe(mocks.success.mock.calls[1][1].toastId);
+    expect(mocks.success.mock.calls[0][1].toastId).not.toBe(undefined);
   });
 
   // BR-71 §3.2 (decision 14): the chatrecall suggestion is shown exactly once in
   // the lifetime of an install, so it must not be able to expire unread. That is
-  // only possible if a caller can override the 3s default per toast.
+  // only possible if a caller can override the shared default per toast.
   it('forwards per-toast options so a caller can opt out of auto-close', () => {
     toastService.success(
       { title: 'Workspace Control enabled', msg: 'long copy' },

@@ -132,7 +132,11 @@ class ToastService {
         isLoading: !isComplete,
         type,
         icon: false,
-        autoClose: isComplete ? 5000 : false,
+        // A clean run expires like any other confirmation; a FAILURE report
+        // persists, because its "View details" action opens a dialog and a 5s
+        // timer must not be able to take the toast (and with it the dialog)
+        // away mid-read.
+        autoClose: isComplete && !hasErrors ? TOAST_AUTO_CLOSE_MS : false,
         closeButton: true,
         closeOnClick: false,
       });
@@ -150,9 +154,9 @@ class ToastService {
           isLoading: !isComplete,
           type,
           icon: false,
-          autoClose: isComplete ? 5000 : false,
+          autoClose: isComplete && !hasErrors ? TOAST_AUTO_CLOSE_MS : false,
           closeButton: true,
-          closeOnClick: false, // Prevent closing when clicking to expand/collapse
+          closeOnClick: false, // the toast carries an action; see the tier rules
         }
       );
     }
@@ -180,6 +184,28 @@ export const toastService = ToastService.getInstance();
 // Re-export ExtensionLoadingStatus for convenience
 export type { ExtensionLoadingStatus };
 
+/**
+ * THE TOAST TIER (Astryx §3.7). Three tiers exist and the boundary is enforced
+ * here rather than negotiated per call site:
+ *
+ *   Toast   — title + at most three wrapped lines + at most two quiet actions.
+ *             Everything in this file.
+ *   Banner  — an in-place notice that must stay put; `NotificationSurface`.
+ *   Report  — anything with a list, a disclosure, or per-item actions. It is a
+ *             dialog, not a toast; see `GroupedExtensionLoadingToast`, whose
+ *             400px collapsible panel is what this tier exists to evict from
+ *             the transient layer.
+ *
+ * The three rules the tier carries, each of which the app used to break:
+ *   · ONE dwell time. 5s for everything that expires; errors do not expire, so
+ *     a failure cannot vanish before it is read.
+ *   · A toast that carries actions is NOT click-to-dismiss — an error toast
+ *     used to die if you clicked 2px off its own button.
+ *   · DEDUP BY KEY IS POLICY, not the single exception the extension toast used
+ *     to be. Identical notifications coalesce instead of stacking N deep.
+ */
+export const TOAST_AUTO_CLOSE_MS = 5000;
+
 const commonToastOptions: ToastOptions = {
   position: 'top-right',
   closeButton: true,
@@ -189,32 +215,55 @@ const commonToastOptions: ToastOptions = {
   draggable: true,
 };
 
+/**
+ * The dedup key for a content-identical toast. Deliberately NOT applied to
+ * `toastLoading`: a loading toast's id is a handle its caller holds to dismiss
+ * exactly its own operation, and collapsing two concurrent operations onto one
+ * id would let the first to finish dismiss the second's progress.
+ */
+const dedupeKey = (kind: string, title?: string, msg?: string) =>
+  `${kind}:${title ?? ''}:${msg ?? ''}`;
+
 type ToastSuccessProps = { title?: string; msg?: string; toastOptions?: ToastOptions };
 
 export function toastSuccess({ title, msg, toastOptions = {} }: ToastSuccessProps) {
   return toast.success(
     // title AND msg render independently — a message with no title is no longer dropped.
-    <NotificationContent status="success" title={title} message={msg} />,
-    { ...commonToastOptions, icon: false, autoClose: 3000, ...toastOptions }
+    <NotificationContent status="success" title={title} message={msg} clampMessage />,
+    {
+      ...commonToastOptions,
+      icon: false,
+      autoClose: TOAST_AUTO_CLOSE_MS,
+      toastId: dedupeKey('success', title, msg),
+      ...toastOptions,
+    }
   );
 }
 
 export function toastInfo({ title, msg, toastOptions = {} }: ToastSuccessProps) {
-  return toast.info(<NotificationContent status="info" title={title} message={msg} />, {
-    ...commonToastOptions,
-    icon: false,
-    autoClose: 4000,
-    ...toastOptions,
-  });
+  return toast.info(
+    <NotificationContent status="info" title={title} message={msg} clampMessage />,
+    {
+      ...commonToastOptions,
+      icon: false,
+      autoClose: TOAST_AUTO_CLOSE_MS,
+      toastId: dedupeKey('info', title, msg),
+      ...toastOptions,
+    }
+  );
 }
 
 export function toastWarning({ title, msg, toastOptions = {} }: ToastSuccessProps) {
-  return toast.warning(<NotificationContent status="warning" title={title} message={msg} />, {
-    ...commonToastOptions,
-    icon: false,
-    autoClose: 5000,
-    ...toastOptions,
-  });
+  return toast.warning(
+    <NotificationContent status="warning" title={title} message={msg} clampMessage />,
+    {
+      ...commonToastOptions,
+      icon: false,
+      autoClose: TOAST_AUTO_CLOSE_MS,
+      toastId: dedupeKey('warning', title, msg),
+      ...toastOptions,
+    }
+  );
 }
 
 type ToastErrorProps = {
@@ -265,13 +314,33 @@ function ToastErrorContent({
       </>
     ) : undefined;
 
-  return <NotificationContent status="error" title={title} message={msg} actions={actions} />;
+  return (
+    <NotificationContent
+      status="error"
+      title={title}
+      message={msg}
+      clampMessage
+      actions={actions}
+    />
+  );
 }
 
 export function toastError({ title, msg, traceback, recoverHints }: ToastErrorProps) {
+  // An error toast carries actions whenever there is something to copy or a
+  // recovery path to offer — and a toast with actions is not click-to-dismiss,
+  // because the click that misses the button must not destroy the button.
+  const hasActions = Boolean(traceback || recoverHints);
   return toast.error(
     <ToastErrorContent title={title} msg={msg} traceback={traceback} recoverHints={recoverHints} />,
-    { ...commonToastOptions, icon: false, autoClose: traceback ? false : 5000 }
+    {
+      ...commonToastOptions,
+      icon: false,
+      // Errors persist. A failure that expires unread is a failure that was
+      // never reported.
+      autoClose: false,
+      closeOnClick: !hasActions,
+      toastId: dedupeKey('error', title, msg),
+    }
   );
 }
 
@@ -282,10 +351,13 @@ type ToastLoadingProps = {
 };
 
 export function toastLoading({ title, msg, toastOptions }: ToastLoadingProps) {
-  return toast.loading(<NotificationContent status="loading" title={title} message={msg} />, {
-    ...commonToastOptions,
-    icon: false,
-    autoClose: false,
-    ...toastOptions,
-  });
+  return toast.loading(
+    <NotificationContent status="loading" title={title} message={msg} clampMessage />,
+    {
+      ...commonToastOptions,
+      icon: false,
+      autoClose: false,
+      ...toastOptions,
+    }
+  );
 }
