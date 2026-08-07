@@ -1194,6 +1194,51 @@ fn attach_response(
     SseResponse::new(ReceiverStream::new(rx)).into_response()
 }
 
+/// Is this request an ATTACH naming a turn this daemon does not hold?
+///
+/// `/reply` had no way to say "attach only", and outcome 1 of the wire contract
+/// is "a `turn_id` naming no known turn starts a new turn" — while the client's
+/// attach body is obliged to carry a `user_message` (the schema requires one,
+/// and the transcript's trailing user message is the closest truthful value). So
+/// the moment the turn being re-attached to left the registry — the daemon
+/// restarted, which is the commonest reason a driving stream ends without a
+/// terminal frame, or `FINISHED_TURN_RETENTION` elapsed — the re-attach silently
+/// RE-SUBMITTED the user's prompt: the answer generated a second time, rendered
+/// under the half already on screen (the new turn's id resets the client's
+/// sequence gate), and the tokens spent twice. The contract's own words are
+/// "nothing is charged twice".
+///
+/// `from_seq` is the explicit spelling, and it needs no new field: it means "I
+/// already hold frames 0..N of a turn", which only an attach can say. A first
+/// POST never sends it (see [`ChatRequest::from_seq`] and the client's
+/// `buildAttachRequest`), so a request carrying it is an attach and is answered
+/// as one — including when the answer is "that turn is gone".
+///
+/// Asked BEFORE the turn lock, deliberately: taking the lock to find out would
+/// mint a turn entry for a turn that does not exist, and inserting it evicts
+/// whatever finished turn that session was still holding for replay.
+fn attach_names_a_missing_turn(
+    state: &Arc<AppState>,
+    session_id: &str,
+    request: &ChatRequest,
+) -> bool {
+    if request.from_seq.is_none() {
+        return false;
+    }
+    let known = request
+        .turn_id
+        .as_deref()
+        .is_some_and(|turn_id| state.knows_turn(session_id, turn_id));
+    if !known {
+        tracing::info!(
+            session_id = %session_id,
+            turn_id = ?request.turn_id,
+            "attach names a turn this daemon does not hold; answering without starting one"
+        );
+    }
+    !known
+}
+
 /// The answer to an ATTACH naming a turn this daemon does not hold.
 ///
 /// 200 with one `Error` frame and an immediate end, rather than a status code,
@@ -1326,40 +1371,9 @@ pub async fn reply(
 
     let session_id = request.session_id.clone();
 
-    // An ATTACH whose turn is gone must not become a NEW TURN.
-    //
-    // `/reply` had no way to say "attach only", and outcome 1 of the wire
-    // contract is "a `turn_id` naming no known turn starts a new turn" — while
-    // the client's attach body is obliged to carry a `user_message` (the schema
-    // requires one, and the transcript's trailing user message is the closest
-    // truthful value). So the moment the turn being re-attached to left the
-    // registry — the daemon restarted, which is the commonest reason a driving
-    // stream ends without a terminal frame, or `FINISHED_TURN_RETENTION` elapsed
-    // — the re-attach silently RE-SUBMITTED the user's prompt: the answer
-    // generated a second time, rendered under the half already on screen (the
-    // new turn's id resets the client's sequence gate), and the tokens spent
-    // twice. The contract's own words are "nothing is charged twice".
-    //
-    // `from_seq` is the explicit spelling, and it needs no new field: it means
-    // "I already hold frames 0..N of a turn", which only an attach can say. A
-    // first POST never sends it (see `ChatRequest::from_seq` and the client's
-    // `buildAttachRequest`), so a request carrying it is an attach and is
-    // answered as one — including when the answer is "that turn is gone".
-    //
-    // Checked BEFORE the turn lock, deliberately: taking the lock to find out
-    // would mint a turn entry for a turn that does not exist, and inserting it
-    // evicts whatever finished turn that session was still holding for replay.
-    if request.from_seq.is_some()
-        && !request
-            .turn_id
-            .as_deref()
-            .is_some_and(|turn_id| state.knows_turn(&session_id, turn_id))
-    {
-        tracing::info!(
-            session_id = %session_id,
-            turn_id = ?request.turn_id,
-            "attach names a turn this daemon does not hold; answering without starting one"
-        );
+    // An ATTACH whose turn is gone must not become a NEW TURN — see
+    // `attach_names_a_missing_turn`.
+    if attach_names_a_missing_turn(&state, &session_id, &request) {
         return attach_missed_response();
     }
 
@@ -1451,12 +1465,9 @@ pub async fn reply(
     // can observe it. The token is moved into the pump; if this handler returned
     // before spawning it, dropping the token would close the log rather than
     // leave it open with nobody to end it.
+    // Unreachable `else`: the log was minted by the turn lock this task took.
     let Some(writer) = turn_stream.claim_writer() else {
-        // Unreachable: the log was minted by the turn lock this task just took.
-        tracing::error!(
-            session_id = %session_id,
-            "a freshly created turn's log already had a writer"
-        );
+        tracing::error!(session_id = %session_id, "a new turn's log already had a writer");
         return attach_missed_response();
     };
 
