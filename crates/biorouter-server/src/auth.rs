@@ -567,6 +567,19 @@ mod tests {
     /// The first is what the old form could not do: a conjunct spelled through
     /// a helper reads as ordinary code to a denylist, and the old assertion
     /// passed against one.
+    ///
+    /// ⚠ **The three inputs are NAMED, not counted, since `2662619a`.** That
+    /// commit ("one enable gate, one clause order, called from every door")
+    /// replaced this route's hand-written `classification.tier.is_private() &&
+    /// capability == ProviderTier::Public` with the shared
+    /// `refusal::tier_refuses(..)` predicate, so that the four doors to this
+    /// capability could not drift apart — and in doing so folded two of the
+    /// three conjuncts into a call. Counting `&&` therefore read 1 where it had
+    /// read 2, against a guard whose inputs had not changed at all. The claim is
+    /// unchanged and the scan is stricter for it: the old form pinned only *how
+    /// many* things the guard named, this one pins **which** three, so swapping
+    /// one of them for the caller is caught where a bare count would have
+    /// stayed green.
     #[test]
     fn the_add_extension_route_still_refuses_a_public_session_outright() {
         let handler = body_of(
@@ -584,10 +597,18 @@ mod tests {
         let tier_decision = handler
             .split_once("session_reach(")
             .map_or(handler, |(_, after_the_gate)| after_the_gate);
-        let (before_the_refusal, _) = tier_decision.split_once("PrivateExtensionOverHttp").expect(
-            "the tier refusal now runs BEFORE the reach gate, so this scan no longer \
+        // The REFUSAL, not the prose about it. `PrivateExtensionOverHttp` is
+        // also named in the comment above the guard, which explains why the
+        // predicate is asked rather than re-typed — and splitting on the bare
+        // name landed there instead, putting the guard outside this span and
+        // making the scan report a refusal that had gone nowhere. The
+        // path-qualified spelling is the constructor and nothing else.
+        let (before_the_refusal, _) = tier_decision
+            .split_once("PrivacyRefusal::PrivateExtensionOverHttp")
+            .expect(
+                "the tier refusal now runs BEFORE the reach gate, so this scan no longer \
                      covers the span its claim is about",
-        );
+            );
         // Back to the `if` that guards it — the last one before the refusal,
         // whatever a reformat does to the line breaks inside the condition.
         let (_, guard) = before_the_refusal
@@ -596,14 +617,26 @@ mod tests {
         let (condition, _) = guard
             .split_once('{')
             .expect("the guarded block is no longer a block");
+        // The three inputs, by name. Two of them now reach the guard as the
+        // arguments of `tier_refuses`, so they are asserted where they are
+        // rather than as a conjunct count.
+        for input in ["enforced", "classification.tier", "capability"] {
+            assert!(
+                condition.contains(input),
+                "the outright tier refusal no longer reads `{input}`. Its three inputs are \
+                 tiers being enforced, the extension's classification, and the bound \
+                 provider's tier; dropping one is a change to what it refuses. \
+                 Guard reads: {condition}"
+            );
+        }
         assert_eq!(
             condition.matches("&&").count(),
-            2,
-            "the outright tier refusal takes a THIRD input beyond the extension's \
-             classification and the bound provider's tier. If that input is the caller, \
-             attaching a private extension to a public chat has become a raise the user can \
-             authorize, which DR-16 says it is not — and a helper would hide it from the scan \
-             below. Guard reads: {condition}"
+            1,
+            "the outright tier refusal takes a FOURTH input beyond the extension's \
+             classification, the bound provider's tier, and DR-15's master opt-out. If that \
+             input is the caller, attaching a private extension to a public chat has become a \
+             raise the user can authorize, which DR-16 says it is not — and a helper would \
+             hide it from the scan below. Guard reads: {condition}"
         );
         for proof in ["user_action_proof(", "is_user_action(", "X-User-Action"] {
             assert!(
