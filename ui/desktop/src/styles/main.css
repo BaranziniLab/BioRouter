@@ -86,9 +86,29 @@
      byte-shared between markdown code blocks and the xterm terminal and is one
      of the few places in the app with zero drift. The role exists so call
      sites have a name; the stack behind it stays exactly where it was. */
+  /* ── REVERTABLE: the interface face ──────────────────────────────────────
+     Arial by operator preference (2026-08-07). Only the FACE changed — every
+     size, weight, line-height and letter-spacing role below is untouched, so
+     the type scale is exactly what it was.
+
+     TO GO BACK TO FIGTREE: put `'Figtree',` back at the head of the stack, i.e.
+
+       --font-body:
+         'Figtree', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI',
+         Roboto, 'Helvetica Neue', Arial, sans-serif;
+
+     That is the whole revert. The `@font-face` above is deliberately LEFT IN
+     PLACE — Figtree is still bundled and still loads, it simply is not asked
+     for — so going back is one line here and no rebuild of the font payload.
+     `git revert` of the commit that made this change does the same thing.
+
+     Nothing else needs touching: `--font-heading` aliases this, and the
+     knowledge-graph canvas reads its face from the resolved computed style
+     rather than naming one, so it follows automatically. `--font-code` points
+     at `--font-mono` and is deliberately not affected. */
   --font-body:
-    'Figtree', ui-sans-serif, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
-    'Helvetica Neue', Arial, sans-serif;
+    Arial, 'Helvetica Neue', Helvetica, ui-sans-serif, -apple-system, BlinkMacSystemFont,
+    'Segoe UI', Roboto, sans-serif;
   --font-heading: var(--font-body); /* a family may re-point this; body is the default */
   --font-code: var(--font-mono);
 
