@@ -31,7 +31,7 @@
     "test-e2e:report": "playwright show-report",
     "test-e2e:single": "npm run generate-api && playwright test -g",
     "lint": "eslint \"src/**/*.{ts,tsx}\" --fix --no-warn-ignored",
-    "lint:check": "npm run typecheck && eslint \"src/**/*.{ts,tsx}\" --max-warnings 0 --no-warn-ignored && npm run check:themes && npm run check:contrast",
+    "lint:check": "npm run typecheck && eslint \"src/**/*.{ts,tsx}\" --max-warnings 0 --no-warn-ignored && npm run check:themes && npm run check:contrast && npm run check:tokens",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,json}\"",
     "format:check": "prettier --check \"src/**/*.{ts,tsx,css,json}\"",
     "test": "vitest",
@@ -41,6 +41,7 @@
     "prepare": "husky",
     "start-alpha-gui": "ALPHA=true npm run start-gui",
     "check:contrast": "node scripts/check-contrast.mjs",
+    "check:tokens": "node scripts/check-token-mirrors.mjs",
     "themes": "node scripts/generate-themes.mjs",
     "check:themes": "node scripts/generate-themes.mjs --check"
   },
