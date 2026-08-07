@@ -1005,9 +1005,9 @@ fn occurrences(line: &str, ident: &str) -> (usize, usize) {
 fn defines(line: &str, ident: &str) -> bool {
     let t = line.trim_start();
     let t = t.strip_prefix("pub ").unwrap_or(t);
-    let t = match t.find(") ") {
+    let t = match t.split_once(") ") {
         // `pub(crate) fn`, `pub(in …) fn`
-        Some(k) if t.starts_with("pub(") => &t[k + 2..],
+        Some((_, rest)) if t.starts_with("pub(") => rest,
         _ => t,
     };
     let t = t.strip_prefix("async ").unwrap_or(t);
@@ -1073,8 +1073,8 @@ fn public_fns(tree: &Tree, file: &str) -> Vec<String> {
         if !t.starts_with("pub ") && !t.starts_with("pub(") {
             continue;
         }
-        let after = match t.find(" fn ") {
-            Some(k) => &t[k + 4..],
+        let after = match t.split_once(" fn ") {
+            Some((_, rest)) => rest,
             None => continue,
         };
         let name: String = after

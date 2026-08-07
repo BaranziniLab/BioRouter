@@ -1844,10 +1844,15 @@ mod tests {
     /// first run of these tests read a depth of 3 where it expected 0, because
     /// the doors test's parked spawns were queued at the same moment.
     ///
-    /// `unwrap_or_else(PoisonError::into_inner)`: a panic in one of these tests
-    /// must fail that test, not turn every later one into a poisoned-lock panic
-    /// that hides the original.
-    static QUEUE_DEPTH_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    /// A `tokio` mutex, not a `std` one, because both holders await while they
+    /// hold it — `std::sync::MutexGuard` across an `.await` is a real deadlock
+    /// risk (it parks the whole worker thread rather than yielding), and clippy
+    /// rejects it under `-D warnings`. It also retires the poison handling this
+    /// comment used to explain: a tokio mutex never poisons, so a panic in one
+    /// of these tests fails that test and leaves the rest untouched, which is
+    /// exactly what the `PoisonError::into_inner` dance was reaching for.
+    /// `privacy_toggle.rs` serialises its own matrix the same way.
+    static QUEUE_DEPTH_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
     /// The gate's real body, driven concurrently over a semaphore this test
     /// owns: a spawn that gets a permit at once is never counted as pending, a
@@ -1858,9 +1863,7 @@ mod tests {
     /// four tests asserting on one global counter would race each other.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn the_pending_queue_is_counted_bounded_and_drained() {
-        let _serialised = QUEUE_DEPTH_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
         let semaphore: &'static Semaphore = Box::leak(Box::new(Semaphore::new(1)));
         const MAX_PENDING: usize = 2;
 
@@ -1939,9 +1942,7 @@ mod tests {
     /// with `got: ["open_tab", "annotate_tab"]`, frames it never sent.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn both_spawn_doors_refuse_a_full_queue() {
-        let _serialised = QUEUE_DEPTH_TESTS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _serialised = QUEUE_DEPTH_TESTS.lock().await;
         // Every slot taken: from here nothing starts, everything queues.
         let held = hold_every_subagent_permit().await;
         assert_eq!(SUBAGENT_SEMAPHORE.available_permits(), 0);

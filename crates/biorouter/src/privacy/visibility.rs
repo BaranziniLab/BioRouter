@@ -274,7 +274,12 @@ mod tests {
         let cut = WORKSPACE
             .match_indices("mod tests {")
             .find_map(|(i, _)| {
-                let before = WORKSPACE[..i].trim_end();
+                // `get`, not `[..i]`: `match_indices` only ever yields char
+                // boundaries so the slice cannot actually panic, but clippy's
+                // `string_slice` does not know that and `-D warnings` makes it
+                // an error. Asking for the option is honest either way — and
+                // cheaper than an `#[allow]` that a reader has to take on faith.
+                let before = WORKSPACE.get(..i)?.trim_end();
                 let before = before
                     .strip_suffix("pub(crate)")
                     .unwrap_or(before)

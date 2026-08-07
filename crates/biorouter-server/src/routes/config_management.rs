@@ -1653,14 +1653,6 @@ mod tests {
     }
 }
 
-/// Task 30A (issue #56, DR-17 requirement 3): `GET /privacy/disclosure` and
-/// `POST /privacy/disclosure/ack`.
-///
-/// ⚠ **Handlers, not `oneshot` over a `Router`.** These two routes take no
-/// `AppState`, and building one opens the developer's REAL session database
-/// (`routes::agent::working_dir_lock_tests`). Calling the handlers directly is
-/// how the rest of this file's tests reach `read_config` and
-/// `get_detectable_providers`, and it exercises the same guard the router would.
 #[cfg(test)]
 mod affiliation_wire_tests {
     //! What `GET /config/providers` actually puts on the wire for DR-26's third
@@ -1741,6 +1733,14 @@ mod affiliation_wire_tests {
     }
 }
 
+/// Task 30A (issue #56, DR-17 requirement 3): `GET /privacy/disclosure` and
+/// `POST /privacy/disclosure/ack`.
+///
+/// ⚠ **Handlers, not `oneshot` over a `Router`.** These two routes take no
+/// `AppState`, and building one opens the developer's REAL session database
+/// (`routes::agent::working_dir_lock_tests`). Calling the handlers directly is
+/// how the rest of this file's tests reach `read_config` and
+/// `get_detectable_providers`, and it exercises the same guard the router would.
 #[cfg(test)]
 mod privacy_disclosure_tests {
     use super::*;
