@@ -10731,6 +10731,214 @@ mod tests {
         );
     }
 
+    /// Real overlap against a real pool and a real WAL file: 150 deletes of
+    /// real sessions racing a second, independent store that never stops
+    /// committing.
+    ///
+    /// This is the delete-side twin of
+    /// `concurrent_appends_survive_racing_rewrites`, and `errors.is_empty()` is
+    /// what makes it irreplaceable. `delete_session` opens its DEFERRED
+    /// transaction with `DELETE FROM messages` deliberately. Restore the
+    /// `SELECT EXISTS` probe it used to lead with — the tidier, obvious
+    /// "check, then act" — and the transaction pins a WAL read snapshot before
+    /// it writes; the very next statement has to *upgrade* to a writer, and any
+    /// commit that landed in that window makes SQLite refuse **instantly** with
+    /// SQLITE_BUSY_SNAPSHOT. A busy handler is not consulted for that error, so
+    /// the pool's five-second `busy_timeout` is not in the path at all, and the
+    /// delete surfaces `(code: 5) database is locked` when it should merely
+    /// have waited its turn.
+    ///
+    /// The damage is an ERROR, not data loss — the refused transaction rolls
+    /// back and leaves the session exactly as it was. So a test that only
+    /// checked which sessions survived would pass while the ordering was
+    /// broken, which is precisely why
+    /// `deleting_an_unknown_id_rolls_back_and_leaves_real_sessions_intact`
+    /// cannot stand in for this one: it is single-threaded, on one connection,
+    /// with nothing to race.
+    ///
+    /// Mutation-tested, not assumed. Restoring the leading `SELECT EXISTS` and
+    /// changing nothing else failed 16 of 16 runs, 25 to 71 deletes lost per
+    /// run; removing it again passed 26 of 26. The reported codes are
+    /// `(code: 5) database is locked` and, less often, `(code: 517)` — 517 *is*
+    /// SQLITE_BUSY_SNAPSHOT (`SQLITE_BUSY | (2<<8)`), and both are the same
+    /// root cause. SQLite skips the busy handler for either once
+    /// `pBt->inTransaction` is already `TRANS_READ`, so a delete that has read
+    /// first cannot wait for the lock at all: 5 when the writer merely *holds*
+    /// it, 517 when the writer has *committed* since the snapshot.
+    ///
+    /// A busy *append* on the writer side is tolerated, exactly as the two
+    /// rewrite races above tolerate it and for the same reason: the writer
+    /// loops with only a `yield_now`, so it can lose the single per-file write
+    /// lock to a delete that is legitimately holding it. Only the DELETE side
+    /// is held to "never busy".
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_deletes_survive_racing_writes() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        const DOOMED: usize = 150;
+
+        let temp = TempDir::new().unwrap();
+        let deleter_store = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        // A second store over the same `sessions.db`: its own pool, its own WAL
+        // reader, nothing in process memory ordering the two — the
+        // CLI-vs-daemon shape of
+        // `appends_from_a_second_store_survive_racing_rewrites`.
+        let writer_store = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+
+        let mut doomed = Vec::with_capacity(DOOMED);
+        for i in 0..DOOMED {
+            let s = deleter_store
+                .create_session(
+                    PathBuf::from("/tmp/delete_race"),
+                    format!("doomed-{i}"),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            deleter_store
+                .add_message(&s.id, &umsg(1, &format!("body-{i}")))
+                .await
+                .unwrap();
+            doomed.push(s.id);
+        }
+        // The session the writer commits into. It is never deleted, so the two
+        // tasks contend for the write lock without ever touching the same rows
+        // — the failure below can only be lock ordering, never a row conflict.
+        let chatty = writer_store
+            .create_session(
+                PathBuf::from("/tmp/delete_race"),
+                "chatty".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let stop = Arc::new(AtomicBool::new(false));
+        let committed = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(AtomicUsize::new(0));
+
+        let writer = {
+            let writer_store = Arc::clone(&writer_store);
+            let id = chatty.id.clone();
+            let stop = Arc::clone(&stop);
+            let committed = Arc::clone(&committed);
+            let started = Arc::clone(&started);
+            tokio::spawn(async move {
+                let mut busy = 0usize;
+                let mut i = 0i64;
+                while !stop.load(Ordering::Relaxed) {
+                    let m = umsg(1_000 + i, &format!("chat-{i}"));
+                    started.fetch_add(1, Ordering::Relaxed);
+                    match writer_store.add_message(&id, &m).await {
+                        Ok(_) => {
+                            committed.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(e) if e.to_string().contains("database is locked") => busy += 1,
+                        Err(e) => panic!(
+                            "append failed for a reason other than lock \
+                             contention: {e}"
+                        ),
+                    }
+                    i += 1;
+                    tokio::task::yield_now().await;
+                }
+                busy
+            })
+        };
+        let deleter = {
+            let deleter_store = Arc::clone(&deleter_store);
+            let doomed = doomed.clone();
+            let stop = Arc::clone(&stop);
+            let committed = Arc::clone(&committed);
+            let started = Arc::clone(&started);
+            tokio::spawn(async move {
+                // Barrier, not a sleep. Left to chance the deleter sometimes
+                // ran its whole loop before the writer task was ever scheduled
+                // — across twelve free-running runs the overlap swung from 19
+                // commits to 686 — so each delete waits for the writer to
+                // ENTER its next append before starting.
+                //
+                // Which edge it waits on is load-bearing, and was measured.
+                // Releasing on the writer's *commit* aims every delete at the
+                // one moment the writer provably holds no lock and the WAL
+                // provably has not moved: detection under the mutation fell to
+                // 0-4 failures per 150 and 3 of 16 mutated runs passed
+                // outright. Releasing on the writer's *start* aims each delete
+                // at a transaction that is about to take the write lock, which
+                // is the state the ordering exists to survive.
+                let mut seen = started.load(Ordering::Relaxed);
+                let before = committed.load(Ordering::Relaxed);
+                let mut errors = Vec::new();
+                for id in &doomed {
+                    // Five seconds is the pool's own `busy_timeout`: a writer
+                    // silent for that long is a real fault, not scheduling
+                    // noise, and must not be graded as a passing race.
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+                    loop {
+                        let now = started.load(Ordering::Relaxed);
+                        if now > seen {
+                            seen = now;
+                            break;
+                        }
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "the writer stopped appending — there is no race \
+                             left to grade"
+                        );
+                        tokio::task::yield_now().await;
+                    }
+
+                    if let Err(e) = deleter_store.delete_session(id).await {
+                        errors.push(format!("{id}: {e}"));
+                    }
+                    tokio::task::yield_now().await;
+                }
+                let during = committed.load(Ordering::Relaxed) - before;
+                stop.store(true, Ordering::Relaxed);
+                (errors, during)
+            })
+        };
+        let (busy_appends, deletes) = tokio::join!(writer, deleter);
+        let busy_appends = busy_appends.unwrap();
+        let (errors, committed_during) = deletes.unwrap();
+
+        // 1. The write-first lock ordering held. A delete that opens with a
+        // WRITE takes the single per-file write lock up front, where the busy
+        // handler *does* apply, so losing a race costs it a wait and never an
+        // error. A delete that opens with a READ fails right here, instantly.
+        assert!(
+            errors.is_empty(),
+            "{} of {DOOMED} deletes failed (a `database is locked` — code 5 or \
+             its SQLITE_BUSY_SNAPSHOT variant 517 — here means the transaction \
+             read before it wrote): {:?}",
+            errors.len(),
+            &errors[..errors.len().min(5)]
+        );
+        // 2. The race really was a race. The barrier already forces one
+        // append per delete, so this restates the guarantee end to end: a
+        // barrier that is ever weakened, or a writer that dies halfway,
+        // cannot quietly leave assertion 1 grading an empty overlap. The bar
+        // is half of `DOOMED` rather than all of it because a *busy* append
+        // starts without committing, and those are tolerated. Measured range
+        // over 26 clean runs: 151 to 2159.
+        assert!(
+            committed_during * 2 >= DOOMED,
+            "only {committed_during} writes committed alongside {DOOMED} \
+             deletes ({busy_appends} lost the write lock) — too little overlap \
+             for this to still be testing anything"
+        );
+        // 3. Every delete actually landed, and the writer's session did not.
+        assert_eq!(
+            deleter_store.count_all_sessions().await.unwrap(),
+            1,
+            "only the writer's session may remain"
+        );
+        assert!(
+            writer_store.get_session(&chatty.id, false).await.is_ok(),
+            "the writer's session must be untouched"
+        );
+    }
+
     /// #41: the idless soft-interrupt shape — a `Message::user()` minted
     /// mid-turn, persisted, then retained in the in-memory conversation and
     /// yielded. `add_message_adopting_uid` must stamp the store's minted uid
