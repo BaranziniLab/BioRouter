@@ -253,31 +253,53 @@ export const BottomMenuExtensionSelection = ({
   );
 
   /**
-   * The chip's number: how many extensions this chat actually has.
+   * The chip's number: how many extensions **the user added** to this chat.
    *
-   * ⚠ **Not `extensionsList`.** That list is the menu's contents, and the menu
-   * deliberately holds only user-installed extensions — `isCapabilityExtension`
-   * strips Developer, Computer Controller, Auto Visualiser, Memory, Knowledge,
-   * Agent Drafter, Todo, Chat Recall, Extension Manager, Code Execution and
-   * Skills out of it, because those are managed in Settings → Chat. Counting the
-   * menu therefore reported `Manage extensions (0 enabled)` on a chat with
-   * eleven extensions loaded and working (v1.89.0 P-04), next to a correct
-   * `Manage skills (5 enabled)` — the skills menu lists everything it counts, so
-   * the same expression is right there and wrong here.
+   * Two independent decisions, and they are easy to conflate:
    *
-   * The count is of the SESSION's extensions, which is what the agent holds and
-   * what History's own per-session "N extensions" column shows. Before that
-   * fetch lands there is nothing session-specific to count, so it falls back to
-   * the enabled config — the same fallback `GET /sessions/{id}/extensions`
-   * applies server-side, so the chip does not flash `0` on the way to the real
-   * number. `sessionOverrides` is layered on top so a toggle moves the chip
-   * immediately rather than after the refetch.
+   * 1. *What is counted* — user-installed extensions only. Shipped capabilities
+   *    (Developer, Computer Controller, Auto Visualiser, Memory, Knowledge,
+   *    Agent Drafter, Todo, Chat Recall, Extension Manager, Code Execution,
+   *    Skills) are excluded; see the note inside. A chat whose only extensions
+   *    are capabilities therefore reads `0`, and that is the number meaning
+   *    "you have added none", not the v1.89.0 P-04 defect wearing the same face.
+   * 2. *Where the number comes from* — the SESSION's extensions, which is what
+   *    the agent holds and what History's own per-session "N extensions" column
+   *    shows. **Not the enabled state of `extensionsList`**, which is the menu's
+   *    config-derived rows: an extension can be listed here and not attached to
+   *    this chat, or attached here while off in the config, and the chip must
+   *    follow the chat. That half is P-04's fix and it stands.
+   *
+   * Before the session fetch lands there is nothing session-specific to count,
+   * so it falls back to the enabled config — the same fallback `GET
+   * /sessions/{id}/extensions` applies server-side, so the chip does not flash
+   * `0` on the way to the real number. `sessionOverrides` is layered on top so a
+   * toggle moves the chip immediately rather than after the refetch.
    */
   const activeCount = useMemo(() => {
     const hubOverrides = getExtensionOverrides();
+
+    // ⚠ SHIPPED CAPABILITIES DO NOT COUNT. They come with the app, they are
+    // managed in Settings → Chat → Capabilities rather than here, and every
+    // chat has them — so counting them makes the chip a constant with a small
+    // number added, which is not what a reader takes it to mean. The number is
+    // "extensions I added", and the exclusion uses `isCapabilityExtension`, the
+    // same predicate the menu already filters its own contents by, so the chip
+    // and the list it labels can never disagree about what an extension is.
+    //
+    // A session extension the config does not know about is counted rather than
+    // hidden: unknown means "not a shipped capability" here, and the safe
+    // direction for a count of the user's own things is to show it.
+    const isShippedCapability = (name: string) => {
+      const known = allExtensions.find((e) => e.name === name);
+      return known ? isCapabilityExtension(known) : false;
+    };
+
     if (isHubView) {
-      return allExtensions.filter((ext) =>
-        hubOverrides.has(ext.name) ? hubOverrides.get(ext.name)! : ext.enabled
+      return allExtensions.filter(
+        (ext) =>
+          !isCapabilityExtension(ext) &&
+          (hubOverrides.has(ext.name) ? hubOverrides.get(ext.name)! : ext.enabled)
       ).length;
     }
 
@@ -290,7 +312,7 @@ export const BottomMenuExtensionSelection = ({
       if (isEnabled) enabled.add(name);
       else enabled.delete(name);
     });
-    return enabled.size;
+    return [...enabled].filter((name) => !isShippedCapability(name)).length;
     // hubUpdateTrigger re-reads the hub override map, which mutates in place.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [allExtensions, sessionExtensions, sessionOverrides, isHubView, hubUpdateTrigger]);

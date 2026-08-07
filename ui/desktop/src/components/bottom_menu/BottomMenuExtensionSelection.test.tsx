@@ -9,6 +9,22 @@ const mocks = vi.hoisted(() => ({
   removeFromAgent: vi.fn(async (): Promise<void> => undefined),
 }));
 
+/**
+ * The fixture is the experiment, so it is designed rather than inherited.
+ *
+ * FOUR shipped capabilities — `autovisualiser`, `code_execution`, `chatrecall`,
+ * `agent_drafter`, all in `CAPABILITY_KEYS` — and THREE user-installed
+ * extensions. Two of each kind are enabled, and the two halves are enabled in
+ * different numbers.
+ *
+ * ⚠ **Both properties are load-bearing.** A fixture of capabilities alone can
+ * only ever assert `0`, which is indistinguishable from the chip being broken in
+ * the direction it was already broken once (v1.89.0 P-04 read `(0 enabled)` on a
+ * working chat). And a fixture where the two halves happen to agree cannot tell
+ * "counted the user's extensions" from "counted everything". Here every expected
+ * number is non-zero and every one of them differs from the number a chip that
+ * ignored `isCapabilityExtension` would print.
+ */
 vi.mock('../ConfigContext', () => ({
   useConfig: () => ({
     extensionsList: [
@@ -46,6 +62,24 @@ vi.mock('../ConfigContext', () => ({
         args: [],
         enabled: false,
       },
+      {
+        type: 'stdio',
+        name: 'spoke',
+        display_name: 'Spoke',
+        description: 'User-installed extension',
+        cmd: 'spoke',
+        args: [],
+        enabled: true,
+      },
+      {
+        type: 'stdio',
+        name: 'workspace',
+        display_name: 'Workspace',
+        description: 'User-installed extension',
+        cmd: 'workspace',
+        args: [],
+        enabled: true,
+      },
     ],
   }),
 }));
@@ -81,6 +115,18 @@ describe('BottomMenuExtensionSelection', () => {
     // set by one test would otherwise be the starting state of the next.
     mocks.getSessionExtensions.mockReset();
     mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
+    // ⚠ Same reason, and it bites harder here because `mockImplementationOnce`
+    // queues. A test that sets one up and then FAILS before the click that would
+    // consume it leaves it queued for the next test, which then consumes a
+    // stale promise whose resolver closes over the dead test's variable — its
+    // own `resolveEnable` stays `undefined`, the toggle chain never settles, and
+    // the failure surfaces as "removeFromAgent was never called". That is
+    // exactly how a single wrong expected number in the chip tests above took
+    // the serialization test down with it.
+    mocks.addToAgent.mockReset();
+    mocks.addToAgent.mockResolvedValue(undefined as never);
+    mocks.removeFromAgent.mockReset();
+    mocks.removeFromAgent.mockResolvedValue(undefined as never);
   });
 
   it('keeps an immediate hub toggle when the menu closes and reopens', async () => {
@@ -89,7 +135,7 @@ describe('BottomMenuExtensionSelection', () => {
     expect(trigger).not.toHaveAttribute('title');
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
-    const toggle = await screen.findByRole('menuitemcheckbox');
+    const toggle = await screen.findByRole('menuitemcheckbox', { name: 'example' });
     expect(toggle).toHaveAttribute('aria-checked', 'false');
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
@@ -98,7 +144,7 @@ describe('BottomMenuExtensionSelection', () => {
     await waitFor(() => expect(screen.queryByRole('menuitemcheckbox')).not.toBeInTheDocument());
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
-    const reopenedToggle = await screen.findByRole('menuitemcheckbox');
+    const reopenedToggle = await screen.findByRole('menuitemcheckbox', { name: 'example' });
     expect(reopenedToggle).toHaveAttribute('aria-checked', 'true');
     fireEvent.click(reopenedToggle);
     await waitFor(() => expect(reopenedToggle).toHaveAttribute('aria-checked', 'false'));
@@ -106,55 +152,101 @@ describe('BottomMenuExtensionSelection', () => {
   });
 
   /**
-   * v1.89.0 P-04. The chip counts the chat's extensions; the menu lists the ones
-   * this menu may toggle. They are different sets by design — capabilities are
-   * managed in Settings → Chat — and counting the menu made the chip read
-   * `(0 enabled)` on a chat with eleven extensions loaded and working.
+   * The chip's number is **"extensions I added"**, not "everything this chat
+   * loaded".
    *
-   * ⚠ The fixture is chosen so a regression cannot pass: every capability here
-   * is enabled and the only non-capability extension is DISABLED, so counting
-   * the menu gives 0 and counting the chat gives 2. A fixture where the two
-   * happen to agree proves nothing.
+   * Shipped capabilities come with the app, are managed in Settings → Chat →
+   * Capabilities rather than in this menu, and are present in every chat — so
+   * counting them makes the chip a constant plus a small number, which is not
+   * what a reader takes it to mean. The exclusion uses `isCapabilityExtension`,
+   * the same predicate the menu already filters its own rows by, so the chip and
+   * the list it labels can never disagree about what an extension is.
+   *
+   * What survives from v1.89.0 P-04 is the *source*: the number comes from the
+   * SESSION's extensions — what the agent actually holds, and what History's own
+   * per-session column reports — not from the config-derived rows. That is why
+   * this chat shows 3 rows and a chip of 2: `spoke` is listed and togglable but
+   * not attached here, and `example` is attached despite being off in the config.
    */
-  it('counts the chat`s extensions, not the rows this menu happens to show', async () => {
+  it('counts the chat`s user extensions and not its shipped capabilities', async () => {
     mocks.getSessionExtensions.mockResolvedValue({
       data: {
         extensions: [
           { type: 'builtin', name: 'autovisualiser' },
           { type: 'platform', name: 'code_execution' },
+          { type: 'platform', name: 'chatrecall' },
+          { type: 'stdio', name: 'example' },
+          { type: 'stdio', name: 'workspace' },
         ],
       },
     } as never);
 
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
 
+    // Five attached, three of them shipped capabilities → 2. Counting the whole
+    // session would say 5.
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
     );
 
-    // …and the menu still shows only the one togglable row.
+    // …and the menu lists every user extension, attached or not, so the chip is
+    // a count over the chat rather than over the rows beneath it.
     fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
       button: 0,
       ctrlKey: false,
     });
-    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(1);
+    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(3);
   });
 
-  it('counts the config`s enabled extensions before the session read lands', async () => {
+  /**
+   * The exclusion asks "is this a shipped capability", NOT "is this in the
+   * config". An extension the session holds and the config cannot describe is
+   * the user's own by elimination, and the safe direction for a count of the
+   * user's own things is to show it — so it counts.
+   */
+  it('counts a session extension the config has never heard of', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: {
+        extensions: [
+          { type: 'builtin', name: 'autovisualiser' },
+          { type: 'stdio', name: 'unlisted' },
+        ],
+      },
+    } as never);
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+
+    // 1, not 2 (the capability counted) and not 0 (the unknown swallowed).
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+  });
+
+  it('counts the config`s enabled user extensions before the session read lands', async () => {
     // The daemon applies exactly this fallback for a session with no stored
-    // extension state, so the chip must not flash 0 on the way to the number.
+    // extension state, so the chip must not flash 0 on the way to the number —
+    // and the fallback obeys the same rule as the real read.
     mocks.getSessionExtensions.mockReturnValue(new Promise(() => {}) as never);
 
     render(<BottomMenuExtensionSelection sessionId="session-1" />);
 
-    // autovisualiser + code_execution are enabled in the fixture; chatrecall,
-    // agent_drafter and example are not.
+    // Four extensions are enabled in the fixture. Two are capabilities
+    // (autovisualiser, code_execution) and do not count; two are the user's own
+    // (spoke, workspace) and do.
     expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument();
   });
 
   it('moves the chip the moment a row is toggled, before the refetch', async () => {
+    // Two attached, one of them a capability → the chip starts at 1, and
+    // enabling `example` must take it to 2 while `addToAgent` is still in
+    // flight. A chip that counted capabilities would read 2 → 3 here.
     mocks.getSessionExtensions.mockResolvedValue({
-      data: { extensions: [{ type: 'builtin', name: 'autovisualiser' }] },
+      data: {
+        extensions: [
+          { type: 'builtin', name: 'autovisualiser' },
+          { type: 'stdio', name: 'workspace' },
+        ],
+      },
     } as never);
     let resolveEnable: (() => void) | undefined;
     mocks.addToAgent.mockImplementationOnce(
@@ -170,7 +262,7 @@ describe('BottomMenuExtensionSelection', () => {
       button: 0,
       ctrlKey: false,
     });
-    fireEvent.click(await screen.findByRole('menuitemcheckbox'));
+    fireEvent.click(await screen.findByRole('menuitemcheckbox', { name: 'example' }));
 
     await waitFor(() =>
       expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
@@ -216,13 +308,22 @@ describe('BottomMenuExtensionSelection', () => {
     expect(screen.queryByText(/Applies to this chat\./)).not.toBeInTheDocument();
   });
 
-  it('keeps shipped capabilities out of the per-chat extension selector', async () => {
+  /**
+   * The hub view is the second, separate branch of the same rule — it reads the
+   * config plus the in-memory override map rather than a session — so it gets
+   * its own assertion on the number, not only on the rows.
+   */
+  it('keeps shipped capabilities out of the selector and out of its count', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
+
+    // Four extensions enabled in the config, two of them capabilities → 2.
     const trigger = screen.getByLabelText('Manage extensions (2 enabled)');
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
-    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(1);
+    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(3);
     expect(screen.getByText('example')).toBeInTheDocument();
+    expect(screen.getByText('spoke')).toBeInTheDocument();
+    expect(screen.getByText('workspace')).toBeInTheDocument();
     expect(screen.queryByText('autovisualiser')).not.toBeInTheDocument();
     expect(screen.queryByText('code_execution')).not.toBeInTheDocument();
     expect(screen.queryByText('chatrecall')).not.toBeInTheDocument();
@@ -240,7 +341,7 @@ describe('BottomMenuExtensionSelection', () => {
       ctrlKey: false,
     });
 
-    const toggle = await screen.findByRole('menuitemcheckbox');
+    const toggle = await screen.findByRole('menuitemcheckbox', { name: 'example' });
     fireEvent.click(toggle);
     await waitFor(() => expect(toggle).toHaveAttribute('aria-checked', 'true'));
     fireEvent.click(toggle);
