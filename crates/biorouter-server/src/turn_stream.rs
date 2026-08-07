@@ -153,10 +153,20 @@ impl SeqFrame {
     ///
     /// String surgery rather than a re-serialize, and it is exact: `json` is
     /// always a JSON *object*, so it always starts with `{`, and member order
-    /// is not significant. Pinned by `replay_marker_is_spliced_in_exactly`.
+    /// is not significant. `serde_json` emits no whitespace after the brace, so
+    /// the only case needing care is an empty object, which takes no separator.
+    /// Pinned by `replay_marker_is_spliced_in_exactly`.
     pub fn replay_sse(&self) -> String {
-        debug_assert!(self.json.starts_with('{'));
-        format!("data: {{\"replay\":true,{}\n\n", &self.json[1..])
+        let Some(rest) = self.json.strip_prefix('{') else {
+            // Unreachable — `encode_frame` only ever produces an object. Degrade
+            // to a live delivery rather than emit a corrupt frame; a client that
+            // re-renders one frame is a far smaller failure than one that
+            // cannot parse the stream at all.
+            tracing::error!("a logged frame was not a JSON object; replay marker skipped");
+            return self.live_sse();
+        };
+        let separator = if rest.starts_with('}') { "" } else { "," };
+        format!("data: {{\"replay\":true{separator}{rest}\n\n")
     }
 }
 
@@ -652,6 +662,20 @@ mod tests {
         for (key, value) in live.as_object().unwrap() {
             assert_eq!(&replayed[key], value, "field {key} changed under replay");
         }
+
+        // The two degenerate shapes the splice has to survive: an empty object
+        // (a stray comma would make it invalid JSON) and a non-object (which
+        // must degrade, not corrupt).
+        let empty = SeqFrame {
+            seq: 0,
+            json: Arc::from("{}"),
+        };
+        assert_eq!(empty.replay_sse(), "data: {\"replay\":true}\n\n");
+        let not_an_object = SeqFrame {
+            seq: 0,
+            json: Arc::from("\"scalar\""),
+        };
+        assert_eq!(not_an_object.replay_sse(), not_an_object.live_sse());
     }
 
     /// Publishing with nobody attached is an ordinary no-op — the property the
