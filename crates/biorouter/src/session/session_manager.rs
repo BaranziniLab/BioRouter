@@ -10672,6 +10672,65 @@ mod tests {
         );
     }
 
+    /// Deleting an unknown id must report "Session not found" and touch nothing.
+    ///
+    /// This pins the contract across a change in HOW it is produced. The delete
+    /// used to open its transaction with `SELECT EXISTS` and bail before
+    /// touching anything; it now issues the DELETEs first and decides from
+    /// `rows_affected`, because a leading SELECT pins a WAL read snapshot and
+    /// the later write has to upgrade — which SQLite refuses with
+    /// SQLITE_BUSY_SNAPSHOT without consulting the busy handler, so the pool's
+    /// five-second timeout could not save it.
+    ///
+    /// What this test does and does not prove, stated plainly: for an unknown
+    /// id every DELETE matches zero rows, so commit and rollback are
+    /// indistinguishable and this does NOT exercise the rollback. It pins the
+    /// externally visible contract — the same error, and no collateral damage
+    /// to a sibling session or its messages. The rollback is only observable
+    /// against orphaned message rows whose session row is already gone, which
+    /// this store has no supported way to create.
+    #[tokio::test]
+    async fn deleting_an_unknown_id_rolls_back_and_leaves_real_sessions_intact() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+
+        let keep = sm
+            .create_session(
+                PathBuf::from("/tmp/delete_rollback"),
+                "KeepMe".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(
+            &keep.id,
+            &amsg(chrono::Utc::now().timestamp_millis(), "hello"),
+        )
+        .await
+        .unwrap();
+
+        let err = sm
+            .delete_session("no-such-session-id")
+            .await
+            .expect_err("deleting an id that does not exist must fail");
+        assert!(
+            err.to_string().contains("Session not found"),
+            "unexpected error: {err}"
+        );
+
+        // The real session and its message must both survive the rolled-back
+        // transaction — this is the assertion the change actually needs.
+        let loaded = sm
+            .get_session(&keep.id, true)
+            .await
+            .expect("the untouched session must still exist");
+        assert_eq!(
+            loaded.conversation.unwrap().messages().len(),
+            1,
+            "a failed delete of a different id must not remove messages"
+        );
+    }
+
     /// #41: the idless soft-interrupt shape — a `Message::user()` minted
     /// mid-turn, persisted, then retained in the in-memory conversation and
     /// yielded. `add_message_adopting_uid` must stamp the store's minted uid
