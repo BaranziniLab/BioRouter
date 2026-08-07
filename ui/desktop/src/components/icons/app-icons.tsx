@@ -89,6 +89,7 @@ import {
   Pause as _Pause,
   PauseCircle as _PauseCircle,
   Pencil as _Pencil,
+  PictureInPicture2 as _PictureInPicture2,
   Pill as _Pill,
   Play as _Play,
   Plus as _Plus,
@@ -108,7 +109,6 @@ import {
   SlidersHorizontal as _SlidersHorizontal,
   Sparkles as _Sparkles,
   Square as _Square,
-  SquareStack as _SquareStack,
   StopCircle as _StopCircle,
   Sun as _Sun,
   Target as _Target,
@@ -261,7 +261,16 @@ export const Sparkles = light(_Sparkles);
 // control (two offset windows). Deliberately not `Plus` (that is New Session),
 // not `AppWindow` (that is the Applications route), and not `Copy`, whose
 // geometry the spec's drawing actually matches but which already means copy.
-export const NewWindow = light(_SquareStack);
+/** "Open in a new window" — a second window appearing beside the first.
+ *
+ * Was `SquareStack`: two equally-sized offset squares, which is the same
+ * figure `Copy` draws (36 call sites), so the titlebar control read as a
+ * duplicate button. The alternatives collide too — an arrow leaving a box is
+ * `ExternalLink` (20 sites, and it means "leave the app"), and a rounded
+ * square with a stroke inside is `PanelLeftIcon`, this button's immediate
+ * neighbour. PictureInPicture2 is the one glyph in the set that depicts the
+ * actual outcome, and its two unequal shapes stay legible at 16px. */
+export const NewWindow = light(_PictureInPicture2);
 // The original 'Square' icon was visually a circle-with-square (stop button),
 // which corresponds to lucide's StopCircle. Keep both names pointing to it.
 export const Square = light(_StopCircle);

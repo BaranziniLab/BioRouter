@@ -20,7 +20,7 @@ type DocumentPreviewProps = {
 
 function PreviewStatus({ message }: { message: string }) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-background-default text-sm text-text-muted">
+    <div className="absolute inset-0 flex items-center justify-center bg-background-default text-body text-text-muted">
       {message}
     </div>
   );
@@ -133,9 +133,9 @@ function PdfPageCanvas({
     >
       <canvas ref={canvasRef} className={cn('bg-white shadow-md', renderError && 'hidden')} />
       {renderError && (
-        <div className="flex min-h-48 w-full flex-col items-center justify-center gap-1 bg-background-default px-6 text-center text-sm text-text-muted shadow-md">
+        <div className="flex min-h-48 w-full flex-col items-center justify-center gap-1 bg-background-default px-6 text-center text-body text-text-muted shadow-md">
           <span>Could not render page {pageNumber}</span>
-          <span className="text-xs text-text-subtle">{renderError}</span>
+          <span className="text-supporting text-text-subtle">{renderError}</span>
         </div>
       )}
     </figure>
@@ -401,10 +401,13 @@ function SpreadsheetPreview({
               onClick={() => setActiveSheet(index)}
               aria-pressed={activeSheet === index}
               className={cn(
-                'h-7 shrink-0 rounded px-2.5 text-xs transition-colors',
+                // A tab in the sheet bar: `rounded-element`, and the active one
+                // is a FILL, not a lift — which is why the raised card look
+                // (bg-background-default + shadow-sm) becomes the selected tint.
+                'h-7 shrink-0 rounded-element px-2.5 text-supporting transition-colors',
                 activeSheet === index
-                  ? 'bg-background-default text-text-default shadow-sm'
-                  : 'text-text-muted hover:bg-background-medium hover:text-text-default'
+                  ? 'bg-overlay-selected text-text-default'
+                  : 'text-text-muted hover:bg-overlay-hover hover:text-text-default'
               )}
             >
               Sheet {index + 1}

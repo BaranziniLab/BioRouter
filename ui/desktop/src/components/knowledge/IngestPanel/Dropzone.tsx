@@ -109,7 +109,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           if (dragCounterRef.current === 0) setDragging(false);
         }}
         onDrop={onDrop}
-        className={`relative cursor-pointer rounded-xl border px-4 py-5 text-center transition-colors duration-[var(--motion-fast)] ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted hover:bg-background-medium'}`}
+        className={`relative cursor-pointer rounded-container border px-4 py-5 text-center transition-colors ${dragging ? 'border-border-strong bg-background-medium' : 'border-border-subtle bg-background-muted tint-interactive'}`}
       >
         <input
           data-testid="knowledge-ingest-file-input"
@@ -130,8 +130,8 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
         >
           <Upload className="h-5 w-5" />
         </div>
-        <div className="mt-2 text-sm font-medium">Drag and drop to stage</div>
-        <div className="mt-1 text-xs leading-5 text-text-muted">
+        <div className="mt-2 text-label">Drag and drop to stage</div>
+        <div className="mt-1 text-supporting text-text-muted">
           Drop readable files directly, or click to choose files, folders, and archives for backend
           staging.
         </div>
@@ -153,7 +153,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             </Badge>
           ))}
         </div>
-        <div className="mt-2 text-[11px] leading-5 text-text-muted">
+        <div className="mt-2 text-supporting text-text-muted">
           Readable contents are staged file by file. Binaries are skipped, and{' '}
           <span className="font-medium text-text-default">Import from .brkb</span> stays in the
           knowledge base menu for full knowledge-base archives.
@@ -178,11 +178,11 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 inputRef.current?.click();
               }}
-              className="biorouter-modal-row rounded-md px-4 py-4 text-left transition-colors hover:bg-background-default"
+              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
             >
               <FileStack className="h-5 w-5 text-text-muted" />
-              <div className="mt-3 text-sm font-medium">Choose files</div>
-              <p className="mt-1 text-xs leading-5 text-text-muted">
+              <div className="mt-3 text-label">Choose files</div>
+              <p className="mt-1 text-supporting text-text-muted">
                 Stage PDFs, Markdown, HTML, DOCX, CSV, plain text, and similar readable files.
               </p>
             </button>
@@ -194,11 +194,11 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
                 setChooserOpen(false);
                 void onPathPickRequested();
               }}
-              className="biorouter-modal-row rounded-md px-4 py-4 text-left transition-colors hover:bg-background-default"
+              className="biorouter-modal-row rounded-element px-4 py-4 text-left transition-colors tint-interactive"
             >
               <FolderTree className="h-5 w-5 text-text-muted" />
-              <div className="mt-3 text-sm font-medium">Choose folder or archive</div>
-              <p className="mt-1 text-xs leading-5 text-text-muted">
+              <div className="mt-3 text-label">Choose folder or archive</div>
+              <p className="mt-1 text-supporting text-text-muted">
                 Let Biorouter unpack archives, skip binaries, and stage readable children one by one
                 for curation.
               </p>

@@ -56,26 +56,26 @@ const CustomRadio = ({
           />
           <span
             className="pointer-events-none absolute inset-0 rounded-full border-[1.5px] border-border-strong
-                      transition-colors duration-[var(--motion-fast)] ease-[var(--ease-out)]
+                      transition-colors
                       peer-checked:border-border-accent"
           />
           <span
             className="pointer-events-none h-1.5 w-1.5 rounded-full bg-background-accent opacity-0
-                      transition-opacity duration-[var(--motion-fast)] ease-[var(--ease-out)]
+                      transition-opacity
                       peer-checked:opacity-100"
           />
         </span>
 
         {(label || secondaryLabel) && (
           <div>
-            {label && <p className="text-sm text-text-default">{label}</p>}
-            {secondaryLabel && <p className="text-xs text-text-muted">{secondaryLabel}</p>}
+            {label && <p className="text-label text-text-default">{label}</p>}
+            {secondaryLabel && <p className="text-supporting text-text-muted">{secondaryLabel}</p>}
           </div>
         )}
       </div>
 
       {rightContent && (
-        <div className="flex items-center text-sm text-text-muted">{rightContent}</div>
+        <div className="flex items-center text-body text-text-muted">{rightContent}</div>
       )}
     </label>
   );

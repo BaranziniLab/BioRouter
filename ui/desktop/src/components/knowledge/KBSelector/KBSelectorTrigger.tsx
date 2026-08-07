@@ -29,7 +29,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
       <button
         data-testid="knowledge-kb-selector-trigger"
         onClick={() => setOpen(true)}
-        className="group flex h-9 w-full items-center gap-2.5 rounded-md border border-border-input bg-background-default px-3 text-sm transition-colors duration-[var(--motion-fast)] hover:border-border-strong"
+        className="group flex h-9 w-full items-center gap-2.5 rounded-element border border-border-input bg-background-default px-3 text-label transition-colors hover:border-border-strong"
       >
         <span
           className="h-2 w-2 flex-shrink-0 rounded-full"
@@ -40,17 +40,15 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange }: Props) {
         </span>
         {otherBaseCount > 0 && (
           <span
-            className="shrink-0 text-[11px] text-text-muted"
+            className="shrink-0 text-supporting text-text-muted"
             title={`${otherBaseCount} more knowledge base${otherBaseCount === 1 ? '' : 's'} in this chat`}
           >
             +{otherBaseCount}
           </span>
         )}
-        <Badge uppercase className="text-[10px]">
-          KB
-        </Badge>
+        <Badge uppercase>KB</Badge>
         <ChevronDown
-          className={`h-4 w-4 shrink-0 text-text-muted transition-transform duration-[var(--motion-fast)] ${open ? 'rotate-180' : ''}`}
+          className={`h-4 w-4 shrink-0 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
         />
       </button>
       {open && <KBSelectorPalette onClose={() => setOpen(false)} />}

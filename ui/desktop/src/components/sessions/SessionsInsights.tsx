@@ -1,84 +1,23 @@
 import { useEffect, useRef, useState } from 'react';
 import { Greeting } from '../common/Greeting';
-import { useNavigate } from 'react-router-dom';
-import { Button } from '../ui/button';
-import { ChatSmart } from '../icons/';
-import { Skeleton } from '../ui/skeleton';
-import { ActivityWindow, Session } from '../../api';
-import { resumeSession } from '../../sessions';
-import { useNavigation } from '../../hooks/useNavigation';
+import { ActivityWindow } from '../../api';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { UsageHeatmap, UsageHeatmapLoading } from './UsageHeatmap';
-import { withoutSubagents } from './sessionGrouping';
-import {
-  getCachedSessionList,
-  refreshSessionList,
-  subscribeSessionList,
-} from '../../utils/sessionListCache';
-import {
-  cacheHomeRecentSessions,
-  getCachedHomeActivity,
-  getCachedRecentSessions,
-  refreshHomeActivity,
-} from '../../utils/homeInsightsCache';
+import { getCachedHomeActivity, refreshHomeActivity } from '../../utils/homeInsightsCache';
 
-const RECENT_LIMIT = 3;
-
-// The Home view sheds its lower sections as it gets short, in a fixed order:
-// the recent-chats list folds away FIRST, then the usage heatmap — so the
-// greeting + composer are the last things standing. Thresholds are the available
-// height (the scroll area above the composer), tuned on screen. Hysteresis is
-// unnecessary: hiding a section only frees height (pushes further from the
-// threshold) and showing one only consumes it, so the states cannot chase.
-const FOLD_RECENTS_BELOW_PX = 660;
-const FOLD_HEATMAP_BELOW_PX = 470;
+// The Home view no longer folds sections away or lists recent chats (the
+// sidebar's Recents already owns that job). The hero compacts via container
+// queries (main.css) and the heatmap scales its cells to whatever box is left
+// (see UsageHeatmap), so the usage story survives even the smallest window.
 
 export function SessionInsights() {
   const initialActivity = useRef(getCachedHomeActivity()).current;
-  // BR-71: three places read the shared session cache, and History's toggle can
-  // leave subagent rows in it. All three drop them — filtering only the fetch
-  // below would still let a warm cache paint them on mount.
-  const warmSessionList = getCachedSessionList();
-  const initialSessions = useRef(
-    warmSessionList
-      ? withoutSubagents(warmSessionList).slice(0, RECENT_LIMIT)
-      : getCachedRecentSessions()
-  ).current;
   const [activity, setActivity] = useState<ActivityWindow | null>(initialActivity);
   const [activityFailed, setActivityFailed] = useState(false);
-  const [recentSessions, setRecentSessions] = useState<Session[]>(initialSessions ?? []);
-  const [isLoadingSessions, setIsLoadingSessions] = useState(initialSessions === null);
-  const navigate = useNavigate();
-  const setView = useNavigation();
-
-  // Watch the height the Home view is given (its parent scroll area) and decide
-  // which lower sections fit — recents fold before the heatmap.
-  const rootRef = useRef<HTMLDivElement>(null);
-  const [availableHeight, setAvailableHeight] = useState(Number.POSITIVE_INFINITY);
-  useEffect(() => {
-    const host = rootRef.current?.parentElement;
-    if (!host) return;
-    // clientHeight is 0 in jsdom (no layout) and briefly during mount — treat
-    // that as "unknown, show everything", never as "too short, fold it all".
-    const measure = () => {
-      const h = host.clientHeight;
-      if (h > 0) setAvailableHeight(h);
-    };
-    measure();
-    if (typeof ResizeObserver === 'undefined') {
-      window.addEventListener('resize', measure);
-      return () => window.removeEventListener('resize', measure);
-    }
-    const observer = new ResizeObserver(measure);
-    observer.observe(host);
-    return () => observer.disconnect();
-  }, []);
-  const showHeatmap = availableHeight >= FOLD_HEATMAP_BELOW_PX;
-  const showRecents = availableHeight >= FOLD_RECENTS_BELOW_PX;
 
   useEffect(() => {
     // The heatmap carries the usage story now, so there is no separate insights
-    // fetch to gate a full-page skeleton on — each section shows its own loading
+    // fetch to gate a full-page skeleton on — the section shows its own loading
     // state and the greeting renders instantly.
     const loadActivity = async () => {
       try {
@@ -93,148 +32,37 @@ export function SessionInsights() {
       }
     };
 
-    const loadRecentSessions = async () => {
-      try {
-        const sessions = await refreshSessionList();
-        // BR-71: History may have asked the shared cache for subagent runs.
-        // Home's recents are conversations the *user* started, so drop them
-        // here regardless of what the other surface wanted. Filter BEFORE the
-        // slice, or a subagent row silently shortens the recents list.
-        const refreshedRecentSessions = withoutSubagents(sessions).slice(0, RECENT_LIMIT);
-        cacheHomeRecentSessions(refreshedRecentSessions);
-        setRecentSessions(refreshedRecentSessions);
-      } catch (error) {
-        console.error('Failed to load recent sessions:', error);
-      } finally {
-        setIsLoadingSessions(false);
-      }
-    };
-
     loadActivity();
-    loadRecentSessions();
   }, [initialActivity]);
 
-  // Keep the Home recents live: a rename (name channel) or a create / diverge /
-  // delete (list channel) mutates the shared cache and emits here, so the Home
-  // list matches the sidebar Recents and the tabs without a remount.
-  useEffect(() => {
-    return subscribeSessionList(() => {
-      const cached = getCachedSessionList();
-      if (cached) setRecentSessions(withoutSubagents(cached).slice(0, RECENT_LIMIT));
-    });
-  }, []);
-
-  const handleSessionClick = async (session: Session) => {
-    try {
-      resumeSession(session, setView);
-    } catch (error) {
-      console.error('Failed to start session:', error);
-      navigate('/sessions', {
-        state: { selectedSessionId: session.id },
-        replace: true,
-      });
-    }
-  };
-
-  const navigateToSessionHistory = () => {
-    navigate('/sessions');
-  };
-
-  const formatDateOnly = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date
-      .toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })
-      .replace(/\//g, '/');
-  };
-
   return (
-    <div ref={rootRef} className="flex min-h-full flex-col bg-background-canvas">
+    <div className="flex h-full min-h-0 flex-col bg-background-canvas">
       {/* Hero — text directly on canvas. Aligned to the composer's column. */}
-      <ReadableContent size="chat" className="biorouter-home-hero px-4 pb-6 pt-16 sm:px-6">
+      <ReadableContent
+        size="chat"
+        className="biorouter-home-hero shrink-0 px-4 pb-6 pt-16 sm:px-6"
+      >
         <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
         <Greeting />
       </ReadableContent>
 
-      {/* Usage heatmap — the single source of the usage story. Folds away only
-          after recents, when the window is too short for both. */}
-      {showHeatmap && (
-        <ReadableContent size="chat" className="biorouter-home-activity px-4 pb-8 sm:px-6">
-          {activity ? (
-            <div className="page-transition">
-              <UsageHeatmap window={activity} />
-            </div>
-          ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
-            <UsageHeatmapLoading />
-          )}
-        </ReadableContent>
-      )}
-
-      {/* Recent chats — the first section to fold when the window gets short. */}
-      {showRecents && (
-        <ReadableContent
-          size="chat"
-          className="biorouter-home-recents page-transition px-4 pb-8 sm:px-6"
-        >
-        <div>
-          <div className="flex justify-between items-center pb-2">
-            <span className="text-xs font-medium text-text-muted uppercase tracking-wider">
-              Recent chats
-            </span>
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-xs text-text-muted !px-2 hover:bg-background-muted/60 hover:text-text-default"
-              onClick={navigateToSessionHistory}
-            >
-              See all
-            </Button>
+      {/* Usage heatmap — the single source of the usage story. It is never
+          folded away: the flex-1 box hands it the height the window can spare
+          (min-h floor keeps it legible) and UsageHeatmap sizes its cells to
+          fit. If a pathological squeeze leaves less than the floor, the Hub
+          scrolls rather than letting anything overlap. */}
+      <ReadableContent
+        size="chat"
+        className="biorouter-home-activity min-h-[190px] min-w-0 flex-1 px-4 pb-6 sm:px-6"
+      >
+        {activity ? (
+          <div className="page-transition h-full">
+            <UsageHeatmap window={activity} />
           </div>
-
-          <div className="biorouter-list-shell min-h-[96px] transition-all duration-300 ease-in-out">
-            {isLoadingSessions ? (
-              [200, 160, 220].map((w, i) => (
-                <div
-                  key={i}
-                  className="biorouter-list-row flex items-center justify-between px-3 py-2"
-                >
-                  <div className="flex items-center space-x-2.5">
-                    <Skeleton className="h-4 w-4 rounded-sm flex-shrink-0" />
-                    <Skeleton style={{ width: w }} className="h-3.5" />
-                  </div>
-                  <Skeleton className="h-3.5 w-16" />
-                </div>
-              ))
-            ) : recentSessions.length > 0 ? (
-              recentSessions.map((session, index) => (
-                <div
-                  key={session.id}
-                  className="biorouter-list-row session-item flex items-center justify-between text-sm px-3 py-2 cursor-pointer"
-                  onClick={() => handleSessionClick(session)}
-                  role="button"
-                  tabIndex={0}
-                  style={{ animationDelay: `${index * 0.1}s` }}
-                  onKeyDown={async (e) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      await handleSessionClick(session);
-                    }
-                  }}
-                >
-                  <div className="flex items-center space-x-2.5 min-w-0">
-                    <ChatSmart className="h-4 w-4 text-text-muted flex-shrink-0" />
-                    <span className="truncate max-w-[300px]">{session.name}</span>
-                  </div>
-                  <span className="text-text-muted text-xs flex-shrink-0">
-                    {formatDateOnly(session.updated_at)}
-                  </span>
-                </div>
-              ))
-            ) : (
-              <div className="text-text-muted text-sm py-3">No recent chat sessions found.</div>
-            )}
-          </div>
-        </div>
-        </ReadableContent>
-      )}
+        ) : activityFailed ? null : ( // definitive failure: collapse, don't leave a void
+          <UsageHeatmapLoading />
+        )}
+      </ReadableContent>
     </div>
   );
 }

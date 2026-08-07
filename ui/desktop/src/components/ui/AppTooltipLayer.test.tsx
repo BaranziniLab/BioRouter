@@ -30,7 +30,7 @@ describe('AppTooltipLayer', () => {
     expect(tooltip).toHaveClass(
       'bg-background-inverse',
       'text-text-inverse',
-      'rounded-sm',
+      'rounded-inner',
       'font-sans'
     );
     expect(tooltip).not.toHaveClass('text-balance');
@@ -83,7 +83,7 @@ describe('AppTooltipLayer', () => {
     expect(tooltip).toHaveTextContent('Ships with Biorouter. Recreated automatically if deleted.', {
       normalizeWhitespace: true,
     });
-    expect(tooltip).toHaveClass('whitespace-pre-line', 'text-left', 'leading-4');
+    expect(tooltip).toHaveClass('whitespace-pre-line', 'text-left', 'text-supporting');
   });
 
   it('uses intrinsic width for short action labels', async () => {

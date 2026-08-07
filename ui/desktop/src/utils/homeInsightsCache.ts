@@ -1,12 +1,14 @@
-import { getSessionActivity, type ActivityWindow, type Session } from '../api';
+import { getSessionActivity, type ActivityWindow } from '../api';
 
 export const HOME_ACTIVITY_DAYS = 155;
 
+// v1 blobs also carried a `recentSessions` list for the Home recent-chats
+// section; that section is gone (the sidebar's Recents owns the job), so the
+// stray key is simply ignored and dropped on the next persist.
 const HOME_INSIGHTS_STORAGE_KEY = 'biorouter-home-insights-v1';
 
 type HomeInsightsCache = {
   activity: ActivityWindow | null;
-  recentSessions: Session[] | null;
 };
 
 let memoryCache: HomeInsightsCache | undefined;
@@ -15,7 +17,7 @@ let inFlightActivity: Promise<ActivityWindow> | null = null;
 function readCache(): HomeInsightsCache {
   if (memoryCache) return memoryCache;
 
-  const emptyCache = { activity: null, recentSessions: null };
+  const emptyCache = { activity: null };
   if (typeof localStorage === 'undefined') {
     memoryCache = emptyCache;
     return memoryCache;
@@ -29,10 +31,7 @@ function readCache(): HomeInsightsCache {
     }
 
     const parsed = JSON.parse(stored) as Partial<HomeInsightsCache>;
-    memoryCache = {
-      activity: parsed.activity ?? null,
-      recentSessions: Array.isArray(parsed.recentSessions) ? parsed.recentSessions : null,
-    };
+    memoryCache = { activity: parsed.activity ?? null };
   } catch {
     memoryCache = emptyCache;
   }
@@ -54,17 +53,8 @@ export function getCachedHomeActivity(): ActivityWindow | null {
   return readCache().activity;
 }
 
-export function getCachedRecentSessions(): Session[] | null {
-  return readCache().recentSessions;
-}
-
 export function cacheHomeActivity(activity: ActivityWindow): void {
   readCache().activity = activity;
-  persistCache();
-}
-
-export function cacheHomeRecentSessions(sessions: Session[]): void {
-  readCache().recentSessions = sessions;
   persistCache();
 }
 

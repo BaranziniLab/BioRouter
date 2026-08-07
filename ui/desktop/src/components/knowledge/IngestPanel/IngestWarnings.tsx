@@ -26,8 +26,8 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
             <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
           )}
           <div className="min-w-0">
-            <div className="text-sm font-medium">Curation warnings</div>
-            <p className="text-xs text-text-muted">
+            <div className="text-label">Curation warnings</div>
+            <p className="text-supporting text-text-muted">
               {warnings.length} {warnings.length === 1 ? 'item' : 'items'} tucked away until you
               need them.
             </p>
@@ -36,14 +36,14 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
         <button
           type="button"
           onClick={onClear}
-          className="shrink-0 text-[11px] text-text-muted transition-colors hover:text-text-default"
+          className="shrink-0 text-label text-text-muted transition-colors hover:text-text-default"
         >
           Clear
         </button>
       </div>
 
       <CollapsibleContent className="px-3 pb-3">
-        <p className="mb-3 text-xs leading-5 text-text-muted">
+        <p className="mb-3 text-supporting text-text-muted">
           Keep readable, high-signal sources. Leave out installers, giant raw exports, and files
           that mostly contain IDs or machine noise.
         </p>
@@ -54,7 +54,7 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
             return (
               <div
                 key={warning.id}
-                className={`rounded-lg border px-3 py-2 ${
+                className={`rounded-container border px-3 py-2 ${
                   isError
                     ? 'border-border-danger/40 bg-background-danger/10 text-text-danger'
                     : 'border-border-warning/40 bg-background-warning/10 text-text-warning'
@@ -67,10 +67,8 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
                     <Info className="mt-0.5 h-4 w-4 shrink-0" />
                   )}
                   <div className="min-w-0 flex-1">
-                    <div className="text-xs font-medium">{warning.title}</div>
-                    <p className="mt-1 break-words text-[11px] leading-5 opacity-90">
-                      {warning.message}
-                    </p>
+                    <div className="text-label">{warning.title}</div>
+                    <p className="mt-1 break-words text-supporting opacity-90">{warning.message}</p>
                   </div>
                   <button
                     type="button"

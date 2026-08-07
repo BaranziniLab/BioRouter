@@ -90,20 +90,18 @@ export default function JsonSchemaEditor({
         <div className="flex-1 flex flex-col min-h-0">
           <div className="mb-4">
             <div className="flex items-center justify-between mb-2">
-              <label className="block text-sm font-medium text-text-default">
-                Response JSON Schema
-              </label>
+              <label className="block text-label text-text-default">Response JSON Schema</label>
               <Button
                 type="button"
                 onClick={insertExample}
                 variant="ghost"
                 size="sm"
-                className="text-xs"
+                className="text-supporting"
               >
                 Insert Example
               </Button>
             </div>
-            <p className="text-xs text-text-muted mb-3">
+            <p className="text-supporting text-text-muted mb-3">
               Define the expected structure of the AI's response using JSON Schema format
             </p>
           </div>
@@ -115,7 +113,7 @@ export default function JsonSchemaEditor({
                 setLocalValue(e.target.value);
                 setLocalError('');
               }}
-              className={`biorouter-modal-panel w-full h-full min-h-[400px] px-3 py-2 text-sm rounded-lg text-text-default placeholder:text-text-muted transition-colors duration-150 resize-none font-mono ${localError || error ? '!border-border-danger' : ''}`}
+              className={`biorouter-modal-panel w-full h-full min-h-[400px] px-3 py-2 text-code rounded-element text-text-default placeholder:text-text-muted transition-colors resize-none font-mono ${localError || error ? '!border-border-danger' : ''}`}
               placeholder={`{
  "type": "object",
  "properties": {
@@ -128,7 +126,7 @@ export default function JsonSchemaEditor({
 }`}
             />
             {(localError || error) && (
-              <p className="text-text-danger text-sm mt-2">{localError || error}</p>
+              <p className="text-text-danger text-body mt-2">{localError || error}</p>
             )}
           </div>
         </div>

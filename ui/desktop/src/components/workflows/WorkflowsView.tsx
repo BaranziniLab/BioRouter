@@ -437,13 +437,15 @@ export default function WorkflowsView() {
       <div className="flex justify-between items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
-            <h3 className="text-sm text-text-default truncate max-w-[50vw]">{workflow.title}</h3>
+            <h3 className="text-label text-text-default truncate max-w-[50vw]">{workflow.title}</h3>
             {isBuiltinWorkflow(workflowManifestResponse.file_path) && (
               <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
             )}
           </div>
-          <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{workflow.description}</p>
-          <div className="flex items-center gap-3 mt-1 text-[11px] text-text-subtle">
+          <p className="text-supporting text-text-muted mt-0.5 line-clamp-1">
+            {workflow.description}
+          </p>
+          <div className="flex items-center gap-3 mt-1 text-supporting text-text-subtle">
             <span className="flex items-center">
               <Calendar className="w-3 h-3 mr-1" />
               {convertToLocaleDateString(lastModified)}
@@ -613,8 +615,8 @@ export default function WorkflowsView() {
       return (
         <div className="flex flex-col items-center justify-center h-full text-text-muted">
           <AlertCircle className="h-12 w-12 text-text-danger mb-4" />
-          <p className="text-lg mb-2">Error Loading Workflows</p>
-          <p className="text-sm text-center mb-4">{error}</p>
+          <p className="text-subheading mb-2">Error Loading Workflows</p>
+          <p className="text-body text-center mb-4">{error}</p>
           <Button onClick={loadSavedWorkflows} variant="default">
             Try Again
           </Button>
@@ -673,10 +675,8 @@ export default function WorkflowsView() {
           {/* Flat page header */}
           <div className="flex-shrink-0 border-b border-border-subtle">
             <ReadableContent className="px-8 pt-12 pb-6">
-              <h1 className="text-2xl font-semibold tracking-tight mb-1 page-transition">
-                Workflows
-              </h1>
-              <p className="text-sm text-text-muted mb-0">
+              <h1 className="text-title mb-1 page-transition">Workflows</h1>
+              <p className="text-body text-text-muted mb-0">
                 View and manage your saved workflows to quickly start new sessions with predefined
                 configurations. {getSearchShortcutText()} to search.
               </p>
@@ -798,7 +798,7 @@ export default function WorkflowsView() {
             </DialogHeader>
             <div className="space-y-4">
               <div>
-                <p className="text-sm text-text-muted mb-3">
+                <p className="text-body text-text-muted mb-3">
                   Set a slash command to quickly run this workflow from any chat
                 </p>
                 <div className="flex gap-2 items-center">
@@ -808,11 +808,11 @@ export default function WorkflowsView() {
                     value={slashCommand}
                     onChange={(e) => setSlashCommand(e.target.value)}
                     placeholder="command-name"
-                    className="flex-1 px-3 py-2 border border-border-subtle rounded text-sm"
+                    className="flex-1 px-3 py-2 border border-border-subtle rounded-element text-body"
                   />
                 </div>
                 {slashCommand && (
-                  <p className="text-xs text-text-muted mt-2">
+                  <p className="text-supporting text-text-muted mt-2">
                     Use /{slashCommand} in any chat to run this workflow
                   </p>
                 )}

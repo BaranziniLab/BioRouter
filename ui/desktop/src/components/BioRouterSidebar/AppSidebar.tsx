@@ -218,7 +218,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
           onPointerEnter={entry.path === '/' ? preloadHome : undefined}
           isActive={isActive}
           tooltip={entry.tooltip}
-          className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
+          className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
         >
           {/* Icons take --sidebar-icon rather than inheriting the label's ink.
               In Parchment that token passes through to --sidebar-foreground, so
@@ -326,7 +326,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               onClick={() => handleNavigation(settingsItem.path)}
               isActive={isActivePath(settingsItem.path)}
               tooltip={settingsItem.tooltip}
-              className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
+              className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
             >
               <Settings className="h-4 w-4" />
               <span>{settingsItem.label}</span>

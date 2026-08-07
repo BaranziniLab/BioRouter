@@ -484,7 +484,7 @@ export function IngestPanel() {
         </Button>
         {digestBlockedReason && !busy && (
           <p
-            className="text-center text-[11px] text-text-muted"
+            className="text-center text-supporting text-text-muted"
             // Only where it explains the line being shown — hung on an
             // unrelated reason it is a tooltip about someone else's problem.
             title={(kbUnavailable && basesError) || undefined}

@@ -174,8 +174,8 @@ export default function ApplicationsView() {
         <div className="flex-shrink-0 border-b border-border-subtle">
           <ReadableContent className="px-8 pt-12 pb-6">
             <div className="flex flex-col page-transition">
-              <h1 className="text-2xl font-semibold tracking-tight mb-1">Applications</h1>
-              <p className="text-sm text-text-muted mb-0">
+              <h1 className="text-title mb-1">Applications</h1>
+              <p className="text-body text-text-muted mb-0">
                 Apps you built with Agent Drafter. Each one runs a full Biorouter agent with its own
                 model, extensions, skills, and knowledge, and opens in your browser.{' '}
                 {getSearchShortcutText()} to search.
@@ -197,7 +197,7 @@ export default function ApplicationsView() {
         >
           <ReadableContent className="px-8 py-4">
             {loading ? (
-              <p className="text-sm text-text-muted mt-10 text-center">Loading applications…</p>
+              <p className="text-body text-text-muted mt-10 text-center">Loading applications…</p>
             ) : error && apps.length === 0 ? (
               <div className="flex flex-col items-center justify-center mt-16 text-center">
                 <p className="text-text-danger mb-4">Could not load applications: {error}</p>
@@ -205,10 +205,10 @@ export default function ApplicationsView() {
               </div>
             ) : filtered.length === 0 ? (
               <div className="text-center mt-16 max-w-md mx-auto">
-                <h3 className="text-base font-medium text-text-default mb-1">
+                <h3 className="text-subheading text-text-default mb-1">
                   {searchTerm ? 'No matching applications' : 'No applications yet'}
                 </h3>
-                <p className="text-sm text-text-muted">
+                <p className="text-body text-text-muted">
                   {searchTerm
                     ? 'No applications match your search.'
                     : 'Ask Biorouter to build one. For example: "Use Agent Drafter to build a SPOKE dashboard app." It will show up here, ready to launch.'}
@@ -300,13 +300,13 @@ export function ApplicationItem({
     >
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-1.5">
-          <p className="text-sm text-text-default truncate">{app.title}</p>
-          <span className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0">
+          <p className="text-label text-text-default truncate">{app.title}</p>
+          <span className="text-supporting px-1.5 py-0.5 rounded-inner bg-background-medium text-text-muted flex-shrink-0">
             {app.kind}
           </span>
           {surfaceSummary && (
             <span
-              className="text-[11px] px-1.5 py-0.5 rounded bg-background-medium text-text-muted flex-shrink-0"
+              className="text-supporting px-1.5 py-0.5 rounded-inner bg-background-medium text-text-muted flex-shrink-0"
               title="Declared app surface: verbs the agent can call and signals it can subscribe to"
             >
               {surfaceSummary}
@@ -314,9 +314,9 @@ export function ApplicationItem({
           )}
         </div>
         {app.description && (
-          <p className="text-xs text-text-muted mt-0.5 line-clamp-1">{app.description}</p>
+          <p className="text-supporting text-text-muted mt-0.5 line-clamp-1">{app.description}</p>
         )}
-        <div className="flex items-center gap-3 mt-1 text-[11px] text-text-subtle flex-wrap">
+        <div className="flex items-center gap-3 mt-1 text-supporting text-text-subtle flex-wrap">
           <span className="flex items-center">
             <Calendar className="w-3 h-3 mr-1" />
             Created {formatDate(app.created_at)}

@@ -198,7 +198,7 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
           onClick={() => onOpen(session.id, session.name.trim() || undefined)}
           aria-label={accessibleLabel}
           aria-current={isActive ? 'page' : undefined}
-          className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:rounded-full before:bg-transparent hover:bg-sidebar-hover ${
+          className={`relative flex h-8 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden rounded-lg px-3 text-left text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover ${
             isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
           }`}
         >

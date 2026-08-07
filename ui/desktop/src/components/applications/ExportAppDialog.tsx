@@ -41,8 +41,8 @@ function IncludeCheckbox({
         className="mt-0.5"
       />
       <label htmlFor={id} className="min-w-0 cursor-pointer">
-        <span className="block text-sm text-text-default">{label}</span>
-        <span className="block text-xs text-text-muted">{hint}</span>
+        <span className="block text-label text-text-default">{label}</span>
+        <span className="block text-supporting text-text-muted">{hint}</span>
       </label>
     </div>
   );
@@ -163,7 +163,7 @@ export default function ExportAppDialog({ app, onConfirm, onCancel }: ExportAppD
               label="Bundle daemon binary (~110 MB)"
               hint="Skips the biorouterd download on the recipient's machine."
             />
-            <p className="text-xs text-text-muted mt-1">
+            <p className="text-supporting text-text-muted mt-1">
               Full exports can be large. A bundled knowledge base carries its sources.
             </p>
           </div>

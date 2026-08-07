@@ -151,8 +151,8 @@ export default function ExtensionsView({
         <div className="flex-shrink-0 border-b border-border-subtle">
           <ReadableContent className="px-8 pt-12 pb-6">
             <div className="flex flex-col page-transition">
-              <h1 className="text-2xl font-semibold tracking-tight mb-1">Extensions</h1>
-              <p className="text-sm text-text-muted mb-0">
+              <h1 className="text-title mb-1">Extensions</h1>
+              <p className="text-body text-text-muted mb-0">
                 MCP extensions expand Biorouter's capabilities with Prompts, Resources, and Tools.
                 Enabled extensions apply to all new chats. {getSearchShortcutText()} to search.
               </p>

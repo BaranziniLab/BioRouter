@@ -66,7 +66,7 @@ function SheetContent({
         {...props}
       >
         {children}
-        <SheetPrimitive.Close className="data-[state=open]:bg-background-muted absolute top-4 right-4 flex h-8 w-8 items-center justify-center rounded-md text-text-muted opacity-70 transition-[opacity,background-color] duration-[var(--motion-fast)] hover:bg-background-muted hover:opacity-100 disabled:pointer-events-none">
+        <SheetPrimitive.Close className="data-[state=open]:bg-overlay-hover absolute top-4 right-4 flex h-8 w-8 items-center justify-center rounded-element text-text-muted opacity-70 transition-[opacity,background-color] hover:bg-overlay-hover hover:opacity-100 disabled:pointer-events-none">
           <XIcon className="size-4" />
           <span className="sr-only">Close</span>
         </SheetPrimitive.Close>
@@ -99,7 +99,7 @@ function SheetTitle({ className, ...props }: React.ComponentProps<typeof SheetPr
   return (
     <SheetPrimitive.Title
       data-slot="sheet-title"
-      className={cn('text-text-default text-base font-semibold', className)}
+      className={cn('text-text-default text-subheading', className)}
       {...props}
     />
   );
@@ -112,7 +112,7 @@ function SheetDescription({
   return (
     <SheetPrimitive.Description
       data-slot="sheet-description"
-      className={cn('text-text-muted text-sm', className)}
+      className={cn('text-text-muted text-body', className)}
       {...props}
     />
   );
