@@ -71,8 +71,6 @@ export default {
       sidebar: '#eef0f0',
       'sidebar-foreground': '#052049',
       'sidebar-icon': '#14828c',
-      'sidebar-primary': '#14828c',
-      'sidebar-primary-foreground': '#ffffff',
       'sidebar-hover': '#e3e5e5',
       'sidebar-active': '#d8d9da',
       'sidebar-accent': '#e3e5e5',
@@ -87,8 +85,6 @@ export default {
         '0px 8px 24px 0px rgba(5, 32, 73, 0.12), 0px 0px 1px 0px rgba(5, 32, 73, 0.18)',
       'shadow-modal':
         '0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16), 0px 0px 0px 1px rgba(5, 32, 73, 0.05)',
-      'shadow-modal-chrome-bottom': 'none',
-      'shadow-modal-chrome-top': 'none',
       scrim: 'rgba(5, 32, 73, 0.2)',
     },
     raw: {
@@ -211,8 +207,6 @@ export default {
       sidebar: '#071b3a',
       'sidebar-foreground': '#f2f3f4',
       'sidebar-icon': '#60d0da',
-      'sidebar-primary': '#60d0da',
-      'sidebar-primary-foreground': '#052049',
       'sidebar-hover': '#0e2a50',
       'sidebar-active': '#163864',
       'sidebar-accent': '#0e2a50',
@@ -225,8 +219,6 @@ export default {
       'shadow-popover': '0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5)',
       'shadow-modal':
         '0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055)',
-      'shadow-modal-chrome-bottom': 'none',
-      'shadow-modal-chrome-top': 'none',
       scrim: 'rgba(0, 0, 0, 0.48)',
     },
     raw: {

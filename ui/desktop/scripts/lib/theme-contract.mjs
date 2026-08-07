@@ -4,8 +4,13 @@
  *
  * Before this existed the answer was folklore: you copied the previous family's
  * blocks and hoped. Every estimate of the vocabulary size was wrong (the design
- * discussion assumed ~45; it is 60 semantic + 27 raw + 17 structural), which is
+ * discussion assumed ~45; it is 58 semantic + 27 raw + 17 structural), which is
  * how two separate refactor proposals mispriced themselves threefold.
+ *
+ * Shrinking this list is a real saving: it is what a NEW family has to author.
+ * The Astryx sweep removed four consumerless entries — `sidebar-primary`,
+ * `sidebar-primary-foreground` and the two `shadow-modal-chrome-*` no-ops —
+ * which is eight fewer hand-picked values per family across the two modes.
  *
  * Anything listed REQUIRED here must be present in every theme definition or
  * the generator refuses to emit. Anything DERIVED is computed from other tokens
@@ -80,8 +85,6 @@ export const SEMANTIC_TOKENS = [
   'sidebar',
   'sidebar-foreground',
   'sidebar-icon',
-  'sidebar-primary',
-  'sidebar-primary-foreground',
   'sidebar-hover',
   'sidebar-active',
   'sidebar-accent',
@@ -95,8 +98,6 @@ export const SEMANTIC_TOKENS = [
   'shadow-composer',
   'shadow-popover',
   'shadow-modal',
-  'shadow-modal-chrome-bottom',
-  'shadow-modal-chrome-top',
 ];
 
 /**
@@ -111,8 +112,6 @@ export const SHADOW_TOKENS = new Set([
   'shadow-composer',
   'shadow-popover',
   'shadow-modal',
-  'shadow-modal-chrome-bottom',
-  'shadow-modal-chrome-top',
 ]);
 
 /** Tokens whose value is a colour and can therefore be contrast-checked. */

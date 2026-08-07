@@ -200,10 +200,12 @@
   --color-coral-600: #b85a32; /* light-mode CTA fill + focus ring */
   --color-coral-700: #a94f2a; /* light-mode CTA hover */
 
-  /* Deprecated aliases: `block-teal` held a coral, not a teal (DR-02).
-     Retained so existing call sites keep rendering; sweep them to coral-*. */
+  /* Deprecated alias: `block-teal` holds a coral, not a teal (DR-02). Retained
+     only because five call sites still read it (BrxtInstallModal,
+     ImportWorkflowForm, CreateEditWorkflowModal, ExtensionsView,
+     ImportSessionModal); sweep those to coral-* and this goes with them.
+     `--color-block-orange` had no call sites at all and was deleted. */
   --color-block-teal: var(--color-coral-500);
-  --color-block-orange: var(--color-coral-600);
 
   /* Warm cream-gray neutral palette — calmer than the yellow-cast original */
   --color-neutral-50: #faf8f3;
@@ -537,8 +539,6 @@
      here (and in .dark) so every theme resolves it and check-contrast.mjs can
      assert it across all four. */
   --sidebar-icon: var(--sidebar-foreground);
-  --sidebar-primary: var(--background-accent);
-  --sidebar-primary-foreground: var(--text-inverse);
   --sidebar-hover: #ece4d4;
   --sidebar-active: #e4d9c3;
   --sidebar-accent: var(--sidebar-hover);
@@ -566,11 +566,6 @@
   --shadow-modal:
     0px 22px 60px -18px rgba(32, 25, 15, 0.22), 0px 8px 24px -18px rgba(32, 25, 15, 0.16),
     0px 0px 0px 1px rgba(32, 25, 15, 0.045);
-  /* D-05: elevation is hairline-only outside the four permitted surfaces.
-     These two chrome shadows existed solely to fake a gradient page header;
-     they are now no-ops, retained as null values so any stale reference is inert. */
-  --shadow-modal-chrome-bottom: none;
-  --shadow-modal-chrome-top: none;
 
   /* ── Inset rings (§2.7, §3.2, §4.4) ──────────────────────────────────────
      An INSET ring, not an outline and not a border, and the distinction is the
@@ -659,8 +654,6 @@
   --sidebar: var(--background-muted);
   --sidebar-foreground: var(--text-default);
   --sidebar-icon: var(--sidebar-foreground);
-  --sidebar-primary: var(--background-accent);
-  --sidebar-primary-foreground: var(--text-inverse);
   --sidebar-hover: #322b1d;
   --sidebar-active: #3d3524;
   --sidebar-accent: var(--sidebar-hover);
@@ -678,8 +671,6 @@
   --shadow-modal:
     0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5),
     0px 0px 0px 1px rgba(255, 255, 255, 0.055);
-  --shadow-modal-chrome-bottom: none;
-  --shadow-modal-chrome-top: none;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -778,8 +769,6 @@
   --sidebar: #eef0f0;
   --sidebar-foreground: #052049;
   --sidebar-icon: #14828c;
-  --sidebar-primary: #14828c;
-  --sidebar-primary-foreground: #ffffff;
   --sidebar-hover: #e3e5e5;
   --sidebar-active: #d8d9da;
   --sidebar-accent: #e3e5e5;
@@ -791,8 +780,6 @@
   --shadow-composer: 0px 2px 6px -1px rgba(5, 32, 73, 0.1), 0px 1px 2px 0px rgba(5, 32, 73, 0.06);
   --shadow-popover: 0px 8px 24px 0px rgba(5, 32, 73, 0.12), 0px 0px 1px 0px rgba(5, 32, 73, 0.18);
   --shadow-modal: 0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16), 0px 0px 0px 1px rgba(5, 32, 73, 0.05);
-  --shadow-modal-chrome-bottom: none;
-  --shadow-modal-chrome-top: none;
 }
 
 .dark[data-theme='alma-mater'] {
@@ -844,8 +831,6 @@
   --sidebar: #071b3a;
   --sidebar-foreground: #f2f3f4;
   --sidebar-icon: #60d0da;
-  --sidebar-primary: #60d0da;
-  --sidebar-primary-foreground: #052049;
   --sidebar-hover: #0e2a50;
   --sidebar-active: #163864;
   --sidebar-accent: #0e2a50;
@@ -857,8 +842,6 @@
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
   --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
   --shadow-modal: 0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055);
-  --shadow-modal-chrome-bottom: none;
-  --shadow-modal-chrome-top: none;
 }
 
 :root[data-theme='roche-limit'] {
@@ -942,8 +925,6 @@
   --sidebar: #f7f7f5;
   --sidebar-foreground: #1f1e1c;
   --sidebar-icon: #d95b08;
-  --sidebar-primary: #ee6c1a;
-  --sidebar-primary-foreground: #ffffff;
   --sidebar-hover: #efefec;
   --sidebar-active: #eaeae6;
   --sidebar-accent: #efefec;
@@ -955,8 +936,6 @@
   --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
   --shadow-popover: 0px 8px 24px 0px rgba(31, 30, 28, 0.11), 0px 0px 1px 0px rgba(31, 30, 28, 0.16);
   --shadow-modal: 0px 22px 60px -18px rgba(31, 30, 28, 0.22), 0px 8px 24px -18px rgba(31, 30, 28, 0.16), 0px 0px 0px 1px rgba(31, 30, 28, 0.05);
-  --shadow-modal-chrome-bottom: none;
-  --shadow-modal-chrome-top: none;
 }
 
 .dark[data-theme='roche-limit'] {
@@ -1008,8 +987,6 @@
   --sidebar: #171716;
   --sidebar-foreground: #ededea;
   --sidebar-icon: #ee6c1a;
-  --sidebar-primary: #ee6c1a;
-  --sidebar-primary-foreground: #131312;
   --sidebar-hover: #232320;
   --sidebar-active: #2e2e2a;
   --sidebar-accent: #232320;
@@ -1021,15 +998,11 @@
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
   --shadow-popover: 0px 8px 24px 0px rgba(0, 0, 0, 0.4), 0px 0px 1px 0px rgba(0, 0, 0, 0.5);
   --shadow-modal: 0px 22px 64px -16px rgba(0, 0, 0, 0.62), 0px 8px 26px -18px rgba(0, 0, 0, 0.5), 0px 0px 0px 1px rgba(255, 255, 255, 0.055);
-  --shadow-modal-chrome-bottom: none;
-  --shadow-modal-chrome-top: none;
 }
 /* THEMES:GENERATED:FAMILIES:END */
 
 
 @theme inline {
-  --ease-g2: cubic-bezier(0.55, 0, 1, 0.45);
-
   --color-background-canvas: var(--background-canvas);
   --color-background-default: var(--background-default);
   --color-background-muted: var(--background-muted);
@@ -1112,7 +1085,6 @@
   --font-mono:
     ui-monospace, 'SF Mono', SFMono-Regular, 'Cascadia Mono', Menlo, Consolas, 'Liberation Mono',
     monospace;
-  --font-serif: serif;
 
   --color-heat-0: var(--heat-0);
   --color-heat-1: var(--heat-1);
@@ -1126,8 +1098,6 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-hover: var(--sidebar-hover);
   --color-sidebar-active: var(--sidebar-active);
-  --color-sidebar-primary: var(--sidebar-primary);
-  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
   --color-sidebar-accent: var(--sidebar-accent);
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
@@ -1346,14 +1316,10 @@
 }
 
 /* `sidebar-item-in` and `wind` are gone with the staggered nav entrance and the
-   FlyingBird decoration they drove (D-14). */
-
-/* D-14: the staggered per-nth-child sidebar entrance is deleted. The nav is
-   seen on every cold start; a 0.8s performance there is the opposite of "calm".
-   The class is retained (still referenced by AppSidebar) but is now inert. */
-.sidebar-item {
-  opacity: 1;
-}
+   FlyingBird decoration they drove (D-14). `.sidebar-item` itself — the inert
+   `opacity: 1` left behind by D-14, plus the three `!important` pointer-events
+   guards that propped up the old rail — went with the phase 7 compaction, which
+   removed its last call site. */
 
 /* Toast body + close button.
    React-Toastify v11 renders custom content directly inside our toast card; it
@@ -1443,22 +1409,6 @@
   backdrop-filter: blur(8px);
 }
 
-
-/* P7 — the diagnostics panel was a white card behind a CREAM scrim in dark mode.
-   It now uses the same tokens as every other modal. */
-.biorouter-diagnostics-overlay {
-  background: var(--scrim);
-  backdrop-filter: blur(8px);
-}
-
-
-.biorouter-diagnostics-surface {
-  background: var(--background-default);
-  color: var(--text-default);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-2xl);
-  box-shadow: var(--shadow-modal);
-}
 
 .biorouter-modal-surface {
   background: var(--background-default);
@@ -2559,27 +2509,19 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
   min-height: 140px;
 }
 
-/* Ensure navigation is always responsive */
+/* Ensure navigation is always responsive.
+   This was three rules carrying the same `pointer-events: auto !important`
+   guard, two of them keyed on the now-deleted `.sidebar-item`. Only the
+   `[data-slot]` selector has a live renderer (AppSidebar's SidebarMenuButton),
+   so the two dead rules are gone and the surviving declarations — which were
+   split across identical selectors — are stated once. */
 [data-slot='sidebar-menu-button'] {
   /* Ensure buttons are always clickable during transitions */
   pointer-events: auto !important;
   /* Optimize for interaction */
   touch-action: manipulation;
-}
-
-/* Ensure all navigation buttons are immediately responsive */
-.sidebar-item button,
-.sidebar-item a,
-[data-slot='sidebar-menu-button'] {
-  pointer-events: auto !important;
   /* Prevent any blocking during animations */
   will-change: auto;
-}
-
-/* Override any blocking pointer events during animations */
-.sidebar-item,
-.sidebar-item * {
-  pointer-events: auto !important;
 }
 
 /* Optimize route transitions for better performance */
@@ -2613,33 +2555,6 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
    compositor cannot promote, so a will-change hint there is ineffective; and the
    previous per-state reset blocks cancelled each other out (data-state is always
    expanded|collapsed), leaving the hint on permanently. Both are removed. */
-
-/* Subtle back-and-forth shimmer animation for onboarding card */
-@keyframes shimmer {
-  0% {
-    transform: translateX(-100%);
-    opacity: 0;
-  }
-  20% {
-    opacity: 0.15;
-  }
-  50% {
-    transform: translateX(100%);
-    opacity: 0.05;
-  }
-  80% {
-    opacity: 0.15;
-  }
-  100% {
-    transform: translateX(-100%);
-    opacity: 0;
-  }
-}
-
-.animate-shimmer {
-  /* A sweeping translate (marquee-like) reads best at constant speed. */
-  animation: shimmer 6s linear infinite;
-}
 
 /* KaTeX Math Rendering */
 
@@ -2691,17 +2606,6 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
   }
   50% {
     opacity: 0.55;
-  }
-}
-
-@keyframes breathe-pulse {
-  0% {
-    transform: scale(1);
-    opacity: 0.45;
-  }
-  100% {
-    transform: scale(1.6);
-    opacity: 0;
   }
 }
 

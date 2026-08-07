@@ -484,15 +484,34 @@ Not everything needs changing, and the audits were explicit about it. These stan
 
 ## 7. The deletion list
 
-A redesign that only adds is a redesign that fails. These are removed as part of the work, each verified dead or duplicative by the audits:
+A redesign that only adds is a redesign that fails. This was the list the audits proposed. Phase 10 then re-grepped every entry against the tree the nine preceding phases had actually produced, and the rule it applied was: **delete only what nothing references any more.** A deletion that merely compiles is not a passing deletion, because `cn()`/tailwind-merge drops classes it does not recognise without erroring — an unreferenced-looking token and a silently-swallowed one are indistinguishable from the build.
 
-**Tokens:** `--background-card` (byte-identical to `--background-default` in all six family/mode combinations), `--sidebar-accent(-foreground)`, `--sidebar-ring`, `--sidebar-primary(-foreground)` (zero consumers, and Roche's value would fail AA if anything ever used it), `--border-default`, `--color-block-teal`/`-orange` (a "teal" holding a coral, 8 live call sites), `--ease-g2`, `--ease-in`, `--font-serif`, `--shadow-modal-chrome-top/bottom`.
+That re-check moved most of this list. The audits were counting call sites in the pre-Astryx tree; five migrations had since changed which aliases were load-bearing, in both directions.
 
-**CSS:** `shimmer` + `.animate-shimmer`, `breathe-pulse`, `.sidebar-item` and its three `!important` pointer-events guards, `.biorouter-diagnostics-*`, the duplicate `.biorouter-settings-row` (it differs from `.biorouter-list-row` by four percentage points of hover mix).
+### 7.1 Removed
 
-**Classes in TSX:** `page-transition` × 11, `biorouter-composer-view-transition` × 2, `animate-[wind_…]` × 2 (the keyframes were deleted), the dead `shadow-sm`/`shadow-md` in `DocumentPreview`.
+**Tokens:** `--sidebar-primary(-foreground)` (zero consumers, and Roche's value would fail AA if anything ever used it), `--color-block-orange`, `--ease-g2`, `--font-serif`, `--shadow-modal-chrome-top/bottom` (`none` in all six family/mode combinations, read by nothing).
 
-**Components:** ~300 lines of unreachable shadcn sidebar scaffolding, the six hand-rolled modal shells, the legacy `SessionViewComponents` renderer with its pre-token `bg-bgSecondary`, two `window.confirm` calls, the `shape` prop on Button, and the duplicate `tailwindcss-animate` dependency.
+Removing the four semantic entries also shrinks the theme contract from 60 tokens to 58 — eight fewer hand-picked values every new family has to author across its two modes.
+
+**CSS:** `@keyframes shimmer` + `.animate-shimmer`, `@keyframes breathe-pulse`, `.sidebar-item` and the two of its three `!important` pointer-events guards that were keyed on it alone. The third guard survives on `[data-slot='sidebar-menu-button']`, which AppSidebar still renders; with the dead selectors stripped it became a byte-duplicate of the rule above it, so the two are now stated once. `.biorouter-diagnostics-*`.
+
+**Dependency:** `tailwindcss-animate` — the Tailwind v3 plugin, superseded by the `tw-animate-css` that `main.css` actually imports, and referenced from nowhere but `package.json`.
+
+### 7.2 Kept, with the reason
+
+Each of these still has live consumers. They are follow-up work in the component files, not sweep work:
+
+| Entry | Why it survived |
+|---|---|
+| `--background-card` | 9 call sites in 7 components (`ui/card.tsx`, `CardContainer`, `UsagePanel` ×3, four onboarding cards) — and the theme generator resolves it as a `SURFACE_TOKENS` entry, so sandboxed `srcdoc` previews inline it as a literal hex. Not byte-identical to `--background-default` any more either: Parchment dark inverts the ladder. |
+| `--border-default` | 34 call sites across 13 components, including `ui/separator.tsx`, `SecurityToggle`, `LocalModelInventory`, `SwitchModelModal` and `ExtensionInfoFields`. |
+| `--color-block-teal` | 5 call sites (`BrxtInstallModal`, `ImportWorkflowForm`, `CreateEditWorkflowModal`, `ExtensionsView`, `ImportSessionModal`). Its `-orange` twin had none and went. |
+| `--sidebar-accent(-foreground)`, `--sidebar-ring` | Consumed throughout `ui/sidebar.tsx`; `--sidebar-ring` additionally by `SidebarUpdateButton`'s `focus-visible` ring. They fall when the shadcn scaffolding does, not before. |
+| `--ease-in` | The audit called it "defined, never used" — a phase since added `ease-[var(--ease-in)]` to `SessionListView`'s skeleton cross-fade. Live. |
+| `.biorouter-settings-row` | 23 call sites across 17 Settings components. Genuinely a four-percentage-point duplicate of `.biorouter-list-row`, but converging them is a change to those components, not to the stylesheet. |
+
+**Classes in TSX** (`page-transition` × 11, `biorouter-composer-view-transition` × 2, `animate-[wind_…]` × 2, `DocumentPreview`'s dead shadows) and **components** (the shadcn sidebar scaffolding, the hand-rolled modal shells, `SessionViewComponents` with its pre-token `bg-bgSecondary`, two `window.confirm` calls, Button's `shape` prop) are all still present and all still referenced. `animate-[wind_…]` is the sharpest of them: its `@keyframes wind` really is gone, so those two elements on `icons/BioRouter.tsx` name an animation that does not exist — inert, but it should be deleted rather than left looking intentional.
 
 ---
 
