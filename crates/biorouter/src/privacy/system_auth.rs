@@ -660,9 +660,10 @@ mod tests {
     /// reports it as a timed-out test rather than as an assertion.
     #[tokio::test(start_paused = true)]
     async fn a_prompt_that_is_never_answered_still_ends_in_a_refusal() {
-        let refusal = authenticate_or_refuse(&NeverAnswers, &AuthRequest::about("Do a thing.", "s"))
-            .await
-            .expect("an unanswered prompt must refuse, never approve");
+        let refusal =
+            authenticate_or_refuse(&NeverAnswers, &AuthRequest::about("Do a thing.", "s"))
+                .await
+                .expect("an unanswered prompt must refuse, never approve");
 
         // Fails CLOSED. This is the assertion that matters: the alternative
         // reading of "the OS did not say no" is "the OS said yes".
