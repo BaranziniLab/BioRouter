@@ -231,7 +231,9 @@ export function ChatTabStrip({
   // getSessionTitlePadding moved here from BaseChat: the strip is now its only
   // consumer. The reserve is what stops the tabs sliding under the macOS traffic
   // lights when the sidebar is collapsed — and when it fails, it fails SILENTLY.
-  const paddingLeft = getSessionTitlePadding(isCompactSidebarOverlayOpen, reserveTitlebar);
+  // Named for what it IS, not how it is applied: it is applied as a MARGIN, so
+  // that it sits outside this element's draggable border box (#74).
+  const leftReserve = getSessionTitlePadding(isCompactSidebarOverlayOpen, reserveTitlebar);
 
   const handleKeyDown = (event: React.KeyboardEvent, index: number) => {
     // Roving tabindex: both tab surfaces have promised role="tablist" and never
@@ -269,7 +271,27 @@ export function ChatTabStrip({
       // moves is not a reserve. On the wrap it is a fixed gutter — the scroll
       // box now BEGINS at 172px and its overflow clips there, so no scroll
       // offset can ever carry a tab across it.
-      style={{ paddingLeft, WebkitAppRegion: 'drag' } as CSSProperties}
+      //
+      // MARGIN, NOT PADDING, AND THAT IS LOAD-BEARING (#74). This element is
+      // `-webkit-app-region: drag`. Padding lives INSIDE the border box, so
+      // with the reserve as padding the drag rect still began at x=0 and
+      // covered the very titlebar controls the reserve exists to protect —
+      // the OS ate every click on them, because Electron folds app-region
+      // rects in TREE order (a later `drag` re-covers an earlier `no-drag`,
+      // z-index irrelevant) and this wrap is mounted after them. A margin is
+      // OUTSIDE the border box, so the drag rect now starts at the reserve
+      // and the tabs land in exactly the same place as before.
+      //
+      // Both rects in this row had to move: measured with real CGEventPost
+      // input, the header's rect and this one were EACH sufficient on their
+      // own to kill the buttons, so fixing only one changed nothing. See the
+      // matching note in BaseChat.tsx.
+      //
+      // Do not "simplify" this back to padding, and do not try to remove a
+      // rect from the fold by writing `-webkit-app-region: none` — measured,
+      // an explicitly specified `none` computes to `no-drag` in Blink (it
+      // subtracts a rect); only an ABSENT declaration is truly absent.
+      style={{ marginLeft: leftReserve, WebkitAppRegion: 'drag' } as CSSProperties}
     >
       <div
         role="tablist"
@@ -283,11 +305,15 @@ export function ChatTabStrip({
         data-tab-strip-group={groupId}
         data-group-active={groupActive ? 'true' : 'false'}
         className="br-tabstrip br-tabstrip--inline h-full min-w-0 flex-1"
-        // The strip lives INSIDE BaseChat's 52px WebkitAppRegion:'drag' header.
-        // R1 was measured with real OS input through CDP: a pointer drag on a
-        // no-drag child inside that drag region DOES reach the DOM and the window
-        // does not move. So the strip may live here — but every tab must still
-        // declare no-drag itself, or the OS eats the gesture before React sees it.
+        // The strip lives INSIDE the wrap's WebkitAppRegion:'drag' rect. R1 was
+        // measured with real OS input through CDP: a pointer drag on a no-drag
+        // child inside a drag region DOES reach the DOM and the window does not
+        // move. So the strip may live here — but every tab must still declare
+        // no-drag itself, or the OS eats the gesture before React sees it.
+        //
+        // This one keeps `drag` safely: it begins at the wrap's CONTENT edge,
+        // which the wrap's margin has already pushed past the titlebar controls
+        // (#74), so it never reaches them the way the wrap itself did.
         //
         // paddingLeft: 0 cancels `.br-tabstrip`'s `padding: 0 8px` on the left
         // only, so the reserve on the wrap is the whole left inset and the first

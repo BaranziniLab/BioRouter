@@ -2,7 +2,10 @@ import { describe, it, expect, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import { ChatTabStrip } from './ChatTabStrip';
 import { ChatTab, firstLeaf, GroupLayout } from './chatGroupsTypes';
-import { getTitlebarControlReserve, TITLEBAR_CONTROL_RESERVE_PROPERTY } from '../Layout/TitlebarControls';
+import {
+  getTitlebarControlReserve,
+  TITLEBAR_CONTROL_RESERVE_PROPERTY,
+} from '../Layout/TitlebarControls';
 
 /**
  * The reserve test the spec demands (card Pi).
@@ -23,6 +26,22 @@ import { getTitlebarControlReserve, TITLEBAR_CONTROL_RESERVE_PROPERTY } from '..
  * check: the reserve belongs to the wrap, and the scroll box must carry no left
  * inset of its own. Geometry under a real scroll offset is browser work — see
  * the D-32 width sweep.
+ *
+ * Then it failed silently a THIRD time (#74), and this file passed through that
+ * one too. The reserve was on the wrap, outside the scroll box, exactly as
+ * asserted — but applied as PADDING, and the wrap is `-webkit-app-region: drag`.
+ * Padding is inside the border box, so the draggable rect still began at the
+ * row's left edge and swallowed the very titlebar controls the reserve exists
+ * to protect: measured with real CGEventPost input, zero events reached the
+ * sidebar toggle and a press-drag moved the window instead. The reserve is now
+ * a MARGIN, which is outside the border box, so the drag rect starts past the
+ * controls while every tab lands in exactly the same place.
+ *
+ * That is why the assertions below read marginLeft. Do not relax them back to
+ * "either padding or margin" — the property IS the fix. And note what jsdom
+ * still cannot see: it has no layout and no app-regions, so nothing here can
+ * fail on #74 itself. The gate that can is scripts/titlebar-appregion-check.mjs
+ * against a running app.
  */
 
 const TAB: ChatTab = {
@@ -55,19 +74,19 @@ describe('ChatTabStrip — the 172px titlebar reserve', () => {
     expect(getTitlebarControlReserve(true)).toBe(172);
     // Derived from the same function AppLayout sets the property from, never a
     // literal — that is exactly how a hardcoded 172 drifted before.
-    expect(getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe(
+    expect(getByTestId('chat-tab-strip-reserve').style.marginLeft).toBe(
       `var(${TITLEBAR_CONTROL_RESERVE_PROPERTY}, 172px)`
     );
   });
 
   it('no reserve: the strip falls back to the plain 16px inset', () => {
     const { getByTestId } = renderStrip(false);
-    expect(getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe('16px');
+    expect(getByTestId('chat-tab-strip-reserve').style.marginLeft).toBe('16px');
   });
 
   it('the compact sidebar overlay wins over the titlebar reserve', () => {
     const { getByTestId } = renderStrip(true, true);
-    expect(getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe(
+    expect(getByTestId('chat-tab-strip-reserve').style.marginLeft).toBe(
       'calc(var(--sidebar-width) + 8px)'
     );
   });
@@ -93,6 +112,10 @@ describe('ChatTabStrip — the 172px titlebar reserve', () => {
     // …and it adds no left inset of its own, so the wrap's reserve is the whole
     // left edge and the first tab lands exactly on it.
     expect(scrollBox.style.paddingLeft).toBe('0px');
+    // #74: the wrap is a drag region, so its reserve must be OUTSIDE its border
+    // box. Padding here would put the titlebar controls back inside the
+    // draggable rect and kill them at the OS level.
+    expect(reserveEl.style.paddingLeft).toBe('');
   });
 });
 
@@ -183,10 +206,10 @@ describe('firstLeaf — the reserve is aimed by a TREE WALK, never an index', ()
     const reserved = firstLeaf(layout);
 
     const top = renderStrip(reserved === 'top');
-    expect(top.getByTestId('chat-tab-strip-reserve').style.paddingLeft).toContain('172px');
+    expect(top.getByTestId('chat-tab-strip-reserve').style.marginLeft).toContain('172px');
     top.unmount();
 
     const bottom = renderStrip(reserved === 'bottom');
-    expect(bottom.getByTestId('chat-tab-strip-reserve').style.paddingLeft).toBe('16px');
+    expect(bottom.getByTestId('chat-tab-strip-reserve').style.marginLeft).toBe('16px');
   });
 });

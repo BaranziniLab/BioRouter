@@ -909,9 +909,11 @@ interface BaseChatProps {
    * actions never have to move. Mount a strip ABOVE BaseChat instead and you
    * get a strip row AND an actions row: two 52px bars.
    *
-   * The header is WebkitAppRegion:'drag'; anything interactive rendered here
-   * must declare no-drag on itself (R1, measured 2026-07-16 — the gesture does
-   * reach the DOM, but only for no-drag children).
+   * The header row carries a WebkitAppRegion:'drag' rect (on the strip's own
+   * wrap, inset by a margin — see the header markup and #74); anything
+   * interactive rendered here must declare no-drag on itself (R1, measured
+   * 2026-07-16 — the gesture does reach the DOM, but only for no-drag
+   * children).
    */
   renderSessionTitle?: () => React.ReactNode;
   /**
@@ -2130,15 +2132,32 @@ function BaseChatContent({
                 // bottom hairlines read at different weights so they never
                 // visually aligned (D-18).
                 className="relative z-[var(--z-sticky)] flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-canvas pr-4"
-                style={
-                  {
-                    WebkitAppRegion: 'drag',
-                    // The tab strip owns its own left reserve (it is the only
-                    // consumer of getSessionTitlePadding once it renders), so
-                    // the header must not apply the reserve twice.
-                    paddingLeft: renderSessionTitle ? 0 : sessionPillPaddingLeft,
-                  } as React.CSSProperties
-                }
+                // THIS ROW MUST NOT DECLARE `-webkit-app-region: drag` (#74).
+                //
+                // It used to, and with the sidebar collapsed its border box
+                // starts at x=0 — so its drag rect covered the floating
+                // titlebar controls (sidebar toggle + New Window, x 100–156).
+                // Electron folds app-region rects in TREE order, unioning
+                // `drag` and subtracting `no-drag`, so a later `drag` re-covers
+                // an earlier `no-drag` no matter what the z-index says. The
+                // controls are mounted earlier (AppLayout renders them before
+                // SidebarInset), so this row won and both buttons went dead at
+                // the OS level: measured with real CGEventPost input, ZERO
+                // events reached the renderer and a press-drag moved the
+                // window instead. Collapsing the sidebar made the control that
+                // un-collapses it unreachable — a one-way door.
+                //
+                // The fix is geometric, and it has to hold for BOTH drag rects
+                // in this row: neutralising only one leaves the other lethal
+                // (measured — see the truth table on the strip wrap in
+                // ChatTabStrip.tsx). Padding lives INSIDE the border box, so a
+                // padded reserve is still inside the draggable rect; a margin
+                // is outside it. Every `drag` rect here is therefore pushed
+                // right by the reserve via a MARGIN, so none of them can reach
+                // the controls. The border and background still span the full
+                // width — insetting this element itself would have put a
+                // 172px gap in the bottom hairline.
+                style={{ paddingLeft: 0 } as React.CSSProperties}
               >
                 {/* The strip renders HERE, in place of the pill. Do not move
                     renderSessionHeaderActions() out of this row — it closes
@@ -2147,7 +2166,18 @@ function BaseChatContent({
                 {renderSessionTitle ? (
                   renderSessionTitle()
                 ) : (
-                  <div className="min-w-0 flex-1">
+                  <div
+                    className="min-w-0 flex-1"
+                    // The pill path's own drag rect, carrying the reserve as a
+                    // MARGIN so it starts past the titlebar controls (#74).
+                    // The strip path does the same on its own wrap.
+                    style={
+                      {
+                        marginLeft: sessionPillPaddingLeft,
+                        WebkitAppRegion: 'drag',
+                      } as React.CSSProperties
+                    }
+                  >
                     <SessionNamePill
                       name={session?.name || 'New Session'}
                       onRename={handleRename}

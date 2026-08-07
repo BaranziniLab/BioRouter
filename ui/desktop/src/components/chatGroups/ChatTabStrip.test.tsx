@@ -388,3 +388,63 @@ describe('ChatTabStrip — the cross-window merge caret', () => {
     expect(container.querySelectorAll('[data-dropbefore]')).toHaveLength(0);
   });
 });
+
+describe('ChatTabStrip — the titlebar reserve must stay OUTSIDE the drag box (#74)', () => {
+  /**
+   * What this can and cannot prove.
+   *
+   * It CANNOT prove the bug is fixed. jsdom has no layout (every rect is 0×0)
+   * and no concept of `-webkit-app-region`, so a synthetic click always reaches
+   * the button whether or not macOS would have eaten it. The real gate is
+   * `scripts/titlebar-appregion-check.mjs` against a running app, plus a real
+   * CGEventPost click — see the header of that file.
+   *
+   * What it DOES prove is the structural invariant the fix rests on, which is
+   * checkable from inline styles alone: no element in this strip may declare
+   * `-webkit-app-region: drag` AND carry the titlebar reserve as padding.
+   * Padding is inside the border box, so such an element's draggable rect
+   * starts at the row's left edge and swallows the floating titlebar controls;
+   * a margin puts the reserve outside the box. Reverting the fix, or adding a
+   * new drag rect that pads rather than margins, fails here.
+   */
+  const dragEls = (container: HTMLElement) =>
+    Array.from(container.querySelectorAll<HTMLElement>('*')).filter(
+      (el) =>
+        (el.style as CSSStyleDeclaration & { WebkitAppRegion?: string }).WebkitAppRegion === 'drag'
+    );
+
+  it('carries the reserve as margin-left, never padding-left', () => {
+    const { getByTestId } = renderStrip({ reserveTitlebar: true });
+    const wrap = getByTestId('chat-tab-strip-reserve');
+    // The reserve resolves to the custom property AppLayout sets from
+    // getTitlebarControlReserve, so assert the shape rather than a literal.
+    expect(wrap.style.marginLeft).toContain('--biorouter-titlebar-control-reserve');
+    expect(wrap.style.paddingLeft).toBe('');
+  });
+
+  it('no drag element pads itself by the reserve, in any reserve state', () => {
+    for (const state of [
+      { reserveTitlebar: true, isCompactSidebarOverlayOpen: false },
+      { reserveTitlebar: false, isCompactSidebarOverlayOpen: true },
+      { reserveTitlebar: false, isCompactSidebarOverlayOpen: false },
+    ]) {
+      const { container, unmount } = renderStrip(state);
+      const els = dragEls(container);
+      expect(els.length).toBeGreaterThan(0);
+      for (const el of els) {
+        // `paddingLeft: 0` is fine and deliberate (it cancels .br-tabstrip's
+        // shorthand); anything non-zero would be a reserve inside a drag box.
+        const pad = el.style.paddingLeft;
+        expect(pad === '' || pad === '0' || pad === '0px').toBe(true);
+      }
+      unmount();
+    }
+  });
+
+  it('the outermost drag box is the wrap, and it is the one holding the reserve', () => {
+    // If a future change adds a drag rect ABOVE the wrap, it would start at the
+    // row's left edge with no reserve and reintroduce #74 — catch that here.
+    const { container, getByTestId } = renderStrip({ reserveTitlebar: true });
+    expect(dragEls(container)[0]).toBe(getByTestId('chat-tab-strip-reserve'));
+  });
+});
