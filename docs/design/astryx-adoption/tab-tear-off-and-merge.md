@@ -102,8 +102,35 @@ This is the single most important finding in this document, and it is the reason
 **Decision.** Each chat window registers, on mount and on resize, the viewport-relative rectangle of its tab-strip band. Main converts that to screen coordinates with `win.getContentBounds()` and stores it. Given a screen point from the source window, main answers:
 
 - inside another registered window's **strip band** ⇒ `{ kind: 'merge', windowId }`
-- inside another registered window's rest ⇒ `{ kind: 'none' }` (hovering a window's body is not a drop, matching browsers)
+- inside another registered window's rest ⇒ `{ kind: 'detach' }` — see the correction below
 - anywhere else, including over our own artifact/launcher/app windows and over other applications ⇒ `{ kind: 'detach' }`
+
+> **Corrected during Phase 1 (implemented, `821108c2`).** This decision originally
+> gave a drop over another chat window's *body* its own `{ kind: 'none' }`, which
+> contradicts §4 — whose `CrossWindowPhase` union has only `local | detach |
+> merge` — and contradicts §5, whose release table gives a body drop the same
+> outcome as a desktop drop. §4 and §5 agree with each other and with Chrome, so
+> they win: a body drop is `detach`, and nothing consumes the distinction. The
+> door §7 wanted to leave open for cross-window *pane* drops is reopened by
+> adding the arm back when something needs it, not by carrying an unused state.
+
+> **Two limits found while implementing this, neither of them fixable in the
+> renderer.**
+>
+> **Z-order has no source in Electron.** "The topmost wins" is right, but Electron
+> exposes no z-order query and `getAllWindows()` order is not documented as one.
+> The registry therefore carries an explicit `stackOrder`, raised on `focus`.
+> **Phase 3 must wire `focus`/`show` → `raise()`**, or the rule silently degrades
+> to registration order — which is wrong the first time a user clicks between
+> windows.
+>
+> **Only chat windows register, so only chat windows can occlude.** A launcher,
+> artifact, or app window of ours sitting *above* a chat window's strip does not
+> hide that strip from the resolver, so a drop there resolves as `merge` rather
+> than `detach`. There is no Electron API to fix this with. The consequence is a
+> merge the user did not aim at — recoverable, not destructive. It means §6's
+> "dropped on our own artifact/launcher window ⇒ treated as desktop" row holds
+> only while that window is not overlapping a registered strip.
 
 The *insertion index* inside the target strip is computed by the **target renderer**, which is the only party that knows its own tab rects. Main forwards the screen point; the target converts it to client coordinates and paints its own `[data-dropbefore]` caret.
 
@@ -298,6 +325,16 @@ New `ui/desktop/src/components/chatGroups/ChatDropOverlay.tsx` variant — **als
 | `ui/desktop/src/components/chatGroups/ChatTabStrip.tsx` | **likely zero edits.** The running set already reaches the shell, and the caret already renders from `dragOverTabId`. Confirm before scheduling any | yes |
 
 The preload additions are append-only at the end of one object literal, so the merge surface is a few lines even though the file is contested.
+
+**Obligations Phase 3 inherits.** Each was found while building Phases 1 and 2 and is deliberately *not* implemented there, because each needs a party those phases do not have. A Phase 3 that skips them compiles and appears to work.
+
+1. **Re-check the lock at commit, not only at move.** `isTabLocked` is sampled on every `pointermove` while the pointer is outside — so a turn *ending* mid-drag correctly unlocks the tab. But a turn *starting* in the milliseconds after the final move still commits as a detach. The shell → main commit path is the only place that can close that, and it must.
+2. **Enforce D5 at commit.** Tearing out a window's only tab is a no-op, and nothing in Phases 1 or 2 enforces it — the hook does not know how many tabs the window has, and the resolver does not either. Same commit path, same reason.
+3. **Wire `focus`/`show` → `raise()`** on the band registry, or z-order degrades to registration order (see D3 above).
+4. **Own the ghost clamp.** D7 says the ghost is clamped to the source window's content rect. That needs the ghost's rendered size, which the hook does not have — it computes `clientX − grabOffset` and nothing more. It belongs to whoever renders the ghost, or to CSS in Phase 4. Today an outside ghost simply flies past the frame and Electron clips it.
+5. **Decide whether Escape is swallowed.** The hook cancels the drag on Escape but does not `preventDefault` or stop propagation, so the keypress also reaches anything else listening — a modal, the composer. Swallowing it needs `stopImmediatePropagation` plus an assumption about listener ordering, which Phase 2 declined to bake in silently.
+
+**A testing note that will cost someone an hour otherwise.** This repo's jsdom has no `document.elementFromPoint` *at all* — not "returns null", missing. The drag hook's move handler therefore throws on the first *promoted* move, which is why no pre-existing test in `components/chatGroups/` promotes a drag. Stub it to `null` in `beforeAll`. And note that pointer capture does not exist in jsdom either, so the capture *target* — which must be the element that received the `pointerdown`, never the tab wrapper, because capture retargets the compatibility mouse events and would otherwise fire `click` on the wrapper and break selecting a tab — can only be asserted, never exercised.
 
 ### Phase 4 — visuals (**partly contested**)
 
