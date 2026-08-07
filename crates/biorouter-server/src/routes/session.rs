@@ -2157,3 +2157,62 @@ mod edit_message_tests {
         assert!(null.expected_message_ids.is_none());
     }
 }
+
+/// Deleting a chat stops its turn.
+///
+/// This used to hold by accident, and the accident is exactly what the live turn
+/// stream removed: the UI unmounted the deleted chat, its SSE socket dropped,
+/// the next `tx.send` failed, and the handler cancelled the turn. A turn now
+/// outlives its listeners by design, so without an explicit cancel here one kept
+/// running for up to the five-minute orphan timeout — spending tokens and
+/// writing into a session that no longer exists.
+#[cfg(test)]
+mod delete_session_tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use biorouter::session::SessionType;
+    use serial_test::serial;
+    use std::path::PathBuf;
+    use tokio_util::sync::CancellationToken;
+    use tower::ServiceExt;
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[serial]
+    async fn deleting_a_session_cancels_the_turn_it_was_running() {
+        let state = AppState::new().await.unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                PathBuf::from("/tmp/delete_cancels_turn"),
+                "delete-cancels-turn".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        // A turn in flight, with the token `/agent/cancel` would trip.
+        let cancel = CancellationToken::new();
+        let _guard = state
+            .try_begin_turn_idempotent(&session.id, cancel.clone(), Some("t-1".into()))
+            .unwrap();
+        assert!(!cancel.is_cancelled());
+
+        let response = routes(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/sessions/{}", session.id))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            cancel.is_cancelled(),
+            "the deleted session's turn kept running, writing into a session that \
+             no longer exists"
+        );
+    }
+}

@@ -2129,6 +2129,48 @@ mod tests {
         );
     }
 
+    /// The boundary that makes `from_seq` safe to read as "this is an attach":
+    /// a FIRST POST carries a `turn_id` (its idempotency key, BR-62) and no
+    /// `from_seq`, and must still start a turn.
+    ///
+    /// Without this pinned, the attach-miss guard would be one careless client
+    /// change away from refusing every ordinary submit with `turn_not_found` —
+    /// a chat that answers nothing at all. The renderer's `buildAttachRequest`
+    /// is the only place that sets the field; `submitPreparedMessage` builds its
+    /// body without it.
+    #[tokio::test]
+    async fn a_first_post_carrying_an_idempotency_key_still_starts_a_turn() {
+        use tower::ServiceExt;
+        let state = AppState::new().await.unwrap();
+        let session_id = "first-post-with-key".to_string();
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(Message::user().with_text("hi")).unwrap(),
+            "session_id": session_id,
+            "turn_id": "a-key-the-client-minted",
+        });
+        let response = routes(state.clone())
+            .oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert!(
+            state.knows_turn(&session_id, "a-key-the-client-minted"),
+            "a first POST with an idempotency key must START a turn, not be read \
+             as an attach to one that does not exist"
+        );
+        state.cancel_turn(&session_id);
+        let _ = tokio::time::timeout(
+            Duration::from_secs(10),
+            axum::body::to_bytes(response.into_body(), usize::MAX),
+        )
+        .await;
+    }
+
     /// **The bug, as a test.** The last observer leaves mid-turn; the turn must
     /// CONTINUE. Before this work, the failed `tx.send` into the departed
     /// response called `cancel_token.cancel()` and the turn died with the window.
