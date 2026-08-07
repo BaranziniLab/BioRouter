@@ -174,6 +174,75 @@ fn describe_monitors(monitors: &[Monitor]) -> String {
     out
 }
 
+/// macOS gates every form of screen capture behind the Screen Recording
+/// privacy permission, and it does **not** fail loudly when the permission is
+/// absent — it degrades:
+///
+/// - `Window::all()` still returns every window, but each `title()` comes back
+///   empty, so `list_windows` printed a list of nothing and `screen_capture`
+///   said *"no titled windows are currently open"*. Read literally, that says
+///   the user has no windows open, which is never true and sends everyone
+///   looking for the wrong bug.
+/// - A display capture still succeeds and still returns a real PNG — of the
+///   desktop wallpaper with every window missing. The agent then confidently
+///   describes an empty desktop.
+///
+/// Both readings are wrong in the same direction: they blame the screen for a
+/// permission. `CGPreflightScreenCaptureAccess` answers the actual question
+/// without side effects and without blocking, so it is safe to call from the
+/// daemon on every capture.
+///
+/// ⚠ **Preflight only — never `CGRequestScreenCaptureAccess`.** The request
+/// variant raises a system consent dialog, and this code runs inside
+/// `biorouterd`, a background child of the GUI. The identical shape (a
+/// synchronous macOS consent call from a non-foreground daemon) is what hung
+/// the privacy switch for the full 60-second timeout, and a hung
+/// `screen_capture` would be a worse failure than the misleading message it
+/// replaces. The first capture attempt is itself what registers the app in the
+/// Screen Recording list, so preflighting and telling the user where to look
+/// gets them there without the dialog.
+#[cfg(target_os = "macos")]
+mod screen_recording_permission {
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        // CG_EXTERN bool CGPreflightScreenCaptureAccess(void)
+        fn CGPreflightScreenCaptureAccess() -> bool;
+    }
+
+    pub fn granted() -> bool {
+        // SAFETY: a no-argument CoreGraphics predicate with no out-params and
+        // no ownership transfer. It reads the calling process's TCC decision
+        // and returns a C `bool`, which is ABI-identical to Rust's.
+        unsafe { CGPreflightScreenCaptureAccess() }
+    }
+}
+
+/// The message a capture fails with when macOS has not granted the permission.
+///
+/// It names the app rather than the binary because the permission is attributed
+/// to the bundle the user sees in System Settings, not to `biorouterd`.
+#[cfg(target_os = "macos")]
+const SCREEN_RECORDING_DENIED: &str = "macOS has not granted Biorouter permission to record the \
+     screen, so screenshots would show only the desktop wallpaper with every window missing, and \
+     window titles would all come back empty.\n\nTo fix it: System Settings → Privacy & Security → \
+     Screen Recording → enable Biorouter (this attempt is what puts it in that list, so it should \
+     be there now), then QUIT AND REOPEN Biorouter — macOS only applies the new permission to a \
+     freshly launched process.";
+
+/// `Ok(())` when a capture can actually see windows, `Err` with instructions
+/// when it cannot. Never blocks; a no-op off macOS, where no such gate exists.
+fn ensure_screen_capture_permitted() -> Result<(), ErrorData> {
+    #[cfg(target_os = "macos")]
+    if !screen_recording_permission::granted() {
+        return Err(ErrorData::new(
+            ErrorCode::INTERNAL_ERROR,
+            SCREEN_RECORDING_DENIED.to_string(),
+            None,
+        ));
+    }
+    Ok(())
+}
+
 /// Parameters for the text_editor tool
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct TextEditorParams {
@@ -995,6 +1064,9 @@ impl DeveloperServer {
         description = "List all available window titles that can be used with screen_capture. Returns a list of window titles that can be used with the window_title parameter of the screen_capture tool."
     )]
     pub async fn list_windows(&self) -> Result<CallToolResult, ErrorData> {
+        // Before the list, not after: without the permission every title is
+        // empty, so the honest answer is about the permission, not the windows.
+        ensure_screen_capture_permitted()?;
         let windows = Window::all().map_err(|_| {
             ErrorData::new(
                 ErrorCode::INTERNAL_ERROR,
@@ -1031,6 +1103,11 @@ impl DeveloperServer {
         params: Parameters<ScreenCaptureParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let params = params.0;
+
+        // ⚠ First, before any capture path. A denied display capture does not
+        // error — it returns a real PNG of an empty desktop — so there is no
+        // later point at which this can be detected from the result.
+        ensure_screen_capture_permitted()?;
 
         // Human/agent-readable note describing what was captured and, for
         // display captures, the full multi-monitor topology. Reporting the
