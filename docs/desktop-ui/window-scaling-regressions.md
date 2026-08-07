@@ -1,0 +1,156 @@
+# When the app "stops scaling with the window"
+
+> **What this is.** The recurring regression where resizing the Biorouter window
+> stops changing the layout, the one product cause behind it, and the four ways
+> the same symptom appears when nothing is wrong with the app at all.
+> **Status:** Current.
+> **Audience:** anyone who has just been told "the app doesn't rescale", and
+> agents driving the dev GUI.
+
+This has been reported more than once, and each time the first hour went into
+reproducing it rather than fixing it — because four unrelated things produce the
+identical symptom, and three of them are not bugs in the app. Read the
+triage below before changing any CSS.
+
+## Triage: two minutes, in this order
+
+Run these against the dev GUI over CDP (see
+[Debugging the dev GUI with agent-browser](agent-browser-debugging.md)).
+
+```js
+// 1. Is the app even rendering?
+JSON.stringify({ text: (document.body.innerText || '').slice(0, 60), hash: location.hash })
+
+// 2. Does the renderer's viewport match the real window?
+JSON.stringify({ inner: [innerWidth, innerHeight], outer: [outerWidth, outerHeight] })
+
+// 3. Is the measure fluid?
+getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
+```
+
+| Reading | Diagnosis |
+|---|---|
+| `text` empty, or `hash` is `#/pair` | **Not a layout bug.** The app is not rendering — see *A dead daemon* below. |
+| `inner` ≠ `outer` | **Not a layout bug.** Your tooling pinned the viewport — see *Viewport emulation* below. |
+| `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
+| Everything tracks, but content stays the same width | **The real one.** A fixed pixel cap — see below. |
+
+## The real product cause: a fixed pixel cap
+
+The layout is built around reading measures. When those are flat pixel values,
+a wider window buys **margin**, not content: at 1800px the chat column sat at
+760px with roughly 400px of dead band on each side, which is exactly what
+"doesn't scale with the window" looks like to someone dragging the edge.
+
+The fix is that every measure is a `clamp()` whose middle term is a
+**percentage**:
+
+```css
+--measure-chat: clamp(760px, 78%, 1180px);
+--measure-page: clamp(1120px, 88%, 1720px);
+```
+
+Two invariants, both learned the hard way:
+
+- **Percentage, never `vw`.** A percentage resolves against the containing
+  block — the content pane. `vw` is the whole viewport, so it over-counts by the
+  sidebar's width and widens the column at the exact moment the sidebar opens and
+  takes the room away.
+- **The floor is the value it replaced.** `max-width` can never force a box wider
+  than its parent, so below the floor the column is simply pane-wide and nothing
+  narrow changes. The clamp only ever raises the ceiling.
+
+### Why no rendered test catches this
+
+jsdom has no layout engine and never runs Tailwind, so **no component test in
+this repo can measure a column's width.** A regression to
+`--measure-chat: 760px` renders identically in all 264 frontend files and ships
+green.
+
+The guard is therefore a source assertion, `src/styles/measures.test.ts`. It
+asserts the declaration is a `clamp`, that the middle term is a percentage
+rather than three static pixel values, that it is not `vw`-keyed, and that the
+floors still equal the old shipped numbers so a narrow window can never end up
+*narrower* than before. It caught a stale doc comment on its first run.
+
+**If you add a new measure, add it to that test.** A `max-w-[1400px]` introduced
+anywhere in a layout container reintroduces this bug with nothing to stop it.
+
+## The three impostors
+
+### Viewport emulation pins `innerWidth`
+
+`agent-browser`/CDP can apply `Emulation.setDeviceMetricsOverride`, which fixes
+the renderer's viewport regardless of the real window. Resizing the OS window
+then changes nothing on screen and every measurement lies.
+
+**Tell:** `outerWidth` moves and `innerWidth` does not. Observed as
+`outer: [800, 600]` with `inner: [1400, 900]` — a round 1400×900 that nobody set
+is itself the giveaway.
+
+**Fix:** use a fresh session with no override, or set the viewport explicitly to
+the size you mean to test.
+
+### `osascript … set size of front window` silently no-ops
+
+```applescript
+-- Reports success. Frequently does nothing.
+tell application "System Events" to tell (first process whose name contains "Electron") ¬
+  to set size of front window to {1400, 900}
+
+-- Works.
+tell application "System Events" to tell (first process whose name contains "Electron") ¬
+  to tell front window to set size to {1400, 900}
+```
+
+The first form returned no error while the window stayed at 900×800 across three
+consecutive attempts, which reads exactly like an app that refuses to resize.
+
+**Tell:** always read the size back after setting it. If the value you get is not
+the value you set, the harness failed, not the app.
+
+### A dead daemon looks like a frozen layout
+
+If `biorouterd` is not running, the renderer sits on `#/pair` or renders nothing.
+A blank page has no layout to reflow, so dragging the window appears to do
+nothing at all.
+
+**Tell:** `document.body.innerText` is empty, or `location.hash` is `#/pair`.
+Confirm with `pgrep -f 'target/debug/biorouterd'` and check `/tmp/electron.log`
+for `biorouterd process exited with code null`.
+
+## The trap behind that trap: `code null` after copying a binary
+
+`exited with code null` in the Electron log means the daemon was **killed by a
+signal**, and running it by hand gives exit **137** (SIGKILL) with no output at
+all — not a log line, not a panic.
+
+On Apple Silicon, overwriting an existing code-signed Mach-O in place
+invalidates the kernel's cached signature for that path, and the new file is
+killed on exec. `cp` preserves the bytes perfectly, so the copy is
+byte-identical to a working binary and `codesign -dv` still reports a valid
+adhoc signature — which makes this very hard to see.
+
+```bash
+codesign --force --sign - target/debug/biorouterd
+```
+
+That is the whole fix. It applies to any restage of `biorouterd`, `biorouter`,
+or the binaries under `ui/desktop/src/bin/` — which is why `just copy-binary`
+re-signs, and why hand-copying around it breaks the app in a way that looks
+like a renderer bug.
+
+A related version of the same trap: **never copy from `target/release/` while a
+build is running.** A binary captured mid-link is truncated, and its only
+symptom is the same silent SIGKILL.
+
+## Related documentation
+
+- [Launching the dev GUI from a shell without a TTY](launching-the-dev-gui.md) — the
+  five other ways a working app looks broken when launched from an agent shell.
+- [Debugging the dev GUI with agent-browser](agent-browser-debugging.md) — how to run
+  the triage snippets above.
+- [Renderer testing traps](renderer-testing-traps.md) — the wider family of
+  frontend tests that pass while the code they cover is broken.
+- [Theme system architecture](../design/theming/theme-system-architecture.md) — where
+  the design tokens, including the measures, are defined and generated.
