@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, render } from '@testing-library/react';
 import { ChatState } from '../types/chatState';
 import { ChatStreamRegistry, REPLAY_MAX_HOLD_MS } from './chatStreamStore';
-import { rememberActiveTurn } from '../utils/activeTurnRegistry';
 import type { Message, MessageEvent, Session, TokenState } from '../api';
 import { reply, resumeAgent } from '../api';
 
@@ -71,6 +70,21 @@ function session(id: string, conversation: Message[] = []): Session {
     extension_data: {},
     user_set_name: false,
   } as Session;
+}
+
+/**
+ * What `POST /agent/resume` answers with. `active_turn` is the authoritative —
+ * and only — way a client learns that a turn is running for this session: the
+ * server filters it on `finished_at.is_none()`, so it is present exactly when
+ * there is something to rejoin.
+ */
+function resumeResponse(conversation: Message[] = [], activeTurnId?: string) {
+  return {
+    data: {
+      session: session(SID, conversation),
+      ...(activeTurnId ? { active_turn: { turn_id: activeTurnId } } : {}),
+    },
+  } as never;
 }
 
 function userMessage(id: string, text: string): Message {
@@ -168,7 +182,6 @@ beforeEach(() => {
   SID = `attach-s${++sessionSeq}`;
   vi.mocked(resumeAgent).mockReset();
   vi.mocked(reply).mockReset();
-  localStorage.clear();
   Object.assign(window, {
     electron: {
       showNotification: vi.fn(),
@@ -344,13 +357,12 @@ describe('attaching to a turn this client did not start', () => {
   });
 
   it('rejoins a turn left running by a window that reloaded', async () => {
+    // The reload case, end to end. The transcript comes back from the store
+    // stopping at the user's message — a live turn has persisted nothing yet —
+    // and `active_turn` on the same response is what fills in the rest.
     const registry = new ChatStreamRegistry();
-    vi.mocked(resumeAgent).mockResolvedValue({
-      data: { session: session(SID, [userMessage('u1', 'long job')]) },
-    } as never);
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse([userMessage('u1', 'long job')], TURN));
     servingFrames(replayed(0, messageFrame('a1', 'still working')), live(1, finishFrame));
-    // What the window that died left behind.
-    rememberActiveTurn(SID, TURN);
 
     const controller = registry.getController(SID);
     await controller.loadSession();
@@ -359,7 +371,57 @@ describe('attaching to a turn this client did not start', () => {
     await vi.waitFor(() =>
       expect(transcriptText(controller.getSnapshot().messages)).toContain('still working')
     );
-    expect(replyBody()).toMatchObject({ turn_id: TURN });
+    expect(replyBody()).toMatchObject({ turn_id: TURN, from_seq: 0 });
+    expect(transcriptText(controller.getSnapshot().messages)).toEqual([
+      'long job',
+      'still working',
+    ]);
+  });
+
+  it('rejoins a turn it never started, under the name the server gave it', async () => {
+    // The reloaded window has never seen the idempotency key the original
+    // caller minted — that lived in a renderer heap which is gone. All it has
+    // is the server's own `turn-N`, and posting THAT must attach rather than
+    // 409. (Same path a turn started by the CLI or a scheduled run takes: this
+    // client did not start it and could not have guessed its key.)
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse([userMessage('u1', 'go')], 'turn-7'));
+    vi.mocked(reply).mockResolvedValue({
+      stream: (async function* () {
+        yield envelope(
+          messageFrame('a1', 'output from elsewhere'),
+          0,
+          'turn-7',
+          true
+        ) as MessageEvent;
+        yield envelope(finishFrame, 1, 'turn-7') as MessageEvent;
+      })(),
+    } as never);
+
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await vi.waitFor(() =>
+      expect(transcriptText(controller.getSnapshot().messages)).toContain('output from elsewhere')
+    );
+    expect(replyBody()).toMatchObject({ turn_id: 'turn-7' });
+  });
+
+  it('rejoins only once, however many times the session is loaded', async () => {
+    // `loadSession` is a no-op on an already-painted session but is still
+    // awaited by every submit, and `ensureAgentLoaded`'s resume reports
+    // `active_turn` too. Neither may start a second attach to the same turn.
+    const registry = new ChatStreamRegistry();
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse([], TURN));
+    servingFrames(replayed(0, messageFrame('a1', 'working')), live(1, finishFrame));
+
+    const controller = registry.getController(SID);
+    await controller.loadSession();
+    await vi.waitFor(() => expect(vi.mocked(reply)).toHaveBeenCalledTimes(1));
+    await controller.loadSession();
+    await controller.loadSession();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(vi.mocked(reply)).toHaveBeenCalledTimes(1);
   });
 
   it('never eats a message typed while it is still trying to rejoin', async () => {
@@ -367,8 +429,7 @@ describe('attaching to a turn this client did not start', () => {
     // If the attach claimed "a turn is in flight" before it knew one was, the
     // submit below would be refused SILENTLY — no error, no bubble, nothing.
     const registry = new ChatStreamRegistry();
-    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(SID) } } as never);
-    rememberActiveTurn(SID, TURN);
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse([], TURN));
 
     let releaseAttachPost = () => {};
     const attachPostHeld = new Promise<void>((resolve) => {
@@ -408,13 +469,16 @@ describe('attaching to a turn this client did not start', () => {
     expect(controller.getSnapshot().turnError).toBeUndefined();
   });
 
-  it('does not chase a turn when there is nothing to rejoin', async () => {
+  it('does not chase a turn when the server reports none', async () => {
+    // No `active_turn` means no turn is running — the server filters it on
+    // `finished_at.is_none()`. Nothing to rejoin, so nothing is POSTed; there
+    // is no local guess left that could disagree.
     const registry = new ChatStreamRegistry();
-    vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session(SID) } } as never);
+    vi.mocked(resumeAgent).mockResolvedValue(resumeResponse());
 
     const controller = registry.getController(SID);
     await controller.loadSession();
-    await Promise.resolve();
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
     expect(vi.mocked(reply)).not.toHaveBeenCalled();
   });

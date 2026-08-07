@@ -1,7 +1,9 @@
 import React, { createContext, useContext, useSyncExternalStore } from 'react';
 import { ChatState } from '../types/chatState';
 import {
+  ActiveTurnRef,
   cancelTurn,
+  ChatRequest,
   getSession,
   interrupt,
   listApps,
@@ -34,7 +36,6 @@ import {
 } from '../types/message';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { showExtensionLoadResults } from '../utils/extensionErrorUtils';
-import { forgetActiveTurn, readActiveTurn, rememberActiveTurn } from '../utils/activeTurnRegistry';
 import { reasoningEffortForRequest } from '../store/reasoningEffort';
 import type { ChatTurnErrorData, TurnErrorScope } from '../types/turnError';
 import type { PendingSteer } from '../utils/trailingActivity';
@@ -66,33 +67,31 @@ function newTurnId(): string {
  *    server's `try_begin_turn_idempotent` already recognises it as a duplicate;
  *    the contract changes the answer from a JSON 409 to 200 + the stream.
  *
- *  - **`from_seq` goes in the BODY, not the query string.** The contract offers
- *    `?from_seq=N` as an option; the body is the form this client can actually
- *    send. `/reply` is generated as `query?: never` (`api/types.gen.ts`
- *    `ReplyData`), so a query parameter can only be smuggled past the typed
- *    client, while a new optional body field appears on `ChatRequest` the next
- *    time the spec is regenerated. It means "I hold frames 0..N-1, send me the
- *    rest" — an optimisation only: the sequence gate drops a full replay
- *    correctly if the server ignores it, which is exactly what makes it safe to
- *    ship the client before the server honours it.
+ *  - **`from_seq` goes in the BODY, not the query string** — "I hold frames
+ *    0..N-1, send me the rest". An optimisation only: the sequence gate drops a
+ *    full replay correctly if the server ignores it.
  *
- *  - **`user_message` is a formality here and MUST be ignored by the server.**
- *    The schema requires it, but a client attaching to someone else's turn does
- *    not know what started it. We send the transcript's trailing user message
- *    when there is one — for a live turn that IS the message that started it,
- *    since the driver appended it before POSTing and the server persisted it —
- *    and an empty one otherwise. If the server were ever to honour this field
- *    on a duplicate `turn_id`, an attach would inject a phantom prompt into a
- *    running turn, which is why it is called out here rather than left implicit.
- *    Making the field optional when `turn_id` names an in-flight turn removes
- *    the hazard entirely and is the requested schema change.
+ *  - **`user_message` is a formality here and is ignored by the server.** The
+ *    schema requires it, but a client attaching to someone else's turn does not
+ *    know what started it. We send the transcript's trailing user message when
+ *    there is one — for a live turn that IS the message that started it, since
+ *    the driver appended it before POSTing and the server persisted it — and an
+ *    empty one otherwise. Were it ever honoured on a duplicate `turn_id`, an
+ *    attach would inject a phantom prompt into a running turn.
+ *
+ * **`turnId` may be either name for the turn.** The turn's *idempotency key*
+ * (what its original caller minted, which only that caller holds) and the
+ * server's own `turn-N` (what a frame's `turn_id` and `active_turn` carry) both
+ * work — `/reply` matches on either. That is not a nicety: a reloaded window
+ * has only ever seen the server's name, so matching on the key alone would 409
+ * exactly the case this feature exists for.
  */
 function buildAttachRequest(
   sessionId: string,
   turnId: string,
   fromSeq: number,
   messages: Message[]
-): Parameters<typeof reply>[0]['body'] {
+): ChatRequest {
   const trailingUser = [...messages].reverse().find((m) => m.role === 'user');
   const placeholder: Message = {
     role: 'user',
@@ -104,9 +103,8 @@ function buildAttachRequest(
     session_id: sessionId,
     turn_id: turnId,
     user_message: trailingUser ?? placeholder,
-    // Not on the generated `ChatRequest` yet; see the note above.
     from_seq: fromSeq,
-  } as Parameters<typeof reply>[0]['body'];
+  };
 }
 
 /**
@@ -736,7 +734,7 @@ class ChatStreamController {
 
   /**
    * The turn this controller was rendering is over (or has been given up on):
-   * stop offering it as something to attach to.
+   * stop treating it as something a dropped socket may be rejoined to.
    *
    * It deliberately does NOT forget `seqTurnId`/`lastAppliedSeq`. Those record
    * WHAT HAS ALREADY BEEN PAINTED of a specific turn, and that remains true
@@ -752,7 +750,6 @@ class ChatStreamController {
    * unfamiliar turn resets it on arrival (`applySequenceGate`).
    */
   private retireActiveTurn(): void {
-    if (this.activeTurnId) forgetActiveTurn(this.sessionId, this.activeTurnId);
     this.activeTurnId = null;
     this.reattachesThisTurn = 0;
   }
@@ -956,6 +953,12 @@ class ChatStreamController {
         const resumeData = response.data;
         const initializationError = resumeData?.initialization_error;
 
+        // Reached on the paths `loadSession` short-circuits — a controller
+        // reused for a tab reopened mid-turn, or a transcript served from the
+        // LRU — where this is the only `/agent/resume` that runs and therefore
+        // the only place the session's live turn is named.
+        this.noteActiveTurn(resumeData?.active_turn);
+
         showExtensionLoadResults(resumeData?.extension_results, this.sessionId);
 
         if (initializationError) {
@@ -1015,9 +1018,9 @@ class ChatStreamController {
 
     if (this.snapshot.session) {
       // Session already painted, but the agent may still be missing entirely on
-      // the controller-reuse path. Idempotent.
+      // the controller-reuse path. Idempotent — and it is the resume inside it
+      // that reports any live turn, so nothing here needs to guess at one.
       void this.ensureAgentLoaded();
-      void this.resumeActiveTurn();
       onSessionLoaded?.();
       return;
     }
@@ -1048,10 +1051,6 @@ class ChatStreamController {
       // extensions. Kick the load off here; `whenAgentReady` is what makes the
       // submit safe.
       void this.ensureAgentLoaded();
-      // …and rejoin whatever turn is still running on the daemon. Not awaited:
-      // the transcript is already painted and an attach must never be something
-      // the user waits behind.
-      void this.resumeActiveTurn();
       onSessionLoaded?.();
       return;
     }
@@ -1120,9 +1119,9 @@ class ChatStreamController {
           // case the whole feature exists for: the transcript above is what the
           // store had persisted, which for a live turn stops at the user's
           // message, and the attach fills in everything the agent has produced
-          // since. Ordered after the paint and not awaited, so a session with no
-          // live turn pays nothing for it.
-          void this.resumeActiveTurn();
+          // since. The same response that carried the transcript names the
+          // turn, so there is no extra round trip and nothing to guess.
+          this.noteActiveTurn(resumeData?.active_turn);
 
           listApps({
             throwOnError: true,
@@ -1721,17 +1720,17 @@ class ChatStreamController {
    * Safe to call on every load — it is a no-op when there is no remembered
    * turn, when one is already live here, or when the id has expired.
    */
-  resumeActiveTurn = async (): Promise<boolean> => {
-    if (!this.sessionId || this.hasLiveTurn()) return false;
-    const turnId = readActiveTurn(this.sessionId);
-    if (!turnId) return false;
-    // At most one automatic attempt per turn. `loadSession` is a no-op once a
-    // session is painted, so it is called freely — `handleSubmit` awaits it on
-    // every send — and an un-latched auto-resume would therefore fire again on
-    // the way into a submit. That is not merely wasteful: the attach it starts
-    // races the submit for the controller, and if it gets there first the
-    // submit is refused as "a turn is already in flight" and the user's message
-    // disappears without a trace. A rejoin is a one-shot repair, not a policy.
+  resumeActiveTurn = async (turnId: string): Promise<boolean> => {
+    if (!this.sessionId || !turnId || this.hasLiveTurn()) return false;
+    // At most one automatic attempt per turn. Both `/agent/resume` calls report
+    // `active_turn`, and `loadSession` is a no-op once a session is painted, so
+    // this can be reached repeatedly for one turn — `handleSubmit` awaits
+    // `loadSession` on every send. An un-latched auto-resume would therefore
+    // fire again on the way into a submit, and that is not merely wasteful: the
+    // attach it starts races the submit for the controller, and if it gets
+    // there first the submit is refused as "a turn is already in flight" and
+    // the user's message disappears without a trace. A rejoin is a one-shot
+    // repair, not a policy.
     if (this.autoResumedTurnIds.has(turnId)) return false;
     this.autoResumedTurnIds.add(turnId);
     return this.attachToTurn(turnId);
@@ -1739,6 +1738,30 @@ class ChatStreamController {
 
   /** Turns this controller has already tried, once, to rejoin by itself. */
   private autoResumedTurnIds = new Set<string>();
+
+  /**
+   * `/agent/resume` has told us which turn — if any — is running for this
+   * session. Rejoin it.
+   *
+   * The server is the ONLY authority worth asking here, and this replaces an
+   * earlier `localStorage` pointer written by whichever window started the
+   * turn. That pointer could only ever be a guess: it went stale when a window
+   * died without clearing it, it could not see a turn started by the CLI or a
+   * scheduled run, and a stale one aimed an attach at a turn that had already
+   * finished — whose backlog would then have re-rendered a turn the session
+   * load had just painted. `state.rs::active_turn_id` filters on
+   * `finished_at.is_none()`, so `active_turn` is present exactly when there is
+   * something to join. Staleness stops being a category of bug rather than
+   * being handled.
+   *
+   * Fire-and-forget by design: this runs off the back of a response the
+   * transcript has already been painted from, and an attach must never be
+   * something the user waits behind.
+   */
+  private noteActiveTurn(activeTurn: ActiveTurnRef | null | undefined): void {
+    if (!activeTurn?.turn_id) return;
+    void this.resumeActiveTurn(activeTurn.turn_id);
+  }
 
   private submitPreparedMessage = async (
     newMessage: Message,
@@ -1791,17 +1814,19 @@ class ChatStreamController {
     // BR-62b: one idempotency key per turn, sent in the body so an SSE
     // reconnect re-POST carries the same key and the server dedupes it.
     const turnId = newTurnId();
-    // The live-turn stream contract promotes that key into the ATTACH handle:
-    // re-POSTing it is how any client — this window after a reload, another
-    // window after a tab handoff — joins this turn instead of starting a new
-    // one. Publish it before the POST goes out, so a crash in the next
-    // millisecond still leaves something to attach to, and start this turn's
-    // sequence numbering from nothing.
+    // The live-turn stream contract promotes that key into an ATTACH handle:
+    // re-POSTing it rejoins this turn instead of starting a new one, which is
+    // how THIS controller recovers a dropped socket (`reattachAfterDrop`).
+    //
+    // It is not how anyone ELSE finds the turn. The key exists only in this
+    // renderer's heap, so a reloaded window or a window receiving a moved tab
+    // has never seen it; they get the server's own name for the turn from
+    // `/agent/resume`'s `active_turn`, and `/reply` matches on either name.
+    // Start this turn's sequence numbering from nothing.
     this.activeTurnId = turnId;
     this.seqTurnId = turnId;
     this.lastAppliedSeq = -1;
     this.reattachesThisTurn = 0;
-    rememberActiveTurn(this.sessionId, turnId);
 
     try {
       // The transcript paints before the agent's model + extensions are up, so
