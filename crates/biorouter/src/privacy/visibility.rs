@@ -275,7 +275,10 @@ mod tests {
             .match_indices("mod tests {")
             .find_map(|(i, _)| {
                 let before = WORKSPACE[..i].trim_end();
-                let before = before.strip_suffix("pub(crate)").unwrap_or(before).trim_end();
+                let before = before
+                    .strip_suffix("pub(crate)")
+                    .unwrap_or(before)
+                    .trim_end();
                 let before = before.strip_suffix("pub").unwrap_or(before).trim_end();
                 before
                     .ends_with("#[cfg(test)]")
