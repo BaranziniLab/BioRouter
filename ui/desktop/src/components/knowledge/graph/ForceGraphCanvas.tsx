@@ -7,6 +7,7 @@ import { nodeFill, retractedColor } from './credColors';
 import { prettyLabel, wrapLabel } from './labelText';
 import {
   CANVAS_FONT_FALLBACK,
+  CANVAS_INK_FALLBACK,
   DIMMED_OPACITY,
   edgeStyle,
   HUB_RADIUS,
@@ -14,7 +15,10 @@ import {
   LABEL_FONT_PX,
   LABEL_FONT_PX_HUB,
   NODE_BASE_RADIUS,
+  NODE_RING_ALPHA,
   resolveCanvasFontFamily,
+  resolveCanvasInk,
+  withAlpha,
 } from './graphStyle';
 
 interface Props {
@@ -61,15 +65,34 @@ function useSize(): [React.RefObject<HTMLDivElement | null>, Sized] {
   return [ref, size];
 }
 
-/// The resolved UI font family, read off the graph container's computed style.
+/// The resolved UI font family AND label ink, read off the graph container's
+/// computed style.
 ///
 /// Read once on mount and again whenever the root's theme signal changes, so a
-/// family that re-points the face is picked up without re-reading a computed
-/// style on every node of every frame.
-function useCanvasFontFamily(ref: React.RefObject<HTMLDivElement | null>): string {
-  const [family, setFamily] = useState<string>(CANVAS_FONT_FALLBACK);
+/// family that re-points the face — or a mode that inverts the ink — is picked
+/// up without re-reading a computed style on every node of every frame.
+///
+/// Both values ride ONE observer deliberately. The family already did this and
+/// the ink did not, which is exactly how the ink came to be a hardcoded
+/// near-black: a second, parallel piece of theme plumbing is a second thing to
+/// forget. Anything else this canvas needs from the cascade belongs here too.
+function useCanvasTheme(ref: React.RefObject<HTMLDivElement | null>): {
+  fontFamily: string;
+  ink: string;
+} {
+  const [theme, setTheme] = useState<{ fontFamily: string; ink: string }>({
+    fontFamily: CANVAS_FONT_FALLBACK,
+    ink: CANVAS_INK_FALLBACK,
+  });
   useEffect(() => {
-    const read = () => setFamily(resolveCanvasFontFamily(ref.current));
+    const read = () =>
+      setTheme((prev) => {
+        const next = {
+          fontFamily: resolveCanvasFontFamily(ref.current),
+          ink: resolveCanvasInk(ref.current),
+        };
+        return prev.fontFamily === next.fontFamily && prev.ink === next.ink ? prev : next;
+      });
     read();
     if (typeof MutationObserver !== 'function') return;
     const observer = new MutationObserver(read);
@@ -79,7 +102,7 @@ function useCanvasFontFamily(ref: React.RefObject<HTMLDivElement | null>): strin
     });
     return () => observer.disconnect();
   }, [ref]);
-  return family;
+  return theme;
 }
 
 export function ForceGraphCanvas({
@@ -92,7 +115,8 @@ export function ForceGraphCanvas({
 }: Props) {
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
   const [containerRef, size] = useSize();
-  const fontFamily = useCanvasFontFamily(containerRef);
+  const { fontFamily, ink } = useCanvasTheme(containerRef);
+  const nodeRing = useMemo(() => withAlpha(ink, NODE_RING_ALPHA), [ink]);
 
   // Convert API graph → force-graph data. react-force-graph mutates nodes
   // (adds x/y) and links — so we keep our own stable copies.
@@ -183,6 +207,12 @@ export function ForceGraphCanvas({
     return () => window.clearTimeout(timeout);
   }, [graph, size.height, size.width, compactCanvas]);
 
+  // The remaining literal colours in this file were audited alongside the ink
+  // fix and are deliberately NOT tokenised: the wash below and the edge strokes
+  // are low-alpha tints that composite over whatever ground is behind them, and
+  // the node fills (`credColors.ts`) are a fixed semantic palette the legend
+  // reproduces verbatim. Only glyphs and outlines — the two opaque things drawn
+  // ON the ground — have to follow the theme, and both now do.
   return (
     <div
       data-testid="knowledge-graph-canvas"
@@ -218,7 +248,7 @@ export function ForceGraphCanvas({
           ctx.fillStyle = nodeFill(n);
           ctx.fill();
           ctx.lineWidth = isHub ? 1.05 : 0.85;
-          ctx.strokeStyle = 'rgba(31, 36, 44, 0.5)';
+          ctx.strokeStyle = nodeRing;
           ctx.stroke();
           if ((n as { retracted?: boolean }).retracted) {
             // Small red "!" badge top-right of the node.
@@ -246,7 +276,7 @@ export function ForceGraphCanvas({
           if (shouldShowLabel) {
             const fs = (isHub ? LABEL_FONT_PX_HUB : LABEL_FONT_PX) / globalScale;
             ctx.font = `${isHub || isFocused ? '600' : '400'} ${fs}px ${fontFamily}`;
-            ctx.fillStyle = '#1f242c';
+            ctx.fillStyle = ink;
             ctx.textAlign = 'left';
             ctx.textBaseline = 'middle';
             const text = prettyLabel(n.label, n.kind);
