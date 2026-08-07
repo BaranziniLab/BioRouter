@@ -292,6 +292,27 @@ Two BioRouter windows, a `pointerdown` on a tab in window A, the cursor dragged 
 
 Files: none. Output: a result recorded in this section.
 
+#### Result — measured 2026-08-06. **Capture holds. The mechanism in D2 is sound.**
+
+Measured against the shipped **1.88.6** app (identical version to the repo), two windows on one 2560×1080 display, with **real OS-level input**: a compiled Swift driver posting `CGEvent`s at `.cghidEventTap`, which enter below the window server and are routed exactly as a physical mouse's are. CDP was used only to instrument the pages and read the results back — never to generate the input, which is what would have made the measurement circular.
+
+| Question | Answer |
+|---|---|
+| Does the source keep receiving moves once the cursor leaves its frame? | **Yes.** 21–26 of ~55 moves per run were delivered with `inside: false`, tracked to the far edge of the display (x=2300). |
+| Does the source receive the release outside its frame? | **Yes**, every run, over empty desktop and over another window alike. |
+| `lostpointercapture` during the gesture? | **Never**, across every run. |
+| Does the target window receive anything? | **No.** With the target fully un-occluded and the cursor dragged directly across its strip for 46 outside-moves and released on it, the target logged **zero** events. |
+| Are `screenX/screenY` consistent with window origins? | **Yes**, exactly; client coordinates round-tripped through `screenX − window.screenX` to the pixel. |
+
+Five repeat runs, alternating the exit edge (right and left): source `down=1, up=1, upOutside=1, lost=0` in 5/5.
+
+**One anomaly, recorded rather than smoothed over.** When the drag exited through a 40px band where the target window extended *past* the source's edge, the target logged exactly **one** buttoned move (3 of 3 right-exits; 0 of 2 left-exits, where no such band existed). It did not recur in the un-occluded test, so it reads as a boundary artifact at the moment the cursor crosses the source's frame. It changes nothing: one sparse event cannot drive a hit test, so **D3 stands** — and its stronger claim, that the target receives *nothing*, is confirmed for the case that matters.
+
+**Two things learned that the spec did not anticipate:**
+
+1. **D5 is already enforced by the app, at a level below the renderer.** With only ONE tab in a window, pressing that tab does not start a drag at all — the press is claimed by the `-webkit-app-region: drag` strip and **moves the window**. The `no-drag` on `.br-tab` only takes effect once there is something to reorder. So "tearing out a window's only tab is a no-op" is not a rule Phase 3 must add; it is a rule Phase 3 must avoid *breaking*. Verified both ways: with one tab the window moved by exactly the drag vector; with two tabs the window did not move and the tabs reordered.
+2. **The gesture is fully drivable from an agent shell after all**, which the previous revision of this section said it was not. The harness plus the Swift driver are reproducible; `ui/desktop/scripts/tab-tearoff-phase0.js` is the instrument, and the driver is ~40 lines of `CGEventPost`. Phase 3 and 4 can therefore be verified the same way instead of by hand.
+
 ### Phase 1 — main-process geometry (**uncontested, independently landable**)
 
 New `ui/desktop/src/windowDrag.ts`: the strip-band registry, `resolveDropTarget(screenPoint, registry, sourceWindowId)` returning the `CrossWindowPhase` discriminant, and `tornOffWindowBounds(screenPoint, grabOffset, sourceBounds, workArea)` generalising `branchWindowBounds`. Pure functions over plain rectangles, with the Electron calls confined to a thin shim so the logic is testable.
