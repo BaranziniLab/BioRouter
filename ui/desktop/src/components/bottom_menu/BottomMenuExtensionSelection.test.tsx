@@ -178,6 +178,44 @@ describe('BottomMenuExtensionSelection', () => {
     resolveEnable?.();
   });
 
+  /**
+   * v1.89.0 P-03. Toggling Workspace on here, quitting, and finding it off again
+   * reads as a setting that failed to save. It is a per-chat control being read
+   * as a global one: `/agent/add_extension` persists into that SESSION's own
+   * extension state and never touches `config.yaml`, and the hub view's
+   * overrides live in a map `createSession` clears. Making it write the config
+   * instead would be the wrong repair — disabling an extension in one chat would
+   * disable it everywhere — so the menu has to say what it does.
+   *
+   * ⚠ Asserted on the SCOPE WORD, not on the sentence, because the two views say
+   * genuinely different things and a single phrase would be wrong in one of them.
+   */
+  it('says the session toggle applies to this chat, and where the default lives', async () => {
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await screen.findAllByRole('menuitemcheckbox');
+
+    expect(screen.getByText(/Applies to this chat\./)).toBeInTheDocument();
+    expect(screen.getByText(/Settings → Extensions/)).toBeInTheDocument();
+  });
+
+  it('says the hub toggle applies to the next chat, not to "new chats"', async () => {
+    render(<BottomMenuExtensionSelection sessionId={null} />);
+    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
+      button: 0,
+      ctrlKey: false,
+    });
+    await screen.findAllByRole('menuitemcheckbox');
+
+    // `clearExtensionOverrides` runs on session creation, so the override shapes
+    // exactly one chat — "in new chats" was an over-promise.
+    expect(screen.getByText(/Applies to the next chat you start\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Applies to this chat\./)).not.toBeInTheDocument();
+  });
+
   it('keeps shipped capabilities out of the per-chat extension selector', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
     const trigger = screen.getByLabelText('Manage extensions (2 enabled)');

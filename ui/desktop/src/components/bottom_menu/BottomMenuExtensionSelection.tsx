@@ -119,7 +119,9 @@ export const BottomMenuExtensionSelection = ({
 
         toastService.success({
           title: 'Extension Updated',
-          msg: `${formatExtensionName(extensionConfig.name)} will be ${nextEnabled ? 'enabled' : 'disabled'} in new chats`,
+          // "in new chats" over-promised: `extensionOverrides` is an in-memory
+          // map that `createSession` clears, so it shapes exactly one chat.
+          msg: `${formatExtensionName(extensionConfig.name)} will be ${nextEnabled ? 'enabled' : 'disabled'} in the next chat you start`,
         });
         return;
       }
@@ -317,7 +319,7 @@ export const BottomMenuExtensionSelection = ({
 
       toastService.success({
         title: 'Extensions Updated',
-        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in new chats`,
+        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in the next chat you start`,
       });
       return;
     }
@@ -350,7 +352,7 @@ export const BottomMenuExtensionSelection = ({
 
       toastService.success({
         title: 'Extensions Updated',
-        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat session`,
+        msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat`,
       });
     } catch {
       toastService.error({
@@ -435,6 +437,34 @@ export const BottomMenuExtensionSelection = ({
             </button>
           )}
         </div>
+        {sortedExtensions.length > 0 && (
+          /*
+           * v1.89.0 P-03. What this menu changes, said where the user is
+           * deciding rather than in a toast that has already gone.
+           *
+           * The control is per-CHAT and always was: a session toggle calls
+           * `/agent/add_extension`, which attaches to the running agent and
+           * persists into that session's own `enabled_extensions.v0` — so the
+           * choice survives a restart *in this chat* — and never touches
+           * `config.yaml`. The hub view's toggles are more transient still:
+           * `extensionOverrides` is an in-memory map that `createSession`
+           * clears, so it shapes exactly the next chat you start.
+           *
+           * Neither said so. The bulk button's toast did ("… for this chat
+           * session"), a single row's said only "Successfully added extension",
+           * and nothing at all said where the durable default lives. A user who
+           * enabled Workspace here, quit, and found it off again read that as
+           * the setting failing to save; it was a per-chat control being read as
+           * a global one. Fixing the persistence instead would be the wrong
+           * repair — it would make disabling an extension in one chat disable it
+           * in every other.
+           */
+          <div className="px-3 pb-1.5 pt-0.5 text-[11px] leading-4 text-text-muted">
+            {isHubView
+              ? 'Applies to the next chat you start. Settings → Extensions sets the default for all new chats.'
+              : 'Applies to this chat. Settings → Extensions sets the default for new chats.'}
+          </div>
+        )}
         <div className="max-h-[400px] overflow-y-auto">
           {sortedExtensions.length === 0 ? (
             <div className="px-3 py-4 text-center text-[13px] leading-[18px] text-text-muted">
