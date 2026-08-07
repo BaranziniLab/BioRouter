@@ -2,6 +2,7 @@ use super::base::{MessageStream, Usage};
 use super::errors::GoogleErrorCode;
 use crate::config::paths::Paths;
 use crate::model::ModelConfig;
+use crate::privacy::ProviderTier;
 use crate::providers::errors::ProviderError;
 use crate::providers::formats::openai::response_to_streaming_message;
 use anyhow::{anyhow, Result};
@@ -19,7 +20,7 @@ use std::io;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::pin;
 use tokio_stream::StreamExt;
 use tokio_util::codec::{FramedRead, LinesCodec};
@@ -488,6 +489,47 @@ fn unescape_json_values_in_place(value: &mut Value) {
     }
 }
 
+/// What a [`RequestLog`] may write about the exchange it is logging.
+///
+/// The privacy question this answers is not "is the log file protected?" — it
+/// is "what leaves the machine?". `<state>/logs/llm_request.*.jsonl` is zipped
+/// into the diagnostics bundle a user emails to support believing they sent a
+/// bug report, so a prompt written here is a prompt disclosed to a third party.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PayloadPolicy {
+    /// The prompt, the response and every streamed chunk are written verbatim.
+    Full,
+    /// Only metadata: the model config, the session, timings, token usage and
+    /// error text. No prompt, no completion, no tool arguments.
+    MetadataOnly,
+}
+
+impl PayloadPolicy {
+    /// The ONE place a provider tier becomes a logging decision.
+    ///
+    /// Private-tier means the model is reached without the content leaving the
+    /// user's machine or their institution's boundary; writing that content
+    /// into a bundle destined for a public issue tracker undoes exactly that.
+    pub const fn for_tier(tier: ProviderTier) -> Self {
+        if tier.is_private() {
+            Self::MetadataOnly
+        } else {
+            Self::Full
+        }
+    }
+
+    pub const fn is_metadata_only(self) -> bool {
+        matches!(self, Self::MetadataOnly)
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::MetadataOnly => "metadata-only",
+        }
+    }
+}
+
 /// Per-request debug log of the LLM exchange (`<state>/logs/llm_request.N.jsonl`).
 ///
 /// BR-57: this is written on **every** request and, while streaming, once per
@@ -495,17 +537,63 @@ fn unescape_json_values_in_place(value: &mut Value) {
 /// keep blocking file I/O off that runtime the lines are buffered in memory
 /// ([`write`](Self::write) does no syscalls) and the whole exchange is flushed
 /// and rotated in a single `spawn_blocking` at [`finish`](Self::finish) time.
+///
+/// ⚠ **Every log records the session it belongs to, and a log that cannot name
+/// one is unattributable.** `generate_diagnostics` ships only the logs whose
+/// header names the session the user asked to report; see
+/// `crate::session::diagnostics`. That is why the header line is written even
+/// under [`PayloadPolicy::MetadataOnly`] — dropping it would not make the file
+/// private, it would make the file unfilterable.
 pub struct RequestLog {
     /// Buffered JSONL lines (each already serialized, no trailing newline).
     /// `None` once the log has been flushed, so `finish` is idempotent.
     lines: Option<Vec<String>>,
     temp_path: PathBuf,
+    /// Decided once, at [`start_with_tier`](Self::start_with_tier), and never
+    /// re-read: a policy sampled again per chunk could change mid-stream if the
+    /// bound provider were swapped, and half a redacted transcript is a leaked
+    /// transcript.
+    policy: PayloadPolicy,
+    started: Instant,
+    /// Response chunks suppressed by [`PayloadPolicy::MetadataOnly`], and their
+    /// combined serialized size. Kept so the log still says *how much* came
+    /// back, which is what a truncation or a runaway-response report needs.
+    redacted_chunks: u64,
+    redacted_bytes: u64,
 }
 
 pub const LOGS_TO_KEEP: usize = 10;
 
 impl RequestLog {
+    /// Open a log for a request whose provider tier is **not known here**.
+    ///
+    /// ⚠ This resolves to [`ProviderTier::Private`], i.e. metadata only, and
+    /// that is deliberate. `RequestLog` is constructed from inside a provider's
+    /// `complete`/`stream` body, which hands it a [`ModelConfig`] and nothing
+    /// else — no `&dyn Provider`, so no `tier()`. A tier this constructor
+    /// guessed (from the configured provider name, say) would be wrong in the
+    /// leaking direction the moment a session binds a provider other than the
+    /// global default, which is the ordinary case for a private chat. Guessing
+    /// Public to keep the debug log rich is the bug this fixes; guessing Private
+    /// costs prompt text in a debug file and can never disclose a private
+    /// transcript.
+    ///
+    /// A provider that knows its own tier should call
+    /// [`start_with_tier`](Self::start_with_tier) with `self.tier()` — that is
+    /// the seam, and it lives in the provider modules, not here.
     pub fn start<Payload>(model_config: &ModelConfig, payload: &Payload) -> Result<Self>
+    where
+        Payload: Serialize,
+    {
+        Self::start_with_tier(ProviderTier::Private, model_config, payload)
+    }
+
+    /// Open a log for a request whose provider tier **is** known.
+    pub fn start_with_tier<Payload>(
+        tier: ProviderTier,
+        model_config: &ModelConfig,
+        payload: &Payload,
+    ) -> Result<Self>
     where
         Payload: Serialize,
     {
@@ -515,18 +603,40 @@ impl RequestLog {
         let temp_name = format!("llm_request.{request_id}.jsonl");
         let temp_path = logs_dir.join(PathBuf::from(temp_name));
 
-        let data = serde_json::json!({
+        let policy = PayloadPolicy::for_tier(tier);
+        let encoded = serde_json::to_string(payload)?;
+
+        // `model_config` is model name / limits / sampling knobs — no user
+        // content — so it is metadata under either policy.
+        let mut header = serde_json::json!({
+            "session_id": crate::session_context::current_session_id(),
+            "provider_tier": tier,
+            "payloads": policy.as_str(),
             "model_config": model_config,
-            "input": payload,
+            "input_bytes": encoded.len(),
         });
+        if !policy.is_metadata_only() {
+            header["input"] = serde_json::from_str(&encoded)?;
+        }
+
         // Buffer the opening line in memory — no file is opened on the async
         // runtime; the disk work is deferred to `finish` (`spawn_blocking`).
-        let lines = vec![serde_json::to_string(&data)?];
+        let lines = vec![serde_json::to_string(&header)?];
 
         Ok(Self {
             lines: Some(lines),
             temp_path,
+            policy,
+            started: Instant::now(),
+            redacted_chunks: 0,
+            redacted_bytes: 0,
         })
+    }
+
+    /// The policy this log was opened under. Exposed so a test can assert on
+    /// the decision as well as on its output.
+    pub fn policy(&self) -> PayloadPolicy {
+        self.policy
     }
 
     fn write_json(&mut self, line: &serde_json::Value) -> Result<()> {
@@ -551,6 +661,17 @@ impl RequestLog {
     where
         Payload: Serialize,
     {
+        if self.policy.is_metadata_only() {
+            self.redacted_chunks += 1;
+            self.redacted_bytes += serde_json::to_string(data)?.len() as u64;
+            // Token counts are metadata and are what a usage report needs; the
+            // chunks that carry no usage carry only content, so they vanish.
+            if usage.is_some() {
+                return self.write_json(&serde_json::json!({ "usage": usage }));
+            }
+            return Ok(());
+        }
+
         self.write_json(&serde_json::json!({
             "data": data,
             "usage": usage,
@@ -558,6 +679,19 @@ impl RequestLog {
     }
 
     fn finish(&mut self) -> Result<()> {
+        // Timings are metadata under either policy, and under
+        // `MetadataOnly` this trailer is what keeps the log diagnostic:
+        // it still says how long the call took and how much came back.
+        if self.lines.is_some() {
+            let trailer = serde_json::json!({
+                "elapsed_ms": self.started.elapsed().as_millis() as u64,
+                "payloads": self.policy.as_str(),
+                "redacted_response_chunks": self.redacted_chunks,
+                "redacted_response_bytes": self.redacted_bytes,
+            });
+            self.write_json(&trailer)?;
+        }
+
         let Some(lines) = self.lines.take() else {
             return Ok(());
         };
@@ -697,14 +831,29 @@ mod tests {
     // BR-57: the log buffers its lines in memory and only touches the disk when
     // it is finished (inline here, since there is no tokio runtime; on the
     // streaming path the same flush runs in `spawn_blocking`).
+    /// A log opened with an explicit policy, writing into `dir` instead of the
+    /// real state directory. Only the tests below build one this way; every
+    /// production path goes through `start`/`start_with_tier`.
+    fn test_log(
+        dir: &std::path::Path,
+        policy: PayloadPolicy,
+        header: serde_json::Value,
+    ) -> RequestLog {
+        RequestLog {
+            lines: Some(vec![header.to_string()]),
+            temp_path: dir.join("llm_request.abc.jsonl"),
+            policy,
+            started: Instant::now(),
+            redacted_chunks: 0,
+            redacted_bytes: 0,
+        }
+    }
+
     #[test]
     fn test_request_log_buffers_then_flushes_on_finish() {
         let dir = tempfile::tempdir().unwrap();
         let temp_path = dir.path().join("llm_request.abc.jsonl");
-        let mut log = RequestLog {
-            lines: Some(vec![json!({"input": "hi"}).to_string()]),
-            temp_path: temp_path.clone(),
-        };
+        let mut log = test_log(dir.path(), PayloadPolicy::Full, json!({"input": "hi"}));
 
         // `write`/`error` are pure in-memory: nothing is written to disk yet.
         log.write(&json!({"delta": "one"}), None).unwrap();
@@ -718,16 +867,165 @@ mod tests {
         let slot0 = dir.path().join("llm_request.0.jsonl");
         let contents = std::fs::read_to_string(&slot0).unwrap();
         let lines: Vec<&str> = contents.lines().collect();
-        assert_eq!(lines.len(), 3);
+        // Three buffered lines plus the timing trailer `finish` appends.
+        assert_eq!(lines.len(), 4);
         assert!(lines[0].contains("\"input\":\"hi\""));
         assert!(lines[1].contains("\"delta\":\"one\""));
         assert!(lines[2].contains("\"error\":\"boom\""));
+        assert!(lines[3].contains("\"elapsed_ms\""));
         // The temp file was consumed by the rename.
         assert!(!temp_path.exists());
 
         // A second finish (e.g. from Drop) is a no-op.
         log.finish().unwrap();
         assert!(log.lines.is_none());
+    }
+
+    #[test]
+    fn payload_policy_follows_the_provider_tier() {
+        assert_eq!(
+            PayloadPolicy::for_tier(ProviderTier::Private),
+            PayloadPolicy::MetadataOnly
+        );
+        assert_eq!(
+            PayloadPolicy::for_tier(ProviderTier::Public),
+            PayloadPolicy::Full
+        );
+    }
+
+    /// The fix. A private-tier exchange leaves model, timings, tokens and error
+    /// text on disk and **no transcript** — asserted on the bytes that reach the
+    /// file, not on the policy value that produced them.
+    #[test]
+    fn a_private_tier_log_writes_no_prompt_and_no_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+
+        let model = ModelConfig::new("gpt-4o").unwrap();
+        let prompt = json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "patient MRN 8675309 has glioblastoma"}],
+        });
+
+        let mut log = RequestLog::start_with_tier(ProviderTier::Private, &model, &prompt).unwrap();
+        assert_eq!(log.policy(), PayloadPolicy::MetadataOnly);
+        log.write(&json!({"delta": "the biopsy shows"}), None)
+            .unwrap();
+        log.write(&json!({"delta": " an IDH-wildtype tumour"}), None)
+            .unwrap();
+        log.error("upstream 429").unwrap();
+        log.finish().unwrap();
+
+        let contents =
+            std::fs::read_to_string(Paths::in_state_dir("logs").join("llm_request.0.jsonl"))
+                .unwrap();
+
+        // Not one word of the exchange survived.
+        assert!(!contents.contains("8675309"), "prompt leaked: {contents}");
+        assert!(
+            !contents.contains("glioblastoma"),
+            "prompt leaked: {contents}"
+        );
+        assert!(
+            !contents.contains("biopsy"),
+            "completion leaked: {contents}"
+        );
+        assert!(
+            !contents.contains("IDH-wildtype"),
+            "completion leaked: {contents}"
+        );
+        assert!(
+            !contents.contains("\"input\""),
+            "input key present: {contents}"
+        );
+        assert!(
+            !contents.contains("\"data\""),
+            "data key present: {contents}"
+        );
+
+        // The metadata the fix promises to keep is all there.
+        assert!(contents.contains("\"provider_tier\":\"private\""));
+        assert!(contents.contains("\"payloads\":\"metadata-only\""));
+        assert!(contents.contains("gpt-4o"), "model name is metadata");
+        assert!(contents.contains("\"elapsed_ms\""));
+        assert!(contents.contains("\"redacted_response_chunks\":2"));
+        assert!(contents.contains("\"error\":\"upstream 429\""));
+    }
+
+    /// The other half of the same gate: Public keeps the debug log useful.
+    #[test]
+    fn a_public_tier_log_still_writes_the_exchange() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+
+        let model = ModelConfig::new("gpt-4o").unwrap();
+        let prompt = json!({"messages": [{"role": "user", "content": "hello there"}]});
+
+        let mut log = RequestLog::start_with_tier(ProviderTier::Public, &model, &prompt).unwrap();
+        assert_eq!(log.policy(), PayloadPolicy::Full);
+        log.write(&json!({"delta": "general kenobi"}), None)
+            .unwrap();
+        log.finish().unwrap();
+
+        let contents =
+            std::fs::read_to_string(Paths::in_state_dir("logs").join("llm_request.0.jsonl"))
+                .unwrap();
+        assert!(contents.contains("hello there"));
+        assert!(contents.contains("general kenobi"));
+        assert!(contents.contains("\"provider_tier\":\"public\""));
+    }
+
+    /// `start` is what all ~25 provider call sites reach, and none of them pass
+    /// a tier. It must resolve to the safe end of the lattice.
+    #[test]
+    fn the_tierless_constructor_every_provider_uses_is_metadata_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+
+        let model = ModelConfig::new("gpt-4o").unwrap();
+        let log = RequestLog::start(&model, &json!({"secret": "do not ship me"})).unwrap();
+        assert_eq!(log.policy(), PayloadPolicy::MetadataOnly);
+        drop(log);
+
+        let contents =
+            std::fs::read_to_string(Paths::in_state_dir("logs").join("llm_request.0.jsonl"))
+                .unwrap();
+        assert!(!contents.contains("do not ship me"), "leaked: {contents}");
+    }
+
+    /// The diagnostics filter reads this header field. If it stops being
+    /// written, every log becomes unattributable and the bundle ships none of
+    /// them — a silent loss, so pin it here as well as at the reader.
+    #[tokio::test]
+    async fn every_log_header_records_the_session_it_belongs_to() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let model = ModelConfig::new("gpt-4o").unwrap();
+
+        let header = crate::session_context::with_session_id(Some("sess-42".into()), async {
+            let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+            let log = RequestLog::start(&model, &json!({"m": 1})).unwrap();
+            log.lines.as_ref().unwrap()[0].clone()
+        })
+        .await;
+
+        assert!(header.contains("\"session_id\":\"sess-42\""), "{header}");
+    }
+
+    /// Outside a scoped session the header still carries the key, with `null` —
+    /// which the diagnostics filter reads as "cannot attribute, do not ship".
+    #[test]
+    fn a_log_opened_outside_a_session_records_a_null_session() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+
+        let model = ModelConfig::new("gpt-4o").unwrap();
+        let log = RequestLog::start(&model, &json!({"m": 1})).unwrap();
+        assert!(log.lines.as_ref().unwrap()[0].contains("\"session_id\":null"));
     }
 
     #[test]

@@ -212,6 +212,103 @@ fn totals_text(t: &UsageTotals) -> String {
     )
 }
 
+/// The session a `llm_request.*.jsonl` names in its header line, if any.
+///
+/// `RequestLog::start` writes that header first and always (see
+/// `crate::providers::utils::RequestLog`). `None` means the file predates that
+/// header, is not JSONL, or was opened outside a scoped session — in every one
+/// of those cases the file's provenance is unknown.
+fn log_session_id(contents: &str) -> Option<String> {
+    let header: serde_json::Value = serde_json::from_str(contents.lines().next()?).ok()?;
+    header.get("session_id")?.as_str().map(str::to_string)
+}
+
+/// Whether a log file may be shipped in the bundle for `session_id`.
+///
+/// **Fail-closed on purpose.** An unattributable log is excluded rather than
+/// included: the bundle is emailed to a third party, so "I could not tell whose
+/// conversation this was" has to mean "do not send it". The previous rule —
+/// newest ten files, whoever produced them — put another chat's prompts into a
+/// bug report about this one.
+fn log_belongs_to_session(contents: &str, session_id: &str) -> bool {
+    log_session_id(contents).is_some_and(|id| id == session_id)
+}
+
+/// Does this key name a credential? Matched case-insensitively on a substring,
+/// so `SPOKEAGENT_PASSCODE`, `api_key` and `GITHUB_TOKEN` all hit.
+///
+/// Deliberately broad: over-redacting a bundle costs a support engineer one
+/// follow-up question, under-redacting one mails a working credential to an
+/// inbox and, for a GitHub issue, to the public.
+fn is_secret_key(key: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        "key",
+        "token",
+        "secret",
+        "password",
+        "passcode",
+        "passwd",
+        "credential",
+        "auth",
+        "cookie",
+        "session",
+        "signature",
+        "private",
+    ];
+    let key = key.to_ascii_lowercase();
+    NEEDLES.iter().any(|needle| key.contains(needle))
+}
+
+const REDACTED: &str = "[redacted by diagnostics bundle]";
+
+/// Replace credential-shaped values in `config.yaml` before it is zipped.
+///
+/// Two rules, because extension entries need both: any value whose key looks
+/// like a credential, and **every** value inside an `envs` map (a `.brxt`
+/// install writes the extension's environment straight into the config entry,
+/// and `CDW_USERNAME` names a person while matching no credential needle).
+///
+/// A file that does not parse is replaced wholesale rather than passed through:
+/// the fallback for "I could not inspect this" is not "send it anyway".
+fn redact_config_yaml(raw: &str) -> String {
+    let Ok(mut doc) = serde_yaml::from_str::<serde_yaml::Value>(raw) else {
+        return "# config.yaml was omitted from this bundle: it could not be parsed as YAML,\n\
+                # so its values could not be checked for credentials.\n"
+            .to_string();
+    };
+    redact_yaml_value(&mut doc, false);
+    serde_yaml::to_string(&doc).unwrap_or_else(|_| {
+        "# config.yaml was omitted from this bundle: it could not be re-serialized.\n".to_string()
+    })
+}
+
+fn redact_yaml_value(value: &mut serde_yaml::Value, redact_every_leaf: bool) {
+    match value {
+        serde_yaml::Value::Mapping(map) => {
+            let keys: Vec<serde_yaml::Value> = map.keys().cloned().collect();
+            for key in keys {
+                let key_str = key.as_str().unwrap_or_default().to_string();
+                let Some(child) = map.get_mut(&key) else {
+                    continue;
+                };
+                if redact_every_leaf || is_secret_key(&key_str) {
+                    *child = serde_yaml::Value::String(REDACTED.to_string());
+                    continue;
+                }
+                // A `.brxt` install writes the extension's whole environment
+                // here; treat all of it as credential material.
+                redact_yaml_value(child, key_str.eq_ignore_ascii_case("envs"));
+            }
+        }
+        serde_yaml::Value::Sequence(items) => {
+            for item in items {
+                redact_yaml_value(item, redact_every_leaf);
+            }
+        }
+        _ => {}
+    }
+}
+
 pub async fn generate_diagnostics(
     session_manager: &SessionManager,
     session_id: &str,
@@ -244,14 +341,27 @@ pub async fn generate_diagnostics(
 
         log_files.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
 
-        for entry in log_files.iter().rev().take(LOGS_TO_KEEP) {
+        // Newest first, but only this session's logs — see
+        // `log_belongs_to_session`. `take(LOGS_TO_KEEP)` on the *unfiltered*
+        // list is what shipped other chats' prompts: the ten newest files on
+        // this machine have nothing to do with the session being reported.
+        let mut shipped = 0usize;
+        for entry in log_files.iter().rev() {
+            if shipped == LOGS_TO_KEEP {
+                break;
+            }
             let path = entry.path();
+            let bytes = fs::read(&path)?;
+            if !log_belongs_to_session(&String::from_utf8_lossy(&bytes), session_id) {
+                continue;
+            }
             let name = path
                 .file_name()
                 .map(|name| name.to_string_lossy())
                 .unwrap_or_default();
             zip.start_file(format!("logs/{}", name), options)?;
-            zip.write_all(&fs::read(&path)?)?;
+            zip.write_all(&bytes)?;
+            shipped += 1;
         }
 
         let session_data = session_manager.export_session(session_id).await?;
@@ -259,8 +369,9 @@ pub async fn generate_diagnostics(
         zip.write_all(session_data.as_bytes())?;
 
         if config_path.exists() {
+            let raw = fs::read(&config_path)?;
             zip.start_file("config.yaml", options)?;
-            zip.write_all(&fs::read(&config_path)?)?;
+            zip.write_all(redact_config_yaml(&String::from_utf8_lossy(&raw)).as_bytes())?;
         }
 
         zip.start_file("system.txt", options)?;
@@ -328,6 +439,167 @@ mod tests {
         assert!(archive.by_name("session.json").is_ok());
         assert!(archive.by_name("system.txt").is_ok());
         assert!(archive.by_name("usage.txt").is_ok());
+    }
+
+    /// Read every entry of a bundle as `(name, bytes)`.
+    fn bundle_entries(bundle: Vec<u8>) -> Vec<(String, Vec<u8>)> {
+        use std::io::Read;
+        let mut archive = zip::ZipArchive::new(Cursor::new(bundle)).unwrap();
+        (0..archive.len())
+            .map(|i| {
+                let mut file = archive.by_index(i).unwrap();
+                let name = file.name().to_string();
+                let mut bytes = Vec::new();
+                file.read_to_end(&mut bytes).unwrap();
+                (name, bytes)
+            })
+            .collect()
+    }
+
+    /// ⚠ The assertion is on the **zip's bytes**, not on the filter's return
+    /// value: a correct filter whose result the bundler ignores is the failure
+    /// this test exists to catch.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_bundle_ships_only_the_named_session_s_llm_logs() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "diagnostics".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let logs_dir = Paths::in_state_dir("logs");
+        fs::create_dir_all(&logs_dir).unwrap();
+
+        // Three logs on this machine: one from the session being reported, one
+        // from somebody else's chat, one from before headers existed.
+        fs::write(
+            logs_dir.join("llm_request.0.jsonl"),
+            format!(
+                "{{\"session_id\":\"{}\",\"model_config\":{{}}}}\n{{\"data\":\"MINE\"}}\n",
+                session.id
+            ),
+        )
+        .unwrap();
+        fs::write(
+            logs_dir.join("llm_request.1.jsonl"),
+            "{\"session_id\":\"some-other-chat\"}\n{\"data\":\"THEIR PRIVATE PROMPT\"}\n",
+        )
+        .unwrap();
+        fs::write(
+            logs_dir.join("llm_request.2.jsonl"),
+            "{\"model_config\":{}}\n{\"data\":\"UNATTRIBUTED PROMPT\"}\n",
+        )
+        .unwrap();
+
+        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+
+        let log_names: Vec<&str> = entries
+            .iter()
+            .map(|(name, _)| name.as_str())
+            .filter(|name| name.starts_with("logs/"))
+            .collect();
+        assert_eq!(log_names, vec!["logs/llm_request.0.jsonl"]);
+
+        let all_bytes: Vec<u8> = entries.iter().flat_map(|(_, b)| b.clone()).collect();
+        let all = String::from_utf8_lossy(&all_bytes);
+        assert!(
+            all.contains("MINE"),
+            "the reported session's own log is missing"
+        );
+        assert!(
+            !all.contains("THEIR PRIVATE PROMPT"),
+            "another chat's transcript is in the bundle"
+        );
+        assert!(
+            !all.contains("UNATTRIBUTED PROMPT"),
+            "an unattributable transcript is in the bundle"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_bundled_config_has_its_credentials_redacted() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(temp.path().to_path_buf(), "diag".into(), SessionType::User)
+            .await
+            .unwrap();
+
+        let config_dir = Paths::config_dir();
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.yaml"),
+            "BIOROUTER_PROVIDER: anthropic\n\
+             ANTHROPIC_API_KEY: sk-ant-LIVE-CREDENTIAL\n\
+             extensions:\n\
+             \x20 spoke:\n\
+             \x20   name: SPOKEAgent\n\
+             \x20   envs:\n\
+             \x20     SPOKEAGENT_PASSCODE: hunter2\n\
+             \x20     CDW_USERNAME: CAMPUS\\\\jdoe\n",
+        )
+        .unwrap();
+
+        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let (_, config) = entries
+            .iter()
+            .find(|(name, _)| name == "config.yaml")
+            .expect("config.yaml is in the bundle");
+        let config = String::from_utf8_lossy(config);
+
+        assert!(!config.contains("sk-ant-LIVE-CREDENTIAL"), "{config}");
+        assert!(!config.contains("hunter2"), "{config}");
+        assert!(!config.contains("jdoe"), "{config}");
+        // Still diagnostic: the shape of the config survives.
+        assert!(config.contains("BIOROUTER_PROVIDER: anthropic"), "{config}");
+        assert!(config.contains("SPOKEAgent"), "{config}");
+    }
+
+    #[test]
+    fn an_unattributable_log_is_not_this_session_s() {
+        assert!(log_belongs_to_session(
+            "{\"session_id\":\"abc\"}\n{\"data\":1}",
+            "abc"
+        ));
+        assert!(!log_belongs_to_session("{\"session_id\":\"abc\"}\n", "def"));
+        assert!(!log_belongs_to_session("{\"session_id\":null}\n", "abc"));
+        assert!(!log_belongs_to_session("{\"model_config\":{}}\n", "abc"));
+        assert!(!log_belongs_to_session("not json at all\n", "abc"));
+        assert!(!log_belongs_to_session("", "abc"));
+    }
+
+    #[test]
+    fn redaction_covers_credential_keys_and_every_extension_env() {
+        let out = redact_config_yaml(
+            "OPENAI_API_KEY: sk-live\n\
+             GITHUB_TOKEN: ghp_live\n\
+             harmless: keep-me\n\
+             extensions:\n\
+             \x20 a:\n\
+             \x20   envs:\n\
+             \x20     ANY_NAME_AT_ALL: value\n",
+        );
+        assert!(!out.contains("sk-live"), "{out}");
+        assert!(!out.contains("ghp_live"), "{out}");
+        assert!(!out.contains("value"), "{out}");
+        assert!(out.contains("keep-me"), "{out}");
+    }
+
+    #[test]
+    fn unparseable_config_is_replaced_rather_than_shipped() {
+        // A tab in the indentation: YAML forbids it, so this cannot parse.
+        let out = redact_config_yaml("root:\n\tANTHROPIC_API_KEY: sk-live\n");
+        assert!(!out.contains("sk-live"), "{out}");
+        assert!(out.starts_with('#'), "{out}");
     }
 
     #[tokio::test]
