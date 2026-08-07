@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Home, Plus, Settings } from '../icons/app-icons';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { ChevronDown, Home, Plus, Settings } from '../icons/app-icons';
 import { ENTITY_ICONS } from '../icons/entity-icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
@@ -12,6 +12,7 @@ import {
   SidebarGroupContent,
 } from '../ui/sidebar';
 import { BioRouterWordmark } from '../icons/BioRouterWordmark';
+import { cn } from '../../utils';
 import { ViewOptions, View, navigateWithViewTransition } from '../../utils/navigationUtils';
 import { useChatContext } from '../../contexts/ChatContext';
 import { DEFAULT_CHAT_TITLE } from '../../contexts/ChatContext';
@@ -53,14 +54,23 @@ const settingsItem: NavigationItem = {
   tooltip: 'Configure Biorouter settings',
 };
 
-const menuItems: NavigationItem[] = [
-  {
-    type: 'item',
-    path: '/pair',
-    label: 'New Session',
-    icon: Plus,
-    tooltip: 'Start a new session',
-  },
+/**
+ * THE RAIL CARRIES ONE DESTINATION AND ONE ACTION (Astryx §4.1.3, decision A-08).
+ *
+ * The audit measured ~462px of fixed chrome above the first recent chat, of
+ * which 288px was nine nav rows. On a 720p window more than half the rail was
+ * spent before any history showed.
+ *
+ * **Home** is first, because it is where the rail RETURNS you; **New Session** is
+ * beneath it, because it is the one thing the rail DOES. Everything else is a
+ * place you go occasionally, and those live behind one `Components` disclosure —
+ * one click away, keeping their real icons, indented rather than shrunk.
+ *
+ * Order is load-bearing and was reversed from what shipped: New Session used to
+ * sit above Home, which put an action in the position the eye reads as "the top
+ * of the map".
+ */
+const primaryItems: NavigationItem[] = [
   {
     type: 'item',
     path: '/',
@@ -68,6 +78,29 @@ const menuItems: NavigationItem[] = [
     icon: Home,
     tooltip: 'Go back to the main chat screen',
   },
+  {
+    type: 'item',
+    path: '/pair',
+    label: 'New Session',
+    icon: Plus,
+    tooltip: 'Start a new session',
+  },
+];
+
+/**
+ * The six-or-seven destinations behind the `Components` disclosure.
+ *
+ * ⚠ `/apps` ("Apps") and `/applications` ("Applications") are two rows a user
+ * cannot tell apart, and they are not the same list: `/applications` shows apps
+ * you BUILT with Agent Drafter (`GET /apps`), while `/apps` shows apps ADVERTISED
+ * by installed extensions (`GET /agent/list_apps`). §4.1 resolves this by folding
+ * the second into the first as a section — but that is a change to the
+ * Applications VIEW, which belongs to the views phase and to another steward.
+ * Recorded here so that phase inherits the observation. Until then `/apps`
+ * remains conditional (`hasApps`), which is what already keeps most users from
+ * ever seeing the collision.
+ */
+const componentItems: NavigationItem[] = [
   {
     type: 'item',
     path: '/workflows',
@@ -119,6 +152,23 @@ const menuItems: NavigationItem[] = [
   },
 ];
 
+const COMPONENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-components-expanded';
+
+/**
+ * Collapsed by DEFAULT — that is where the 192px comes from (nine 32px nav rows
+ * become three). Remembered, so a user who wants the six open never reopens
+ * them. Storage failures (private mode, a sandboxed frame) fall back to
+ * collapsed rather than throwing, matching what Recents already does one file
+ * over.
+ */
+function readStoredComponentsExpanded(): boolean {
+  try {
+    return window.localStorage.getItem(COMPONENTS_EXPANDED_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
 const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -149,7 +199,9 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   }, [currentPath]);
 
   useEffect(() => {
-    const currentItem = [...menuItems, settingsItem].find((item) => item.path === currentPath);
+    const currentItem = [...primaryItems, ...componentItems, settingsItem].find(
+      (item) => item.path === currentPath
+    );
 
     const titleBits = ['Biorouter'];
 
@@ -202,23 +254,54 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     );
   };
 
-  const renderMenuItem = (entry: NavigationItem) => {
+  /**
+   * NEW SESSION IS AN ACTION, AND ACTIONS DO NOT STAY LIT (Astryx §4.1.3).
+   *
+   * A destination keeps the selected wash and the accent rail because you are
+   * still THERE. New Session fires and the view moves on — leaving a lit row
+   * behind claims a location that is no longer true, and it is the reason a rail
+   * with one action and one destination read as a rail with two selected states.
+   */
+  const isDestinationActive = (entry: NavigationItem) =>
+    entry.path === '/pair' ? false : isActivePath(entry.path);
+
+  /**
+   * Drop focus after a POINTER activation only.
+   *
+   * `event.detail > 0` is the mouse/touch test: a keyboard `Enter` or `Space`
+   * reports 0. Blurring blindly would strand a Tab user mid-rail with no visible
+   * focus and nowhere obvious to resume from, so the row that must not stay lit
+   * for a mouse must still keep focus for a keyboard.
+   */
+  const blurAfterPointerActivation = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    if (event.detail > 0) event.currentTarget.blur();
+  }, []);
+
+  const renderMenuItem = (entry: NavigationItem, options?: { indented?: boolean }) => {
     const IconComponent = entry.icon;
-    const isActive =
-      entry.path === '/pair'
-        ? currentPath === '/pair' && !currentSessionId
-        : isActivePath(entry.path);
+    const isActive = isDestinationActive(entry);
+    const isAction = entry.path === '/pair';
 
     return (
       <SidebarMenuItem key={entry.path}>
         <SidebarMenuButton
           data-testid={`sidebar-${entry.label.toLowerCase().replace(/\s+/g, '-')}-button`}
-          onClick={() => handleNavigation(entry.path)}
+          onClick={(event) => {
+            handleNavigation(entry.path);
+            if (isAction) blurAfterPointerActivation(event);
+          }}
           onFocus={entry.path === '/' ? preloadHome : undefined}
           onPointerEnter={entry.path === '/' ? preloadHome : undefined}
           isActive={isActive}
           tooltip={entry.tooltip}
-          className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar"
+          // HIERARCHY BY INDENT, NEVER BY SIZE (§4.1.3). A child of the
+          // disclosure keeps the same 32px height and the same type; only its
+          // text edge moves, by 24px. Shrinking it would say it is a lesser kind
+          // of destination, which it is not.
+          className={cn(
+            'relative h-8 w-full justify-start rounded-lg py-2 text-sm transition-colors duration-150 before:absolute before:inset-y-2 before:left-0 before:w-0.5 before:bg-transparent hover:bg-sidebar-hover data-[active=true]:bg-sidebar-active data-[active=true]:font-medium data-[active=true]:before:bg-accent-bar',
+            options?.indented ? 'pl-9 pr-3' : 'px-3'
+          )}
         >
           {/* Icons take --sidebar-icon rather than inheriting the label's ink.
               In Parchment that token passes through to --sidebar-foreground, so
@@ -231,12 +314,29 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
     );
   };
 
-  const visibleMenuItems = menuItems.filter((entry) => {
-    if (entry.type === 'item' && entry.path === '/apps') {
-      return hasApps;
-    }
-    return true;
-  });
+  const visibleComponentItems = componentItems.filter((entry) =>
+    entry.path === '/apps' ? hasApps : true
+  );
+
+  const [isComponentsExpanded, setIsComponentsExpanded] = useState(readStoredComponentsExpanded);
+  const toggleComponents = useCallback(() => {
+    setIsComponentsExpanded((wasExpanded) => {
+      const nextExpanded = !wasExpanded;
+      try {
+        window.localStorage.setItem(COMPONENTS_EXPANDED_STORAGE_KEY, String(nextExpanded));
+      } catch {
+        // Persisting is best-effort; the disclosure still opens.
+      }
+      return nextExpanded;
+    });
+  }, []);
+
+  // A lit row inside a collapsed section is an invisible one. When the user IS
+  // on one of these destinations the group opens regardless of the stored
+  // preference — and does NOT overwrite it, so navigating away collapses back to
+  // whatever they chose.
+  const isOnComponentRoute = visibleComponentItems.some((entry) => entry.path === currentPath);
+  const showComponentChildren = isComponentsExpanded || isOnComponentRoute;
 
   return (
     <>
@@ -278,25 +378,55 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
             </div>
           </div>
 
+          {/* NO "MENU" HEADER (§4.1.2). It was 32px labelling something
+              self-evident: a vertical list of destinations at the top of a rail
+              does not need to be told apart from anything. The Recents header
+              stays, because it labels one list among two. */}
           <SidebarGroup className="px-2 pb-1">
-            <div data-testid="sidebar-menu-label" className="flex h-8 shrink-0 items-center px-3">
-              <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-text-subtle">
-                Menu
-              </span>
-            </div>
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0">{visibleMenuItems.map(renderMenuItem)}</SidebarMenu>
+              <SidebarMenu className="gap-0">
+                {primaryItems.map((entry) => renderMenuItem(entry))}
+
+                {/* The disclosure row: an item's twin, with a leading chevron in
+                    place of an icon and no uppercase mini-label. It is a control,
+                    not a destination, so it never takes the selected wash — even
+                    when one of its children is the current route. The child's own
+                    wash says where you are. */}
+                <SidebarMenuItem>
+                  <SidebarMenuButton
+                    data-testid="sidebar-components-disclosure"
+                    aria-expanded={showComponentChildren}
+                    aria-controls="sidebar-components-group"
+                    onClick={toggleComponents}
+                    className="relative h-8 w-full justify-start rounded-lg px-3 py-2 text-sm transition-colors duration-150 hover:bg-sidebar-hover"
+                  >
+                    <ChevronDown
+                      aria-hidden="true"
+                      className={cn(
+                        'h-4 w-4 text-sidebar-icon transition-transform duration-150',
+                        showComponentChildren ? '' : '-rotate-90'
+                      )}
+                    />
+                    <span>Components</span>
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+
+                {showComponentChildren && (
+                  <div id="sidebar-components-group" data-testid="sidebar-components-group">
+                    {visibleComponentItems.map((entry) =>
+                      renderMenuItem(entry, { indented: true })
+                    )}
+                  </div>
+                )}
+              </SidebarMenu>
             </SidebarGroupContent>
           </SidebarGroup>
         </div>
 
-        {/* Full-width inset rule — the menu and the history are separate zones. */}
-        <div
-          data-testid="sidebar-nav-divider"
-          role="separator"
-          aria-orientation="horizontal"
-          className="mx-3.5 my-2 h-px shrink-0 bg-sidebar-border"
-        />
+        {/* THE UPPER DIVIDER IS GONE (§4.1.4). The Components row and the
+            Recents header now do the zoning between the rail's destinations and
+            its history, so a rule between them was a third answer to a question
+            two elements already answered. */}
         <RecentChats
           sessions={sessions}
           activeSessionId={currentSessionId}
@@ -309,13 +439,14 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
         />
       </SidebarContent>
 
-      {/* Matches the menu/history divider above rather than SidebarSeparator's
-          32px sliver — two rules ~100px apart at different widths read as an
-          accident, not a system. */}
+      {/* The rail's ONE rule, and now it is unambiguous: it separates the
+          scrolling history from the fixed footer. Halved to a 10px block
+          (§4.1.4) — `my-1` + the hairline — because at `my-2` it was 18px of
+          rail spent on a 1px mark. */}
       <div
         data-testid="sidebar-footer-divider"
         role="separator"
-        className="mx-3.5 my-2 h-px shrink-0 bg-sidebar-border"
+        className="mx-3.5 my-1 h-px shrink-0 bg-sidebar-border"
       />
       <SidebarFooter className="gap-1 p-2">
         <SidebarUpdateButton />
