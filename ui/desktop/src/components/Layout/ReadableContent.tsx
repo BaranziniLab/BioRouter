@@ -8,14 +8,28 @@ type ReadableContentProps = {
 
 /**
  * `chat` is the column the composer and every chat message occupy
- * (`max-w-[760px]`, see BaseChat.tsx / ChatInput.tsx). A view that sits directly
- * above the composer — Home — must use it, or its edges will not line up.
+ * (`max-w-measure-chat`, see BaseChat.tsx / ChatInput.tsx). A view that sits
+ * directly above the composer — Home — must use it, or its edges will not line
+ * up. It names the TOKEN rather than a literal precisely so that alignment
+ * survives the measure changing, which it since has: the flat 760px this line
+ * used to quote is now the floor of a clamp.
+ */
+/**
+ * ⚠ Every one of these is a CLAMP, not a flat cap, for the reason spelled out
+ * on `--measure-chat` in main.css: a fixed pixel ceiling means a wider window
+ * buys dead margin instead of content. The floor of each is exactly the value
+ * it replaced, so nothing narrow moves — `max-width` cannot force a box wider
+ * than its parent — and the percentage resolves against the content pane rather
+ * than the viewport, so the sidebar opening does not widen the column.
+ *
+ * `chat` stays keyed to the token so it and the composer can never drift; the
+ * other three are page measures with their own ceilings.
  */
 const WIDTH_BY_SIZE: Record<NonNullable<ReadableContentProps['size']>, string> = {
-  chat: 'max-w-[760px]',
-  text: 'max-w-[1120px]',
-  wide: 'max-w-[1280px]',
-  graph: 'max-w-[1440px]',
+  chat: 'max-w-measure-chat',
+  text: 'max-w-[clamp(1120px,88%,1720px)]',
+  wide: 'max-w-[clamp(1280px,92%,1920px)]',
+  graph: 'max-w-[clamp(1440px,96%,2200px)]',
 };
 
 export function ReadableContent({ children, className = '', size = 'text' }: ReadableContentProps) {

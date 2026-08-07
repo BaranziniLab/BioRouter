@@ -413,9 +413,25 @@
 
   /* Reading measures. Both are already shipped as arbitrary values in
      ReadableContent.tsx; naming them is what lets the 896px replay fork be
-     deleted against something rather than against a comment. */
-  --measure-chat: 760px;
-  --measure-page: 1120px;
+     deleted against something rather than against a comment.
+
+     ⚠ FLUID, not fixed. They were flat pixel caps, and on a wide window that
+     read as the app refusing to use it: at 1800px the chat column sat at 760px
+     with ~400px of dead band on each side, so dragging the window wider bought
+     margin instead of content. A cap is still right — an 1800px line of prose
+     is unreadable — but the cap has to move with the window.
+
+     PERCENTAGES, not `vw`. These resolve against the containing block, which is
+     the content pane; `vw` is the whole viewport and would over-count by the
+     sidebar's width, widening the column exactly when the sidebar opened and
+     took the room away.
+
+     The floor is the OLD value, so nothing narrow changes: `max-width` never
+     forces a box wider than its parent, so below the floor the column is still
+     simply pane-wide. The clamp only ever raises the ceiling on a window that
+     has space to spare. */
+  --measure-chat: clamp(760px, 78%, 1180px);
+  --measure-page: clamp(1120px, 88%, 1720px);
 
   --z-base: 0;
   --z-sticky: 100;
