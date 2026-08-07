@@ -1331,8 +1331,7 @@ async fn strict_mode_authorization(
         ),
         CROSS_AFFILIATION_GRANT_AUTH_SUBJECT,
     );
-    let outcome = prompter.authenticate(&request).await;
-    match biorouter::privacy::system_auth::refusal_for(outcome, prompter) {
+    match biorouter::privacy::system_auth::authenticate_or_refuse(prompter, &request).await {
         None => Ok(()),
         // Nothing has been written at this point — the grant row is the next
         // statement — so the flow stays refused, which is the safe direction.

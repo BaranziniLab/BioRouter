@@ -2061,8 +2061,7 @@ pub async fn authenticate_export(
     };
 
     let prompter = system_auth::prompter();
-    let outcome = prompter.authenticate(&request).await;
-    match system_auth::refusal_for(outcome, prompter) {
+    match system_auth::authenticate_or_refuse(prompter, &request).await {
         None => Ok(ExportAuthorization {
             session_ids: request.session_ids,
         }),

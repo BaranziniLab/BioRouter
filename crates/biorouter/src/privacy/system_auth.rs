@@ -198,6 +198,64 @@ impl std::fmt::Display for SystemAuthRefusal {
 pub const DENIED_MESSAGE: &str =
     "The system authentication was not completed, so nothing was changed.";
 
+/// The longest [`authenticate_or_refuse`] will wait for the operating system.
+///
+/// Long enough to type a login password without being hurried, short enough that
+/// a prompt which is never going to arrive ends in a sentence rather than in a
+/// spinner. Both halves of that are requirements, and the second one is the
+/// defect this constant was added for (P-05): a control whose only two states
+/// are "working…" and "still working…" tells the user nothing about whether
+/// their instruction took effect, and this particular control governs whether
+/// privacy enforcement is on.
+pub const PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// What a user is told when the operating system never answered at all.
+///
+/// Deliberately **not** [`SystemAuthenticator::unavailable_reason`], whose advice
+/// ("run it from a Biorouter session on a machine whose operating system can
+/// raise one") is wrong here: the machine can, and the user is already sitting at
+/// it. What could not raise the prompt is Biorouter's own background service, so
+/// that is what the sentence says. It closes on what did not happen, for
+/// [`DENIED_MESSAGE`]'s reason.
+pub const PROMPT_UNANSWERED_MESSAGE: &str =
+    "Biorouter's background service asked the operating system to confirm it is you, and the \
+     operating system never answered, so nothing was changed. This is a limitation of the \
+     service rather than a refusal — it has no window of its own to show the prompt in.";
+
+/// Raise `prompter`'s prompt and turn the answer into either *go ahead* (`None`)
+/// or the refusal — **without ever waiting forever**.
+///
+/// ⚠ **The single entry point, and the audit below enforces that.** Every caller
+/// went through `authenticate` + [`refusal_for`] as two statements, and all five
+/// of them inherited the same defect: an `.await` on an operating-system call
+/// that, on macOS, does not return. `LAContext.evaluatePolicy` reaches
+/// `coreauthd` over a *synchronous* XPC that never replies in a process which is
+/// not a foreground application — measured on 1.89.0 with the packaged
+/// `biorouterd`, and reproduced in isolation with a 30-line Objective-C probe
+/// that hangs identically whether or not the binary carries a bundle identifier
+/// and whether or not it sits inside a real `.app`. The reply block simply never
+/// fires. So the HTTP handler never returned, the response never arrived, and
+/// Settings → Privacy sat in `busy` until the app was restarted.
+///
+/// A timeout is therefore not belt-and-braces here — it is the only thing that
+/// makes the operation terminate on the platform Biorouter ships first.
+///
+/// Fails **closed**, like everything else in this module: the timeout resolves to
+/// [`AuthOutcome::Unavailable`], never to an approval. A prompt that was not
+/// answered is not a prompt that said yes.
+pub async fn authenticate_or_refuse(
+    prompter: &dyn SystemAuthenticator,
+    request: &AuthRequest,
+) -> Option<SystemAuthRefusal> {
+    match tokio::time::timeout(PROMPT_TIMEOUT, prompter.authenticate(request)).await {
+        Ok(outcome) => refusal_for(outcome, prompter),
+        Err(_elapsed) => Some(SystemAuthRefusal {
+            outcome: AuthOutcome::Unavailable,
+            message: PROMPT_UNANSWERED_MESSAGE.to_string(),
+        }),
+    }
+}
+
 /// Turn a prompter's answer into either *go ahead* (`None`) or the refusal.
 ///
 /// The **decision half** of every caller, split from the platform call for the
@@ -576,6 +634,139 @@ impl SystemAuthenticator for NoPrompter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prompter that never answers — which is what
+    /// `LAContext.evaluatePolicy` is inside `biorouterd`.
+    struct NeverAnswers;
+
+    #[async_trait::async_trait]
+    impl SystemAuthenticator for NeverAnswers {
+        async fn authenticate(&self, _req: &AuthRequest) -> AuthOutcome {
+            std::future::pending().await
+        }
+        fn platform(&self) -> &'static str {
+            "a prompter that never answers"
+        }
+    }
+
+    /// P-05. The defect was not that the prompt refused — it was that the
+    /// operation had **no third state**: not applied, not refused, just still
+    /// running, for as long as the process lived.
+    ///
+    /// `start_paused` makes this instant: tokio auto-advances its clock when
+    /// every task is idle, so the 60-second bound elapses without the test
+    /// waiting for it. Remove the timeout from `authenticate_or_refuse` and this
+    /// test does not fail — it hangs, which is precisely the bug, and the harness
+    /// reports it as a timed-out test rather than as an assertion.
+    #[tokio::test(start_paused = true)]
+    async fn a_prompt_that_is_never_answered_still_ends_in_a_refusal() {
+        let refusal = authenticate_or_refuse(&NeverAnswers, &AuthRequest::about("Do a thing.", "s"))
+            .await
+            .expect("an unanswered prompt must refuse, never approve");
+
+        // Fails CLOSED. This is the assertion that matters: the alternative
+        // reading of "the OS did not say no" is "the OS said yes".
+        assert_eq!(refusal.outcome, AuthOutcome::Unavailable);
+        assert_eq!(refusal.message, PROMPT_UNANSWERED_MESSAGE);
+        // And the sentence has to close on what did not happen, or a user reads a
+        // refusal as "it probably went through anyway".
+        assert!(
+            refusal.message.contains("nothing was changed"),
+            "got {}",
+            refusal.message
+        );
+    }
+
+    /// The bound is a ceiling, not a floor: a prompter that answers promptly must
+    /// still have its own answer used, including its refusals.
+    #[tokio::test(start_paused = true)]
+    async fn a_prompter_that_does_answer_keeps_its_own_answer() {
+        struct Fixed(AuthOutcome);
+        #[async_trait::async_trait]
+        impl SystemAuthenticator for Fixed {
+            async fn authenticate(&self, _req: &AuthRequest) -> AuthOutcome {
+                self.0
+            }
+            fn platform(&self) -> &'static str {
+                "a prompter that answers"
+            }
+        }
+        let req = AuthRequest::about("Do a thing.", "s");
+
+        assert!(
+            authenticate_or_refuse(&Fixed(AuthOutcome::Approved), &req)
+                .await
+                .is_none(),
+            "an approval must still be an approval"
+        );
+        let denied = authenticate_or_refuse(&Fixed(AuthOutcome::Denied), &req)
+            .await
+            .expect("a denial refuses");
+        assert_eq!(denied.message, DENIED_MESSAGE);
+        // Not the timeout's message: the two failures are different things and a
+        // user who cancelled must not be told the service is incapable.
+        assert_ne!(denied.message, PROMPT_UNANSWERED_MESSAGE);
+    }
+
+    /// P-05 again, as an audit rather than as a behaviour.
+    ///
+    /// The bug was one line repeated at five call sites, so fixing the five
+    /// without closing the shape leaves the sixth to be written next. Every
+    /// prompt in the workspace must go through [`authenticate_or_refuse`], which
+    /// is the only place the bound exists.
+    #[test]
+    fn no_caller_raises_a_prompt_without_a_bound_on_it() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+
+        // The prompters themselves define `authenticate`, and this module is
+        // where the bounded call lives. Everything else must go through it.
+        let allowed = [
+            "crates/biorouter/src/privacy/system_auth.rs",
+            "crates/biorouter/src/privacy/system_auth_seam.rs",
+            "crates/biorouter/src/privacy/system_auth_macos.rs",
+            "crates/biorouter/src/privacy/system_auth_polkit.rs",
+            "crates/biorouter/src/privacy/system_auth_windows.rs",
+        ];
+
+        let mut offenders: Vec<String> = vec![];
+        let mut scanned = 0usize;
+        for entry in walkdir::WalkDir::new(root.join("crates")) {
+            let entry = entry.expect("the audit must not silently skip an unreadable directory");
+            let p = entry.path();
+            if p.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let rel = p
+                .strip_prefix(&root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            if allowed.contains(&rel.as_str()) {
+                continue;
+            }
+            scanned += 1;
+            let src = std::fs::read_to_string(p).expect("the audit could not read a source file");
+            // `.authenticate(` is how a prompter is called directly; the trait
+            // method is the only thing in the tree with that name.
+            if src.contains(".authenticate(") {
+                offenders.push(rel);
+            }
+        }
+        assert!(scanned >= 400, "only {scanned} .rs files were scanned");
+        offenders.sort();
+        assert_eq!(
+            offenders,
+            Vec::<String>::new(),
+            "these files call a prompter directly instead of through \
+             `authenticate_or_refuse`, so their `.await` is unbounded. On macOS that does not \
+             time out — it never returns, and the caller's response is never sent."
+        );
+    }
 
     /// Every rule [`dialog_safe`] claims, and the one it deliberately does not.
     #[test]

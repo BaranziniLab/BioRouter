@@ -590,8 +590,7 @@ async fn set_policy_with(
     let from = read_in(config_dir).unwrap_or_default();
     if loosens(from, to) {
         let request = AuthRequest::about(loosening_reason(from, to), MIXING_POLICY_AUTH_SUBJECT);
-        let outcome = prompter.authenticate(&request).await;
-        if let Some(refusal) = system_auth::refusal_for(outcome, prompter) {
+        if let Some(refusal) = system_auth::authenticate_or_refuse(prompter, &request).await {
             // Nothing has been written at this point, so the machine is left in
             // the mode it was already in — which is the stricter of the two.
             return Err(SetPolicyError::Refused(refusal));

@@ -337,8 +337,12 @@ pub async fn upsert_config(
                 MASTER_SWITCH_AUTH_REASON,
                 MASTER_SWITCH_AUTH_SUBJECT,
             );
-            let outcome = prompter.authenticate(&request).await;
-            if let Some(refusal) = biorouter::privacy::system_auth::refusal_for(outcome, prompter) {
+            // Bounded (P-05). This `.await` used to be unbounded, and on macOS
+            // it never returned: the route sent no response at all and the
+            // panel's `busy` state was permanent.
+            if let Some(refusal) =
+                biorouter::privacy::system_auth::authenticate_or_refuse(prompter, &request).await
+            {
                 // Nothing has been written at this point — not the record, not
                 // the live atomic — so the feature is left exactly as it was, in
                 // the enforcing direction.

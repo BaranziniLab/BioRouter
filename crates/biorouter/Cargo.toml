@@ -162,7 +162,11 @@ criterion = "0.5"
 serial_test = { workspace = true }
 mockall = "0.13.1"
 wiremock = { workspace = true }
-tokio = { workspace = true }
+# `test-util` is NOT part of tokio's `full`, and it is what gives
+# `#[tokio::test(start_paused = true)]` its auto-advancing clock. Without it the
+# P-05 timeout test would have to sit through the real 60-second
+# `PROMPT_TIMEOUT`, which is the kind of cost that gets a test deleted.
+tokio = { workspace = true, features = ["test-util"] }
 tokio-util = { version = "0.7.15", features = ["compat"] }
 temp-env = "0.3.6"
 dotenvy = "0.15.7"

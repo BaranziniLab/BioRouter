@@ -127,8 +127,31 @@ fn evaluate(reason: &str) -> MacAuthSignal {
         ]
     };
 
-    // A dropped sender (the callback never fired) is not an approval.
-    rx.recv().unwrap_or(MacAuthSignal::EvaluationFailed(0))
+    // ⚠ **Bounded, and this is the P-05 fix at its source.**
+    //
+    // `evaluatePolicy` hands the work to an internal `la_client` queue, which
+    // talks to `coreauthd` over a *synchronous* XPC. In a process that is not a
+    // foreground application — which `biorouterd` never is — that XPC gets no
+    // reply, the reply block never fires, and a plain `recv()` here parks this
+    // thread for the life of the daemon. Measured on the packaged 1.89.0 build:
+    // the tokio blocking-pool thread sat in `_pthread_cond_wait` while the
+    // `la_client` thread sat in `__NSXPCCONNECTION_IS_WAITING_FOR_A_SYNCHRONOUS_REPLY__`,
+    // and the HTTP handler above never answered.
+    //
+    // `super::system_auth::authenticate_or_refuse` already bounds the *caller*,
+    // so the request terminates either way. Bounding it here as well is what
+    // keeps the blocking-pool thread from being lost with it: a `spawn_blocking`
+    // task that never finishes still occupies its thread after its future is
+    // dropped, so without this every attempt would retire one thread out of the
+    // runtime's finite pool.
+    //
+    // Slightly longer than the caller's bound so the two cannot race to describe
+    // the same failure differently — the caller's message is the one the user
+    // sees, and this is the cleanup behind it.
+    //
+    // A timeout, like a dropped sender, is not an approval.
+    rx.recv_timeout(super::system_auth::PROMPT_TIMEOUT + std::time::Duration::from_secs(5))
+        .unwrap_or(MacAuthSignal::EvaluationFailed(0))
 }
 
 /// `-[NSError code]`, or 0 for a null error.

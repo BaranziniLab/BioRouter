@@ -311,8 +311,7 @@ async fn authorize_with(
         });
     };
 
-    let outcome = prompter.authenticate(&request).await;
-    match system_auth::refusal_for(outcome, prompter) {
+    match system_auth::authenticate_or_refuse(prompter, &request).await {
         None => Ok(SystemAuthorization {
             session_ids: request.session_ids,
         }),
