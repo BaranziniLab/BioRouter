@@ -952,8 +952,17 @@ function ToolCallView({
         status={toolCallStatus}
         className="mt-px"
       />
-      <span className="min-w-0 flex-1 truncate text-text-muted">
-        <span>
+      {/* The summary truncates; the status suffix does not.
+          Both used to live inside ONE `truncate` span, so a single ellipsis
+          budget covered them and the SUFFIX was what got eaten — consecutive
+          rows read "· 1 …", "· 1 result rea…", and where the command was
+          longest, nothing at all while the chevron survived. The suffix is the
+          shorter and more valuable of the two (it says whether there is
+          anything to open), so it is the part that must never be cut. Making
+          this a flex row with a `min-w-0` truncating summary and a `shrink-0`
+          suffix is the fix; a wider clipper would only move the threshold. */}
+      <span className="flex min-w-0 flex-1 items-baseline text-text-muted">
+        <span className="min-w-0 truncate">
           {loadingStatus === 'loading'
             ? 'Working on'
             : loadingStatus === 'error'
@@ -965,9 +974,11 @@ function ToolCallView({
         </span>
         {liveDetail && (
           <span
-            className={cn('text-text-muted/70', loadingStatus === 'loading' && 'animate-pulse')}
+            className={cn(
+              'shrink-0 whitespace-nowrap pl-1 text-text-muted/70',
+              loadingStatus === 'loading' && 'animate-pulse'
+            )}
           >
-            {' '}
             · {liveDetail}
           </span>
         )}
