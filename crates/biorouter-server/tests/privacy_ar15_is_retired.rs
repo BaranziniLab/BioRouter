@@ -38,6 +38,15 @@
 //!   this repository a lie, and nothing else in the tree notices, because the
 //!   route's own tests assert the *refusal*, not the *reason*.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+// The lib's copy is `#[cfg(test)]` and is NOT compiled into an integration
+// binary — every one of these files declares its own. Nothing here builds an
+// `AppState` today, so this is a floor rather than a fix; the guard exists
+// because the next test added here would not have one.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 /// The commit that implemented DR-16 and retired AR-15.
 const CLOSING_COMMIT: &str = "0757823f";
 

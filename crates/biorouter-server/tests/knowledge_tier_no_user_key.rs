@@ -10,6 +10,15 @@
 //! hand-run `biorouterd agent` and a headless deployment start. Its sibling
 //! `knowledge_routes::tier_route` holds the with-a-key half.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+// The lib's copy is `#[cfg(test)]` and is NOT compiled into an integration
+// binary — every one of these files declares its own. Nothing here builds an
+// `AppState` today, so this is a floor rather than a fix; the guard exists
+// because the next test added here would not have one.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use axum::{body::Body, http::Request, Router};
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use std::sync::Arc;

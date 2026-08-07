@@ -15,6 +15,15 @@
 //! full-workspace run. Each `tests/*.rs` file is its own process, so nothing
 //! outside this file can observe its writes.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+// The lib's copy is `#[cfg(test)]` and is NOT compiled into an integration
+// binary — every one of these files declares its own. Nothing here builds an
+// `AppState` today, so this is a floor rather than a fix; the guard exists
+// because the next test added here would not have one.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use axum::Json;
 use biorouter::config::Config;
 use biorouter_server::routes::config_management::{
