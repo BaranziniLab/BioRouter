@@ -11,6 +11,7 @@ use biorouter::config::paths::Paths;
 use biorouter::config::ExtensionEntry;
 use biorouter::config::{Config, ConfigError};
 use biorouter::model::ModelConfig;
+use biorouter::privacy::ProviderTier;
 use biorouter::providers::auto_detect::{detect_provider_from_api_key, detectable_providers};
 use biorouter::providers::base::{ProviderAffiliation, ProviderMetadata, ProviderType};
 use biorouter::providers::create_with_default_model;
@@ -108,6 +109,26 @@ pub struct ProviderDetails {
     /// it is instance-resolved too.
     #[serde(default)]
     pub affiliation: Option<ProviderAffiliation>,
+    /// The tier of a live **instance** of this provider — the value Gate C
+    /// actually judges a tool call on (issue #56).
+    ///
+    /// ⚠ **This is not `metadata.tier`, and the difference is a user-visible
+    /// bug it exists to close.** `metadata.tier` is the type-level claim: what
+    /// the module ships. This is what `providers::create` resolved *here*, off
+    /// the same instance as [`Self::affiliation`] and in the same call, so the
+    /// two axes can never be sampled at different instants or off different
+    /// endpoints. A re-pointed `ollama` ships `private` in its metadata and
+    /// resolves `public` here; a Versa module re-pointed off the UCSF gateway
+    /// loses Private and `ucsf` together, in this field and the one above.
+    ///
+    /// ⚠ **`None` means "not resolved", NEVER "public".** It is the answer for
+    /// an unconfigured provider, a construction failure and a timeout alike, and
+    /// every consumer must treat it as *judge nothing* rather than as the
+    /// permissive tier. Collapsing it to Public is what made a Private UCSF
+    /// model read as public on the composer's extension menu; the renderer's
+    /// `extensionPairingRefused` documents the same rule on its side.
+    #[serde(default)]
+    pub resolved_tier: Option<ProviderTier>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -871,8 +892,20 @@ const AFFILIATION_RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::fr
 /// constructed (its keys are missing) and cannot be bound to a chat, so building
 /// it would buy nothing and would run every provider module's constructor —
 /// including the ones with process-global side effects — on a plain GET.
-async fn resolve_provider_affiliation(metadata: &ProviderMetadata) -> Option<ProviderAffiliation> {
-    let model = ModelConfig::new(&metadata.default_model).ok()?;
+///
+/// ⚠ **Both axes come from ONE instance, in one call.** The tier returned
+/// beside the affiliation is `Provider::tier()` on the very object
+/// `ProviderAffiliation::of` reads, so the row can never pair one endpoint's
+/// tier with another's institution — the same reason `ModelsBottomBar` does a
+/// single fetch for the pair. Resolving them separately would also double the
+/// constructor cost of this route.
+async fn resolve_provider_axes(
+    metadata: &ProviderMetadata,
+) -> (Option<ProviderTier>, Option<ProviderAffiliation>) {
+    let unresolved = (None, None);
+    let Ok(model) = ModelConfig::new(&metadata.default_model) else {
+        return unresolved;
+    };
     let created = tokio::time::timeout(
         AFFILIATION_RESOLVE_TIMEOUT,
         biorouter::providers::create(&metadata.name, model),
@@ -881,12 +914,20 @@ async fn resolve_provider_affiliation(metadata: &ProviderMetadata) -> Option<Pro
     .inspect_err(|_| {
         tracing::warn!(
             provider = %metadata.name,
-            "timed out resolving provider affiliation; the row will show none"
+            "timed out resolving provider tier and affiliation; the row will show neither"
         );
-    })
-    .ok()?
-    .ok()?;
-    ProviderAffiliation::of(created.as_ref())
+    });
+    let Ok(Ok(created)) = created else {
+        return unresolved;
+    };
+    // `tier()` FIRST and off the same borrow, so the pair is one sample of one
+    // instance. `ProviderAffiliation::of` asks the same object for the same
+    // tier internally, which is what makes the two fields agree by construction
+    // rather than by a test that remembers to check.
+    (
+        Some(created.tier()),
+        ProviderAffiliation::of(created.as_ref()),
+    )
 }
 
 #[utoipa::path(
@@ -905,12 +946,12 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, StatusCode> {
         futures::future::join_all(providers.into_iter().map(
             |(metadata, provider_type)| async move {
                 let is_configured = check_provider_configured(&metadata, provider_type);
-                // Issue #56, DR-26. Resolved from the instance, never from the name
-                // — see `resolve_provider_affiliation`.
-                let affiliation = if is_configured {
-                    resolve_provider_affiliation(&metadata).await
+                // Issue #56, DR-26. Both resolved from the instance, never from
+                // the name — see `resolve_provider_axes`.
+                let (resolved_tier, affiliation) = if is_configured {
+                    resolve_provider_axes(&metadata).await
                 } else {
-                    None
+                    (None, None)
                 };
 
                 ProviderDetails {
@@ -919,6 +960,7 @@ pub async fn providers() -> Result<Json<Vec<ProviderDetails>>, StatusCode> {
                     is_configured,
                     provider_type,
                     affiliation,
+                    resolved_tier,
                 }
             },
         ))
@@ -1673,13 +1715,62 @@ mod affiliation_wire_tests {
     use biorouter::providers::base::{ProviderAffiliation, ProviderAffiliationKind};
 
     fn row(affiliation: Option<ProviderAffiliation>) -> ProviderDetails {
+        row_with_tier(affiliation, None)
+    }
+
+    fn row_with_tier(
+        affiliation: Option<ProviderAffiliation>,
+        resolved_tier: Option<ProviderTier>,
+    ) -> ProviderDetails {
         ProviderDetails {
             name: "versa_azure".to_string(),
             metadata: ProviderMetadata::empty(),
             is_configured: true,
             provider_type: ProviderType::Builtin,
             affiliation,
+            resolved_tier,
         }
+    }
+
+    /// The instance-resolved tier travels under `resolved_tier`, beside the
+    /// metadata rather than inside it — the same rule as the affiliation, and
+    /// for the same reason.
+    ///
+    /// ⚠ **The key is what the renderer's `readResolvedProviderTier` reads.** A
+    /// key that moved, or that serialised as a missing field instead of `null`,
+    /// would send every consumer back to "unresolved" — which is fail-safe but
+    /// silently restores the defect this field exists to fix: the composer would
+    /// stop judging the pairing at all.
+    #[test]
+    fn the_resolved_tier_travels_beside_the_metadata_under_its_own_key() {
+        let json = serde_json::to_value(row_with_tier(None, Some(ProviderTier::Private))).unwrap();
+        assert_eq!(json["resolved_tier"], serde_json::json!("private"));
+        assert!(
+            json["metadata"].get("resolved_tier").is_none(),
+            "the instance-resolved tier must not be folded into the type-level metadata"
+        );
+    }
+
+    /// Unresolved is a rendered `null`, never a missing key — see the module
+    /// note above, and `readResolvedProviderTier`, which treats both as
+    /// "judge nothing" but only one of which is a contract.
+    #[test]
+    fn an_unresolved_tier_is_a_rendered_null() {
+        let json = serde_json::to_value(row_with_tier(None, None)).unwrap();
+        assert_eq!(json["resolved_tier"], serde_json::Value::Null);
+    }
+
+    /// The whole point of the field: it is NOT `metadata.tier`.
+    ///
+    /// `ProviderMetadata::empty()` carries the default tier (Public — "a
+    /// provider module that forgets `tier()` gets less reach, never more"),
+    /// while this instance resolved Private. A consumer reading the metadata
+    /// would call UCSF Versa public, which is the reported defect.
+    #[test]
+    fn the_resolved_tier_can_disagree_with_the_type_level_one() {
+        let json = serde_json::to_value(row_with_tier(None, Some(ProviderTier::Private))).unwrap();
+        assert_eq!(json["resolved_tier"], serde_json::json!("private"));
+        assert_eq!(json["metadata"]["tier"], serde_json::json!("public"));
     }
 
     /// ⚠ **Beside the metadata, not inside it.** `ProviderMetadata` is the

@@ -22,6 +22,7 @@ import { ExtensionConfig, getSessionExtensions } from '../../api';
 import type { SessionClassification } from '../../api/types.gen';
 import { addToAgent, removeFromAgent } from '../settings/extensions/agent-api';
 import { extensionPairingRefused } from '../settings/extensions/extensionPrivacy';
+import { useBoundProviderTier } from '../privacy/useBoundProviderTier';
 import { setExtensionOverride, getExtensionOverrides } from '../../store/extensionOverrides';
 
 /** §14.5's reason, in the composer's own words. Public model → private tool. */
@@ -33,22 +34,39 @@ interface BottomMenuExtensionSelectionProps {
   /**
    * The focused chat's privacy tier (issue #56, §14.5).
    *
-   * This component is where the *true* per-session pairing state belongs,
-   * because it is the only extension surface that already knows which chat it
-   * is looking at. Settings has no session awareness at all, and with tabs and
-   * splits "the focused session" is undefined once the user navigates away from
-   * chat — so Settings judges against the global default provider instead and
-   * says so, and only this surface answers "will it work *here*".
-   *
-   * `undefined` means unresolved, not public: see `extensionPairingRefused`.
+   * ⚠ **No longer what the pairing is judged on — see `pairingTier` in the body.**
+   * The chat's classification and the bound model's tier are different axes, and
+   * feeding this one to `extensionPairingRefused` reported a Private UCSF model
+   * as public in every chat that had not yet run a turn. Kept as a prop because
+   * it is still the honest answer to *what tier is this chat*, which is what the
+   * model chip beside this one states.
    */
   privacyTier?: SessionClassification;
 }
 
 export const BottomMenuExtensionSelection = ({
   sessionId,
-  privacyTier,
+  privacyTier: _sessionPrivacyTier,
 }: BottomMenuExtensionSelectionProps) => {
+  /**
+   * The tier this surface judges a pairing on: the **bound model's**, resolved
+   * from a live instance (issue #56).
+   *
+   * ⚠ **It is deliberately NOT the session's classification.** Gate C asks
+   * `privacy_refusal(extension, extension_tier, cap.tier())` where `cap.tier()`
+   * is `Provider::tier()` off the bound instance — the session row is not
+   * consulted at all. This surface previously passed the session's ratcheted
+   * `privacy_tier`, which is `public` until the first turn raises it, so a chat
+   * on UCSF Versa (Private) rendered `ucsfomopagent` and `cdwagent` disabled
+   * with "Unavailable in this chat (public model)" while the daemon would have
+   * dispatched them. `extensionPairingRefused`'s doc claims it matches
+   * `privacy_refusal` "exactly"; that is true of the rule and was false of the
+   * argument, which is what let the mismatch through.
+   *
+   * `undefined` while unresolved, and `extensionPairingRefused` judges nothing
+   * on it — a tier nobody could read must not wall a working tool.
+   */
+  const pairingTier = useBoundProviderTier();
   const [searchQuery, setSearchQuery] = useState('');
   const [isOpen, setIsOpen] = useState(false);
   const [sessionExtensions, setSessionExtensions] = useState<ExtensionConfig[]>([]);
@@ -248,8 +266,8 @@ export const BottomMenuExtensionSelection = ({
    * remove.
    */
   const toggleableExtensions = useMemo(
-    () => sortedExtensions.filter((ext) => !extensionPairingRefused(ext.name, privacyTier)),
-    [sortedExtensions, privacyTier]
+    () => sortedExtensions.filter((ext) => !extensionPairingRefused(ext.name, pairingTier)),
+    [sortedExtensions, pairingTier]
   );
 
   /**
@@ -507,7 +525,7 @@ export const BottomMenuExtensionSelection = ({
               // why the string appears nowhere else in this file. Filtering the
               // row out instead would satisfy every other assertion here and
               // reintroduce the exact silence this state removes.
-              const pairingRefused = extensionPairingRefused(ext.name, privacyTier);
+              const pairingRefused = extensionPairingRefused(ext.name, pairingTier);
               const rowDisabled = bulkInFlight || pairingRefused;
               return (
                 <DropdownMenuCheckboxItem
