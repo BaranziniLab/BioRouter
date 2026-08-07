@@ -260,9 +260,22 @@ cmd_linux() {
   log "packaging Linux deb + rpm (docker)"
   docker volume create biorouter-linux-npm-cache >/dev/null 2>&1 || true
   docker run --rm --platform linux/amd64 -v "$ROOT":/ws -v biorouter-linux-npm-cache:/root/.npm \
-    node:24-bookworm bash /ws/ui/desktop/scripts/build-linux-deb.sh
-  log "deb: $DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
-  log "rpm: $DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
+    node:24-bookworm bash /ws/ui/desktop/scripts/build-linux-deb.sh \
+    || die "the linux docker build failed — see the output above"
+  # Assert the artifacts EXIST before announcing them. A bash function returns
+  # its LAST command's status, so the three `log` lines that used to end this
+  # function masked a failing `docker run` entirely: the phase exited 0, a
+  # `set -e` chain sailed past it, and it printed these two paths for files it
+  # had not produced. That happened — `npm ci` refused an out-of-sync lock
+  # inside the container and the release still reported the phase OK.
+  local deb="$DESK/out/make/deb/x64/biorouter_${v}_amd64.deb"
+  local rpm="$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
+  [ -f "$deb" ] || die "linux phase reported success but produced no deb at $deb"
+  [ -f "$rpm" ] || die "linux phase reported success but produced no rpm at $rpm"
+  log "deb: $deb"
+  log "rpm: $rpm"
+  # `npm ci`, NOT `npm install`: install rewrites package-lock.json, and the
+  # container's `npm ci` then refuses the out-of-sync lock on the next run.
   log "NOTE: node_modules is now Linux-flavored — run 'cd ui/desktop && npm ci' before any further mac build."
 }
 
