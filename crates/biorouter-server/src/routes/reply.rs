@@ -2107,9 +2107,19 @@ mod tests {
     async fn from_seq_asks_only_for_the_frames_the_client_is_missing() {
         use tower::ServiceExt;
         let state = AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "from-seq-session".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
         let guard = state
             .try_begin_turn_idempotent(
-                "from-seq-session",
+                &session.id,
                 tokio_util::sync::CancellationToken::new(),
                 Some("client-turn-1".to_string()),
             )
@@ -2127,7 +2137,7 @@ mod tests {
 
         let body = serde_json::json!({
             "user_message": serde_json::to_value(Message::user().with_text("hi")).unwrap(),
-            "session_id": "from-seq-session",
+            "session_id": session.id,
             "turn_id": "client-turn-1",
             "from_seq": 2,
         });
@@ -2171,7 +2181,17 @@ mod tests {
     async fn a_first_post_carrying_an_idempotency_key_still_starts_a_turn() {
         use tower::ServiceExt;
         let state = AppState::new().await.unwrap();
-        let session_id = "first-post-with-key".to_string();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_id = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "first-post-with-key".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
         let body = serde_json::json!({
             "user_message": serde_json::to_value(Message::user().with_text("hi")).unwrap(),
             "session_id": session_id,
@@ -2353,7 +2373,17 @@ mod tests {
     async fn attaching_after_the_turn_completed_sends_only_its_terminal_frame() {
         use tower::ServiceExt;
         let state = AppState::new().await.unwrap();
-        let session_id = "attach-after-finish".to_string();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_id = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "attach-after-finish".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
         let guard = state
             .try_begin_turn_idempotent(
                 &session_id,
@@ -2598,7 +2628,17 @@ mod tests {
     async fn an_attach_ignores_the_user_message_it_carries() {
         use tower::ServiceExt;
         let state = AppState::new().await.unwrap();
-        let session_id = "attach-ignores-prompt".to_string();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_id = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "attach-ignores-prompt".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
         let guard = state
             .try_begin_turn_idempotent(&session_id, CancellationToken::new(), Some("t-1".into()))
             .unwrap();
@@ -2649,7 +2689,17 @@ mod tests {
     async fn the_server_assigned_turn_id_is_also_a_valid_attach_pointer() {
         use tower::ServiceExt;
         let state = AppState::new().await.unwrap();
-        let session_id = "attach-by-server-id".to_string();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session_id = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "attach-by-server-id".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id;
         let guard = state
             .try_begin_turn_idempotent(
                 &session_id,
