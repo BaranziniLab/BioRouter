@@ -228,7 +228,15 @@ export default function SkillsView() {
             {totalBR > 0 && (
               <>
                 <h2 className="text-caps text-text-muted uppercase mb-3 flex items-center gap-2">
-                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-info flex-shrink-0" />
+                  {/* The same decorative marker as the sibling group below.
+                      This one was `bg-background-info` — rgb(30, 95, 191), the
+                      only saturated blue on the page — beside a neutral
+                      `bg-background-strong` dot in exactly the same role, so two
+                      group markers carried different semantics and wildly
+                      different weight for no reason a reader could recover. The
+                      heading text is what distinguishes the groups; the dot is
+                      punctuation, and punctuation does not need a hue. */}
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-background-strong flex-shrink-0" />
                   Biorouter Skills ({totalBR})
                 </h2>
                 <div className="biorouter-list-shell">
