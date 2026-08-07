@@ -39,7 +39,13 @@ describe('Settings > Privacy', () => {
     __resetDisclosureStoreForTests();
     mocks.value = undefined;
     mocks.read.mockImplementation(async () => mocks.value);
-    mocks.upsert.mockImplementation(async () => undefined);
+    // A STATEFUL stand-in for the daemon: a write that resolves is a write that
+    // landed, so a later read sees it. The panel now reads the key back after
+    // every write (P-05), and a mock whose `read` ignored its own `upsert` would
+    // make every success look like a refusal.
+    mocks.upsert.mockImplementation(async (_key: string, value: unknown) => {
+      mocks.value = value;
+    });
     mocks.getPrivacyDisclosure.mockResolvedValue({
       data: {
         title_template: '{provider} is not hosted by your institution.',
@@ -128,6 +134,77 @@ describe('Settings > Privacy', () => {
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('403'));
     expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeChecked();
+  });
+
+  /**
+   * P-05. The reported defect was that this control had no end state at all —
+   * it sat in `busy` forever, because the daemon never answered. The daemon's
+   * half of that is fixed where it belongs (a bounded system-auth prompt), and
+   * cannot be exercised here: jsdom has no macOS XPC to leave unanswered.
+   *
+   * What IS the renderer's own responsibility, and is what these three cover:
+   * once an answer arrives, the control must land on a state that is TRUE, in
+   * both directions, and must always come back out of `busy`.
+   */
+  describe('the control always ends in a definite state', () => {
+    it('reports a write the daemon accepted but did not apply, instead of showing it as done', async () => {
+      const user = userEvent.setup();
+      // Resolves — no throw — but the value does not move. This is precisely
+      // what the generated API client did on a 403 before `throwOnError` was
+      // set on it, and the panel must not be the thing that depends on that.
+      mocks.upsert.mockResolvedValue(undefined);
+      render(<PrivacyPanel />);
+      await waitFor(() => screen.getByRole('switch', { name: /Privacy tiers/ }));
+
+      await user.click(screen.getByRole('switch', { name: /Privacy tiers/ }));
+      await user.type(screen.getByLabelText('Confirmation phrase'), DISABLE_PHRASE);
+      await user.click(screen.getByRole('button', { name: /Turn off privacy tiers/ }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('privacy-toggle-error')).toHaveTextContent(/did not apply/i)
+      );
+      // The switch shows what is TRUE, and the "tiers are off" strip — the
+      // thing that would tell a user their machine is unprotected — is absent.
+      expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeChecked();
+      expect(screen.queryByTestId('privacy-enforcement-off-strip')).toBeNull();
+    });
+
+    it('says so when turning protection back ON fails', async () => {
+      const user = userEvent.setup();
+      mocks.value = 'off';
+      // The ON direction opens no confirmation dialog, which is exactly why
+      // this needs its own test: the refusal used to be rendered INSIDE that
+      // dialog, so this whole direction failed in silence.
+      mocks.upsert.mockRejectedValue(new Error('the daemon refused'));
+      render(<PrivacyPanel />);
+      await waitFor(() =>
+        expect(screen.getByRole('switch', { name: /Privacy tiers/ })).not.toBeChecked()
+      );
+
+      await user.click(screen.getByRole('switch', { name: /Privacy tiers/ }));
+
+      await waitFor(() =>
+        expect(screen.getByTestId('privacy-toggle-error')).toHaveTextContent(/refused/i)
+      );
+      expect(screen.queryByTestId('privacy-disable-confirm')).toBeNull();
+    });
+
+    it('comes back out of busy on every path, so the control is never left inert', async () => {
+      const user = userEvent.setup();
+      mocks.upsert.mockRejectedValue(new Error('403 Forbidden'));
+      render(<PrivacyPanel />);
+      await waitFor(() => screen.getByRole('switch', { name: /Privacy tiers/ }));
+
+      await user.click(screen.getByRole('switch', { name: /Privacy tiers/ }));
+      await user.type(screen.getByLabelText('Confirmation phrase'), DISABLE_PHRASE);
+      await user.click(screen.getByRole('button', { name: /Turn off privacy tiers/ }));
+      await waitFor(() => expect(screen.getByTestId('privacy-toggle-error')).toBeInTheDocument());
+
+      // `disabled={busy}` on both, so a control still disabled after the answer
+      // arrived is the permanent-spinner bug in its renderer-side form.
+      expect(screen.getByRole('switch', { name: /Privacy tiers/ })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /Turn off privacy tiers/ })).toBeEnabled();
+    });
   });
 
   /**

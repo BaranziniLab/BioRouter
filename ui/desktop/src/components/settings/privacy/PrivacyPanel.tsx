@@ -67,7 +67,26 @@ export default function PrivacyPanel() {
         // costs the user nothing, because the panel supplies it, and keeps the
         // daemon's rule to a single unconditional branch.
         await upsert(PRIVACY_TIERS_KEY, on ? 'on' : 'off', false, DISABLE_PHRASE);
-        setEnabled(on);
+        // P-05. NEVER `setEnabled(on)` — that is the value the user ASKED for,
+        // and this switch may only ever show the value the daemon HOLDS.
+        //
+        // A resolved write is not proof the write landed: the master switch is
+        // the one key `/config/upsert` can refuse after accepting the request
+        // (DR-20's operating-system authentication is raised inside the
+        // handler), and any future refusal that the client failed to raise as
+        // an exception would be painted here as a successful disable. So the
+        // panel asks rather than assumes, and a disagreement is reported as a
+        // refusal instead of being displayed as a success.
+        const applied = privacyTiersEnabledFromConfig(await read(PRIVACY_TIERS_KEY, false));
+        setEnabled(applied);
+        if (applied !== on) {
+          setError(
+            'Biorouter did not apply that change — privacy tiers are still ' +
+              (applied ? 'on' : 'off') +
+              '. Nothing was changed.'
+          );
+          return;
+        }
         setConfirming(false);
         setTyped('');
       } catch (e) {
@@ -80,7 +99,7 @@ export default function PrivacyPanel() {
         setBusy(false);
       }
     },
-    [upsert, refresh]
+    [upsert, read, refresh]
   );
 
   if (enabled === null) {
@@ -183,6 +202,28 @@ export default function PrivacyPanel() {
         />
       </div>
 
+      {/*
+        P-05. The refusal lives HERE, at section level, not inside the
+        confirmation dialog it used to be nested in.
+
+        Both directions of this switch can be refused by the daemon, but only
+        the OFF direction opens the dialog. So while the message was nested, a
+        failed *enable* — the direction that restores protection — printed
+        nothing at all: the switch flicked back to off and the user was left to
+        infer that their click had been dropped. A control whose failure is
+        silent in one direction is the same defect as one whose failure is
+        silent in both.
+      */}
+      {error && (
+        <p
+          role="alert"
+          data-testid="privacy-toggle-error"
+          className="min-w-0 rounded-lg border border-borderStandard px-3 py-2 text-xs text-text-default [overflow-wrap:anywhere]"
+        >
+          {error}
+        </p>
+      )}
+
       {confirming && (
         <div
           data-testid="privacy-disable-confirm"
@@ -217,11 +258,6 @@ export default function PrivacyPanel() {
             placeholder={DISABLE_PHRASE}
             aria-label="Confirmation phrase"
           />
-          {error && (
-            <p role="alert" className="text-xs text-text-muted">
-              {error}
-            </p>
-          )}
           <div className="flex gap-2">
             <Button
               variant="destructive"

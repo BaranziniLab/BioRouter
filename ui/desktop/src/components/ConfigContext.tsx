@@ -179,6 +179,14 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
       };
       await upsertConfig({
         body: query,
+        // P-05. WITHOUT this the generated client resolves on a 4xx/5xx — it
+        // returns `{ error }` and `throwOnError` defaults to false — so every
+        // caller of this hook reported a refused write as a successful one.
+        // That is how "Turn off privacy tiers" would have gone from hanging to
+        // *lying*: the daemon answers 403 with a reason, and the panel would
+        // have flipped the switch and shown the feature as off while it was
+        // still enforcing. A write that did not happen must not resolve.
+        throwOnError: true,
         // Issue #56 DR-16: this is the GUI's ONLY path to `/config/upsert`, and
         // real settings screens write capability keys through it —
         // BIOROUTER_LEAD_MODEL / BIOROUTER_LEAD_PROVIDER from Lead/Worker
