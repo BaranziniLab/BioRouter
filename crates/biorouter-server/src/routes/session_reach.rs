@@ -14,7 +14,8 @@
 //! the daemon's API surface as a whole, not of one endpoint"*, and the general
 //! problem is that the daemon has no principal — an authorization redesign, not
 //! a release fix. What this closes is the **privacy slice**: a session-addressing
-//! route that reaches a **private** session must carry the user-action proof.
+//! route that reaches a **private** session must be made by a caller whose own
+//! capability covers that session, or must carry the user-action proof.
 //! #47 stays open with its residual narrowed to, and stated so it cannot be
 //! read as smaller than it is:
 //!
@@ -78,12 +79,40 @@
 //! that session would have had** — an id that never existed, one that was
 //! deleted, one a client held across a store reset, one not persisted yet.
 //!
-//! `biorouter sessions send <id>` is the concrete case: `biorouter-cli` posts
-//! `/reply` and sends no proof header, so it is refused for a private chat *and*
-//! for an unknown one. That is the control working — the CLI is precisely the
-//! surface a model with shell access drives, which is why it cannot be proof of a
-//! human — but "private chats now check" describes less than what changed, and a
-//! release note that says only that is wrong.
+//! `biorouter session send <id>` is the concrete case, and it is also the case
+//! that **used to be enforced backwards**. The CLI posts `/reply` and can never
+//! carry a proof of a human — a terminal is precisely the surface a model with
+//! shell access drives — so under a proof-only rule it was refused for a private
+//! chat whatever model it was running, while the desktop app was admitted for
+//! the same chat *while running the same public model*. The rule the design
+//! actually states is `caller capability >= target classification`, which is the
+//! rule [`biorouter::privacy::visibility::may_read`] states for the tool surface
+//! and the rule Gate A states for a bind; measuring the surface instead of the
+//! capability got the answer exactly wrong in both directions.
+//!
+//! So reach now has **two sufficient conditions**, and this is the one thing to
+//! read carefully if you are extending this module:
+//!
+//! * the caller's capability covers the target — stated on the request as
+//!   [`CALLER_PROVIDER_HEADER`] (a provider NAME, resolved to a tier by *this*
+//!   daemon's registry, never a tier the caller asserts); or
+//! * the request carries the user-action proof, which is how the desktop app
+//!   reaches a private chat it has open on a public model.
+//!
+//! ⚠ **Only REACH moved.** Raising a session's classification and declassifying
+//! one still take the user-action proof and nothing else — a capability is a fact
+//! about a model, and neither of those is a decision a model may make. Those
+//! gates live in `routes/session.rs` and `privacy::declassify`, and this change
+//! does not touch them.
+//!
+//! An unknown session is still answered exactly as a private one is, at every
+//! (capability, proof) pair, so the refusal is no more of an oracle than it was.
+//!
+//! ⚠ The residual is unchanged and is stated in full above: a caller holding the
+//! daemon secret can spell any installed provider's name in that header, exactly
+//! as it could already reach every public session. The header makes the gate able
+//! to express the right rule; it does not make the daemon able to authenticate
+//! anyone, which is [#47].
 //!
 //! # The gated list
 //!
@@ -97,7 +126,7 @@
 //! | `POST /agent/add_extension` | Attaches tools to the session. |
 //! | `POST /knowledge/active` | Repoints the session's knowledge bases and its write target. |
 //!
-//! # Why `X-User-Action` and not a new mechanism
+//! # Why `X-User-Action` and not a new mechanism, for the proof half
 //!
 //! The instrument already exists ([`biorouter_server::auth::user_action_proof`],
 //! Task 18A) and it is the right one here for a reason worth writing down: the
@@ -111,17 +140,39 @@
 
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use biorouter::privacy::SessionClassification;
+use biorouter::privacy::{ProviderTier, SessionClassification};
 use biorouter::session::session_manager::SessionManager;
 // Issue #56 DR-16. `src/routes/` is compiled into the `biorouterd` binary as
 // well as the lib and cannot name `crate::auth`, so this is the shared
 // direction — the same import `routes::session` and `routes::knowledge` use.
 use biorouter_server::auth::{user_action_proof, UserActionProof};
 
-/// What an unproven caller is told when it names a session it may not reach.
+/// The header a Biorouter client names the model it is running under.
+///
+/// ⚠ **The NAME of a provider, never a tier.** A caller that could send
+/// `X-Caller-Tier: private` would be asserting its own answer; a caller that
+/// sends `versa_azure` is stating a fact this daemon resolves for itself,
+/// against its own installed provider registry
+/// ([`biorouter::workflow::privacy::declared_provider_tier`]). A name this
+/// install does not publish, an unparseable value and an absent header all
+/// resolve to [`ProviderTier::Public`] — the fail-safe side — so the header can
+/// only ever be a claim the daemon has independently confirmed is *possible*.
+///
+/// ⚠ **This is not authentication, and it is not sold as one.** A caller
+/// holding the daemon secret can spell any installed provider's name here, and
+/// the module header already records that such a caller reaches everything
+/// anyway (the daemon has no principal — [#47]). What the header buys is that
+/// the gate can express the rule the ruling actually states, *caller capability
+/// ≥ target classification*, instead of the proxy it used to enforce.
+///
+/// [#47]: https://github.com/BaranziniLab/biorouter/issues/47
+pub const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
+
+/// What a caller with neither the capability nor the user's proof is told when
+/// it names a session it may not reach.
 ///
 /// ⚠ **ONE sentence for "that chat is private" and for "there is no such
-/// chat", deliberately.** An unproven caller must not learn whether a session
+/// chat", deliberately.** Such a caller must not learn whether a session
 /// exists, or anything about it, from the shape of the refusal — otherwise the
 /// refusal itself becomes an oracle that enumerates the machine's private chats
 /// one id at a time. §14.4's content rule holds: it names the boundary and
@@ -129,12 +180,22 @@ use biorouter_server::auth::{user_action_proof, UserActionProof};
 ///
 /// It forecloses the retry for the reason every refusal in this feature does: a
 /// model that reads a refusal as transient loops on it.
+///
+/// ⚠ **It now names BOTH ways through**, because there are two and a refusal
+/// that named one would send half its readers somewhere that cannot help them.
+/// The old wording said only "this request carried no proof it came from the
+/// person at the keyboard", which was the whole defect: a terminal running
+/// Versa was told to go and be a human, when what it needed was to be told it
+/// already had the capability and merely was not saying so.
 pub const SESSION_OUT_OF_REACH: &str =
-    "That chat is private, or there is no chat with that id — this request carried no proof it \
-     came from the person at the keyboard, and the two answers are deliberately the same so that \
-     nothing about the chat is disclosed. Nothing was read and nothing was changed. Do not retry; \
-     the same call will be refused again, and no setting, hook or permission mode changes it. If \
-     this task genuinely needs that chat, stop and ask the user to open it for you.";
+    "That chat is private, or there is no chat with that id — this request was made on a public \
+     model and carried no proof it came from the person at the keyboard, and the two answers are \
+     deliberately the same so that nothing about the chat is disclosed. Nothing was read and \
+     nothing was changed. Do not retry as you are; the same call will be refused again, and no \
+     setting, hook or permission mode changes it. A private chat is reachable from a session \
+     running a model hosted inside the institution, or from the desktop app when the person at \
+     the keyboard acts. If this task genuinely needs that chat, stop and ask the user to open it \
+     for you.";
 
 /// …and when this daemon was handed no user-action key at all.
 ///
@@ -218,6 +279,7 @@ impl From<SessionOutOfReach> for super::errors::ErrorResponse {
 pub fn refuse_unless_reachable(
     enforced: bool,
     tier: TargetTier,
+    caller: ProviderTier,
     proof: UserActionProof,
 ) -> Result<(), SessionOutOfReach> {
     if !enforced {
@@ -229,6 +291,23 @@ pub fn refuse_unless_reachable(
         // every chat is one people route around, and it would break every
         // client that has never sent this header.
         TargetTier::Public => Ok(()),
+        // ⚠ **CAPABILITY FIRST — this is the inversion.** The rule is *caller
+        // capability ≥ target classification*, which is the same rule
+        // `privacy::visibility::may_read` states for the tool surface and the
+        // same rule Gate A states for a bind. It was previously enforced as
+        // *proof-of-human*, and the two are not the same question: a CLI running
+        // Versa has the capability and can never have the proof (a terminal is
+        // exactly the surface a model with shell access drives), while the
+        // desktop app running Versa had the proof and was admitted. So the
+        // capable caller was refused and the proven one allowed — backwards.
+        //
+        // The user-action arms below are KEPT, not replaced: the desktop app is
+        // a legitimate caller whose reach comes from the person at the keyboard
+        // rather than from the model it happens to be running, and removing
+        // them would refuse every GUI read of a private chat opened on a public
+        // model. Reach now has two sufficient conditions; raising a session's
+        // tier and declassifying still have exactly one, and it is the proof.
+        TargetTier::Private | TargetTier::Unreadable if caller.is_private() => Ok(()),
         TargetTier::Private | TargetTier::Unreadable => match proof {
             UserActionProof::Proven => Ok(()),
             UserActionProof::Unproven => Err(SessionOutOfReach {
@@ -241,6 +320,43 @@ pub fn refuse_unless_reachable(
             }),
         },
     }
+}
+
+/// The capability the request claims, resolved against **this install's**
+/// provider registry.
+///
+/// The header carries a provider NAME; the tier is this daemon's own answer to
+/// "what does this install think that provider is". An absent header, a name
+/// this install does not publish, and a value that is not valid UTF-8 all give
+/// [`ProviderTier::Public`] — the fail-safe side, and also the historical
+/// behaviour for every client that has never sent it.
+///
+/// ⚠ **The DECLARED tier, not an instance's.** `declared_provider_tier` reads
+/// `ProviderMetadata::tier`, and the two can disagree in the permissive
+/// direction (`ollama` re-pointed off the machine by `OLLAMA_HOST` ships Private
+/// and resolves Public). That residual is inherited rather than introduced —
+/// `workflow::privacy` and the CLI's start-time refusal already reason from the
+/// declared tier for the same reason: there is no instance here to ask, and
+/// constructing one would need the provider's credentials just to answer a
+/// routing question.
+///
+/// ⚠ **Deliberately NOT `pub`.** This module is one of `COMPLETE_MODULES` in the
+/// wiring census (`crates/biorouter/tests/privacy_guard_wiring.rs`): every
+/// public function in it must carry a census row classifying it as a reach
+/// decision. This is not one — it resolves an input to [`session_reach`], which
+/// is the guard and which does carry a row — and its only caller is that
+/// function, three lines below. Making it public to save an import would either
+/// break the census or add a row that misdescribes what it is.
+async fn caller_capability(headers: &HeaderMap) -> ProviderTier {
+    let Some(name) = headers
+        .get(CALLER_PROVIDER_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    else {
+        return ProviderTier::Public;
+    };
+    biorouter::workflow::privacy::declared_provider_tier(name).await
 }
 
 /// Read the named session's tier, failing closed on anything that is not a
@@ -284,6 +400,7 @@ pub async fn session_reach(
     refuse_unless_reachable(
         enforced,
         target_tier(manager, session_id).await,
+        caller_capability(headers).await,
         user_action_proof(headers),
     )
 }
@@ -363,17 +480,44 @@ mod tests {
         UserActionProof::NoKeyInstalled,
     ];
 
-    /// The whole rule, at every corner, in the direction that matters: a private
-    /// target is out of reach unless the request proves it came from the person
-    /// at the keyboard.
+    const CAPABILITIES: [ProviderTier; 2] = [ProviderTier::Public, ProviderTier::Private];
+
+    /// **The inversion, stated as an assertion.** A caller running a model
+    /// hosted inside the institution reaches a private chat *because of that*,
+    /// with no proof of a human anywhere — including on a daemon that was never
+    /// handed a user-action key at all.
+    ///
+    /// This is the case the gate used to get exactly backwards: `biorouter
+    /// session send <id>` running Versa was refused, while the desktop app
+    /// running Versa was allowed, on a rule that measured the surface rather
+    /// than the capability.
     #[test]
-    fn a_private_target_is_out_of_reach_without_the_users_proof() {
-        assert!(
-            refuse_unless_reachable(true, TargetTier::Private, UserActionProof::Proven).is_ok()
-        );
+    fn a_private_capability_reaches_a_private_chat_without_any_human_proof() {
+        for proof in PROOFS {
+            assert!(
+                refuse_unless_reachable(true, TargetTier::Private, ProviderTier::Private, proof)
+                    .is_ok(),
+                "a caller whose capability already covers this chat was refused ({proof:?})"
+            );
+        }
+    }
+
+    /// The whole rule, at every corner, in the direction that matters: a private
+    /// target is out of reach of a caller that has NEITHER the capability nor
+    /// the user's proof.
+    #[test]
+    fn a_public_caller_without_the_users_proof_cannot_reach_a_private_chat() {
+        assert!(refuse_unless_reachable(
+            true,
+            TargetTier::Private,
+            ProviderTier::Public,
+            UserActionProof::Proven
+        )
+        .is_ok());
         for proof in [UserActionProof::Unproven, UserActionProof::NoKeyInstalled] {
             assert!(
-                refuse_unless_reachable(true, TargetTier::Private, proof).is_err(),
+                refuse_unless_reachable(true, TargetTier::Private, ProviderTier::Public, proof)
+                    .is_err(),
                 "a caller holding nothing but the daemon secret reached a private chat ({proof:?})"
             );
         }
@@ -383,32 +527,44 @@ mod tests {
     ///
     /// This is the half a gate written only for the refusal loses. A barrier
     /// that fired on every chat would break every client that has never sent
-    /// this header — which is all of them, for every public chat — and DR-16's
+    /// either header — which is all of them, for every public chat — and DR-16's
     /// posture is a CONDITION, not a wall in front of the user.
     #[test]
     fn a_public_target_is_reachable_by_every_caller() {
-        for proof in PROOFS {
-            assert!(
-                refuse_unless_reachable(true, TargetTier::Public, proof).is_ok(),
-                "the gate is a wall in front of the user, not a condition ({proof:?})"
-            );
+        for capability in CAPABILITIES {
+            for proof in PROOFS {
+                assert!(
+                    refuse_unless_reachable(true, TargetTier::Public, capability, proof).is_ok(),
+                    "the gate is a wall in front of the user, not a condition \
+                     ({capability:?}, {proof:?})"
+                );
+            }
         }
     }
 
-    /// Issue #56 Task 58, Step 4.3. An unproven caller cannot distinguish "no
-    /// such session" from "private session" **from the response**.
+    /// Issue #56 Task 58, Step 4.3. A caller cannot distinguish "no such
+    /// session" from "private session" **from the response**.
     ///
     /// Byte-for-byte on both the status and the message, because either half
     /// alone is an oracle: a 403 and a 404 enumerate the machine's private chats
     /// just as well as two different sentences do.
+    ///
+    /// ⚠ It holds for the ADMITTED corners too, and that is not vacuous: a
+    /// private-capability caller is admitted for both, so it learns which it was
+    /// from what the handler does next — which is fine, because a caller whose
+    /// capability already covers private chats is not an enumerator of them.
+    /// What must never differ is the REFUSAL, and this asserts every pair.
     #[test]
     fn no_such_session_and_a_private_session_are_the_same_refusal() {
-        for proof in PROOFS {
-            assert_eq!(
-                refuse_unless_reachable(true, TargetTier::Unreadable, proof),
-                refuse_unless_reachable(true, TargetTier::Private, proof),
-                "the refusal tells an unproven caller whether the chat exists ({proof:?})"
-            );
+        for capability in CAPABILITIES {
+            for proof in PROOFS {
+                assert_eq!(
+                    refuse_unless_reachable(true, TargetTier::Unreadable, capability, proof),
+                    refuse_unless_reachable(true, TargetTier::Private, capability, proof),
+                    "the refusal tells a caller whether the chat exists \
+                     ({capability:?}, {proof:?})"
+                );
+            }
         }
     }
 
@@ -417,14 +573,28 @@ mod tests {
     /// in different words, because reporting "this daemon cannot verify a human"
     /// as "you are not a human" sends them hunting for a permission they can
     /// never obtain.
+    ///
+    /// ⚠ Still true, and still *reachable*: the inversion gives a keyless daemon
+    /// a way through (bring the capability), but a public-capability caller on
+    /// one is refused exactly as before. That is the point of open question 23's
+    /// separate sentence — a headless `biorouterd agent` has no keyboard to
+    /// prove anything from, so telling it to be a human is a dead end.
     #[test]
     fn a_keyless_daemon_refuses_rather_than_allows_and_says_which() {
-        let keyless =
-            refuse_unless_reachable(true, TargetTier::Private, UserActionProof::NoKeyInstalled)
-                .expect_err("a keyless daemon must refuse");
-        let unproven =
-            refuse_unless_reachable(true, TargetTier::Private, UserActionProof::Unproven)
-                .expect_err("an unproven caller must be refused");
+        let keyless = refuse_unless_reachable(
+            true,
+            TargetTier::Private,
+            ProviderTier::Public,
+            UserActionProof::NoKeyInstalled,
+        )
+        .expect_err("a keyless daemon must refuse");
+        let unproven = refuse_unless_reachable(
+            true,
+            TargetTier::Private,
+            ProviderTier::Public,
+            UserActionProof::Unproven,
+        )
+        .expect_err("an unproven caller must be refused");
         assert_eq!(keyless.message, SESSION_REACH_NO_KEY);
         assert_eq!(unproven.message, SESSION_OUT_OF_REACH);
         assert_ne!(
@@ -448,12 +618,107 @@ mod tests {
             TargetTier::Private,
             TargetTier::Unreadable,
         ] {
-            for proof in PROOFS {
-                assert!(
-                    refuse_unless_reachable(false, tier, proof).is_ok(),
-                    "the master opt-out did not reach this gate ({tier:?}, {proof:?})"
-                );
+            for capability in CAPABILITIES {
+                for proof in PROOFS {
+                    assert!(
+                        refuse_unless_reachable(false, tier, capability, proof).is_ok(),
+                        "the master opt-out did not reach this gate \
+                         ({tier:?}, {capability:?}, {proof:?})"
+                    );
+                }
             }
+        }
+    }
+
+    /// The header carries a NAME and this daemon resolves the tier itself, so a
+    /// caller cannot mint a capability by asserting one.
+    ///
+    /// Driven against the real registry (`declared_provider_tier`), not a
+    /// fixture: the value that matters is what *this install* publishes, and a
+    /// stubbed table would keep passing after a provider's tier changed.
+    #[tokio::test]
+    async fn the_capability_header_is_resolved_against_the_real_registry() {
+        let of = |value: &str| {
+            let mut headers = HeaderMap::new();
+            headers.insert(
+                CALLER_PROVIDER_HEADER,
+                axum::http::HeaderValue::from_str(value).unwrap(),
+            );
+            headers
+        };
+
+        assert_eq!(
+            caller_capability(&of("versa_azure")).await,
+            ProviderTier::Private,
+            "an institutional provider must resolve Private, or the CLI can never reach its \
+             own private chats"
+        );
+        // A public model, an unknown name, an empty value and no header at all
+        // are all Public — the fail-safe side, and the historical behaviour for
+        // every client that has never sent this.
+        assert_eq!(
+            caller_capability(&of("anthropic")).await,
+            ProviderTier::Public
+        );
+        assert_eq!(
+            caller_capability(&of("private")).await,
+            ProviderTier::Public,
+            "a caller that spells a TIER rather than a provider must not be believed"
+        );
+        assert_eq!(
+            caller_capability(&of("no-such-provider-xyz")).await,
+            ProviderTier::Public
+        );
+        assert_eq!(caller_capability(&of("   ")).await, ProviderTier::Public);
+        assert_eq!(
+            caller_capability(&HeaderMap::new()).await,
+            ProviderTier::Public
+        );
+    }
+
+    /// **The wiring half.** A capability the caller never sends is a capability
+    /// nobody has: the gate would be correct and every CLI command would still
+    /// be refused, which is this campaign's signature failure.
+    ///
+    /// A cross-crate source scan because the CLI carries no HTTP client and
+    /// cannot be driven against this router from here — its daemon requests are
+    /// hand-built strings. What is asserted is that the one place those strings
+    /// are built names this exact header, so a rename on either side turns the
+    /// build red rather than silently un-wiring the gate.
+    #[test]
+    fn the_cli_sends_the_capability_header_this_gate_reads() {
+        let cli = include_str!("../../../biorouter-cli/src/commands/session_watch.rs");
+
+        // (1) The CLI spells this exact header, as a declaration rather than
+        //     anywhere in its prose — a mention in a comment is not wiring, and
+        //     this campaign has already shipped a grep gate that passed on one.
+        assert!(
+            cli.contains(&format!(
+                "const CALLER_PROVIDER_HEADER: &str = \"{CALLER_PROVIDER_HEADER}\""
+            )),
+            "the CLI no longer declares `{CALLER_PROVIDER_HEADER}`, so every session-addressing \
+             command it runs is a public-capability caller and the inversion buys nothing"
+        );
+
+        // (2) …and it is emitted from the one place that composes a request's
+        //     headers, which BOTH request builders call. `watch` is a GET and
+        //     `send` / `attach` are POSTs; a header put on one builder only
+        //     leaves the other half of the surface refused, which is exactly the
+        //     "guarded at three doors of four" failure.
+        assert!(
+            cli.contains("out.push_str(CALLER_PROVIDER_HEADER);"),
+            "nothing in the CLI writes `{CALLER_PROVIDER_HEADER}` onto a request"
+        );
+        for builder in [
+            "pub(crate) fn build_get_request",
+            "pub(crate) fn build_post_request",
+        ] {
+            let body = body_of(cli, builder);
+            assert!(
+                body.contains("auth.headers()"),
+                "{builder} composes its headers itself instead of through the one place that \
+                 emits `{CALLER_PROVIDER_HEADER}`"
+            );
         }
     }
 

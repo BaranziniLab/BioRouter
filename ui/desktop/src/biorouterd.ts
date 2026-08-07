@@ -227,6 +227,30 @@ export interface BiorouterdResult {
   errorLog: string[];
 }
 
+/**
+ * The URL the `BIOROUTER_EXTERNAL_BACKEND` developer escape hatch points at.
+ *
+ * ⚠ It used to be the hard-coded string `http://127.0.0.1:3000`, which quietly
+ * ignored `BIOROUTER_EXTERNAL_PORT` — the variable this repo's own
+ * documentation calls "Backend port (default 3000)" and which `just
+ * debug-server` sets. So a developer who moved their daemon off 3000 had the app
+ * connect to 3000 anyway and report the backend as down, with nothing in the
+ * logs naming the port it actually tried.
+ *
+ * Only a well-formed positive port is honoured; anything else falls back to
+ * 3000 rather than composing a URL that cannot resolve.
+ */
+export const externalBackendUrlFromEnv = (env: Record<string, string | undefined>): string => {
+  const raw = (env.BIOROUTER_EXTERNAL_PORT ?? '').trim();
+  // ⚠ A whole-string digit match, not `parseInt`. `parseInt('12.5')` is 12 and
+  // `parseInt('80abc')` is 80, so a typo would be silently accepted as a
+  // *different* port — which is worse than the fallback, because the app would
+  // then report a backend as down at an address nobody typed.
+  const port = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+  const valid = Number.isInteger(port) && port > 0 && port < 65536;
+  return `http://127.0.0.1:${valid ? port : 3000}`;
+};
+
 const connectToExternalBackend = (workingDir: string, url: string): BiorouterdResult => {
   log.info(`Using external biorouterd backend at ${url}`);
 
@@ -296,7 +320,7 @@ export const startBiorouterd = async (
   }
 
   if (process.env.BIOROUTER_EXTERNAL_BACKEND) {
-    return connectToExternalBackend(dir, 'http://127.0.0.1:3000');
+    return connectToExternalBackend(dir, externalBackendUrlFromEnv(process.env));
   }
 
   let biorouterdPath = getBiorouterdBinaryPath(app);
@@ -444,6 +468,24 @@ export const startBiorouterd = async (
   });
 
   log.info(`Biorouterd server successfully started on port ${port}`);
+  // Issue #56. This daemon is deliberately unreachable from a terminal: the port
+  // above was chosen by the OS at launch and `serverSecret` is minted per
+  // launch, and neither is written anywhere a `biorouter` CLI could read it. So
+  // `biorouter session send/watch/attach/cancel` cannot talk to the app's
+  // daemon, by construction rather than by omission — and the CLI's own error
+  // (`session_watch.rs`'s NO_SECRET_KEY_HELP) names the External Backend
+  // setting as the supported way round it.
+  //
+  // Logged, at the one moment the values are both known, so that a support
+  // question about "why does the CLI say it cannot authenticate" is answerable
+  // from main.log without anyone having to rediscover this. The SECRET is never
+  // logged — only the fact that one exists.
+  log.info(
+    `This managed biorouterd is not reachable from a terminal: its port (${port}) is ephemeral ` +
+      'and its secret is per-launch. To drive sessions from the `biorouter` CLI, run your own ' +
+      'daemon with a fixed BIOROUTER_PORT and BIOROUTER_SERVER__SECRET_KEY and point the app at ' +
+      'it via Settings > Advanced > External Backend.'
+  );
   return {
     baseUrl: `http://127.0.0.1:${port}`,
     workingDir: dir,

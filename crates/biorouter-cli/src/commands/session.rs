@@ -145,6 +145,23 @@ pub async fn handle_session_remove(
 /// `subagents == false` is the historical behaviour byte for byte:
 /// `list_sessions()` IS `list_sessions_by_types(&[User, Scheduled])`.
 async fn fetch_sessions(session_manager: &SessionManager, subagents: bool) -> Result<Vec<Session>> {
+    if subagents {
+        // ⚠ **A subagent that produced nothing was invisible here.** The
+        // historical query INNER JOINs `messages`, so a child spawned and ended
+        // before its first message is not returned by SQL at all — and this
+        // listing is the ONLY surface in the product that shows subagent runs
+        // (History filters to `user`/`scheduled`). So the one place a user could
+        // go looking for a child that died early reported that it never
+        // existed, which reads as "no subagent was spawned" rather than "the
+        // subagent produced nothing".
+        //
+        // Widened only on this branch: without `--subagents` the behaviour is
+        // byte for byte what it was, so the sidebar's deliberate hiding of
+        // message-less rows is untouched.
+        return session_manager
+            .list_sessions_by_types_including_empty(listed_session_types(subagents))
+            .await;
+    }
     session_manager
         .list_sessions_by_types(listed_session_types(subagents))
         .await
@@ -337,12 +354,102 @@ async fn print_grouped_sessions(
     Ok(())
 }
 
+/// Issue #56 — the terminal's half of the export gate.
+///
+/// ⚠ **The gate runs BEFORE the transcript is read**, and that ordering is the
+/// same rule `session_reach` states for its five routes: a refusal that had
+/// already loaded the conversation into this process has not protected it, it
+/// has merely declined to print it. `export_privacy_gate_precedes_the_read` is
+/// what holds the ordering.
+///
+/// The gate itself lives in the shared library
+/// ([`SessionManager::authorize_export`]) so the desktop's export route can call
+/// exactly the same code rather than a second implementation of the same policy
+/// — this is only the terminal's presentation of it: the capability comes from
+/// the model this terminal runs, the system-authentication prompt is the
+/// platform's own, and the copy is the shared constant.
+///
+/// `Ok(false)` means "refused, and the reason has been printed" — the caller
+/// returns without writing anything.
+async fn authorize_export_at_terminal(
+    session_manager: &SessionManager,
+    session_id: &str,
+) -> Result<bool> {
+    use biorouter::privacy::system_auth::AuthOutcome;
+    use biorouter::session::session_manager::{
+        authenticate_export, ExportDecision, EXPORT_NOT_PROTECTED,
+    };
+
+    let capability = crate::session::privacy::caller_capability().await;
+    // Owned, and outside the loop: `authenticate_export` takes a slice, and a
+    // `&[session_id.to_string()]` built inside the `match` scrutinee is a
+    // temporary held across an `.await`.
+    let named = [session_id.to_string()];
+    let mut authorization = None;
+    // At most two passes: the first decides, and if it asks for the operating
+    // system the second spends what the prompt granted. A loop rather than
+    // nested `if`s so the second pass goes through the SAME decision — the row
+    // is re-read, so a chat that changed under the prompt is judged on what it
+    // is now.
+    for _ in 0..2 {
+        match session_manager
+            .authorize_export(session_id, capability, authorization.as_ref())
+            .await?
+        {
+            ExportDecision::Unrestricted | ExportDecision::Authorized => return Ok(true),
+            ExportDecision::SessionNotFound => {
+                return Err(anyhow::anyhow!("Session '{session_id}' not found."))
+            }
+            ExportDecision::CapabilityRequired => {
+                let models = crate::session::privacy::available_private_models().await;
+                println!(
+                    "{}",
+                    crate::session::privacy::export_capability_refusal(session_id, &models)
+                );
+                return Ok(false);
+            }
+            ExportDecision::SystemAuthenticationRequired if authorization.is_none() => {
+                // The copy comes BEFORE the password dialog: a user must know
+                // what they are authorising before they authorise it, and "the
+                // file will not be protected" is the entire point of asking.
+                println!("{EXPORT_NOT_PROTECTED}");
+                match authenticate_export(&named).await {
+                    Ok(granted) => authorization = Some(granted),
+                    // "This machine cannot raise the prompt" is not the user's
+                    // answer, and reporting it as one would tell a Linux user
+                    // with no polkit that they declined something they were
+                    // never shown. It carries the platform's own advice, so it
+                    // surfaces as an error rather than as a refusal.
+                    Err(refusal) if refusal.outcome == AuthOutcome::Unavailable => {
+                        return Err(anyhow::anyhow!("{refusal}"))
+                    }
+                    Err(refusal) => {
+                        println!("{refusal} Nothing was exported.");
+                        return Ok(false);
+                    }
+                }
+            }
+            ExportDecision::SystemAuthenticationRequired => {
+                println!(
+                    "The system authentication did not cover this chat, so nothing was exported."
+                );
+                return Ok(false);
+            }
+        }
+    }
+    Ok(false)
+}
+
 pub async fn handle_session_export(
     session_id: String,
     output_path: Option<PathBuf>,
     format: String,
 ) -> Result<()> {
     let session_manager = SessionManager::instance();
+    // ⚠ FIRST. Everything below this line reads the transcript.
+    if !authorize_export_at_terminal(&session_manager, &session_id).await? {
+        return Ok(());
+    }
     let session = match session_manager.get_session(&session_id, true).await {
         Ok(session) => session,
         Err(e) => {
@@ -854,6 +961,124 @@ mod tests {
     use biorouter::conversation::message::Message;
     use biorouter::session::session_manager::SessionType;
     use tempfile::TempDir;
+
+    /// Issue #56 — **the export gate is consulted, and it is consulted first.**
+    ///
+    /// Two assertions, and the second is the one that matters. A gate that ran
+    /// *after* `get_session(&session_id, true)` would have loaded the private
+    /// transcript into this process before deciding not to print it, which is
+    /// not a refusal — it is a decision not to print something already read.
+    /// The same ordering rule `routes/session_reach.rs` states for its five
+    /// routes, with the same reasoning.
+    ///
+    /// A source scan because `handle_session_export` is bound to the
+    /// `SessionManager::instance()` singleton — it opens the developer's REAL
+    /// session database — so it cannot be driven from a unit test at all. What
+    /// *is* driven for real is the decision itself, over in
+    /// `session_manager.rs`'s `export_gate` module; this holds the wiring and
+    /// the order, which that module cannot see.
+    #[test]
+    fn the_export_gate_is_called_before_the_transcript_is_read() {
+        let src = include_str!("session.rs");
+        let body = src
+            .split_once("pub async fn handle_session_export(")
+            .expect("handle_session_export is gone")
+            .1;
+        let body = body.split_once("\n}\n").map_or(body, |(b, _)| b);
+
+        let gate = body
+            .find("authorize_export_at_terminal(")
+            .expect("`session export` no longer consults the export privacy gate");
+        let read = body
+            .find("get_session(&session_id, true)")
+            .expect("the transcript read is no longer spelled the way this audit looks for");
+        assert!(
+            gate < read,
+            "the export gate runs AFTER the transcript is read; a refusal at that point has \
+             already loaded the private conversation into this process"
+        );
+
+        // …and the terminal presenter really reaches the SHARED decision, not a
+        // second copy of the policy written here. `authorize_export` lives on
+        // `SessionManager` so the desktop's export route can call the same code.
+        let presenter = src
+            .split_once("async fn authorize_export_at_terminal(")
+            .expect("the terminal presenter is gone")
+            .1;
+        let presenter = presenter.split_once("\n}\n").map_or(presenter, |(b, _)| b);
+        assert!(
+            presenter.contains(".authorize_export("),
+            "the terminal decides for itself instead of calling the shared gate"
+        );
+        assert!(
+            presenter.contains("authenticate_export("),
+            "the terminal never raises the system-authentication prompt"
+        );
+        assert!(
+            presenter.contains("EXPORT_NOT_PROTECTED"),
+            "the terminal never tells the user the file will not be protected"
+        );
+        assert!(
+            presenter.contains("export_capability_refusal("),
+            "the terminal does not offer the repair for a public-model export"
+        );
+    }
+
+    /// The subagent listing shows a child that produced NOTHING.
+    ///
+    /// The regression is in SQL (`INNER JOIN messages`) and this listing is the
+    /// only surface in the product that shows subagent runs at all, so a child
+    /// that died before its first message simply did not exist as far as the
+    /// user could tell. Driven through `fetch_sessions`, the function the
+    /// command really calls, so a fix applied only to the storage layer and
+    /// never wired here fails.
+    #[tokio::test]
+    async fn a_subagent_that_produced_nothing_is_still_listed() {
+        let dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(dir.path().to_path_buf());
+        let parent = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Migration review".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&parent.id, &Message::user().with_text("hello"))
+            .await
+            .unwrap();
+        let silent = sm
+            .create_session(
+                dir.path().to_path_buf(),
+                "Subagent: died before saying anything".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+
+        let listed: Vec<String> = fetch_sessions(&sm, true)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert!(
+            listed.contains(&silent.id),
+            "an empty subagent is invisible to the one listing that can show it: {listed:?}"
+        );
+        assert!(listed.contains(&parent.id));
+
+        // …and the default listing is unchanged: it still hides message-less
+        // rows, because that is what keeps "Untitled chat" placeholders out of
+        // every listing the desktop builds from the same query.
+        let default: Vec<String> = fetch_sessions(&sm, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(default, vec![parent.id]);
+    }
 
     /// A `SessionManager` over a throwaway directory, plus one `User` row and
     /// one `SubAgent` row that are identical in every way except their type.

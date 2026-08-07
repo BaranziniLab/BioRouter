@@ -1667,6 +1667,24 @@ impl SessionManager {
         self.storage.list_sessions_by_types(types).await
     }
 
+    /// [`Self::list_sessions_by_types`], including sessions that have recorded
+    /// no message yet.
+    ///
+    /// The CLI's `session list --subagents` is the only surface in the product
+    /// that shows subagent runs, and the default query INNER JOINs `messages` —
+    /// so a child that produced nothing was absent from the one listing that
+    /// could have found it. See
+    /// [`SessionStorage::list_sessions_by_types_maybe_empty`] for why the
+    /// sidebar keeps the opposite default.
+    pub async fn list_sessions_by_types_including_empty(
+        &self,
+        types: &[SessionType],
+    ) -> Result<Vec<Session>> {
+        self.storage
+            .list_sessions_by_types_maybe_empty(types, true)
+            .await
+    }
+
     pub async fn delete_session(&self, id: &str) -> Result<()> {
         self.storage.delete_session(id).await
     }
@@ -1756,6 +1774,303 @@ impl SessionManager {
         self.storage.export_session(id).await
     }
 
+    /// Issue #56 — **the privacy gate on exporting a chat.**
+    ///
+    /// Export had *zero* privacy checks: `biorouter session export <id>` read a
+    /// private transcript out of the store and wrote it to a plain file (or to
+    /// stdout) with no capability check, no proof of a human, no record, and no
+    /// word to the user that the file it just wrote carries none of the
+    /// protection the chat had. Every other way out of a private chat — running
+    /// a turn on a public model, spawning a public child, reaching a public
+    /// connector, declassifying — is gated; a `>` redirect was not.
+    ///
+    /// ⚠ **This does NOT declassify, and it must never grow into that.** The
+    /// ruling is explicit: the chat stays private. `to_classification` on the row
+    /// this writes is `private`, the same value as `from_classification`, and
+    /// nothing here touches `sessions.privacy_tier`. The ratchet is untouched —
+    /// the point of the record is that a copy left the store, not that the
+    /// original changed.
+    ///
+    /// Three conditions, in this order, and the order is the same one
+    /// [`crate::privacy::declassify`] establishes for the same reason: the
+    /// cheapest and most explicable refusal first, the operating-system dialog
+    /// last, so a user is never asked for their password and *then* told they
+    /// were never eligible.
+    ///
+    /// 1. **Capability.** `caller` is the tier of the model the exporting
+    ///    process is running (`ProviderTier`), and a public-capability caller may
+    ///    not take a private transcript out. This is the same
+    ///    caller-capability ≥ target-classification rule
+    ///    [`crate::privacy::visibility::may_read`] states, asked at the one place
+    ///    bytes leave the store as a file.
+    /// 2. **The person at the keyboard**, via the platform's own authentication
+    ///    ([`authenticate_export`]). Capability says *which model*; this says
+    ///    *who*, and neither substitutes for the other — an agent holding
+    ///    `developer__shell` inherits the terminal's capability but cannot
+    ///    satisfy a Touch ID / polkit / Windows Hello prompt.
+    /// 3. **The record**, written inside the same transaction that re-reads the
+    ///    row, so the tier the ledger reports is the tier that was true when the
+    ///    export was authorised rather than one read a moment earlier.
+    ///
+    /// ⚠ **A public chat is [`ExportDecision::Unrestricted`] and costs nothing** —
+    /// no prompt, no row. A gate that fired on every export is one people route
+    /// around, and DR-16's posture is a condition, not a wall in front of the
+    /// user. The master switch (DR-15) turns the whole thing off for the same
+    /// reason it turns off every other gate.
+    ///
+    /// The copy the caller must show is [`EXPORT_NOT_PROTECTED`]; it is a
+    /// constant here rather than in each surface so the terminal and the desktop
+    /// cannot describe the same file differently.
+    ///
+    /// # Which doors call this, and which do not
+    ///
+    /// ⚠ **State this honestly rather than let a reader assume it is universal.**
+    /// Three things in this tree turn a stored session into a file, and only one
+    /// of them consults this today:
+    ///
+    /// * `biorouter session export <id>` (`biorouter-cli`'s
+    ///   `handle_session_export`) — **calls this**, before it reads the
+    ///   transcript.
+    /// * `GET /sessions/{id}/export` (`biorouter-server`'s `routes/session.rs`,
+    ///   which the desktop's export button drives) — **does NOT call this yet**.
+    ///   It is gated by `routes/session_reach.rs`, so a caller must already
+    ///   reach the session, but it raises no system-authentication prompt,
+    ///   writes no ledger row and shows no copy. Wiring it is one call in that
+    ///   handler; this function is deliberately a `SessionManager` method, and
+    ///   not private to the CLI, so that call is available.
+    /// * `generate_diagnostics` (`session/diagnostics.rs`, driven by `biorouter
+    ///   session diagnostics`) — **does NOT call this**, and reaches
+    ///   [`Self::export_session`] directly.
+    ///
+    /// [`Self::export_session`] itself is intentionally left ungated: it is the
+    /// storage read, and a hard refusal inside it would take away the desktop's
+    /// ability to export a private chat *at all* (the route has no way to pass
+    /// an authorisation), which is a worse answer than the one above.
+    pub async fn authorize_export(
+        &self,
+        session_id: &str,
+        caller: crate::privacy::ProviderTier,
+        authorization: Option<&ExportAuthorization>,
+    ) -> Result<ExportDecision> {
+        // DR-15's master opt-out, read once, before the store is touched.
+        if !crate::privacy::privacy_tiers_enabled() {
+            return Ok(ExportDecision::Unrestricted);
+        }
+
+        let pool = self.storage.pool().await?;
+        let mut tx = pool.begin().await?;
+
+        let Some((raw_tier, reason_before, provider_name)) =
+            sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                "SELECT privacy_tier, privacy_reason, provider_name FROM sessions WHERE id = ?1",
+            )
+            .bind(session_id)
+            .fetch_optional(&mut *tx)
+            .await?
+        else {
+            return Ok(ExportDecision::SessionNotFound);
+        };
+
+        // The tier the READER sees, not the raw bytes: `from_stored` fails
+        // closed, so a hand-edited or restored row that no gate in the tree
+        // treats as public is not treated as public here either.
+        if SessionClassification::from_stored(&raw_tier) == SessionClassification::Public {
+            return Ok(ExportDecision::Unrestricted);
+        }
+
+        if !caller.is_private() {
+            return Ok(ExportDecision::CapabilityRequired);
+        }
+
+        // ⚠ `covers`, not merely `is_some`: one authentication may cover a batch,
+        // but only the chats its dialog named (DR-20 point 4). `is_some_and`
+        // fails closed for a caller that presented none.
+        if !authorization.is_some_and(|granted| granted.covers(session_id)) {
+            return Ok(ExportDecision::SystemAuthenticationRequired);
+        }
+
+        let message_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM messages WHERE session_id = ?1")
+                .bind(session_id)
+                .fetch_one(&mut *tx)
+                .await?;
+
+        // `actor`/`actor_kind` are both "user" for the reason
+        // `privacy::declassify` records: this daemon has no principal, so the
+        // honest thing the row can say is the KIND of actor, and a fabricated
+        // username would be worse than none.
+        //
+        // ⚠ `from` and `to` are BOTH `private`. Every consumer of this table
+        // that means "was declassified" keys on `to_classification = 'public'`
+        // (see `SessionStorage::NOT_DECLASSIFIED_BY_USER`), so an export row
+        // cannot be mistaken for a declassification by anything that reads it.
+        sqlx::query(
+            "INSERT INTO classification_audit ( \
+                session_id, from_classification, to_classification, reason, actor, actor_kind, \
+                app_version, provider_name_at_change, privacy_reason_before, \
+                message_count_at_change \
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        )
+        .bind(session_id)
+        .bind(SessionClassification::Private.as_sql())
+        .bind(SessionClassification::Private.as_sql())
+        .bind(EXPORTED_BY_USER)
+        .bind("user")
+        .bind("user")
+        .bind(env!("CARGO_PKG_VERSION"))
+        .bind(provider_name)
+        .bind(reason_before)
+        .bind(message_count)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        tracing::info!(
+            session_id,
+            "a private chat was exported to a file (issue #56); the chat itself is unchanged"
+        );
+        Ok(ExportDecision::Authorized)
+    }
+}
+
+/// The `reason` an export writes into `classification_audit`.
+///
+/// Deliberately not one of `privacy::declassify`'s reasons: nothing about the
+/// session changed, and a value that collided with a declassification reason
+/// would make the ledger's own history unreadable.
+pub const EXPORTED_BY_USER: &str = "exported_by_user";
+
+/// What the user is told before a private chat is written to a file.
+///
+/// ⚠ **It is about the FILE, not about the chat.** The failure this copy exists
+/// to prevent is the user believing the exported markdown inherits the chat's
+/// protection: it does not, it is an ordinary file that any model, any tool and
+/// any sync client can read. The chat itself is unchanged and the sentence says
+/// so, because a user who thinks exporting declassified their chat will
+/// declassify it again "properly" and be surprised twice.
+///
+/// One constant so the terminal and the desktop cannot describe the same file
+/// differently.
+pub const EXPORT_NOT_PROTECTED: &str =
+    "This chat is private. The file this writes is NOT protected: it is an ordinary file on \
+     disk, readable by any model, any tool and anything that syncs your folders — the privacy \
+     tier does not travel with it. The chat itself stays private, and the export is recorded in \
+     the classification ledger.";
+
+/// What [`SessionManager::authorize_export`] decided.
+///
+/// Named outcomes rather than a `bool`, because a caller has to say something
+/// different for each: "you are on a public model", "the operating system did
+/// not authenticate you" and "there is no such chat" send a user to three
+/// different places.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExportDecision {
+    /// A public chat, or the master switch is off. Export as before: no prompt,
+    /// no record, no copy.
+    Unrestricted,
+    /// A private chat and the exporting process is running a public model.
+    CapabilityRequired,
+    /// A private chat, the capability is there, and no system authentication
+    /// covering this chat was presented.
+    SystemAuthenticationRequired,
+    /// Everything is satisfied and the ledger row has been written.
+    Authorized,
+    /// No such session.
+    SessionNotFound,
+}
+
+/// Proof that the **operating system** authenticated the user for an export, for
+/// the chats it named.
+///
+/// ⚠ **Unforgeable by the language, not by an audit.** The field is private and
+/// there is no public constructor: outside this module the only way to obtain
+/// one is [`authenticate_export`], which raises a real platform prompt and
+/// returns `Ok` for [`crate::privacy::system_auth::AuthOutcome::Approved`] and
+/// nothing else. This mirrors `privacy::declassify::SystemAuthorization`
+/// exactly, and is a separate type on purpose: an authorisation the user granted
+/// for "export this chat" must not be spendable on "make this chat public".
+///
+/// Not `Clone` and not `Copy`, for DR-20 point 2's reason — a value that could
+/// be duplicated could be stashed in a static and spent again next week.
+#[derive(Debug)]
+pub struct ExportAuthorization {
+    session_ids: Vec<String>,
+}
+
+impl ExportAuthorization {
+    /// Was `session_id` named by the prompt this authorisation came from?
+    pub fn covers(&self, session_id: &str) -> bool {
+        self.session_ids.iter().any(|id| id == session_id)
+    }
+
+    /// The same proof, for tests that exercise the gate rather than a prompt.
+    ///
+    /// `#[cfg(test)]` and private, so it is absent from every shipped binary and
+    /// unnameable outside this file even in a test build — the same shape
+    /// `privacy::declassify::SystemAuthorization::for_test` has, and for the same
+    /// reason.
+    #[cfg(test)]
+    fn for_test(session_ids: &[String]) -> Self {
+        Self {
+            session_ids: session_ids.to_vec(),
+        }
+    }
+}
+
+/// Raise the platform's authentication prompt **once** for an export of
+/// `session_ids`.
+///
+/// ⚠ **Call this LAST, after [`SessionManager::authorize_export`] has answered
+/// [`ExportDecision::SystemAuthenticationRequired`]** — i.e. only once the row is
+/// really private and the caller's capability really is sufficient. Prompting
+/// earlier asks a user for their password and then tells them they were never
+/// allowed.
+///
+/// The sentence the dialog shows says *export*, never *declassify*: a prompt
+/// that misdescribes what it authorises is the one thing an authorisation dialog
+/// cannot be.
+pub async fn authenticate_export(
+    session_ids: &[String],
+) -> Result<ExportAuthorization, crate::privacy::system_auth::SystemAuthRefusal> {
+    // `SystemAuthenticator` is deliberately NOT imported: `prompter()` returns a
+    // `&'static dyn SystemAuthenticator`, and a method called on a trait object
+    // resolves through the object's own vtable without the trait in scope.
+    use crate::privacy::system_auth::{self, AuthRequest};
+
+    let mut named: Vec<String> = session_ids.to_vec();
+    named.sort();
+    named.dedup();
+    let reason = if named.len() == 1 {
+        "Write a copy of this private Biorouter chat to a file.".to_string()
+    } else {
+        format!(
+            "Write copies of {} private Biorouter chats to files.",
+            named.len()
+        )
+    };
+    let Ok(request) = AuthRequest::new(reason, &named) else {
+        // An empty set names nothing, so the prompt could not state what it
+        // authorises and the proof would be spendable on nothing. Refused rather
+        // than accepted-and-ignored.
+        return Err(system_auth::SystemAuthRefusal {
+            outcome: system_auth::AuthOutcome::Denied,
+            message: "No chats were named, so there was nothing to authenticate for and \
+                      nothing was exported."
+                .to_string(),
+        });
+    };
+
+    let prompter = system_auth::prompter();
+    let outcome = prompter.authenticate(&request).await;
+    match system_auth::refusal_for(outcome, prompter) {
+        None => Ok(ExportAuthorization {
+            session_ids: request.session_ids,
+        }),
+        Some(refusal) => Err(refusal),
+    }
+}
+
+impl SessionManager {
     pub async fn import_session(&self, json: &str) -> Result<Session> {
         self.storage.import_session(self, json).await
     }
@@ -5543,10 +5858,42 @@ impl SessionStorage {
     }
 
     async fn list_sessions_by_types(&self, types: &[SessionType]) -> Result<Vec<Session>> {
+        self.list_sessions_by_types_maybe_empty(types, false).await
+    }
+
+    /// `list_sessions_by_types`, with the `messages` join selectable.
+    ///
+    /// ⚠ **`include_empty` exists because a subagent that produced nothing was
+    /// invisible.** The historical query INNER JOINs `messages`, so a row with no
+    /// message is not returned at all — and that is right for History (an
+    /// "Untitled chat" placeholder must not appear in the sidebar) but wrong for
+    /// `biorouter session list --subagents`, which is the **only** surface that
+    /// can show a subagent run at all. A child that was spawned and died before
+    /// its first message simply vanished there, so the one place a user could
+    /// have gone looking for it reported that it never existed.
+    ///
+    /// `COUNT(m.id)` ignores NULLs, so the LEFT JOIN still yields `message_count
+    /// = 0` rather than 1 — the same reasoning `list_session_summaries`'
+    /// `include_empty` already records.
+    ///
+    /// The historical entry point above delegates with `false`, byte for byte,
+    /// so the sidebar route (`biorouter-server`'s `/sessions`) and
+    /// `commands/term.rs` are unchanged and no caller outside this file had to
+    /// move.
+    async fn list_sessions_by_types_maybe_empty(
+        &self,
+        types: &[SessionType],
+        include_empty: bool,
+    ) -> Result<Vec<Session>> {
         if types.is_empty() {
             return Ok(Vec::new());
         }
 
+        let join = if include_empty {
+            "LEFT JOIN messages m ON s.id = m.session_id"
+        } else {
+            "INNER JOIN messages m ON s.id = m.session_id"
+        };
         let placeholders: String = types.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
         let query = format!(
             r#"
@@ -5558,12 +5905,11 @@ impl SessionStorage {
                    s.privacy_tier, s.privacy_reason,
                    COUNT(m.id) as message_count
             FROM sessions s
-            INNER JOIN messages m ON s.id = m.session_id
-            WHERE s.session_type IN ({})
+            {join}
+            WHERE s.session_type IN ({placeholders})
             GROUP BY s.id
             ORDER BY s.updated_at DESC
-            "#,
-            placeholders
+            "#
         );
 
         let mut q = sqlx::query_as::<_, Session>(&query);
@@ -7311,6 +7657,270 @@ mod tests {
     use tempfile::TempDir;
 
     const NUM_CONCURRENT_SESSIONS: i32 = 10;
+
+    /// Issue #56 — the export gate, at every corner.
+    ///
+    /// ⚠ These drive the REAL decision path (`SessionManager::authorize_export`)
+    /// against a scratch store, never a re-derivation of the rule. The one thing
+    /// they cannot drive is the platform dialog: `authenticate_export` raises a
+    /// real Touch ID / polkit / Windows Hello prompt and there is no test seam
+    /// for it here, so the `Authorized` arm is reached with an
+    /// `ExportAuthorization` minted by `for_test` — which is exactly what
+    /// `privacy::declassify`'s own tests do with `SystemAuthorization`.
+    mod export_gate {
+        use super::*;
+        use crate::privacy::ProviderTier;
+
+        async fn private_chat(sm: &SessionManager) -> String {
+            let s = sm
+                .create_session(
+                    std::env::temp_dir(),
+                    "a cohort chat".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&s.id, &Message::user().with_text("patient MRN 12345"))
+                .await
+                .unwrap();
+            sm.update(&s.id)
+                .provider_name("versa_azure")
+                .raise_privacy(SessionClassification::Private, "mcp:ucsfomopagent")
+                .apply()
+                .await
+                .unwrap();
+            s.id
+        }
+
+        async fn public_chat(sm: &SessionManager) -> String {
+            let s = sm
+                .create_session(
+                    std::env::temp_dir(),
+                    "a public chat".to_string(),
+                    SessionType::User,
+                )
+                .await
+                .unwrap();
+            sm.add_message(&s.id, &Message::user().with_text("hello"))
+                .await
+                .unwrap();
+            s.id
+        }
+
+        async fn export_rows(
+            sm: &SessionManager,
+            session_id: &str,
+        ) -> Vec<(String, String, String)> {
+            let pool = sm.storage.pool().await.unwrap();
+            sqlx::query_as::<_, (String, String, String)>(
+                "SELECT from_classification, to_classification, reason FROM \
+                 classification_audit WHERE session_id = ?1 ORDER BY id",
+            )
+            .bind(session_id)
+            .fetch_all(pool)
+            .await
+            .unwrap()
+        }
+
+        /// The headline: a public-capability caller cannot take a private
+        /// transcript out of the store, and nothing is recorded when it tries.
+        #[tokio::test]
+        async fn a_public_caller_may_not_export_a_private_chat() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Public, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::CapabilityRequired
+            );
+            assert!(
+                export_rows(&sm, &id).await.is_empty(),
+                "a refused export must leave no ledger row"
+            );
+        }
+
+        /// …and neither may a private-capability caller that the operating
+        /// system has not authenticated. The two proofs answer different
+        /// questions and neither substitutes for the other.
+        #[tokio::test]
+        async fn private_capability_alone_is_not_enough() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Private, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::SystemAuthenticationRequired
+            );
+            assert!(export_rows(&sm, &id).await.is_empty());
+        }
+
+        /// DR-20 point 4: an authentication covers the chats its dialog NAMED
+        /// and no others. A proof minted for a different chat is not a proof.
+        #[tokio::test]
+        async fn an_authorization_for_another_chat_does_not_cover_this_one() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+            let elsewhere = ExportAuthorization::for_test(&["20990101_000000".to_string()]);
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Private, Some(&elsewhere))
+                    .await
+                    .unwrap(),
+                ExportDecision::SystemAuthenticationRequired
+            );
+            assert!(export_rows(&sm, &id).await.is_empty());
+        }
+
+        /// The permitted path writes exactly one row — and the row says
+        /// `private → private`, because the ruling is that the chat STAYS
+        /// private. Anything that reads this table for "was declassified" keys
+        /// on `to_classification = 'public'`, so an export can never be
+        /// mistaken for one.
+        #[tokio::test]
+        async fn the_permitted_export_is_recorded_and_does_not_declassify() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = private_chat(&sm).await;
+            let granted = ExportAuthorization::for_test(std::slice::from_ref(&id));
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Private, Some(&granted))
+                    .await
+                    .unwrap(),
+                ExportDecision::Authorized
+            );
+
+            let rows = export_rows(&sm, &id).await;
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0],
+                (
+                    SessionClassification::PRIVATE_SQL.to_string(),
+                    SessionClassification::PRIVATE_SQL.to_string(),
+                    EXPORTED_BY_USER.to_string()
+                )
+            );
+
+            // The ratchet is untouched: exporting is not a way to declassify.
+            let row = sm.get_session(&id, false).await.unwrap();
+            assert_eq!(row.privacy_tier, SessionClassification::Private);
+            assert_eq!(row.privacy_reason.as_deref(), Some("mcp:ucsfomopagent"));
+        }
+
+        /// A public chat costs nothing: no prompt, no record, no copy. A gate
+        /// that fired on every export is one people route around.
+        #[tokio::test]
+        async fn a_public_chat_is_unrestricted_and_leaves_no_row() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            let id = public_chat(&sm).await;
+
+            assert_eq!(
+                sm.authorize_export(&id, ProviderTier::Public, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::Unrestricted
+            );
+            assert!(export_rows(&sm, &id).await.is_empty());
+        }
+
+        /// An id that names nothing is answered as such rather than as a
+        /// refusal: there is no transcript to protect and no row to write.
+        #[tokio::test]
+        async fn an_unknown_session_is_reported_as_missing() {
+            let temp = TempDir::new().unwrap();
+            let sm = SessionManager::new(temp.path().to_path_buf());
+            assert_eq!(
+                sm.authorize_export("20990101_000000", ProviderTier::Private, None)
+                    .await
+                    .unwrap(),
+                ExportDecision::SessionNotFound
+            );
+        }
+
+        /// The copy is about the FILE, not about the chat — the failure it
+        /// exists to prevent is the user believing the exported markdown
+        /// inherits the chat's protection.
+        #[test]
+        fn the_notice_says_the_file_is_not_protected_and_the_chat_is_unchanged() {
+            assert!(EXPORT_NOT_PROTECTED.contains("NOT protected"));
+            assert!(EXPORT_NOT_PROTECTED.contains("stays private"));
+            // …and it never claims the export changed the chat's tier.
+            assert!(!EXPORT_NOT_PROTECTED.contains("declassif"));
+        }
+    }
+
+    /// Issue #56 / BR-71: a subagent that produced nothing was invisible to the
+    /// one listing that can show subagent runs at all.
+    ///
+    /// The regression is in SQL, not in rendering: `list_sessions_by_types`
+    /// INNER JOINs `messages`, so a childless row is not returned. Both halves
+    /// are asserted, because an assertion on the new entry point alone would
+    /// pass just as well if the old one had been widened too — and widening it
+    /// would put "Untitled chat" placeholders back in the desktop sidebar.
+    #[tokio::test]
+    async fn an_empty_subagent_is_listed_only_by_the_include_empty_query() {
+        let temp = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp.path().to_path_buf());
+
+        let silent = sm
+            .create_session(
+                std::env::temp_dir(),
+                "a child that produced nothing".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        let spoke = sm
+            .create_session(
+                std::env::temp_dir(),
+                "a child that spoke".to_string(),
+                SessionType::SubAgent,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&spoke.id, &Message::user().with_text("i did some work"))
+            .await
+            .unwrap();
+
+        let historical: Vec<String> = sm
+            .list_sessions_by_types(&[SessionType::SubAgent])
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(
+            historical,
+            vec![spoke.id.clone()],
+            "the sidebar query must keep hiding message-less rows"
+        );
+
+        let widened = sm
+            .list_sessions_by_types_including_empty(&[SessionType::SubAgent])
+            .await
+            .unwrap();
+        let ids: std::collections::BTreeSet<String> =
+            widened.iter().map(|s| s.id.clone()).collect();
+        assert!(
+            ids.contains(&silent.id),
+            "the childless subagent is still invisible: {ids:?}"
+        );
+        assert!(ids.contains(&spoke.id));
+        // `COUNT(m.id)` ignores NULLs, so the LEFT JOIN must report 0 rather
+        // than the 1 a naive count of joined rows would give.
+        let silent_row = widened.iter().find(|s| s.id == silent.id).unwrap();
+        assert_eq!(silent_row.message_count, 0);
+        let spoke_row = widened.iter().find(|s| s.id == spoke.id).unwrap();
+        assert_eq!(spoke_row.message_count, 1);
+    }
 
     // #44 — the atomic empty-chat-only working-dir update. The emptiness check
     // lives in the UPDATE's own WHERE clause, so "insert a message between the

@@ -1224,9 +1224,17 @@ enum Command {
     },
 
     /// Start or resume interactive chat sessions
+    ///
+    /// ⚠ `sessions` is an alias, and it is not cosmetic. `session_watch.rs`'s
+    /// own error message told users to run `biorouter sessions watch <id>`, the
+    /// BR-71 plan wrote `biorouter sessions …` in roughly forty places, and
+    /// `docs/cli/command-reference.md` printed it — while the plural was never a
+    /// registered command, so every one of those instructions ended in
+    /// `unrecognized subcommand 'sessions'`. Registering it makes the
+    /// instructions true rather than making forty documents wrong.
     #[command(
         about = "Start or resume interactive chat sessions",
-        visible_alias = "s"
+        visible_aliases = ["s", "sessions"]
     )]
     Session {
         #[command(subcommand)]
@@ -2347,5 +2355,59 @@ pub async fn cli() -> anyhow::Result<()> {
         }) => crate::commands::web::handle_web(port, host, open, auth_token, no_auth).await,
         Some(Command::Term { command }) => handle_term_subcommand(command).await,
         None => handle_default_session().await,
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    /// The parser is internally consistent (clap's own audit: duplicate
+    /// aliases, conflicting shorts, bad `value_parser`s).
+    ///
+    /// Not decoration — it is what makes the alias below a *parse* assertion
+    /// rather than a claim about an attribute nobody built.
+    #[test]
+    fn the_parser_is_well_formed() {
+        Cli::command().debug_assert();
+    }
+
+    /// BR-71 / issue #56: `biorouter sessions <verb>` really is a command.
+    ///
+    /// ⚠ Driven through the real parser, on the real argv, for every verb the
+    /// prose and the error messages tell people to type. An assertion that the
+    /// attribute is present would pass against an alias registered on the wrong
+    /// subcommand; this fails unless the argument vector a user actually types
+    /// produces the subcommand they meant.
+    ///
+    /// `session_watch.rs`'s missing-secret error printed `biorouter sessions
+    /// watch <id>` and the command reference printed it too, while `sessions`
+    /// was not registered anywhere — so following the instruction gave
+    /// `unrecognized subcommand`.
+    #[test]
+    fn sessions_is_a_real_alias_for_every_verb_the_product_prints() {
+        for argv in [
+            vec!["biorouter", "sessions", "watch", "20260801_7"],
+            vec!["biorouter", "sessions", "send", "20260801_7", "hello"],
+            vec!["biorouter", "sessions", "attach", "20260801_7"],
+            vec!["biorouter", "sessions", "cancel", "20260801_7"],
+            vec!["biorouter", "sessions", "list"],
+        ] {
+            let parsed = Cli::try_parse_from(&argv)
+                .unwrap_or_else(|e| panic!("`{}` does not parse: {e}", argv.join(" ")));
+            assert!(
+                matches!(parsed.command, Some(Command::Session { .. })),
+                "`{}` parsed as something other than the session command",
+                argv.join(" ")
+            );
+        }
+
+        // …and the canonical spelling and the short alias still work, so the
+        // addition is additive rather than a rename.
+        for name in ["session", "s"] {
+            let parsed = Cli::try_parse_from(["biorouter", name, "list"])
+                .unwrap_or_else(|e| panic!("`biorouter {name} list` does not parse: {e}"));
+            assert!(matches!(parsed.command, Some(Command::Session { .. })));
+        }
     }
 }

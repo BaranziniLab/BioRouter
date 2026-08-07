@@ -22,6 +22,53 @@
 
 use biorouter::privacy::{ProviderTier, SessionClassification};
 
+/// The provider name this terminal would run a turn on, resolved the way
+/// `session/builder.rs` resolves its `GlobalDefault` slot: `BIOROUTER_PROVIDER`
+/// if the environment sets it, otherwise the configured default.
+///
+/// `None` for an install that has never been configured. That is not an error
+/// here — a user who has not run `biorouter configure` has no capability, which
+/// is exactly what the caller does with it.
+pub fn configured_provider_name() -> Option<String> {
+    biorouter::config::Config::global()
+        .get_biorouter_provider()
+        .ok()
+        .map(|name| name.trim().to_string())
+        .filter(|name| !name.is_empty())
+}
+
+/// **The CLI's capability**: the tier of the model this process would run.
+///
+/// ⚠ **The CLI had none at all, and that was the defect underneath four
+/// others.** It loaded a provider when it started a chat and never resolved a
+/// tier for anything else, so every request it made to the daemon was
+/// indistinguishable from one made by a public-tier caller — which is why
+/// `session send/watch/attach` were refused for a private chat even when the
+/// terminal was configured for an institutional model. A capability is not
+/// something a surface has by being a surface; it is a fact about the model
+/// bound to it, and until something resolved that fact there was nothing for a
+/// gate to compare.
+///
+/// ⚠ **The DECLARED tier, not an instance's.** `declared_provider_tier` reads
+/// the registry, because building an instance would need the provider's
+/// credentials just to answer a routing question, and because the daemon
+/// resolves the same name through the same function on its side — two different
+/// resolutions of one name is how the client and the daemon come to disagree
+/// about what a request is allowed to do. The residual is inherited and
+/// permissive in the same direction the rest of the feature already accepts (an
+/// `ollama` re-pointed off the machine by `OLLAMA_HOST` declares Private and
+/// resolves Public), and it is not the authority: every gate downstream reads
+/// the instance.
+///
+/// An unconfigured install, an unknown provider name and a public model all give
+/// [`ProviderTier::Public`] — the fail-safe side.
+pub async fn caller_capability() -> ProviderTier {
+    match configured_provider_name() {
+        Some(name) => biorouter::workflow::privacy::declared_provider_tier(&name).await,
+        None => ProviderTier::Public,
+    }
+}
+
 /// A private model the user could move this chat onto.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PrivateModel {
@@ -185,6 +232,53 @@ pub fn repair_block(session_id: &str, private_models: &[PrivateModel]) -> String
     out
 }
 
+/// Issue #56 — what the terminal says when a private chat is asked to export
+/// itself from a session running a public model.
+///
+/// ⚠ **Not [`repair_block`], and the difference is the command.** That block's
+/// repair is *re-run this chat on a private model* (`biorouter session --resume
+/// --id … --provider …`), which is the right advice for a chat that will not
+/// start and the wrong advice here: nobody is trying to resume anything, they
+/// are trying to take a copy out. The command below is the one that actually
+/// re-runs the thing they asked for.
+///
+/// §14.4: it names the tier and the models and nothing about the conversation —
+/// the signature has nowhere to put a title, a working directory or a message.
+///
+/// An empty `private_models` is not an impossible state (a stripped install can
+/// have none) and must not print `BIOROUTER_PROVIDER=` with nothing after it.
+pub fn export_capability_refusal(session_id: &str, private_models: &[PrivateModel]) -> String {
+    let mut out = String::from(
+        "This chat is private, and this terminal is running a public model — so it may not \
+         write a copy of the transcript to a file. Nothing was exported and the chat is \
+         unchanged.\n",
+    );
+    match private_models.first() {
+        Some(first) => {
+            let list = private_models
+                .iter()
+                .map(|m| format!("{} ({})", m.display_name, m.name))
+                .collect::<Vec<_>>()
+                .join(", ");
+            out.push_str(&format!("\nPrivate models on this install: {list}.\n"));
+            out.push_str(&format!(
+                "\nRe-run the export from a terminal on one of them:\n\n    \
+                 BIOROUTER_PROVIDER={} biorouter session export --id {session_id}\n",
+                first.name
+            ));
+        }
+        None => out.push_str(
+            "\nThis install publishes no private models, so there is no terminal here that may \
+             export this chat. Configure one with `biorouter configure`.\n",
+        ),
+    }
+    out.push_str(&format!(
+        "\nOr, if this chat's contents are not private after all, declassify it first:\n\n    \
+         biorouter session declassify {session_id}\n"
+    ));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,6 +396,59 @@ mod tests {
         );
         // …and with one, the command is complete.
         assert!(repair_block("20260801_7", &[versa()]).contains("--provider versa_azure"));
+    }
+
+    /// The export refusal prints the command that re-runs THE EXPORT, not the
+    /// command that re-runs the chat.
+    ///
+    /// The distinction is the whole reason this copy is not `repair_block`: a
+    /// user who was refused an export and is told to `--resume` the chat has
+    /// been sent to do something they did not ask for.
+    #[test]
+    fn the_export_refusal_offers_the_export_command_and_the_escape_hatch() {
+        let text = export_capability_refusal("20260801_7", &[versa(), llamacpp()]);
+        assert!(
+            text.contains(
+                "BIOROUTER_PROVIDER=versa_azure biorouter session export --id 20260801_7"
+            ),
+            "{text}"
+        );
+        assert!(
+            !text.contains("--resume"),
+            "the export refusal sends the user to resume the chat instead: {text}"
+        );
+        assert!(text.contains("Versa"), "{text}");
+        assert!(text.contains("Llama Server"), "{text}");
+        assert!(
+            text.contains("biorouter session declassify 20260801_7"),
+            "{text}"
+        );
+        // …and it says what did NOT happen, which is what stops a user
+        // believing the file was written anyway.
+        assert!(text.contains("Nothing was exported"), "{text}");
+    }
+
+    /// A stripped install must not print `BIOROUTER_PROVIDER=` with nothing
+    /// after it, which reads as a command to run.
+    #[test]
+    fn with_no_private_model_the_export_refusal_offers_no_empty_command() {
+        let text = export_capability_refusal("20260801_7", &[]);
+        assert!(!text.contains("BIOROUTER_PROVIDER="), "{text}");
+        assert!(text.contains("biorouter configure"), "{text}");
+        assert!(
+            text.contains("biorouter session declassify 20260801_7"),
+            "{text}"
+        );
+    }
+
+    /// §14.4 again: a refusal names the tier and the model and nothing about the
+    /// conversation.
+    #[test]
+    fn the_export_refusal_carries_no_session_content() {
+        let text = export_capability_refusal("20260801_7", &[versa()]);
+        for content in ["Patient MRN 4471 workup", "phi/cohort-3"] {
+            assert!(!text.contains(content), "{text}");
+        }
     }
 
     /// The list comes from the real registry, so a fourth private provider

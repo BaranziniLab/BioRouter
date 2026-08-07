@@ -59,7 +59,7 @@ vi.mock('child_process', async (importOriginal) => {
 
 import { createHash } from 'node:crypto';
 
-import { startBiorouterd } from './biorouterd';
+import { externalBackendUrlFromEnv, startBiorouterd } from './biorouterd';
 
 const sha256Hex = (value: string): string => createHash('sha256').update(value).digest('hex');
 
@@ -167,5 +167,33 @@ describe('startBiorouterd logging', () => {
     expect(logged).not.toContain(inheritedValue);
     expect(logged).not.toContain(overrideValue);
     expect(logged).not.toContain(serverSecret);
+  });
+});
+
+/**
+ * Issue #56 — the External Backend path is the supported way for the `biorouter`
+ * CLI to reach a daemon the desktop app is also using, so the developer escape
+ * hatch that shares its code must honour the port this repo documents.
+ *
+ * The URL used to be a hard-coded `http://127.0.0.1:3000`, so a developer who
+ * moved their daemon (which `just debug-server` and `BIOROUTER_EXTERNAL_PORT`
+ * both invite) had the app silently connect to 3000 and report the backend as
+ * down.
+ */
+describe('externalBackendUrlFromEnv', () => {
+  it('honours BIOROUTER_EXTERNAL_PORT', () => {
+    expect(externalBackendUrlFromEnv({ BIOROUTER_EXTERNAL_PORT: '3456' })).toBe(
+      'http://127.0.0.1:3456'
+    );
+  });
+
+  it('falls back to 3000 when the port is absent, blank or not a usable port', () => {
+    // A malformed value must not compose a URL that cannot resolve — a wrong
+    // port that at least exists is diagnosable, `http://127.0.0.1:NaN` is not.
+    for (const value of [undefined, '', '   ', 'abc', '0', '-1', '70000', '12.5']) {
+      expect(
+        externalBackendUrlFromEnv(value === undefined ? {} : { BIOROUTER_EXTERNAL_PORT: value })
+      ).toBe('http://127.0.0.1:3000');
+    }
   });
 });
