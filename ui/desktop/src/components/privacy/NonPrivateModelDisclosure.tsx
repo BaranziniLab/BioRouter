@@ -3,6 +3,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '../ui/dialog';
 import { Button } from '../ui/button';
 import { disclosureTitle, type DisclosureCopy } from './disclosureCopy';
 import { DisclosureProse } from './DisclosureProse';
+import { NotificationSurface } from '../alerts/NotificationSurface';
 
 export interface NonPrivateModelDisclosureProps {
   open: boolean;
@@ -87,13 +88,25 @@ export function NonPrivateModelDisclosure({
           <DisclosureProse text={copy.long} paragraphClassName="min-w-0 [overflow-wrap:anywhere]" />
         </div>
 
+        {/* A failure notice in the app's notice tier, not a quieter paragraph.
+            This was a bare `<p>` in `text-text-muted` — LOWER contrast than the
+            explanatory body directly above it — with no icon, no colour and no
+            separation, while the button silently changed from "I understand" to
+            "Continue". A failure rendered less prominently than the prose it
+            follows is read as more boilerplate, which is exactly the outcome
+            the button relabelling is trying to avoid. `NotificationSurface` is
+            the shared banner primitive; `warning`, not `error`, because the
+            person is not blocked — the sentence's whole job is to say what was
+            not recorded before they go on. */}
         {acknowledgeError && (
-          <p
-            data-testid="disclosure-ack-error"
-            className="min-w-0 [overflow-wrap:anywhere] text-sm text-text-muted"
-          >
-            {acknowledgeError}
-          </p>
+          <div data-testid="disclosure-ack-error">
+            <NotificationSurface
+              role="status"
+              status="warning"
+              message={acknowledgeError}
+              className="min-w-0 [overflow-wrap:anywhere]"
+            />
+          </div>
         )}
 
         <div className="flex justify-end pt-2">
