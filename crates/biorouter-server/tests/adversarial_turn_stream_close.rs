@@ -5,6 +5,14 @@
 //! `routes/reply.rs`'s `adversarial_*` modules: those attack who may close a
 //! log; these attack what "terminal" means once one is logged.
 
+// Redirects this binary's Biorouter data/config/state dirs at a throwaway root
+// before `main`, so nothing here can open the developer's real `sessions.db`.
+// The lib's copy is `#[cfg(test)]`, so it is NOT compiled into this binary —
+// every integration test file must declare its own. `tests/every_test_binary_
+// is_sandboxed.rs` is the guard that says so when a new file forgets.
+#[path = "../src/test_sandbox.rs"]
+mod test_sandbox;
+
 use std::sync::Arc;
 use std::time::Duration;
 
