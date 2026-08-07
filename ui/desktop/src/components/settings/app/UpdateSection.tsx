@@ -87,10 +87,10 @@ export default function UpdateSection() {
     <div>
       <div className="text-sm text-text-muted mb-4">
         <div className="flex flex-col">
-          <div className="text-text-default text-2xl font-mono">
+          <div className="text-text-default text-display font-mono">
             {currentVersion || 'Loading...'}
           </div>
-          <div className="text-xs text-text-muted">Current version</div>
+          <div className="text-supporting text-text-muted">Current version</div>
         </div>
       </div>
 

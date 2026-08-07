@@ -215,7 +215,7 @@ export function KBSelectorPalette({ onClose }: Props) {
           </DialogHeader>
 
           <div className="px-6 py-4 border-b border-border-subtle">
-            <div className="flex h-9 items-center gap-2 rounded-md border border-border-input bg-background-default px-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
+            <div className="flex h-control-md items-center gap-2 rounded-element border border-border-input bg-background-default px-3 transition-colors hover:border-border-strong focus-within:border-border-strong">
               <Search className="h-4 w-4 text-text-muted" />
               <input
                 data-testid="knowledge-kb-search"
@@ -224,7 +224,7 @@ export function KBSelectorPalette({ onClose }: Props) {
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder="Search knowledge bases"
-                className="flex-1 bg-transparent text-sm outline-none placeholder:text-text-muted"
+                className="flex-1 bg-transparent text-body outline-none placeholder:text-text-muted"
               />
             </div>
 
@@ -264,8 +264,8 @@ export function KBSelectorPalette({ onClose }: Props) {
             </div>
 
             {draftMode && (
-              <div className="biorouter-modal-panel mt-4 rounded-xl p-4">
-                <div className="mb-2 text-sm font-medium">
+              <div className="biorouter-modal-panel mt-4 rounded-container p-4">
+                <div className="mb-2 text-label">
                   {draftMode.kind === 'create'
                     ? 'Name your new knowledge base'
                     : `Rename "${draftMode.base.name}"`}
@@ -302,7 +302,7 @@ export function KBSelectorPalette({ onClose }: Props) {
               </div>
             )}
 
-            {error && <div className="mt-3 text-sm text-text-danger">{error}</div>}
+            {error && <div className="mt-3 text-body text-text-danger">{error}</div>}
           </div>
 
           {/*
@@ -315,8 +315,8 @@ export function KBSelectorPalette({ onClose }: Props) {
           */}
           {canFollowDefaultPrimary && defaultPrimaryKb && (
             <div className="border-b border-border-subtle px-6 py-3">
-              <div className="biorouter-modal-panel flex flex-col gap-3 rounded-xl p-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="min-w-0 text-xs text-text-muted">
+              <div className="biorouter-modal-panel flex flex-col gap-3 rounded-container p-3 sm:flex-row sm:items-center sm:justify-between">
+                <div className="min-w-0 text-supporting text-text-muted">
                   {primaryKbId
                     ? `This chat uses its own primary, so it no longer follows your default knowledge base, ${defaultPrimaryKb.name}.`
                     : `This chat has no primary knowledge base, even though your default is ${defaultPrimaryKb.name}. Deleting the base a chat was using leaves it this way.`}
@@ -338,7 +338,7 @@ export function KBSelectorPalette({ onClose }: Props) {
 
           <div className="max-h-[420px] overflow-y-auto px-4 py-4">
             {filtered.length === 0 ? (
-              <div className="biorouter-modal-panel rounded-xl px-4 py-10 text-center text-sm text-text-muted">
+              <div className="biorouter-modal-panel rounded-container px-4 py-10 text-center text-body text-text-muted">
                 No knowledge bases match this search.
               </div>
             ) : (
@@ -366,31 +366,25 @@ export function KBSelectorPalette({ onClose }: Props) {
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-2">
-                            <div className="truncate text-sm font-medium text-text-default">
-                              {base.name}
-                            </div>
+                            <div className="truncate text-label text-text-default">{base.name}</div>
                             {isBuiltinKnowledgeBase(base.id) && (
                               <BuiltInBadge title={BUILTIN_RECREATED_TITLE} />
                             )}
-                            {hidden && (
-                              <Badge uppercase className="text-[10px]">
-                                Not in this chat
-                              </Badge>
-                            )}
+                            {hidden && <Badge uppercase>Not in this chat</Badge>}
                           </div>
-                          <div className="truncate text-[11px] font-mono text-text-muted">
+                          <div className="truncate text-supporting font-mono text-text-muted">
                             {base.id}
                           </div>
                         </div>
                         {isPrimary && (
-                          <Badge uppercase tone="accent" className="text-[10px]">
+                          <Badge uppercase tone="accent">
                             Primary
                           </Badge>
                         )}
                       </button>
 
                       <div className="flex items-center gap-2">
-                        <div className="flex items-center gap-2 rounded-md border border-border-subtle bg-background-default px-2 py-1">
+                        <div className="flex items-center gap-2 rounded-element border border-border-subtle bg-background-default px-2 py-1">
                           <EyeOff className="h-3.5 w-3.5 text-text-muted" />
                           <Switch
                             checked={!hidden}
@@ -444,7 +438,7 @@ export function KBSelectorPalette({ onClose }: Props) {
           </div>
 
           <DialogFooter className="border-t border-border-subtle px-6 py-4 sm:justify-between">
-            <div className="text-xs text-text-muted">
+            <div className="text-supporting text-text-muted">
               Tip: the switch decides whether a base is in this chat; clicking its name makes it the
               primary. Bases left out are still reachable by naming them explicitly.
             </div>

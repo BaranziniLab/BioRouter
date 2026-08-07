@@ -22,14 +22,14 @@ const CustomProviderCard = memo(function CustomProviderCard({ onClick }: { onCli
     <button
       data-testid="add-custom-provider-card"
       onClick={onClick}
-      className="w-full flex items-center gap-3 py-3 px-4 rounded-xl
-        cursor-pointer hover:bg-background-medium
-        transition-colors duration-150 text-left"
+      className="w-full flex items-center gap-3 py-3 px-4 rounded-container
+        cursor-pointer tint-interactive
+        transition-colors text-left"
     >
-      <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0">
+      <div className="w-8 h-8 rounded-element flex items-center justify-center flex-shrink-0">
         <Plus className="w-4 h-4 text-text-muted" />
       </div>
-      <p className="text-sm text-text-muted">Add Custom Provider</p>
+      <p className="text-label text-text-muted">Add Custom Provider</p>
     </button>
   );
 });
@@ -203,7 +203,7 @@ function ProviderCards({
       <div className="space-y-8">
         {localCards.length > 0 && (
           <div>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+            <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
               <span className="w-1.5 h-1.5 bg-background-success rounded-full flex-shrink-0" />
               Local Models
             </h2>
@@ -213,7 +213,7 @@ function ProviderCards({
 
         {institutionalCards.length > 0 && (
           <div>
-            <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+            <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
               <span className="w-1.5 h-1.5 bg-background-info rounded-full flex-shrink-0" />
               Institutional Models
             </h2>
@@ -222,7 +222,7 @@ function ProviderCards({
         )}
 
         <div>
-          <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-3 flex items-center gap-2">
+          <h2 className="text-caps text-text-muted mb-3 flex items-center gap-2">
             <span className="w-1.5 h-1.5 bg-background-warning rounded-full flex-shrink-0" />
             Commercial Models
           </h2>

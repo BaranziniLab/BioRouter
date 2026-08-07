@@ -206,9 +206,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
     <div className="biorouter-settings-section" data-testid="reset-panel">
       <div className="biorouter-settings-section-header flex flex-wrap items-end justify-between gap-2">
         <div>
-          <h2 className="mb-1 text-[11px] font-medium uppercase tracking-wider text-text-muted">
-            Reset
-          </h2>
+          <h2 className="mb-1 text-caps text-text-muted">Reset</h2>
           <p className="text-xs text-text-muted">
             Choose what to clean up. Built-in content is restored; models, credentials, and
             preferences are kept.
@@ -264,7 +262,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
                     {category.title}
                   </span>
                   <span className="flex shrink-0 items-center gap-2">
-                    <span className="flex items-center gap-1 text-[11px] tabular-nums text-text-muted">
+                    <span className="flex items-center gap-1 text-supporting tabular-nums text-text-muted">
                       {loadingCounts ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
                       ) : (
@@ -351,7 +349,7 @@ export default function ResetPanel({ onReset }: ResetPanelProps) {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="grid grid-cols-1 gap-2 rounded-lg border border-border-subtle bg-background-muted/40 p-3 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-2 rounded-element border border-border-subtle bg-background-muted/40 p-3 sm:grid-cols-2">
             {pendingDefinitions.map((category) => {
               const Icon = category.icon;
               return (

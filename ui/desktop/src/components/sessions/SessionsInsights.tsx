@@ -38,11 +38,8 @@ export function SessionInsights() {
   return (
     <div className="flex h-full min-h-0 flex-col bg-background-canvas">
       {/* Hero — text directly on canvas. Aligned to the composer's column. */}
-      <ReadableContent
-        size="chat"
-        className="biorouter-home-hero shrink-0 px-4 pb-6 pt-16 sm:px-6"
-      >
-        <p className="text-xs font-medium text-text-muted tracking-widest mb-3">UCSF Biorouter</p>
+      <ReadableContent size="chat" className="biorouter-home-hero shrink-0 px-4 pb-6 pt-16 sm:px-6">
+        <p className="text-caps text-text-muted mb-3">UCSF Biorouter</p>
         <Greeting />
       </ReadableContent>
 

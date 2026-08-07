@@ -137,7 +137,7 @@ export default function TunnelSection() {
 
   return (
     <>
-      <Card className="rounded-lg">
+      <Card className="rounded-element">
         <CardHeader className="pb-0">
           <CardTitle className="mb-1">Remote Access</CardTitle>
           <CardDescription className="flex flex-col gap-2">
@@ -223,7 +223,7 @@ export default function TunnelSection() {
           {tunnelInfo.state === 'running' && (
             <div className="py-4 space-y-4">
               <div className="flex justify-center">
-                <div className="p-4 bg-background-default rounded-lg">
+                <div className="p-4 bg-background-default rounded-element">
                   <QRCodeSVG value={getQRCodeData()} size={200} />
                 </div>
               </div>
@@ -312,7 +312,7 @@ export default function TunnelSection() {
 
           <div className="py-4 space-y-4">
             <div className="flex justify-center">
-              <div className="p-4 bg-background-default rounded-lg">
+              <div className="p-4 bg-background-default rounded-element">
                 <QRCodeSVG value={IOS_APP_STORE_URL} size={200} />
               </div>
             </div>

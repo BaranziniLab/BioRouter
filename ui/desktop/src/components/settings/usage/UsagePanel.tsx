@@ -167,16 +167,16 @@ function SummaryMetric({
   detail: string;
 }) {
   return (
-    <div className="flex min-w-0 items-start gap-3 rounded-lg border border-border-subtle bg-background-default p-3">
-      <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md bg-heat-0 text-text-accent">
+    <div className="flex min-w-0 items-start gap-3 rounded-element border border-border-subtle bg-background-default p-3">
+      <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-element bg-heat-0 text-text-accent">
         {icon}
       </span>
       <div className="min-w-0">
-        <p className="text-[10px] font-medium uppercase tracking-wider text-text-subtle">{label}</p>
-        <p className="mt-0.5 truncate text-lg font-semibold leading-tight text-text-default tabular-nums">
+        <p className="text-caps text-text-subtle">{label}</p>
+        <p className="mt-0.5 truncate text-subheading leading-tight text-text-default tabular-nums">
           {value}
         </p>
-        <p className="mt-1 text-[11px] leading-tight text-text-muted">{detail}</p>
+        <p className="mt-1 text-supporting leading-tight text-text-muted">{detail}</p>
       </div>
     </div>
   );
@@ -194,15 +194,15 @@ function SectionCard({
   children: ReactNode;
 }) {
   return (
-    <section className="overflow-hidden rounded-xl border border-border-subtle bg-background-card">
+    <section className="overflow-hidden rounded-container border border-border-subtle bg-background-card">
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border-subtle bg-background-muted/40 px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
-          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-lg border border-border-subtle bg-background-default text-text-accent">
+          <span className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-element border border-border-subtle bg-background-default text-text-accent">
             {icon}
           </span>
           <div className="min-w-0">
             <h3 className="text-sm font-medium text-text-default">{title}</h3>
-            <p className="mt-0.5 text-[11px] text-text-muted">{description}</p>
+            <p className="mt-0.5 text-supporting text-text-muted">{description}</p>
           </div>
         </div>
       </div>
@@ -240,7 +240,7 @@ function TokenFlowCell({ row, showCache }: { row: UsageReportRow; showCache: boo
 
   return (
     <div
-      className={`grid overflow-hidden rounded-md border border-border-subtle bg-background-muted/30 ${showCache ? 'grid-cols-4' : 'grid-cols-2'}`}
+      className={`grid overflow-hidden rounded-element border border-border-subtle bg-background-muted/30 ${showCache ? 'grid-cols-4' : 'grid-cols-2'}`}
       data-testid="usage-model-token-flow"
     >
       {items.map((item, index) => (
@@ -248,10 +248,8 @@ function TokenFlowCell({ row, showCache }: { row: UsageReportRow; showCache: boo
           key={item.label}
           className={`min-w-0 px-2 py-1.5 ${index > 0 ? 'border-l border-border-subtle' : ''}`}
         >
-          <p className="whitespace-nowrap text-[8px] font-medium uppercase tracking-[0.04em] text-text-subtle">
-            {item.label}
-          </p>
-          <p className="mt-0.5 truncate text-[11px] font-medium text-text-default tabular-nums">
+          <p className="whitespace-nowrap text-caps text-text-subtle">{item.label}</p>
+          <p className="mt-0.5 truncate text-supporting font-medium text-text-default tabular-nums">
             <CompactTokenValue value={item.value} />
           </p>
         </div>
@@ -262,8 +260,8 @@ function TokenFlowCell({ row, showCache }: { row: UsageReportRow; showCache: boo
 
 function EmptyTableState({ icon, children }: { icon: ReactNode; children: ReactNode }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center text-xs text-text-muted">
-      <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-background-muted text-text-subtle">
+    <div className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-center text-body text-text-muted">
+      <span className="flex h-9 w-9 items-center justify-center rounded-element bg-background-muted text-text-subtle">
         {icon}
       </span>
       <p>{children}</p>
@@ -278,12 +276,12 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
 
   return (
     <div data-testid="usage-panel">
-      <div className="flex flex-col gap-3 rounded-xl border border-border-subtle bg-background-card px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="flex flex-col gap-3 rounded-container border border-border-subtle bg-background-card px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-2">
           <Badge tone="accent" className="px-2 py-1 tabular-nums">
             {summary.month}
           </Badge>
-          <dl className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-xs">
+          <dl className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1 text-supporting">
             <div className="flex items-baseline gap-1.5">
               <dt className="text-text-muted">Tokens</dt>
               <dd
@@ -327,7 +325,7 @@ export function UsagePanel({ summary, dayRows, modelRows }: UsagePanelProps) {
         >
           <DialogHeader className="mb-0 border-b border-border-subtle bg-background-muted/40 px-6 py-5">
             <div className="mb-2 flex items-center gap-2">
-              <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-border-subtle bg-background-default text-text-accent">
+              <span className="flex h-8 w-8 items-center justify-center rounded-element border border-border-subtle bg-background-default text-text-accent">
                 <Activity className="h-4 w-4" />
               </span>
               <Badge tone="accent" className="px-2 py-1 tabular-nums">
@@ -392,13 +390,13 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
   return (
     <div className="flex flex-col gap-5" data-testid="usage-report">
       <section
-        className="overflow-hidden rounded-xl border border-border-subtle bg-background-card"
+        className="overflow-hidden rounded-container border border-border-subtle bg-background-card"
         data-testid="usage-summary-card"
       >
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border-subtle bg-background-muted/40 px-4 py-3">
           <div>
             <h3 className="text-sm font-medium text-text-default">Month to date</h3>
-            <p className="mt-0.5 text-[11px] text-text-muted">
+            <p className="mt-0.5 text-supporting text-text-muted">
               Billed usage recorded across all conversations
             </p>
           </div>
@@ -484,7 +482,7 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
         ) : (
           <div className="w-full overflow-x-auto" data-testid="usage-day-table-wrap">
             <table
-              className="w-full min-w-[520px] border-collapse text-xs"
+              className="w-full min-w-[520px] border-collapse text-body"
               data-testid="usage-day-table"
             >
               <colgroup>
@@ -493,36 +491,36 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
                 <col className={showDayCost ? 'w-[26%]' : 'w-[46%]'} />
                 {showDayCost && <col className="w-[20%]" />}
               </colgroup>
-              <thead className="bg-background-muted/60">
-                <tr className="text-left text-[10px] uppercase tracking-wider text-text-subtle">
-                  <th className="px-4 py-2.5 font-medium">Day</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Turns</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Billed</th>
-                  {showDayCost && <th className="px-4 py-2.5 text-right font-medium">Cost</th>}
+              <thead>
+                <tr className="text-left text-label text-text-muted">
+                  <th className="px-3 py-2">Day</th>
+                  <th className="px-3 py-2 text-right">Turns</th>
+                  <th className="px-3 py-2 text-right">Billed</th>
+                  {showDayCost && <th className="px-3 py-2 text-right">Cost</th>}
                 </tr>
               </thead>
               <tbody>
                 {orderedDayRows.map((row) => (
                   <tr
                     key={row.date}
-                    className={`transition-colors hover:bg-background-muted/50 ${hasUsage(row) ? 'text-text-default' : 'text-text-subtle'}`}
+                    className={`tint-interactive transition-colors ${hasUsage(row) ? 'text-text-default' : 'text-text-subtle'}`}
                   >
-                    <td className="border-t border-border-subtle px-4 py-3 font-medium">
+                    <td className="border-t border-border-subtle px-3 py-2 font-medium">
                       <time dateTime={row.date ?? undefined} title={row.date ?? undefined}>
                         {formatUsageDate(row.date)}
                       </time>
                     </td>
-                    <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
+                    <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td className="border-t border-border-subtle px-4 py-3 text-right font-medium tabular-nums">
+                    <td className="border-t border-border-subtle px-3 py-2 text-right font-medium tabular-nums">
                       <CompactTokenValue
                         value={billedTokenValue(row)}
                         fallback={formatBilledTokens(row)}
                       />
                     </td>
                     {showDayCost && (
-                      <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
+                      <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
                         {formatCostEstimate(row.cost)}
                       </td>
                     )}
@@ -546,7 +544,7 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
         ) : (
           <div className="w-full overflow-x-auto" data-testid="usage-model-table-wrap">
             <table
-              className={`w-full border-collapse text-xs ${showModelCache ? 'min-w-[900px]' : 'min-w-[720px]'}`}
+              className={`w-full border-collapse text-body ${showModelCache ? 'min-w-[900px]' : 'min-w-[720px]'}`}
               data-testid="usage-model-table"
             >
               <colgroup>
@@ -556,45 +554,45 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
                 <col className={showModelCost ? 'w-[13%]' : 'w-[22%]'} />
                 {showModelCost && <col className="w-[11%]" />}
               </colgroup>
-              <thead className="bg-background-muted/60">
-                <tr className="text-left text-[10px] uppercase tracking-wider text-text-subtle">
-                  <th className="px-4 py-2.5 font-medium">Model</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Turns</th>
-                  <th className="px-4 py-2.5 font-medium">Token flow</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Billed</th>
-                  {showModelCost && <th className="px-4 py-2.5 text-right font-medium">Cost</th>}
+              <thead>
+                <tr className="text-left text-label text-text-muted">
+                  <th className="px-3 py-2">Model</th>
+                  <th className="px-3 py-2 text-right">Turns</th>
+                  <th className="px-3 py-2">Token flow</th>
+                  <th className="px-3 py-2 text-right">Billed</th>
+                  {showModelCost && <th className="px-3 py-2 text-right">Cost</th>}
                 </tr>
               </thead>
               <tbody>
                 {modelRows.map((row, index) => (
                   <tr
                     key={`${modelLabel(row)}-${index}`}
-                    className="text-text-default transition-colors hover:bg-background-muted/50"
+                    className="tint-interactive text-text-default transition-colors"
                   >
-                    <td className="border-t border-border-subtle px-4 py-3">
+                    <td className="border-t border-border-subtle px-3 py-2">
                       <div className="min-w-0" title={modelLabel(row)}>
-                        <p className="truncate font-mono text-[12px] font-medium">
+                        <p className="truncate font-mono text-supporting font-medium">
                           {row.modelId ?? 'unknown'}
                         </p>
-                        <p className="mt-1 truncate text-[9px] font-medium uppercase tracking-wider text-text-subtle">
+                        <p className="mt-1 truncate text-caps text-text-subtle">
                           {row.provider ?? 'Unattributed provider'}
                         </p>
                       </div>
                     </td>
-                    <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
+                    <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
                       {row.turns.toLocaleString('en-US')}
                     </td>
-                    <td className="border-t border-border-subtle px-4 py-3">
+                    <td className="border-t border-border-subtle px-3 py-2">
                       <TokenFlowCell row={row} showCache={showModelCache} />
                     </td>
-                    <td className="border-t border-border-subtle px-4 py-3 text-right font-medium tabular-nums">
+                    <td className="border-t border-border-subtle px-3 py-2 text-right font-medium tabular-nums">
                       <CompactTokenValue
                         value={billedTokenValue(row)}
                         fallback={formatBilledTokens(row)}
                       />
                     </td>
                     {showModelCost && (
-                      <td className="border-t border-border-subtle px-4 py-3 text-right text-text-muted tabular-nums">
+                      <td className="border-t border-border-subtle px-3 py-2 text-right text-text-muted tabular-nums">
                         {formatCostEstimate(row.cost)}
                       </td>
                     )}
@@ -608,16 +606,16 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
 
       {(anyIncompleteTokens || anyUnpriced || anyCostExcludesCache) && (
         <aside
-          className="flex items-start gap-3 rounded-xl border border-border-subtle bg-background-muted/40 px-4 py-3"
+          className="flex items-start gap-3 rounded-container border border-border-subtle bg-background-muted/40 px-4 py-3"
           aria-label="Usage data notes"
           data-testid="usage-data-notes"
         >
-          <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-background-default text-text-muted">
+          <span className="mt-0.5 flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-element bg-background-default text-text-muted">
             <Info className="h-3.5 w-3.5" />
           </span>
           <div className="min-w-0">
-            <p className="text-xs font-medium text-text-default">About these totals</p>
-            <ul className="mt-1.5 space-y-1 text-[11px] leading-relaxed text-text-muted">
+            <p className="text-label text-text-default">About these totals</p>
+            <ul className="mt-1.5 space-y-1 text-supporting leading-relaxed text-text-muted">
               {anyIncompleteTokens && (
                 <li data-testid="usage-incomplete-note" role="status">
                   Some historical token details were not recorded. Totals are conservative, and
@@ -659,10 +657,10 @@ function UsageGauge({ testid, label, used, limit, percent, unavailableReason }: 
   const over = percent != null && percent > 100;
   return (
     <div
-      className="rounded-lg border border-border-subtle bg-background-default p-3"
+      className="rounded-element border border-border-subtle bg-background-default p-3"
       data-testid={testid}
     >
-      <div className="flex items-baseline justify-between text-xs">
+      <div className="flex items-baseline justify-between text-supporting">
         <span className="text-text-muted">{label}</span>
         <span className="text-text-default tabular-nums">
           {used} / {limit}
@@ -675,7 +673,7 @@ function UsageGauge({ testid, label, used, limit, percent, unavailableReason }: 
       </div>
       {unavailableReason ? (
         <div
-          className="mt-1 rounded-md border border-border-subtle bg-background-medium px-2 py-1 text-xs text-text-muted"
+          className="mt-1 rounded-element border border-border-subtle bg-background-medium px-2 py-1 text-supporting text-text-muted"
           role="status"
           data-testid={`${testid}-unavailable`}
         >

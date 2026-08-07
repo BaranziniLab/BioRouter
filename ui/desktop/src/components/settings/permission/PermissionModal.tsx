@@ -127,7 +127,7 @@ export default function PermissionModal({
       <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden p-0 sm:max-w-[620px]">
         <DialogHeader className="border-b border-border-subtle px-5 pb-5 pt-5 sm:px-6">
           <div className="flex min-w-0 items-start gap-3 pr-6">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-background-medium text-text-default">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-element bg-background-medium text-text-default">
               <SlidersHorizontal className="h-5 w-5" />
             </div>
             <div className="min-w-0 pt-0.5">

@@ -207,7 +207,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
             Configure a lead model for planning and a worker model for execution.
           </p>
 
-          <div className="biorouter-modal-panel flex items-center justify-between gap-4 rounded-xl px-3 py-2.5">
+          <div className="biorouter-modal-panel flex items-center justify-between gap-4 rounded-container px-3 py-2.5">
             <div>
               <label htmlFor="enable-lead-worker" className="text-sm font-medium text-text-default">
                 Lead/worker mode
@@ -323,7 +323,7 @@ export function LeadWorkerSettings({ isOpen, onClose }: LeadWorkerSettingsProps)
               <p className="text-xs text-text-muted">Fast model for routine execution tasks</p>
             </div>
 
-            <div className="biorouter-modal-panel grid grid-cols-3 gap-3 rounded-xl p-3">
+            <div className="biorouter-modal-panel grid grid-cols-3 gap-3 rounded-container p-3">
               <div className="space-y-2">
                 <label className="flex items-center gap-1 text-sm font-medium text-text-default">
                   Initial Lead Turns

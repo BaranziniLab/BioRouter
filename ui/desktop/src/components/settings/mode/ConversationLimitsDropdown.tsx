@@ -38,7 +38,7 @@ export const ConversationLimitsDropdown = ({
         }`}
       >
         <div className="px-3 pb-3">
-          <div className="flex items-center justify-between rounded-lg bg-background-medium/55 px-3 py-2.5">
+          <div className="flex items-center justify-between rounded-element bg-background-medium/55 px-3 py-2.5">
             <div>
               <h4 className="text-text-default text-sm">Max Turns</h4>
               <p className="text-xs text-text-muted mt-[2px]">

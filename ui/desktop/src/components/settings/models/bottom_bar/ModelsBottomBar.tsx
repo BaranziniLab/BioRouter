@@ -173,7 +173,7 @@ export default function ModelsBottomBar({
           <TooltipTrigger asChild>
             <DropdownMenuTrigger
               aria-label={`Current model: ${fullModelLabel}`}
-              className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-md px-0.5 hover:cursor-pointer text-text-default/70 hover:bg-background-medium hover:text-text-default transition-colors"
+              className="flex h-7 min-w-0 max-w-[120px] flex-shrink-0 items-center rounded-element px-0.5 hover:cursor-pointer text-text-default/70 tint-interactive hover:text-text-default transition-colors"
             >
               <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
                 <Brain className="size-[18px] flex-shrink-0" />
@@ -186,21 +186,21 @@ export default function ModelsBottomBar({
         <DropdownMenuContent side="top" align="center" className="w-64 p-0 font-sans">
           <div className="border-b border-border-subtle px-3 py-2.5">
             <div className="text-sm font-medium text-text-default">Current model</div>
-            <div className="mt-0.5 text-[11px] leading-4 text-text-muted">
+            <div className="mt-0.5 text-supporting leading-4 text-text-muted">
               {displayModelName}
               {displayProvider && ` · ${displayProvider}`}
             </div>
           </div>
           <div className="p-1.5">
             <DropdownMenuItem
-              className="h-auto rounded-md px-2 py-1.5 text-xs font-medium text-text-default"
+              className="h-auto rounded-element px-2 py-1.5 text-xs font-medium text-text-default"
               onClick={() => setIsAddModelModalOpen(true)}
             >
               <span>Change Model</span>
               <SlidersHorizontal className="ml-auto size-3.5" />
             </DropdownMenuItem>
             <DropdownMenuItem
-              className="h-auto rounded-md px-2 py-1.5 text-xs font-medium text-text-default"
+              className="h-auto rounded-element px-2 py-1.5 text-xs font-medium text-text-default"
               onClick={() => setIsLeadWorkerModalOpen(true)}
             >
               <span>Lead/Worker Settings</span>

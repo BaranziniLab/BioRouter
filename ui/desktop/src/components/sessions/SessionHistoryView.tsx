@@ -34,6 +34,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
 import { Message, Session } from '../../api';
 import { useNavigation } from '../../hooks/useNavigation';
 import { ReadableContent } from '../Layout/ReadableContent';
+import { EmptyState } from '../ui/empty-state';
 
 const isUserMessage = (message: Message): boolean => {
   if (message.role === 'assistant') {
@@ -67,7 +68,9 @@ const SessionHeader: React.FC<{
       <div className="flex items-center pt-0 mb-1">
         <BackButton onClick={onBack} />
       </div>
-      <h1 className="text-2xl font-semibold tracking-tight mb-4 pt-6">{title}</h1>
+      {/* §4.2 — `text-title` carries the 24/600/-0.01em the three utilities
+          beside it were spelling out by hand. */}
+      <h1 className="text-title mb-4 pt-6">{title}</h1>
       <div className="flex items-center">{children}</div>
       {actionButtons && <div className="flex items-center space-x-3 mt-4">{actionButtons}</div>}
     </div>
@@ -91,16 +94,18 @@ const SessionMessages: React.FC<{
               <LoaderCircle className="animate-spin h-8 w-8 text-text-default" />
             </div>
           ) : error ? (
-            <div className="flex flex-col items-center justify-center py-8 text-text-muted">
-              <div className="text-text-danger mb-4">
-                <AlertCircle size={32} />
-              </div>
-              <p className="text-sm font-medium mb-2">Error Loading Session Details</p>
-              <p className="text-sm text-center mb-4">{error}</p>
-              <Button onClick={onRetry} variant="default">
-                Try Again
-              </Button>
-            </div>
+            // §4.5 — the same shared surface the list view's error uses, so the
+            // two halves of one feature stop speaking different error dialects.
+            <EmptyState
+              icon={AlertCircle}
+              title="Couldn't load this session"
+              description={error}
+              actions={
+                <Button onClick={onRetry} variant="outline">
+                  Try again
+                </Button>
+              }
+            />
           ) : filteredMessages?.length > 0 ? (
             <div className="max-w-4xl mx-auto w-full">
               <SearchView placeholder="Search history...">
@@ -119,11 +124,12 @@ const SessionMessages: React.FC<{
               </SearchView>
             </div>
           ) : (
-            <div className="flex flex-col items-center justify-center py-8 text-text-muted">
-              <MessageSquareText className="w-12 h-12 mb-4" />
-              <p className="text-lg mb-2">No messages found</p>
-              <p className="text-sm">This session doesn't contain any messages</p>
-            </div>
+            <EmptyState
+              icon={MessageSquareText}
+              title="No messages in this session"
+              description="This session was created but nothing was ever said in it."
+              compact
+            />
           )}
         </div>
       </div>
@@ -279,7 +285,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
             <div className="flex flex-col">
               {!isLoading ? (
                 <>
-                  <div className="flex items-center text-text-muted text-sm space-x-5 font-mono">
+                  <div className="flex items-center text-text-muted text-supporting gap-5 font-mono tabular-nums">
                     <span className="flex items-center">
                       <Calendar className="w-4 h-4 mr-1" />
                       {formatMessageTimestamp(messages[0]?.created)}
@@ -303,7 +309,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center text-text-muted text-sm mt-1 font-mono">
+                  <div className="flex items-center text-text-muted text-supporting mt-1 font-mono">
                     <span className="flex items-center">
                       <Folder className="w-4 h-4 mr-1" />
                       {session.working_dir}
@@ -311,7 +317,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                   </div>
                 </>
               ) : (
-                <div className="flex items-center text-text-muted text-sm">
+                <div className="flex items-center text-secondary text-text-muted">
                   <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
                   <span>Loading session details...</span>
                 </div>
@@ -341,8 +347,8 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           </DialogHeader>
 
           <div className="py-4">
-            <div className="relative rounded-xl border border-border-subtle px-3 py-2 flex items-center bg-background-medium">
-              <code className="text-sm text-text-default overflow-x-hidden break-all pr-8 w-full">
+            <div className="relative rounded-container border border-border-subtle px-3 py-2 flex items-center bg-background-medium">
+              <code className="text-code text-text-default overflow-x-hidden break-all pr-8 w-full">
                 {shareLink}
               </code>
               <Button

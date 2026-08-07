@@ -97,7 +97,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
           <div className="space-y-4">
             {parsed.frontmatter && (
               <div className="overflow-hidden rounded-element bg-background-muted">
-                <div className="flex items-center gap-2 px-3 py-1.5 text-caps uppercase text-text-muted">
+                <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
                   <FileCode2 className="h-3 w-3" />
                   Overview
                 </div>

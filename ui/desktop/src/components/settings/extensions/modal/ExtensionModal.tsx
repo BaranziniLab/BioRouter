@@ -337,7 +337,7 @@ export default function ExtensionModal({
           ) : (
             <div className="py-4 space-y-6">
               {formData.installation_notes && (
-                <div className="biorouter-modal-panel rounded-xl p-4">
+                <div className="biorouter-modal-panel rounded-container p-4">
                   <div className="flex items-start gap-2">
                     <Info className="h-5 w-5 text-text-info shrink-0 mt-0.5" />
                     <div>

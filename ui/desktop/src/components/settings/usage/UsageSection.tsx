@@ -60,9 +60,7 @@ export default function UsageSection() {
   return (
     <div className="biorouter-settings-section">
       <div className="biorouter-settings-section-header">
-        <h2 className="mb-1 text-[11px] font-medium uppercase tracking-wider text-text-muted">
-          Usage
-        </h2>
+        <h2 className="mb-1 text-caps text-text-muted">Usage</h2>
         <p className="text-xs text-text-muted">
           Billed tokens and estimated cost for the current month, grouped by day and model.
         </p>
@@ -70,7 +68,7 @@ export default function UsageSection() {
 
       {loadError && (
         <div
-          className="flex items-center justify-between gap-3 rounded-md border border-border-subtle bg-background-medium px-3 py-2"
+          className="flex items-center justify-between gap-3 rounded-element border border-border-subtle bg-background-medium px-3 py-2"
           role="alert"
           data-testid="usage-load-error"
         >

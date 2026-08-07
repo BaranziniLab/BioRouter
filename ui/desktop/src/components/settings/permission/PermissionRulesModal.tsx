@@ -85,7 +85,7 @@ export default function PermissionRulesModal({ isOpen, onClose }: PermissionRule
       <DialogContent className="max-h-[min(760px,calc(100vh-2rem))] p-0 flex flex-col overflow-hidden sm:max-w-[720px]">
         <DialogHeader className="flex-shrink-0 border-b border-border-subtle px-5 pb-5 pt-5 sm:px-6">
           <div className="flex min-w-0 items-start gap-3 pr-6">
-            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-background-medium text-text-default">
+            <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-element bg-background-medium text-text-default">
               <SlidersHorizontal className="h-5 w-5" />
             </div>
             <div className="min-w-0 pt-0.5">

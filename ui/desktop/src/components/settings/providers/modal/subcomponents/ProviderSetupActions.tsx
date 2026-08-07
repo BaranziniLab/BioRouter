@@ -32,7 +32,7 @@ export default function ProviderSetupActions({
     if (isActiveProvider) {
       return (
         <div className="flex items-start gap-3 w-full">
-          <div className="flex-1 flex items-start gap-2 text-sm text-text-warning bg-background-warning/10 border border-border-warning/40 rounded-lg px-3 py-2.5">
+          <div className="flex-1 flex items-start gap-2 text-sm text-text-warning bg-background-warning/10 border border-border-warning/40 rounded-element px-3 py-2.5">
             <AlertTriangle className="w-4 h-4 mt-0.5 flex-shrink-0" />
             <span>
               Switch to a different model before removing <strong>{providerName}</strong>.

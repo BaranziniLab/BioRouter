@@ -83,9 +83,9 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             <button
               key={k}
               onClick={() => toggleKind(k)}
-              className={`rounded-inner px-1.5 py-0.5 text-caps uppercase transition-colors ${
+              className={`rounded-inner px-1.5 py-0.5 text-caps transition-colors ${
                 activeKinds.has(k)
-                  ? 'bg-overlay-selected text-text-default'
+                  ? 'tint-selected tint-interactive text-text-default'
                   : 'text-text-muted hover:text-text-default'
               }`}
             >
@@ -105,7 +105,7 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
             filtered.map((entry) => (
               <div
                 key={entry.commit_sha}
-                className="px-5 py-3 border-b border-border-subtle transition-colors hover:bg-overlay-hover"
+                className="px-5 py-3 border-b border-border-subtle transition-colors tint-interactive"
               >
                 <div className="flex items-center gap-2 mb-1">
                   <ChangeKindChip kind={entry.kind} />

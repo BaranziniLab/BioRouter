@@ -50,9 +50,7 @@ export function WorkspaceSettingsSection() {
     <div className="pb-8">
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
-            Workspace
-          </h2>
+          <h2 className="text-caps text-text-muted">Workspace</h2>
         </div>
         <div className="biorouter-settings-list">
           <div className="biorouter-settings-row flex items-center justify-between px-3 py-2.5">

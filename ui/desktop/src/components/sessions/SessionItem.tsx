@@ -14,13 +14,16 @@ interface SessionItemProps {
  */
 const SessionItem: React.FC<SessionItemProps> = ({ session, extraActions }) => {
   return (
-    <div className="biorouter-list-row flex cursor-pointer items-center justify-between gap-3 px-4 py-2 hover:bg-background-medium">
+    // `hover:bg-background-medium` was a SECOND hover on a row that already has
+    // one: `.biorouter-list-row:hover` paints the shared list wash. Two hovers
+    // on one row is how the list-vs-settings 42%/38% fork started.
+    <div className="biorouter-list-row flex cursor-pointer items-center justify-between gap-3 px-4 py-2">
       <div className="min-w-0">
-        <p className="truncate text-sm font-medium text-text-default">{session.name}</p>
-        <p className="mt-0.5 truncate text-xs text-text-muted">
+        <p className="truncate text-label text-text-default">{session.name}</p>
+        <p className="mt-0.5 truncate text-supporting text-text-muted">
           {formatDate(session.updated_at)} • {session.message_count} messages
         </p>
-        <p className="truncate font-mono text-xs text-text-subtle">{session.working_dir}</p>
+        <p className="truncate font-mono text-supporting text-text-subtle">{session.working_dir}</p>
       </div>
       {extraActions && <div className="flex shrink-0 items-center gap-1">{extraActions}</div>}
     </div>

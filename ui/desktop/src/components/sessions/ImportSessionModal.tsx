@@ -93,12 +93,12 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
           onDrop={handleDrop}
           onClick={() => !isSubmitting && fileInputRef.current?.click()}
           className={[
-            'biorouter-modal-panel flex flex-col items-center justify-center gap-2 rounded-xl py-10 cursor-pointer transition-colors duration-150 select-none',
+            'biorouter-modal-panel flex flex-col items-center justify-center gap-2 rounded-container py-10 cursor-pointer transition-colors select-none',
             isDragging
               ? '!border-block-teal bg-block-teal/5'
               : error
                 ? '!border-border-danger bg-background-danger/10'
-                : 'hover:!border-border-strong hover:bg-background-medium',
+                : 'hover:!border-border-strong tint-interactive',
           ].join(' ')}
         >
           <input

@@ -132,7 +132,7 @@ export function IngestModelPicker({
 
     return (
       <section key={provider.name} className="space-y-1.5">
-        <div className="px-1 text-[11px] font-medium uppercase tracking-wider text-text-muted">
+        <div className="px-1 text-caps text-text-muted">
           {providerDisplayNames[provider.name] ?? provider.name}
         </div>
         <div className="space-y-0.5">
@@ -146,12 +146,12 @@ export function IngestModelPicker({
                   onChange({ provider: provider.name, model });
                   setOpen(false);
                 }}
-                className={`flex w-full items-center gap-3 rounded-md px-3 py-2.5 text-left transition-colors duration-[var(--motion-fast)] ${selected ? 'bg-background-medium' : 'hover:bg-background-medium'}`}
+                className={`flex w-full items-center gap-3 rounded-element px-3 py-2.5 text-left transition-colors ${selected ? 'tint-selected tint-interactive' : 'tint-interactive'}`}
               >
                 <Brain className="h-4 w-4 shrink-0 text-text-muted" />
                 <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium">{model}</span>
-                  <span className="block text-[11px] text-text-muted">
+                  <span className="block truncate text-label">{model}</span>
+                  <span className="block text-supporting text-text-muted">
                     {providerDisplayNames[provider.name] ?? provider.name}
                   </span>
                 </span>
@@ -173,20 +173,18 @@ export function IngestModelPicker({
           if (!disabled) setOpen(true);
         }}
         disabled={disabled}
-        className="group flex h-9 w-full items-center justify-between gap-2 rounded-md border border-border-input bg-background-default px-3 text-left transition-colors duration-[var(--motion-fast)] hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-60"
+        className="group flex h-control-md w-full items-center justify-between gap-2 rounded-element border border-border-input bg-background-default px-3 text-left transition-colors hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-60"
       >
         <span className="flex min-w-0 flex-1 items-center gap-2">
           <Brain className="h-4 w-4 shrink-0 text-text-muted" />
-          <span className="shrink-0 text-[11px] font-medium uppercase tracking-wider text-text-muted">
-            Model
-          </span>
+          <span className="shrink-0 text-caps text-text-muted">Model</span>
           <span
-            className={`min-w-0 truncate text-xs font-medium ${value ? 'text-text-default' : 'text-text-muted'}`}
+            className={`min-w-0 truncate text-label ${value ? 'text-text-default' : 'text-text-muted'}`}
           >
             {triggerLabel}
           </span>
         </span>
-        <span className="flex shrink-0 items-center gap-1.5 rounded-sm bg-background-medium px-2 py-1 text-[11px] font-medium text-text-muted">
+        <span className="flex shrink-0 items-center gap-1.5 rounded-inner bg-background-medium px-2 py-1 text-chip text-text-muted">
           {saving && <LoaderCircle className="h-3.5 w-3.5 animate-spin text-text-muted" />}
           {saving ? 'Saving' : 'Set default'}
           {!saving && (
@@ -209,7 +207,7 @@ export function IngestModelPicker({
 
           <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
             {!hasModels && (
-              <div className="rounded-md bg-background-medium px-4 py-3 text-sm text-text-muted">
+              <div className="rounded-element bg-background-medium px-4 py-3 text-body text-text-muted">
                 No configured providers have available models yet.
               </div>
             )}
@@ -217,7 +215,7 @@ export function IngestModelPicker({
             <div className="space-y-6">
               {sections.map((section) => (
                 <section key={section.key} className="space-y-3">
-                  <div className="flex items-center gap-2 px-1 text-xs font-medium uppercase tracking-wider text-text-muted">
+                  <div className="flex items-center gap-2 px-1 text-caps text-text-muted">
                     <span className={`h-1.5 w-1.5 rounded-full ${section.accentClassName}`} />
                     {section.label}
                   </div>

@@ -183,7 +183,7 @@ export default function DefaultProviderSetupForm({
             });
           }}
           placeholder={getPlaceholder(parameter)}
-          className={`w-full h-9 px-3 rounded-lg shadow-none text-sm ${
+          className={`w-full h-9 px-3 rounded-element shadow-none text-sm ${
             validationErrors[parameter.name]
               ? 'border-2 border-border-danger'
               : 'border border-border-subtle hover:border-border-strong focus:border-border-strong'
@@ -219,7 +219,7 @@ export default function DefaultProviderSetupForm({
             <Collapsible
               open={optionalExpanded}
               onOpenChange={setOptionalExpanded}
-              className="mt-4 border border-border-subtle rounded-xl bg-background-muted"
+              className="mt-4 border border-border-subtle rounded-container bg-background-muted"
             >
               <CollapsibleTrigger className="w-full flex items-center justify-between px-4 py-2.5 text-sm text-text-muted hover:text-text-default transition-colors duration-150">
                 <span>{expandCtaText}</span>

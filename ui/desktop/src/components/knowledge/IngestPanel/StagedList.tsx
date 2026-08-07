@@ -17,7 +17,7 @@ export function StagedList({ items, onRemove, onClear }: Props) {
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between mb-1">
-        <span className="text-caps uppercase text-text-muted">Staged · {items.length}</span>
+        <span className="text-caps text-text-muted">Staged · {items.length}</span>
         <button onClick={onClear} className="text-label text-text-muted hover:text-text-default">
           clear all
         </button>

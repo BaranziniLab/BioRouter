@@ -11,9 +11,7 @@ export default function ChatSettingsSection() {
     <div className="pb-8">
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
-            Mode
-          </h2>
+          <h2 className="text-caps text-text-muted mb-1">Mode</h2>
           <p className="text-xs text-text-muted">
             Configure how Biorouter interacts with tools and extensions
           </p>
@@ -25,9 +23,7 @@ export default function ChatSettingsSection() {
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
-            Response Styles
-          </h2>
+          <h2 className="text-caps text-text-muted mb-1">Response Styles</h2>
           <p className="text-xs text-text-muted">
             Choose how Biorouter should format and style its responses
           </p>
@@ -39,9 +35,7 @@ export default function ChatSettingsSection() {
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
-            Capabilities
-          </h2>
+          <h2 className="text-caps text-text-muted mb-1">Capabilities</h2>
           <p className="text-xs text-text-muted">
             Built-in abilities are managed here. Most are enabled by default.
           </p>
@@ -57,9 +51,7 @@ export default function ChatSettingsSection() {
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
-            App SDK
-          </h2>
+          <h2 className="text-caps text-text-muted mb-1">App SDK</h2>
           <p className="text-xs text-text-muted">
             Opt-in safety frameworks for Agent-Drafter apps. All are off by default and apply only
             to Agent-Drafter apps, never to normal chat.
@@ -72,9 +64,7 @@ export default function ChatSettingsSection() {
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
-            Editor
-          </h2>
+          <h2 className="text-caps text-text-muted">Editor</h2>
         </div>
         <div className="biorouter-settings-list">
           <SpellcheckToggle />
@@ -83,9 +73,7 @@ export default function ChatSettingsSection() {
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
-            Project
-          </h2>
+          <h2 className="text-caps text-text-muted">Project</h2>
         </div>
         <div className="biorouter-settings-list">
           <BioRouterHintsSection />

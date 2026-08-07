@@ -211,25 +211,23 @@ function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
     <div
       ref={ref}
       role="tooltip"
-      className="pointer-events-none fixed z-[var(--z-toast)] w-max min-w-[228px] max-w-[calc(100vw-16px)] rounded-2xl border border-border-subtle bg-background-default p-3 shadow-popover"
+      className="pointer-events-none fixed z-[var(--z-toast)] w-max min-w-[228px] max-w-[calc(100vw-16px)] rounded-surface border border-border-subtle bg-background-default p-3 shadow-popover"
       style={{
         left: pos?.left ?? -9999,
         top: pos?.top ?? -9999,
         visibility: pos ? 'visible' : 'hidden',
       }}
     >
-      <p className="mb-2 text-[13px] font-semibold text-text-default">{label}</p>
+      <p className="mb-2 text-label text-text-default">{label}</p>
       {cell.inStreak && (
-        <p className="-mt-1 mb-2 text-[11px] font-medium text-text-muted">
-          Part of your current streak
-        </p>
+        <p className="-mt-1 mb-2 text-supporting text-text-muted">Part of your current streak</p>
       )}
       {d ? (
         <>
           <Row label="Sessions started" value={full.format(d.sessions)} />
           <Row label="Tokens processed" value={tokenDisplay(d)} />
           <Row label="Messages" value={full.format(d.messages)} />
-          <p className="mt-2 border-t border-border-subtle pt-2 text-[11px] leading-snug text-text-subtle">
+          <p className="mt-2 border-t border-border-subtle pt-2 text-supporting leading-snug text-text-subtle">
             {d.tokensComplete
               ? 'Tokens are attributed to the turn that spent them.'
               : d.tokens > 0
@@ -258,7 +256,7 @@ function tokenAria(day: DailyActivity): string {
 
 function Row({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex items-baseline justify-between gap-5 text-[12.5px] leading-[1.9] text-text-muted">
+    <div className="flex items-baseline justify-between gap-5 text-secondary leading-[1.9] text-text-muted">
       <span>{label}</span>
       <b className="font-mono font-medium tabular-nums text-text-default">{value}</b>
     </div>
@@ -270,7 +268,7 @@ export function UsageHeatmapLoading() {
     <div className="biorouter-heatmap" role="status" aria-label="Loading usage activity">
       <div aria-hidden="true">
         <div className="mb-4 flex items-center justify-between gap-4">
-          <span className="biorouter-heatmap-loading-line h-6 w-24 rounded-md bg-heat-0" />
+          <span className="biorouter-heatmap-loading-line h-6 w-24 rounded-element bg-heat-0" />
           <span className="biorouter-heatmap-loading-line h-2.5 w-28 rounded bg-heat-0" />
         </div>
 
@@ -316,11 +314,11 @@ export function UsageHeatmapLoading() {
           </div>
         </div>
 
-        <div className="mt-4 flex items-center justify-between text-[11px] text-text-muted/70">
+        <div className="mt-4 flex items-center justify-between text-supporting text-text-muted/70">
           <div className="flex items-center gap-1">
             <span className="mr-1">Less</span>
             {[0, 1, 2, 3, 4].map((level) => (
-              <i key={level} className={`block h-3 w-3 rounded-[3px] ${LEVEL_CLASS[level]}`} />
+              <i key={level} className={`block h-3 w-3 rounded-inner ${LEVEL_CLASS[level]}`} />
             ))}
             <span className="ml-1">More</span>
           </div>
@@ -365,15 +363,15 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
       <div
         className={`${activity.tokensComplete ? 'mb-4' : 'mb-2'} flex flex-wrap items-baseline justify-between gap-x-4 gap-y-0.5`}
       >
-        <h2 className="text-lg font-semibold tracking-tight text-text-default">
+        <h2 className="text-subheading text-text-default">
           {activity.currentStreak === 1 ? '1 day streak' : `${activity.currentStreak} day streak`}
         </h2>
-        <span className="text-[10px] font-medium uppercase tracking-wider text-text-muted">
+        <span className="text-caps text-text-muted">
           Longest streak · {activity.longestStreak} {activity.longestStreak === 1 ? 'day' : 'days'}
         </span>
       </div>
       {!activity.tokensComplete && (
-        <p className="mb-4 text-[11px] text-text-subtle" role="status">
+        <p className="mb-4 text-supporting text-text-subtle" role="status">
           Some days have incomplete token history, so their totals are conservative estimates.
           Unavailable means no trustworthy total was recorded.
         </p>
@@ -441,12 +439,12 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
         </div>
       </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-[11px] text-text-muted">
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 text-supporting text-text-muted">
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1">
             <span className="mr-1">Less</span>
             {[0, 1, 2, 3, 4].map((l) => (
-              <i key={l} className={`block h-3 w-3 rounded-[3px] ${LEVEL_CLASS[l]}`} />
+              <i key={l} className={`block h-3 w-3 rounded-inner ${LEVEL_CLASS[l]}`} />
             ))}
             <span className="ml-1">More</span>
           </div>
@@ -454,7 +452,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
             <div className="flex items-center gap-1.5">
               <i
                 aria-hidden="true"
-                className="block h-3 w-3 rounded-[3px] bg-heat-0 shadow-[inset_0_0_0_2px_var(--text-default)]"
+                className="block h-3 w-3 rounded-inner bg-heat-0 shadow-[inset_0_0_0_2px_var(--text-default)]"
               />
               <span>Current streak</span>
             </div>

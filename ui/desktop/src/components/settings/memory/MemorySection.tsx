@@ -207,9 +207,7 @@ export default function MemorySection() {
     <div className="biorouter-settings-section" data-testid="memory-section">
       <div className="biorouter-settings-section-header flex flex-wrap items-end justify-between gap-2">
         <div className="min-w-0">
-          <h2 className="mb-1 text-[11px] font-medium uppercase tracking-wider text-text-muted">
-            Memory
-          </h2>
+          <h2 className="mb-1 text-caps text-text-muted">Memory</h2>
           <p className="max-w-2xl text-xs leading-5 text-text-muted">
             What Biorouter has been asked to remember, and everything it can disclose when a
             conversation asks to read it. Global memories are shared by every conversation on this
@@ -266,7 +264,7 @@ export default function MemorySection() {
               }
             />
           ) : (
-            <div className="rounded-md border border-border-subtle p-3">
+            <div className="rounded-element border border-border-subtle p-3">
               <p className="text-xs leading-5 text-text-muted">
                 This window has no project open, so there is no local memory store to show. Local
                 memories live in a project&rsquo;s <code>.biorouter/memory</code> and are managed
@@ -323,7 +321,7 @@ function StoreBlock({
           {icon}
           {heading}
         </span>
-        <span className="text-[11px] tabular-nums text-text-subtle">
+        <span className="text-supporting tabular-nums text-text-subtle">
           {total === 0
             ? 'empty'
             : `${plural(store.categories.length, 'category').replace(
@@ -332,17 +330,17 @@ function StoreBlock({
               )} · ${total === 1 ? '1 memory' : `${total} memories`}`}
         </span>
       </div>
-      <p className="mb-2 min-w-0 break-words font-mono text-[11px] leading-4 text-text-subtle [overflow-wrap:anywhere]">
+      <p className="mb-2 min-w-0 break-words font-mono text-supporting leading-4 text-text-subtle [overflow-wrap:anywhere]">
         {store.path}
       </p>
 
       {store.categories.length === 0 ? (
-        <p className="rounded-md border border-border-subtle p-3 text-xs leading-5 text-text-muted">
+        <p className="rounded-element border border-border-subtle p-3 text-xs leading-5 text-text-muted">
           Nothing has been remembered here yet. Biorouter adds a memory only when it asks you and
           you agree.
         </p>
       ) : (
-        <div className="biorouter-list-shell rounded-md border border-border-subtle">
+        <div className="biorouter-list-shell rounded-element border border-border-subtle">
           {store.categories.map((category) => (
             <CategoryRow
               key={`${store.scope}:${category.name}`}
@@ -400,7 +398,7 @@ function CategoryRow({
             <span className="block min-w-0 break-words text-sm text-text-default [overflow-wrap:anywhere]">
               {category.name}
             </span>
-            <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-text-subtle">
+            <span className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-supporting text-text-subtle">
               <span className="tabular-nums">{countLabel}</span>
               <span className="tabular-nums">{formatBytes(category.size_bytes)}</span>
               {when && (
@@ -431,7 +429,7 @@ function CategoryRow({
                     {entry.tags.map((tag) => (
                       <span
                         key={tag}
-                        className="min-w-0 break-words rounded bg-background-medium px-1.5 py-0.5 text-[10px] text-text-muted [overflow-wrap:anywhere]"
+                        className="min-w-0 break-words rounded bg-background-medium px-1.5 py-0.5 text-supporting text-text-muted [overflow-wrap:anywhere]"
                       >
                         {tag}
                       </span>

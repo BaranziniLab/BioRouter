@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -175,7 +176,7 @@ describe('SessionListView empty state', () => {
 });
 
 describe('SessionListView row actions', () => {
-  it('uses the standard outlined action buttons and destructive delete button', async () => {
+  it('shows three 32px row actions and keeps the destructive one in the overflow', async () => {
     mocks.listSessions.mockResolvedValue({
       data: {
         sessions: [
@@ -198,24 +199,60 @@ describe('SessionListView row actions', () => {
       </MemoryRouter>
     );
 
-    const outlinedActions = await Promise.all([
-      screen.findByRole('button', { name: 'Launch options for Example session' }),
+    // §3.10 — every visible row action is one 32px icon button. This assertion
+    // is what ended the 28-vs-32px fork between the outlined trio and delete.
+    const visibleActions = await Promise.all([
       screen.findByRole('button', { name: 'Edit Example session' }),
       screen.findByRole('button', { name: 'Export Example session' }),
+      screen.findByRole('button', { name: 'More actions for Example session' }),
     ]);
 
-    for (const action of outlinedActions) {
-      expect(action).toHaveClass('h-7', 'w-7', 'border');
+    for (const action of visibleActions) {
+      expect(action).toHaveClass('h-8', 'w-8', 'border');
       expect(action).not.toHaveAttribute('title');
     }
 
-    const deleteAction = screen.getByRole('button', { name: 'Delete Example session' });
-    expect(deleteAction).toHaveAttribute('data-slot', 'tooltip-trigger');
-    expect(deleteAction).toHaveClass('h-8', 'w-8', 'text-text-danger');
-    expect(deleteAction).not.toHaveAttribute('title');
+    // Destructive actions live only in the overflow, so Delete must NOT be one
+    // of the buttons a stray click can reach.
+    expect(screen.queryByRole('button', { name: 'Delete Example session' })).toBeNull();
+  });
+
+  it('offers Open in new tab above Open in new window, on the row-click path', async () => {
+    const user = userEvent.setup();
+    const onSelectSession = vi.fn();
+    // A name of its own: this file leaks `listSessions` promises through a
+    // module-global cache no `cleanup()` resets, so a query that could also
+    // match the PREVIOUS test's row resolves against a detached tree.
+    mocks.listSessions.mockResolvedValue({
+      data: { sessions: [row({ id: 'session-1', name: 'A launchable session' })] },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={onSelectSession} />
+      </MemoryRouter>
+    );
+
+    // Let the list settle before touching it. A leaked promise resolving between
+    // the query and the click detaches the button, and the click then lands on
+    // nothing — which reads as "the menu never opened".
+    await screen.findByRole('button', { name: 'More actions for A launchable session' });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await user.click(screen.getByRole('button', { name: 'More actions for A launchable session' }));
+
+    const items = (await screen.findAllByRole('menuitem')).map((el) => el.textContent);
+    expect(items.indexOf('Open in new tab')).toBeGreaterThanOrEqual(0);
+    expect(items.indexOf('Open in new tab')).toBeLessThan(items.indexOf('Open in new window'));
+
+    await user.click(screen.getByRole('menuitem', { name: 'Open in new tab' }));
+    expect(onSelectSession).toHaveBeenCalledWith('session-1');
   });
 
   it('uses the shared notification surface after deleting a session', async () => {
+    const user = userEvent.setup();
     const session = {
       id: 'session-1',
       name: 'A session name long enough to exercise notification wrapping',
@@ -233,7 +270,10 @@ describe('SessionListView row actions', () => {
       </MemoryRouter>
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: `Delete ${session.name}` }));
+    await user.click(
+      await screen.findByRole('button', { name: `More actions for ${session.name}` })
+    );
+    await user.click(await screen.findByRole('menuitem', { name: `Delete ${session.name}` }));
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm deletion' }));
 
     await waitFor(() =>

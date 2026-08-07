@@ -175,9 +175,7 @@ export default function ConfigSettings() {
   return (
     <div className="biorouter-settings-section">
       <div className="biorouter-settings-section-header">
-        <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">
-          Configuration
-        </h2>
+        <h2 className="text-caps text-text-muted mb-1">Configuration</h2>
         <p className="text-xs text-text-muted">
           Edit your Biorouter configuration settings
           {currentProvider && ` (current settings for ${currentProvider})`}

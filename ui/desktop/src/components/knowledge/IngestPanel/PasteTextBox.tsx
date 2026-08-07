@@ -53,7 +53,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
               <button
                 key={u}
                 onClick={() => toggleUrl(u)}
-                className={`rounded-inner px-2 py-0.5 font-mono text-supporting transition-colors ${on ? 'bg-overlay-selected text-text-default' : 'text-text-muted line-through hover:text-text-default'}`}
+                className={`rounded-inner px-2 py-0.5 font-mono text-supporting transition-colors ${on ? 'tint-selected tint-interactive text-text-default' : 'tint-interactive text-text-muted line-through hover:text-text-default'}`}
               >
                 {u.length > 36 ? u.substring(0, 33) + '…' : u}
               </button>

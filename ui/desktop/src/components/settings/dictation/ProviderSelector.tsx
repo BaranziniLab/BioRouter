@@ -73,7 +73,7 @@ export const ProviderSelector = ({ settings, onProviderChange }: ProviderSelecto
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between py-2 px-2 hover:bg-background-muted rounded-lg transition-all">
+      <div className="flex items-center justify-between py-2 px-2 hover:bg-background-muted rounded-element transition-all">
         <div>
           <h3 className="text-text-default">Dictation Provider</h3>
           <p className="text-xs text-text-muted max-w-md mt-[2px]">
@@ -84,7 +84,7 @@ export const ProviderSelector = ({ settings, onProviderChange }: ProviderSelecto
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="flex items-center gap-2 px-3 py-1.5 text-sm border border-border-subtle rounded-md hover:border-border-default transition-colors text-text-default bg-background-default"
+              className="flex items-center gap-2 px-3 py-1.5 text-sm border border-border-subtle rounded-element hover:border-border-default transition-colors text-text-default bg-background-default"
               aria-label="Choose dictation provider"
             >
               {getProviderLabel(settings.provider)}

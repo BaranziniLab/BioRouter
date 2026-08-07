@@ -534,10 +534,10 @@ export const SwitchModelModal = ({
                       key={model.id || model.name}
                       onClick={() => setSelectedPredefinedModel(model)}
                       className={[
-                        'biorouter-modal-row flex items-start gap-3 py-2.5 px-3 rounded-xl cursor-pointer transition-colors duration-150',
+                        'biorouter-modal-row flex items-start gap-3 py-2.5 px-3 rounded-container cursor-pointer transition-colors',
                         isSelected
-                          ? '!border-border-default bg-background-medium'
-                          : 'hover:!border-border-default hover:bg-background-medium',
+                          ? '!border-border-default tint-selected tint-interactive'
+                          : 'hover:!border-border-default tint-interactive',
                       ].join(' ')}
                     >
                       {/* Radio dot */}
@@ -561,7 +561,7 @@ export const SwitchModelModal = ({
                             {model.alias || model.name}
                           </span>
                           {model.alias?.toLowerCase().includes('recommended') && (
-                            <span className="text-[11px] font-medium uppercase tracking-wider text-text-muted bg-background-default/80 px-1.5 py-0.5 rounded-md shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
+                            <span className="text-caps text-text-muted bg-background-default/80 px-1.5 py-0.5 rounded-element shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
                               Recommended
                             </span>
                           )}
@@ -575,7 +575,7 @@ export const SwitchModelModal = ({
 
                       {/* Provider badge */}
                       {model.provider && (
-                        <span className="text-[11px] text-text-muted bg-background-default/80 px-1.5 py-0.5 rounded-md flex-shrink-0 mt-0.5 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
+                        <span className="text-supporting text-text-muted bg-background-default/80 px-1.5 py-0.5 rounded-element flex-shrink-0 mt-0.5 shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--border-subtle)_55%,transparent)]">
                           {model.provider}
                         </span>
                       )}

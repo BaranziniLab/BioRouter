@@ -100,7 +100,7 @@ export const SecurityToggle = () => {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between py-2 px-2 hover:bg-background-muted rounded-lg transition-all">
+      <div className="flex items-center justify-between py-2 px-2 hover:bg-background-muted rounded-element transition-all">
         <div>
           <h3 className="text-text-default">Enable Prompt Injection Detection</h3>
           <p className="text-xs text-text-muted max-w-md mt-[2px]">
@@ -158,7 +158,7 @@ export const SecurityToggle = () => {
 
           {/* ML Detection Toggle */}
           <div className="border-t border-border-default pt-4">
-            <div className="flex items-center justify-between py-2 hover:bg-background-muted rounded-lg transition-all">
+            <div className="flex items-center justify-between py-2 hover:bg-background-muted rounded-element transition-all">
               <div>
                 <h4
                   className={`text-sm font-medium ${enabled ? 'text-text-default' : 'text-text-muted'}`}

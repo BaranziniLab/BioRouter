@@ -106,7 +106,7 @@ function DetailRow({
       <span
         className={[
           'min-w-0 text-right text-text-default',
-          mono ? 'break-all font-mono text-[11px] leading-relaxed' : 'break-words',
+          mono ? 'break-all font-mono text-supporting leading-relaxed' : 'break-words',
         ]
           .filter(Boolean)
           .join(' ')}
@@ -421,9 +421,7 @@ export default function LocalModelInventory() {
     <div className="biorouter-settings-section">
       <div className="biorouter-settings-section-header flex items-center justify-between gap-3">
         <div>
-          <h2 className="text-[11px] font-medium text-text-muted uppercase tracking-wider">
-            Local Model Inventory
-          </h2>
+          <h2 className="text-caps text-text-muted">Local Model Inventory</h2>
           <p className="mt-1 text-xs text-text-muted">
             {isLoading
               ? 'Checking local models...'
@@ -475,7 +473,7 @@ export default function LocalModelInventory() {
                       </p>
                       <span
                         className={[
-                          'rounded-md px-1.5 py-0.5 text-[10px]',
+                          'rounded-element px-1.5 py-0.5 text-supporting',
                           isInstalled(model)
                             ? 'bg-background-success/15 text-text-success'
                             : 'bg-background-medium text-text-muted',
@@ -485,7 +483,7 @@ export default function LocalModelInventory() {
                       </span>
                       <span
                         className={[
-                          'rounded-md px-1.5 py-0.5 text-[10px]',
+                          'rounded-element px-1.5 py-0.5 text-supporting',
                           model.suitability_status === 'suitable'
                             ? 'bg-background-success/15 text-text-success'
                             : 'bg-background-warning/15 text-text-warning',
@@ -503,7 +501,7 @@ export default function LocalModelInventory() {
                   {renderAction(model)}
                 </div>
                 {busyLabel && (
-                  <div className="mt-3 flex min-w-0 items-start gap-2 rounded-md border border-border-default bg-background-medium/45 px-2.5 py-2 text-xs text-text-muted">
+                  <div className="mt-3 flex min-w-0 items-start gap-2 rounded-element border border-border-default bg-background-medium/45 px-2.5 py-2 text-xs text-text-muted">
                     <Loader2 className="mt-0.5 h-3 w-3 shrink-0 animate-spin" />
                     <p className="min-w-0 whitespace-normal break-words leading-relaxed">
                       {busyLabel}

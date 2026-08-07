@@ -1,5 +1,5 @@
 import React from 'react';
-import { MessageSquare, AlertCircle } from '../icons/app-icons';
+import { MessageSquare, AlertCircle, LoaderCircle } from '../icons/app-icons';
 import { Card } from '../ui/card';
 import { Button } from '../ui/button';
 import { ScrollArea } from '../ui/scroll-area';
@@ -17,6 +17,7 @@ import {
 import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { extractImagePaths, removeImagePathsFromText } from '../../utils/imageUtils';
 import { Message } from '../../api';
+import { EmptyState } from '../ui/empty-state';
 
 /**
  * Get tool responses map from messages
@@ -69,19 +70,20 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
           <div className="space-y-4 mb-6">
             {isLoading ? (
               <div className="flex justify-center items-center py-12">
-                <div className="animate-spin rounded-full h-8 w-8 border-t-2 border-b-2 border-text-default"></div>
+                <LoaderCircle className="h-6 w-6 animate-spin text-text-muted" aria-hidden="true" />
               </div>
             ) : error ? (
-              <div className="flex flex-col items-center justify-center py-8 text-text-muted">
-                <div className="text-text-danger mb-4">
-                  <AlertCircle size={32} />
-                </div>
-                <p className="text-sm font-medium mb-2">Error Loading Session Details</p>
-                <p className="text-sm text-center mb-4">{error}</p>
-                <Button onClick={onRetry} variant="default">
-                  Try Again
-                </Button>
-              </div>
+              // §4.5 — the shared surface, not a fourth hand-rolled error column.
+              <EmptyState
+                icon={AlertCircle}
+                title="Couldn't load this session"
+                description={error}
+                actions={
+                  <Button onClick={onRetry} variant="outline">
+                    Try again
+                  </Button>
+                }
+              />
             ) : messages?.length > 0 ? (
               messages
                 .map((message, index) => {
@@ -138,12 +140,12 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                             and "You" on a message another agent injected is a
                             misattribution to the human. */}
                         <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-medium text-text-default">
+                          <span className="text-label text-text-default">
                             {message.role === 'user' ? 'You' : 'Biorouter'}
                           </span>
                           <ProvenanceChip provenance={message.metadata?.provenance ?? undefined} />
                         </div>
-                        <span className="text-xs text-text-muted shrink-0">
+                        <span className="text-supporting text-text-muted shrink-0">
                           {formatMessageTimestamp(message.created)}
                         </span>
                       </div>
@@ -202,11 +204,12 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                 })
                 .filter(Boolean) // Filter out null entries
             ) : (
-              <div className="flex flex-col items-center justify-center py-8 text-text-muted">
-                <MessageSquare className="w-12 h-12 mb-4" />
-                <p className="text-lg mb-2">No messages found</p>
-                <p className="text-sm">This session doesn't contain any messages</p>
-              </div>
+              <EmptyState
+                icon={MessageSquare}
+                title="No messages in this session"
+                description="This session was created but nothing was ever said in it."
+                compact
+              />
             )}
           </div>
         </div>
