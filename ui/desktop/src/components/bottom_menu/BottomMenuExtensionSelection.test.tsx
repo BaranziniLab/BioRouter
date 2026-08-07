@@ -77,6 +77,10 @@ describe('BottomMenuExtensionSelection', () => {
   beforeEach(() => {
     mocks.overrides.clear();
     vi.clearAllMocks();
+    // `clearAllMocks` clears CALLS, not implementations, so a `mockResolvedValue`
+    // set by one test would otherwise be the starting state of the next.
+    mocks.getSessionExtensions.mockReset();
+    mocks.getSessionExtensions.mockResolvedValue({ data: { extensions: [] } } as never);
   });
 
   it('keeps an immediate hub toggle when the menu closes and reopens', async () => {
@@ -101,9 +105,82 @@ describe('BottomMenuExtensionSelection', () => {
     expect(mocks.overrides.get('example')).toBe(false);
   });
 
+  /**
+   * v1.89.0 P-04. The chip counts the chat's extensions; the menu lists the ones
+   * this menu may toggle. They are different sets by design — capabilities are
+   * managed in Settings → Chat — and counting the menu made the chip read
+   * `(0 enabled)` on a chat with eleven extensions loaded and working.
+   *
+   * ⚠ The fixture is chosen so a regression cannot pass: every capability here
+   * is enabled and the only non-capability extension is DISABLED, so counting
+   * the menu gives 0 and counting the chat gives 2. A fixture where the two
+   * happen to agree proves nothing.
+   */
+  it('counts the chat`s extensions, not the rows this menu happens to show', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: {
+        extensions: [
+          { type: 'builtin', name: 'autovisualiser' },
+          { type: 'platform', name: 'code_execution' },
+        ],
+      },
+    } as never);
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
+    );
+
+    // …and the menu still shows only the one togglable row.
+    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
+      button: 0,
+      ctrlKey: false,
+    });
+    expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(1);
+  });
+
+  it('counts the config`s enabled extensions before the session read lands', async () => {
+    // The daemon applies exactly this fallback for a session with no stored
+    // extension state, so the chip must not flash 0 on the way to the number.
+    mocks.getSessionExtensions.mockReturnValue(new Promise(() => {}) as never);
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+
+    // autovisualiser + code_execution are enabled in the fixture; chatrecall,
+    // agent_drafter and example are not.
+    expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument();
+  });
+
+  it('moves the chip the moment a row is toggled, before the refetch', async () => {
+    mocks.getSessionExtensions.mockResolvedValue({
+      data: { extensions: [{ type: 'builtin', name: 'autovisualiser' }] },
+    } as never);
+    let resolveEnable: (() => void) | undefined;
+    mocks.addToAgent.mockImplementationOnce(
+      () => new Promise<void>((resolve) => (resolveEnable = resolve))
+    );
+
+    render(<BottomMenuExtensionSelection sessionId="session-1" />);
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (1 enabled)')).toBeInTheDocument()
+    );
+
+    fireEvent.pointerDown(screen.getByLabelText(/Manage extensions/), {
+      button: 0,
+      ctrlKey: false,
+    });
+    fireEvent.click(await screen.findByRole('menuitemcheckbox'));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText('Manage extensions (2 enabled)')).toBeInTheDocument()
+    );
+    resolveEnable?.();
+  });
+
   it('keeps shipped capabilities out of the per-chat extension selector', async () => {
     render(<BottomMenuExtensionSelection sessionId={null} />);
-    const trigger = screen.getByLabelText('Manage extensions (0 enabled)');
+    const trigger = screen.getByLabelText('Manage extensions (2 enabled)');
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
     expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(1);
