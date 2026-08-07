@@ -18,16 +18,27 @@ const info = [];
 for (const p of pages) {
   const d = await p.evaluate(() => ({
     hash: location.hash,
-    sx: window.screenX, sy: window.screenY,
-    iw: window.innerWidth, ih: window.innerHeight,
+    sx: window.screenX,
+    sy: window.screenY,
+    iw: window.innerWidth,
+    ih: window.innerHeight,
     tabs: Array.from(document.querySelectorAll('[data-tab-id]')).map((el) => {
       const r = el.getBoundingClientRect();
-      return { id: el.getAttribute('data-tab-id'), x: r.x, y: r.y, w: r.width, h: r.height,
-               label: (el.textContent || '').trim().slice(0, 24) };
+      return {
+        id: el.getAttribute('data-tab-id'),
+        x: r.x,
+        y: r.y,
+        w: r.width,
+        h: r.height,
+        label: (el.textContent || '').trim().slice(0, 24),
+      };
     }),
-    strip: (() => { const s = document.querySelector('.br-tabstrip');
-      if (!s) return null; const r = s.getBoundingClientRect();
-      return { x: r.x, y: r.y, w: r.width, h: r.height }; })(),
+    strip: (() => {
+      const s = document.querySelector('.br-tabstrip');
+      if (!s) return null;
+      const r = s.getBoundingClientRect();
+      return { x: r.x, y: r.y, w: r.width, h: r.height };
+    })(),
     role: window.__tearoff?.role ?? null,
   }));
   info.push(d);
@@ -42,29 +53,39 @@ if (cmd === 'setup') {
 } else if (cmd === 'report') {
   const out = [];
   for (const p of pages) {
-    out.push(await p.evaluate(() => {
-      const r = window.__tearoff;
-      if (!r) return { role: null, error: 'harness missing' };
-      const log = r.log;
-      const downs = log.filter((x) => x.type === 'pointerdown');
-      const moves = log.filter((x) => x.type === 'pointermove' && x.buttons > 0);
-      const ups = log.filter((x) => x.type === 'pointerup');
-      return {
-        role: r.role,
-        total: log.length,
-        downs: downs.length,
-        moves: moves.length,
-        movesOutside: moves.filter((x) => !x.inside).length,
-        ups: ups.length,
-        upsOutside: ups.filter((x) => !x.inside).length,
-        lostCapture: log.filter((x) => x.type === 'lostpointercapture').length,
-        cancels: log.filter((x) => x.type === 'pointercancel').length,
-        firstDownTarget: downs[0]?.target ?? null,
-        // The extreme screen coords prove how far outside the frame events kept coming.
-        moveScreenXRange: moves.length ? [Math.min(...moves.map((m) => m.screenX)), Math.max(...moves.map((m) => m.screenX))] : null,
-        lastUp: ups.length ? { screenX: ups.at(-1).screenX, screenY: ups.at(-1).screenY, inside: ups.at(-1).inside } : null,
-      };
-    }));
+    out.push(
+      await p.evaluate(() => {
+        const r = window.__tearoff;
+        if (!r) return { role: null, error: 'harness missing' };
+        const log = r.log;
+        const downs = log.filter((x) => x.type === 'pointerdown');
+        const moves = log.filter((x) => x.type === 'pointermove' && x.buttons > 0);
+        const ups = log.filter((x) => x.type === 'pointerup');
+        return {
+          role: r.role,
+          total: log.length,
+          downs: downs.length,
+          moves: moves.length,
+          movesOutside: moves.filter((x) => !x.inside).length,
+          ups: ups.length,
+          upsOutside: ups.filter((x) => !x.inside).length,
+          lostCapture: log.filter((x) => x.type === 'lostpointercapture').length,
+          cancels: log.filter((x) => x.type === 'pointercancel').length,
+          firstDownTarget: downs[0]?.target ?? null,
+          // The extreme screen coords prove how far outside the frame events kept coming.
+          moveScreenXRange: moves.length
+            ? [Math.min(...moves.map((m) => m.screenX)), Math.max(...moves.map((m) => m.screenX))]
+            : null,
+          lastUp: ups.length
+            ? {
+                screenX: ups.at(-1).screenX,
+                screenY: ups.at(-1).screenY,
+                inside: ups.at(-1).inside,
+              }
+            : null,
+        };
+      })
+    );
   }
   console.log(JSON.stringify(out, null, 2));
 } else if (cmd === 'reset') {
