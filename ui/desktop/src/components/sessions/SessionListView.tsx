@@ -26,6 +26,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { Button } from '../ui/button';
+import { Checkbox } from '../ui/Checkbox';
 import { ScrollArea } from '../ui/scroll-area';
 import { formatMessageTimestamp } from '../../utils/timeUtils';
 import { billedSessionTokenEstimate, formatBilledTokenEstimate } from '../../utils/billedTokens';
@@ -438,13 +439,26 @@ const SessionItem = React.memo(function SessionItem({
           §3.10 "one optical axis per row": each right-hand cluster gets its
           own 20px-high centred box rather than trusting a 32px button and a
           12px glyph to agree on a baseline. The figures are `tabular-nums`
-          inside fixed-width boxes so the counts form real columns down the
-          list instead of drifting with each value's width. */}
+          in `min-w-*` boxes so the counts form real columns down the list
+          instead of drifting with each value's width.
+
+          MIN-width, not width. These were fixed `w-*` boxes, and a real
+          29,988,671-token session measures 72px against a 48px box, so the
+          last digits painted straight over the puzzle icon that follows —
+          illegible on every row carrying an estimate. `w-8` and `w-4` were the
+          same bug waiting for a five-digit message count and a three-digit
+          extension count. A bigger fixed number only moves the cliff; a floor
+          keeps the column and lets the rare long value push the cluster out.
+
+          These spans deliberately keep flex's default `min-width: auto`, which
+          is what refuses to shrink them below their content. That is the exact
+          property this repo normally has to defeat with `min-w-0` — here it is
+          the mechanism, so do not "tidy" one in. */}
       <div className="flex h-5 items-center gap-3 flex-shrink-0">
         <div className="flex h-5 items-center gap-3 text-supporting text-text-muted font-mono tabular-nums">
           <div className="flex items-center gap-2">
             <MessageSquareText className="w-3 h-3" />
-            <span className="w-8 text-right">{session.message_count}</span>
+            <span className="min-w-8 text-right whitespace-nowrap">{session.message_count}</span>
           </div>
           {billedTokenEstimate && (
             <div
@@ -457,7 +471,7 @@ const SessionItem = React.memo(function SessionItem({
             >
               <Target className="w-3 h-3" />
               <span className="sr-only">Billed tokens: </span>
-              <span className="w-12 text-right">
+              <span className="min-w-12 text-right whitespace-nowrap">
                 {formatBilledTokenEstimate(billedTokenEstimate)}
               </span>
             </div>
@@ -468,7 +482,9 @@ const SessionItem = React.memo(function SessionItem({
                 <TooltipTrigger asChild>
                   <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
                     <Puzzle className="w-3 h-3" />
-                    <span className="w-4 text-right">{extensionNames.length}</span>
+                    <span className="min-w-4 text-right whitespace-nowrap">
+                      {extensionNames.length}
+                    </span>
                   </div>
                 </TooltipTrigger>
                 <TooltipContent side="top" className="max-w-xs">
@@ -1174,9 +1190,16 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                   View and search your past conversations with Biorouter. {getSearchShortcutText()}{' '}
                   to search.
                 </p>
-                <label className="mt-3 flex items-center gap-2 text-supporting text-text-muted">
-                  <input
-                    type="checkbox"
+                {/* §3.3's checkbox, not the OS one. A bare `<input
+                    type="checkbox">` here rendered as macOS system blue in light
+                    mode and a bare white square in dark — the only unstyled
+                    control in the app, directly under a page title. `-ml-px`
+                    pulls back the 1px by which the 24px hit target overhangs its
+                    22px visible box, so the box's edge lines up with the title
+                    and description above it rather than the target's. */}
+                <label className="mt-3 flex cursor-pointer items-center gap-2 text-supporting text-text-muted">
+                  <Checkbox
+                    className="-ml-px"
                     checked={showSubagents}
                     onChange={(e) => setShowSubagents(e.target.checked)}
                   />

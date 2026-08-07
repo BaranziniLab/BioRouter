@@ -552,3 +552,90 @@ describe('SessionListView privacy markers', () => {
     expect(screen.getAllByTestId('privacy-badge')).toHaveLength(1);
   });
 });
+
+// v1.89.0 visual review, D1. jsdom has no layout engine and never runs
+// Tailwind, so nothing here can measure the overlap that made these figures
+// illegible — `29,988,671` is 72px wide and the box was a fixed 48px, so the
+// last digits painted over the puzzle icon on every row carrying an estimate.
+// What IS testable is the property that caused it: a hard `width` on a span
+// whose content the app does not control. These pin that no count in the
+// cluster is given one, which is what a "just make the box bigger" fix would
+// re-introduce with a new cliff a few digits further out.
+describe('SessionListView stat column sizing', () => {
+  const statSpan = (text: string) =>
+    screen.getAllByText(text).find((el) => el.tagName === 'SPAN' && el.className.includes('w-'));
+
+  it('floors the count boxes instead of clipping them', async () => {
+    mocks.listSessions.mockResolvedValue({
+      data: {
+        sessions: [
+          row({
+            id: 'session-1',
+            name: 'Long-running analysis',
+            message_count: 12345,
+            // Five extensions and a 29.9M-token history: the row from the
+            // review, and the shape every fixed width in this cluster failed on.
+            extension_data: {
+              'enabled_extensions.v0': {
+                extensions: [
+                  { name: 'developer' },
+                  { name: 'memory' },
+                  { name: 'knowledge' },
+                  { name: 'computercontroller' },
+                  { name: 'autovisualiser' },
+                ],
+              },
+            },
+            accumulated_total_tokens: 29_988_671,
+          } as never),
+        ],
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    await screen.findByText('Long-running analysis');
+
+    for (const text of ['12345', '29,988,671', '5']) {
+      const span = statSpan(text);
+      expect(span, `no stat span rendered for ${text}`).toBeDefined();
+      // A floor keeps the column; a fixed width is the clip.
+      expect(span!.className).toMatch(/\bmin-w-\d/);
+      expect(span!.className).not.toMatch(/(^|\s)w-\d/);
+    }
+  });
+});
+
+// v1.89.0 visual review, D4. The bare `<input type="checkbox">` this replaces
+// computed `appearance: auto` / `accent-color: auto`, so it painted as the macOS
+// system blue in light mode and a bare white square in dark — the only unstyled
+// control found anywhere in the sweep. jsdom cannot see either rendering; what
+// it can see is whether the app draws its own box, which is the thing that
+// stopped the OS from drawing one.
+describe('SessionListView subagent toggle', () => {
+  it('uses the design-system checkbox rather than the OS control', async () => {
+    render(
+      <MemoryRouter>
+        <SessionListView onSelectSession={vi.fn()} />
+      </MemoryRouter>
+    );
+
+    const input = await screen.findByLabelText(/show subagent runs/i);
+    // `sr-only` is what hands the painting to the app's own box. A revert to the
+    // native control fails here, and the label association below keeps the
+    // accessible control from being replaced by a decorative div.
+    expect(input).toHaveClass('sr-only');
+    expect(input).toHaveAttribute('type', 'checkbox');
+
+    fireEvent.click(input);
+    await waitFor(() =>
+      expect(mocks.listSessions).toHaveBeenLastCalledWith(
+        expect.objectContaining({ query: { include_subagents: true } })
+      )
+    );
+  });
+});
