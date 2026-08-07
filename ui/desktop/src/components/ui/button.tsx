@@ -10,12 +10,19 @@ const buttonVariants = cva(
   // NB: Tailwind v4 maps scale-*/hover:scale-*/active:scale-* to the standalone
   // `scale` property (not `transform`), so `scale` must be in the transition list
   // for the press/hover scale to ease rather than snap.
+  // `--tint-ink` is in the list for the same class of reason: four of the five
+  // variants take their hover/press from `tint-interactive`, which carries the
+  // tint in that registered custom property (background-image does not animate in
+  // Chrome — see main.css). Omitting it made `default` ease its own fill while
+  // destructive/outline/secondary/ghost snapped: two hover behaviours in one
+  // component. An explicit `transition-[…]` list REPLACES the utility's own
+  // fallback, so this is the only place the button can declare it.
   // `text-label` IS 14/20/500 — it replaces `text-sm font-medium` exactly, and is
   // the one type role every control in the app now shares.
   // The duration/easing annotations are gone: `--default-transition-duration` and
   // `--default-transition-timing-function` are already `--dur-fast` / `--ease-out`
   // in main.css, so any `transition-*` utility picks them up unannotated.
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-label transition-[color,background-color,border-color,transform,scale,opacity] active:scale-[0.98] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap text-label transition-[color,background-color,border-color,transform,scale,opacity,--tint-ink] active:scale-[0.98] cursor-pointer disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0",
   {
     variants: {
       // One state stack, four fills (§3.1). Hover and press are NOT authored per

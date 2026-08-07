@@ -2636,17 +2636,65 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
  * The `bg-overlay-*` colour utilities remain for the case that genuinely wants a
  * fill rather than a wash. Prefer these.
  */
+/*
+ * The tint is carried by a REGISTERED CUSTOM PROPERTY, not by swapping the
+ * `background-image` declaration — because `background-image` does not animate.
+ *
+ * Measured in Chrome (the only engine Electron runs): an element with
+ * `transition-property: background-image; transition-duration: 125ms`, a
+ * resting `linear-gradient(transparent, transparent)` and a hover
+ * `linear-gradient(rgba(42,37,32,.05), …)` — same gradient type, same stop
+ * count, so the spec permits interpolation — fires ZERO `transitionrun`,
+ * `transitionstart` or `transitionend` events and reports zero running
+ * animations. Chrome has not implemented gradient interpolation; the property
+ * is discrete there. Naming `background-image` in a transition list therefore
+ * buys nothing, which is why the first cut of these tokens shipped a hover that
+ * SNAPS while `transition-colors` sat right next to it looking like it worked.
+ *
+ * `--tint-ink` is `@property`-registered as a `<color>`, so it interpolates —
+ * the same mechanism Tailwind's own `--tw-gradient-from/via/to` use, and the
+ * reason those three appear in `transition-colors`' property list. The gradient
+ * DECLARATION never changes; only the colour inside it does, and the gradient
+ * re-resolves each frame. `inherits: false` keeps a tinted row from bleeding its
+ * state into a tinted child.
+ *
+ * The resting gradient is `transparent`, present at all times rather than
+ * `none`, for the same reason: `none → <gradient>` is a discrete change, so a
+ * tint that only exists in `:hover` would pop in and pop out no matter what the
+ * transition list said. No `tint-*` call site paints a background-image of its
+ * own (checked), so an always-present transparent layer costs nothing.
+ */
+@property --tint-ink {
+  syntax: '<color>';
+  inherits: false;
+  initial-value: transparent;
+}
+
 @utility tint-interactive {
+  background-image: linear-gradient(var(--tint-ink), var(--tint-ink));
+
+  /* The fallback fade, for the ~19 call sites that declare no transition at all.
+     A call site's own `transition-*` utility BEATS this — measured: Tailwind
+     sorts `@utility` rules ahead of the built-in `transition-*` ones inside the
+     `utilities` layer, so source order hands the win to the built-in regardless
+     of which class is written first in the attribute. That is why
+     `transition-colors` is extended below rather than left alone: the utility
+     cannot defend its own property, so the transition lists have to name it. */
+  transition-property: --tint-ink;
+  transition-duration: var(--default-transition-duration);
+  transition-timing-function: var(--default-transition-timing-function);
+
   &:hover {
-    background-image: linear-gradient(var(--overlay-hover), var(--overlay-hover));
+    --tint-ink: var(--overlay-hover);
   }
   &:active {
-    background-image: linear-gradient(var(--overlay-pressed), var(--overlay-pressed));
+    --tint-ink: var(--overlay-pressed);
   }
 }
 
 @utility tint-selected {
-  background-image: linear-gradient(var(--overlay-selected), var(--overlay-selected));
+  background-image: linear-gradient(var(--tint-ink), var(--tint-ink));
+  --tint-ink: var(--overlay-selected);
 }
 
 /*
@@ -2668,10 +2716,39 @@ body.biorouter-window-resizing [data-testid='artifact-viewer'] {
  */
 @layer utilities {
   .tint-selected.tint-interactive:hover {
-    background-image: linear-gradient(
-      var(--overlay-selected-hover),
-      var(--overlay-selected-hover)
-    );
+    --tint-ink: var(--overlay-selected-hover);
+  }
+}
+
+/*
+ * `transition-colors` has to know about the interaction tint.
+ *
+ * Tailwind's stock list is `color, background-color, border-color,
+ * outline-color, text-decoration-color, fill, stroke, --tw-gradient-from,
+ * --tw-gradient-via, --tw-gradient-to` — measured, not quoted. In THIS app the
+ * interaction tint is also a colour; it is simply carried by `--tint-ink`
+ * instead of `background-color`, because a background-COLOUR would replace the
+ * fill of an opaque control rather than composite over it (see the note above
+ * `tint-interactive`). Thirteen call sites write `tint-interactive
+ * transition-colors` and mean exactly one thing by it. Adding the token to the
+ * list is what makes that mean what it reads as.
+ *
+ * Written as a plain `@layer utilities` rule rather than `@utility
+ * transition-colors`, matching the `.text-caps` precedent below: a hand-written
+ * rule keeps its SOURCE position (the end of this file, after everything
+ * `@import 'tailwindcss'` generated), so it wins on order at equal specificity.
+ * An `@utility` of the same name is sorted back in among the generated
+ * utilities, which is where the ordering stops being predictable.
+ *
+ * The last three are Tailwind internals and must be repeated verbatim: this
+ * rule REPLACES the property list, it does not extend it, so dropping them
+ * would silently stop gradient utilities from fading.
+ */
+@layer utilities {
+  .transition-colors {
+    transition-property:
+      color, background-color, border-color, outline-color, text-decoration-color, fill, stroke,
+      --tw-gradient-from, --tw-gradient-via, --tw-gradient-to, --tint-ink;
   }
 }
 
