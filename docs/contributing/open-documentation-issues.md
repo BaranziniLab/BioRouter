@@ -386,14 +386,13 @@ contain only `biorouter workflow list`, which does neither. Restoring these need
 run the commands. **Decision needed:** this is the single biggest remaining quality problem in
 the reference pages.
 
-### Seven features are referenced everywhere and documented nowhere
+### Six features are referenced everywhere and documented nowhere
 
 No page under `docs/` covers: `.biorouterignore` (load-bearing security guidance — it is the
 mechanism the developer page recommends for protecting `.env` files and private keys, and exists
 in prose only); granular per-tool permissions (referenced twice by
 [permission modes](../security/permission-modes.md) and by the `biorouter configure` TUI's "Tool
-Permission" setting); the extension allowlist (`BIOROUTER_ALLOWLIST`); prompt-injection detection
-(`SECURITY_PROMPT_ENABLED`, `SECURITY_PROMPT_THRESHOLD`); logs; LLM rate-limit handling; and
+Permission" setting); the extension allowlist (`BIOROUTER_ALLOWLIST`); logs; LLM rate-limit handling; and
 in-session interrupt / message queueing — which
 [common problems](../troubleshooting/common-problems-and-fixes.md) still directs users to. The
 in-session content appears to have been lost in the migration rather than moved.

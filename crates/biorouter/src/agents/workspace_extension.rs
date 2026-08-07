@@ -2929,7 +2929,7 @@ impl McpClientTrait for WorkspaceClient {
 /// does not claim to have opened something.
 ///
 /// Config key, read through the same store every other daemon-visible
-/// preference uses (`Config::global().get_param`, e.g. `SECURITY_PROMPT_ENABLED`
+/// preference uses (`Config::global().get_param`, e.g. `SECURITY_COMMAND_POLICY`
 /// in `security/mod.rs`). Default OFF — background-open stays the design's
 /// default (§4.1 "opens in the background, never stealing the composer").
 pub const ANNOUNCE_ONLY_KEY: &str = "WORKSPACE_ANNOUNCE_ONLY";

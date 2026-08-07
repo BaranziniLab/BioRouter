@@ -1133,7 +1133,6 @@ const createChat = async (
           workflowDeeplink: workflowDeeplink,
           workflowParameters: workflowParameters,
           scheduledJobId: scheduledJobId,
-          SECURITY_ML_MODEL_MAPPING: process.env.SECURITY_ML_MODEL_MAPPING,
         }),
       ],
       partition: 'persist:biorouter',

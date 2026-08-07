@@ -452,10 +452,10 @@ impl Agent {
                     }
                 };
 
-                // Log user decision if this was a security alert
+                // Log user decision if this was a security-inspector finding
                 if let Some(finding_id) = get_security_finding_id_from_results(&request.id, inspection_results) {
                     tracing::info!(
-                        counter.biorouter.prompt_injection_user_decisions = 1,
+                        counter.biorouter.security_finding_user_decisions = 1,
                         decision = ?confirmation.permission,
                         finding_id = %finding_id,
                         "User security decision"

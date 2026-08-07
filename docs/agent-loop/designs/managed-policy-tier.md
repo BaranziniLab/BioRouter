@@ -102,10 +102,12 @@ that a user cannot turn off.
 - `crates/biorouter/src/config/permission.rs:11-12,42-62` — `PermissionManager`
   is a singleton backed by one user file `~/.config/biorouter/permission.yaml`;
   there is no higher-precedence source.
-- `crates/biorouter/src/security/mod.rs` — the regex scanner is
-  `SECURITY_PROMPT_ENABLED=false` by default and, when on, only *asks* (gap #3 in the
+- `crates/biorouter/src/security/mod.rs` — at the time of writing the only screening was a
+  regex scanner that was off by default and, when on, only *asked* (gap #3 in the
   [guardrails and permissions review](../../history/agent-loop-review/subsystem-reviews/guardrails-and-permissions.md)).
-  So `Auto` mode = zero command governance and nothing an admin can pin.
+  So `Auto` mode = zero command governance and nothing an admin can pin. That scanner has
+  since been deleted; the BR-20 floor and the BR-21 policy engine are what govern commands
+  today, and neither is an admin-pinnable tier.
 
 ### The enforcement seam already exists
 

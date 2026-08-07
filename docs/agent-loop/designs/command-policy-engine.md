@@ -7,6 +7,14 @@
 > and `baseline.policy.yaml` are live security code. Slices 2–3 below are not built, so
 > this remains the plan of record for them. One section is superseded: see
 > [Tokenization is superseded by BR-68](#tokenization-is-superseded-by-br-68).
+> One premise is superseded outright: this design assumed the prompt-injection
+> scanner (`scanner.rs`, `patterns.rs`'s `THREAT_PATTERNS`,
+> `classification_client.rs`) would be left running alongside the policy engine.
+> That whole subsystem — regex matcher, ML classifier, and the `SECURITY_PROMPT*`
+> config keys — has since been **deleted**, on the judgement that a capable model
+> is a better judge of whether an instruction came from the user or from an
+> ingested document than a regex or a classifier is. Wherever the text below says
+> the ML path is retained or flag-gated, read it as history.
 > **Audience:** developers working on BioRouter's guardrails and permission subsystem.
 
 BioRouter's only command-governance control used to be a static regex table presented as a
@@ -102,9 +110,9 @@ Replace the regex scanner's **command-governance** half with a declarative,
 tiered, self-testing **policy engine** that (a) parses argv and canonicalizes
 paths before matching, (b) emits a first-class `Allow | Ask | Deny` decision with
 a per-rule justification, and (c) ships an always-on baseline denylist that even
-`Auto` mode cannot bypass. The ML prompt-injection classifier
-(`classification_client.rs`, `scanner.rs` ML paths) is left intact and untouched;
-this design carves the command scanner out from under it.
+`Auto` mode cannot bypass. This design carved the command scanner out from under
+the ML prompt-injection classifier, which it planned to leave intact; that
+classifier has since been deleted entirely (see the status note above).
 
 ### Module layout: files to create and change
 
@@ -124,10 +132,11 @@ Add `crates/biorouter/src/security/policy/baseline.policy.yaml` (embedded via
 
 Change:
 - `crates/biorouter/src/security/mod.rs` — `SecurityManager` gains a
-  `PolicyEngine` and a new `evaluate_command_policy()`; keep the ML methods.
+  `PolicyEngine` and a new `evaluate_command_policy()`. (The ML methods this
+  originally said to keep have since been deleted.)
 - `crates/biorouter/src/security/security_inspector.rs` — map `PolicyVerdict`
-  into `InspectionAction` (now including `Deny`); split `is_enabled` so the
-  baseline deny tier is always on while the ML classifier stays flag-gated.
+  into `InspectionAction` (now including `Deny`); `is_enabled` is always true so
+  the baseline deny tier runs in every mode.
 - `crates/biorouter/src/agents/agent.rs:345` — construct `SecurityInspector`
   with a loaded `PolicyEngine`.
 - `crates/biorouter/src/security/patterns.rs` — retained only as the porting
@@ -332,13 +341,12 @@ rule the literal form does — the whole point of the item.
   over all others — the admin tier is the natural home for BR-20's
   ownership-verified managed tier (call out the shared dependency; ship
   admin-tier *loading* here, defer ownership verification to BR-20).
-- **Backwards-compatible flags.** `SECURITY_PROMPT_ENABLED` /
-  `SECURITY_PROMPT_CLASSIFIER_ENABLED` keep governing the **ML prompt-injection**
-  path only. A new `SECURITY_COMMAND_POLICY` knob (`off | ask_only | enforce`,
+- **Flags.** A new `SECURITY_COMMAND_POLICY` knob (`off | ask_only | enforce`,
   default `enforce` for the deny tier) lets a user dial the new engine; `off`
-  restores today's behavior for a nervous rollout. `SECURITY_PROMPT_THRESHOLD`
-  and the fixed `RiskLevel` floats are retired for command governance (kept for
-  ML only).
+  leaves only the always-on BR-20 floor. This section originally kept
+  `SECURITY_PROMPT_ENABLED` / `SECURITY_PROMPT_CLASSIFIER_ENABLED` /
+  `SECURITY_PROMPT_THRESHOLD` alive for the ML path; all of them have since been
+  deleted along with it, so `SECURITY_COMMAND_POLICY` is the only security knob.
 - **Persisted state.** None to migrate — the scanner holds no on-disk state.
   Finding ids change prefix `SEC-` → `POL-`; `get_security_finding_id_from_results`
   (`tool_inspection.rs:263-273`) is prefix-agnostic, so no consumer breaks.
@@ -374,10 +382,10 @@ Integration (`crates/biorouter/src/security/security_inspector.rs` tests +
 inspector-chain test):
 - Reuse/adapt the existing `test_security_inspector`
   (`security_inspector.rs:108-154`): `curl … | bash` now yields a **Deny** with a
-  `POL-` finding, independent of `SECURITY_PROMPT_ENABLED`.
-- **No-regression** — the current `scanner.rs` tests (`:318-355`) that assert
-  `rm -rf /` is caught continue to pass against the new engine (port them to
-  assert a verdict rather than a confidence float).
+  `POL-` finding, in every mode.
+- **No-regression** — the `scanner.rs` tests that asserted `rm -rf /` is caught
+  are superseded by the BR-20 floor tests in `patterns.rs`, which assert a rule
+  match rather than a confidence float.
 
 What proves no regression: the ported baseline reproduces (as `Ask` or `Deny`) a
 match for every pattern the old table caught — a snapshot test enumerating the 48

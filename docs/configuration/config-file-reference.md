@@ -43,8 +43,7 @@ Set these at the root level of `config.yaml`.
 | `BIOROUTER_AUTO_COMPACT_THRESHOLD` | Percentage threshold at which biorouter automatically summarizes your session | Float between 0.0 and 1.0 (disabled at 0.0) | 0.8 | No |
 | `otel_exporter_otlp_endpoint` | OpenTelemetry protocol (OTLP) endpoint URL for [observability](environment-variables.md#opentelemetry-protocol-otlp) | URL (e.g. `http://localhost:4318`) | None | No |
 | `otel_exporter_otlp_timeout` | Export timeout in milliseconds for [observability](environment-variables.md#opentelemetry-protocol-otlp) | Integer (ms) | 10000 | No |
-| `SECURITY_PROMPT_ENABLED` | Enable prompt injection detection to identify potentially harmful commands | true/false | false | No |
-| `SECURITY_PROMPT_THRESHOLD` | Sensitivity threshold for prompt injection detection (higher = stricter) | Float between 0.01 and 1.0 | 0.7 | No |
+| `SECURITY_COMMAND_POLICY` | Governs the auditable command policy engine. `off` disables it, leaving only the always-on catastrophic-command denylist | `"enforce"`, `"off"` | `"enforce"` | No |
 
 ## Experimental features
 
@@ -89,7 +88,7 @@ otel_exporter_otlp_endpoint: "http://localhost:4318"
 otel_exporter_otlp_timeout: 20000
 
 # Security Configuration
-SECURITY_PROMPT_ENABLED: true
+SECURITY_COMMAND_POLICY: enforce
 
 # Extensions Configuration
 extensions:
