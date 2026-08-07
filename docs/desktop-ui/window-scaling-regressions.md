@@ -29,7 +29,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 ```
 
 | Reading | Diagnosis |
-|---|---|
+|---------|-----------|
 | `text` empty, or `hash` is `#/pair` | **Not a layout bug.** The app is not rendering — see *A dead daemon* below. |
 | `inner` ≠ `outer` | **Not a layout bug.** Your tooling pinned the viewport — see *Viewport emulation* below. |
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
@@ -140,9 +140,13 @@ or the binaries under `ui/desktop/src/bin/` — which is why `just copy-binary`
 re-signs, and why hand-copying around it breaks the app in a way that looks
 like a renderer bug.
 
-A related version of the same trap: **never copy from `target/release/` while a
-build is running.** A binary captured mid-link is truncated, and its only
-symptom is the same silent SIGKILL.
+⚠ **Signature invalidation is the whole explanation — resist adding a second
+one.** When this happened here the copy had been taken from `target/release/`
+while a build was running, so "the binary was captured mid-link and truncated"
+looked like the obvious cause and was written down as fact. It was wrong: `cmp`
+later showed the copy byte-identical to the finished binary, and re-signing
+alone fixed it. Two plausible causes for one symptom is how a real fix gets
+attributed to the wrong action and stops being applied.
 
 ## Related documentation
 
