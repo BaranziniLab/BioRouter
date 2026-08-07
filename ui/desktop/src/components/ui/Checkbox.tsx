@@ -26,8 +26,10 @@ import { cn } from '../../utils';
  * `--radius-inner`, the role the ladder names for "checkbox", against the
  * radio's circle.
  */
-export interface CheckboxProps
-  extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'type' | 'size'> {
+export interface CheckboxProps extends Omit<
+  React.InputHTMLAttributes<HTMLInputElement>,
+  'type' | 'size'
+> {
   /** Renders the dash state. Mirrors the DOM property, which has no attribute. */
   indeterminate?: boolean;
   /** Classes for the 24px hit target, not for the hidden input. */

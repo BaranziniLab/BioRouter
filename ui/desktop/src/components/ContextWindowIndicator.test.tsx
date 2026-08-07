@@ -65,10 +65,12 @@ describe('ContextWindowGauge compaction control', () => {
     expect(document.querySelector('[data-slot="tooltip-content"]')).toHaveClass(
       'bg-background-inverse',
       'text-text-inverse',
-      // `rounded-inner`, not the `rounded-sm` this asserted before: both render
-      // 4px (sm is now a deprecated alias of inner), so the tooltip is
-      // pixel-identical — only the name it goes by changed.
-      'rounded-inner'
+      // `rounded-container` (12px). This asserted `rounded-sm`, then
+      // `rounded-inner` — both 4px, the rung the ladder reserves for things
+      // nested INSIDE a control. A tooltip is a floating surface, and the
+      // cohesion design puts every floating surface on one 12px recipe; the
+      // v1.89.0 review caught the tooltip as the last one still two steps off.
+      'rounded-container'
     );
     expect(document.querySelector('[data-slot="tooltip-content"] svg')).toBeNull();
   });
