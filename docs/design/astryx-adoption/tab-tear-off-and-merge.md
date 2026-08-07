@@ -1,7 +1,7 @@
 # Tab tear-off and merge
 
 > **What this is.** The specification for generalising the chat-tab drag from a window-local gesture into a window-manager gesture: dragging a tab out of the app creates a new window carrying that session, and dragging it onto another window's tab strip merges it back in at the drop position.
-> **Status:** Proposed — investigated and specified, not implemented. Partly blocked on the contested files named in §8 and §9 landing first.
+> **Status:** Current — Phases 0–5 implemented (§8); Phase 4's stylesheet rule and §9's session-list menu item are the remainder, both waiting on files another campaign holds. **D1 is superseded** — see §3.1 before adding any restriction on moving a running tab.
 > **Audience:** developers implementing this; maintainers reviewing the decisions in §3 and §7.
 
 Today a chat tab can be dragged only *within* one window: reorder it inside its strip, or carry it to another pane of a split and back. Dragging it past the window's edge does nothing, and a session that lives in its own window can never be dragged back into a strip. Browsers have had both since 2010, which is precisely why their absence reads as breakage rather than as a missing feature.
@@ -77,13 +77,52 @@ This is the single most important finding in this document, and it is the reason
 
 ## 3. The hard parts, decided
 
-### D1 — A tab with a turn in flight cannot be torn off or merged
+### D1 — ~~A tab with a turn in flight cannot be torn off or merged~~ **SUPERSEDED 2026-08-06**
 
-**Decision.** While `runningSessionIds` contains a tab's `sessionId`, the cross-window half of the gesture is refused: the drag still works inside the window (reorder, pane move, split), but leaving the window's content rect produces no tear-off preview and `pointerup` outside returns the tab to its slot. The strip already renders a coral pulse on a running tab (`main.css:1568`, `.br-tab__dot`), so the "this one is busy" affordance exists and needs no new chrome; the refusal is explained by a one-line toast on the first attempt per session.
+> **Superseded by D9, which shipped.** D1 said its own expiry condition out loud —
+> *"it is not a property of window management, it is a property of `/reply` having
+> exactly one subscriber"* — and that property is gone. `crates/biorouter-server/src/turn_stream.rs`
+> merged (`d7cb1fe5`) and all three halves of D9 were verified before Phase 3 was
+> written; the evidence is in **§3.1** below. Nothing in the implementation
+> refuses a running tab: there is no `isTabLocked`, no refusal toast, and no
+> "stop here" row in the §5 table. **Do not re-add a lock** — the codebase no
+> longer has the defect it was defending against, and a lock would now be a
+> restriction with no cause.
+>
+> The original decision is kept below, struck through, because §2 is still the
+> correct description of what a single-subscriber turn stream would have done and
+> is the reason the backend work happened at all.
 
-**Reasoning.** §2 shows the alternatives are worse. Killing and restarting the turn discards work and doubles token spend. Letting it move and freeze is a silent failure that looks like data loss. Holding the source window alive invisibly until the turn ends is magic the user cannot see or predict.
+~~**Decision.** While `runningSessionIds` contains a tab's `sessionId`, the cross-window half of the gesture is refused: the drag still works inside the window (reorder, pane move, split), but leaving the window's content rect produces no tear-off preview and `pointerup` outside returns the tab to its slot. The strip already renders a coral pulse on a running tab (`main.css:1568`, `.br-tab__dot`), so the "this one is busy" affordance exists and needs no new chrome; the refusal is explained by a one-line toast on the first attempt per session.~~
 
-**Rejected: making this permanent.** It is not a property of window management, it is a property of `/reply` having exactly one subscriber. The unlock is small and nameable — see D9 and Phase 5.
+~~**Reasoning.** §2 shows the alternatives are worse. Killing and restarting the turn discards work and doubles token spend. Letting it move and freeze is a silent failure that looks like data loss. Holding the source window alive invisibly until the turn ends is magic the user cannot see or predict.~~
+
+~~**Rejected: making this permanent.** It is not a property of window management, it is a property of `/reply` having exactly one subscriber. The unlock is small and nameable — see D9 and Phase 5.~~
+
+### 3.1 — The three measurements that retired D1
+
+Verified against the tree at `d7cb1fe5`, before any Phase 3 code was written. "The
+mechanism exists" is not "the renderer uses it", so each half was checked
+separately and each is cited.
+
+| D9 required | What is true now | Where |
+|---|---|---|
+| cancel-on-hangup fires when the **last** subscriber leaves, not the first | **Better than required: a departing subscriber never cancels at all.** The old `tx.send(…).is_err() ⇒ cancel_token.cancel()` is gone; the drain logs *"a turn stream observer disconnected; the turn continues"* and returns. The only audience-driven cancel is a separate orphan reaper that trips after `DEFAULT_ORPHAN_TIMEOUT` = **300s** with **zero** observers, and it makes the decision and the cancel under one lock so an `attach()` racing it either wins outright or reads an already-cancelled turn. | `routes/reply.rs:1019-1022`, `:1529-1532`; `turn_stream.rs:175`, `:556-588` |
+| `ChatStreamController` gains "detach without abort" | `stopObserving()` refuses to abort a controller that is **driving** — *"'the tab closed' is not a reason to do that (BR-62b: the server keeps running either way)"* — and the registry never disposes controllers, so a tab's removal tears down no socket. Attach-before-detach is legal on the server side too: two simultaneous observers of one turn are pinned by test. | `hooks/chatStreamStore.tsx:1679-1692`, `:2342-2430`; `reply.rs::two_simultaneous_observers_receive_identical_frames` |
+| the renderer attaches via the stream rather than owning the response body | `attachToTurn(turnId)` re-POSTs the turn's own id and the server answers **200 + SSE** with the replay backlog from `from_seq` then the live tail, where it used to answer 409-and-no-stream. `resumeActiveTurn` calls it, and `noteActiveTurn` fires it automatically off `/agent/resume`'s `active_turn` on **every session load** — so a torn-off window rejoins a running turn without anyone asking it to. | `chatStreamStore.tsx:1724-1806`, `:1820-1870` |
+
+**What this means for the gesture.** A tab whose turn is in flight tears off and
+merges like any other. The source window drops its socket; the turn does not
+notice; the new window loads the session, sees `active_turn`, attaches from the
+sequence it has already painted, and the transcript continues. The 300s orphan
+window is the budget for that hop, and a window boot is ~4.6s.
+
+**One consequence to keep in view.** The orphan reaper is the *only* thing that
+now ends an unwatched turn, so a tear-off that fails to produce a window — the
+user quits mid-gesture, the seed URL 404s — leaves a turn running for five
+minutes. That is the intended trade (a live turn is worth more than five minutes
+of tokens) and it is not new to this feature; it is the behaviour of every reload
+since `turn_stream.rs` landed.
 
 ### D2 — The mechanism is pointer capture in the source window plus a main-process resolver
 
@@ -120,9 +159,10 @@ This is the single most important finding in this document, and it is the reason
 > **Z-order has no source in Electron.** "The topmost wins" is right, but Electron
 > exposes no z-order query and `getAllWindows()` order is not documented as one.
 > The registry therefore carries an explicit `stackOrder`, raised on `focus`.
-> **Phase 3 must wire `focus`/`show` → `raise()`**, or the rule silently degrades
-> to registration order — which is wrong the first time a user clicks between
-> windows.
+> ~~**Phase 3 must wire `focus`/`show` → `raise()`**~~ — **done**, along with
+> `restore`/`hide`/`minimize`/`closed`; see obligation 3 in §8. Without it the
+> rule silently degrades to registration order, which is wrong the first time a
+> user clicks between windows.
 >
 > **Only chat windows register, so only chat windows can occlude.** A launcher,
 > artifact, or app window of ours sitting *above* a chat window's strip does not
@@ -179,7 +219,12 @@ The existing choreography is: ghost lifts under the cursor with `--ease-spring` 
 
 **Reasoning.** A gesture that can create and destroy windows needs a way out that does not require finding a safe place to release.
 
-### D9 — What would unblock D1, stated precisely so it is not rediscovered
+### D9 — What unblocked D1 — **DONE, shipped in `d7cb1fe5`**
+
+> **Landed.** This was written as a named future; it is now the code. See §3.1 for
+> the three-part verification and the file/line citations. The shape below is
+> what was asked for; what shipped exceeds it (a replayable, sequence-numbered
+> frame log with an orphan reaper, rather than a bare broadcast fan-out).
 
 A tab with a live turn becomes movable the moment a turn's event stream has more than one possible subscriber. The smallest shape that does it:
 
@@ -187,7 +232,7 @@ A tab with a live turn becomes movable the moment a turn's event stream has more
 - `/reply`'s `tx` becomes a `broadcast::Sender` fan-out, and the cancel-on-hangup at `reply.rs:257` fires only when the **last** subscriber leaves, not the first;
 - `ChatStreamController` gains "detach without abort", so the source renderer can hand the turn over.
 
-That is a backend feature with its own correctness surface (who owns cancel, what a late subscriber sees, how the turn lock interacts). It is named here so the block in D1 is understood as provisional, and it is explicitly **not** in this plan's scope.
+That is a backend feature with its own correctness surface (who owns cancel, what a late subscriber sees, how the turn lock interacts). It was named here so the block in D1 would be understood as provisional. It was then built — on its own branch, with its own tests — and merged before Phase 3 began, which is why Phase 3 shipped with no lock in it.
 
 ## 4. The state model
 
@@ -237,7 +282,7 @@ interface TabMovePayload {
 | Press | `pointerdown` on a tab | record origin, grab offset; `setPointerCapture` | — | — |
 | Promote | moved > 5px | ghost lifts (`--ease-spring`), source tab → 35% | — | — |
 | Drag, inside | point inside content rect | today's behaviour: reorder caret, pane tint, split zones | — | — |
-| Drag, outside | point outside content rect, running ⇒ **stop here** (D1) | ghost clamps to edge, `data-detach='true'` | — | resolve screen point |
+| Drag, outside | point outside content rect (a running turn is **not** a barrier — D1 superseded, §3.1) | ghost clamps to edge, `data-detach='true'` | — | resolve screen point |
 | Drag, over desktop | `{ kind: 'detach' }` | detach ghost held | — | — |
 | Drag, over a strip | `{ kind: 'merge' }` | detach ghost held | `[data-dropbefore]` caret at the resolved index; **not raised, not focused** | forwards point to target |
 | Release, local | inside | commit reorder/move as today | — | — |
@@ -251,7 +296,7 @@ The new window's bounds: size copied from the source window, origin `(screenX �
 
 | Case | Answer | Where it is decided |
 |---|---|---|
-| Tab has a turn in flight | cross-window half refused; local drag unaffected | D1 |
+| Tab has a turn in flight | **moves like any other tab.** The source drops its socket, the turn does not notice, the destination window rejoins it from `/agent/resume` | D1 superseded, §3.1 |
 | Source window would be emptied by a tear-off | no-op; tab returns | D5 |
 | Source window is emptied by a merge | source window closes, after the target acks | D6a |
 | Dropped back on its own window | ordinary local path, no special case | D6b |
@@ -329,7 +374,7 @@ Extend `ui/desktop/src/components/chatGroups/useTabDragReorder.ts` — **not on 
 
 - `setPointerCapture`/`releasePointerCapture` (D2)
 - optional `onCrossWindow?(phase, screenPoint)` and `onCrossWindowCommit?(phase, screenPoint)`
-- optional `isTabLocked?(tabId): boolean` — the D1 running guard, injected rather than assumed, so the hook stays free of chat-stream knowledge
+- ~~optional `isTabLocked?(tabId): boolean` — the D1 running guard~~ **removed in Phase 3.** It was landed in Phase 2 as an injection point precisely so the policy could change at the call site without touching the hook; D1 was then superseded outright (§3.1), so the injection point was deleted rather than left dangling. A dead hook argument named for a lock is an invitation to re-implement the lock.
 - an `Escape` listener wired to the existing `finish` with a cancel flag (D8)
 
 New tests alongside the existing `dropZones.test.ts` for the pure parts; the gesture itself is browser-verified per Phase 0.
@@ -342,18 +387,22 @@ New `ui/desktop/src/components/chatGroups/ChatDropOverlay.tsx` variant — **als
 |---|---|---|
 | `ui/desktop/src/main.ts` | register `tab-drag:register-bands`, `tab-drag:move`, `tab-drag:commit`, `create-torn-off-chat-window`; window `closed`/`hide` cleanup | yes |
 | `ui/desktop/src/preload.ts` | three send methods; the receive side needs nothing (the generic `on` at `:483` already covers it) | yes |
-| `ui/desktop/src/components/chatGroups/ChatGroupsShell.tsx` | pass `isTabLocked` from `groups.runningSessionIds`; own the cross-window callbacks; subscribe to the remote-preview channel | yes |
-| `ui/desktop/src/components/chatGroups/ChatTabStrip.tsx` | **likely zero edits.** The running set already reaches the shell, and the caret already renders from `dragOverTabId`. Confirm before scheduling any | yes |
+| `ui/desktop/src/components/chatGroups/ChatGroupsShell.tsx` | own the cross-window callbacks; report strip bands; subscribe to the remote-preview and merge channels | yes |
+| `ui/desktop/src/components/chatGroups/ChatTabStrip.tsx` | **one prop.** `remoteDropBeforeTabId` — the caret in a MERGE target is driven by IPC, not by this window's own drag state, so `dragOverTabId` cannot supply it (the target window receives no pointer events at all; §3, Phase 0). The rendering is the same `[data-dropbefore]` hairline | yes |
 
 The preload additions are append-only at the end of one object literal, so the merge surface is a few lines even though the file is contested.
 
 **Obligations Phase 3 inherits.** Each was found while building Phases 1 and 2 and is deliberately *not* implemented there, because each needs a party those phases do not have. A Phase 3 that skips them compiles and appears to work.
 
-1. **Re-check the lock at commit, not only at move.** `isTabLocked` is sampled on every `pointermove` while the pointer is outside — so a turn *ending* mid-drag correctly unlocks the tab. But a turn *starting* in the milliseconds after the final move still commits as a detach. The shell → main commit path is the only place that can close that, and it must.
-2. **Enforce D5 at commit.** Tearing out a window's only tab is a no-op, and nothing in Phases 1 or 2 enforces it — the hook does not know how many tabs the window has, and the resolver does not either. Same commit path, same reason.
-3. **Wire `focus`/`show` → `raise()`** on the band registry, or z-order degrades to registration order (see D3 above).
-4. **Own the ghost clamp.** D7 says the ghost is clamped to the source window's content rect. That needs the ghost's rendered size, which the hook does not have — it computes `clientX − grabOffset` and nothing more. It belongs to whoever renders the ghost, or to CSS in Phase 4. Today an outside ghost simply flies past the frame and Electron clips it.
-5. **Decide whether Escape is swallowed.** The hook cancels the drag on Escape but does not `preventDefault` or stop propagation, so the keypress also reaches anything else listening — a modal, the composer. Swallowing it needs `stopImmediatePropagation` plus an assumption about listener ordering, which Phase 2 declined to bake in silently.
+1. ~~**Re-check the lock at commit, not only at move.**~~ **Void.** There is no lock to re-check — D1 was superseded before Phase 3 was written (§3.1). This obligation existed only to close a race between a turn *starting* mid-drag and the commit; with a running tab freely movable, the race has no consequence.
+2. **Enforce D5 at commit.** Tearing out a window's only tab is a no-op, and nothing in Phases 1 or 2 enforces it — the hook does not know how many tabs the window has, and the resolver does not either. **Discharged in the shell:** `commitCrossWindow` counts the window's tabs across every group and returns `noop` without calling main when the count is 1.
+   ⚠ **It is also enforced one level below the renderer, and that path is the one that actually fires.** Phase 0 measured it: with a single tab, `-webkit-app-region: drag` on the strip claims the press and the OS **moves the window** — no `pointerdown` reaches React, so no drag begins. The renderer check is therefore a backstop for the case where that does not hold (a future non-drag strip, a platform without app regions), not the primary rule. **Do not add `no-drag` to the strip wrapper to "fix" a single tab not dragging.** That is the feature.
+3. **Wire `focus`/`show` → `raise()`** on the band registry, or z-order degrades to registration order (see D3 above). **Discharged in `main.ts`:** `focus`, `show` and `restore` raise; `hide` and `minimize` set `hidden`; `closed` removes. `move`/`resize` need no listener because every `tab-drag:move` refreshes each entry's `contentBounds` from the live `BrowserWindow` before resolving — a window dragged to a new position mid-gesture is therefore never stale, which no amount of renderer-side re-registration could have achieved (a window MOVE fires no renderer resize).
+4. **Own the ghost clamp.** D7 says the ghost is clamped to the source window's content rect. That needs the ghost's rendered size, which the hook does not have — it computes `clientX − grabOffset` and nothing more. **Discharged as measurement in the shell, CSS reported to the token steward:** `clampGhostToViewport` (in `tabTearOffBridge.ts`) is a pure function over the ghost's measured box and the viewport, and `ChatTabGhost` reports its own rendered size through a ref. Its output is the `left`/`top` the ghost is already positioned with, so it needs no new stylesheet rule; the one rule main.css still owes is `.br-tab-ghost[data-detach='true']` (Phase 4).
+5. **Decide whether Escape is swallowed.** **Decided: NO.** The cancel listener does not `preventDefault`, does not `stopPropagation`, and does not `stopImmediatePropagation`. Three reasons, in order of weight:
+   - **A drag is not a modal.** Escape during a tab drag has exactly one plausible second meaning — close the dialog or menu that is also open — and cancelling the drag does not make that meaning wrong. Both should happen.
+   - **Swallowing needs an ordering assumption the hook cannot honour.** `stopImmediatePropagation` only wins over listeners registered *after* it on the same node. The hook registers on `window` at mount; a dialog registered later would still fire, and one registered earlier would be silently killed. The behaviour would then depend on component mount order, which changes with every layout.
+   - **The failure modes are asymmetric.** A swallowed Escape leaves a modal stuck open with no visible cause. A doubled Escape closes a menu the user was probably done with. The first is a bug report; the second is not.
 
 **A testing note that will cost someone an hour otherwise.** This repo's jsdom has no `document.elementFromPoint` *at all* — not "returns null", missing. The drag hook's move handler therefore throws on the first *promoted* move, which is why no pre-existing test in `components/chatGroups/` promotes a drag. Stub it to `null` in `beforeAll`. And note that pointer capture does not exist in jsdom either, so the capture *target* — which must be the element that received the `pointerdown`, never the tab wrapper, because capture retargets the compatibility mouse events and would otherwise fire `click` on the wrapper and break selecting a tab — can only be asserted, never exercised.
 
@@ -363,9 +412,16 @@ The preload additions are append-only at the end of one object literal, so the m
 
 Phase 4b, optional and separate: reconsider the ghost window rejected in D7.
 
-### Phase 5 — optional unlock
+### Phase 5 — ~~optional unlock~~ **done, and it landed first**
 
 Implement D9 and lift the D1 block. Backend work in `crates/biorouter-server/src/routes/reply.rs` plus `chatStreamStore.tsx`. Independent of everything above and should be specified on its own before it is started.
+
+> **It was, and it overtook the plan.** `turn_stream.rs` merged at `d7cb1fe5` as its
+> own branch with its own spec and tests, ahead of Phase 3 rather than after it.
+> The order in the recommendation below is therefore historical: what actually
+> happened was 0 → 1, 2 → **5** → 3, and Phase 3 was smaller for it, because the
+> lock it would otherwise have had to thread through four files was deleted
+> instead of wired.
 
 **Recommended order:** Phase 0 → Phase 1 and 2 in parallel (both uncontested) → wait for the contested branch → Phases 3 and 4 together, which is when the feature first becomes visible.
 

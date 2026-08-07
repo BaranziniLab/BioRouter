@@ -27,7 +27,6 @@ interface HarnessProps {
   onDropToGroup?: (tabId: string, target: DropTarget) => void;
   onCrossWindow?: (phase: CrossWindowPhase, point: ScreenPoint) => void;
   onCrossWindowCommit?: (phase: CrossWindowPhase, point: ScreenPoint) => void;
-  isTabLocked?: (tabId: string) => boolean;
 }
 
 function Harness(props: HarnessProps) {
@@ -110,19 +109,6 @@ describe('useTabDragReorder — no cross-window callbacks (the shipped configura
     expect(screen.getByTestId('ghost')).toHaveTextContent('yes');
   });
 
-  it('does not consult isTabLocked when there is no cross-window half to refuse', () => {
-    const isTabLocked = vi.fn(() => true);
-    render(<Harness isTabLocked={isTabLocked} />);
-    pressAndPromote();
-    moveOutside();
-    fireEvent.pointerUp(window, { pointerId: 1 });
-    // The lock exists to gate exactly one branch. With that branch absent,
-    // asking is pointless work and would make a caller believe the lock is doing
-    // something. (It is also not asked while the pointer is inside the window,
-    // where the answer could not change any outcome.)
-    expect(isTabLocked).not.toHaveBeenCalled();
-  });
-
   it('still commits an ordinary drag on pointerup', () => {
     // The reorder itself needs elementFromPoint, which jsdom cannot do, so this
     // asserts the shape of the ending: state cleared, no throw, no cross-window
@@ -195,44 +181,36 @@ describe('useTabDragReorder — cross-window phase', () => {
   });
 });
 
-describe('useTabDragReorder — D1, a locked tab cannot leave the window', () => {
-  it('refuses the cross-window half while the tab is locked', () => {
+/**
+ * D1 IS SUPERSEDED, AND THIS BLOCK IS WHAT STOPS IT COMING BACK.
+ *
+ * There used to be three tests here for an `isTabLocked` argument that refused
+ * the cross-window half while the tab's session had a turn in flight. The
+ * argument is gone (see the note above `TabDragReorderArgs`), so those tests
+ * would now pass vacuously against a prop nothing reads — which is worse than
+ * no test, because it reads as coverage.
+ *
+ * What replaces them is the inverse claim, stated once: nothing about the tab
+ * gates the cross-window half. The hook is given no way to know a tab is
+ * running, and it asks nobody.
+ */
+describe('useTabDragReorder — no tab-level gate on leaving the window (D1 superseded)', () => {
+  it('takes no per-tab predicate: extra options cannot re-introduce a lock', () => {
+    // Passed as a stray option the hook does not declare. If someone re-adds a
+    // lock by name, this stops failing — which is exactly when this test should
+    // be revisited rather than deleted.
+    const isTabLocked = vi.fn(() => true);
     const onCrossWindow = vi.fn();
-    const onCrossWindowCommit = vi.fn();
     render(
       <Harness
         onCrossWindow={onCrossWindow}
-        onCrossWindowCommit={onCrossWindowCommit}
-        isTabLocked={(tabId) => tabId === 'tab-1'}
+        {...({ isTabLocked } as unknown as Partial<HarnessProps>)}
       />
     );
     pressAndPromote();
     moveOutside();
-    fireEvent.pointerUp(window, { pointerId: 1 });
 
-    expect(onCrossWindow).not.toHaveBeenCalled();
-    expect(onCrossWindowCommit).not.toHaveBeenCalled();
-    expect(screen.getByTestId('phase')).toHaveTextContent('local');
-  });
-
-  it('locks by TAB, not globally — another tab is unaffected', () => {
-    const onCrossWindow = vi.fn();
-    render(<Harness onCrossWindow={onCrossWindow} isTabLocked={(tabId) => tabId === 'other'} />);
-    pressAndPromote();
-    moveOutside();
-    expect(onCrossWindow).toHaveBeenCalledWith({ kind: 'detach' }, expect.anything());
-  });
-
-  it('is re-asked on every move, so a turn that ends mid-drag unlocks the tab', () => {
-    let running = true;
-    const onCrossWindow = vi.fn();
-    render(<Harness onCrossWindow={onCrossWindow} isTabLocked={() => running} />);
-    pressAndPromote();
-    moveOutside();
-    expect(onCrossWindow).not.toHaveBeenCalled();
-
-    running = false; // the turn finished while the user was still dragging
-    moveOutside();
+    expect(isTabLocked).not.toHaveBeenCalled();
     expect(onCrossWindow).toHaveBeenCalledWith({ kind: 'detach' }, expect.anything());
   });
 });

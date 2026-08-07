@@ -3,7 +3,14 @@ import { render, screen, cleanup } from '@testing-library/react';
 import { ChatTabGhost } from './ChatDropOverlay';
 import { DragGhost } from './useTabDragReorder';
 
-const GHOST: DragGhost = { tabId: 'tab-1', title: 'Volcano plot', x: 120, y: 40 };
+const GHOST: DragGhost = {
+  tabId: 'tab-1',
+  title: 'Volcano plot',
+  x: 120,
+  y: 40,
+  grabOffsetX: 12,
+  grabOffsetY: 8,
+};
 
 afterEach(cleanup);
 

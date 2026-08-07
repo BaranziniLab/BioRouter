@@ -57,6 +57,15 @@ export interface DragGhost {
   title: string;
   x: number;
   y: number;
+  /**
+   * Where inside the tab the pointer grabbed it. `x`/`y` above are already
+   * `client − grabOffset`, so this is redundant for POSITIONING — it is carried
+   * because a tear-off needs it in screen space, to place the new window so the
+   * tab lands under the cursor that is still holding it (design §5). Deriving it
+   * back out of `x` would need the client point, which is not published.
+   */
+  grabOffsetX: number;
+  grabOffsetY: number;
 }
 
 interface TabDragReorderArgs {
@@ -89,27 +98,27 @@ interface TabDragReorderArgs {
    * knows whether tearing off would empty this window (design D5, a no-op).
    */
   onCrossWindowCommit?: (phase: CrossWindowPhase, point: ScreenPoint) => void;
-  /**
-   * D1: a tab whose session has a turn in flight cannot leave the window, because
-   * `/reply` has exactly one subscriber and moving it either freezes the
-   * transcript or kills the turn (design §2).
-   *
-   * INJECTED, not assumed. The hook has no idea what makes a tab locked and must
-   * not learn — the running set lives in the chat-stream layer, and D9/Phase 5
-   * are expected to remove this restriction entirely. When that lands, the policy
-   * changes at the call site and this file is not edited.
-   *
-   * Consulted on every move, not once at `beginDrag`: a turn that finishes
-   * mid-drag unlocks the tab, and one that starts mid-drag locks it.
-   *
-   * A locked tab still reorders, still moves between panes, still splits. Only
-   * the cross-window half is refused: no phase is emitted, no preview appears,
-   * and a release outside returns the tab to its slot — which is what today's
-   * code already does, because `elementFromPoint` outside the viewport finds
-   * nothing to drop on.
-   */
-  isTabLocked?: (tabId: string) => boolean;
 }
+
+/**
+ * THERE IS NO RUNNING-TAB LOCK HERE, AND ADDING ONE WOULD NOW BE A REGRESSION.
+ *
+ * Phase 2 shipped an `isTabLocked?(tabId)` injection point for design D1 — a tab
+ * whose session had a turn in flight could not leave the window, because
+ * `/reply` had exactly one subscriber and moving it either froze the transcript
+ * or killed the turn.
+ *
+ * D1 is superseded (design §3.1). `crates/biorouter-server/src/turn_stream.rs`
+ * made a turn's frame log a session-scoped, replayable, many-observer object: a
+ * departing subscriber no longer cancels anything, and `ChatStreamController`'s
+ * `attachToTurn` rejoins a running turn from the sequence a window has already
+ * painted — automatically, off `/agent/resume`, on every session load. A torn-off
+ * tab therefore keeps streaming in its new window with no handover protocol at
+ * all.
+ *
+ * The argument was deleted rather than left unused, because a dead hook parameter
+ * named for a lock is how the lock comes back.
+ */
 
 export interface TabDragReorder {
   draggedTabId: string | null;
@@ -183,7 +192,6 @@ export function useTabDragReorder({
   onDropToGroup,
   onCrossWindow,
   onCrossWindowCommit,
-  isTabLocked,
 }: TabDragReorderArgs): TabDragReorder {
   const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
   const [dragOverTabId, setDragOverTabId] = useState<string | null>(null);
@@ -222,8 +230,6 @@ export function useTabDragReorder({
   onCrossWindowRef.current = onCrossWindow;
   const onCrossWindowCommitRef = useRef(onCrossWindowCommit);
   onCrossWindowCommitRef.current = onCrossWindowCommit;
-  const isTabLockedRef = useRef(isTabLocked);
-  isTabLockedRef.current = isTabLocked;
 
   useEffect(() => {
     const move = (event: globalThis.PointerEvent) => {
@@ -247,21 +253,21 @@ export function useTabDragReorder({
         title: gesture.title,
         x: event.clientX - gesture.grabOffsetX,
         y: event.clientY - gesture.grabOffsetY,
+        grabOffsetX: gesture.grabOffsetX,
+        grabOffsetY: gesture.grabOffsetY,
       });
 
       // ===================================================================
-      // IS THE POINTER STILL IN THIS WINDOW? (design D2, D1)
+      // IS THE POINTER STILL IN THIS WINDOW? (design D2)
       //
-      // Gated on a cross-window callback being supplied. With none — the
-      // shipped configuration, ChatTabStrip's bare fallback instance, and every
-      // existing test — `outside` is false forever and not one line below this
-      // block behaves differently than it did before tear-off existed.
+      // Gated on a cross-window callback being supplied. With none —
+      // ChatTabStrip's bare fallback instance and every strip-level test —
+      // `outside` is false forever and not one line below this block behaves
+      // differently than it did before tear-off existed.
       //
-      // The lock (D1) is asked EVERY TIME THE POINTER IS OUTSIDE, rather than
-      // once at pointerdown: a turn can start or finish mid-drag, and the
-      // question only means anything at the moment the cross-window half would
-      // engage. A locked tab simply never reaches it; its drag stays local,
-      // which is a working gesture, not a dead one.
+      // NO SECOND CONDITION. This used to also ask whether the tab was locked by
+      // a live turn (D1); see the note above TabDragReorderArgs for why that
+      // question no longer exists.
       // ===================================================================
       const crossWindowEnabled = !!(onCrossWindowRef.current || onCrossWindowCommitRef.current);
       const outside =
@@ -269,8 +275,7 @@ export function useTabDragReorder({
         isOutsideViewport(
           { x: event.clientX, y: event.clientY },
           { width: window.innerWidth, height: window.innerHeight }
-        ) &&
-        !(isTabLockedRef.current?.(gesture.tabId) ?? false);
+        );
 
       screenPointRef.current = { screenX: event.screenX, screenY: event.screenY };
       const nextPhase: CrossWindowPhase = outside ? { kind: 'detach' } : LOCAL_PHASE;
