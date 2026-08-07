@@ -105,7 +105,7 @@ describe('PrivacyBadge', () => {
     const { container } = render(<PrivacyBadge tier="private" />);
     const el = container.querySelector('[data-testid="privacy-badge"]')!;
     expect(el).toHaveTextContent('Private');
-    expect(el.className).toContain('rounded-sm'); // from Badge, not hand-rolled
+    expect(el.className).toContain('rounded-inner'); // from Badge, not hand-rolled
     expect(el.querySelector('svg')).not.toBeNull(); // never colour alone: shape + glyph + word
   });
 
@@ -160,19 +160,46 @@ describe('PrivacyBadge', () => {
 
   it('rides Badge for the pill geometry in both tiers, restating none of it', () => {
     const source = read('src', 'components', 'ui', 'PrivacyBadge.tsx');
+
+    // DERIVED from badge.tsx's own declaration, not transcribed from it. This
+    // list used to be five literals, and the Astryx migration renamed two of
+    // them (`rounded-sm` → `rounded-inner`, `text-[11px]` → `text-chip`). Both
+    // copies then failed — the containment check AND the "must not restate"
+    // regex — for a token rename rather than for a regression, which is the
+    // most expensive kind of red: it looks like the thing under test broke.
+    // Reading the primitive means a future rename moves both sides at once,
+    // while the assertion still fails if PrivacyBadge stops inheriting the
+    // geometry or starts writing it down a second time.
+    const badgeGeometry = (() => {
+      const badgeSource = read('src', 'components', 'ui', 'badge.tsx');
+      const base = badgeSource.match(/cn\(\s*'([^']+)'/);
+      expect(base, 'badge.tsx no longer opens its cn() with a base class string — this ' +
+        'derivation is broken and every assertion below would pass vacuously').not.toBeNull();
+      return base![1].split(/\s+/).filter(Boolean);
+    })();
+    // The control: an empty list would make the loop below assert nothing.
+    expect(badgeGeometry.length).toBeGreaterThan(3);
+
     for (const el of [
       badgeOf(<PrivacyBadge tier="private" />)!,
       badgeOf(<PrivacyBadge tier="public" />)!,
     ]) {
-      for (const geometry of ['rounded-sm', 'px-1.5', 'py-0.5', 'text-[11px]', 'inline-flex']) {
+      for (const geometry of badgeGeometry) {
         expect(el.className, `the pill lost Badge's ${geometry}`).toContain(geometry);
       }
     }
+
     // …and none of it is written down a second time here, which is the drift
     // badge.tsx's own doc-comment exists to prevent. `rounded-full` on the dot
-    // is not Badge geometry and is expected.
+    // is not Badge geometry and is expected, so it is excluded by construction:
+    // it is not in badge.tsx's base list.
     expect(source).toMatch(/from '\.\/badge'/);
-    expect(source).not.toMatch(/rounded-sm|px-1\.5|py-0\.5|text-\[11px\]/);
+    for (const geometry of badgeGeometry) {
+      expect(
+        source,
+        `PrivacyBadge restates Badge's ${geometry} instead of inheriting it`
+      ).not.toContain(geometry);
+    }
   });
 
   // ── The tokens, checked against the stylesheet and against the guard ──
