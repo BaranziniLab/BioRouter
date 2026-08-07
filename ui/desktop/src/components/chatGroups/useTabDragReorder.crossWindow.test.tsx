@@ -383,9 +383,7 @@ describe('useTabDragReorder — pointercancel does not commit a tear-off or a me
   it('does not commit the cross-window drop when the OS pre-empts the gesture', () => {
     const onCrossWindowCommit = vi.fn();
     const onCrossWindow = vi.fn();
-    render(
-      <Harness onCrossWindow={onCrossWindow} onCrossWindowCommit={onCrossWindowCommit} />
-    );
+    render(<Harness onCrossWindow={onCrossWindow} onCrossWindowCommit={onCrossWindowCommit} />);
     pressAndPromote();
     moveOutside();
     expect(screen.getByTestId('phase')).toHaveTextContent('detach');
@@ -434,14 +432,18 @@ describe('useTabDragReorder — pointercancel does not commit a tear-off or a me
     const otherTab = document.createElement('div');
     otherTab.setAttribute('data-tab-id', 'tab-2');
     document.body.appendChild(otherTab);
-    (document as unknown as { elementFromPoint: () => Element | null }).elementFromPoint = () =>
-      otherTab;
+    const doc = document as unknown as { elementFromPoint: () => Element | null };
+    // RESTORE, never delete: `beforeAll` installed the file-wide stub only when
+    // the property was absent, so deleting it here would leave every later test
+    // in this file throwing inside the hook's move handler.
+    const previous = doc.elementFromPoint;
+    doc.elementFromPoint = () => otherTab;
     try {
       fireEvent.pointerMove(window, { pointerId: 1, clientX: 220, clientY: 20 });
       fireEvent.pointerCancel(window, { pointerId: 1 });
       expect(onReorder).toHaveBeenCalledWith('tab-1', 'tab-2');
     } finally {
-      delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+      doc.elementFromPoint = previous;
       otherTab.remove();
     }
   });

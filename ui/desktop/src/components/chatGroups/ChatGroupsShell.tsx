@@ -296,6 +296,22 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
    * (`false`) leaves the tab where it was, which is the right answer for every
    * way this can fail: no strip under the point, a layout that changed between
    * the preview and the release, a window mid-reload.
+   *
+   * ═══════════════════════════════════════════════════════════════════════
+   * THE DEADLINE IS THE OTHER HALF OF D6a, AND IT USED TO BE MISSING HERE.
+   *
+   * Main gives up on an unanswered merge after a couple of seconds and tells
+   * the source to KEEP its tab. This window had no deadline at all — so a
+   * window busy with a heavy streaming turn could process the request long
+   * after that, insert the tab, and acknowledge into a request that no longer
+   * existed. The ack was dropped, the source kept its tab, and the SAME
+   * SESSION was then open in two windows.
+   *
+   * `expiresAt` is main's deadline already backed off by a grace period, so a
+   * request accepted here still has time on main's clock for the ack to get
+   * back. Past it, refusing is not a degraded outcome: the tab simply stays
+   * where the user last saw it.
+   * ═══════════════════════════════════════════════════════════════════════
    */
   useEffect(() => {
     if (!desktop?.on || !dispatch) return;
@@ -312,10 +328,18 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
             };
             screenX: number;
             screenY: number;
+            expiresAt?: number;
           }
         | undefined;
       setRemoteDrop(null);
       if (!payload?.tab) return;
+      if (typeof payload.expiresAt === 'number' && Date.now() >= payload.expiresAt) {
+        // Refuse EXPLICITLY rather than staying silent: main is still holding
+        // the source's commit open, and an answer now ends it immediately
+        // instead of making the user watch out the rest of the timeout.
+        desktop.tabDragAckMerge?.(payload.requestId, false);
+        return;
+      }
       const insertion = resolveMergeInsertion(
         document,
         payload.screenX - window.screenX,

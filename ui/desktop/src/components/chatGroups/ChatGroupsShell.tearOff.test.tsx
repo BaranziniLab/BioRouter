@@ -235,6 +235,52 @@ describe('ChatGroupsShell — receiving a merge (the target side)', () => {
     fromMain('tab-drag:preview', { active: false });
     expect(container.querySelector('[data-dropbefore="true"]')).toBeNull();
   });
+
+  /**
+   * THE DEADLINE, WHICH USED TO BE ONE-SIDED.
+   *
+   * Main gives up on an unanswered merge and tells the source to KEEP its tab.
+   * This window had no deadline at all, so a window busy with a heavy streaming
+   * turn could process the request long after that, insert the tab, and
+   * acknowledge into a request that no longer existed — source keeps the tab,
+   * target inserted it, SAME SESSION IN TWO WINDOWS.
+   */
+  it('REFUSES an expired merge instead of inserting a tab the source will keep', () => {
+    const { container } = render(<ChatGroupsShell onChatChange={() => {}} />);
+    stripInDocument(container);
+    dispatch.mockClear();
+
+    fromMain('tab-drag:merge', {
+      requestId: 11,
+      tab: { sessionId: 'incoming', title: 'Too late', userSetName: false },
+      screenX: 40,
+      screenY: 10,
+      // Everything else about this request is valid: the point IS over the
+      // strip, so without the deadline check it would insert.
+      expiresAt: Date.now() - 1,
+    });
+
+    expect(dispatch.mock.calls.some(([action]) => action.type === 'openTab')).toBe(false);
+    // Answering rather than staying silent ends the source's wait immediately.
+    expect(electron.tabDragAckMerge).toHaveBeenCalledWith(11, false);
+  });
+
+  it('accepts a merge that is still within its deadline', () => {
+    const { container } = render(<ChatGroupsShell onChatChange={() => {}} />);
+    stripInDocument(container);
+    dispatch.mockClear();
+
+    fromMain('tab-drag:merge', {
+      requestId: 12,
+      tab: { sessionId: 'incoming', title: 'In time', userSetName: false },
+      screenX: 40,
+      screenY: 10,
+      expiresAt: Date.now() + 5000,
+    });
+
+    expect(dispatch.mock.calls.some(([action]) => action.type === 'openTab')).toBe(true);
+    expect(electron.tabDragAckMerge).toHaveBeenCalledWith(12, true);
+  });
 });
 
 /**

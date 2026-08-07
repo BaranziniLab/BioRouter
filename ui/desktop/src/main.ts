@@ -48,10 +48,10 @@ import {
   resolveDropTargetForRawPoint,
   screenPointFromWire,
   screenPointToWire,
+  TabDragBroker,
   tornOffWindowBoundsForRawPoint,
   type Rect as DragRect,
   type ScreenGeometry,
-  type ScreenPointWire,
 } from './windowDrag';
 import { expandTilde } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
@@ -1426,12 +1426,16 @@ const createChat = async (
   mainWindow.on('hide', () => stripBandRegistry.setHidden(windowId, true));
   mainWindow.on('minimize', () => stripBandRegistry.setHidden(windowId, true));
 
+  // `closed` is not enough on its own: a reload or a renderer crash keeps the
+  // window and kills the drag. See registerTabDragOwnerTeardown.
+  registerTabDragOwnerTeardown(mainWindow, windowId);
+
   // Handle window closure
   mainWindow.on('closed', () => {
     windowMap.delete(windowId);
     // A closed window stops being a merge target on the very next pointermove
     // (design §6), and cannot be left holding a caret nobody will clear.
-    forgetWindowFromTabDrag(windowId);
+    forgetWindowFromTabDrag(windowId, 'window closed');
 
     // Clean up pending initial message
     pendingInitialMessages.delete(windowId);
@@ -1555,14 +1559,24 @@ function tabDragGeometry(): ScreenGeometry {
   return cachedScreenGeometry;
 }
 
-/** The window currently showing a merge caret, so it can be told to stop. */
-let tabDragPreviewWindowId: number | null = null;
-
-let tabDragMergeSeq = 0;
-const tabDragPendingMerges = new Map<number, (inserted: boolean) => void>();
-
-/** How long the source waits for a target to confirm an insert before giving up. */
-const TAB_DRAG_MERGE_ACK_TIMEOUT_MS = 2000;
+/**
+ * Who is showing a merge caret, who is holding the pointer, and which merges are
+ * still unanswered. The rules live in `windowDrag.ts` where they can be tested;
+ * this supplies the Electron they need and nothing else.
+ */
+const tabDragBroker = new TabDragBroker({
+  resolveWindow: (windowId) => {
+    const win = windowMap.get(windowId);
+    if (!win) return null;
+    return {
+      webContentsId: win.isDestroyed() ? -1 : win.webContents.id,
+      isAlive: () => !win.isDestroyed(),
+      send: (channel, payload) => {
+        if (!win.isDestroyed()) win.webContents.send(channel, payload);
+      },
+    };
+  },
+});
 
 /**
  * `tab-drag:commit`'s payload as it arrives — every field still unproven.
@@ -1636,76 +1650,46 @@ function refreshRegisteredContentBounds(): void {
 }
 
 /**
- * Point exactly one window at a merge caret, and un-point the previous one.
+ * A window has stopped being able to take part in a drag — it closed, its render
+ * process died, or a reload replaced its document.
  *
- * The target must NOT be raised or focused while the caret shows: raising it
- * would take the drag away from the source window that is holding the pointer
- * capture, and the gesture would die mid-air (design D3).
+ * ALL THREE MATTER, and only the first was handled. `tab-drag:end` is sent by
+ * the SOURCE renderer's unmount cleanup, and a document swap runs no React
+ * effect cleanups at all — so a source that was reloaded (Cmd+R is wired to
+ * `mainWindow.reload()` in `createChat`) or crashed never sends it, and the
+ * target window it had pointed at kept painting an insertion caret forever. This
+ * is the same failure `registerTerminalOwnerTeardown` exists for, and it is
+ * fixed the same way.
  */
-function setTabDragPreview(targetWindowId: number | null, point: ScreenPointWire): void {
-  if (tabDragPreviewWindowId !== null && tabDragPreviewWindowId !== targetWindowId) {
-    const previous = windowMap.get(tabDragPreviewWindowId);
-    if (previous && !previous.isDestroyed()) {
-      previous.webContents.send('tab-drag:preview', { active: false });
-    }
-  }
-  tabDragPreviewWindowId = targetWindowId;
-  if (targetWindowId === null) return;
-  const target = windowMap.get(targetWindowId);
-  if (!target || target.isDestroyed()) {
-    tabDragPreviewWindowId = null;
-    return;
-  }
-  target.webContents.send('tab-drag:preview', {
-    active: true,
-    screenX: point.screenX,
-    screenY: point.screenY,
-  });
-}
-
-function clearTabDragPreview(): void {
-  setTabDragPreview(null, { screenX: 0, screenY: 0 });
+function forgetWindowFromTabDrag(windowId: number, reason: string): void {
+  stripBandRegistry.remove(windowId);
+  const wasInDrag =
+    tabDragBroker.previewWindow === windowId ||
+    tabDragBroker.dragSourceWindow === windowId ||
+    tabDragBroker.pendingMergeCount > 0;
+  tabDragBroker.forgetWindow(windowId);
+  if (wasInDrag) log.info(`[tab-drag] released window ${windowId}:`, reason);
 }
 
 /**
- * Ask a target window to insert the tab, and wait for it to say it did.
+ * Free a chat window from any in-flight drag once its document goes away.
  *
- * D6a's ordering, and the reason it is a round trip rather than a fire: the
- * source removes its tab ONLY on this acknowledgement, so an insert that fails —
- * the window is mid-reload, its layout has no group under the point, it closed
- * between the resolve and the send — leaves the tab exactly where it was instead
- * of deleting it into a window that never took it.
- *
- * The timeout is the same guarantee for the case where the target says nothing
- * at all. `false` is the safe answer everywhere: it means "keep the tab".
+ * Mirrors `registerTerminalOwnerTeardown` line for line, including the two
+ * filters that were each learned from a real bug there: `isSameDocument`,
+ * because the app is a hash router and `#/pair -> #/settings` fires this event
+ * too; and `isAppOrigin`, because `did-start-navigation` fires before the
+ * navigation throttles that cancel an off-origin navigation, so a navigation
+ * that never commits would otherwise tear the drag down.
  */
-function requestTabMerge(
-  target: BrowserWindow,
-  tab: unknown,
-  point: ScreenPointWire
-): Promise<boolean> {
-  const requestId = ++tabDragMergeSeq;
-  return new Promise<boolean>((resolve) => {
-    const settle = (inserted: boolean) => {
-      clearTimeout(timer);
-      tabDragPendingMerges.delete(requestId);
-      resolve(inserted);
-    };
-    const timer = setTimeout(() => settle(false), TAB_DRAG_MERGE_ACK_TIMEOUT_MS);
-    tabDragPendingMerges.set(requestId, settle);
-    target.webContents.send('tab-drag:merge', {
-      requestId,
-      tab,
-      screenX: point.screenX,
-      screenY: point.screenY,
-    });
+function registerTabDragOwnerTeardown(win: BrowserWindow, windowId: number): void {
+  win.webContents.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame || details.isSameDocument) return;
+    if (!isAppOrigin(details.url, rendererEntryUrl())) return;
+    forgetWindowFromTabDrag(windowId, 'document replaced');
   });
-}
-
-/** A window is gone: it can be neither a merge target nor a preview holder. */
-function forgetWindowFromTabDrag(windowId: number): void {
-  stripBandRegistry.remove(windowId);
-  if (tabDragPreviewWindowId === windowId) tabDragPreviewWindowId = null;
+  win.webContents.on('render-process-gone', () =>
+    forgetWindowFromTabDrag(windowId, 'render process gone')
+  );
 }
 
 const createLauncher = () => {
@@ -4671,6 +4655,10 @@ async function appMain() {
     if (!source || source.isDestroyed()) return;
     const rawPoint = screenPointFromWire(point);
     if (!rawPoint) return;
+    // The only message that says who is holding the pointer, so it is the only
+    // place the broker can learn the drag SOURCE — which is what lets a source
+    // that dies mid-drag take its caret with it (D4).
+    tabDragBroker.noteDragSource(source.id);
     refreshRegisteredContentBounds();
     const phase = resolveDropTargetForRawPoint(
       rawPoint,
@@ -4678,16 +4666,27 @@ async function appMain() {
       stripBandRegistry,
       source.id
     );
-    setTabDragPreview(
-      phase.kind === 'merge' ? phase.targetWindowId : null,
-      screenPointToWire(rawPoint)
-    );
+    if (phase.kind === 'merge') {
+      tabDragBroker.showPreview(phase.targetWindowId, screenPointToWire(rawPoint));
+    } else {
+      tabDragBroker.clearPreview();
+    }
   });
 
-  ipcMain.on('tab-drag:end', () => clearTabDragPreview());
+  ipcMain.on('tab-drag:end', () => tabDragBroker.endDrag());
 
-  ipcMain.on('tab-drag:merge-ack', (_event, requestId: number, inserted: boolean) => {
-    tabDragPendingMerges.get(requestId)?.(!!inserted);
+  // ATTRIBUTED TO THE SENDER. `tabDragAckMerge` is on every renderer's preload,
+  // so a bare request id from anyone would do: the broker believes an ack only
+  // from the webContents the request was actually sent to.
+  ipcMain.on('tab-drag:merge-ack', (event, requestId: unknown, inserted: unknown) => {
+    if (typeof requestId !== 'number') return;
+    const accepted = tabDragBroker.ackMerge(requestId, !!inserted, event.sender.id);
+    if (!accepted) {
+      log.warn(
+        `[tab-drag] ignored merge ack ${requestId} from webContents ${event.sender.id}` +
+          ' (unknown, already settled, or not the window it was sent to)'
+      );
+    }
   });
 
   ipcMain.handle('tab-drag:commit', async (event, request: unknown) => {
@@ -4701,7 +4700,7 @@ async function appMain() {
     const wirePoint = screenPointToWire(rawPoint);
 
     // The caret goes the moment the button is released, whatever happens next.
-    clearTabDragPreview();
+    tabDragBroker.endDrag();
     refreshRegisteredContentBounds();
     const phase = resolveDropTargetForRawPoint(
       rawPoint,
@@ -4712,15 +4711,18 @@ async function appMain() {
     if (phase.kind === 'local') return { outcome: 'noop' };
 
     if (phase.kind === 'merge') {
-      const target = windowMap.get(phase.targetWindowId);
-      if (!target || target.isDestroyed()) return { outcome: 'noop' };
-      const inserted = await requestTabMerge(target, req.tab, wirePoint);
+      const inserted = await tabDragBroker.requestMerge(phase.targetWindowId, req.tab, wirePoint);
       if (!inserted) return { outcome: 'noop' };
       // NOW it may be raised — the gesture is over, so there is no capture left
       // to steal (D3's "not raised, not focused" applies only during preview).
-      target.show();
-      target.focus();
-      target.moveTop();
+      // Re-read the window: the ack round trip is the one place in this handler
+      // where the target can have gone away since it was resolved.
+      const target = windowMap.get(phase.targetWindowId);
+      if (target && !target.isDestroyed()) {
+        target.show();
+        target.focus();
+        target.moveTop();
+      }
       return { outcome: 'merge' };
     }
 

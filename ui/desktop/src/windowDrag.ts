@@ -516,3 +516,284 @@ export function tornOffWindowBoundsForRawPoint(
     geometry.workAreaNearest(dropPoint)
   );
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+// THE PREVIEW AND MERGE BROKER
+//
+// One drag is in flight at a time, and exactly one window may be painting a
+// merge caret for it. That is a small amount of state with a large number of
+// ways to be left wrong, so it lives here — beside the geometry, with no
+// Electron import — rather than as loose module variables in `main.ts` where
+// nothing could reach it to test it.
+//
+// Two defects are what moved it:
+//
+//   D4 — the caret was cleared only when the window HOLDING it went away. A
+//        dying SOURCE (Cmd+R, a renderer crash, a closed window) left the
+//        target painting an insertion hairline forever, because a document swap
+//        runs no React effect cleanups and the renderer's own `tab-drag:end`
+//        never arrives. `registerTerminalOwnerTeardown` had already solved
+//        exactly this for shells; the broker gives tab drag the same door.
+//
+//   D5 — the merge round trip had a deadline on ONE side. The source gave up
+//        after 2s and kept its tab; the target had no deadline at all, so a
+//        window busy with a heavy streaming turn could insert the tab late and
+//        acknowledge into a request that no longer existed. Net result: the
+//        same session open in two windows.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** What the broker needs of a live window. `main.ts` satisfies it with `BrowserWindow`. */
+export interface TabDragWindow {
+  /**
+   * `webContents.id`. An ack is only believed from the window it was sent to —
+   * `tabDragAckMerge` is on EVERY renderer's preload, and the handler used to
+   * take a bare request id from anyone who sent one.
+   */
+  readonly webContentsId: number;
+  isAlive(): boolean;
+  send(channel: string, payload: unknown): void;
+}
+
+/** Opaque handle for whatever the host's timer function returns. */
+export type TabDragTimer = unknown;
+
+export interface TabDragBrokerOptions {
+  /** Live window by id, or `null` once it is gone. */
+  resolveWindow: (windowId: number) => TabDragWindow | null;
+  /** How long the SOURCE waits for the target to confirm an insert. */
+  ackTimeoutMs?: number;
+  /**
+   * How much of that budget is reserved for the ack to travel back.
+   *
+   * The target is given `ackTimeoutMs - ackGraceMs`, so a target that decides
+   * to insert has done so with this much time still on main's clock. Without
+   * it the two deadlines are the same instant and the round trip is a coin
+   * flip; with it, the only way to lose is for main to be blocked for the
+   * whole grace period — which the deferred settle below then covers.
+   */
+  ackGraceMs?: number;
+  now?: () => number;
+  schedule?: (fn: () => void, ms: number) => TabDragTimer;
+  cancelScheduled?: (timer: TabDragTimer) => void;
+  /**
+   * Run after the current I/O has been drained. `setImmediate` in the real
+   * process, and the reason it is here rather than inlined:
+   *
+   * Node runs the TIMERS phase before the POLL phase. If main's loop is blocked
+   * past the deadline, the timeout callback and an ack that is already sitting
+   * on the IPC channel both become runnable, and the timer wins — main answers
+   * "keep the tab" to a target that has already inserted it. Deferring the
+   * settle to the CHECK phase (which runs after POLL) lets that queued ack be
+   * delivered first, and it then finds the request still pending and settles it
+   * truthfully. Costs one tick on a path that has already waited seconds.
+   */
+  deferSettle?: (fn: () => void) => void;
+}
+
+interface PendingMerge {
+  targetWindowId: number;
+  /** The only webContents whose ack counts for this request. */
+  targetWebContentsId: number;
+  timer: TabDragTimer;
+  settle: (inserted: boolean) => void;
+}
+
+/** The message a target renderer receives when it is asked to take a tab. */
+export interface TabDragMergeRequest extends ScreenPointWire {
+  requestId: number;
+  tab: unknown;
+  /**
+   * Wall clock (`Date.now()`) after which the target must REFUSE rather than
+   * insert. Already backed off from main's own deadline by `ackGraceMs`, so the
+   * target never needs to know a grace exists — it just gets a deadline that is
+   * by construction earlier than the one it is racing.
+   */
+  expiresAt: number;
+}
+
+export const TAB_DRAG_MERGE_ACK_TIMEOUT_MS = 2000;
+export const TAB_DRAG_MERGE_ACK_GRACE_MS = 400;
+
+export class TabDragBroker {
+  private previewWindowId: number | null = null;
+  private sourceWindowId: number | null = null;
+  private seq = 0;
+  private readonly pending = new Map<number, PendingMerge>();
+
+  private readonly resolveWindow: (windowId: number) => TabDragWindow | null;
+  private readonly ackTimeoutMs: number;
+  private readonly ackGraceMs: number;
+  private readonly now: () => number;
+  private readonly schedule: (fn: () => void, ms: number) => TabDragTimer;
+  private readonly cancelScheduled: (timer: TabDragTimer) => void;
+  private readonly deferSettle: (fn: () => void) => void;
+
+  constructor(options: TabDragBrokerOptions) {
+    this.resolveWindow = options.resolveWindow;
+    this.ackTimeoutMs = options.ackTimeoutMs ?? TAB_DRAG_MERGE_ACK_TIMEOUT_MS;
+    this.ackGraceMs = options.ackGraceMs ?? TAB_DRAG_MERGE_ACK_GRACE_MS;
+    this.now = options.now ?? (() => Date.now());
+    this.schedule = options.schedule ?? ((fn, ms) => setTimeout(fn, ms));
+    this.cancelScheduled =
+      options.cancelScheduled ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
+    this.deferSettle =
+      options.deferSettle ??
+      ((fn) => {
+        if (typeof setImmediate === 'function') setImmediate(fn);
+        else setTimeout(fn, 0);
+      });
+  }
+
+  /** Read-only view, for `main.ts` logging and for tests. */
+  get previewWindow(): number | null {
+    return this.previewWindowId;
+  }
+  get dragSourceWindow(): number | null {
+    return this.sourceWindowId;
+  }
+  get pendingMergeCount(): number {
+    return this.pending.size;
+  }
+
+  /**
+   * Remember which window is holding the pointer.
+   *
+   * Recorded on every move rather than on a start message because there is no
+   * start message: the gesture only becomes main's business once it leaves the
+   * source window. Without this the broker cannot tell a source's death from
+   * any other window's, which is precisely how D4's stranded caret survived.
+   */
+  noteDragSource(windowId: number): void {
+    this.sourceWindowId = windowId;
+  }
+
+  /**
+   * Point exactly one window at a merge caret, and un-point the previous one.
+   *
+   * The target is NOT raised or focused: raising it would take the drag away
+   * from the source window holding the pointer capture, and the gesture would
+   * die mid-air (D3).
+   */
+  showPreview(targetWindowId: number, point: ScreenPointWire): void {
+    if (this.previewWindowId !== null && this.previewWindowId !== targetWindowId) {
+      this.sendPreviewOff(this.previewWindowId);
+    }
+    const target = this.resolveWindow(targetWindowId);
+    if (!target || !target.isAlive()) {
+      this.previewWindowId = null;
+      return;
+    }
+    this.previewWindowId = targetWindowId;
+    target.send('tab-drag:preview', {
+      active: true,
+      screenX: point.screenX,
+      screenY: point.screenY,
+    });
+  }
+
+  /** No window should be showing a caret. Safe to call when none is. */
+  clearPreview(): void {
+    if (this.previewWindowId === null) return;
+    const previewWindowId = this.previewWindowId;
+    this.previewWindowId = null;
+    this.sendPreviewOff(previewWindowId);
+  }
+
+  /** The gesture is over, however it ended. */
+  endDrag(): void {
+    this.clearPreview();
+    this.sourceWindowId = null;
+  }
+
+  /**
+   * Ask a target to insert the tab, and wait for it to say it did.
+   *
+   * D6a's ordering, and the reason it is a round trip rather than a fire: the
+   * source removes its tab ONLY on this acknowledgement, so an insert that
+   * fails leaves the tab exactly where it was instead of deleting it into a
+   * window that never took it. `false` is the safe answer everywhere — it means
+   * "keep the tab".
+   */
+  requestMerge(targetWindowId: number, tab: unknown, point: ScreenPointWire): Promise<boolean> {
+    const target = this.resolveWindow(targetWindowId);
+    if (!target || !target.isAlive()) return Promise.resolve(false);
+
+    const requestId = ++this.seq;
+    return new Promise<boolean>((resolve) => {
+      const settle = (inserted: boolean) => {
+        const entry = this.pending.get(requestId);
+        if (!entry) return; // already settled — a late ack, or a second timeout
+        this.pending.delete(requestId);
+        this.cancelScheduled(entry.timer);
+        resolve(inserted);
+      };
+      const timer = this.schedule(() => this.deferSettle(() => settle(false)), this.ackTimeoutMs);
+      this.pending.set(requestId, {
+        targetWindowId,
+        targetWebContentsId: target.webContentsId,
+        timer,
+        settle,
+      });
+      const request: TabDragMergeRequest = {
+        requestId,
+        tab,
+        screenX: point.screenX,
+        screenY: point.screenY,
+        expiresAt: this.now() + Math.max(0, this.ackTimeoutMs - this.ackGraceMs),
+      };
+      target.send('tab-drag:merge', request);
+    });
+  }
+
+  /**
+   * A target answered. Returns whether the ack was believed, so `main.ts` can
+   * log the ones that were not.
+   *
+   * An ack is only accepted from the webContents the request was SENT to. The
+   * preload exposes `tabDragAckMerge` to every renderer, so without this any
+   * window — a launcher, an app window, a second chat window — could answer
+   * "inserted" for a request it never received and make the source drop a tab
+   * nobody took.
+   */
+  ackMerge(requestId: number, inserted: boolean, fromWebContentsId: number): boolean {
+    const entry = this.pending.get(requestId);
+    if (!entry) return false;
+    if (entry.targetWebContentsId !== fromWebContentsId) return false;
+    entry.settle(inserted);
+    return true;
+  }
+
+  /**
+   * A window is gone — closed, crashed, or its document replaced by a reload.
+   *
+   * Three obligations, and only the first was met before:
+   *
+   *  1. it can no longer HOLD a caret;
+   *  2. if it was the drag SOURCE, nobody is coming to clear the caret it
+   *     caused, so clear it now (D4). This is the whole bug: `tabDragEnd` is
+   *     sent by the source renderer, and a source that reloaded or crashed
+   *     never sends it, leaving the target painting a hairline indefinitely;
+   *  3. any merge waiting on it as a TARGET can never be answered, so settle it
+   *     `false` at once rather than making the user watch a 2s stall for a
+   *     window that is already gone.
+   */
+  forgetWindow(windowId: number): void {
+    // `settle` does its own removal and timer cancellation, so iterate a copy.
+    for (const entry of [...this.pending.values()]) {
+      if (entry.targetWindowId === windowId) entry.settle(false);
+    }
+    if (this.previewWindowId === windowId) {
+      // The holder itself is gone: drop the pointer without sending into it.
+      this.previewWindowId = null;
+    }
+    if (this.sourceWindowId === windowId) {
+      this.sourceWindowId = null;
+      this.clearPreview();
+    }
+  }
+
+  private sendPreviewOff(windowId: number): void {
+    const win = this.resolveWindow(windowId);
+    if (win && win.isAlive()) win.send('tab-drag:preview', { active: false });
+  }
+}

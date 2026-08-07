@@ -12,12 +12,15 @@ import {
   resolveDropTargetForRawPoint,
   screenPointFromWire,
   screenPointToWire,
+  TabDragBroker,
   tornOffWindowBounds,
   tornOffWindowBoundsForRawPoint,
   type Point,
   type Rect,
   type ScreenGeometry,
   type ScreenPointWire,
+  type TabDragMergeRequest,
+  type TabDragWindow,
 } from './windowDrag';
 
 const STRIP_HEIGHT = 36;
@@ -482,9 +485,10 @@ describe('electronScreenGeometry — macOS, where the DIP converters do not exis
   it('resolves a real merge instead of dying in the ipcMain listener', () => {
     const geometry = electronScreenGeometry(macScreenModule());
     const registry = registryOf([7, chatWindow({ x: 0, y: 0, width: 1000, height: 800 })]);
-    expect(
-      resolveDropTargetForRawPoint({ x: 500, y: 18 }, geometry, registry, 99)
-    ).toEqual({ kind: 'merge', targetWindowId: 7 });
+    expect(resolveDropTargetForRawPoint({ x: 500, y: 18 }, geometry, registry, 99)).toEqual({
+      kind: 'merge',
+      targetWindowId: 7,
+    });
   });
 
   it('places a torn-off window at the drop point rather than at NaN', () => {
@@ -586,5 +590,284 @@ describe('screenPointFromWire — the shape the renderer actually sends', () => 
     // @ts-expect-error a wire point is not a geometry Point and must never be
     const notAPoint: Point = wire;
     expect(notAPoint).toBe(wire);
+  });
+});
+
+/**
+ * THE BROKER — WHO IS SHOWING A CARET, AND WHO STILL OWES AN ANSWER.
+ *
+ * This state used to be four module-level variables in `main.ts`, where nothing
+ * could reach it. Both defects below survived precisely because of that: they
+ * are not geometry, so no test in this file could see them, and main.ts has no
+ * harness at all.
+ */
+
+/** A window that records every message main sends it. */
+function fakeWindow(webContentsId: number) {
+  const sent: Array<{ channel: string; payload: unknown }> = [];
+  let alive = true;
+  return {
+    sent,
+    handle: {
+      webContentsId,
+      isAlive: () => alive,
+      send: (channel: string, payload: unknown) => sent.push({ channel, payload }),
+    } satisfies TabDragWindow,
+    kill: () => {
+      alive = false;
+    },
+    /** The last `tab-drag:preview` this window was told, or null if never told. */
+    previewState(): boolean | null {
+      const previews = sent.filter((m) => m.channel === 'tab-drag:preview');
+      if (previews.length === 0) return null;
+      return !!(previews[previews.length - 1].payload as { active?: boolean }).active;
+    },
+    mergeRequests(): TabDragMergeRequest[] {
+      return sent
+        .filter((m) => m.channel === 'tab-drag:merge')
+        .map((m) => m.payload as TabDragMergeRequest);
+    },
+  };
+}
+
+/**
+ * A broker with hand-driven timers, so the ack race can be reproduced in the
+ * exact order Node's event loop produces it rather than by waiting.
+ */
+function brokerHarness(windows: Record<number, ReturnType<typeof fakeWindow>>) {
+  const timers: Array<{ fn: () => void; ms: number; cancelled: boolean }> = [];
+  const deferred: Array<() => void> = [];
+  let clock = 1_000_000;
+  const broker = new TabDragBroker({
+    resolveWindow: (windowId) => windows[windowId]?.handle ?? null,
+    ackTimeoutMs: 2000,
+    ackGraceMs: 400,
+    now: () => clock,
+    schedule: (fn, ms) => {
+      const timer = { fn, ms, cancelled: false };
+      timers.push(timer);
+      return timer;
+    },
+    cancelScheduled: (timer) => {
+      (timer as { cancelled: boolean }).cancelled = true;
+    },
+    deferSettle: (fn) => deferred.push(fn),
+  });
+  return {
+    broker,
+    advance(ms: number) {
+      clock += ms;
+    },
+    /** Node's TIMERS phase. */
+    runTimers() {
+      for (const timer of [...timers]) if (!timer.cancelled) timer.fn();
+    },
+    /** Node's CHECK phase — after POLL, which is where an IPC ack lands. */
+    runDeferred() {
+      const queued = deferred.splice(0);
+      for (const fn of queued) fn();
+    },
+    liveTimers: () => timers.filter((t) => !t.cancelled).length,
+  };
+}
+
+describe('TabDragBroker — a caret is never stranded (D4)', () => {
+  it('clears the caret when the DRAG SOURCE dies, not just the caret holder', () => {
+    // The whole defect. Window 2 is holding the pointer; window 1 is painting
+    // the caret. Window 2 reloads (Cmd+R), crashes, or closes — a document swap
+    // runs no React effect cleanups, so `tab-drag:end` never arrives — and
+    // window 1 was left drawing an insertion hairline indefinitely.
+    const target = fakeWindow(101);
+    const source = fakeWindow(102);
+    const { broker } = brokerHarness({ 1: target, 2: source });
+
+    broker.noteDragSource(2);
+    broker.showPreview(1, { screenX: 500, screenY: 18 });
+    expect(target.previewState()).toBe(true);
+
+    source.kill();
+    broker.forgetWindow(2);
+
+    expect(target.previewState()).toBe(false);
+    expect(broker.previewWindow).toBeNull();
+    expect(broker.dragSourceWindow).toBeNull();
+  });
+
+  it('still clears when the CARET HOLDER dies, without sending into a dead window', () => {
+    const target = fakeWindow(101);
+    const source = fakeWindow(102);
+    const { broker } = brokerHarness({ 1: target, 2: source });
+    broker.noteDragSource(2);
+    broker.showPreview(1, { screenX: 500, screenY: 18 });
+
+    target.kill();
+    broker.forgetWindow(1);
+
+    expect(broker.previewWindow).toBeNull();
+    // Exactly one message — the `active: true`. Nothing was sent after death.
+    expect(target.sent).toHaveLength(1);
+  });
+
+  it('moves the caret between windows, un-pointing the previous one', () => {
+    const a = fakeWindow(101);
+    const b = fakeWindow(102);
+    const source = fakeWindow(103);
+    const { broker } = brokerHarness({ 1: a, 2: b, 3: source });
+    broker.noteDragSource(3);
+
+    broker.showPreview(1, { screenX: 10, screenY: 10 });
+    broker.showPreview(2, { screenX: 900, screenY: 10 });
+
+    expect(a.previewState()).toBe(false);
+    expect(b.previewState()).toBe(true);
+    expect(broker.previewWindow).toBe(2);
+  });
+
+  it('forgetting an uninvolved window disturbs nothing', () => {
+    const target = fakeWindow(101);
+    const source = fakeWindow(102);
+    const other = fakeWindow(103);
+    const { broker } = brokerHarness({ 1: target, 2: source, 3: other });
+    broker.noteDragSource(2);
+    broker.showPreview(1, { screenX: 500, screenY: 18 });
+
+    broker.forgetWindow(3);
+
+    expect(broker.previewWindow).toBe(1);
+    expect(target.previewState()).toBe(true);
+  });
+
+  it('settles a merge waiting on a window that dies, instead of stalling', async () => {
+    const target = fakeWindow(101);
+    const { broker } = brokerHarness({ 1: target });
+    const merge = broker.requestMerge(1, { sessionId: 's1' }, { screenX: 1, screenY: 1 });
+    expect(broker.pendingMergeCount).toBe(1);
+
+    target.kill();
+    broker.forgetWindow(1);
+
+    await expect(merge).resolves.toBe(false);
+    expect(broker.pendingMergeCount).toBe(0);
+  });
+
+  it('endDrag clears both the caret and the source', () => {
+    const target = fakeWindow(101);
+    const source = fakeWindow(102);
+    const { broker } = brokerHarness({ 1: target, 2: source });
+    broker.noteDragSource(2);
+    broker.showPreview(1, { screenX: 1, screenY: 1 });
+
+    broker.endDrag();
+
+    expect(target.previewState()).toBe(false);
+    expect(broker.previewWindow).toBeNull();
+    expect(broker.dragSourceWindow).toBeNull();
+  });
+});
+
+describe('TabDragBroker — the merge ack cannot leave a session in two windows (D5)', () => {
+  it('gives the target a deadline EARLIER than its own, by the grace period', () => {
+    const target = fakeWindow(101);
+    const harness = brokerHarness({ 1: target });
+    void harness.broker.requestMerge(1, { sessionId: 's1' }, { screenX: 5, screenY: 5 });
+
+    const [request] = target.mergeRequests();
+    expect(request.requestId).toBe(1);
+    // 2000ms budget, 400ms reserved for the ack to travel back.
+    expect(request.expiresAt).toBe(1_000_000 + 1600);
+  });
+
+  it('believes an ack only from the window the request was SENT to', async () => {
+    // `tabDragAckMerge` is on every renderer's preload, and the handler used to
+    // take a bare request id from whoever sent it — so any window could make
+    // the source drop a tab that nobody actually took.
+    const target = fakeWindow(101);
+    const impostor = fakeWindow(999);
+    const harness = brokerHarness({ 1: target, 2: impostor });
+    const merge = harness.broker.requestMerge(1, { sessionId: 's1' }, { screenX: 5, screenY: 5 });
+
+    expect(harness.broker.ackMerge(1, true, impostor.handle.webContentsId)).toBe(false);
+    expect(harness.broker.pendingMergeCount).toBe(1);
+
+    expect(harness.broker.ackMerge(1, true, target.handle.webContentsId)).toBe(true);
+    await expect(merge).resolves.toBe(true);
+  });
+
+  it('ignores an ack for a request id nobody is waiting on', () => {
+    const target = fakeWindow(101);
+    const harness = brokerHarness({ 1: target });
+    expect(harness.broker.ackMerge(42, true, 101)).toBe(false);
+  });
+
+  it('a queued ack WINS the deadline it was racing', async () => {
+    // Node runs TIMERS before POLL. With main's loop blocked past the deadline,
+    // the timeout callback and an ack already sitting on the IPC channel are
+    // both runnable and the timer fires first — main answers "keep the tab" to
+    // a target that has already inserted it, and the session ends up in two
+    // windows. Deferring the settle to the CHECK phase (after POLL) is what
+    // lets the ack be delivered first. This reproduces that exact ordering.
+    const target = fakeWindow(101);
+    const harness = brokerHarness({ 1: target });
+    const merge = harness.broker.requestMerge(1, { sessionId: 's1' }, { screenX: 5, screenY: 5 });
+
+    harness.advance(2000);
+    harness.runTimers(); // TIMERS phase: the deadline fires
+    harness.broker.ackMerge(1, true, 101); // POLL phase: the ack lands
+    harness.runDeferred(); // CHECK phase: the settle finally runs
+
+    await expect(merge).resolves.toBe(true);
+    expect(harness.broker.pendingMergeCount).toBe(0);
+  });
+
+  it('still gives up when the target really does say nothing', async () => {
+    const target = fakeWindow(101);
+    const harness = brokerHarness({ 1: target });
+    const merge = harness.broker.requestMerge(1, { sessionId: 's1' }, { screenX: 5, screenY: 5 });
+
+    harness.advance(2000);
+    harness.runTimers();
+    harness.runDeferred();
+
+    await expect(merge).resolves.toBe(false);
+    expect(harness.broker.pendingMergeCount).toBe(0);
+  });
+
+  it('a second ack after the first changes nothing, and cancels the timer', async () => {
+    const target = fakeWindow(101);
+    const harness = brokerHarness({ 1: target });
+    const merge = harness.broker.requestMerge(1, { sessionId: 's1' }, { screenX: 5, screenY: 5 });
+
+    harness.broker.ackMerge(1, true, 101);
+    expect(harness.broker.ackMerge(1, false, 101)).toBe(false);
+    await expect(merge).resolves.toBe(true);
+    expect(harness.liveTimers()).toBe(0);
+  });
+
+  it('refuses to ask a window that is already gone', async () => {
+    const target = fakeWindow(101);
+    const harness = brokerHarness({ 1: target });
+    target.kill();
+    await expect(
+      harness.broker.requestMerge(1, { sessionId: 's1' }, { screenX: 5, screenY: 5 })
+    ).resolves.toBe(false);
+    expect(target.mergeRequests()).toHaveLength(0);
+  });
+
+  it('keeps request ids distinct so two drags cannot cross-answer', async () => {
+    const a = fakeWindow(101);
+    const b = fakeWindow(102);
+    const harness = brokerHarness({ 1: a, 2: b });
+    const first = harness.broker.requestMerge(1, { sessionId: 's1' }, { screenX: 1, screenY: 1 });
+    const second = harness.broker.requestMerge(2, { sessionId: 's2' }, { screenX: 2, screenY: 2 });
+
+    expect(a.mergeRequests()[0].requestId).toBe(1);
+    expect(b.mergeRequests()[0].requestId).toBe(2);
+    // Window 1 answering with window 2's id must not settle window 2's merge.
+    expect(harness.broker.ackMerge(2, true, a.handle.webContentsId)).toBe(false);
+
+    harness.broker.ackMerge(1, true, a.handle.webContentsId);
+    harness.broker.ackMerge(2, false, b.handle.webContentsId);
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
   });
 });
