@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use crate::turn_stream::TurnStream;
 use axum::{
     extract::{DefaultBodyLimit, State},
     http::{self, StatusCode},
@@ -98,8 +99,28 @@ pub struct ChatRequest {
     /// flaky network — should send the same key it sent the first time. The retry
     /// then comes back as a 409 with `duplicate: true`, meaning "that turn is
     /// still running", instead of being mistaken for a genuine second turn.
+    ///
+    /// Since the live-turn-stream work this is also the ATTACH pointer: posting
+    /// a `turn_id` that names a turn already in flight is answered 200 with that
+    /// turn's stream instead of 409. Either name works — the key the client
+    /// chose, or the server-assigned `turn-N` it read off a frame's `turn_id` /
+    /// `POST /agent/resume`'s `active_turn`.
     #[serde(default)]
     turn_id: Option<String>,
+    /// Attach only from this per-turn sequence number, when `turn_id` names a
+    /// turn already in flight.
+    ///
+    /// A pure OPTIMISATION and deliberately so: a client that already rendered
+    /// frames `0..N` skips re-receiving them, but one that omits the field gets
+    /// the whole turn replayed and its own sequence gate makes that idempotent.
+    /// Nothing about correctness depends on the server honouring it.
+    ///
+    /// It lives in the BODY rather than in `?from_seq=`, because `/reply` is
+    /// generated with `query?: never` in `api/types.gen.ts` — a query parameter
+    /// could only be smuggled past the typed client, while a `ChatRequest` field
+    /// appears properly the next time the OpenAPI spec is regenerated.
+    #[serde(default)]
+    from_seq: Option<u64>,
 }
 
 /// Why a client-supplied `conversation_so_far` was refused (#51 W5).
@@ -381,7 +402,7 @@ impl TurnErrorScope {
 }
 
 impl MessageEvent {
-    fn error(
+    pub(crate) fn error(
         error: impl Into<String>,
         code: impl Into<String>,
         scope: TurnErrorScope,
@@ -428,26 +449,17 @@ pub(crate) async fn get_token_state(
         .unwrap_or_default()
 }
 
-async fn stream_event(
-    event: MessageEvent,
-    tx: &mpsc::Sender<String>,
-    cancel_token: &CancellationToken,
-) {
-    let json = serde_json::to_string(&event).unwrap_or_else(|e| {
-        serde_json::json!({
-            "type": "Error",
-            "error": format!("Failed to serialize stream event: {e}"),
-            "code": "stream_serialization_failed",
-            "scope": "internal",
-            "retryable": false,
-        })
-        .to_string()
-    });
-
-    if tx.send(format!("data: {}\n\n", json)).await.is_err() {
-        tracing::info!("client hung up");
-        cancel_token.cancel();
-    }
+/// Log one frame on the turn's stream, where every observer — and every
+/// observer that has not attached yet — can read it.
+///
+/// **This function cannot fail and cannot cancel anything, and that is the
+/// point.** It replaces a `tx.send(...)` into the single HTTP response body
+/// whose failure called `cancel_token.cancel()`, which made "nobody is
+/// listening" and "stop working" the same event: closing the window, moving the
+/// tab, or reloading the renderer killed the turn mid-flight. A turn with zero
+/// observers is now an ordinary state — see [`crate::turn_stream`].
+fn stream_event(event: MessageEvent, stream: &TurnStream) {
+    stream.publish(&event);
 }
 
 /// BR-53a: how long consecutive streamed text deltas are coalesced into a
@@ -569,23 +581,16 @@ impl DeltaCoalescer {
     }
 }
 
-/// Flush any buffered coalesced run to the client as one `Message` frame.
-async fn flush_coalesced(
-    coalescer: &mut DeltaCoalescer,
-    tx: &mpsc::Sender<String>,
-    cancel_token: &CancellationToken,
-    token_state: &TokenState,
-) {
+/// Flush any buffered coalesced run to the turn's stream as one `Message` frame.
+fn flush_coalesced(coalescer: &mut DeltaCoalescer, stream: &TurnStream, token_state: &TokenState) {
     if let Some(message) = coalescer.drain() {
         stream_event(
             MessageEvent::Message {
                 message,
                 token_state: token_state.clone(),
             },
-            tx,
-            cancel_token,
-        )
-        .await;
+            stream,
+        );
     }
 }
 
@@ -612,29 +617,45 @@ pub(crate) fn on_bus_lag_action() -> BusLagAction {
 /// a terminal frame, i.e. when the runner died without publishing one.
 const RUNNER_EXIT_DRAIN_GRACE: Duration = Duration::from_millis(250);
 
+/// How long the pump keeps draining the bus AFTER its cancellation token trips,
+/// so a cancelled turn's real terminal frame still lands in the replay buffer.
+///
+/// Cancellation is asynchronous: the runner unwinds at its next loop boundary
+/// and only then does `finish_turn` publish `TurnFinished { reason:
+/// "cancelled" }`. Breaking the instant the token trips would close the log
+/// before that frame arrived, and every client attaching afterwards would read
+/// the synthesized "ended without a result" terminal instead of the truth. Two
+/// seconds covers the runner's end-of-turn store read under load; past it,
+/// `TurnStream::close` synthesizes a terminal so nothing waits forever.
+const CANCEL_DRAIN_GRACE: Duration = Duration::from_secs(2);
+
 /// Own the turn's end-of-life, for BOTH failure modes.
 ///
 /// 1. **The runner panicked.** Send the one internal-error frame (unchanged
 ///    behaviour).
-/// 2. **The SSE task is still waiting when the runner is gone.** Release it.
-///    This is new and it is load-bearing: pre-refactor the turn task owned
-///    `task_tx`, so its return — panic included — dropped the sender and closed
-///    the body. Now the SSE task owns its own sender and only breaks on a
-///    terminal bus event, `RecvError::Closed`, or `cancel_token`. A panicking
-///    runner publishes no terminal event; `Closed` is unreachable because this
-///    consumer's own `Receiver` keeps the session's `broadcast::Sender` alive;
-///    and `TurnGuard::drop` does not trip the token (`state.rs`, `TurnGuard`'s
-///    `Drop` impl). Without this the response stays open forever after the error
+/// 2. **The pump is still waiting when the runner is gone.** Release it.
+///    This is load-bearing: pre-refactor the turn task owned `task_tx`, so its
+///    return — panic included — dropped the sender and closed the body. Now the
+///    pump only breaks on a terminal bus event, `RecvError::Closed`, or
+///    `cancel_token`. A panicking runner publishes no terminal event; `Closed`
+///    is unreachable because this consumer's own `Receiver` keeps the session's
+///    `broadcast::Sender` alive; and `TurnGuard::drop` does not trip the token
+///    (`state.rs`, `TurnGuard`'s `Drop` impl). Without this the turn's log never
+///    closes and every attached response stays open forever after the error
 ///    frame.
 ///
 /// The grace period is what keeps case 2 from truncating a HEALTHY turn: the
-/// runner publishes `TurnFinished` and returns, and the SSE task may not have
-/// consumed it yet. Waiting on the SSE task's own handle first means a normal
-/// turn is never cancelled behind its back.
+/// runner publishes `TurnFinished` and returns, and the pump may not have
+/// consumed it yet. Waiting on the pump's own handle first means a normal turn
+/// is never cancelled behind its back.
+///
+/// Note what is NOT here: nothing about HTTP responses. The supervisor owns the
+/// turn's end-of-life, and the turn no longer has a response — it has a stream
+/// that any number of responses read.
 async fn supervise_turn(
     runner: tokio::task::JoinHandle<()>,
-    sse: tokio::task::JoinHandle<()>,
-    tx: mpsc::Sender<String>,
+    pump: tokio::task::JoinHandle<()>,
+    stream: Arc<TurnStream>,
     cancel: CancellationToken,
 ) {
     if let Err(join_error) = runner.await {
@@ -647,24 +668,23 @@ async fn supervise_turn(
                 true,
                 None,
             ),
-            &tx,
-            &cancel,
-        )
-        .await;
+            &stream,
+        );
     }
-    if tokio::time::timeout(RUNNER_EXIT_DRAIN_GRACE, sse)
+    if tokio::time::timeout(RUNNER_EXIT_DRAIN_GRACE, pump)
         .await
         .is_err()
     {
         tracing::warn!(
             counter.biorouter.reply_sse_released_by_supervisor = 1,
-            "turn ended without a terminal frame; releasing the SSE stream"
+            "turn ended without a terminal frame; releasing the turn stream"
         );
         cancel.cancel();
     }
 }
 
-/// The subscription half of `/reply`: one bus consumer, one HTTP response.
+/// The turn's PUMP: one bus consumer, one sequence-numbered frame log, 0..N
+/// HTTP responses reading it.
 ///
 /// Named rather than inlined into the handler for one reason — every branch
 /// below is a property the refactor must not lose, and an inline `tokio::spawn`
@@ -675,57 +695,68 @@ async fn supervise_turn(
 /// that drives THIS function against the real bus (`mod tests`), so removing one
 /// turns a suite red instead of only being described in a comment.
 ///
+/// **It is spawned ONCE per turn, by the `/reply` that starts it, and it does
+/// not belong to that request.** The request's response is just the first
+/// reader of the log this writes ([`drain_stream_to_client`]); when that reader
+/// goes away the pump keeps running, which is the whole fix. Coalescing
+/// therefore moved here too: with several observers, one shared numbering is
+/// the only way two clients can agree on what frame 7 is.
+///
 /// `coalesce_window` is a parameter rather than a call to
 /// [`sse_coalesce_window`] so a test can run the loop with coalescing ON.
 /// `BIOROUTER_SSE_COALESCE_MS` is unset in tests, and with a zero window the
 /// coalescer passes every delta straight through — so the flush ordering this
 /// function exists to guarantee would never execute under test.
 ///
-/// Per-REQUEST concerns only: coalescing, heartbeat, resync-on-lag, and
-/// terminating the SSE response on the turn's terminal frame. Everything about
-/// the turn itself belongs to the runner.
-async fn stream_bus_to_client(
+/// The heartbeat is NOT here any more: a `Ping` is a per-connection liveness
+/// probe, it carries no turn content, and numbering it would fill the replay
+/// buffer with keepalives a re-attaching client would then have to skip. It
+/// lives in [`drain_stream_to_client`], unnumbered.
+async fn pump_bus_into_stream(
     state: Arc<AppState>,
     session_id: String,
     mut bus: biorouter::session_events::Subscription,
-    tx: mpsc::Sender<String>,
+    stream: Arc<TurnStream>,
     cancel: CancellationToken,
     coalesce_window: Duration,
 ) {
     let mut token_state = get_token_state(state.session_manager(), &session_id).await;
-    let mut heartbeat_interval = tokio::time::interval(Duration::from_millis(500));
     // BR-53a: batch the provider's token-by-token text deltas into one SSE
     // frame per window (`BIOROUTER_SSE_COALESCE_MS`; disabled by default).
     let mut coalescer = DeltaCoalescer::new(coalesce_window);
+    // Set when the token trips: the pump keeps draining for CANCEL_DRAIN_GRACE
+    // so the runner's real terminal frame still reaches the log.
+    let mut cancel_deadline: Option<tokio::time::Instant> = None;
     loop {
         let flush_deadline = coalescer.deadline();
         tokio::select! {
-            () = cancel.cancelled() => {
-                flush_coalesced(&mut coalescer, &tx, &cancel, &token_state).await;
-                break;
+            () = cancel.cancelled(), if cancel_deadline.is_none() => {
+                flush_coalesced(&mut coalescer, &stream, &token_state);
+                cancel_deadline = Some(tokio::time::Instant::now() + CANCEL_DRAIN_GRACE);
             }
-            _ = heartbeat_interval.tick() => {
-                stream_event(MessageEvent::Ping, &tx, &cancel).await;
+            () = tokio::time::sleep_until(
+                    cancel_deadline.unwrap_or_else(tokio::time::Instant::now)),
+                if cancel_deadline.is_some() =>
+            {
+                break;
             }
             () = tokio::time::sleep_until(
                     flush_deadline.unwrap_or_else(tokio::time::Instant::now)),
                 if flush_deadline.is_some() =>
             {
-                flush_coalesced(&mut coalescer, &tx, &cancel, &token_state).await;
+                flush_coalesced(&mut coalescer, &stream, &token_state);
             }
             received = bus.recv() => match received {
                 Ok(biorouter::session_events::SessionBusEvent::Agent(
                     biorouter::agents::AgentEvent::Message(message),
                 )) => {
-                    // Coalescing is a client concern, so it stays here and
-                    // is applied to the bus's Message events.
+                    // Coalescing is applied here, once per turn, so every
+                    // observer sees the same frames under the same numbering.
                     for message in coalescer.push(message) {
                         stream_event(
                             MessageEvent::Message { message, token_state: token_state.clone() },
-                            &tx,
-                            &cancel,
-                        )
-                        .await;
+                            &stream,
+                        );
                     }
                 }
                 Ok(event) => {
@@ -764,13 +795,13 @@ async fn stream_bus_to_client(
                         // and `token_usage_alone_does_not_break_a_coalescing_run`,
                         // which drive this loop with a non-zero window; narrowing
                         // the condition either way turns one of them red.
-                        flush_coalesced(&mut coalescer, &tx, &cancel, &token_state).await;
+                        flush_coalesced(&mut coalescer, &stream, &token_state);
                     }
                     if let Some(frame) = crate::routes::session_events::map_bus_event(
                         event,
                         &mut token_state,
                     ) {
-                        stream_event(frame, &tx, &cancel).await;
+                        stream_event(frame, &stream);
                     }
                     if terminal {
                         break;
@@ -811,7 +842,7 @@ async fn stream_bus_to_client(
                         "reply SSE consumer lagged; resyncing from storage"
                     );
                     debug_assert!(matches!(on_bus_lag_action(), BusLagAction::ResyncFromStorage));
-                    flush_coalesced(&mut coalescer, &tx, &cancel, &token_state).await;
+                    flush_coalesced(&mut coalescer, &stream, &token_state);
                     if let Some(resync) = crate::routes::session_events::bus_lag_resync_frame(
                         &state,
                         &session_id,
@@ -819,13 +850,165 @@ async fn stream_bus_to_client(
                     )
                     .await
                     {
-                        stream_event(resync, &tx, &cancel).await;
+                        stream_event(resync, &stream);
                     }
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
             },
         }
     }
+    // Every exit path ends the log, and `close` guarantees a terminal frame
+    // exists — so a client that attaches after a pump died on cancellation or a
+    // closed bus is answered, not left waiting for an end that already happened.
+    stream.close();
+}
+
+/// The per-RESPONSE half: replay this turn's backlog immediately, then follow
+/// the live tail, for as long as this particular HTTP client is there.
+///
+/// **A send failure here ends this response and nothing else.** That single
+/// property is the bug fix: the turn keeps running, its pump keeps logging, and
+/// the next client to attach gets everything from seq 0. Only the orphan reaper
+/// ([`crate::turn_stream::TurnStream::spawn_orphan_reaper`]) can end a turn
+/// because of its audience, and only after minutes of nobody watching.
+///
+/// R2's "delivered IMMEDIATELY on attach": the backlog is written to the socket
+/// as fast as it will take it, with no pacing — a caught-up client renders the
+/// whole thing at once and then continues live.
+async fn drain_stream_to_client(
+    state: Arc<AppState>,
+    session_id: String,
+    stream: Arc<TurnStream>,
+    from_seq: u64,
+    terminal_only: bool,
+    tx: mpsc::Sender<String>,
+) {
+    // A turn that had ALREADY FINISHED when this request arrived is answered
+    // with its terminal frame and nothing else.
+    //
+    // This is not a shortcut, it is a correctness requirement, and the sequence
+    // numbers cannot cover it. The sequence: a window dies mid-turn, the turn
+    // completes with nobody attached, the window comes back, reads the session
+    // from the store — so its transcript ALREADY CONTAINS the finished turn —
+    // and re-POSTs its stale turn pointer with a high-water mark of -1, because
+    // this renderer never saw a frame. Replaying the backlog there re-renders
+    // the whole turn as duplicates: exactly the visible failure R2 exists to
+    // prevent, arriving through the one door the client's gate cannot watch.
+    // The store is the authority for a completed turn; the stream's only
+    // remaining job is to say that it ended.
+    if terminal_only {
+        if stream.terminal_frame().is_none() {
+            // A turn whose log was never closed by a pump — an injected
+            // workspace turn has no `/reply` pump at all. Close it now, which
+            // synthesizes a terminal, so this reader is answered rather than
+            // handed an empty stream.
+            stream.close();
+        }
+        if let Some(terminal) = stream.terminal_frame() {
+            let _ = tx.send(terminal.replay_sse()).await;
+        }
+        return;
+    }
+
+    let mut reader = stream.attach(from_seq);
+    let mut heartbeat = tokio::time::interval(Duration::from_millis(500));
+
+    loop {
+        // R1's fallback. The backlog this reader needed has been evicted (only
+        // reachable on a turn that overran REPLAY_BYTE_BUDGET), so the prefix is
+        // recovered from the session store — where, by construction, it is: the
+        // evicted frames are the OLDEST, which are the ones already persisted,
+        // while the un-persisted tail is exactly what the buffer retains.
+        if reader.take_gap() {
+            tracing::warn!(
+                counter.biorouter.turn_stream_replay_gap = 1,
+                session_id = %session_id,
+                turn_id = %reader.turn_id(),
+                "turn replay buffer overran; recovering the prefix from storage"
+            );
+            let resync = crate::routes::session_events::bus_lag_resync_frame(
+                &state,
+                &session_id,
+                &TokenState::default(),
+            )
+            .await;
+            if let Some(resync) = resync {
+                if send_unnumbered(&tx, &resync, true).await.is_err() {
+                    return;
+                }
+            }
+        }
+
+        tokio::select! {
+            _ = heartbeat.tick() => {
+                // Unnumbered: a keepalive is not part of the turn.
+                if send_unnumbered(&tx, &MessageEvent::Ping, false).await.is_err() {
+                    return;
+                }
+            }
+            event = reader.recv() => match event {
+                crate::turn_stream::ReaderEvent::Frame(frame, replay) => {
+                    let sse = if replay { frame.replay_sse() } else { frame.live_sse() };
+                    if tx.send(sse).await.is_err() {
+                        // The client hung up. That is all it is.
+                        tracing::debug!(
+                            session_id = %session_id,
+                            "a turn stream observer disconnected; the turn continues"
+                        );
+                        return;
+                    }
+                }
+                crate::turn_stream::ReaderEvent::Gap => continue,
+                crate::turn_stream::ReaderEvent::Closed => return,
+            },
+        }
+    }
+}
+
+/// Send a frame that belongs to this CONNECTION rather than to the turn: the
+/// heartbeat, and the storage resync that repairs an evicted backlog. Such a
+/// frame carries no `seq`, because it has no place in the turn's ordering.
+async fn send_unnumbered(
+    tx: &mpsc::Sender<String>,
+    event: &MessageEvent,
+    replay: bool,
+) -> Result<(), ()> {
+    let mut value = serde_json::to_value(event).map_err(|_| ())?;
+    if replay {
+        if let Some(object) = value.as_object_mut() {
+            object.insert("replay".to_string(), serde_json::json!(true));
+        }
+    }
+    tx.send(format!("data: {value}\n\n")).await.map_err(|_| ())
+}
+
+/// Open an SSE response that follows `stream` from `from_seq`.
+///
+/// The same function serves BOTH the request that starts a turn and one that
+/// re-attaches to a turn already in flight — which is the shape the fix asks
+/// for: the starter has no privileged relationship with the turn, it is just
+/// the first observer.
+///
+/// `terminal_only` distinguishes the third case: a re-POST naming a turn that
+/// has already finished. See [`drain_stream_to_client`] for why that one must
+/// NOT be replayed.
+fn attach_response(
+    state: Arc<AppState>,
+    session_id: String,
+    stream: Arc<TurnStream>,
+    from_seq: u64,
+    terminal_only: bool,
+) -> axum::response::Response {
+    let (tx, rx) = mpsc::channel(100);
+    tokio::spawn(drain_stream_to_client(
+        state,
+        session_id,
+        stream,
+        from_seq,
+        terminal_only,
+        tx,
+    ));
+    SseResponse::new(ReceiverStream::new(rx)).into_response()
 }
 
 /// The 409 body a refused `/reply` answers with, kept byte-identical to what the
@@ -845,6 +1028,10 @@ fn turn_conflict_response(
         session_id,
         conflict.running_turn_id,
         conflict.duplicate
+    );
+    debug_assert!(
+        !conflict.duplicate,
+        "a duplicate turn_id is now ATTACHED to (200 + the turn's stream), not refused"
     );
     let error = if conflict.duplicate {
         "This turn is already in progress for this session."
@@ -899,11 +1086,13 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
     tag = "workspace",
     request_body = ChatRequest,
     responses(
-        (status = 200, description = "Streaming response initiated",
+        (status = 200, description = "Streaming response initiated — either a NEW turn, or an \
+                                      attachment to the turn this `turn_id` already named, \
+                                      replayed from `from_seq` and then followed live",
          body = MessageEvent,
          content_type = "text/event-stream"),
-        (status = 409, description = "A turn is already in flight for this session, or the \
-                                      supplied `conversation_so_far` is missing messages the \
+        (status = 409, description = "A DIFFERENT turn is already in flight for this session, or \
+                                      the supplied `conversation_so_far` is missing messages the \
                                       server holds (nothing was written; re-read the session \
                                       and retry)"),
         (status = 424, description = "Agent not initialized"),
@@ -941,12 +1130,39 @@ pub async fn reply(
     // `duplicate: true` back, so it can tell "my turn is still running" apart
     // from "someone else's turn is in the way" — and in neither case does a
     // second turn start.
+    //
+    // …and since the live-turn-stream work, `duplicate: true` is answered with
+    // **200 and the turn's stream** rather than a 409 with no way back in. That
+    // is the difference between "your turn is still running, sorry" and "here it
+    // is, from the beginning". A 409 now means only what it says: a genuinely
+    // DIFFERENT turn is in the way.
     let turn_guard = match state.try_begin_turn_idempotent(
         &session_id,
         cancel_token.clone(),
         request.turn_id.clone(),
     ) {
         Ok(guard) => guard,
+        Err(conflict) if conflict.duplicate => {
+            tracing::info!(
+                session_id = %session_id,
+                turn_id = %conflict.running_turn_id,
+                finished = conflict.finished,
+                from_seq = request.from_seq.unwrap_or(0),
+                "re-POST of a known turn_id: attaching to its stream"
+            );
+            // `request.user_message` is DELIBERATELY dropped here. A client
+            // attaching to a turn it did not start does not know the prompt that
+            // began it — it sends its transcript's trailing user message, or an
+            // empty one — and honouring that would inject a phantom prompt into
+            // a running turn. An attach is a read.
+            return attach_response(
+                state.clone(),
+                session_id,
+                conflict.stream,
+                request.from_seq.unwrap_or(0),
+                conflict.finished,
+            );
+        }
         Err(conflict) => return turn_conflict_response(&session_id, &conflict),
     };
 
@@ -974,17 +1190,18 @@ pub async fn reply(
         None => None,
     };
 
-    let (tx, rx) = mpsc::channel(100);
-    let stream = ReceiverStream::new(rx);
+    // The turn's frame log, created with the turn lock itself (`state.rs`) so it
+    // exists before anything can publish into it and outlives every response
+    // that reads it.
+    let turn_stream = turn_guard.stream();
 
     // BR-71: subscribe BEFORE the turn task is spawned, so no event can fall
     // into the gap between "turn started" and "we are listening".
     let bus = biorouter::session_events::subscribe(&session_id);
 
-    // Re-declared from the deleted turn-task block: the supervisor outlives both
-    // the turn task and the SSE task, so it needs its own sender and token
-    // clones. (`task_cancel` / `task_tx` are gone with the turn task.)
-    let supervisor_tx = tx.clone();
+    // The supervisor outlives both the turn task and the pump, so it needs its
+    // own stream handle and token clone.
+    let supervisor_stream = Arc::clone(&turn_stream);
     let supervisor_cancel = cancel_token.clone();
 
     let turn_request = crate::workspace::turn::TurnRequest {
@@ -1020,24 +1237,34 @@ pub async fn reply(
         runner_cancel,
     ));
 
-    // The subscription half — see `stream_bus_to_client`, which is a named
-    // function precisely so its branches are reachable by a test.
-    let sse_handle = tokio::spawn(stream_bus_to_client(
+    // The pump — see `pump_bus_into_stream`, which is a named function precisely
+    // so its branches are reachable by a test. It belongs to the TURN, not to
+    // this request: it keeps logging with zero observers attached.
+    let pump_handle = tokio::spawn(pump_bus_into_stream(
         state.clone(),
         session_id.clone(),
         bus,
-        tx.clone(),
+        Arc::clone(&turn_stream),
         cancel_token.clone(),
         sse_coalesce_window(),
     ));
 
+    // The only thing that ends a turn because of its AUDIENCE, and only after
+    // minutes of nobody watching (`crate::turn_stream::DEFAULT_ORPHAN_TIMEOUT`).
+    // Without it, decoupling the turn from its listeners would let an abandoned
+    // turn spend tokens forever.
+    turn_stream.spawn_orphan_reaper(cancel_token.clone(), crate::turn_stream::orphan_timeout());
+
     tokio::spawn(supervise_turn(
         handle,
-        sse_handle,
-        supervisor_tx,
+        pump_handle,
+        supervisor_stream,
         supervisor_cancel,
     ));
-    SseResponse::new(stream).into_response()
+
+    // This request is simply the turn's FIRST observer. It has no privileged
+    // relationship with the turn and its departure means nothing to it.
+    attach_response(state, session_id, turn_stream, 0, false)
 }
 
 /// Request body for the soft-interrupt route.
@@ -1409,8 +1636,22 @@ mod tests {
             "no terminal frame in /reply body: {text}"
         );
 
-        // What the /reply CLIENT actually received, heartbeats dropped.
-        let client: Vec<serde_json::Value> = text.lines().filter_map(sse_frame).collect();
+        // What the /reply CLIENT actually received, heartbeats dropped and the
+        // stream envelope (`seq` / `turn_id` / `replay`) stripped. Those three
+        // fields are per-stream bookkeeping the observer route does not carry;
+        // everything under them must still match frame for frame.
+        let client: Vec<serde_json::Value> = text
+            .lines()
+            .filter_map(sse_frame)
+            .map(|mut frame| {
+                if let Some(object) = frame.as_object_mut() {
+                    object.remove("seq");
+                    object.remove("turn_id");
+                    object.remove("replay");
+                }
+                frame
+            })
+            .collect();
 
         // What an observer of the same turn would render: the raw bus events it
         // saw, through the one shared mapper. Both consumers subscribed before
@@ -1446,10 +1687,15 @@ mod tests {
         );
     }
 
-    /// BR-62 must survive: a re-POST of the same turn_id is a duplicate, not a
-    /// second turn.
+    /// BR-62's duplicate detection must survive — but its ANSWER has changed. A
+    /// re-POST of the same `turn_id` is still not a second turn; it is now
+    /// answered **200 with that turn's stream, replayed from seq 0**, instead of
+    /// a 409 with no way back into a turn that is still spending its tokens.
+    ///
+    /// That is the contract's item 2, and it is the only thing standing between
+    /// a user who reloaded their window and a turn they can neither see nor stop.
     #[tokio::test]
-    async fn reply_still_rejects_a_duplicate_turn_id_with_409() {
+    async fn a_reposted_turn_id_attaches_to_the_running_turn_from_seq_zero() {
         use tower::ServiceExt;
         let state = AppState::new().await.unwrap();
         let temp = tempfile::TempDir::new().unwrap();
@@ -1462,14 +1708,25 @@ mod tests {
             )
             .await
             .unwrap();
-        // Hold the lock under a known key, then POST the same key.
-        let _guard = state
+        // Hold the lock under a known key and log two frames on its stream, as a
+        // running turn would have.
+        let guard = state
             .try_begin_turn_idempotent(
                 &session.id,
                 tokio_util::sync::CancellationToken::new(),
                 Some("client-turn-1".to_string()),
             )
             .unwrap();
+        let stream = guard.stream();
+        stream.publish(&MessageEvent::Message {
+            message: Message::assistant().with_id("m-1").with_text("half an "),
+            token_state: TokenState::default(),
+        });
+        stream.publish(&MessageEvent::Message {
+            message: Message::assistant().with_id("m-1").with_text("answer"),
+            token_state: TokenState::default(),
+        });
+
         let body = serde_json::json!({
             "user_message": serde_json::to_value(
                 biorouter::conversation::message::Message::user().with_text("hi")
@@ -1486,12 +1743,576 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), axum::http::StatusCode::CONFLICT);
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "a re-POST of a live turn must be ATTACHED, not refused"
+        );
+
+        // End the turn so the response terminates, then read what it carried.
+        // In production the PUMP closes the log on its way out (the guard
+        // deliberately does not — see `TurnGuard::drop`); this test has no pump,
+        // so it stands in for one.
+        stream.publish(&MessageEvent::Finish {
+            reason: "stop".to_string(),
+            token_state: TokenState::default(),
+        });
+        stream.close();
+        drop(guard);
         let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(value["duplicate"], serde_json::Value::Bool(true));
+        let text = String::from_utf8_lossy(&bytes);
+        let frames: Vec<serde_json::Value> = text.lines().filter_map(sse_frame).collect();
+
+        assert_eq!(
+            frames[0]["seq"],
+            serde_json::json!(0),
+            "the attach replays the turn FROM ITS START, not from where it joined: {frames:?}"
+        );
+        assert_eq!(
+            frames[0]["replay"],
+            serde_json::json!(true),
+            "…and says so, so the client can apply it idempotently: {frames:?}"
+        );
+        assert!(
+            text.contains("half an ") && text.contains("answer"),
+            "no progress may be lost across an attach: {text}"
+        );
+        assert!(
+            frames
+                .last()
+                .is_some_and(|f| f["type"] == "Error" || f["type"] == "Finish"),
+            "an attached response still ends on a terminal frame: {frames:?}"
+        );
+    }
+
+    /// `from_seq` is the cheap path: a client that already rendered frames
+    /// `0..N` asks only for the rest, so an SSE reconnect that lost nothing costs
+    /// nothing and cannot double-render.
+    ///
+    /// It rides in the BODY. `/reply` is generated with `query?: never`, so a
+    /// query parameter is unreachable from the typed client — this test posts it
+    /// the way the client does, and would fail if the field went back to the
+    /// query string.
+    #[tokio::test]
+    async fn from_seq_asks_only_for_the_frames_the_client_is_missing() {
+        use tower::ServiceExt;
+        let state = AppState::new().await.unwrap();
+        let guard = state
+            .try_begin_turn_idempotent(
+                "from-seq-session",
+                tokio_util::sync::CancellationToken::new(),
+                Some("client-turn-1".to_string()),
+            )
+            .unwrap();
+        let stream = guard.stream();
+        for chunk in ["one", "two", "three"] {
+            stream.publish(&MessageEvent::Message {
+                message: Message::assistant().with_id("m-1").with_text(chunk),
+                token_state: TokenState::default(),
+            });
+        }
+
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(Message::user().with_text("hi")).unwrap(),
+            "session_id": "from-seq-session",
+            "turn_id": "client-turn-1",
+            "from_seq": 2,
+        });
+        let response = routes(state.clone())
+            .oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        stream.close();
+        drop(guard);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("one") && !text.contains("two"),
+            "frames below from_seq must not be re-sent: {text}"
+        );
+        assert!(
+            text.contains("three"),
+            "…and the ones above it must be: {text}"
+        );
+    }
+
+    /// **The bug, as a test.** The last observer leaves mid-turn; the turn must
+    /// CONTINUE. Before this work, the failed `tx.send` into the departed
+    /// response called `cancel_token.cancel()` and the turn died with the window.
+    #[tokio::test]
+    async fn the_last_observer_leaving_does_not_stop_the_turn() {
+        let state = AppState::new().await.unwrap();
+        let session_id = "observer-leaves".to_string();
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&session_id, cancel.clone(), Some("t-1".into()))
+            .unwrap();
+        let stream = guard.stream();
+
+        // One observer, attached to a real drain task over a real channel...
+        let (tx, rx) = mpsc::channel::<String>(4);
+        let drain = tokio::spawn(drain_stream_to_client(
+            state.clone(),
+            session_id.clone(),
+            Arc::clone(&stream),
+            0,
+            false,
+            tx,
+        ));
+        stream.publish(&MessageEvent::Message {
+            message: Message::assistant().with_id("m-1").with_text("before"),
+            token_state: TokenState::default(),
+        });
+
+        // ...which now hangs up, exactly as a closed window does.
+        drop(rx);
+        tokio::time::timeout(Duration::from_secs(10), drain)
+            .await
+            .expect("the drain must notice the hang-up and end")
+            .unwrap();
+
+        assert!(
+            !cancel.is_cancelled(),
+            "a departing observer must NEVER cancel the turn — this is the bug"
+        );
+        assert!(
+            state.is_turn_active(&session_id),
+            "the turn is still running"
+        );
+
+        // And the turn keeps producing, into a log the next client can read.
+        stream.publish(&MessageEvent::Message {
+            message: Message::assistant().with_id("m-1").with_text("after"),
+            token_state: TokenState::default(),
+        });
+        stream.publish(&MessageEvent::Finish {
+            reason: "stop".to_string(),
+            token_state: TokenState::default(),
+        });
+        stream.close();
+        drop(guard);
+
+        let replayed = collect_sse(&stream).await.join("");
+        assert!(
+            replayed.contains("before") && replayed.contains("after"),
+            "the whole turn — across the gap with no observers — must be replayable: {replayed}"
+        );
+    }
+
+    /// Two observers of one turn receive every frame, in identical order. This
+    /// is what makes attach-before-detach legal: during a tab handoff BOTH
+    /// windows are attached, so there is no instant with nobody watching.
+    #[tokio::test]
+    async fn two_simultaneous_observers_receive_identical_frames() {
+        let state = AppState::new().await.unwrap();
+        let session_id = "two-observers".to_string();
+        let guard = state
+            .try_begin_turn_idempotent(&session_id, CancellationToken::new(), Some("t-1".into()))
+            .unwrap();
+        let stream = guard.stream();
+
+        let observe = |from_seq: u64| {
+            let (tx, mut rx) = mpsc::channel::<String>(64);
+            let task = tokio::spawn(drain_stream_to_client(
+                state.clone(),
+                session_id.clone(),
+                Arc::clone(&stream),
+                from_seq,
+                false,
+                tx,
+            ));
+            async move {
+                let mut frames = Vec::new();
+                while let Some(raw) = rx.recv().await {
+                    frames.extend(sse_frame(&raw));
+                }
+                task.await.unwrap();
+                frames
+            }
+        };
+        let old_window = observe(0);
+        let new_window = observe(0);
+
+        for chunk in ["alpha", "beta", "gamma"] {
+            stream.publish(&MessageEvent::Message {
+                message: Message::assistant().with_id("m-1").with_text(chunk),
+                token_state: TokenState::default(),
+            });
+        }
+        stream.publish(&MessageEvent::Finish {
+            reason: "stop".to_string(),
+            token_state: TokenState::default(),
+        });
+        stream.close();
+        drop(guard);
+
+        let (a, b) = tokio::time::timeout(
+            Duration::from_secs(10),
+            futures::future::join(old_window, new_window),
+        )
+        .await
+        .expect("both observers must terminate on the turn's terminal frame");
+
+        assert_eq!(
+            frame_types(&a),
+            vec!["Message", "Message", "Message", "Finish"]
+        );
+        assert_eq!(a, b, "two observers of one turn must see identical frames");
+        assert_eq!(
+            a.iter()
+                .map(|f| f["seq"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3],
+            "…under one shared numbering, or they cannot agree on what frame 7 is"
+        );
+    }
+
+    /// Attaching AFTER the turn completed answers with the TERMINAL FRAME AND
+    /// NOTHING ELSE. Not a hang, not a second turn, and — the part that is easy
+    /// to get wrong — not the backlog.
+    ///
+    /// The sequence numbers cannot save a replay here, which is why this is a
+    /// rule rather than a preference. A window dies mid-turn; the turn completes
+    /// with nobody attached; the window comes back, reads the session from the
+    /// store — so its transcript ALREADY CONTAINS the finished turn — and
+    /// re-POSTs its stale pointer with a high-water mark of -1, because this
+    /// renderer never saw a frame. Every replayed frame is then above the gate
+    /// and the whole turn is rendered a second time. The store is the authority
+    /// for a completed turn; the stream's only remaining job is to say it ended.
+    #[tokio::test]
+    async fn attaching_after_the_turn_completed_sends_only_its_terminal_frame() {
+        use tower::ServiceExt;
+        let state = AppState::new().await.unwrap();
+        let session_id = "attach-after-finish".to_string();
+        let guard = state
+            .try_begin_turn_idempotent(
+                &session_id,
+                CancellationToken::new(),
+                Some("client-turn-1".into()),
+            )
+            .unwrap();
+        let stream = guard.stream();
+        stream.publish(&MessageEvent::Message {
+            message: Message::assistant().with_id("m-1").with_text("the answer"),
+            token_state: TokenState::default(),
+        });
+        stream.publish(&MessageEvent::Finish {
+            reason: "stop".to_string(),
+            token_state: TokenState::default(),
+        });
+        stream.close();
+        drop(guard); // the turn ends, and its entry is RETIRED, not deleted
+        assert!(!state.is_turn_active(&session_id), "the turn is over");
+
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(Message::user().with_text("hi")).unwrap(),
+            "session_id": session_id,
+            "turn_id": "client-turn-1",
+        });
+        let response = tokio::time::timeout(
+            Duration::from_secs(10),
+            routes(state.clone()).oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            ),
+        )
+        .await
+        .expect("a late attach must answer, never hang")
+        .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        let bytes = tokio::time::timeout(
+            Duration::from_secs(10),
+            axum::body::to_bytes(response.into_body(), usize::MAX),
+        )
+        .await
+        .expect("…and must END, never hang")
+        .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        let frames: Vec<serde_json::Value> = text.lines().filter_map(sse_frame).collect();
+
+        assert_eq!(
+            frame_types(&frames),
+            vec!["Finish"],
+            "a completed turn answers with its terminal frame ALONE: {text}"
+        );
+        assert!(
+            !text.contains("the answer"),
+            "replaying the backlog of a persisted turn re-renders it as duplicates: {text}"
+        );
+        assert!(
+            !state.is_turn_active(&session_id),
+            "…and starts no second turn — the tokens are spent once"
+        );
+    }
+
+    /// The turn's OWN terminal frame must reach the client — not the synthesized
+    /// stand-in that closing the log too early would produce.
+    ///
+    /// This pins a race the obvious implementation loses. `TurnGuard::drop` runs
+    /// the instant the RUNNER returns, but the runner's last act was to
+    /// *publish* its terminal onto the session bus — the pump has not
+    /// necessarily read it yet. Close the log in `Drop` (which is what an
+    /// earlier revision of this work did) and `publish` refuses the real frame
+    /// as post-terminal, so every healthy turn ends in
+    /// `stream_ended_without_terminal` instead of its true `Finish`/`Error`.
+    /// Both `the_reply_body_carries_exactly_one_terminal_frame` and
+    /// `reply_streams_the_turn_and_an_observer_sees_the_same_frames` count
+    /// terminals rather than reading them, so neither catches it; this does.
+    #[tokio::test]
+    async fn the_runners_own_terminal_reaches_the_client_not_a_synthesized_one() {
+        use tower::ServiceExt;
+        let state = AppState::new().await.unwrap();
+        let temp = tempfile::TempDir::new().unwrap();
+        let session = state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "real-terminal".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap();
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(Message::user().with_text("hi")).unwrap(),
+            "session_id": session.id,
+        });
+        let response = routes(state.clone())
+            .oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            !text.contains("stream_ended_without_terminal"),
+            "the log was closed before the pump read the runner's terminal: {text}"
+        );
+        // A provider-less turn's real terminal is the runner's classified error.
+        assert!(
+            text.contains("\"type\":\"Error\""),
+            "no terminal frame at all: {text}"
+        );
+    }
+
+    /// A retired turn whose log was never closed — an injected workspace turn
+    /// has no `/reply` pump to close it — still answers a late attach instead of
+    /// handing it an empty stream.
+    #[tokio::test]
+    async fn a_retired_turn_with_no_pump_still_answers_a_late_attach() {
+        let state = AppState::new().await.unwrap();
+        let session_id = "retired-no-pump".to_string();
+        let guard = state
+            .try_begin_turn_idempotent(&session_id, CancellationToken::new(), Some("t-1".into()))
+            .unwrap();
+        let stream = guard.stream();
+        drop(guard); // retired with an OPEN log and no terminal
+        assert!(!stream.is_closed());
+
+        let (tx, mut rx) = mpsc::channel::<String>(8);
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            drain_stream_to_client(state, session_id, Arc::clone(&stream), 0, true, tx),
+        )
+        .await
+        .expect("a late attach must answer, never hang");
+
+        let frame = rx.try_recv().expect("one terminal frame");
+        assert!(
+            frame.contains("\"type\":\"Error\"") && frame.contains("stream_ended_without_terminal"),
+            "got: {frame}"
+        );
+        assert!(rx.try_recv().is_err(), "and nothing else");
+    }
+
+    /// Cancel still cancels, promptly, and from a caller that is not watching.
+    ///
+    /// This is the property most at risk from decoupling the turn from its
+    /// listeners: once "everyone left" no longer stops a turn, an explicit stop
+    /// is the ONLY prompt way to end one, and it has to reach both the runner
+    /// (via the token) and every attached response (via the closed log). A
+    /// cancel that leaves a response hanging open looks exactly like the freeze
+    /// this work exists to remove.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn cancel_ends_the_turn_and_every_attached_response() {
+        let state = AppState::new().await.unwrap();
+        let session_id = "cancel-with-observers".to_string();
+        let cancel = CancellationToken::new();
+        let guard = state
+            .try_begin_turn_idempotent(&session_id, cancel.clone(), Some("t-1".into()))
+            .unwrap();
+        let stream = guard.stream();
+        let bus = biorouter::session_events::subscribe(&session_id);
+        let pump = tokio::spawn(pump_bus_into_stream(
+            state.clone(),
+            session_id.clone(),
+            bus,
+            Arc::clone(&stream),
+            cancel.clone(),
+            Duration::ZERO,
+        ));
+
+        // Two watchers, neither of which issues the cancel.
+        let watch = || {
+            let (tx, mut rx) = mpsc::channel::<String>(64);
+            let task = tokio::spawn(drain_stream_to_client(
+                state.clone(),
+                session_id.clone(),
+                Arc::clone(&stream),
+                0,
+                false,
+                tx,
+            ));
+            async move {
+                let mut frames = Vec::new();
+                while let Some(raw) = rx.recv().await {
+                    frames.extend(sse_frame(&raw));
+                }
+                task.await.unwrap();
+                frames
+            }
+        };
+        let (a, b) = (watch(), watch());
+
+        // A third party stops the turn — the CLI, a script, another window.
+        assert_eq!(
+            state.cancel_turn(&session_id).as_deref(),
+            Some(guard.turn_id())
+        );
+        assert!(
+            cancel.is_cancelled(),
+            "the runner's token is tripped at once"
+        );
+
+        let (frames_a, frames_b) =
+            tokio::time::timeout(Duration::from_secs(10), futures::future::join(a, b))
+                .await
+                .expect("a cancel must end every attached response, not leave them open");
+        for frames in [&frames_a, &frames_b] {
+            assert!(
+                frames
+                    .last()
+                    .is_some_and(|f| f["type"] == "Finish" || f["type"] == "Error"),
+                "every observer is told the turn ended: {frames:?}"
+            );
+        }
+        pump.await.unwrap();
+        drop(guard);
+    }
+
+    /// A client attaching to a turn it did not start does not know the prompt
+    /// that began it — it sends its transcript's trailing user message, or an
+    /// empty one. Honouring that would inject a phantom prompt into a running
+    /// turn, so the attach path drops `user_message` entirely.
+    #[tokio::test]
+    async fn an_attach_ignores_the_user_message_it_carries() {
+        use tower::ServiceExt;
+        let state = AppState::new().await.unwrap();
+        let session_id = "attach-ignores-prompt".to_string();
+        let guard = state
+            .try_begin_turn_idempotent(&session_id, CancellationToken::new(), Some("t-1".into()))
+            .unwrap();
+        let stream = guard.stream();
+
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(
+                Message::user().with_text("PHANTOM PROMPT")
+            ).unwrap(),
+            "session_id": session_id,
+            "turn_id": "t-1",
+        });
+        let response = routes(Arc::clone(&state))
+            .oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+
+        stream.publish(&MessageEvent::Finish {
+            reason: "stop".to_string(),
+            token_state: TokenState::default(),
+        });
+        stream.close();
+        drop(guard);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(
+            !String::from_utf8_lossy(&bytes).contains("PHANTOM PROMPT"),
+            "an attach is a READ; its user_message must never enter the turn"
+        );
+    }
+
+    /// The attach pointer works under EITHER name. A window that reloaded did
+    /// not keep the idempotency key it chose — what it has is the `turn_id`
+    /// stamped on the last frame it rendered, or the one `/agent/resume` handed
+    /// it, and both of those are the server's `turn-N`. Matching only the
+    /// client's key would 409 every reload-then-reattach.
+    #[tokio::test]
+    async fn the_server_assigned_turn_id_is_also_a_valid_attach_pointer() {
+        use tower::ServiceExt;
+        let state = AppState::new().await.unwrap();
+        let session_id = "attach-by-server-id".to_string();
+        let guard = state
+            .try_begin_turn_idempotent(
+                &session_id,
+                CancellationToken::new(),
+                Some("a-key-the-client-has-since-lost".into()),
+            )
+            .unwrap();
+        let server_turn_id = state
+            .active_turn_id(&session_id)
+            .expect("/agent/resume hands this to a reloading window");
+        assert_eq!(server_turn_id, guard.turn_id());
+
+        let body = serde_json::json!({
+            "user_message": serde_json::to_value(Message::user().with_text("hi")).unwrap(),
+            "session_id": session_id,
+            "turn_id": server_turn_id,
+        });
+        let response = routes(Arc::clone(&state))
+            .oneshot(
+                axum::http::Request::post("/reply")
+                    .header("content-type", "application/json")
+                    .body(axum::body::Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            axum::http::StatusCode::OK,
+            "the id the client actually holds must attach, not 409"
+        );
+        assert_eq!(
+            state.active_turn_session_ids(),
+            vec![session_id],
+            "and no second turn started"
+        );
+        drop(guard);
     }
 
     /// **[F]** The new backpressure semantics, tested against the REAL broadcast
@@ -1707,52 +2528,59 @@ mod tests {
         );
     }
 
-    /// **[F]** The SSE response must END when the runner dies without publishing
-    /// a terminal event, or the client hangs forever after one error frame.
+    /// **[F]** The turn's log must be ENDED when the runner dies without
+    /// publishing a terminal event, or every attached client hangs forever after
+    /// one error frame.
     ///
-    /// Before this refactor the turn task owned `task_tx`; when it returned —
-    /// including through a panic unwind — the sender dropped and the body ended.
-    /// In the subscription shape the SSE task owns its own sender and only
-    /// breaks on a terminal bus event, `RecvError::Closed`, or its cancel token.
-    /// A panicking runner publishes no terminal event; `Closed` cannot be relied
-    /// on either, because this consumer's own `Receiver` holds the channel open
-    /// and `session_events::release_if_idle` only reclaims a sender once
+    /// Before the BR-71 refactor the turn task owned `task_tx`; when it returned
+    /// — including through a panic unwind — the sender dropped and the body
+    /// ended. In the subscription shape the pump only breaks on a terminal bus
+    /// event, `RecvError::Closed`, or its cancel token. A panicking runner
+    /// publishes no terminal event; `Closed` cannot be relied on either, because
+    /// this consumer's own `Receiver` holds the channel open and
+    /// `session_events::release_if_idle` only reclaims a sender once
     /// `receiver_count() == 0` — which by construction it is not, here; and
-    /// `TurnGuard::drop` removes the `ActiveTurn` entry **without** tripping the
-    /// token (`state.rs`). The supervisor is therefore the only thing that
-    /// can release the loop.
+    /// `TurnGuard::drop` retires the `ActiveTurn` entry **without** tripping the
+    /// token (`state.rs`). The supervisor is therefore the only thing that can
+    /// release the pump.
     #[tokio::test]
     async fn the_supervisor_ends_the_stream_even_when_the_runner_panics() {
-        let (tx, mut rx) = mpsc::channel::<String>(8);
+        let stream = TurnStream::new("sup-panic", "turn-1");
 
-        // A runner that panics, with an SSE task that would never end on its own.
+        // A runner that panics, with a pump that would never end on its own.
         let cancel = CancellationToken::new();
         let runner = tokio::spawn(async { panic!("runner exploded") });
-        let sse = tokio::spawn({
+        let pump = tokio::spawn({
             let cancel = cancel.clone();
             async move { cancel.cancelled().await }
         });
-        supervise_turn(runner, sse, tx.clone(), cancel.clone()).await;
-        let frame = rx.try_recv().expect("the supervisor sends one error frame");
+        supervise_turn(runner, pump, Arc::clone(&stream), cancel.clone()).await;
+        let mut reader = stream.attach(0);
+        let frame = match reader.recv().await {
+            crate::turn_stream::ReaderEvent::Frame(frame, _) => frame.live_sse(),
+            other => panic!("the supervisor must log one error frame, got {other:?}"),
+        };
         assert!(
             frame.contains("\"code\":\"internal_error\""),
             "got: {frame}"
         );
         assert!(
             cancel.is_cancelled(),
-            "the SSE loop must be released, or the response never ends"
+            "the pump must be released, or the log never closes"
         );
 
-        // A runner that returns cleanly while its SSE task has ALREADY ended on
-        // the terminal frame: no error frame, and no premature cancellation
-        // that could truncate the tail of a healthy turn.
+        // A runner that returns cleanly while its pump has ALREADY ended on the
+        // terminal frame: no error frame, and no premature cancellation that
+        // could truncate the tail of a healthy turn.
+        let clean = TurnStream::new("sup-clean", "turn-2");
         let cancel = CancellationToken::new();
         let runner = tokio::spawn(async {});
-        let sse = tokio::spawn(async {});
-        supervise_turn(runner, sse, tx.clone(), cancel.clone()).await;
-        assert!(
-            rx.try_recv().is_err(),
-            "a clean runner exit sends no error frame"
+        let pump = tokio::spawn(async {});
+        supervise_turn(runner, pump, Arc::clone(&clean), cancel.clone()).await;
+        assert_eq!(
+            clean.next_seq(),
+            0,
+            "a clean runner exit logs no error frame"
         );
         assert!(
             !cancel.is_cancelled(),
@@ -1768,8 +2596,7 @@ mod tests {
     #[tokio::test]
     async fn a_terminal_frame_flushes_pending_coalesced_text_first() {
         use biorouter::conversation::message::Message;
-        let (tx, mut rx) = mpsc::channel::<String>(8);
-        let cancel = CancellationToken::new();
+        let stream = TurnStream::new("flush-order", "turn-1");
         let mut coalescer = DeltaCoalescer::new(Duration::from_millis(50));
         assert!(coalescer
             .push(Message::assistant().with_id("a").with_text("hel"))
@@ -1779,28 +2606,46 @@ mod tests {
             .is_empty());
 
         // Exactly what the new terminal branch does, in the order it does it.
-        flush_coalesced(&mut coalescer, &tx, &cancel, &TokenState::default()).await;
+        flush_coalesced(&mut coalescer, &stream, &TokenState::default());
         stream_event(
             MessageEvent::Finish {
                 reason: "stop".to_string(),
                 token_state: TokenState::default(),
             },
-            &tx,
-            &cancel,
-        )
-        .await;
-
-        let first = rx.try_recv().expect("the buffered run is flushed first");
-        assert!(
-            first.contains("\"type\":\"Message\"") && first.contains("hello"),
-            "got: {first}"
+            &stream,
         );
-        let second = rx.try_recv().expect("then the terminal frame");
-        assert!(second.contains("\"type\":\"Finish\""), "got: {second}");
-        assert!(rx.try_recv().is_err(), "and nothing after it");
+        stream.close();
+
+        let logged = collect_sse(&stream).await;
+        assert_eq!(logged.len(), 2, "got: {logged:?}");
+        assert!(
+            logged[0].contains("\"type\":\"Message\"") && logged[0].contains("hello"),
+            "the buffered run is flushed first: {:?}",
+            logged[0]
+        );
+        assert!(
+            logged[1].contains("\"type\":\"Finish\""),
+            "then the terminal frame: {:?}",
+            logged[1]
+        );
     }
 
-    // The four `[M]` tests below drive the REAL SSE loop — `stream_bus_to_client`,
+    /// Every frame a stream logged, as SSE text, in order. Used by the tests
+    /// that drive the pump: the log is what the pump writes, and what every
+    /// present and future observer of the turn reads.
+    async fn collect_sse(stream: &Arc<TurnStream>) -> Vec<String> {
+        let mut reader = stream.attach(0);
+        let mut out = Vec::new();
+        loop {
+            match reader.recv().await {
+                crate::turn_stream::ReaderEvent::Frame(frame, _) => out.push(frame.live_sse()),
+                crate::turn_stream::ReaderEvent::Gap => {}
+                crate::turn_stream::ReaderEvent::Closed => return out,
+            }
+        }
+    }
+
+    // The four `[M]` tests below drive the REAL pump — `pump_bus_into_stream`,
     // the function `/reply` spawns — over the REAL session bus, and each one
     // fails if a specific branch of that loop is deleted or moved.
     //
@@ -1810,8 +2655,8 @@ mod tests {
     // `coalesced_deltas_flush_before_the_terminal_frame` and
     // `a_terminal_frame_flushes_pending_coalesced_text_first` perform the flush
     // themselves, and `the_supervisor_ends_the_stream_even_when_the_runner_panics`
-    // hands `supervise_turn` a stand-in SSE task. Every one of them describes the
-    // loop rather than running it, so deleting the loop's resync branch, its
+    // hands `supervise_turn` a stand-in pump task. Every one of them describes
+    // the loop rather than running it, so deleting the loop's resync branch, its
     // flush, or its `cancel` response leaves all three green.
     //
     // Verified by mutation: narrowing the flush guard to `if terminal`, widening
@@ -1828,21 +2673,25 @@ mod tests {
         (value["type"] != "Ping").then_some(value)
     }
 
-    /// Every frame the loop wrote, in order, until it ended.
+    /// Every frame the pump logged, in order, once its task has ended.
     ///
-    /// The deadline is what turns "a mutation left the loop running forever"
-    /// into a failed assertion instead of a hung test binary, and it is an
-    /// OVERALL deadline rather than a per-`recv` one on purpose: the loop
-    /// heartbeats every 500 ms, so a per-message timeout is fed indefinitely by
-    /// `Ping`s and never fires. (Learned by mutating `if terminal { break }` and
-    /// watching the suite hang.)
-    async fn drain_frames(rx: &mut mpsc::Receiver<String>) -> Vec<serde_json::Value> {
-        let mut frames = Vec::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while let Ok(Some(raw)) = tokio::time::timeout_at(deadline, rx.recv()).await {
-            frames.extend(sse_frame(&raw));
-        }
-        frames
+    /// The timeout on the join is what turns "a mutation left the loop running
+    /// forever" into a failed assertion instead of a hung test binary. Reading
+    /// the LOG rather than a socket is the point: the log is what survives an
+    /// observer leaving, so a test written against it also tests the fix.
+    async fn drain_pump(
+        pump: tokio::task::JoinHandle<()>,
+        stream: &Arc<TurnStream>,
+    ) -> Vec<serde_json::Value> {
+        tokio::time::timeout(Duration::from_secs(10), pump)
+            .await
+            .expect("the terminal frame must end the pump")
+            .unwrap();
+        collect_sse(stream)
+            .await
+            .iter()
+            .filter_map(|raw| sse_frame(raw))
+            .collect()
     }
 
     fn frame_types(frames: &[serde_json::Value]) -> Vec<String> {
@@ -1863,7 +2712,7 @@ mod tests {
     /// client is told the id of a row whose body it has not been sent yet.
     ///
     /// Coalescing must be ON or nothing is buffered and the flush is a no-op,
-    /// which is why the window is a parameter of `stream_bus_to_client` rather
+    /// which is why the window is a parameter of `pump_bus_into_stream` rather
     /// than a read of `BIOROUTER_SSE_COALESCE_MS` (unset under test).
     #[tokio::test]
     async fn the_sse_loop_flushes_buffered_text_before_a_persisted_frame() {
@@ -1873,15 +2722,15 @@ mod tests {
         let state = AppState::new().await.unwrap();
         let session_id = "br71-reply-loop-flush-order".to_string();
         let bus = session_events::subscribe(&session_id);
-        let (tx, mut rx) = mpsc::channel::<String>(64);
+        let stream = TurnStream::new(&session_id, "turn-flush-order");
         let cancel = CancellationToken::new();
         // A window far longer than the test's runtime: the only thing that can
         // emit the buffered run is an explicit flush, never the deadline.
-        let loop_task = tokio::spawn(stream_bus_to_client(
+        let loop_task = tokio::spawn(pump_bus_into_stream(
             state.clone(),
             session_id.clone(),
             bus,
-            tx,
+            Arc::clone(&stream),
             cancel.clone(),
             Duration::from_secs(30),
         ));
@@ -1909,14 +2758,10 @@ mod tests {
             },
         );
 
-        let frames = drain_frames(&mut rx).await;
         // Bounded: the loop must END on the terminal frame. An unbounded await
         // here turns "the `if terminal { break }` was removed" into a hung test
         // binary instead of a failed assertion.
-        tokio::time::timeout(Duration::from_secs(10), loop_task)
-            .await
-            .expect("the terminal frame must end the SSE loop")
-            .unwrap();
+        let frames = drain_pump(loop_task, &stream).await;
         assert_eq!(
             frame_types(&frames),
             vec!["Message", "MessagesPersisted", "Finish"],
@@ -1944,13 +2789,13 @@ mod tests {
         let state = AppState::new().await.unwrap();
         let session_id = "br71-reply-loop-token-usage".to_string();
         let bus = session_events::subscribe(&session_id);
-        let (tx, mut rx) = mpsc::channel::<String>(64);
+        let stream = TurnStream::new(&session_id, "turn-token-usage");
         let cancel = CancellationToken::new();
-        let loop_task = tokio::spawn(stream_bus_to_client(
+        let loop_task = tokio::spawn(pump_bus_into_stream(
             state.clone(),
             session_id.clone(),
             bus,
-            tx,
+            Arc::clone(&stream),
             cancel.clone(),
             Duration::from_secs(30),
         ));
@@ -1979,14 +2824,10 @@ mod tests {
             },
         );
 
-        let frames = drain_frames(&mut rx).await;
         // Bounded: the loop must END on the terminal frame. An unbounded await
         // here turns "the `if terminal { break }` was removed" into a hung test
         // binary instead of a failed assertion.
-        tokio::time::timeout(Duration::from_secs(10), loop_task)
-            .await
-            .expect("the terminal frame must end the SSE loop")
-            .unwrap();
+        let frames = drain_pump(loop_task, &stream).await;
         assert_eq!(
             frame_types(&frames),
             vec!["Message", "Finish"],
@@ -2042,28 +2883,34 @@ mod tests {
             );
         }
 
-        let (tx, mut rx) = mpsc::channel::<String>(64);
+        let stream = TurnStream::new(&session.id, "turn-lagged");
         let cancel = CancellationToken::new();
-        let loop_task = tokio::spawn(stream_bus_to_client(
+        let loop_task = tokio::spawn(pump_bus_into_stream(
             state.clone(),
             session.id.clone(),
             bus,
-            tx,
+            Arc::clone(&stream),
             cancel.clone(),
             Duration::ZERO,
         ));
 
+        let mut reader = stream.attach(0);
         let resync = tokio::time::timeout(Duration::from_secs(10), async {
-            while let Some(raw) = rx.recv().await {
-                if let Some(frame) = sse_frame(&raw) {
-                    return Some(frame);
+            loop {
+                match reader.recv().await {
+                    crate::turn_stream::ReaderEvent::Frame(frame, _) => {
+                        if let Some(value) = sse_frame(&frame.live_sse()) {
+                            return Some(value);
+                        }
+                    }
+                    crate::turn_stream::ReaderEvent::Gap => {}
+                    crate::turn_stream::ReaderEvent::Closed => return None,
                 }
             }
-            None
         })
         .await
         .expect("a lagged consumer must be resynced, not silently skipped")
-        .expect("the stream closed without sending anything");
+        .expect("the stream closed without logging anything");
 
         assert_eq!(
             resync["type"], "UpdateConversation",
@@ -2076,10 +2923,12 @@ mod tests {
 
         cancel.cancel();
         // Bounded for the same reason as above: a loop that ignores its cancel
-        // token must fail this test, not hang it.
+        // token must fail this test, not hang it. `CANCEL_DRAIN_GRACE` is what
+        // it waits out — the window in which a cancelled runner's real terminal
+        // frame can still arrive.
         tokio::time::timeout(Duration::from_secs(10), loop_task)
             .await
-            .expect("cancellation must end the SSE loop")
+            .expect("cancellation must end the pump")
             .unwrap();
     }
 
@@ -2090,7 +2939,7 @@ mod tests {
     /// so it proves the token is tripped and nothing about the loop. This one
     /// composes the two production functions: a runner that returns without ever
     /// publishing a terminal event leaves the real loop parked on `bus.recv()`
-    /// forever, and only the supervisor's `cancel` can end the response.
+    /// forever, and only the supervisor's `cancel` can end it.
     ///
     /// Remove that `cancel.cancel()` and the drain below never completes.
     #[tokio::test]
@@ -2098,13 +2947,13 @@ mod tests {
         let state = AppState::new().await.unwrap();
         let session_id = "br71-reply-supervisor-releases-loop".to_string();
         let bus = biorouter::session_events::subscribe(&session_id);
-        let (tx, mut rx) = mpsc::channel::<String>(64);
+        let stream = TurnStream::new(&session_id, "turn-supervisor");
         let cancel = CancellationToken::new();
-        let sse = tokio::spawn(stream_bus_to_client(
+        let pump = tokio::spawn(pump_bus_into_stream(
             state.clone(),
             session_id,
             bus,
-            tx.clone(),
+            Arc::clone(&stream),
             cancel.clone(),
             Duration::ZERO,
         ));
@@ -2113,20 +2962,27 @@ mod tests {
         // turn leaves behind when it is aborted, or when its own supervisor
         // swallowed the panic after the bus entry was gone.
         let runner = tokio::spawn(async {});
-        supervise_turn(runner, sse, tx.clone(), cancel.clone()).await;
+        supervise_turn(runner, pump, Arc::clone(&stream), cancel.clone()).await;
         assert!(
             cancel.is_cancelled(),
             "the supervisor must release a loop that never saw a terminal frame"
         );
 
-        drop(tx);
+        // …and the released pump must CLOSE the log, so a client attached to it
+        // (or attaching later) gets a terminal instead of an open socket.
         let ended = tokio::time::timeout(Duration::from_secs(10), async {
-            while rx.recv().await.is_some() {}
+            while !stream.is_closed() {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            collect_sse(&stream).await
         })
-        .await;
+        .await
+        .expect("the turn's log must close once the supervisor releases the pump");
         assert!(
-            ended.is_ok(),
-            "the SSE response must end once the supervisor releases the loop"
+            ended
+                .last()
+                .is_some_and(|frame| frame.contains("\"type\":\"Error\"")),
+            "a pump released without a terminal must still leave one behind: {ended:?}"
         );
     }
 
@@ -2445,6 +3301,7 @@ mod tests {
                         workflow_version: None,
                         reasoning_effort: None,
                         turn_id: None,
+                        from_seq: None,
                     })
                     .unwrap(),
                 ))
@@ -2480,6 +3337,7 @@ mod tests {
                         workflow_version: None,
                         reasoning_effort: None,
                         turn_id: None,
+                        from_seq: None,
                     })
                     .unwrap(),
                 ))
@@ -2515,6 +3373,7 @@ mod tests {
                         workflow_version: None,
                         reasoning_effort: None,
                         turn_id: None,
+                        from_seq: None,
                     })
                     .unwrap(),
                 ))
@@ -2675,6 +3534,7 @@ mod tests {
                         workflow_version: None,
                         turn_id: turn_id.map(str::to_string),
                         reasoning_effort: None,
+                        from_seq: None,
                     })
                     .unwrap(),
                 ))
@@ -2720,13 +3580,12 @@ mod tests {
             assert_eq!(body["turn_id"], serde_json::Value::Null);
         }
 
-        /// A re-POST of the same turn (SSE reconnect) is reported as a duplicate
-        /// so the client can re-attach rather than surface a hard error — and no
-        /// second turn starts either way.
+        /// A re-POST of the same turn (SSE reconnect) is ATTACHED to that turn's
+        /// stream — 200, not 409 — and no second turn starts.
         #[tokio::test(flavor = "multi_thread")]
-        async fn test_reply_reports_a_reposted_turn_id_as_duplicate() {
+        async fn test_reply_attaches_a_reposted_turn_id() {
             let state = AppState::new().await.unwrap();
-            let _guard = state
+            let guard = state
                 .try_begin_turn_idempotent(
                     "retry-session",
                     CancellationToken::new(),
@@ -2734,15 +3593,24 @@ mod tests {
                 )
                 .expect("turn lock acquired");
 
-            let app = routes(state);
+            let app = routes(Arc::clone(&state));
             let response = app
                 .oneshot(reply_request("retry-session", Some("client-turn-1")))
                 .await
                 .unwrap();
 
-            assert_eq!(response.status(), StatusCode::CONFLICT);
-            let body = json_body(response).await;
-            assert_eq!(body["duplicate"], serde_json::json!(true));
+            assert_eq!(
+                response.status(),
+                StatusCode::OK,
+                "a reconnect must be given the turn, not an error about it"
+            );
+            assert_eq!(
+                response.headers().get("Content-Type").unwrap(),
+                "text/event-stream"
+            );
+            // Still exactly one turn: the lock was never re-acquired.
+            assert_eq!(state.active_turn_session_ids(), vec!["retry-session"]);
+            drop(guard);
         }
 
         /// A *different* turn arriving while one is in flight is a genuine
