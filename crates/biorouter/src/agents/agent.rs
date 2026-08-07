@@ -1969,6 +1969,19 @@ impl Agent {
             crate::security::global_memory::GlobalMemoryInspector,
         ));
 
+        // Issue #56: refuse tool reads of the session database — `sessions.db`
+        // and its `-wal`/`-shm` siblings, the transcript store every
+        // conversation on this machine writes to. Every other privacy gate is a
+        // gate on a Biorouter API; `cat`/`sqlite3`/`text_editor` on that file
+        // walk around all of them. Path-argument aware, so a doc or a commit
+        // message that merely names the path is untouched, and deliberately
+        // blind to `privacy_tier`: reading the file discloses every other
+        // session too, so the refusal is about the channel and fires for a
+        // private-capability caller as well.
+        tool_inspection_manager.add_inspector(Box::new(
+            crate::security::session_store::SessionStoreInspector,
+        ));
+
         // BR-71 §5: cross-session capability changes always confirm, in every
         // mode. Inert for every tool but `workspace_set_tools` and
         // `workspace_open`.
