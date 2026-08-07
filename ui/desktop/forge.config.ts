@@ -3,8 +3,65 @@ const { FuseV1Options, FuseVersion } = require('@electron/fuses');
 const { AutoUnpackNativesPlugin } = require('@electron-forge/plugin-auto-unpack-natives');
 const { resolve } = require('path');
 
+// `node-pty` is the only runtime dependency that cannot be bundled by Vite: it
+// is a native module, so `vite.main.config.mts` externalises it and the built
+// main.js issues a real `require('node-pty')`. That means the module has to
+// physically exist inside the packaged app — but the Forge Vite plugin's
+// default `packagerConfig.ignore` is `(file) => !file.startsWith('/.vite')`,
+// which drops the entire `node_modules` tree. The shipped app.asar therefore
+// contained exactly two entries (`/.vite` and `/package.json`), `require`
+// threw MODULE_NOT_FOUND, and every terminal silently fell back to the
+// TTY-less pipe backend.
+//
+// The plugin only installs its filter when `packagerConfig.ignore` is unset
+// (see VitePlugin.resolveForgeConfig), so defining one here keeps its rule and
+// adds the single exception node-pty needs.
+//
+// Only the target platform's prebuild is shipped. The tree also carries
+// Windows prebuilds whose `.pdb` symbol files are ~40 MB, which have no
+// business in a macOS bundle.
+const nodePtyTargetPlatform = process.env.ELECTRON_PLATFORM || process.platform;
+// The Windows and Linux targets are cross-built from an arm64 Mac and are
+// x64-only, so `process.arch` is the wrong default for them — it would ship the
+// win32-arm64 prebuild inside an x64 app, where node-pty fails to load it and
+// silently falls back to pipes.
+const nodePtyTargetArch =
+  process.env.ELECTRON_ARCH || (nodePtyTargetPlatform === 'darwin' ? process.arch : 'x64');
+const nodePtyPrebuildDir = `/node_modules/node-pty/prebuilds/${nodePtyTargetPlatform}-${nodePtyTargetArch}`;
+
+const isUnder = (file, dir) => file === dir || file.startsWith(`${dir}/`);
+
+/** Files electron-packager should copy into the app. Everything else is ignored. */
+function keepInPackage(file) {
+  if (!file) return true; // the package root itself
+  if (isUnder(file, '/.vite')) return true;
+  // The directory itself must be kept or packager never descends into it.
+  if (file === '/node_modules') return true;
+  if (!isUnder(file, '/node_modules/node-pty')) return false;
+  if (file.endsWith('.pdb')) return false;
+  if (isUnder(file, '/node_modules/node-pty/prebuilds')) {
+    return (
+      file === '/node_modules/node-pty/prebuilds' || isUnder(file, nodePtyPrebuildDir)
+    );
+  }
+  return (
+    file === '/node_modules/node-pty' ||
+    file === '/node_modules/node-pty/package.json' ||
+    isUnder(file, '/node_modules/node-pty/lib')
+  );
+}
+
 let cfg = {
-  asar: true,
+  // A native module cannot be `dlopen`'d from inside an asar archive, and
+  // node-pty's macOS `spawn-helper` cannot be `posix_spawn`'d from one either.
+  // node-pty handles this itself — `unixTerminal.js` rewrites `app.asar` to
+  // `app.asar.unpacked` in the helper path — but only if the files are
+  // actually unpacked. AutoUnpackNativesPlugin is not enough on its own: it
+  // unpacks `**/*.node`, and `spawn-helper` has no extension, so it would stay
+  // sealed in the archive at the exact path node-pty rewrites away from. The
+  // plugin composes with this value rather than replacing it.
+  asar: { unpack: '**/node_modules/node-pty/**' },
+  ignore: (file) => !keepInPackage(file),
   extraResource: ['src/bin', 'src/images'],
   icon: 'src/images/icon',
   // macOS code signing and notarization

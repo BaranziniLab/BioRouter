@@ -3702,12 +3702,77 @@ function terminalEnv(): Record<string, string | undefined> {
   };
 }
 
+// node-pty's npm tarball ships `prebuilds/<platform>-<arch>/spawn-helper` with
+// mode 0644, and nothing in its install ever chmods it (its `install` script
+// short-circuits on the presence of prebuilds, so node-gyp — which would build
+// and chmod the helper — never runs). On macOS `pty.fork()` `posix_spawn`s that
+// helper, so a non-executable one makes every terminal die with the opaque
+// native error "posix_spawnp failed."
+//
+// `scripts/fix-node-pty-permissions.mjs` repairs it on postinstall and again at
+// package time, which covers dev trees and shipped builds. This is the last
+// line of defence for a dev tree whose node_modules was installed with
+// --ignore-scripts or restored from an archive: repairing costs one stat.
+//
+// Deliberately dev-only. Inside a packaged app the helper lives in a signed —
+// and, on macOS, notarized — bundle; writing to it at runtime is exactly the
+// kind of self-modification that bundle validation exists to catch, and the
+// package-time repair has already run. There we only report.
+function ensureSpawnHelperExecutable(): void {
+  if (process.platform === 'win32') return; // ConPTY/winpty; no spawn-helper
+  // In dev this is the project directory; in a packaged app it is `app.asar`,
+  // and the helper is the copy under `app.asar.unpacked` — the same rewrite
+  // node-pty's unixTerminal.js applies when it builds the path it spawns.
+  const nodePtyRoot = path.join(
+    app.getAppPath().replace('app.asar', 'app.asar.unpacked'),
+    'node_modules',
+    'node-pty'
+  );
+  const prebuild = path.join(
+    nodePtyRoot,
+    'prebuilds',
+    `${process.platform}-${process.arch}`,
+    'spawn-helper'
+  );
+  for (const helper of [prebuild, path.join(nodePtyRoot, 'build', 'Release', 'spawn-helper')]) {
+    let mode: number;
+    try {
+      mode = fsSync.statSync(helper).mode;
+    } catch {
+      continue;
+    }
+    if ((mode & 0o111) === 0o111) continue;
+    if (app.isPackaged) {
+      log.error(
+        `[terminal] ${helper} is not executable (mode ${(mode & 0o7777).toString(8)}). ` +
+          'Every pty spawn will fail with "posix_spawnp failed." — this build was packaged ' +
+          'from a node_modules tree that scripts/fix-node-pty-permissions.mjs never ran against.'
+      );
+      continue;
+    }
+    try {
+      fsSync.chmodSync(helper, (mode & 0o7777) | 0o755);
+      log.warn(`[terminal] restored the executable bit on ${helper}`);
+    } catch (error) {
+      log.error(`[terminal] could not make ${helper} executable:`, error);
+    }
+  }
+}
+
 async function loadNodePty(): Promise<NodePtyModule | null> {
   if (nodePtyModule !== undefined) return nodePtyModule;
   try {
     nodePtyModule = await import('node-pty');
+    ensureSpawnHelperExecutable();
   } catch (error) {
-    log.warn('[terminal] node-pty unavailable; falling back to process pipes:', error);
+    // In a packaged app this is a packaging regression, not a missing optional
+    // feature: node-pty is a declared dependency that forge.config.ts keeps out
+    // of `packagerConfig.ignore` precisely so it ships. The pipe fallback below
+    // has no TTY — no prompt, no line editing, no job control, `isatty()` false
+    // — so it looks like a broken terminal rather than a broken build. Log it
+    // loudly enough that the next person greps for it.
+    const level = app.isPackaged ? 'error' : 'warn';
+    log[level]('[terminal] node-pty unavailable; falling back to process pipes:', error);
     nodePtyModule = null;
   }
   return nodePtyModule;
