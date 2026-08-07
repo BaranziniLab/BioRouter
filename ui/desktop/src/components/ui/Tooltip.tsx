@@ -4,11 +4,19 @@ import * as TooltipPrimitive from '@radix-ui/react-tooltip';
 import { cn } from '../../utils';
 
 /**
- * design.md §4.4 — `--background-inverse` fill, `--text-inverse` 12/16, 6px×8px
- * padding, `--radius-inner`, no arrow, 8px offset. This already matches canonical.
- * `text-supporting` is the 12/16 role; `font-medium` is a DELIBERATE override of
- * its 400 weight — a tooltip sits on an inverse fill and needs the extra weight
- * to hold up, and that is what shipped before the roles existed.
+ * `--background-inverse` fill, `--text-inverse` 12/16, 6px×8px padding, no
+ * arrow, 8px offset. `text-supporting` is the 12/16 role; `font-medium` is a
+ * DELIBERATE override of its 400 weight — a tooltip sits on an inverse fill and
+ * needs the extra weight to hold up, and that is what shipped before the roles
+ * existed.
+ *
+ * Radius is `--radius-container` (12px), not the `--radius-inner` (4px) this
+ * carried. Two steps off the ladder, against the repo's own written rules on
+ * both sides: `main.css` reserves `--radius-inner` for "inline code, chips,
+ * checkbox, swatches — nested inside a control", and the cohesion design says
+ * "every floating thing — popover, dropdown, select, mention picker, toast,
+ * tooltip — gets the same recipe … 12px radius". The old comment cited
+ * "design.md §4.4" as authority for 4px; that document no longer exists.
  *
  * Z — deliberately `--z-modal-dropdown` (500), not `--z-dropdown` (200). A tooltip
  * must paint above whatever surface owns its trigger, and it is portalled to <body>
@@ -18,7 +26,7 @@ import { cn } from '../../utils';
  * very popover that contains them.
  */
 export const TOOLTIP_SURFACE_CLASS_NAME =
-  'bg-background-inverse text-text-inverse z-[var(--z-modal-dropdown)] w-max max-w-[min(20rem,calc(100vw-16px))] break-words rounded-inner px-2 py-1.5 text-left font-sans text-supporting font-medium whitespace-normal';
+  'bg-background-inverse text-text-inverse z-[var(--z-modal-dropdown)] w-max max-w-[min(20rem,calc(100vw-16px))] break-words rounded-container px-2 py-1.5 text-left font-sans text-supporting font-medium whitespace-normal';
 
 function TooltipProvider({
   delayDuration = 500,

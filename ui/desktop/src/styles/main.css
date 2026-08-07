@@ -470,7 +470,16 @@
   --background-code: var(--color-neutral-50);
   --background-medium: var(--color-neutral-100);
   --background-strong: var(--color-neutral-300);
-  --background-inverse: var(--color-black);
+  /* The tooltip fill. Warm near-black, NOT `--color-black`. Parchment was the
+     only family whose inverse was never tinted, so the default theme dropped a
+     pure-black chip into an otherwise warm palette. Both siblings set this to
+     their own `--text-default` (Alma Mater #052049, Roche Limit #1f1e1c, and
+     the latter's design doc says "warm near-black, not #000" in as many words);
+     this is Parchment's. White on it is 13.9:1. Mirror any change in
+     `themes/parchment.theme.mjs` — the base family's :root block is authored
+     here, but that file is still the theme's stated source of truth and feeds
+     the derived artifacts. */
+  --background-inverse: #2a2520;
   /* Status FILLS — a solid background. The ink placed on top is --text-on-*. */
   --background-danger: var(--color-red-600);
   --background-success: var(--color-green-600);

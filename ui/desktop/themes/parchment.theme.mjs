@@ -39,7 +39,14 @@ export default {
       'background-code': '#faf8f3',
       'background-medium': '#f4f0e6',
       'background-strong': '#d4cab6',
-      'background-inverse': '#000000',
+      // The tooltip fill. Warm near-black, not `#000` — Parchment was the only
+      // family whose inverse was never tinted, so the default theme dropped a
+      // pure-black chip into an otherwise warm palette. Both siblings set this
+      // to their own `text-default` (Alma Mater `#052049`, Roche Limit
+      // `#1f1e1c`, and the latter's design doc says "warm near-black, not
+      // `#000`" in as many words); this is Parchment's, so the three now follow
+      // one rule instead of two of them following it by accident.
+      'background-inverse': '#2a2520',
       'background-danger': '#b3261e',
       'background-success': '#1f7a3d',
       'background-info': '#1e5fbf',

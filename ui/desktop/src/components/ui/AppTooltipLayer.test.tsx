@@ -27,10 +27,15 @@ describe('AppTooltipLayer', () => {
     fireEvent.pointerOver(target);
     const tooltip = await screen.findByRole('tooltip');
     expect(tooltip).toHaveTextContent('Native action');
+    // `rounded-container` (12px), not `rounded-inner` (4px): a tooltip is a
+    // floating surface, and both the radius ladder in `main.css` and the
+    // cohesion design put every floating surface — popover, dropdown, select,
+    // mention picker, toast, tooltip — on one 12px recipe. The 4px this used to
+    // assert is the role reserved for things nested INSIDE a control.
     expect(tooltip).toHaveClass(
       'bg-background-inverse',
       'text-text-inverse',
-      'rounded-inner',
+      'rounded-container',
       'font-sans'
     );
     expect(tooltip).not.toHaveClass('text-balance');
