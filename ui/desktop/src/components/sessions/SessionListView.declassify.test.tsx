@@ -203,7 +203,7 @@ describe('SessionListView declassification entry point', () => {
 
     renderList();
     await screen.findByText('Patient cohort');
-    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+    expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-privacy', 'private');
 
     await openRowMenu(/More actions for/);
     fireEvent.click(screen.getByText(/Make this chat public/));
@@ -217,7 +217,11 @@ describe('SessionListView declassification entry point', () => {
     // that did nothing. The control goes with it: a public row has nothing left
     // to declassify.
     await waitFor(() => expect(mocks.declassifySession).toHaveBeenCalled());
-    await waitFor(() => expect(screen.queryByTestId('privacy-badge')).toBeNull());
+    // The glyph stays — every row has one — but it stops claiming the private
+    // tier. Asserting its ABSENCE would now pass for a row that vanished.
+    await waitFor(() =>
+      expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-privacy', 'public')
+    );
     await expectNoDeclassifyItem();
   });
 

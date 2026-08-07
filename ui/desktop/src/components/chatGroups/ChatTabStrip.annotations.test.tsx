@@ -38,10 +38,19 @@ function renderStrip(over: Partial<ChatTabStripProps> = {}) {
   return render(<ChatTabStrip {...props} />);
 }
 
-/** The badge, scoped to one tab — never a document-wide text search. */
+/**
+ * The subagent marking, scoped to one tab — never a document-wide search.
+ *
+ * ⚠ It used to be a `sub` TEXT chip beside the title. It is now the tab's
+ * leading glyph: a sub-agent reads as a robot in the same slot every other kind
+ * uses, instead of a word competing with the title for width. The lookup is by
+ * the glyph's kind, so this suite still fails if the annotation is wired to the
+ * wrong key or dropped.
+ */
 function badgeIn(container: HTMLElement, tabId: string): HTMLElement | null {
   const node = container.querySelector(`[data-tab-id="${tabId}"]`) as HTMLElement;
-  return Array.from(node.querySelectorAll('span')).find((el) => el.textContent === 'sub') ?? null;
+  const glyph = node.querySelector('[data-chat-kind]');
+  return glyph?.getAttribute('data-chat-kind') === 'subagent' ? (glyph as HTMLElement) : null;
 }
 
 const subagent: TabAnnotation = { badge: 'subagent', parentSessionId: 'parent-1' };

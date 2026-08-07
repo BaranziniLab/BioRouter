@@ -528,7 +528,7 @@ describe('SessionListView privacy markers', () => {
     );
 
     await screen.findByText('Patient cohort');
-    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+    expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-privacy', 'private');
   });
 
   it('leaves public conversations unmarked, so the marker keeps meaning something', async () => {
@@ -549,7 +549,14 @@ describe('SessionListView privacy markers', () => {
     );
 
     await screen.findByText('Patient cohort');
-    expect(screen.getAllByTestId('privacy-badge')).toHaveLength(1);
+    // All three rows carry a glyph; exactly one carries the private tier. The
+    // marker is WHICH glyph, not whether one is present — and the untiered row
+    // must read as unmarked rather than inherit the private one.
+    const tiers = screen
+      .getAllByTestId('chat-kind-icon')
+      .map((g) => g.getAttribute('data-privacy'));
+    expect(tiers).toHaveLength(3);
+    expect(tiers.filter((t) => t === 'private')).toHaveLength(1);
   });
 });
 

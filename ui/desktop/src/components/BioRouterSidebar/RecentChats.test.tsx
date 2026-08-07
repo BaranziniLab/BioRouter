@@ -1,13 +1,13 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { chatKindOf } from '../chats/chatKind';
 import type { SessionSummary } from '../../api';
 import { SidebarProvider } from '../ui/sidebar';
 import RecentChats, {
   formatSessionDateLabel,
   formatTimeSinceLastWorked,
   groupRecentChatsByDate,
-  sessionKind,
   sortRecentChats,
 } from './RecentChats';
 
@@ -101,7 +101,7 @@ describe('sessionKind', () => {
   // `SessionSummary` exposes no kind/branch field, so the title is the only
   // signal available — see the note on `sessionKind`.
   it('reads the session kind off the title', () => {
-    const kindOf = (name: string) => sessionKind({ ...makeSession(0), name });
+    const kindOf = (name: string) => chatKindOf({ ...makeSession(0), name });
 
     expect(kindOf('Status check-in')).toBe('chat');
     expect(kindOf('Greeting 2 (branch 1)')).toBe('branch');
@@ -111,8 +111,8 @@ describe('sessionKind', () => {
   });
 
   it('does not mistake prose that merely mentions a branch for a real branch', () => {
-    expect(sessionKind({ ...makeSession(0), name: 'Which git branch 2 use?' })).toBe('chat');
-    expect(sessionKind({ ...makeSession(0), name: 'Refactor the app: rename it' })).toBe('chat');
+    expect(chatKindOf({ ...makeSession(0), name: 'Which git branch 2 use?' })).toBe('chat');
+    expect(chatKindOf({ ...makeSession(0), name: 'Refactor the app: rename it' })).toBe('chat');
   });
 });
 
@@ -265,12 +265,18 @@ describe('RecentChats', () => {
     ];
     renderRecentChats({ sessions, activeSessionId: 'session-1' });
 
-    expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveAttribute('data-kind', 'chat');
+    expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveAttribute(
+      'data-chat-kind',
+      'chat'
+    );
     expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveAttribute(
-      'data-kind',
+      'data-chat-kind',
       'branch'
     );
-    expect(screen.getByTestId('recent-chat-glyph-session-2')).toHaveAttribute('data-kind', 'app');
+    expect(screen.getByTestId('recent-chat-glyph-session-2')).toHaveAttribute(
+      'data-chat-kind',
+      'app'
+    );
 
     // 14px, subdued — and the accent only on the row the user is in.
     expect(screen.getByTestId('recent-chat-glyph-session-0')).toHaveClass(
@@ -310,7 +316,12 @@ describe('RecentChats', () => {
     renderRecentChats({
       sessions: [{ ...makeSession(0), privacy_tier: 'private' }],
     });
-    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+    const glyph = screen.getByTestId('recent-chat-glyph-session-0');
+    expect(glyph).toHaveAttribute('data-privacy', 'private');
+    // ⚠ The tier is carried by the GLYPH's shape, not by a hue, so it survives
+    // for anyone who cannot separate the two inks. A private plain chat is the
+    // padlocked bubble; a public one is not.
+    expect(glyph.getAttribute('aria-label')).toBe('Private chat');
   });
 
   it('leaves public and untiered chats unmarked on this 32px row', () => {
@@ -321,7 +332,17 @@ describe('RecentChats', () => {
         { ...makeSession(2), privacy_tier: 'private' },
       ],
     });
-    expect(screen.getAllByTestId('privacy-badge')).toHaveLength(1);
+    // Every row has a glyph now — the marker is which one, not whether one is
+    // there. Exactly one row may claim the private tier, and an untiered row
+    // must not: reading "no tier recorded" as private would mark half the
+    // history, and reading it as private-looking is the same failure.
+    const glyphs = [0, 1, 2].map((i) => screen.getByTestId(`recent-chat-glyph-session-${i}`));
+    expect(glyphs.map((g) => g.getAttribute('data-privacy'))).toEqual([
+      'public',
+      'public',
+      'private',
+    ]);
+    expect(glyphs.filter((g) => g.getAttribute('aria-label') === 'Private chat')).toHaveLength(1);
   });
 
   it('shows the privacy marker and the running indicator on the same row', () => {
@@ -330,6 +351,9 @@ describe('RecentChats', () => {
       runningSessionIds: new Set(['session-1']),
     });
     expect(screen.getByTestId('running-chat-indicator-session-1')).toBeInTheDocument();
-    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+    expect(screen.getByTestId('recent-chat-glyph-session-1')).toHaveAttribute(
+      'data-privacy',
+      'private'
+    );
   });
 });

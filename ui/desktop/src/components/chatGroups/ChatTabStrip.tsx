@@ -1,5 +1,5 @@
 import { CSSProperties, useCallback, useEffect, useLayoutEffect, useRef } from 'react';
-import { ChevronDown, MessageSquare, X } from '../icons/app-icons';
+import { ChevronDown, X } from '../icons/app-icons';
 import { cn } from '../../utils';
 import { getSessionTitlePadding } from '../Layout/TitlebarControls';
 import { useTabStripOverflow } from '../Layout/useTabStripOverflow';
@@ -10,11 +10,37 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { ChatTab, ChatTabId, ChatGroupId } from './chatGroupsTypes';
-import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { ChatKindIcon } from '../chats/ChatKindIcon';
+import type { ChatKindSource } from '../chats/chatKind';
 import type { SessionClassification } from '../../api';
 import { useTabDragReorder } from './useTabDragReorder';
 import { useChatTabDrag } from './ChatTabDragContext';
 import type { TabAnnotation } from './workspaceCommandPlanner';
+
+/**
+ * A tab is not a session row — it persists `{tabId, sessionId, title}` and
+ * nothing about lineage — so the kind has to be assembled from what the strip
+ * actually holds: the title (which still catches `app:` and legacy branch
+ * names) plus the annotation the workspace planner recorded when a sub-agent
+ * opened a tab.
+ *
+ * ⚠ Deliberately NOT widened by fetching the session: the strip renders on
+ * every keystroke of a rename, and a per-tab fetch there is how a tab strip
+ * becomes the slowest thing in the app.
+ */
+function tabKindSource(
+  tab: { title: string },
+  annotation?: { badge?: string; parentSessionId?: string }
+): ChatKindSource {
+  // ⚠ Only `badge === 'subagent'` marks a sub-agent here — deliberately NOT
+  // `parentSessionId`. `TabAnnotation.badge` is a free-form string and the
+  // planner may record a parent link for other reasons; the strip's own suite
+  // guards that an annotation carrying a parent but no badge marks nothing.
+  return {
+    name: tab.title,
+    session_type: annotation?.badge === 'subagent' ? 'sub_agent' : null,
+  };
+}
 
 function prefersReducedMotion(): boolean {
   return (
@@ -381,33 +407,27 @@ export function ChatTabStrip({
                   onSelect(tab.tabId);
                 }}
               >
-                <MessageSquare className="h-4 w-4 flex-none" />
-                {/* Its own class — deliberately NOT the running dot's, which is
-                    7px, --text-accent, animated, and `group-hover:hidden` so
-                    the close control can take its slot. A privacy marker that
-                    disappears exactly when you point at the tab is not a
-                    privacy marker, so this one has no animation and no hover
-                    rule. (The class name is spelled once, in the JSX below:
-                    this file's own gate counts the running dot's occurrences,
-                    and a comment quoting it reads as a third use.)
+                {/* ⚠ The leading glyph now carries BOTH what the tab is and
+                    whether it is private, replacing an identical-for-every-tab
+                    bubble plus a separate dense privacy dot.
 
-                    It also sits at the OTHER END of the tab from the running
-                    dot — beside the leading glyph, inside the label button —
-                    so a running private chat shows both at once instead of the
-                    two fighting over one slot. */}
-                {privacyTiers[tab.sessionId] && (
-                  <PrivacyBadge
-                    tier={privacyTiers[tab.sessionId]}
-                    dense
-                    className="br-tab__privacy-dot"
-                  />
-                )}
+                    It keeps the two properties the dot was given for: no
+                    animation, and no `group-hover:hidden` rule. The running dot
+                    hides on hover so the close control can take its slot; a
+                    privacy marker that disappears exactly when you point at the
+                    tab is not a privacy marker. Living at the OTHER END of the
+                    tab from the running dot is what lets a running private chat
+                    show both at once instead of the two fighting over one slot.
+
+                    The `sub` text chip is gone with it — a sub-agent now reads
+                    as a robot glyph in the same slot as every other kind,
+                    instead of a word competing with the title for width. */}
+                <ChatKindIcon
+                  session={tabKindSource(tab, tabAnnotations[tab.sessionId])}
+                  tier={privacyTiers[tab.sessionId]}
+                  className="h-4 w-4 br-tab__privacy-dot"
+                />
                 <span className="br-tab__label">{tab.title}</span>
-                {tabAnnotations[tab.sessionId]?.badge === 'subagent' && (
-                  <span className="ml-1 flex-none rounded bg-background-code px-1 text-[10px] text-text-subtle">
-                    sub
-                  </span>
-                )}
               </button>
 
               {isRunning ? (
@@ -480,7 +500,13 @@ export function ChatTabStrip({
                 onSelect={() => handleOverflowSelect(tab.tabId)}
                 className={cn('gap-2', tab.tabId === activeTabId && 'font-medium')}
               >
-                <MessageSquare className="h-4 w-4 flex-none" />
+                {/* The overflow menu draws the SAME glyph as the strip: a tab
+                    that scrolls out of view must not change what it is. */}
+                <ChatKindIcon
+                  session={tabKindSource(tab, tabAnnotations[tab.sessionId])}
+                  tier={privacyTiers[tab.sessionId]}
+                  className="h-4 w-4"
+                />
                 <span className="min-w-0 flex-1 truncate">{tab.title}</span>
                 {runningSessionIds.includes(tab.sessionId) ? (
                   // The same glyph the tab carries. One glyph, one meaning — a

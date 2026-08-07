@@ -22,6 +22,7 @@ import {
   Bot as _Bot,
   Brain as _Brain,
   Calendar as _Calendar,
+  CalendarClock as _CalendarClock,
   Camera as _Camera,
   Check as _Check,
   CheckCircle as _CheckCircle,
@@ -80,6 +81,7 @@ import {
   Lock as _Lock,
   Maximize2 as _Maximize2,
   MessageSquare as _MessageSquare,
+  MessageSquareLock as _MessageSquareLock,
   MessageSquarePlus as _MessageSquarePlus,
   MessageSquareText as _MessageSquareText,
   Monitor as _Monitor,
@@ -170,6 +172,7 @@ export const BookmarkPlus = light(_BookmarkPlus);
 export const Bot = light(_Bot);
 export const Brain = light(_Brain);
 export const Calendar = light(_Calendar);
+export const CalendarClock = light(_CalendarClock);
 export const Camera = light(_Camera);
 export const Check = light(_Check);
 export const CheckIcon = Check;
@@ -251,6 +254,7 @@ export const LoaderCircle = light(_LoaderCircle);
 export const Lock = light(_Lock);
 export const Maximize2 = light(_Maximize2);
 export const MessageSquare = light(_MessageSquare);
+export const MessageSquareLock = light(_MessageSquareLock);
 export const MessageSquarePlus = light(_MessageSquarePlus);
 export const MessageSquareText = light(_MessageSquareText);
 export const Monitor = light(_Monitor);

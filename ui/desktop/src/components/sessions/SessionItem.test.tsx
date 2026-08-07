@@ -28,16 +28,41 @@ function session(over: Partial<Session> = {}): Session {
 describe('SessionItem — the privacy marker', () => {
   it('marks a private session', () => {
     render(<SessionItem session={session({ privacy_tier: 'private' })} />);
-    expect(screen.getByTestId('privacy-badge')).toHaveAttribute('data-privacy', 'private');
+    const glyph = screen.getByTestId('chat-kind-icon');
+    expect(glyph).toHaveAttribute('data-privacy', 'private');
+    expect(glyph.getAttribute('aria-label')).toBe('Private chat');
   });
 
   it('leaves a public session unmarked on this dense row', () => {
     render(<SessionItem session={session({ privacy_tier: 'public' })} />);
-    expect(screen.queryByTestId('privacy-badge')).toBeNull();
+    const glyph = screen.getByTestId('chat-kind-icon');
+    expect(glyph).toHaveAttribute('data-privacy', 'public');
+    expect(glyph.getAttribute('aria-label')).toBe('Chat');
   });
 
   it('leaves a session with no tier at all unmarked rather than guessing', () => {
     render(<SessionItem session={session()} />);
-    expect(screen.queryByTestId('privacy-badge')).toBeNull();
+    // ⚠ "No tier recorded" must render as the UNMARKED glyph, never the private
+    // one — a row the daemon has said nothing about is not a row to claim
+    // protection for.
+    expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-privacy', 'public');
+  });
+
+  /**
+   * The kind axis, which this row could not express at all before: every
+   * session drew the same bubble, so a branch, a sub-agent and a chat were
+   * indistinguishable in History.
+   */
+  it('distinguishes a branch, a sub-agent and a plain chat', () => {
+    const { unmount } = render(<SessionItem session={session({ diverged_from: 'session-0' })} />);
+    expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-chat-kind', 'branch');
+    unmount();
+
+    const second = render(<SessionItem session={session({ session_type: 'sub_agent' })} />);
+    expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-chat-kind', 'subagent');
+    second.unmount();
+
+    render(<SessionItem session={session()} />);
+    expect(screen.getByTestId('chat-kind-icon')).toHaveAttribute('data-chat-kind', 'chat');
   });
 });

@@ -1,16 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FC, type UIEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import type { SessionSummary } from '../../api';
-import {
-  AppWindow,
-  ChevronDown,
-  Clock,
-  Folder,
-  GitBranch,
-  MessageSquare,
-  type LucideProps,
-} from '../icons/app-icons';
+import { ChevronDown, Clock, Folder } from '../icons/app-icons';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/Tooltip';
-import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { ChatKindIcon } from '../chats/ChatKindIcon';
 
 const LOAD_MORE_THRESHOLD_PX = 64;
 const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
@@ -27,28 +19,18 @@ const RECENTS_EXPANDED_STORAGE_KEY = 'biorouter:sidebar-recents-expanded';
  * rows are already distinguishable by their hover and their selected wash.
  */
 
-export type SessionKind = 'chat' | 'branch' | 'app';
-
 /**
- * Classify a session for its leading glyph.
+ * ⚠ **The kind resolver used to live here** — a `SessionKind` union, a
+ * name-regex classifier and a glyph map, all private to the sidebar. Three
+ * other surfaces (History's two row components and the tab strip) drew chats
+ * without any of it, so a branch looked like a branch in the sidebar and like
+ * every other chat everywhere else.
  *
- * NOTE: `SessionSummary` carries no session-kind field (only id / name /
- * timestamps / working_dir / message_count), so both `app:` and `(branch N)`
- * can currently only be read off the title. Replace this with the real field if
- * the API ever exposes one.
+ * It now lives in `components/chats/chatKind.ts`, where all four read it, and
+ * it prefers the real lineage fields (`diverged_from`, `parent_session_id`,
+ * `session_type`) over the title regex — which this note was already asking for
+ * ("replace this with the real field if the API ever exposes one"). It has.
  */
-export function sessionKind(session: SessionSummary): SessionKind {
-  const name = session.name.trim();
-  if (name.startsWith('app:')) return 'app';
-  if (/\(branch \d+\)$/i.test(name)) return 'branch';
-  return 'chat';
-}
-
-const KIND_GLYPHS: Record<SessionKind, FC<LucideProps>> = {
-  chat: MessageSquare,
-  branch: GitBranch,
-  app: AppWindow,
-};
 
 function readStoredRecentsExpanded(): boolean {
   try {
@@ -189,8 +171,6 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
   const accessibleLabel = `${isRunning ? 'Open ongoing chat' : 'Open chat'}: ${title}`;
   const messageLabel = `${session.message_count} ${session.message_count === 1 ? 'message' : 'messages'}`;
   const sessionTimestamp = formatSessionTimestamp(session.updated_at);
-  const kind = sessionKind(session);
-  const KindGlyph = KIND_GLYPHS[kind];
 
   return (
     <Tooltip>
@@ -211,18 +191,22 @@ function RecentChatRow({ session, isActive, isRunning, onOpen }: RecentChatRowPr
             isActive ? 'bg-sidebar-active font-medium before:bg-accent-bar' : ''
           }`}
         >
-          <KindGlyph
-            data-testid={`recent-chat-glyph-${session.id}`}
-            data-kind={kind}
-            aria-hidden="true"
-            className={`h-3.5 w-3.5 shrink-0 ${isActive ? 'text-accent-bar' : 'text-text-subtle'}`}
+          {/* ⚠ One glyph, two facts. This row used to draw an identical bubble
+              for every kind of chat plus a separate dense dot for privacy — so
+              the icon column carried no information and the tier needed its own
+              mark. `ChatKindIcon` folds both in: shape says what the chat IS,
+              and a private plain chat gets the padlocked bubble.
+
+              The active tint still wins over the tier ink, because "this is the
+              chat you are in" is what the sidebar is for. */}
+          <ChatKindIcon
+            session={session}
+            tier={session.privacy_tier}
+            testId={`recent-chat-glyph-${session.id}`}
+            isActive={isActive}
+            className={`h-3.5 w-3.5 ${isActive ? 'text-accent-bar' : 'text-text-subtle'}`}
           />
           <span className="min-w-0 flex-1 truncate leading-5">{title}</span>
-          {/* Dense by necessity — the row is 32px and D-12 says the glyph must
-              not change sidebar density. Private only; Public and "no tier"
-              stay silent. It sits BEFORE the running indicator so the two never
-              swap places as a turn starts and stops. */}
-          {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
           {isRunning && <ActiveChatIndicator sessionId={session.id} />}
         </button>
       </TooltipTrigger>

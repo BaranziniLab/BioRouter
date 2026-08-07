@@ -52,7 +52,7 @@ import { getSearchShortcutText } from '../../utils/keyboardShortcuts';
 import { ReadableContent } from '../Layout/ReadableContent';
 import { Dialog, DialogContent, DialogTitle } from '../ui/dialog';
 import { EmptyState } from '../ui/empty-state';
-import { PrivacyBadge } from '../ui/PrivacyBadge';
+import { ChatKindIcon } from '../chats/ChatKindIcon';
 import { DeclassifySessionDialog } from './DeclassifySessionDialog';
 import {
   getCachedSessionList,
@@ -407,13 +407,12 @@ const SessionItem = React.memo(function SessionItem({
       >
         {/* This row's SessionItem SHADOWS the exported
             components/sessions/SessionItem.tsx — same name, different
-            component, both reachable from History. They are badged
-            identically and to the same rule (dense dot, Private only), or
-            the marker would depend on which of the two a surface happened
-            to mount. */}
+            component, both reachable from History. They draw the SAME glyph
+            from the SAME resolver, or the marking would depend on which of the
+            two a surface happened to mount. */}
         <div className="flex min-w-0 items-center gap-1.5">
+          <ChatKindIcon session={session} tier={session.privacy_tier} className="h-3.5 w-3.5" />
           <h3 className="text-label truncate">{session.name}</h3>
-          {session.privacy_tier && <PrivacyBadge tier={session.privacy_tier} dense />}
         </div>
         {session.diverged_from && (
           <div className="flex items-center gap-2 mt-0.5 text-text-muted text-supporting min-w-0">
