@@ -217,10 +217,21 @@ pub const PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6
 /// it. What could not raise the prompt is Biorouter's own background service, so
 /// that is what the sentence says. It closes on what did not happen, for
 /// [`DENIED_MESSAGE`]'s reason.
+///
+/// ⚠ **It used to end "— it has no window of its own to show the prompt in",
+/// and that was false.** It was the standing explanation, it was wrong, and
+/// because it was written into a user-facing string it was the version people
+/// were told. Measured against the packaged app: a *foreground* Electron
+/// process with a visible focused window fails identically, and the same
+/// daemon binary run from a shell — equally windowless — raises the prompt and
+/// is answered in seconds. The sentence now states only what is observed. Do
+/// not put a mechanism back into it until one is proven; a user-facing string
+/// is the worst place to keep a guess, because it is the hardest to notice is
+/// wrong.
 pub const PROMPT_UNANSWERED_MESSAGE: &str =
     "Biorouter's background service asked the operating system to confirm it is you, and the \
      operating system never answered, so nothing was changed. This is a limitation of the \
-     service rather than a refusal — it has no window of its own to show the prompt in.";
+     service rather than a refusal.";
 
 /// Raise `prompter`'s prompt and turn the answer into either *go ahead* (`None`)
 /// or the refusal — **without ever waiting forever**.
