@@ -8,7 +8,6 @@ import ConfigSettings from './config/ConfigSettings';
 import { ExtensionConfig } from '../../api';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Brain, Monitor, MessageSquare } from '../icons/app-icons';
-import { ShieldIcon } from 'lucide-react';
 import { useState, useEffect } from 'react';
 import ChatSettingsSection from './chat/ChatSettingsSection';
 import PrivacyPanel from './privacy/PrivacyPanel';
@@ -48,7 +47,10 @@ export default function SettingsView({
         tools: 'chat',
         app: 'app',
         chat: 'chat',
-        privacy: 'privacy',
+        // Privacy is no longer a tab of its own — it is a section of App, so an
+        // old deep link to `section: 'privacy'` must still arrive somewhere it
+        // exists rather than selecting a tab that is gone.
+        privacy: 'app',
       };
 
       const targetTab = sectionToTab[viewOptions.section];
@@ -116,14 +118,6 @@ export default function SettingsView({
                     Chat
                   </TabsTrigger>
                   <TabsTrigger
-                    value="privacy"
-                    className="flex gap-2 text-sm"
-                    data-testid="settings-privacy-tab"
-                  >
-                    <ShieldIcon className="h-4 w-4" />
-                    Privacy
-                  </TabsTrigger>
-                  <TabsTrigger
                     value="app"
                     className="flex gap-2 text-label"
                     data-testid="settings-app-tab"
@@ -142,14 +136,22 @@ export default function SettingsView({
                   <TabsContent value="chat" className="mt-0">
                     <ChatSettingsSection />
                   </TabsContent>
-                  <TabsContent value="privacy" className="mt-0">
-                    <PrivacyPanel />
-                  </TabsContent>
                   <TabsContent value="app" className="mt-0">
+                    {/* Order is the operator's, and it is not arbitrary:
+                        Configuration, then Privacy, then Workspace, then
+                        everything AppSettingsSection owns — which ends with
+                        Updates, so Updates stays at the bottom of the page.
+
+                        Privacy used to be a fourth tab. Four tabs for what is
+                        really two audiences (what the model does, how the app
+                        behaves) made Privacy feel like a separate product
+                        rather than a property of this install; it sits with
+                        Configuration now because that is what it is. */}
                     <div>
                       {CONFIGURATION_ENABLED && <ConfigSettings />}
-                      <AppSettingsSection scrollToSection={viewOptions.section} />
+                      <PrivacyPanel />
                       <WorkspaceSettingsSection />
+                      <AppSettingsSection scrollToSection={viewOptions.section} />
                     </div>
                   </TabsContent>
                 </ReadableContent>

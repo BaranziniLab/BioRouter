@@ -203,10 +203,15 @@ fn describe_monitors(monitors: &[Monitor]) -> String {
 /// gets them there without the dialog.
 #[cfg(target_os = "macos")]
 mod screen_recording_permission {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
     #[link(name = "CoreGraphics", kind = "framework")]
     extern "C" {
         // CG_EXTERN bool CGPreflightScreenCaptureAccess(void)
         fn CGPreflightScreenCaptureAccess() -> bool;
+        // CG_EXTERN bool CGRequestScreenCaptureAccess(void)
+        fn CGRequestScreenCaptureAccess() -> bool;
     }
 
     pub fn granted() -> bool {
@@ -214,6 +219,37 @@ mod screen_recording_permission {
         // no ownership transfer. It reads the calling process's TCC decision
         // and returns a C `bool`, which is ABI-identical to Rust's.
         unsafe { CGPreflightScreenCaptureAccess() }
+    }
+
+    /// Ask macOS for the permission — which is what puts Biorouter in the
+    /// Screen Recording list in the first place.
+    ///
+    /// ⚠ **Preflighting alone was not enough, and that was a real defect.**
+    /// `CGPreflightScreenCaptureAccess` only *reads* the decision; it never
+    /// registers the app with TCC. So the first version of this guard refused
+    /// with "enable Biorouter in System Settings → Screen Recording" while
+    /// Biorouter was not in that list to enable — an instruction that sent the
+    /// user somewhere there was nothing to do. `CGRequestScreenCaptureAccess`
+    /// both registers the app and raises the system prompt the first time.
+    ///
+    /// ⚠ **Bounded, on its own thread.** Elsewhere in this release a macOS
+    /// consent call (`LAContext.evaluatePolicy`) was measured never to return
+    /// when the daemon runs under the desktop app, hanging the request for its
+    /// full timeout. Whether this call shares that fate is not known, and a
+    /// screenshot tool that can hang forever is worse than one that reports a
+    /// missing permission — so the answer is waited for briefly and its absence
+    /// is read as "not granted", which is the outcome the caller already
+    /// handles. The spawned thread is deliberately left to finish on its own:
+    /// the prompt it raised is still useful to the user even if we stopped
+    /// waiting for it.
+    pub fn request_bounded() -> bool {
+        let (tx, rx) = mpsc::sync_channel::<bool>(1);
+        std::thread::spawn(move || {
+            // SAFETY: same contract as the preflight above — no arguments, no
+            // out-params, returns a C `bool`.
+            let _ = tx.send(unsafe { CGRequestScreenCaptureAccess() });
+        });
+        rx.recv_timeout(Duration::from_secs(3)).unwrap_or(false)
     }
 }
 
@@ -224,21 +260,31 @@ mod screen_recording_permission {
 #[cfg(target_os = "macos")]
 const SCREEN_RECORDING_DENIED: &str = "macOS has not granted Biorouter permission to record the \
      screen, so screenshots would show only the desktop wallpaper with every window missing, and \
-     window titles would all come back empty.\n\nTo fix it: System Settings → Privacy & Security → \
-     Screen Recording → enable Biorouter (this attempt is what puts it in that list, so it should \
-     be there now), then QUIT AND REOPEN Biorouter — macOS only applies the new permission to a \
-     freshly launched process.";
+     window titles would all come back empty.\n\nBiorouter has just asked macOS for that \
+     permission. If a system dialog appeared, choose Allow and try again. If it did not — macOS \
+     only offers it once per app — open System Settings → Privacy & Security → Screen Recording \
+     and switch Biorouter on; the request just made puts it in that list. Either way, QUIT AND \
+     REOPEN Biorouter afterwards: macOS applies a new screen-recording grant only to a freshly \
+     launched process.";
 
 /// `Ok(())` when a capture can actually see windows, `Err` with instructions
 /// when it cannot. Never blocks; a no-op off macOS, where no such gate exists.
 fn ensure_screen_capture_permitted() -> Result<(), ErrorData> {
     #[cfg(target_os = "macos")]
     if !screen_recording_permission::granted() {
-        return Err(ErrorData::new(
-            ErrorCode::INTERNAL_ERROR,
-            SCREEN_RECORDING_DENIED.to_string(),
-            None,
-        ));
+        // Ask, don't just look. Requesting is what registers Biorouter with TCC
+        // and raises the system prompt; without it the refusal below names a
+        // System Settings entry that does not exist yet.
+        //
+        // A grant made right here is honoured immediately rather than costing
+        // the user a second attempt — macOS returns true once they approve.
+        if !screen_recording_permission::request_bounded() {
+            return Err(ErrorData::new(
+                ErrorCode::INTERNAL_ERROR,
+                SCREEN_RECORDING_DENIED.to_string(),
+                None,
+            ));
+        }
     }
     Ok(())
 }

@@ -107,7 +107,9 @@ export default function PrivacyPanel() {
   }
 
   return (
-    <section className="space-y-4">
+    // `data-privacy-panel` marks this section's root so SettingsView's suite
+    // can assert WHERE it sits among its siblings, not merely that it mounted.
+    <section className="space-y-4" data-privacy-panel>
       {!enabled && (
         <div
           data-testid="privacy-enforcement-off-strip"

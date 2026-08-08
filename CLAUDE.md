@@ -124,7 +124,8 @@ For an agent-orchestrated run (each phase as a verified subagent that stops on
 the first failure), use the **`release` workflow** in
 [`.claude/workflows/release.js`](.claude/workflows/release.js):
 `Workflow({ name: 'release', args: { version: '1.80.1' } })`. After a release,
-restore a mac-native node_modules: `cd ui/desktop && rm -rf node_modules && npm install`.
+restore a mac-native node_modules: `cd ui/desktop && rm -rf node_modules && npm ci` (**`ci`, not
+`install`** — see the bullet below).
 
 The detailed manual steps and the reasoning behind each invariant follow.
 
@@ -136,7 +137,8 @@ The detailed manual steps and the reasoning behind each invariant follow.
 - **macOS sign + notarize**: set `APPLE_ID` and `APPLE_APP_SPECIFIC_PASSWORD` on the `npm run bundle:default` / `bundle:intel` invocation. Signing identity is the UCSF Developer ID Application (team `F3YYBXAFJ8`).
 - **Intel macOS requires `just release-intel` first**. `bundle:intel` does NOT cross-compile the Rust backend — it repackages whatever is in `ui/desktop/src/bin/`. Without `target/x86_64-apple-darwin/release/{biorouter,biorouterd}`, `prepare-platform-binaries.js` falls through to the arm64 build and ships an Intel dmg that crashes on Intel Macs with "bad CPU type." Always run `just release-intel` (or have a recent `target/x86_64-apple-darwin/release/` build) immediately before `npm run bundle:intel`. Verify with `file ui/desktop/out/Biorouter-darwin-x64/Biorouter.app/Contents/Resources/bin/biorouter` — must say `x86_64`, not `arm64`. Same rule applies symmetrically: `bundle:default` needs `target/release/` to be the arm64 build (`just release-binary` or `just copy-binary`).
 - **Build platforms one at a time** — every bundle writes to `ui/desktop/src/bin/` and clobbers the others. After any non-mac build, run `just release-binary` (or `just copy-binary`) to restore the local arm64 binary.
-- **After Linux/Windows Docker builds**, the on-disk `ui/desktop/node_modules` is Linux-flavored — macOS bundle then fails with `@rollup/rollup-darwin-arm64` missing. Fix: `cd ui/desktop && rm -rf node_modules && npm install`.
+- **After Linux/Windows Docker builds**, the on-disk `ui/desktop/node_modules` is Linux-flavored — the macOS bundle then fails with `@rollup/rollup-darwin-arm64` missing, and so does `npx vitest`, with a `MODULE_NOT_FOUND` inside `rollup/dist/native.js` that looks nothing like a platform problem. Fix: `cd ui/desktop && rm -rf node_modules && npm ci`.
+  ⚠ **`npm ci`, never `npm install`.** `install` rewrites `package-lock.json`, and the next cross build runs `npm ci` inside the container, which refuses a lockfile that disagrees with `package.json` — so the quick fix here breaks the next Linux/Windows build instead. This line said `npm install` for a long time; it was wrong.
 - **`macos-alias` `NODE_MODULE_VERSION` mismatch** during forge `make`: `cd ui/desktop && npm rebuild macos-alias`.
 - **Unmount any stale `/Volumes/Biorouter*` mounts before the dmg step** — leftover mounts cause `cp: Operation not permitted` and abort `electron-forge maker-dmg`.
 - **Do not hand-roll the dmg via `hdiutil create`** — it skips the `Applications` symlink and the background-image layout that `electron-forge maker-dmg` adds. If `bundle:default` fails at the dmg step, fix the underlying cause (usually a stale `/Volumes` mount) and re-run, don't `hdiutil` over it.
