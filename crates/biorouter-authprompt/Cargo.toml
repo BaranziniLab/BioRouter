@@ -1,0 +1,16 @@
+[package]
+name = "biorouter-authprompt"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The macOS authentication prompt Biorouter's background service cannot raise itself"
+
+[[bin]]
+name = "biorouter-authprompt"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"

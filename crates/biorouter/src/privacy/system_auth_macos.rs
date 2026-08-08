@@ -73,8 +73,145 @@ fn prompt_text(req: &AuthRequest) -> String {
     format!("{} ({})", req.reason, req.session_ids.join(", "))
 }
 
+/// Where the bundled prompt helper lives, if it is there at all.
+///
+/// `BIOROUTER_AUTHPROMPT_APP` overrides, for a dev tree or a test. Otherwise it
+/// is looked for beside the running executable, which is where the packaged app
+/// puts it (`Biorouter.app/Contents/Resources/`), and `biorouterd` itself lives
+/// in `Contents/Resources/bin/`.
+///
+/// `None` means "not bundled", and the caller falls back to the in-process
+/// call. That path is not dead: it is what the CLI and any shell-started daemon
+/// use, and it works there.
+fn helper_app() -> Option<std::path::PathBuf> {
+    const BUNDLE: &str = "Biorouter Authentication.app";
+    if let Ok(explicit) = std::env::var("BIOROUTER_AUTHPROMPT_APP") {
+        let path = std::path::PathBuf::from(explicit);
+        return path.exists().then_some(path);
+    }
+    let exe = std::env::current_exe().ok()?;
+    // `…/Contents/Resources/bin/biorouterd` -> `…/Contents/Resources/<bundle>`
+    let candidate = exe.parent()?.parent()?.join(BUNDLE);
+    candidate.exists().then_some(candidate)
+}
+
+/// Ask the bundled helper to raise the prompt, and believe its answer only if
+/// it comes back carrying the nonce we issued.
+///
+/// ⚠ **Why a separate process at all** is documented at length on
+/// `biorouter-authprompt`'s crate root, with the measurements: an in-process
+/// `evaluatePolicy` never returns when the daemon was started by the desktop
+/// app, and neither does Electron's own `promptTouchID`, and neither does an
+/// Electron process holding a visible focused window. Launching through `open`
+/// — so LaunchServices starts the helper under **launchd** rather than under
+/// us — is what makes the prompt appear.
+///
+/// ⚠ **The nonce is not a security boundary.** Anything running as this user
+/// can read it and forge an approval; what it buys is that forging requires
+/// reading the daemon's private directory rather than guessing a path. This was
+/// chosen knowingly over an unforgeable check that never fires, and it is why
+/// the nonce goes in a 0600 file and never in argv or the environment, both of
+/// which any process on the machine can read.
+#[cfg(target_os = "macos")]
+fn evaluate_via_helper(app: &std::path::Path, reason: &str) -> Option<MacAuthSignal> {
+    use rand::Rng;
+    use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+
+    let dir = tempfile::Builder::new()
+        .prefix("biorouter-auth-")
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir()
+        .ok()?;
+    let _ = std::fs::DirBuilder::new().mode(0o700).create(dir.path());
+
+    let nonce: String = {
+        let bytes: [u8; 32] = rand::thread_rng().gen();
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    };
+    let nonce_path = dir.path().join("nonce");
+    let result_path = dir.path().join("result");
+
+    let mut nonce_file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&nonce_path)
+        .ok()?;
+    nonce_file.write_all(nonce.as_bytes()).ok()?;
+    drop(nonce_file);
+
+    // `-n` so a helper left over from a previous prompt cannot absorb this one.
+    let spawned = std::process::Command::new("/usr/bin/open")
+        .arg("-n")
+        .arg("-a")
+        .arg(app)
+        .arg("--args")
+        .arg(&nonce_path)
+        .arg(&result_path)
+        .arg(reason)
+        .status();
+    if !matches!(spawned, Ok(status) if status.success()) {
+        return None;
+    }
+
+    // Poll rather than watch: the helper is a separate process launched through
+    // LaunchServices, so there is no child to wait on and no descriptor to
+    // select over. Bounded by the same budget the caller uses.
+    let deadline = std::time::Instant::now() + super::system_auth::PROMPT_TIMEOUT;
+    while std::time::Instant::now() < deadline {
+        if let Ok(contents) = std::fs::read_to_string(&result_path) {
+            return Some(parse_helper_result(&nonce, &contents));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    // Ran out of time. Not an approval.
+    Some(MacAuthSignal::EvaluationFailed(0))
+}
+
+/// Turn the helper's one line into a signal, checking the nonce first.
+///
+/// ⚠ **Split out so it can be tested at all.** Everything else on this path
+/// needs a human at a Touch ID sensor, which no test has — so without this the
+/// only security-relevant logic here (does an approval we did not ask for get
+/// believed?) would ship unexercised.
+///
+/// ⚠ **Fails closed on everything.** A missing nonce, the wrong nonce, a
+/// truncated line, an unrecognised verdict, empty content: all of them are
+/// `EvaluationFailed`, which the caller reads as "not approved". The only input
+/// that approves is our exact nonce followed by exactly `approved`.
+fn parse_helper_result(nonce: &str, contents: &str) -> MacAuthSignal {
+    let mut parts = contents.trim().splitn(2, ' ');
+    let seen = parts.next().unwrap_or_default();
+    let verdict = parts.next().unwrap_or_default();
+    // Constant-time comparison would be theatre: an attacker able to time this
+    // can already read the nonce file. An EXACT match is not optional though —
+    // a result the daemon did not ask for is not an answer to it.
+    if seen.is_empty() || seen != nonce {
+        return MacAuthSignal::EvaluationFailed(0);
+    }
+    match verdict {
+        "approved" => MacAuthSignal::Evaluated,
+        "unavailable" => MacAuthSignal::PolicyUnavailable(0),
+        // "denied", and anything at all we do not recognise.
+        _ => MacAuthSignal::EvaluationFailed(0),
+    }
+}
+
 /// Raise the prompt and block until the user answers.
 fn evaluate(reason: &str) -> MacAuthSignal {
+    // The bundled helper first, because the in-process call below cannot work
+    // under the desktop app. Absent (CLI, dev tree, shell-started daemon) the
+    // in-process call is correct and is what runs.
+    if let Some(app) = helper_app() {
+        if let Some(signal) = evaluate_via_helper(&app, reason) {
+            return signal;
+        }
+        // The helper is present but could not be launched. Fall through rather
+        // than refuse: the in-process attempt costs one bounded wait and may
+        // still succeed on a host where it works.
+    }
+
     let Some(context_class) = AnyClass::get(c"LAContext") else {
         return MacAuthSignal::FrameworkMissing;
     };
@@ -232,6 +369,61 @@ mod tests {
     #[test]
     fn a_null_error_reads_as_code_zero_rather_than_dereferencing() {
         assert_eq!(error_code(std::ptr::null_mut()), 0);
+    }
+
+    /// The helper's reply is the one thing on this path a test can reach: the
+    /// rest needs a finger on a sensor. It is also the only place an approval
+    /// gets *believed*, so it is the half worth pinning.
+    #[test]
+    fn only_our_own_nonce_with_an_explicit_approval_is_believed() {
+        let nonce = "a".repeat(64);
+        assert!(matches!(
+            parse_helper_result(&nonce, &format!("{nonce} approved\n")),
+            MacAuthSignal::Evaluated
+        ));
+    }
+
+    /// ⚠ Every one of these is an APPROVAL that must not be granted. A helper
+    /// reply carrying someone else's nonce is the forgery the nonce exists to
+    /// catch; the rest are malformed input, and malformed input is not consent.
+    #[test]
+    fn everything_else_fails_closed() {
+        let nonce = "a".repeat(64);
+        let other = "b".repeat(64);
+        for hostile in [
+            format!("{other} approved"),       // a reply we never asked for
+            "approved".to_string(),            // verdict with no nonce at all
+            format!("{nonce}"),                // our nonce, no verdict
+            format!("{nonce} "),               // our nonce, empty verdict
+            format!("{nonce} APPROVED"),       // case is not a match
+            format!("{nonce} approved extra"), // trailing junk after the verdict
+            format!(" approved {nonce}"),      // fields swapped
+            String::new(),                     // empty file, e.g. a crashed helper
+            format!("{}", &nonce[..32]),       // truncated nonce
+        ] {
+            assert!(
+                !matches!(
+                    parse_helper_result(&nonce, &hostile),
+                    MacAuthSignal::Evaluated
+                ),
+                "approved on {hostile:?}"
+            );
+        }
+    }
+
+    /// "This Mac cannot ask" is not "the user said no", and the two lead to
+    /// different advice — so the helper's third answer must survive the trip.
+    #[test]
+    fn an_unavailable_verdict_is_not_collapsed_into_a_refusal() {
+        let nonce = "c".repeat(64);
+        assert!(matches!(
+            parse_helper_result(&nonce, &format!("{nonce} unavailable")),
+            MacAuthSignal::PolicyUnavailable(_)
+        ));
+        assert!(matches!(
+            parse_helper_result(&nonce, &format!("{nonce} denied")),
+            MacAuthSignal::EvaluationFailed(_)
+        ));
     }
 
     #[test]

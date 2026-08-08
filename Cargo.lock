@@ -1065,6 +1065,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "biorouter-authprompt"
+version = "1.89.0"
+dependencies = [
+ "block2",
+ "objc2",
+]
+
+[[package]]
 name = "biorouter-bench"
 version = "1.89.0"
 dependencies = [
