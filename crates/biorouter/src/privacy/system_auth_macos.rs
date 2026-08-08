@@ -130,13 +130,37 @@ fn evaluate(reason: &str) -> MacAuthSignal {
     // ⚠ **Bounded, and this is the P-05 fix at its source.**
     //
     // `evaluatePolicy` hands the work to an internal `la_client` queue, which
-    // talks to `coreauthd` over a *synchronous* XPC. In a process that is not a
-    // foreground application — which `biorouterd` never is — that XPC gets no
-    // reply, the reply block never fires, and a plain `recv()` here parks this
-    // thread for the life of the daemon. Measured on the packaged 1.89.0 build:
-    // the tokio blocking-pool thread sat in `_pthread_cond_wait` while the
-    // `la_client` thread sat in `__NSXPCCONNECTION_IS_WAITING_FOR_A_SYNCHRONOUS_REPLY__`,
-    // and the HTTP handler above never answered.
+    // talks to `coreauthd` over a *synchronous* XPC. Under the desktop app that
+    // XPC gets no reply, the reply block never fires, and a plain `recv()` here
+    // parks this thread for the life of the daemon. Measured on the packaged
+    // 1.89.0 build: the tokio blocking-pool thread sat in `_pthread_cond_wait`
+    // while the `la_client` thread sat in
+    // `__NSXPCCONNECTION_IS_WAITING_FOR_A_SYNCHRONOUS_REPLY__`, and the HTTP
+    // handler above never answered.
+    //
+    // ⚠ **WHY it gets no reply is NOT known, and the explanation that used to
+    // stand here was measured to be false.** That explanation was "a process
+    // that is not a foreground application — which `biorouterd` never is". It
+    // does not survive contact:
+    //
+    //   * An Electron app *with a visible, focused window* — a foreground
+    //     application by any definition — cannot raise this prompt either. Its
+    //     own `systemPreferences.promptTouchID()` times out identically, so the
+    //     failure is not about windows and not about this crate's FFI.
+    //   * `TransformProcessType` to a UI-capable process type succeeds from a
+    //     windowless process and changes nothing here. It was implemented,
+    //     tested against the packaged app, and reverted.
+    //   * The same release binary run from a shell reaches `coreauthd` and
+    //     returns in seconds. Only the descent from the desktop app fails, and
+    //     it fails whether the app is adhoc-signed or Developer-ID signed with
+    //     the hardened runtime, and whether it was exec'd directly or launched
+    //     through LaunchServices.
+    //
+    // So the discriminator is something about running underneath Electron, not
+    // the daemon's window-lessness. Do not restore the old sentence, and do not
+    // replace it with a fresh guess: the guess is what made this look understood
+    // and therefore not worth re-testing. The bound below is correct defensive
+    // code either way, which is why it stays while the cause is still open.
     //
     // `super::system_auth::authenticate_or_refuse` already bounds the *caller*,
     // so the request terminates either way. Bounding it here as well is what
