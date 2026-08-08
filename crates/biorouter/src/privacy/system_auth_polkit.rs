@@ -64,16 +64,39 @@ impl SystemAuthenticator for PolkitPrompter {
     }
 }
 
+/// Where `pkcheck` is allowed to be, in order.
+///
+/// ⚠ **Absolute paths, never a PATH lookup.** This used to be
+/// `Command::new("pkcheck")`, which resolves through `PATH` — and `PATH` is
+/// part of the daemon's environment, which AR-11 measured to be recoverable and
+/// settable in-process. So anything running as this user could drop a
+/// `pkcheck` of its own earlier in `PATH`, exit 0, and the daemon would read
+/// that as "the user authenticated", with no polkit dialog ever shown. The same
+/// class of hole as trusting a file another same-user process can write; the
+/// fix is to name the binary rather than ask the environment where it is.
+///
+/// Both locations are root-owned on every distribution that ships polkit, so
+/// substituting one is a privilege the attacker would already need to have.
+const PKCHECK_PATHS: &[&str] = &["/usr/bin/pkcheck", "/bin/pkcheck"];
+
+/// The `pkcheck` this host actually has, or `None`.
+fn pkcheck_binary() -> Option<&'static str> {
+    PKCHECK_PATHS
+        .iter()
+        .copied()
+        .find(|path| std::path::Path::new(path).exists())
+}
+
 /// Ask polkit whether this process is authorised, letting it prompt.
 async fn check_authorization(req: &AuthRequest) -> PolkitSignal {
-    if which::which("pkcheck").is_err() {
+    let Some(pkcheck) = pkcheck_binary() else {
         return PolkitSignal::NotInstalled;
-    }
+    };
     if !can_show_a_prompt() {
         return PolkitSignal::NoAuthenticationAgent;
     }
 
-    let output = tokio::process::Command::new("pkcheck")
+    let output = tokio::process::Command::new(pkcheck)
         .arg("--action-id")
         .arg(POLKIT_ACTION_ID)
         .arg("--process")
@@ -130,8 +153,40 @@ mod tests {
             AuthOutcome::Approved,
             "a machine with no polkit must never approve"
         );
-        if which::which("pkcheck").is_err() {
+        // Mirrors the production lookup exactly — a test that asked `PATH`
+        // while the code asks two absolute paths would drift from it silently.
+        if pkcheck_binary().is_none() {
             assert_eq!(outcome, AuthOutcome::Unavailable);
+        }
+    }
+
+    /// ⚠ **`pkcheck` must never be resolved through `PATH`.** `PATH` lives in
+    /// the daemon's environment, which AR-11 measured to be settable
+    /// in-process, so a `Command::new("pkcheck")` is a bypass any same-user
+    /// process can arrange for itself: drop a `pkcheck` earlier in `PATH`, exit
+    /// 0, and the daemon reads that as "the user authenticated" with no polkit
+    /// dialog shown at all.
+    #[test]
+    fn the_polkit_binary_is_named_absolutely_and_not_looked_up() {
+        // ⚠ Comment lines are stripped first. Both the fix's own docstring and
+        // this test's explain the bug by quoting it, so a naive `contains`
+        // matches its own prose and fails on correct code — the same
+        // self-referential trap this repo hit when a comment quoted the class
+        // name a gate was counting.
+        let code: String = include_str!("system_auth_polkit.rs")
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            !code.contains("Command::new(\"pkcheck\")"),
+            "pkcheck must be invoked by absolute path, never resolved through PATH"
+        );
+        for path in PKCHECK_PATHS {
+            assert!(
+                path.starts_with('/'),
+                "{path} is not absolute, so it would be resolved through PATH"
+            );
         }
     }
 
