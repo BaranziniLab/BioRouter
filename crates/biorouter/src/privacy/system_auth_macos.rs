@@ -90,9 +90,27 @@ fn helper_app() -> Option<std::path::PathBuf> {
         return path.exists().then_some(path);
     }
     let exe = std::env::current_exe().ok()?;
-    // `…/Contents/Resources/bin/biorouterd` -> `…/Contents/Resources/<bundle>`
-    let candidate = exe.parent()?.parent()?.join(BUNDLE);
-    candidate.exists().then_some(candidate)
+    let dir = exe.parent()?;
+    // ⚠ **Beside the executable FIRST, and that is the packaged layout.**
+    // `extraResource: ['src/bin']` copies the *directory*, so everything in it
+    // lands in `Contents/Resources/bin/` — the helper included, right next to
+    // `biorouterd`. An earlier version of this function looked one level up, at
+    // `Contents/Resources/`, which is where the bundle is NOT. It found nothing,
+    // silently fell back to the in-process call, and that call cannot work under
+    // the desktop app — so the packaged build would have shipped the exact
+    // 60-second refusal the helper exists to remove, with every unit test
+    // passing and the developer-machine test passing too, because the latter
+    // used the `BIOROUTER_AUTHPROMPT_APP` override and never exercised this
+    // path. Only opening the built `.app` caught it.
+    let beside = dir.join(BUNDLE);
+    if beside.exists() {
+        return Some(beside);
+    }
+    // One level up as well, so a future packaging change that flattens
+    // `src/bin` into `Resources/` keeps working rather than regressing to a
+    // silent fallback.
+    let above = dir.parent()?.join(BUNDLE);
+    above.exists().then_some(above)
 }
 
 /// Ask the bundled helper to raise the prompt, and believe its answer only if

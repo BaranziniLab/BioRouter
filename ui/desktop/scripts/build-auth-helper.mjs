@@ -47,7 +47,12 @@ if (!fs.existsSync(built)) {
   // falls back to the in-process call — but on a packaged build that fallback
   // never works, so shipping without it means shipping the bug this fixes.
   console.error(`[auth-helper] MISSING: ${built}`);
-  console.error('[auth-helper] build it first:  cargo build --release -p biorouter-authprompt');
+  // Name the exact command for THIS arch. A generic hint costs a round trip on
+  // the Intel path, where the `--target` is the whole point.
+  const cmd = target
+    ? `cargo build --release --target ${target} -p biorouter-authprompt`
+    : 'cargo build --release -p biorouter-authprompt';
+  console.error(`[auth-helper] build it first:  ${cmd}`);
   process.exit(1);
 }
 

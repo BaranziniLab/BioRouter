@@ -322,6 +322,19 @@ cmd_verify() {
     [ -f "$f" ] && log "present: $(basename "$f") ($(du -h "$f" | cut -f1))" || { printf 'MISSING: %s\n' "$f"; ok=0; }
   done
   "$ROOT/scripts/verify-headless-artifact.sh" >/dev/null || ok=0
+  # ⚠ Opens the built .app rather than trusting the packaging config. The macOS
+  # auth helper is loaded by PATH at runtime, so a layout change moves it
+  # somewhere the daemon does not look — and nothing fails: the daemon falls
+  # back to an in-process call that cannot work under the desktop app, and
+  # macOS users get a 60-second refusal with no diagnostic. This shipped once
+  # already, past green unit tests and a passing developer-machine run that had
+  # set BIOROUTER_AUTHPROMPT_APP and so never exercised the lookup.
+  for app in "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" \
+             "$DESK/out/Biorouter-darwin-x64/Biorouter.app"; do
+    if [ -d "$app" ]; then
+      "$ROOT/scripts/check-auth-helper-bundled.sh" "$app" || ok=0
+    fi
+  done
   # The electron-updater manifest is generated at publish time; verify it if
   # already present (and that it references both arch zips).
   local yml="$DESK/out/make/latest-mac.yml"
