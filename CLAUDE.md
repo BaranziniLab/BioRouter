@@ -644,13 +644,28 @@ and the extension itself by [`docs/extensions/built-in/workspace.md`](docs/exten
   `agents/subagent_execution_tool/`, `agents/subagent_handle.rs`.
 - **GUI tab/pane layer:** `ui/desktop/src/components/chatGroups/`.
 
-**The delegation gate** (`Agent::subagents_enabled`, `agents/agent.rs`): the
-generic `subagent` tool is offered only in **Completely Autonomous** mode, never
-*to* a subagent (a `SessionType::SubAgent` session cannot spawn its own), and
-never on a model whose name starts with `gemini`. Agent-Drafter apps with
-declared worker profiles also switch it off so `consult` stays the one delegation
-mechanism. If the tool is missing, check those four conditions before suspecting a
-registration bug.
+**The delegation gate** (`Agent::subagents_enabled`, `agents/agent.rs`) has
+**five** conditions. The generic `subagent` tool is offered only when all of them
+hold:
+
+1. `subagent_tool_enabled` — Agent-Drafter apps with declared worker profiles set
+   this false, so `consult` stays the one delegation mechanism.
+2. **Completely Autonomous** mode (`BioRouterMode::Auto`).
+3. The bound model's name does **not** start with `gemini`.
+4. The session is not itself a `SessionType::SubAgent` — a subagent cannot spawn
+   its own.
+5. **At least one non-injected extension is loaded**
+   (`ExtensionManager::has_non_injected_extensions`).
+
+⚠ **Condition 5 is the one that gets missed, and it is deliberately
+self-excluding.** `ensure_spawn_extension` puts `workspace` into the extension
+map, so counting it would make one turn's `true` the reason for the next turn's
+`true` — an agent that removed its last real extension would keep delegating
+forever off a grant it derived from itself. The consequence to recognise: a chat
+with **every** extension disabled has no `subagent` tool, which looks exactly
+like a registration bug and is not one.
+
+If the tool is missing, check all five before suspecting registration.
 
 ### Communication Flow
 
