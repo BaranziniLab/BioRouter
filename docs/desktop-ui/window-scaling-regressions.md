@@ -9,7 +9,7 @@
 
 This has been reported more than once, and each time the first hour went into
 reproducing it rather than fixing it — because four unrelated things produce the
-identical symptom, and three of them are not bugs in the app. Read the
+identical symptom, and most of them are not bugs in the app. Read the
 triage below before changing any CSS.
 
 ## Triage: two minutes, in this order
@@ -30,6 +30,7 @@ getComputedStyle(document.documentElement).getPropertyValue('--measure-chat')
 
 | Reading | Diagnosis |
 |---------|-----------|
+| `text` is `Loading BioRouter…` and the console is EMPTY | **Not a layout bug.** The renderer's assets 404'd — see *`--base ./`* below. |
 | `text` empty, or `hash` is `#/pair` | **Not a layout bug.** The app is not rendering — see *A dead daemon* below. |
 | `inner` ≠ `outer` | **Not a layout bug.** Your tooling pinned the viewport — see *Viewport emulation* below. |
 | `inner` = `outer`, and neither changes when you resize | **Not a layout bug.** Your resize command silently did nothing — see *AppleScript* below. |
@@ -76,7 +77,7 @@ floors still equal the old shipped numbers so a narrow window can never end up
 **If you add a new measure, add it to that test.** A `max-w-[1400px]` introduced
 anywhere in a layout container reintroduces this bug with nothing to stop it.
 
-## The three impostors
+## The four impostors
 
 ### Viewport emulation pins `innerWidth`
 
@@ -108,6 +109,35 @@ consecutive attempts, which reads exactly like an app that refuses to resize.
 
 **Tell:** always read the size back after setting it. If the value you get is not
 the value you set, the harness failed, not the app.
+
+### A renderer built without `--base ./` never mounts under `file://`
+
+The packaged and dev-launched app both load the renderer from
+`file://…/.vite/renderer/main_window/index.html`. A bundle built with vite's
+default base emits absolute asset paths (`/assets/index-….js`), which under
+`file://` resolve against the **filesystem root**, 404, and leave React unmounted
+behind the boot splash forever.
+
+**Tell:** the BR splash spins indefinitely, `document.body.innerText` is
+`"Loading BioRouter…"`, and — the part that misleads — the console shows **no
+error at all**, because the failure is a resource that never loaded rather than
+code that threw. It reads exactly like a hung backend, and it is not.
+
+```bash
+npx vite build --config vite.renderer.config.mts \
+  --outDir .vite/renderer/main_window --emptyOutDir --base ./
+```
+
+⚠ Related, and the reason people reach for that command in the first place:
+**`MAIN_WINDOW_VITE_DEV_SERVER_URL` is a build-time constant, not an environment
+variable.** `main.ts` declares it with `declare var` and the forge vite plugin
+substitutes it at build time, so exporting it before launching Electron does
+nothing and the app loads the built renderer regardless. If your source edits are
+not appearing, this is usually why — rebuild the renderer rather than restarting
+a dev server the app is not reading.
+
+And `BIOROUTER_NO_HMR=1` disables vite's **watcher**, so a dev server started
+that way keeps serving cached transforms of the source as it stood at launch.
 
 ### A dead daemon looks like a frozen layout
 
