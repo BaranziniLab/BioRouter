@@ -148,6 +148,14 @@ windows = { version = "0.61", features = ["Security_Credentials_UI"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
+# Peer verification for the auth helper's reply (privacy/system_auth_macos.rs).
+# The daemon asks the kernel WHICH process is on the other end of the socket and
+# then asks Security.framework whether that process is signed by our Team ID —
+# so forging an approval needs a binary we signed, not merely a process running
+# as the same user. `core-foundation` supplies the CFDictionary/CFNumber the
+# guest-attribute lookup takes; both crates are already in the lock file.
+core-foundation = "0.9"
+core-foundation-sys = "0.8"
 
 # Managed-policy ownership verification (BR-65) reads the effective uid via
 # `geteuid` to trust a root- or current-user-owned policy file.
