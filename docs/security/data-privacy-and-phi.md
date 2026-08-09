@@ -49,21 +49,21 @@ smaller.
 > **{Provider} is not hosted by your institution.**
 >
 > It is not HIPAA-compliant, is not hosted on-premise, and does not run on this machine. It can
-> read **files on this computer** — anything a chat on this model can reach, it can send there:
+> read **files on this computer**. Anything a chat on this model can reach, it can send there:
 > the contents of your working directory, and whatever a command you approve prints.
 >
 > Biorouter does stop three things: this model cannot read another chat's transcript, cannot read
-> a knowledge base marked private, and cannot use the private data extensions (UCSF OMOP, CDW) or
-> switch this chat to a private model to reach them.
+> a knowledge base marked private, and cannot use an extension marked private or switch this chat
+> to a private model to reach one.
 >
-> It **does not** stop it reading ordinary files on this computer through the shell — including files
+> It **does not** stop it reading ordinary files on this computer through the shell, including files
 > an earlier private chat wrote outside Biorouter's own storage. If the work involves patient
 > data, use a local model or an institutional one.
 
 The one-line form, which appears on the model chip and in `biorouter configure`:
 
-> Not HIPAA-compliant, not on-premise, not local — this model can read files on this computer.
-> Private chats and private knowledge bases stay out of its reach.
+> Not HIPAA-compliant, not on-premise, not local. This model can read files on this computer.
+> Biorouter will not hand it another chat's transcript or a knowledge base marked private.
 
 > **Maintenance.** These are the exact words of `COPY_LONG` and `COPY_SHORT` in
 > [`crates/biorouter/src/privacy/disclosure.rs`](../../crates/biorouter/src/privacy/disclosure.rs),

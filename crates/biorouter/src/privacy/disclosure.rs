@@ -78,14 +78,14 @@ pub const COPY_TITLE_TEMPLATE: &str = "{provider} is not hosted by your institut
 /// raw into a tooltip and a terminal.
 pub const COPY_LONG: &str = "\
 It is not HIPAA-compliant, is not hosted on-premise, and does not run on this machine. \
-It can read **files on this computer** — anything a chat on this model can reach, it can send \
+It can read **files on this computer**. Anything a chat on this model can reach, it can send \
 there: the contents of your working directory, and whatever a command you approve prints.
 
 Biorouter does stop three things: this model cannot read another chat's transcript, cannot \
-read a knowledge base marked private, and cannot use the private data extensions (UCSF OMOP, \
-CDW) or switch this chat to a private model to reach them.
+read a knowledge base marked private, and cannot use an extension marked private or switch \
+this chat to a private model to reach one.
 
-It **does not** stop it reading ordinary files on this computer through the shell — including \
+It **does not** stop it reading ordinary files on this computer through the shell, including \
 files an earlier private chat wrote outside Biorouter's own storage. If the work involves \
 patient data, use a local model or an institutional one.";
 
@@ -94,8 +94,15 @@ patient data, use a local model or an institutional one.";
 ///
 /// It carries all three of the ruling's conditions, because a short form that
 /// dropped one would be the drifted copy a user actually reads.
-pub const COPY_SHORT: &str = "Not HIPAA-compliant, not on-premise, not local — this model can \
-read files on this computer. Private chats and private knowledge bases stay out of its reach.";
+/// ⚠ **No absolute claim here.** This is the form with no qualifying paragraph
+/// beside it, so an absolute reads as a guarantee. It used to end "stay out of
+/// its reach", which states a property of the machine; the barrier is a rule
+/// Biorouter applies, and the filesystem underneath it is open (§9.5 did not
+/// ship). Naming Biorouter as the actor is the difference between what is
+/// enforced and what is merely true today.
+pub const COPY_SHORT: &str = "Not HIPAA-compliant, not on-premise, not local. This model can \
+read files on this computer. Biorouter will not hand it another chat's transcript or a \
+knowledge base marked private.";
 
 /// The dialog heading for `provider_display_name`.
 pub fn title_for(provider_display_name: &str) -> String {
