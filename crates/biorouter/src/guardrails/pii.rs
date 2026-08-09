@@ -79,9 +79,87 @@ fn ssn_valid(s: &str) -> bool {
     area != 0 && area != 666 && area < 900 && group != 0 && serial != 0
 }
 
-// NANP phone numbers in common written formats (optional +1, separators).
-static PHONE: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b").unwrap());
+// NANP phone numbers, matched on SHAPE rather than on "ten digits somewhere".
+//
+// ⚠ The separator class must never contain `\s`. It used to be `[-.\s]`, and
+// `\s` matches a NEWLINE — so a tool that printed the integers 1..1500 one per
+// line handed the model `998\n999\n1000`, a textbook `\d{3} sep \d{3} sep
+// \d{4}`, and the whole result was framed as containing PHI. Any numeric tool
+// output trips that: line counts, ids, measurements, a CSV column. The cost is
+// not the noise — it is that a guardrail which cries wolf on a column of
+// integers is one the model learns to discount on a real phone number.
+//
+// The candidate below is deliberately permissive (every separator optional) and
+// [`phone_shape_ok`] does the deciding, the same split SSN/[`ssn_valid`] and
+// credit cards/[`luhn_ok`] already use in this file.
+const PHONE_SHAPE: &str = r"(?:\+\d{1,3}[-. ]?)?\(?\d{3}\)?[-. ]?\d{3}[-. ]?\d{4}";
+
+static PHONE_CANDIDATE: Lazy<Regex> = Lazy::new(|| Regex::new(PHONE_SHAPE).unwrap());
+
+// A LABEL is itself a phone signal, and it licenses the forms the shape rule
+// alone rejects: `Phone: 415 555 0132`, `Tel 4155550132`. Built from the same
+// `PHONE_SHAPE` so the two patterns cannot drift apart.
+//
+// "cell" and "mobile" are deliberately NOT labels here: this detector's primary
+// text is biomedical, where "cell counts: 300 400 5000" is ordinary prose and
+// would become a reported phone number.
+static PHONE_LABELED: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(&format!(
+        r"(?i)\b(?:tel(?:ephone)?|phone|fax)\b\.?\s{{0,3}}[:#]?\s{{0,3}}({PHONE_SHAPE})"
+    ))
+    .unwrap()
+});
+
+/// Structural plausibility, shared by both phone paths.
+///
+/// The NANP rules are what most "ten digits in a row" false positives fail:
+/// neither the area code nor the exchange may begin with 0 or 1, so `100 200
+/// 3000` is not a phone number however it is punctuated. They are applied to
+/// the trailing ten digits of a `+CC` number too — only NANP-shaped bodies
+/// match `PHONE_SHAPE` at all, so there is no non-NANP number here to mis-judge.
+fn phone_digits_plausible(s: &str) -> bool {
+    let digits: Vec<u8> = s
+        .bytes()
+        .filter(u8::is_ascii_digit)
+        .map(|b| b - b'0')
+        .collect();
+    let has_plus = s.starts_with('+');
+    // E.164 caps a number at 15 digits; NANP is 10, or 11 with the country code.
+    if digits.len() < 10 || digits.len() > 15 {
+        return false;
+    }
+    if !has_plus && (digits.len() > 11 || (digits.len() == 11 && digits[0] != 1)) {
+        return false;
+    }
+    let national = &digits[digits.len() - 10..];
+    national[0] >= 2 && national[3] >= 2
+}
+
+/// A candidate is a phone number only if it *looks* like one.
+///
+/// Beyond plausibility it must carry a phone SIGNAL — a `+` country code, a
+/// parenthesised area code, or `-`/`.` group separators. A bare run of digits,
+/// or digit groups separated only by spaces, is an accession number, a
+/// measurement or a spreadsheet column far more often than it is a phone
+/// number; when it really is one, it is normally labelled, and
+/// [`PHONE_LABELED`] catches that.
+fn phone_shape_ok(s: &str) -> bool {
+    phone_digits_plausible(s)
+        && (s.starts_with('+')
+            || (s.contains('(') && s.contains(')'))
+            || s.contains('-')
+            || s.contains('.'))
+}
+
+/// True when the span is not carved out of the middle of a longer run of digits
+/// (an accession number, a timestamp, a genomic coordinate). Replaces the `\b`
+/// the pattern cannot use now that it may begin and end with an optional
+/// separator. Byte comparison is UTF-8 safe: a continuation byte is never an
+/// ASCII digit.
+fn not_inside_a_longer_number(text: &str, start: usize, end: usize) -> bool {
+    let b = text.as_bytes();
+    (start == 0 || !b[start - 1].is_ascii_digit()) && (end >= b.len() || !b[end].is_ascii_digit())
+}
 
 // MRN: keyword-anchored (MRNs have no universal format), capturing the id.
 static MRN: Lazy<Regex> =
@@ -166,8 +244,19 @@ impl PiiDetector {
                 push_full(&mut raw, PiiKind::Ssn, m);
             }
         }
-        for m in PHONE.find_iter(text) {
-            push_full(&mut raw, PiiKind::Phone, m);
+        for m in PHONE_CANDIDATE.find_iter(text) {
+            if not_inside_a_longer_number(text, m.start(), m.end()) && phone_shape_ok(m.as_str()) {
+                push_full(&mut raw, PiiKind::Phone, m);
+            }
+        }
+        // A labelled number needs no shape signal — the label is the signal.
+        // Overlap resolution below drops the duplicate when both paths agree.
+        for caps in PHONE_LABELED.captures_iter(text) {
+            if let Some(g) = caps.get(1) {
+                if phone_digits_plausible(g.as_str()) {
+                    push_full(&mut raw, PiiKind::Phone, g);
+                }
+            }
         }
         for m in IPV4.find_iter(text) {
             push_full(&mut raw, PiiKind::IpAddress, m);
@@ -263,9 +352,57 @@ mod tests {
 
     #[test]
     fn detects_phone_formats() {
-        for s in ["call (415) 555-0132", "415-555-0132", "+1 415.555.0132"] {
+        for s in [
+            "call (415) 555-0132",
+            "415-555-0132",
+            "+1 415.555.0132",
+            "+1 (415) 555-0132",
+            "415.555.0132",
+            // Space-separated and bare digits have no shape signal of their
+            // own, so they are carried by their label — which is how a real
+            // phone number in a record is nearly always written.
+            "Phone: 415 555 0132",
+            "Telephone: (415) 555-0132",
+            "Tel 4155550132",
+            "Fax: 415-555-0199",
+        ] {
             assert!(kinds(s).contains(&PiiKind::Phone), "missed phone in {s:?}");
         }
+    }
+
+    /// Measured false positive (2026-08 subagent stress pass): a subagent
+    /// returned the integers 1..1500, one per line, and the parent received the
+    /// whole thing prefixed with "1 potential PII/PHI span(s) detected (PHONE)".
+    /// `998\n999\n1000` was the span — the separator class was `[-.\s]`, and
+    /// `\s` matches a newline.
+    ///
+    /// Every false positive here teaches the model to discount the warning,
+    /// which costs more than the miss it is guarding against.
+    #[test]
+    fn a_run_of_plain_integers_is_not_a_phone_number() {
+        let column: String = (1..=1500).map(|n| format!("{n}\n")).collect();
+        let hits = PiiDetector::new().scan(&column);
+        assert!(
+            hits.is_empty(),
+            "the integers 1..1500 one per line are not PII: {:?}",
+            hits.iter().map(|m| (m.kind, &m.text)).collect::<Vec<_>>()
+        );
+
+        // The same digits on ONE line are not a phone number either: groups
+        // separated only by spaces carry no phone signal.
+        assert!(!kinds("998 999 1000").contains(&PiiKind::Phone));
+        assert!(!kinds("500 600 7000").contains(&PiiKind::Phone));
+        // Ordinary numeric tool output: ids, counts, coordinates.
+        assert!(!kinds("accession 4155550132 archived").contains(&PiiKind::Phone));
+        assert!(!kinds("rows: 1024 4096 65536").contains(&PiiKind::Phone));
+        assert!(!kinds("chr1:155-550-1320").contains(&PiiKind::Phone));
+        // An area code or exchange starting with 0/1 is not dialable, which is
+        // what a punctuated id usually looks like.
+        assert!(!kinds("100-200-3000").contains(&PiiKind::Phone));
+        assert!(!kinds("415-155-0132").contains(&PiiKind::Phone));
+        // Too long / too short to be a phone number.
+        assert!(!kinds("4155550132999999").contains(&PiiKind::Phone));
+        assert!(!kinds("415-555-013").contains(&PiiKind::Phone));
     }
 
     #[test]
