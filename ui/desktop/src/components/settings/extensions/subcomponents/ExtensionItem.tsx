@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import kebabCase from 'lodash/kebabCase';
 import { Switch } from '../../../ui/switch';
+import { Button } from '../../../ui/button';
 import { Settings } from '../../../icons/app-icons';
 import { FixedExtensionEntry } from '../../../ConfigContext';
 import BuiltInBadge from '../../../ui/BuiltInBadge';
@@ -139,13 +140,27 @@ export default function ExtensionItem({
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
         {editable && (
-          <button
-            className="opacity-0 group-hover:opacity-100 transition-opacity text-text-muted hover:text-text-default"
+          /*
+           * ⚠ This was a raw <button> with no box at all — no height, width,
+           * padding, radius or hit target — and its reveal rule was
+           * `opacity-0 group-hover:opacity-100` with neither an `sm:` guard nor
+           * `group-focus-within`, unlike the other four row-action clusters.
+           *
+           * That is an accessibility defect, not a style one. The control stays
+           * focusable while invisible, so keyboard users tab to something they
+           * cannot see; and below the `sm` breakpoint, where there is no hover,
+           * it is unreachable entirely. The reveal string now matches its
+           * siblings, so focus reveals it and small screens keep it visible.
+           */
+          <Button
+            variant="ghost"
+            shape="round"
+            className="opacity-100 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100"
             aria-label={`Configure ${getFriendlyTitle(extension)} extension`}
             onClick={() => onConfigure?.(extension)}
           >
             <Settings className="w-4 h-4" />
-          </button>
+          </Button>
         )}
         <Switch
           checked={isToggling ? visuallyEnabled : extension.enabled}

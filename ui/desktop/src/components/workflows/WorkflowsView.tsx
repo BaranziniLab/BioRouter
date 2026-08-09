@@ -468,9 +468,20 @@ export default function WorkflowsView() {
               e.stopPropagation();
               handleOpenSlashCommandDialog(workflowManifestResponse);
             }}
-            variant={slash_command ? 'default' : 'outline'}
-            size="sm"
-            className="h-7 w-7 p-0"
+            variant="ghost"
+            shape="round"
+            /*
+             * ⚠ State, not emphasis. This was `default` when a slash command
+             * exists, so the state was drawn as a solid accent fill. Flattening
+             * every row action to ghost would have DELETED that signal, which is
+             * a functional regression rather than a style change.
+             *
+             * `tint-selected` is the system's answer for exactly this case:
+             * selection is a state the app sets, not a user interaction. Paired
+             * with `tint-interactive` because hover alone (5%) is lighter than
+             * the selected wash (14%) and would visibly un-select on hover.
+             */
+            className={slash_command ? 'tint-selected tint-interactive' : undefined}
             title={slash_command ? 'Edit slash command' : 'Add slash command'}
           >
             <Terminal className="w-4 h-4" />
@@ -480,8 +491,7 @@ export default function WorkflowsView() {
               e.stopPropagation();
               handleStartWorkflowChat(workflow, workflowManifestResponse.id);
             }}
-            size="sm"
-            className="h-7 w-7 p-0"
+            shape="round"
             title="Use workflow"
           >
             <Play className="w-4 h-4" />
@@ -490,9 +500,8 @@ export default function WorkflowsView() {
             <DropdownMenuTrigger asChild>
               <Button
                 onClick={(e) => e.stopPropagation()}
-                variant="outline"
-                size="sm"
-                className="h-7 w-7 p-0"
+                variant="ghost"
+                shape="round"
                 title="Launch workflow"
               >
                 <NewWindow className="w-4 h-4" />
@@ -512,9 +521,8 @@ export default function WorkflowsView() {
               e.stopPropagation();
               handleEditWorkflow(workflowManifestResponse);
             }}
-            variant="outline"
-            size="sm"
-            className="h-7 w-7 p-0"
+            variant="ghost"
+            shape="round"
             title="Edit workflow"
           >
             <Edit className="w-4 h-4" />
@@ -523,9 +531,8 @@ export default function WorkflowsView() {
             <DropdownMenuTrigger asChild>
               <Button
                 onClick={(e) => e.stopPropagation()}
-                variant="outline"
-                size="sm"
-                className="h-7 w-7 p-0"
+                variant="ghost"
+                shape="round"
                 title="Share workflow"
               >
                 <Share2 className="w-4 h-4" />
@@ -552,9 +559,10 @@ export default function WorkflowsView() {
               e.stopPropagation();
               handleOpenScheduleDialog(workflowManifestResponse);
             }}
-            variant={schedule_cron ? 'default' : 'outline'}
-            size="sm"
-            className="h-7 w-7 p-0"
+            variant="ghost"
+            shape="round"
+            // Same state-as-tint treatment as the slash-command button above.
+            className={schedule_cron ? 'tint-selected tint-interactive' : undefined}
             title={schedule_cron ? 'Edit schedule' : 'Add schedule'}
           >
             <Clock className="w-4 h-4" />
@@ -566,7 +574,7 @@ export default function WorkflowsView() {
             }}
             variant="ghost"
             size="sm"
-            className="h-8 w-8 p-0 text-text-danger hover:bg-background-danger/10"
+            className="text-text-danger"
             title="Delete workflow"
           >
             <Trash2 className="w-4 h-4" />

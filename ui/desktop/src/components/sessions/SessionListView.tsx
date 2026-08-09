@@ -411,7 +411,7 @@ const SessionItem = React.memo(function SessionItem({
             from the SAME resolver, or the marking would depend on which of the
             two a surface happened to mount. */}
         <div className="flex min-w-0 items-center gap-1.5">
-          <ChatKindIcon session={session} tier={session.privacy_tier} className="h-3.5 w-3.5" />
+          <ChatKindIcon session={session} tier={session.privacy_tier} className="h-4 w-4" />
           <h3 className="text-label truncate">{session.name}</h3>
         </div>
         {session.diverged_from && (

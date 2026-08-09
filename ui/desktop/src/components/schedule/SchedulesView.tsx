@@ -139,13 +139,12 @@ const ScheduleCard: React.FC<{
                   onEdit(job);
                 }}
                 disabled={actionInProgress}
-                variant="outline"
-                size="sm"
-                className="h-7 w-7 p-0"
+                variant="ghost"
+                shape="round"
                 title="Edit"
                 aria-label={`Edit ${scheduleDisplayName(job.id)}`}
               >
-                <Edit className="w-3.5 h-3.5" />
+                <Edit className="w-4 h-4" />
               </Button>
               <Button
                 onClick={(e) => {
@@ -157,13 +156,12 @@ const ScheduleCard: React.FC<{
                   }
                 }}
                 disabled={actionInProgress}
-                variant="outline"
-                size="sm"
-                className="h-7 w-7 p-0"
+                variant="ghost"
+                shape="round"
                 title={job.paused ? 'Resume' : 'Pause'}
                 aria-label={`${job.paused ? 'Resume' : 'Pause'} ${scheduleDisplayName(job.id)}`}
               >
-                {job.paused ? <Play className="w-3.5 h-3.5" /> : <Pause className="w-3.5 h-3.5" />}
+                {job.paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}
               </Button>
             </>
           )}
@@ -175,13 +173,12 @@ const ScheduleCard: React.FC<{
                   onInspect(job.id);
                 }}
                 disabled={actionInProgress}
-                variant="outline"
-                size="sm"
-                className="h-7 w-7 p-0"
+                variant="ghost"
+                shape="round"
                 title="Inspect"
                 aria-label={`Inspect ${scheduleDisplayName(job.id)}`}
               >
-                <Eye className="w-3.5 h-3.5" />
+                <Eye className="w-4 h-4" />
               </Button>
               <Button
                 onClick={(e) => {
@@ -189,13 +186,12 @@ const ScheduleCard: React.FC<{
                   onKill(job.id);
                 }}
                 disabled={actionInProgress}
-                variant="outline"
-                size="sm"
-                className="h-7 w-7 p-0"
+                variant="ghost"
+                shape="round"
                 title="Kill"
                 aria-label={`Kill ${scheduleDisplayName(job.id)}`}
               >
-                <Square className="w-3.5 h-3.5" />
+                <Square className="w-4 h-4" />
               </Button>
             </>
           )}
@@ -207,11 +203,11 @@ const ScheduleCard: React.FC<{
             disabled={actionInProgress}
             variant="ghost"
             size="sm"
-            className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
+            className="text-text-danger"
             title="Delete"
             aria-label={`Delete ${scheduleDisplayName(job.id)}`}
           >
-            <Trash2 className="w-3.5 h-3.5" />
+            <Trash2 className="w-4 h-4" />
           </Button>
         </div>
       </div>

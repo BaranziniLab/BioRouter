@@ -400,12 +400,12 @@ function BundleItem({ bundle, enabled, onClick, onDelete, onToggle }: BundleItem
           <Button
             variant="ghost"
             size="sm"
-            className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
+            className="text-text-danger"
             onClick={onDelete}
             title="Delete bundle"
             aria-label={`Delete skill bundle ${bundle.bundleName}`}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 className="h-4 w-4" />
           </Button>
         </div>
         <div onClick={(e) => e.stopPropagation()}>

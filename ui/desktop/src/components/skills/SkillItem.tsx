@@ -46,34 +46,32 @@ export default function SkillItem({
         >
           <Button
             variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
+            shape="round"
             onClick={() => onClick()}
             title="Open in Finder"
             aria-label={`Open ${skill.name} in Finder`}
           >
-            <FolderDot className="h-3.5 w-3.5" />
+            <FolderDot className="h-4 w-4" />
           </Button>
           <Button
             variant="ghost"
-            size="sm"
-            className="h-7 w-7 p-0"
+            shape="round"
             onClick={() => onShare()}
             title="Copy SKILL.md to clipboard"
             aria-label={`Copy ${skill.name} SKILL.md to clipboard`}
           >
-            <Copy className="h-3.5 w-3.5" />
+            <Copy className="h-4 w-4" />
           </Button>
           {!builtin && (
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
+              className="text-text-danger"
               onClick={() => onDelete()}
               title="Delete"
               aria-label={`Delete ${skill.name}`}
             >
-              <Trash2 className="h-3.5 w-3.5" />
+              <Trash2 className="h-4 w-4" />
             </Button>
           )}
         </div>
