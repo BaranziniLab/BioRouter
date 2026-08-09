@@ -1,72 +1,65 @@
-import { useRef } from 'react';
+import { useState } from 'react';
 import { useTextAnimator } from '../../hooks/use-text-animator';
 
 interface GreetingProps {
   className?: string;
   /**
-   * The chat this greeting belongs to. The unroll plays ONCE per chat; pass the
-   * session id so a remount of the same chat stays still. Omit it and the
-   * greeting never animates, which is the right default for anywhere that is
-   * not a new chat.
+   * Set false where the heading should appear immediately with no unroll.
+   * Defaults to animating, because every place this renders is an arrival:
+   * a new chat, a new window, or Home.
    */
-  animateOnceFor?: string;
+  animate?: boolean;
 }
 
 /**
- * The line above the composer on an empty chat.
+ * The heading above the composer on an empty chat, and on Home.
  *
- * ⚠ **One fixed, plain sentence. Do not restore the rotation.** This used to
- * pick at random from fifteen variants in the register of a product page:
- * "Which patterns will the knowledge graph unlock for tomorrow's treatments?",
- * "How will today's data bring us closer to a new breakthrough?". It was the
- * largest concentration of marketing voice in the app and it sat on the first
- * screen. Every variant also assumed a knowledge graph or an EHR, so a user
- * doing neither was greeted with someone else's use case.
+ * ⚠ **The rotation is deliberate product voice, not accidental filler.** These
+ * are the stock sentences. I removed them once as marketing register and was
+ * corrected: the variety is the point, and the operator wants a different line
+ * on each arrival. Do not collapse this back to one fixed sentence.
  *
- * ⚠ **The unroll plays on a NEW chat and nowhere else**, and that distinction
- * is the whole point. `010bf68e` ("Keep chat greetings still and immediate")
- * removed the animation outright because `BaseChat` renders
- * `<Greeting key={sessionId}>`, so EVERY remount replayed it: reopening a saved
- * chat, a renderer reload, switching back to a tab. An animation that fires
- * when nothing new happened reads as a glitch, which is what that commit was
- * reacting to.
- *
- * Removing it also removed the thing people liked on a genuinely new tab, so
- * the fix is the gate rather than the animation. `SEEN` records which chats
- * have already played; a second mount of the same id renders still. It is
- * deliberately module-level and NOT persisted: a full reload is a new app
- * session, and a greeting that unrolls once after a restart is correct.
+ * ⚠ **It unrolls on EVERY mount, on purpose.** `010bf68e` ("Keep chat greetings
+ * still and immediate") removed the animator because `BaseChat` renders
+ * `<Greeting key={sessionId}>` and every remount replayed it. A later attempt
+ * gated it to once per chat. Both were wrong for the same reason: an arrival is
+ * exactly when the unroll should play, and Home, a new window and a new chat
+ * are all arrivals. The animator already honours `prefers-reduced-motion`,
+ * which is the accessibility answer to "some people do not want motion" — a
+ * blanket removal was not.
  */
-const SEEN = new Set<string>();
-
-/** Test-only: forget which chats have played. */
-export function resetGreetingAnimationForTests() {
-  SEEN.clear();
-}
+const MESSAGES = [
+  'What insights will your data reveal today?',
+  'Which connections in the knowledge graph will lead to better care?',
+  'What patient story will you uncover in the EHR today?',
+  "Which patterns will the knowledge graph unlock for tomorrow's treatments?",
+  'What unanswered question in the EHR can we tackle next?',
+  "How will today's data bring us closer to a new breakthrough?",
+  'Which patient trends are waiting to be discovered in the EHR?',
+  'What surprising links might the knowledge graph reveal today?',
+  "Which treatment paths can we refine from today's data?",
+  'How will your next query shape patient outcomes?',
+  'Which health discovery is hidden in your data today?',
+  'What clinical journey will your analysis improve today?',
+  'What relationships in the data will bring us closer to a cure?',
+  'What question will your data answer next?',
+  'Which medical mystery might the knowledge graph help solve today?',
+] as const;
 
 export function Greeting({
   className = 'mt-1 text-2xl font-semibold tracking-tight',
-  animateOnceFor,
+  animate = true,
 }: GreetingProps) {
-  // Decided once, on the first render of this instance. Reading it during
-  // render rather than in an effect is deliberate: the animator needs to know
-  // before it attaches, and an effect would let one unanimated frame paint.
-  const shouldAnimate = useRef<boolean | null>(null);
-  if (shouldAnimate.current === null) {
-    const fresh = animateOnceFor !== undefined && !SEEN.has(animateOnceFor);
-    if (fresh) SEEN.add(animateOnceFor);
-    shouldAnimate.current = fresh;
-  }
+  // Chosen once per instance, in a lazy initialiser, so a re-render does not
+  // swap the sentence out from under a running animation. A remount is a new
+  // arrival and gets a new line, which is the intent.
+  const [message] = useState(() => MESSAGES[Math.floor(Math.random() * MESSAGES.length)]);
 
-  const text = 'What do you want to work on?';
-  const messageRef = useTextAnimator({
-    text,
-    enabled: shouldAnimate.current,
-  });
+  const messageRef = useTextAnimator({ text: message, enabled: animate });
 
   return (
     <h1 className={className}>
-      <span ref={messageRef}>{text}</span>
+      <span ref={messageRef}>{message}</span>
     </h1>
   );
 }

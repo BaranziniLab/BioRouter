@@ -40,11 +40,10 @@ export function SessionInsights() {
       {/* Hero — text directly on canvas. Aligned to the composer's column. */}
       <ReadableContent size="chat" className="biorouter-home-hero shrink-0 px-4 pb-6 pt-16 sm:px-6">
         <p className="text-caps text-text-muted mb-3">UCSF Biorouter</p>
-        {/* Home is where a new window and a new tab both land, so the unroll
-            belongs here too. A single stable key means it plays once per app
-            session and stays still every time the user navigates back, which
-            is the same rule the chat greeting follows. */}
-        <Greeting animateOnceFor="home" />
+        {/* Home is where a new window and a new tab both land, and each is an
+            arrival, so the unroll plays every time and the sentence is a fresh
+            draw from the stock set. */}
+        <Greeting />
       </ReadableContent>
 
       {/* Usage heatmap — the single source of the usage story. It is never

@@ -1,6 +1,6 @@
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { Greeting, resetGreetingAnimationForTests } from './Greeting';
+import { Greeting } from './Greeting';
 
 const animate = vi.fn();
 vi.mock('../../hooks/use-text-animator', () => ({
@@ -10,64 +10,53 @@ vi.mock('../../hooks/use-text-animator', () => ({
   },
 }));
 
-beforeEach(() => {
-  animate.mockClear();
-  resetGreetingAnimationForTests();
-});
+beforeEach(() => animate.mockClear());
 
 describe('Greeting', () => {
-  it('renders the fixed line', () => {
+  it('renders one of the stock sentences', () => {
     render(<Greeting />);
-    expect(screen.getByRole('heading')).toHaveTextContent('What do you want to work on?');
+    expect(screen.getByRole('heading').textContent).toMatch(/\?$/);
   });
 
   /**
-   * ⚠ This is the rule `010bf68e` was reaching for and overshot.
-   *
-   * That commit removed the animation outright because `BaseChat` renders
-   * `<Greeting key={sessionId}>`, so every remount replayed it: reopening a
-   * saved chat, a renderer reload, switching back to a tab. An animation firing
-   * when nothing new happened reads as a glitch.
-   *
-   * The answer is the gate, not the removal. First mount of a chat animates;
-   * every later mount of that same chat does not.
+   * ⚠ The rotation is deliberate product voice. It was removed once as
+   * marketing register and restored on the operator's instruction: a different
+   * line on each arrival is the intent, so a change that collapses this to one
+   * fixed sentence should fail here rather than pass quietly.
    */
-  it('unrolls once for a new chat and stays still on every remount of it', () => {
-    render(<Greeting animateOnceFor="chat-a" />);
-    expect(animate).toHaveBeenLastCalledWith(true);
-
-    // Same chat again: reopened, reloaded, or tabbed back to.
-    render(<Greeting animateOnceFor="chat-a" />);
-    expect(animate).toHaveBeenLastCalledWith(false);
-
-    // A genuinely different chat is new, so it plays.
-    render(<Greeting animateOnceFor="chat-b" />);
-    expect(animate).toHaveBeenLastCalledWith(true);
-  });
-
-  it('never animates when no chat is named', () => {
-    render(<Greeting />);
-    expect(animate).toHaveBeenLastCalledWith(false);
-  });
-
-  /**
-   * ⚠ The greeting is FIXED. It used to pick at random from fifteen lines in a
-   * product-page register ("unlock", "bring us closer to a cure", "medical
-   * mystery"), on the first screen the user sees. Two assertions, because the
-   * two failure modes differ: prose drifting back into that voice one word at a
-   * time, and the randomness returning via a refactor that means no harm.
-   */
-  it('is one fixed line, with no marketing register and no randomness', () => {
-    const randomSpy = vi.spyOn(Math, 'random');
-    const first = render(<Greeting />).container.textContent;
-    const second = render(<Greeting />).container.textContent;
-
-    expect(second).toBe(first);
-    expect(randomSpy).not.toHaveBeenCalled();
-
-    for (const word of ['unlock', 'breakthrough', 'cure', 'mystery', 'journey', 'uncover', 'hidden']) {
-      expect(first?.toLowerCase()).not.toContain(word);
+  it('draws a different sentence across arrivals', () => {
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const { container, unmount } = render(<Greeting />);
+      seen.add(container.textContent ?? '');
+      unmount();
     }
-    randomSpy.mockRestore();
+    expect(seen.size).toBeGreaterThan(1);
+  });
+
+  /**
+   * ⚠ It unrolls on EVERY mount. `010bf68e` removed the animator outright and a
+   * later pass gated it to once per chat; both were wrong the same way. Home, a
+   * new window and a new chat are all arrivals, and an arrival is exactly when
+   * the unroll belongs. `prefers-reduced-motion` is the accessibility answer,
+   * and the animator already honours it.
+   */
+  it('animates on every mount, and can be switched off explicitly', () => {
+    render(<Greeting />);
+    expect(animate).toHaveBeenLastCalledWith(true);
+
+    render(<Greeting />);
+    expect(animate).toHaveBeenLastCalledWith(true);
+
+    render(<Greeting animate={false} />);
+    expect(animate).toHaveBeenLastCalledWith(false);
+  });
+
+  it('keeps its sentence stable across a re-render of the same instance', () => {
+    // A re-render must not swap the text out from under a running animation.
+    const { container, rerender } = render(<Greeting />);
+    const first = container.textContent;
+    rerender(<Greeting />);
+    expect(container.textContent).toBe(first);
   });
 });
