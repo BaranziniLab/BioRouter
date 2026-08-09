@@ -33,6 +33,20 @@ smoke_mac() {
     || die "$arch CLI architecture mismatch"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouter" --version | grep -q "$VERSION"
   "${runner[@]}" "$app/Contents/Resources/bin/biorouterd" --version | grep -q "$VERSION"
+  # ⚠ **Give the throwaway HOME a keychain, or macOS interrupts whoever is at
+  # the machine.** `BIOROUTER_DISABLE_KEYRING` only silences OUR keyring use;
+  # Electron's own `safeStorage` still reaches for the Keychain. With HOME
+  # pointed at an empty temp dir there is no `login.keychain-db`, and macOS puts
+  # up a modal — "A keychain cannot be found to store Biorouter" — whose buttons
+  # are Cancel and **Reset To Defaults**. A verification run must not put a
+  # button that resets someone's keychain search list in front of them. This
+  # happened to the operator during a real verify run.
+  #
+  # An empty keychain in the temp HOME satisfies the lookup and is thrown away
+  # with the directory. Failure is not fatal: the smoke test's subject is the
+  # artifact, not the keychain.
+  mkdir -p "$tmp/Library/Keychains"
+  security create-keychain -p "" "$tmp/Library/Keychains/login.keychain-db" 2>/dev/null || true
   HOME="$tmp" BIOROUTER_DISABLE_KEYRING=true \
     "${runner[@]}" "$app/Contents/MacOS/Biorouter" --disable-gpu >"$tmp/app.log" 2>&1 &
   local pid=$!
@@ -47,7 +61,14 @@ smoke_mac() {
     sleep 2
     hdiutil detach -force "$mount" >/dev/null
   }
-  rm -rf "$mount" "$tmp"
+  # ⚠ `chmod` first, and never let cleanup decide the verdict. The app runs with
+  # HOME="$tmp", and anything it invokes that touches hermit writes a READ-ONLY
+  # package cache in there — `rm -rf` then fails with "Permission denied" /
+  # "Directory not empty", returns non-zero, and under `set -e` sinks the entire
+  # verification even though every artifact passed. That happened: a green
+  # release reported "verification failed" because it could not tidy up.
+  chmod -R u+w "$mount" "$tmp" 2>/dev/null || true
+  rm -rf "$mount" "$tmp" 2>/dev/null || true
   log "macOS $arch DMG, CLI, daemon, and desktop startup passed"
 }
 
