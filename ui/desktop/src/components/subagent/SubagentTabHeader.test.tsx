@@ -23,9 +23,19 @@ describe('SubagentTabHeader', () => {
     render(<SubagentTabHeader {...props} />);
     expect(screen.getByText(/spawned by/i)).toBeTruthy();
     expect(screen.getByText(/Planning chat/)).toBeTruthy();
-    expect(screen.getByText('developer')).toBeTruthy();
-    expect(screen.getByText('kb-papers')).toBeTruthy();
-    expect(screen.getByText('kb-methods')).toBeTruthy();
+    // ⚠ Counts on the band, names in the `title`. The header used to print one
+    // chip per grant in an uncapped flex-wrap, so a subagent tab grew taller
+    // than an ordinary one with every extension — and, before the backend fix,
+    // the names it printed were the user's whole globally-enabled set rather
+    // than the child's grants. The names must stay REACHABLE, which is what the
+    // title asserts; they must not set the band's height.
+    // `getByTitle`, not `getByText`: the count is interpolated
+    // (`{n} extension{s}`) so React splits it across text nodes, and the title
+    // is the thing that actually has to carry the names.
+    const exts = screen.getByTitle('developer, todo');
+    expect(exts.textContent).toBe('2 extensions');
+    const kbs = screen.getByTitle('kb-papers, kb-methods');
+    expect(kbs.textContent).toBe('2 knowledge bases');
     // Collapsed by default; expanding reveals the spawn context.
     expect(screen.queryByText(/count the files/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /spawn context/i }));

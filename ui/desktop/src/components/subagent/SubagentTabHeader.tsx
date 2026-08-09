@@ -8,6 +8,7 @@
  * child; Stop is the only kill switch here.
  */
 import { useState } from 'react';
+import { Button } from '../ui/button';
 
 export function SubagentTabHeader({
   sessionId,
@@ -33,65 +34,92 @@ export function SubagentTabHeader({
   const [expanded, setExpanded] = useState(false);
   const spawnContextId = `subagent-spawn-context-${sessionId}`;
   return (
-    <div
-      className="border-b border-border-subtle bg-background-muted px-4 py-2 text-sm"
+    <>
+      <div
+      /*
+       * ⚠ One band's worth of height, on the chat's own ground.
+       *
+       * This used to be `bg-background-muted` with content-driven height — a
+       * THIRD ground beside the header's `bg-sidebar` and the transcript's
+       * canvas, growing taller with every grant because the chip row below was
+       * an uncapped flex-wrap of one chip per extension and per knowledge base.
+       * A subagent tab was visibly taller than an ordinary one, and the taller
+       * it got the more it looked like a debug panel rather than a chat.
+       *
+       * The ordinary chat already settled this question: counts in the
+       * composer's row 1, names behind a popover, never a list in a header
+       * (`ChatInput.tsx:2668-2670` records the decision). This now follows that
+       * convention.
+       */
+      className="flex h-chrome items-center gap-2 border-b border-border-subtle bg-sidebar px-4 text-secondary"
       data-testid={`subagent-header-${sessionId}`}
     >
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="flex-none rounded-full bg-background-code px-2 py-0.5 text-xs">
-          subagent
+      {/* The tab strip already badges this tab as a subagent, so the standalone
+          "subagent" pill said the same thing twice on one screen. */}
+      <span className="min-w-0 truncate text-text-subtle">
+        spawned by{' '}
+        <button className="underline" onClick={onOpenParent}>
+          {parentSessionName ?? parentSessionId}
+        </button>
+      </span>
+      {/* Counts, not names. The names are one click away and the count is the
+          part that survives a glance — the same trade the composer's three
+          chips make. `title` carries the full list so it is still reachable
+          without opening anything. */}
+      {extensions.length > 0 && (
+        <span
+          className="flex-none rounded bg-background-code px-1.5 py-0.5 text-supporting text-text-subtle"
+          title={extensions.join(', ')}
+        >
+          {extensions.length} extension{extensions.length === 1 ? '' : 's'}
         </span>
-        <span className="min-w-0 truncate text-text-subtle">
-          spawned by{' '}
-          <button className="underline" onClick={onOpenParent}>
-            {parentSessionName ?? parentSessionId}
-          </button>
+      )}
+      {knowledgeBases.length > 0 && (
+        <span
+          className="flex-none rounded bg-background-code px-1.5 py-0.5 text-supporting text-text-subtle"
+          title={knowledgeBases.join(', ')}
+        >
+          {knowledgeBases.length} knowledge base{knowledgeBases.length === 1 ? '' : 's'}
         </span>
-        {running && (
-          <button
-            className="ml-auto flex-none rounded border border-border-subtle px-2 py-0.5 text-xs"
+      )}
+      {/* Only offered when there is something to disclose. The backend's
+          `persist_spawn_context` is best-effort (a failure only warns) and
+          sessions older than it have no record, so `spawnContext` really can
+          be absent while the header itself is still worth showing — and a
+          toggle that can only ever open onto nothing is a dead control. */}
+      {spawnContext && (
+        <button
+          className="flex-none underline"
+          onClick={() => setExpanded((e) => !e)}
+          aria-expanded={expanded}
+          aria-controls={spawnContextId}
+        >
+          spawn context
+        </button>
+      )}
+      {running && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto flex-none"
             onClick={onStop}
             aria-label="Stop subagent"
           >
             Stop subagent
-          </button>
+          </Button>
         )}
       </div>
-      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-xs text-text-subtle">
-        {extensions.map((name) => (
-          <span key={name} className="rounded bg-background-code px-1.5 py-0.5">
-            {name}
-          </span>
-        ))}
-        {knowledgeBases.map((kb) => (
-          <span key={kb} className="rounded bg-background-code px-1.5 py-0.5">
-            {kb}
-          </span>
-        ))}
-        {/* Only offered when there is something to disclose. The backend's
-            `persist_spawn_context` is best-effort (a failure only warns) and
-            sessions older than it have no record, so `spawnContext` really can
-            be absent while the header itself is still worth showing — and a
-            toggle that can only ever open onto nothing is a dead control. */}
-        {spawnContext && (
-          <button
-            className="underline"
-            onClick={() => setExpanded((e) => !e)}
-            aria-expanded={expanded}
-            aria-controls={spawnContextId}
-          >
-            spawn context
-          </button>
-        )}
-      </div>
+      {/* Below the band, not inside it: the band is a fixed `h-chrome` so it
+          stays exactly as tall as the ordinary chat header whether this is open
+          or shut. */}
       {expanded && spawnContext && (
         <pre
           id={spawnContextId}
-          className="mt-2 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-background-code p-2 text-xs"
+          className="max-h-64 overflow-auto whitespace-pre-wrap break-words border-b border-border-subtle bg-background-code p-2 text-supporting"
         >
           {spawnContext}
         </pre>
       )}
-    </div>
+    </>
   );
 }
