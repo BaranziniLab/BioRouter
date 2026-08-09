@@ -1,14 +1,14 @@
 # Launching the dev GUI from a shell without a TTY
 
 > **What this is.** The procedure for starting the Electron dev GUI from an agent
-> shell, a CI step, or any other context without a TTY — and the five failure modes
+> shell, a CI step, or any other context without a TTY — and the six failure modes
 > that make a working app look broken.
 > **Status:** Current.
 > **Audience:** agents driving the desktop app, and developers automating a GUI launch.
 
 `just run-dev` is the right command **at a human terminal**. It does not survive being
 launched without a TTY, and the ways it fails all look like application bugs rather
-than launcher bugs. This page is the procedure that works and, more usefully, the five
+than launcher bugs. This page is the procedure that works and, more usefully, the six
 wrong turns that each cost a debugging cycle, so the next session recognises them
 instead of rediscovering them.
 
@@ -18,18 +18,26 @@ instead of rediscovering them.
 cd ui/desktop
 source ../../bin/activate-hermit
 
+# 0. ASK THE BUNDLE which port it will connect to. Do NOT assume 5173 — see
+#    failure 6. Whatever this prints is the port step 1 must serve on.
+grep -oE "http://localhost:[0-9]+" .vite/build/main.js | sort | uniq -c
+PORT=5174   # <- set from the line above, NOT from this example
+
 # 1. Renderer dev server — MUST name the renderer config (see failure 3).
-#    The port and the URL in step 2 must AGREE, which is what `--strictPort`
-#    protects: without it vite silently takes the next free port when 5173 is
-#    busy, Electron still asks for 5173, and you get ERR_CONNECTION_REFUSED and a
-#    blank window — which reads as a broken app rather than a mis-launched one.
+#    The port and the bundle's baked-in URL must AGREE, which is what
+#    `--strictPort` protects: without it vite silently takes the next free port,
+#    Electron still asks for the baked one, and you get ERR_CONNECTION_REFUSED
+#    and a blank window — which reads as a broken app rather than a mis-launched
+#    one.
 BIOROUTER_NO_HMR=1 npx vite --config vite.renderer.config.mts \
-  --port 5173 --strictPort > /tmp/vite.log 2>&1 &
+  --port "$PORT" --strictPort > /tmp/vite.log 2>&1 &
 
 # 2. Electron against the built main process, detached from this shell.
 #    `env -u ELECTRON_RUN_AS_NODE` is load-bearing (see failure 1).
+#    ⚠ Do NOT pass MAIN_WINDOW_VITE_DEV_SERVER_URL here — it is a build-time
+#    constant, not an env var, and setting it does nothing (failure 6).
 env -u ELECTRON_RUN_AS_NODE -u ELECTRON_NO_ATTACH_CONSOLE \
-  BIOROUTER_NO_HMR=1 MAIN_WINDOW_VITE_DEV_SERVER_URL=http://localhost:5173 \
+  BIOROUTER_NO_HMR=1 \
   node_modules/electron/dist/Electron.app/Contents/MacOS/Electron \
   .vite/build/main.js --remote-debugging-port=9333 > /tmp/electron.log 2>&1 &
 ```
@@ -56,7 +64,7 @@ pgrep -f "target/debug/biorouterd"     # the daemon the app spawned
 curl -s http://localhost:9333/json/list | grep '"title"'   # -> "Biorouter"
 ```
 
-## The five failures, and how to recognise each
+## The six failures, and how to recognise each
 
 **1. `ELECTRON_RUN_AS_NODE=1` in the environment — Electron exits instantly.**
 Agent shells commonly export this. Electron then runs `main.js` as plain Node
@@ -107,6 +115,30 @@ does **not** hit this, because it does not use the dev bundle; only the
 direct-Electron path above does. The fix is to patch the (gitignored)
 `.vite/build/main.dev.js` so `installExtension` is callable before launching.
 
+**6. The dev-server port is baked into the bundle, and it is not always 5173.**
+`MAIN_WINDOW_VITE_DEV_SERVER_URL` is a **build-time constant**: forge substitutes
+it into `.vite/build/main.js` at build time, so the identifier does not survive
+into the bundle at all (`grep -c MAIN_WINDOW_VITE_DEV_SERVER_URL .vite/build/main.js`
+returns **0**). Passing it as an environment variable therefore does nothing —
+the app connects to whatever URL was compiled in, and ignores you.
+
+A bundle built by `npx electron-forge start` while forge's own vite held 5173 has
+**5174** compiled in. Start your vite on 5173, and Electron asks for 5174, finds
+nothing (forge's server died with forge), and logs
+`Failed to load URL: http://localhost:5174/#/? with error: ERR_CONNECTION_REFUSED`
+behind a blank window. The window exists, the process is healthy, and the CDP
+target is present with `"title": "localhost:5174/#/?"` instead of `"Biorouter"` —
+that title is the tell, and it is worth checking first.
+
+Read the port out of the bundle rather than assuming it:
+
+```bash
+grep -oE "http://localhost:[0-9]+" .vite/build/main.js | sort | uniq -c
+```
+
+Serve vite on whichever port that prints. A healthy launch reports
+`"title": "Biorouter"` on `curl -s http://localhost:9333/json/list`.
+
 ## Two things that are NOT the problem
 
 Both were suspected and ruled out with evidence, so don't re-litigate them:
@@ -120,6 +152,12 @@ Both were suspected and ruled out with evidence, so don't re-litigate them:
   quits when the backend cannot exec), but check it with
   `file ui/desktop/src/bin/biorouterd` before assuming it — a healthy tree shows
   `Mach-O 64-bit executable arm64` and `--version` prints the workspace version.
+  The **`x86_64`** variant is the same trap wearing a friendlier face: a release
+  run that ended on `bundle:intel` leaves an Intel binary staged, which does not
+  announce itself the way an ELF does. `just copy-binary` restores the arm64 pair
+  and re-signs them, so Keychain grants survive. A dev launch reads
+  `target/debug/` rather than `src/bin/`, so this bites the *packaged* app first —
+  restore it anyway before you trust a dev session's backend behaviour.
 
 ## Three standing cautions
 
