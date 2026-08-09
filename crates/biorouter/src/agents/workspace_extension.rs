@@ -1826,6 +1826,35 @@ impl WorkspaceClient {
     ) -> Result<Vec<Content>, String> {
         let args: WorkspaceSetToolsParams = parse_args(arguments)?;
 
+        // ⚠ **A conversation may not re-tool ITSELF through this door.**
+        //
+        // This is a cross-conversation tool: every other guard below asks what
+        // the caller may do to ANOTHER chat. Self-targeting was never the point,
+        // and once Workspace became a default-on capability it became an
+        // escalation: `apply_tool_changes` adds extensions with
+        // `agent.add_extension`, which stamps `ExtensionOrigin::Explicit`, and
+        // `has_non_injected_extensions` counts Explicit entries. So an agent
+        // could add any default-off public capability to its own session and
+        // thereby satisfy condition 5 of the delegation gate on the next tool
+        // listing.
+        //
+        // That is exactly the self-sustaining grant the gate exists to prevent.
+        // Excluding `workspace` by name (issue #76) closed the door Workspace
+        // came through; it did not close the door Workspace can OPEN. Found by
+        // review, not by a test, and the regression test lives beside this.
+        //
+        // Refused rather than silently ignored: an agent that asked for this
+        // should be told the boundary, not left believing it worked.
+        if args.session_id == caller_session_id {
+            return Err(
+                "workspace_set_tools operates on ANOTHER conversation, not this one. \
+                 To change the tools available here, ask the user: extensions are \
+                 Settings > Extensions, skills are the composer's skill menu. Do not \
+                 retry with this session's id."
+                    .to_string(),
+            );
+        }
+
         // Issue #56, design §7 — the WRITE row, and the same predicate
         // `workspace_send_prompt` asks one screen up. This tool rewrites another
         // conversation's provider, its extension set, its skills and its
@@ -6924,6 +6953,53 @@ pub(crate) mod tests {
             text_of(&result).contains("definitely-not-an-extension"),
             "got: {}",
             text_of(&result)
+        );
+    }
+
+    /// ⚠ **A conversation may not re-tool ITSELF, because that is an escalation.**
+    ///
+    /// Found by review, not by a test, which is why this one exists.
+    ///
+    /// `apply_tool_changes` adds extensions with `agent.add_extension`, stamping
+    /// `ExtensionOrigin::Explicit`, and the delegation gate's condition 5
+    /// (`has_non_injected_extensions`) counts Explicit entries. Once Workspace
+    /// shipped as a default-on capability with its full surface, an agent could
+    /// add any default-off public capability to its OWN session and thereby
+    /// satisfy condition 5 on the next tool listing: delegation turned on by a
+    /// grant the agent wrote for itself.
+    ///
+    /// Excluding `workspace` by name (issue #76) closed the door Workspace came
+    /// through. It did not close the door Workspace can OPEN. This is that door.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn set_tools_refuses_to_retool_the_calling_conversation() {
+        let c = client();
+
+        // "caller" is the session id `test_meta()` presents, so this is the
+        // self-targeting case exactly as an agent would issue it.
+        let result = set_tools(
+            &c,
+            serde_json::json!({
+                "session_id": "caller",
+                "add_extensions": ["chatrecall"],
+            }),
+        )
+        .await;
+
+        let text = text_of(&result);
+        assert!(
+            result.is_error.unwrap_or(false),
+            "self-targeting must be refused, got: {text}"
+        );
+        assert!(
+            text.contains("ANOTHER conversation"),
+            "the refusal must say why, got: {text}"
+        );
+        // The refusal has to be terminal. A model told only "no" retries; this
+        // one is told the boundary and where the user changes tools instead.
+        assert!(
+            text.contains("Do not retry"),
+            "the refusal must close the loop, got: {text}"
         );
     }
 
