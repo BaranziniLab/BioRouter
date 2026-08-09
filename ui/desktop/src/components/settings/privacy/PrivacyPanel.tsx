@@ -81,7 +81,7 @@ export default function PrivacyPanel() {
         setEnabled(applied);
         if (applied !== on) {
           setError(
-            'Biorouter did not apply that change — privacy tiers are still ' +
+            'Biorouter did not apply that change. Privacy tiers are still ' +
               (applied ? 'on' : 'off') +
               '. Nothing was changed.'
           );

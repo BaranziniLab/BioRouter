@@ -235,7 +235,7 @@ export function DeclassifySessionDialog({
       description={
         gradedStrong
           ? `This chat ${strongReason}. Marking it public removes its private ` +
-            'marker and lets it be opened by a public model — its contents are unchanged, and ' +
+            'marker and lets it be opened by a public model. Its contents are unchanged, and ' +
             'this cannot be undone.'
           : escalated
             ? // Not the sentence above: nothing here established that this chat

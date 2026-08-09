@@ -238,7 +238,7 @@ export default function MemorySection() {
           <StoreBlock
             store={global}
             icon={<Globe className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />}
-            heading="Global — shared by every conversation on this computer"
+            heading="Global: shared by every conversation on this computer"
             expanded={expanded}
             onToggle={toggle}
             onDeleteCategory={(category) =>
@@ -253,7 +253,7 @@ export default function MemorySection() {
             <StoreBlock
               store={local}
               icon={<Folder className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />}
-              heading="This project — only conversations opened here"
+              heading="This project: only conversations opened here"
               expanded={expanded}
               onToggle={toggle}
               onDeleteCategory={(category) =>

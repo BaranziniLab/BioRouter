@@ -240,7 +240,7 @@ export function PrivacyBadge({
     >
       {spec.glyph ? <Lock className="h-3 w-3" aria-hidden="true" /> : null}
       {spec.label}
-      {off ? <span className="text-text-muted">&nbsp;— enforcement off</span> : null}
+      {off ? <span className="text-text-muted">&nbsp;(enforcement off)</span> : null}
     </Badge>
   );
 }

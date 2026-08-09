@@ -97,7 +97,7 @@ export function AffiliationBadge({ affiliation, dense = false, className }: Affi
         // documents.
         role="img"
         aria-label={accessibleName}
-        title={`${words.label} — ${words.title}`}
+        title={`${words.label}. ${words.title}`}
         // `inline-flex` + `shrink-0` for `PrivacyBadge`'s dense-dot reasons: a
         // sized indicator inside a tight flex row is the first thing squeezed
         // away, and an indicator whose whole job is to be seen cannot delegate

@@ -359,7 +359,7 @@ export function FirstRunPrivacyNotice({
               <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including
               commercial models hosted outside your institution, can still call{' '}
               {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
-              {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed — this is so you
+              {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed. This notice is so you
               know.
             </p>
           )}

@@ -3770,7 +3770,7 @@ function ensureSpawnHelperExecutable(): void {
     if (app.isPackaged) {
       log.error(
         `[terminal] ${helper} is not executable (mode ${(mode & 0o7777).toString(8)}). ` +
-          'Every pty spawn will fail with "posix_spawnp failed." — this build was packaged ' +
+          'Every pty spawn will fail with "posix_spawnp failed." This build was packaged ' +
           'from a node_modules tree that scripts/fix-node-pty-permissions.mjs never ran against.'
       );
       continue;

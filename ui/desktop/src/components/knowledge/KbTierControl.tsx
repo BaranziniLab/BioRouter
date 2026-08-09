@@ -117,7 +117,7 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
           busy={busy}
           title={`Make "${kb.name}" public?`}
           description={
-            `Every model, including public ones, will be able to read ${blastRadius(kb)} — ` +
+            `Every model, including public ones, will be able to read ${blastRadius(kb)}, ` +
             'including anything a private chat wrote into it. This cannot be undone for ' +
             'content that has already been read.'
           }

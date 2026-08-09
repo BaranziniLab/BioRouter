@@ -25,7 +25,7 @@ export interface StreamRunResult {
  * the user will read it — the source was not digested.
  */
 export const STREAM_ENDED_WITHOUT_TERMINAL =
-  'The digest stopped without reporting a result — the connection to the Biorouter backend ended mid-stream. Nothing was added to the knowledge base; try again.';
+  'The digest stopped without reporting a result. The connection to the Biorouter backend ended mid-stream. Nothing was added to the knowledge base; try again.';
 
 function extractErrorMessage(raw: string): string {
   const trimmed = raw.trim();
