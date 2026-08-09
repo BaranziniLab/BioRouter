@@ -478,20 +478,25 @@ fn announce_subagent_tab(
     let parent = parent_session_id.to_string();
     tokio::spawn(async move {
         if open_a_tab {
-            announce_open_frame(services.as_ref(), &child, placement, announce_only).await;
+            announce_open_frame(services.as_ref(), &child, &parent, placement, announce_only).await;
         }
         // The badge is NOT focus-stealing, so it is sent for every child this
         // function announced at all — including a capped one, which has no tab
         // yet and is exactly the child the user opens later from History. The
         // renderer stores it by session id (`ChatGroupsContext`'s
         // `tabAnnotations`), so it is already waiting when that tab appears.
+        // ⚠ Routed to the PARENT's window (#78), the same as the open frame
+        // below. Sending them through different routes is how a badge and its
+        // tab ended up in different windows, after which the receiving window
+        // observes a session it has no tab for.
         let _ = services
-            .gui_command(
+            .gui_command_near(
                 serde_json::json!({
                     "type": "workspace", "cmd": "annotate_tab",
                     "session_id": child, "badge": "subagent", "parent_session_id": parent,
                 }),
                 false,
+                &parent,
             )
             .await;
     });
@@ -503,6 +508,7 @@ fn announce_subagent_tab(
 async fn announce_open_frame(
     services: &dyn crate::workspace_services::WorkspaceServices,
     child_session_id: &str,
+    parent_session_id: &str,
     placement: &'static str,
     announce_only: bool,
 ) {
@@ -539,10 +545,15 @@ async fn announce_open_frame(
     // tab is to notice. The lie is also bounded — the child exists, runs, and is
     // reachable from History and `workspace_read_conversation` wherever its tab
     // did or did not land.
+    // ⚠ The spawned tab belongs beside its parent (#78). Before this, the
+    // daemon was never told which window meant, so it guessed with
+    // `focused_or_recent` and — with several windows open — landed in one
+    // particular wrong window, consistently, off `HashMap` iteration order.
     let _ = services
-        .gui_command(
+        .gui_command_near(
             crate::agents::workspace_extension::apply_focus_etiquette(open_frame, announce_only),
             false,
+            parent_session_id,
         )
         .await;
 }

@@ -310,6 +310,35 @@ impl WorkspaceServices for ServerWorkspaceServices {
             .unwrap_or_default()
     }
 
+    /// Route to the window holding `near_session`, or fall back to the guess.
+    ///
+    /// ⚠ The fallback is not laziness (issue #78). A parent legitimately has no
+    /// tab anywhere — a headless spawn, a tab closed mid-turn, or an echo not
+    /// yet delivered through its 300 ms debounce — and the fire-and-forget
+    /// contract requires that a spawn never break because a window could not be
+    /// located. Falling back to today's behaviour is strictly better than
+    /// dropping the frame.
+    async fn gui_command_near(
+        &self,
+        frame: serde_json::Value,
+        wait_result: bool,
+        near_session: &str,
+    ) -> Result<serde_json::Value, String> {
+        let bridge = crate::workspace::bridge::bridge_for_session(near_session)
+            .or_else(crate::workspace::bridge::focused_or_recent)
+            .ok_or("no GUI attached")?;
+        if wait_result {
+            bridge
+                .emit_and_wait(frame, std::time::Duration::from_secs(10))
+                .await
+        } else {
+            bridge
+                .emit(frame)
+                .map(|()| serde_json::json!({ "sent": true }))
+                .map_err(|e| e.to_string())
+        }
+    }
+
     async fn gui_command(
         &self,
         frame: serde_json::Value,

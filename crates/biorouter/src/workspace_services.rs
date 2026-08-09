@@ -136,6 +136,33 @@ pub trait WorkspaceServices: Send + Sync {
         frame: serde_json::Value,
         wait_result: bool,
     ) -> Result<serde_json::Value, String>;
+
+    /// Push a workspace frame to the window that holds `near_session`, falling
+    /// back to [`Self::gui_command`]'s guess when that window cannot be found.
+    ///
+    /// ⚠ **Additive on purpose** (issue #78). The routing bug is that the
+    /// spawn path never said which window it meant, so the daemon guessed with
+    /// `focused_or_recent` — and before the renderer reported real focus, that
+    /// guess could not even discriminate between two open windows and fell
+    /// through to `HashMap` iteration order.
+    ///
+    /// A sibling with a default body, rather than a parameter added to
+    /// `gui_command`, because the signature change would ripple through the
+    /// trait, `NullServices`, the server impl and two test doubles for no gain:
+    /// every existing caller genuinely has no target to name.
+    ///
+    /// The default IGNORES the hint. That is the honest behaviour for a
+    /// headless host, and it keeps the fire-and-forget contract: a spawn must
+    /// never fail because a window could not be located.
+    async fn gui_command_near(
+        &self,
+        frame: serde_json::Value,
+        wait_result: bool,
+        near_session: &str,
+    ) -> Result<serde_json::Value, String> {
+        let _ = near_session;
+        self.gui_command(frame, wait_result).await
+    }
 }
 
 static WORKSPACE_SERVICES: OnceLock<Arc<dyn WorkspaceServices>> = OnceLock::new();
