@@ -26,20 +26,27 @@
 //! # The protocol, and what it is honestly worth
 //!
 //! `biorouterd` creates a private directory, writes a single-use nonce into it,
-//! and launches this helper with the *paths*. The helper reads the nonce,
-//! raises the prompt, and writes `<nonce> <verdict>` to the result file. The
-//! daemon accepts the verdict only if the nonce comes back verbatim.
+//! opens a unix socket there, and launches this helper with the *paths*. The
+//! helper reads the nonce, raises the prompt, and sends `<nonce> <verdict>`
+//! down the socket. The daemon accepts it only if **both** hold: the connecting
+//! process is signed by our Developer ID team, and the nonce comes back
+//! verbatim.
 //!
-//! ⚠ **This is not a security boundary, and the nonce does not make it one.**
-//! Anything running as the same user can read the nonce file and forge an
-//! approval. That is a real weakening compared to an in-process call, which
-//! cannot be forged at all — and it was accepted deliberately, because the
-//! in-process call does not work under the desktop app, so the alternative is
-//! not a stronger check but no check. What the nonce buys is that forging
-//! requires *reading the daemon's private state* rather than guessing a
-//! predictable path or racing a world-writable file. Biorouter's privacy
-//! barrier is documented as safety rather than security for exactly this class
-//! of reason; see `docs/security/privacy-tiers.md`.
+//! ⚠ **The nonce alone was not enough, and that is why the socket exists.** A
+//! result FILE can be written by anything running as the same user — including
+//! an agent with shell access, which can also read the nonce out of the
+//! daemon's private directory. Since the operations behind this prompt include
+//! *turning privacy enforcement off*, a forged approval there is an escalation
+//! rather than a skipped dialog. Connecting over a socket is what lets the
+//! daemon ask the kernel **which process** is answering
+//! (`super::system_auth_peer`), so forging now requires a binary signed by
+//! `F3YYBXAFJ8` rather than merely a process running as you.
+//!
+//! ⚠ **It is still not unforgeable.** Someone who can inject into a process we
+//! signed, or who holds the key, defeats it. Biorouter's privacy barrier remains
+//! documented as safety rather than security; see `docs/security/privacy-tiers.md`.
+//! The nonce is kept alongside the peer check because it answers a different
+//! question: the peer check says *who*, the nonce says *which prompt*.
 //!
 //! ⚠ **The nonce travels in a FILE, never in argv or the environment.** Both of
 //! those are readable by any process on the machine (`ps`, `KERN_PROCARGS2`),
@@ -58,10 +65,12 @@ fn main() {
 
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 4 {
-        eprintln!("usage: biorouter-authprompt <nonce-file> <result-file> <reason>");
+        eprintln!("usage: biorouter-authprompt <nonce-file> <result-file> <reason> [socket]");
         std::process::exit(64);
     }
     let (nonce_path, result_path, reason) = (&args[1], &args[2], &args[3]);
+    // Present since the peer check landed; absent only for an older daemon.
+    let socket_path = args.get(4).cloned();
 
     // A missing or unreadable nonce means the daemon did not set this up, which
     // is not something to authenticate past.
@@ -73,6 +82,19 @@ fn main() {
         std::process::exit(65);
     }
 
+    // ⚠ **Connect BEFORE prompting.** The daemon verifies who we are as soon as
+    // the connection lands, so an unauthorised binary is turned away without a
+    // dialog ever appearing. Prompting first meant an impostor could still make
+    // the user authenticate and only then be refused — the user pays for the
+    // attacker's attempt, and a refusal after a successful fingerprint reads as
+    // a broken app rather than a working defence.
+    // `.ok()` swallows the error deliberately: the daemon being gone or never
+    // having listened is the older-daemon case, and the file fallback below
+    // handles it.
+    let mut stream = socket_path
+        .as_deref()
+        .and_then(|path| std::os::unix::net::UnixStream::connect(path).ok());
+
     let verdict = match macos::evaluate(reason) {
         macos::Verdict::Approved => "approved",
         macos::Verdict::Denied => "denied",
@@ -83,8 +105,36 @@ fn main() {
     // and the daemon's comparison fails closed on anything it did not issue.
     let line = format!("{nonce} {verdict}\n");
 
-    // Written to a sibling temp path and renamed, so the daemon can never read
-    // a half-written result and mistake it for an answer.
+    // ⚠ **The socket is the real channel now.** Connecting is what lets the
+    // daemon ask the kernel who we are and Security.framework whether we are
+    // signed by its team — a file cannot carry that, which is why a file alone
+    // could be written by anything running as the user. Closing the stream is
+    // what ends the daemon's `read_to_string`.
+    if let Some(mut stream) = stream.take() {
+        let _ = stream.write_all(line.as_bytes());
+        let _ = stream.flush();
+        // ⚠ **Stay alive until the daemon closes.** The daemon identifies us by
+        // asking the kernel for the pid on its end of this socket, and a pid
+        // only names a process while that process exists. macOS can approve
+        // `evaluatePolicy` INSTANTLY from a recent authentication — no dialog at
+        // all — so without this the helper writes and exits in milliseconds,
+        // the daemon's next poll finds a dead pid, the signature lookup fails,
+        // and a perfectly good approval is rejected as an impostor.
+        //
+        // Reading is how we wait: the daemon drops its end once it has the
+        // verdict, which lands here as EOF. Bounded by the daemon's own timeout
+        // on the other side, so a daemon that dies cannot pin this process.
+        use std::io::Read;
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(90)));
+        let mut ignored = Vec::new();
+        let _ = stream.read_to_end(&mut ignored);
+        drop(stream);
+        return;
+    }
+
+    // Fallback for a daemon older than the socket: write the file it is
+    // waiting on. Staged and renamed so it can never read a half-written
+    // result and mistake it for an answer.
     let staging = format!("{result_path}.partial");
     if let Ok(mut file) = std::fs::File::create(&staging) {
         let _ = file.write_all(line.as_bytes());

@@ -124,12 +124,17 @@ fn helper_app() -> Option<std::path::PathBuf> {
 /// — so LaunchServices starts the helper under **launchd** rather than under
 /// us — is what makes the prompt appear.
 ///
-/// ⚠ **The nonce is not a security boundary.** Anything running as this user
-/// can read it and forge an approval; what it buys is that forging requires
-/// reading the daemon's private directory rather than guessing a path. This was
-/// chosen knowingly over an unforgeable check that never fires, and it is why
-/// the nonce goes in a 0600 file and never in argv or the environment, both of
-/// which any process on the machine can read.
+/// ⚠ **Two checks, answering two different questions.** The peer check
+/// (`super::system_auth_peer`) asks *who is answering* — the kernel names the
+/// connected process and Security.framework confirms it is signed by our team,
+/// so a shell script cannot forge an approval. The nonce asks *which prompt*
+/// this answers, which the peer check cannot: a signed helper replying to an
+/// older request is still not an answer to this one. Neither is redundant.
+///
+/// ⚠ **Still not unforgeable**, and the docs must not claim otherwise: injecting
+/// into a process we signed defeats it. The nonce continues to travel in a 0600
+/// file and never in argv or the environment, both of which any process on the
+/// machine can read.
 #[cfg(target_os = "macos")]
 fn evaluate_via_helper(app: &std::path::Path, reason: &str) -> Option<MacAuthSignal> {
     use rand::Rng;
@@ -159,6 +164,35 @@ fn evaluate_via_helper(app: &std::path::Path, reason: &str) -> Option<MacAuthSig
     nonce_file.write_all(nonce.as_bytes()).ok()?;
     drop(nonce_file);
 
+    // Listening BEFORE the launch, so the helper cannot connect before we are
+    // ready and be turned away.
+    //
+    // ⚠ **The filename is one character on purpose.** A unix socket path is
+    // capped at 104 bytes on macOS, and the private temp directory already
+    // spends ~70 of them (`/var/folders/<2>/<30>/T/biorouter-auth-<8>/`). With
+    // a name like `reply.sock` that leaves ~21 bytes of headroom, and `TMPDIR`
+    // is settable — a longer one silently exhausts it. The failure mode is the
+    // bad kind: `bind` errors, this function returns `None`, the caller falls
+    // back to the in-process call, and under the desktop app that is a
+    // 60-second hang with nothing saying why.
+    let socket_path = dir.path().join("s");
+    let listener = match std::os::unix::net::UnixListener::bind(&socket_path) {
+        Ok(listener) => listener,
+        Err(err) => {
+            // Loud, because the silent version is indistinguishable from "no
+            // helper installed" and leads somewhere much worse.
+            tracing::warn!(
+                error = %err,
+                path = %socket_path.display(),
+                len = socket_path.as_os_str().len(),
+                "could not open the auth helper's reply socket; falling back to the \
+                 in-process prompt, which does not work under the desktop app"
+            );
+            return None;
+        }
+    };
+    listener.set_nonblocking(true).ok()?;
+
     // `-n` so a helper left over from a previous prompt cannot absorb this one.
     let spawned = std::process::Command::new("/usr/bin/open")
         .arg("-n")
@@ -168,20 +202,73 @@ fn evaluate_via_helper(app: &std::path::Path, reason: &str) -> Option<MacAuthSig
         .arg(&nonce_path)
         .arg(&result_path)
         .arg(reason)
+        .arg(&socket_path)
         .status();
     if !matches!(spawned, Ok(status) if status.success()) {
         return None;
     }
 
-    // Poll rather than watch: the helper is a separate process launched through
-    // LaunchServices, so there is no child to wait on and no descriptor to
-    // select over. Bounded by the same budget the caller uses.
+    // Poll the listener rather than block on `accept`: the helper is launched
+    // through LaunchServices, so there is no child to wait on, and a blocking
+    // accept could not be bounded. Same budget the caller uses.
+    use std::io::BufRead;
     let deadline = std::time::Instant::now() + super::system_auth::PROMPT_TIMEOUT;
     while std::time::Instant::now() < deadline {
-        if let Ok(contents) = std::fs::read_to_string(&result_path) {
-            return Some(parse_helper_result(&nonce, &contents));
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // ⚠ Identify the peer BEFORE reading a word it sent. The socket
+                // is the channel a same-user process would use to forge an
+                // approval, and the nonce alone cannot stop that — anything
+                // that can read the daemon's private directory has it. Asking
+                // the kernel which process is connected, and Security.framework
+                // whether that process is signed by our team, is what makes a
+                // forgery require code we signed.
+                // The helper connects before it prompts, so this runs while no
+                // dialog is on screen yet: an unauthorised peer is turned away
+                // without the user ever being asked. Rejecting after a
+                // successful fingerprint would make the user pay for the
+                // attacker's attempt and would read as a broken app.
+                if !super::system_auth_peer::peer_is_ours(&stream) {
+                    return Some(MacAuthSignal::EvaluationFailed(0));
+                }
+                // ⚠ **Clear O_NONBLOCK on the accepted socket.** On macOS and
+                // the BSDs the accepted socket INHERITS the listener's
+                // non-blocking flag — POSIX says it should not, and Linux does
+                // not. Left set, `read_to_string` returns `WouldBlock`
+                // immediately, which this code reads as a failed reply: the
+                // request was refused in ~1s having never shown a prompt, and
+                // the symptom is indistinguishable from a rejected peer.
+                if stream.set_nonblocking(false).is_err() {
+                    return Some(MacAuthSignal::EvaluationFailed(0));
+                }
+                // The helper connects first and prompts second, so this read is
+                // waiting on a human. Bounded anyway: a helper that dies
+                // holding the socket open must not park this thread forever.
+                let _ = stream.set_read_timeout(Some(super::system_auth::PROMPT_TIMEOUT));
+                // ⚠ **One LINE, not to EOF.** The helper holds the connection
+                // open until we close it — that is what keeps its pid alive
+                // across the peer check above — so waiting for EOF here would
+                // deadlock: each side waiting for the other to hang up. The
+                // verdict is a single line and ends with `\n`.
+                let mut reply = String::new();
+                if std::io::BufReader::new(&stream)
+                    .read_line(&mut reply)
+                    .is_err()
+                {
+                    return Some(MacAuthSignal::EvaluationFailed(0));
+                }
+                // Closing is the helper's signal to exit.
+                drop(stream);
+                // The nonce stays as well: it binds this reply to THIS prompt,
+                // which the peer check does not — a signed helper answering a
+                // different, older request is still not an answer to this one.
+                return Some(parse_helper_result(&nonce, &reply));
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(_) => return Some(MacAuthSignal::EvaluationFailed(0)),
         }
-        std::thread::sleep(std::time::Duration::from_millis(150));
     }
     // Ran out of time. Not an approval.
     Some(MacAuthSignal::EvaluationFailed(0))
@@ -411,13 +498,13 @@ mod tests {
         for hostile in [
             format!("{other} approved"),       // a reply we never asked for
             "approved".to_string(),            // verdict with no nonce at all
-            format!("{nonce}"),                // our nonce, no verdict
+            nonce.clone(),                     // our nonce, no verdict
             format!("{nonce} "),               // our nonce, empty verdict
             format!("{nonce} APPROVED"),       // case is not a match
             format!("{nonce} approved extra"), // trailing junk after the verdict
             format!(" approved {nonce}"),      // fields swapped
             String::new(),                     // empty file, e.g. a crashed helper
-            format!("{}", &nonce[..32]),       // truncated nonce
+            nonce.chars().take(32).collect(),  // truncated nonce
         ] {
             assert!(
                 !matches!(

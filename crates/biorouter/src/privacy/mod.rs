@@ -37,6 +37,7 @@ pub mod system_auth;
 // file-level `cfg`, so these declarations are unconditional and the audit in
 // `system_auth.rs` can assert that exactly two files gate on the seam's cfg pair.
 pub mod system_auth_macos;
+pub mod system_auth_peer;
 pub mod system_auth_polkit;
 pub mod system_auth_seam;
 pub mod system_auth_windows;

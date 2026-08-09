@@ -969,6 +969,8 @@ dependencies = [
  "boa_engine",
  "chrono",
  "clap",
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
  "criterion",
  "ctor",
  "dashmap",
