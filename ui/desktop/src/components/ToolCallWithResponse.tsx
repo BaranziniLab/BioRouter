@@ -326,7 +326,7 @@ class ToolCallRenderBoundary extends React.Component<
         status="error"
         role="alert"
         title="Tool details unavailable"
-        message="This tool returned an unexpected response. The conversation can continue."
+        message="This tool returned an unexpected response. The chat can continue."
       >
         <details className="mt-2.5 text-xs text-text-muted">
           <summary className="w-fit cursor-pointer select-none font-medium text-text-default">

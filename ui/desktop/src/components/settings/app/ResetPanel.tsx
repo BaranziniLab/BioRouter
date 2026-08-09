@@ -35,8 +35,8 @@ type CategoryDefinition = {
 const CATEGORIES: CategoryDefinition[] = [
   {
     id: 'applications',
-    title: 'Applications',
-    description: 'Delete every application created with Agent Drafter.',
+    title: 'Built apps',
+    description: 'Delete every app created with Agent Drafter.',
     countKey: 'applications',
     countLabel: 'built',
     icon: ENTITY_ICONS.application,
@@ -84,11 +84,11 @@ const CATEGORIES: CategoryDefinition[] = [
   },
   {
     id: 'history',
-    title: 'Conversation & usage history',
-    description: 'Clear every conversation, token meter, cost total, and checkpoint.',
+    title: 'Chat & usage history',
+    description: 'Clear every chat, token meter, cost total, and checkpoint.',
     countKey: 'conversations',
-    countLabel: 'conversations',
-    singularCountLabel: 'conversation',
+    countLabel: 'chats',
+    singularCountLabel: 'chat',
     icon: History,
   },
 ];

@@ -82,7 +82,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
   {
     key: 'chatrecall',
     label: 'Chat Recall',
-    description: 'Search past conversations and load session summaries for context.',
+    description: 'Search past chats and load their summaries for context.',
     defaultEnabled: false,
   },
   {
@@ -107,7 +107,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
     key: 'workspace',
     label: 'Workspace Control',
     description:
-      'Work across several chats: open, read and steer other conversations, and run subagents in visible tabs.',
+      'Work across several chats: open, read and steer other chats, and run subagents in visible tabs.',
     defaultEnabled: true,
   },
 ];

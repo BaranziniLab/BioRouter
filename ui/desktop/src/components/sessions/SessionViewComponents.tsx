@@ -76,7 +76,7 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
               // §4.5 — the shared surface, not a fourth hand-rolled error column.
               <EmptyState
                 icon={AlertCircle}
-                title="Couldn't load this session"
+                title="Couldn't load this chat"
                 description={error}
                 actions={
                   <Button onClick={onRetry} variant="outline">
@@ -136,7 +136,7 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
                       <div className="flex justify-between items-center mb-2 gap-2">
                         {/* BR-71 §5: provenance is structural, so it has to
                             travel with the transcript into this view too — a
-                            shared session is the one that leaves the machine,
+                            shared chat is the one that leaves the machine,
                             and "You" on a message another agent injected is a
                             misattribution to the human. */}
                         <div className="flex items-center gap-2 min-w-0">
@@ -206,8 +206,8 @@ export const SessionMessages: React.FC<SessionMessagesProps> = ({
             ) : (
               <EmptyState
                 icon={MessageSquare}
-                title="No messages in this session"
-                description="This session was created but nothing was ever said in it."
+                title="No messages in this chat"
+                description="This chat was created but nothing was ever said in it."
                 compact
               />
             )}

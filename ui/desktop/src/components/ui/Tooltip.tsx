@@ -21,7 +21,7 @@ import { cn } from '../../utils';
  * Z — deliberately `--z-modal-dropdown` (500), not `--z-dropdown` (200). A tooltip
  * must paint above whatever surface owns its trigger, and it is portalled to <body>
  * so it cannot know what that is. ContextWindowIndicator is the proof: its gauge
- * ("Compact conversation", "Drag to adjust auto-compact threshold") renders INSIDE a
+ * ("Compact chat", "Drag to adjust auto-compact threshold") renders INSIDE a
  * PopoverContent, which sits at 500 — at 200 those tooltips would hide behind the
  * very popover that contains them.
  */

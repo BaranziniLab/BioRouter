@@ -112,7 +112,7 @@ const SessionMessages: React.FC<{
             // two halves of one feature stop speaking different error dialects.
             <EmptyState
               icon={AlertCircle}
-              title="Couldn't load this session"
+              title="Couldn't load this chat"
               description={error}
               actions={
                 <Button onClick={onRetry} variant="outline">
@@ -140,8 +140,8 @@ const SessionMessages: React.FC<{
           ) : (
             <EmptyState
               icon={MessageSquareText}
-              title="No messages in this session"
-              description="This session was created but nothing was ever said in it."
+              title="No messages in this chat"
+              description="This chat was created but nothing was ever said in it."
               compact
             />
           )}
@@ -197,19 +197,19 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
     try {
       const savedSessionConfig = localStorage.getItem('session_sharing_config');
       if (!savedSessionConfig) {
-        throw new Error('Session sharing is not configured. Please configure it in settings.');
+        throw new Error('Chat sharing is not configured.');
       }
 
       const config = JSON.parse(savedSessionConfig);
       if (!config.enabled || !config.baseUrl) {
-        throw new Error('Session sharing is not enabled or base URL is not configured.');
+        throw new Error('Chat sharing is off, or its base URL is missing.');
       }
 
       const shareToken = await createSharedSession(
         config.baseUrl,
         session.working_dir,
         messages,
-        session.name || 'Shared Session',
+        session.name || 'Shared chat',
         billedTokenEstimate?.lowerBound ? null : (billedTokenEstimate?.value ?? null)
       );
 
@@ -219,7 +219,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
     } catch (error) {
       console.error('Error sharing session:', error);
       toastError({
-        title: 'Failed to share session',
+        title: 'Failed to share chat',
         msg: error instanceof Error ? error.message : 'Unknown error',
       });
     } finally {
@@ -238,7 +238,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         console.error('Failed to copy link:', err);
         toastError({
           title: 'Failed to copy link',
-          msg: 'The session link could not be copied to the clipboard.',
+          msg: 'The chat link could not be copied to the clipboard.',
         });
       });
   };
@@ -248,7 +248,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
       resumeSession(session, setView);
     } catch (error) {
       toastError({
-        title: 'Could not launch session',
+        title: 'Could not open this chat',
         msg: error instanceof Error ? error.message : String(error),
       });
     }
@@ -280,10 +280,10 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
         </TooltipTrigger>
         {!canShare ? (
           <TooltipContent>
-            <p>
-              To enable session sharing, go to <b>Settings</b> {'>'} <b>Session</b> {'>'}{' '}
-              <b>Session Sharing</b>.
-            </p>
+            {/* Deliberately does NOT name a settings path: chat sharing has
+                no mounted settings section, so the old "Settings > Session >
+                Session Sharing" sent the user somewhere that does not exist. */}
+            <p>Chat sharing is not set up on this install.</p>
           </TooltipContent>
         ) : null}
       </Tooltip>
@@ -332,7 +332,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
                         className="flex items-center"
                         title={
                           billedTokenEstimate.lowerBound
-                            ? 'At least this many tokens; only last-turn usage is available for this legacy session'
+                            ? 'At least this many tokens; only last-turn usage is available for this older chat'
                             : 'Billed tokens across every turn, including recorded cache usage'
                         }
                       >
@@ -352,7 +352,7 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
               ) : (
                 <div className="flex items-center text-secondary text-text-muted">
                   <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                  <span>Loading session details...</span>
+                  <span>Loading chat details...</span>
                 </div>
               )}
             </div>
@@ -372,10 +372,10 @@ const SessionHistoryView: React.FC<SessionHistoryViewProps> = ({
           <DialogHeader>
             <DialogTitle className="flex justify-center items-center gap-2">
               <Share2 className="w-6 h-6 text-text-default" />
-              Share Session (beta)
+              Share chat (beta)
             </DialogTitle>
             <DialogDescription>
-              Share this session link to give others a read only view of your biorouter chat.
+              Share this link to give others a read-only view of this chat.
             </DialogDescription>
           </DialogHeader>
 

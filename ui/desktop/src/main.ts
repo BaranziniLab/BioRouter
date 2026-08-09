@@ -3052,7 +3052,7 @@ ipcMain.handle(
   async (event, sessionId: string, archive: DiagnosticsArchivePayload) => {
     try {
       if (!sessionId || typeof sessionId !== 'string') {
-        throw new Error('A session is required to generate diagnostics.');
+        throw new Error('A chat is required to generate diagnostics.');
       }
 
       const bytes = diagnosticsArchiveBytes(archive);
@@ -4007,7 +4007,7 @@ function registerCliInstallHandlers() {
 
   ipcMain.handle('terminal:write', async (event, sessionId: string, data: string) => {
     const session = ownedTerminalSession(event, sessionId);
-    if (!session) return { success: false, error: 'Terminal session is no longer running.' };
+    if (!session) return { success: false, error: 'This terminal is no longer running.' };
     session.write(data);
     return { success: true };
   });
@@ -4016,7 +4016,7 @@ function registerCliInstallHandlers() {
     'terminal:resize',
     async (event, sessionId: string, cols: number, rows: number) => {
       const session = ownedTerminalSession(event, sessionId);
-      if (!session) return { success: false, error: 'Terminal session is no longer running.' };
+      if (!session) return { success: false, error: 'This terminal is no longer running.' };
       session.resize(cols, rows);
       return { success: true };
     }
@@ -4024,7 +4024,7 @@ function registerCliInstallHandlers() {
 
   ipcMain.handle('terminal:dispose', async (event, sessionId: string) => {
     if (!ownedTerminalSession(event, sessionId)) {
-      return { success: false, error: 'Terminal session is no longer running.' };
+      return { success: false, error: 'This terminal is no longer running.' };
     }
     disposeTerminalSession(sessionId);
     return { success: true };

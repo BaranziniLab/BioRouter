@@ -60,7 +60,7 @@ export default function ApplicationsView() {
       setApps(data);
       setError(null);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to load applications');
+      setError(err instanceof Error ? err.message : 'Failed to load apps');
     } finally {
       setLoading(false);
     }
@@ -142,7 +142,7 @@ export default function ApplicationsView() {
     try {
       await deleteAgentDrafterApp(app.id);
       setApps((prev) => prev.filter((a) => a.id !== app.id));
-      toastSuccess({ title: app.title, msg: 'Application deleted' });
+      toastSuccess({ title: app.title, msg: 'App deleted' });
     } catch (err) {
       console.error('Failed to delete app:', err);
       toastError({
@@ -174,7 +174,7 @@ export default function ApplicationsView() {
         <div className="flex-shrink-0 border-b border-border-subtle">
           <ReadableContent className="px-8 pt-12 pb-6">
             <div className="flex flex-col page-transition">
-              <h1 className="text-title mb-1">Applications</h1>
+              <h1 className="text-title mb-1">Built apps</h1>
               <p className="text-body text-text-muted mb-0">
                 Apps you built with Agent Drafter. Each one runs a full Biorouter agent with its own
                 model, extensions, skills, and knowledge, and opens in your browser.{' '}
@@ -193,24 +193,24 @@ export default function ApplicationsView() {
         {/* List */}
         <SearchView
           onSearch={(term, _caseSensitive) => setSearchTerm(term)}
-          placeholder="Search applications..."
+          placeholder="Search built apps..."
         >
           <ReadableContent className="px-8 py-4">
             {loading ? (
-              <p className="text-body text-text-muted mt-10 text-center">Loading applications…</p>
+              <p className="text-body text-text-muted mt-10 text-center">Loading apps…</p>
             ) : error && apps.length === 0 ? (
               <div className="flex flex-col items-center justify-center mt-16 text-center">
-                <p className="text-text-danger mb-4">Could not load applications: {error}</p>
+                <p className="text-text-danger mb-4">Could not load apps: {error}</p>
                 <Button onClick={load}>Retry</Button>
               </div>
             ) : filtered.length === 0 ? (
               <div className="text-center mt-16 max-w-md mx-auto">
                 <h3 className="text-subheading text-text-default mb-1">
-                  {searchTerm ? 'No matching applications' : 'No applications yet'}
+                  {searchTerm ? 'No matching apps' : 'No apps built yet'}
                 </h3>
                 <p className="text-body text-text-muted">
                   {searchTerm
-                    ? 'No applications match your search.'
+                    ? 'No apps match your search.'
                     : 'Ask Biorouter to build one, for example "use Agent Drafter to build a dashboard app". It will appear here.'}
                 </p>
               </div>
@@ -250,7 +250,7 @@ export default function ApplicationsView() {
       <ConfirmationModal
         isOpen={appToDelete !== null}
         title={`Delete "${appToDelete?.title}"?`}
-        message="This permanently removes the application and its files from disk. This action cannot be undone."
+        message="This permanently removes the app and its files from disk. This action cannot be undone."
         confirmLabel="Delete"
         cancelLabel="Cancel"
         confirmVariant="destructive"
@@ -263,7 +263,7 @@ export default function ApplicationsView() {
 }
 
 // ---------------------------------------------------------------------------
-// Inline application row component
+// Inline app row component
 // ---------------------------------------------------------------------------
 interface ApplicationItemProps {
   app: AppManifest;
@@ -346,8 +346,8 @@ export function ApplicationItem({
             variant="outline"
             size="sm"
             className="h-7 w-7 p-0"
-            title="Open the conversation where this app was built"
-            aria-label={`Open the conversation where ${app.title} was built`}
+            title="Open the chat where this app was built"
+            aria-label={`Open the chat where ${app.title} was built`}
           >
             <MessageSquare className="w-4 h-4" />
           </Button>

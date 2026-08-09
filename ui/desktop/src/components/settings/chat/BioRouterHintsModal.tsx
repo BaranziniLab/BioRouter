@@ -15,7 +15,7 @@ const HelpText = () => (
     <span className="font-medium text-text-default">.biorouterhints</span> gives Biorouter
     additional context about your project. The{' '}
     <span className="font-medium text-text-default">Developer</span> extension must be enabled
-    (Extensions page), and sessions must be restarted for changes to take effect.
+    (Extensions page), and chats must be restarted for changes to take effect.
   </div>
 );
 

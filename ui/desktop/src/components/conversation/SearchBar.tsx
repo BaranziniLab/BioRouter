@@ -36,7 +36,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
   searchResults,
   inputRef: externalInputRef,
   initialSearchTerm = '',
-  placeholder = 'Search conversation...',
+  placeholder = 'Search chat...',
 }: SearchBarProps) => {
   const [searchTerm, setSearchTerm] = useState(initialSearchTerm);
   const [caseSensitive, setCaseSensitive] = useState(false);

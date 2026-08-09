@@ -79,7 +79,7 @@ export default function CreateWorkflowFromSessionModal({
 
       // Create a sequence of analysis stages for better UX
       const stages = [
-        'Reading your conversation...',
+        'Reading your chat...',
         'Identifying key patterns...',
         'Extracting main topics...',
         'Generating workflow structure...',
@@ -400,9 +400,9 @@ export default function CreateWorkflowFromSessionModal({
           data-testid="modal-header"
         >
           <div>
-            <DialogTitle>Create Workflow from Session</DialogTitle>
+            <DialogTitle>Create workflow from this chat</DialogTitle>
             <p className="text-supporting text-text-muted mt-0.5">
-              Create a reusable workflow based on your current conversation
+              Create a reusable workflow based on your current chat
             </p>
           </div>
         </div>
@@ -420,7 +420,7 @@ export default function CreateWorkflowFromSessionModal({
               />
               <div className="text-center">
                 <p className="text-label text-text-default" data-testid="analyzing-title">
-                  Analyzing your conversation
+                  Analyzing your chat
                 </p>
                 <p className="text-supporting text-text-muted mt-1" data-testid="analysis-stage">
                   {analysisStage}

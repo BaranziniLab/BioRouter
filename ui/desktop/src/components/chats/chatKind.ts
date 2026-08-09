@@ -91,7 +91,7 @@ export function chatIconFor(kind: ChatKind, tier?: SessionClassification | null)
     case 'app':
       return { Icon: AppWindow, label: `App${privateSuffix}` };
     case 'terminal':
-      return { Icon: Terminal, label: `Terminal session${privateSuffix}` };
+      return { Icon: Terminal, label: `Terminal${privateSuffix}` };
     case 'subagent':
       return { Icon: Bot, label: `Sub-agent${privateSuffix}` };
     case 'scheduled':

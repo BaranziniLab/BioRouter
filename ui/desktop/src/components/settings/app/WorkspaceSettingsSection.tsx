@@ -57,8 +57,8 @@ export function WorkspaceSettingsSection() {
             <div className="min-w-0">
               <p className="text-sm font-medium text-text-default">Never open tabs automatically</p>
               <p className="text-xs text-text-muted mt-0.5 max-w-md">
-                When an agent opens a conversation or starts a subagent, notify me instead of
-                opening a tab. Subagents still run; open them from History.
+                When an agent opens a chat or starts a subagent, notify me instead of opening a tab.
+                Subagents still run; open them from History.
               </p>
             </div>
             <Switch

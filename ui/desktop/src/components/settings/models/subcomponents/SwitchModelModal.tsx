@@ -643,9 +643,7 @@ export const SwitchModelModal = ({
             <Brain size={24} className="text-text-default" />
             {titleOverride || 'Switch models'}
           </DialogTitle>
-          <DialogDescription>
-            Select a provider and model to use for your conversations.
-          </DialogDescription>
+          <DialogDescription>Select a provider and model to use for your chats.</DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-4 py-4">

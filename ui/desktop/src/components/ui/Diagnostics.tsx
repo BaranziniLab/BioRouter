@@ -167,13 +167,13 @@ Add any other context about the problem here.
         <div className="space-y-3 text-body text-text-muted">
           <ul className="list-inside list-disc space-y-1">
             <li>Basic system info</li>
-            <li>Your current session messages</li>
+            <li>Your current chat messages</li>
             <li>Recent log files</li>
             <li>Configuration settings</li>
           </ul>
           <p>
-            <strong className="text-text-default">Warning:</strong> If your session contains
-            sensitive information, do not share the diagnostics file publicly.
+            <strong className="text-text-default">Warning:</strong> If your chat contains sensitive
+            information, do not share the diagnostics file publicly.
           </p>
           <p>If you file a bug, consider attaching the diagnostics report to it.</p>
         </div>

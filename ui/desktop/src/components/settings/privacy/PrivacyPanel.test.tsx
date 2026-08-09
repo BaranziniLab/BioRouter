@@ -76,7 +76,7 @@ describe('Settings > Privacy', () => {
     const dialog = screen.getByTestId('privacy-disable-confirm');
     expect(dialog).toHaveTextContent(/every.*privacy guardrail on this machine/i);
     expect(dialog).toHaveTextContent(/read and write your knowledge bases/i);
-    expect(dialog).toHaveTextContent(/stops recording which conversations touched private/i);
+    expect(dialog).toHaveTextContent(/stops recording which chats touched private/i);
     expect(dialog).toHaveTextContent(/cannot go back and mark anything that happened/i);
   });
 

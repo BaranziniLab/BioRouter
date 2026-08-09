@@ -654,7 +654,7 @@ export function handleCreateSessionError(
   );
   const connection = isConnectionError(err);
   toastError({
-    title: connection ? 'Backend disconnected' : 'Failed to start session',
+    title: connection ? 'Backend disconnected' : 'Failed to start chat',
     msg: connection
       ? 'Biorouter could not reach its backend. Your message was kept - try again in a moment.'
       : errorMessage(err),
@@ -1761,7 +1761,7 @@ function BaseChatContent({
     messages,
     workflow,
     sessionId,
-    name: session?.name || 'No Session',
+    name: session?.name || 'New chat',
   };
 
   // Update the global chat context when session name changes
@@ -1832,7 +1832,7 @@ function BaseChatContent({
         });
       }
       toastError({
-        title: 'Failed to rename session',
+        title: 'Failed to rename chat',
         msg: errorMessage(err),
       });
     }
@@ -1912,21 +1912,22 @@ function BaseChatContent({
                   HEADER_ACTION_BUTTON_CLASS,
                   reviewOpen && 'bg-background-medium text-text-default'
                 )}
-                aria-label="Session review"
+                aria-label="Chat summary"
               >
                 <AlignLeft className="h-4 w-4" />
               </Button>
             </PopoverTrigger>
           </TooltipTrigger>
-          <TooltipContent>Session review</TooltipContent>
+          {/* Not "Chat summary" again: the popover's own first heading already
+              says that, so a tooltip repeating it tells the user nothing they
+              are not about to read. It names the contents instead. */}
+          <TooltipContent>Tool calls, tokens and artifacts so far</TooltipContent>
         </Tooltip>
         <PopoverContent side="bottom" align="end" className="w-96 p-3">
           <div className="space-y-3">
             <div>
-              <div className="text-sm font-medium text-text-default">Session review</div>
-              <div className="text-xs text-text-muted">
-                {session?.name || 'Current conversation'}
-              </div>
+              <div className="text-sm font-medium text-text-default">Chat summary</div>
+              <div className="text-xs text-text-muted">{session?.name || 'Current chat'}</div>
             </div>
             <div className="grid grid-cols-2 gap-x-4">
               <SummaryMetric label="Tool calls" value={sessionToolCallCount.toLocaleString()} />
@@ -2093,7 +2094,7 @@ function BaseChatContent({
             <div className="flex-1 bg-background-default rounded-b-2xl flex items-center justify-center">
               <div className="flex flex-col items-center justify-center p-8">
                 <div className="text-text-danger bg-background-danger/10 border border-border-danger/40 p-4 rounded-lg mb-4 max-w-md">
-                  <h3 className="font-semibold mb-2">Failed to Load Session</h3>
+                  <h3 className="font-semibold mb-2">Could not load this chat</h3>
                   <p className="text-sm">{sessionLoadError}</p>
                 </div>
                 <button

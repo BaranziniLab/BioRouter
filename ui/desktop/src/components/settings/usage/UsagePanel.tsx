@@ -397,7 +397,7 @@ export function UsageReport({ summary, dayRows, modelRows }: UsagePanelProps) {
           <div>
             <h3 className="text-sm font-medium text-text-default">Month to date</h3>
             <p className="mt-0.5 text-supporting text-text-muted">
-              Billed usage recorded across all conversations
+              Billed usage recorded across all chats
             </p>
           </div>
           <Badge tone="accent" className="px-2 py-1 tabular-nums">

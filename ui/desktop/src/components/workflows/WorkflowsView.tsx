@@ -637,7 +637,7 @@ export default function WorkflowsView() {
         <EmptyState
           icon={WorkflowIcon}
           title="No workflows yet"
-          description="Create a reusable workflow here, save one from a conversation, or import an existing workflow."
+          description="Create a reusable workflow here, save one from a chat, or import an existing workflow."
           actions={
             <>
               <Button onClick={() => setShowCreateDialog(true)}>
@@ -685,7 +685,7 @@ export default function WorkflowsView() {
             <ReadableContent className="px-8 pt-12 pb-6">
               <h1 className="text-title mb-1 page-transition">Workflows</h1>
               <p className="text-body text-text-muted mb-0">
-                View and manage your saved workflows to quickly start new sessions with predefined
+                View and manage your saved workflows to quickly start new chats with predefined
                 configurations. {getSearchShortcutText()} to search.
               </p>
               <div className="flex gap-3 mt-5">

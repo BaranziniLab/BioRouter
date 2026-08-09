@@ -210,7 +210,7 @@ export default function ExtensionsSection({
       toastService.success(
         {
           title: 'Workspace Control enabled',
-          msg: 'Chat Recall pairs with it: Workspace reads and steers live conversations, Chat Recall searches past ones. Turn it on under Settings → Chat → Capabilities.',
+          msg: 'Chat Recall pairs with it: Workspace reads and steers live chats, Chat Recall searches past ones. Turn it on under Settings → Chat → Capabilities.',
         },
         // No auto-close: this is a once-per-install prompt whose flag is burned
         // as soon as it is shown, so the shared 3s default would let decision

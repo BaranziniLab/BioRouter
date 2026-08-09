@@ -23,7 +23,7 @@ const BRSDK_TOGGLES: BrsdkToggleMeta[] = [
     key: 'brsdk_pii_guardrail',
     label: 'PII / PHI guardrail',
     description:
-      'Mask personal and health information before an app message reaches the model or conversation.',
+      'Mask personal and health information before an app message reaches the model or chat.',
   },
   {
     key: 'brsdk_llm_guardrails',

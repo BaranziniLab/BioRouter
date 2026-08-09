@@ -65,7 +65,7 @@ describe('TitlebarControls', () => {
     expect(screen.getByTestId('titlebar-new-window')).toBeInTheDocument();
     expect(screen.getByTestId('titlebar-new-window')).toHaveAttribute(
       'title',
-      'Start a new session in a new window'
+      'Start a new chat in a new window'
     );
   });
 

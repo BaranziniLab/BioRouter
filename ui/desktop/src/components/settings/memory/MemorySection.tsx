@@ -39,8 +39,8 @@ const scopeNoun = (scope: MemoryScope) => (scope === 'global' ? 'global' : 'loca
 /** Who can read a store. This is the sentence the whole section exists to make. */
 const scopeAudience = (scope: MemoryScope) =>
   scope === 'global'
-    ? 'every conversation on this computer, in any project'
-    : 'every conversation opened in this project';
+    ? 'every chat on this computer, in any project'
+    : 'every chat opened in this project';
 
 const plural = (n: number, noun: string) => `${n} ${noun}${n === 1 ? '' : 's'}`;
 
@@ -209,9 +209,9 @@ export default function MemorySection() {
         <div className="min-w-0">
           <h2 className="mb-1 text-caps text-text-muted">Memory</h2>
           <p className="max-w-2xl text-xs leading-5 text-text-muted">
-            What Biorouter has been asked to remember, and everything it can disclose when a
-            conversation asks to read it. Global memories are shared by every conversation on this
-            computer; local ones stay in the project they were saved in. Deleting is permanent.
+            What Biorouter has been asked to remember, and everything it can disclose when a chat
+            asks to read it. Global memories are shared by every chat on this computer; local ones
+            stay in the project they were saved in. Deleting is permanent.
           </p>
         </div>
         <Button type="button" size="xs" variant="ghost" onClick={() => void load()}>
@@ -238,7 +238,7 @@ export default function MemorySection() {
           <StoreBlock
             store={global}
             icon={<Globe className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />}
-            heading="Global: shared by every conversation on this computer"
+            heading="Global: shared by every chat on this computer"
             expanded={expanded}
             onToggle={toggle}
             onDeleteCategory={(category) =>
@@ -253,7 +253,7 @@ export default function MemorySection() {
             <StoreBlock
               store={local}
               icon={<Folder className="h-3.5 w-3.5 text-text-muted" aria-hidden="true" />}
-              heading="This project: only conversations opened here"
+              heading="This project: only chats opened here"
               expanded={expanded}
               onToggle={toggle}
               onDeleteCategory={(category) =>

@@ -61,12 +61,12 @@ const settingsItem: NavigationItem = {
  * which 288px was nine nav rows. On a 720p window more than half the rail was
  * spent before any history showed.
  *
- * **Home** is first, because it is where the rail RETURNS you; **New Session** is
+ * **Home** is first, because it is where the rail RETURNS you; **New chat** is
  * beneath it, because it is the one thing the rail DOES. Everything else is a
  * place you go occasionally, and those live behind one `Components` disclosure —
  * one click away, keeping their real icons, indented rather than shrunk.
  *
- * Order is load-bearing and was reversed from what shipped: New Session used to
+ * Order is load-bearing and was reversed from what shipped: New chat used to
  * sit above Home, which put an action in the position the eye reads as "the top
  * of the map".
  */
@@ -81,24 +81,25 @@ const primaryItems: NavigationItem[] = [
   {
     type: 'item',
     path: '/pair',
-    label: 'New Session',
+    label: 'New chat',
     icon: Plus,
-    tooltip: 'Start a new session',
+    tooltip: 'Start a new chat',
   },
 ];
 
 /**
  * The six-or-seven destinations behind the `Components` disclosure.
  *
- * ⚠ `/apps` ("Apps") and `/applications` ("Applications") are two rows a user
- * cannot tell apart, and they are not the same list: `/applications` shows apps
- * you BUILT with Agent Drafter (`GET /apps`), while `/apps` shows apps ADVERTISED
- * by installed extensions (`GET /agent/list_apps`). §4.1 resolves this by folding
- * the second into the first as a section — but that is a change to the
- * Applications VIEW, which belongs to the views phase and to another steward.
+ * ⚠ `/applications` and `/apps` are two rows that used to read "Applications"
+ * and "Apps", one word apart, and they are not the same list: `/applications`
+ * shows apps you BUILT with Agent Drafter (`GET /apps`), while `/apps` shows
+ * apps ADVERTISED by installed extensions (`GET /agent/list_apps`). They are
+ * now labelled by their SOURCE ("Built apps" and "MCP apps"), so the two names
+ * differ in the word that carries the difference rather than in a suffix.
+ * §4.1 would go further and fold the second into the first as a section, but
+ * that is a change to the Built-apps VIEW and belongs to the views phase.
  * Recorded here so that phase inherits the observation. Until then `/apps`
- * remains conditional (`hasApps`), which is what already keeps most users from
- * ever seeing the collision.
+ * remains conditional (`hasApps`).
  */
 const componentItems: NavigationItem[] = [
   {
@@ -139,16 +140,16 @@ const componentItems: NavigationItem[] = [
   {
     type: 'item' as const,
     path: '/applications',
-    label: 'Applications',
+    label: 'Built apps',
     icon: ENTITY_ICONS.application,
-    tooltip: 'Biorouter apps you built with Agent Drafter',
+    tooltip: 'Apps you built with Agent Drafter',
   },
   {
     type: 'item',
     path: '/apps',
-    label: 'Apps',
+    label: 'MCP apps',
     icon: ENTITY_ICONS.mcpApp,
-    tooltip: 'Browse and launch MCP apps',
+    tooltip: 'Apps your installed extensions provide',
   },
 ];
 

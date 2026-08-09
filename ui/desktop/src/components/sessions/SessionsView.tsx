@@ -29,7 +29,7 @@ const SessionsView: React.FC = () => {
       setSelectedSession(response.data);
     } catch (err) {
       console.error(`Failed to load session details for ${sessionId}:`, err);
-      setError('Could not load session details. Try again.');
+      setError('Could not load this chat. Try again.');
       // Keep the selected session null if there's an error
       setSelectedSession(null);
       setShowSessionHistory(false);

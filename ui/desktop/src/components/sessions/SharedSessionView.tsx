@@ -44,11 +44,11 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
         <div className="biorouter-page-header -mx-8 mb-6 flex items-center px-8 py-4">
           <div className="flex items-center text-text-muted">
             <Share2 className="w-5 h-5 mr-2" />
-            <span className="text-label">Shared Session</span>
+            <span className="text-label">Shared chat</span>
           </div>
         </div>
 
-        <SessionHeader title={session ? session.description : 'Shared Session'}>
+        <SessionHeader title={session ? session.description : 'Shared chat'}>
           <div className="flex flex-col">
             {!isLoading && session && session.messages.length > 0 ? (
               <>
@@ -81,7 +81,7 @@ const SharedSessionView: React.FC<SharedSessionViewProps> = ({
             ) : (
               <div className="flex items-center text-secondary text-text-muted">
                 <LoaderCircle className="w-4 h-4 mr-2 animate-spin" />
-                <span>Loading session details...</span>
+                <span>Loading chat details...</span>
               </div>
             )}
           </div>

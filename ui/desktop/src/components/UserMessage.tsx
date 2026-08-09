@@ -310,8 +310,8 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
             )}
             <div className="flex justify-between items-center gap-3 mt-3">
               <div className="text-supporting text-text-muted min-w-0">
-                <span className="font-semibold">Edit in Place</span> updates this session •{' '}
-                <span className="font-semibold">Diverge Session</span> creates a new session
+                <span className="font-semibold">Edit in place</span> updates this chat •{' '}
+                <span className="font-semibold">Diverge</span> creates a new one
               </div>
               <div className="flex shrink-0 gap-2">
                 <Button onClick={handleCancel} variant="ghost" aria-label="Cancel editing">
@@ -321,16 +321,16 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                   onClick={() => handleSave('edit')}
                   variant="secondary"
                   aria-label="Edit message in place"
-                  title="Update the message in this session"
+                  title="Update the message in this chat"
                 >
-                  Edit in Place
+                  Edit in place
                 </Button>
                 <Button
                   onClick={() => handleSave('diverge')}
-                  aria-label="Diverge session with edited message"
-                  title="Create a new session with the edited message"
+                  aria-label="Diverge with the edited message"
+                  title="Create a new chat from the edited message"
                 >
-                  Diverge Session
+                  Diverge
                 </Button>
               </div>
             </div>

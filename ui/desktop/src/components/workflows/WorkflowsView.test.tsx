@@ -103,7 +103,7 @@ describe('WorkflowsView loading transition', () => {
     const emptyState = title.closest('section');
 
     expect(emptyState).toHaveAccessibleDescription(
-      'Create a reusable workflow here, save one from a conversation, or import an existing workflow.'
+      'Create a reusable workflow here, save one from a chat, or import an existing workflow.'
     );
     expect(screen.getByRole('button', { name: 'Create workflow' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Import workflow' })).toBeInTheDocument();

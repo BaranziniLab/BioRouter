@@ -42,18 +42,14 @@ export async function openSharedSessionFromDeepLink(
           if (config.enabled && config.baseUrl) {
             baseUrl = config.baseUrl;
           } else {
-            throw new Error(
-              'Session sharing is not enabled or base URL is not configured. Check the settings page.'
-            );
+            throw new Error('Chat sharing is off, or its base URL is missing.');
           }
         } catch (error) {
           console.error('Error parsing session sharing config:', error);
-          throw new Error(
-            'Session sharing is not enabled or base URL is not configured. Check the settings page.'
-          );
+          throw new Error('Chat sharing is off, or its base URL is missing.');
         }
       } else {
-        throw new Error('Session sharing is not configured');
+        throw new Error('Chat sharing is not configured');
       }
     }
 
@@ -69,7 +65,7 @@ export async function openSharedSessionFromDeepLink(
 
     return sessionDetails;
   } catch (error) {
-    const errorMessage = `Failed to open shared session: ${error instanceof Error ? error.message : 'Unknown error'}`;
+    const errorMessage = `Failed to open the shared chat: ${error instanceof Error ? error.message : 'Unknown error'}`;
     console.error(errorMessage);
 
     // Navigate to the shared session view with the error instead of throwing

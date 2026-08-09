@@ -78,10 +78,8 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
     <Dialog open={isOpen} onOpenChange={(open) => !open && !isSubmitting && handleClose()}>
       <DialogContent dismissible={!isSubmitting} className="sm:max-w-[480px]">
         <DialogHeader>
-          <DialogTitle>Import Session</DialogTitle>
-          <DialogDescription>
-            Drag and drop a session JSON file, or click to browse.
-          </DialogDescription>
+          <DialogTitle>Import chat</DialogTitle>
+          <DialogDescription>Drag and drop a chat JSON file, or click to browse.</DialogDescription>
         </DialogHeader>
 
         <div

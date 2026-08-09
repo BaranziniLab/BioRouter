@@ -49,7 +49,7 @@ export async function loadSession(sessionId: string, forceRefresh = false): Prom
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => 'Unknown error');
-        throw new Error(`Failed to load session: HTTP ${response.status} - ${errorText}`);
+        throw new Error(`Could not load this chat: HTTP ${response.status} - ${errorText}`);
       }
 
       const session: Session = await response.json();
@@ -58,9 +58,9 @@ export async function loadSession(sessionId: string, forceRefresh = false): Prom
       return session;
     } catch (error) {
       if (error instanceof Error) {
-        throw new Error(`Error loading session ${sessionId}: ${error.message}`);
+        throw new Error(`Could not load chat ${sessionId}: ${error.message}`);
       }
-      throw new Error(`Error loading session ${sessionId}: Unknown error`);
+      throw new Error(`Could not load chat ${sessionId}: Unknown error`);
     } finally {
       inFlightRequests.delete(sessionId);
     }

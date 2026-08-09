@@ -374,7 +374,7 @@ export default function CreateEditWorkflowModal({
             <DialogTitle>{isCreateMode ? 'Create Workflow' : 'Edit Workflow'}</DialogTitle>
             <p className="text-supporting text-text-muted mt-0.5">
               {isCreateMode
-                ? 'Define agent behavior and capabilities for reusable chat sessions.'
+                ? 'Define agent behavior and capabilities for reusable chats.'
                 : 'Edit the workflow to change agent behavior.'}{' '}
               <a
                 href="http://biorouter.ucsf.edu/docs"

@@ -200,8 +200,8 @@ export function IngestModelPicker({
           <DialogHeader className="px-6 pb-3 pt-6">
             <DialogTitle>Choose knowledge model</DialogTitle>
             <DialogDescription>
-              This model digests staged sources and scheduled knowledge curation. Conversation
-              replies still use the model selected in the chat composer.
+              This model digests staged sources and scheduled knowledge curation. Chat replies still
+              use the model selected in the chat composer.
             </DialogDescription>
           </DialogHeader>
 

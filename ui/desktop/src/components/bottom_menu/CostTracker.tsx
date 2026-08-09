@@ -84,8 +84,8 @@ function CostTrigger({ estimate, currency = '$' }: { estimate: CostEstimate; cur
         className={COST_TRIGGER_CLASS}
         aria-label={
           estimate.amount === null
-            ? 'Session cost unavailable'
-            : `${estimate.partial ? 'Estimated session total' : 'Session cost'} ${label}`
+            ? 'Chat cost unavailable'
+            : `${estimate.partial ? 'Estimated chat total' : 'Chat cost'} ${label}`
         }
       >
         {label}

@@ -68,13 +68,13 @@ describe('InAppTerminalDock', () => {
 
     render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
 
-    const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
+    const tabList = screen.getByRole('tablist', { name: /^terminals$/i });
     expect(tabList).toBeInTheDocument();
     expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter');
     expect(document.querySelector('[data-terminal-pane]')).not.toHaveClass('hidden');
     expect(document.querySelector('[data-terminal-pane]')).not.toHaveClass('invisible');
 
-    await user.click(screen.getByRole('button', { name: /new terminal session/i }));
+    await user.click(screen.getByRole('button', { name: /new terminal/i }));
 
     await waitFor(() => {
       expect(screen.getAllByRole('tab')).toHaveLength(2);
@@ -88,7 +88,7 @@ describe('InAppTerminalDock', () => {
 
     render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={onClose} />);
 
-    await user.click(screen.getByRole('button', { name: /new terminal session/i }));
+    await user.click(screen.getByRole('button', { name: /new terminal/i }));
     await waitFor(() => {
       expect(screen.getAllByRole('tab')).toHaveLength(2);
     });
@@ -153,7 +153,7 @@ describe('InAppTerminalDock', () => {
 
     render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
 
-    const addButton = await screen.findByRole('button', { name: /new terminal session/i });
+    const addButton = await screen.findByRole('button', { name: /new terminal/i });
     for (let index = 1; index < MAX_TERMINAL_PANES; index += 1) {
       await user.click(addButton);
     }
@@ -162,9 +162,7 @@ describe('InAppTerminalDock', () => {
       expect(screen.getAllByRole('tab')).toHaveLength(MAX_TERMINAL_PANES);
     });
     expect(addButton).toBeDisabled();
-    expect(screen.getByRole('tablist', { name: /terminal sessions/i })).toHaveClass(
-      'overflow-x-auto'
-    );
+    expect(screen.getByRole('tablist', { name: /^terminals$/i })).toHaveClass('overflow-x-auto');
   });
 
   // Issue #21 — the Cmd+W ladder's first rung. The keystroke never reaches the
@@ -186,7 +184,7 @@ describe('InAppTerminalDock', () => {
         />
       );
 
-      await user.click(await screen.findByRole('button', { name: /new terminal session/i }));
+      await user.click(await screen.findByRole('button', { name: /new terminal/i }));
       await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(2));
       // The newest pane is the active one — precisely the pane Cmd+W must take.
       expect(screen.getByRole('tab', { selected: true })).toHaveTextContent('biorouter 2');
@@ -286,8 +284,8 @@ describe('InAppTerminalDock', () => {
     const user = userEvent.setup();
     render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
 
-    const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
-    const addButton = await screen.findByRole('button', { name: /new terminal session/i });
+    const tabList = screen.getByRole('tablist', { name: /^terminals$/i });
+    const addButton = await screen.findByRole('button', { name: /new terminal/i });
 
     // Inside the scrolling tab strip (not a right-hand toolbar).
     expect(tabList.contains(addButton)).toBe(true);
@@ -312,7 +310,7 @@ describe('InAppTerminalDock', () => {
 
     render(<InAppTerminalDock open workingDir="/Users/wgu/Desktop/biorouter" onClose={vi.fn()} />);
 
-    const tabList = screen.getByRole('tablist', { name: /terminal sessions/i });
+    const tabList = screen.getByRole('tablist', { name: /^terminals$/i });
     const strip = tabList.closest('.br-tabstrip') as HTMLElement;
     expect(strip).not.toBeNull();
     expect(strip).toHaveClass('br-tabstrip--sm');
@@ -320,7 +318,7 @@ describe('InAppTerminalDock', () => {
     // class. Overriding any of them locally is what this guards against.
     expect(strip.className).not.toMatch(/bg-background|border-b|px-|gap-/);
 
-    await user.click(screen.getByRole('button', { name: /new terminal session/i }));
+    await user.click(screen.getByRole('button', { name: /new terminal/i }));
     await waitFor(() => {
       expect(screen.getAllByRole('tab')).toHaveLength(2);
     });

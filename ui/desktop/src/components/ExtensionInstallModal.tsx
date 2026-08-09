@@ -132,7 +132,7 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
       case 'untrusted': {
         return {
           title: `Install untrusted extension ${name}?`,
-          message: `This extension command is not in the allowed list. Once installed it can read your conversations.\n\n${remoteUrl ? `URL: ${remoteUrl}` : `Command: ${command}`}\n\nInstalling extensions from untrusted sources may pose security risks. Contact your administrator if you are unsure about this.`,
+          message: `This extension command is not in the allowed list. Once installed it can read your chats.\n\n${remoteUrl ? `URL: ${remoteUrl}` : `Command: ${command}`}\n\nInstalling extensions from untrusted sources may pose security risks. Contact your administrator if you are unsure about this.`,
           confirmLabel: 'Install anyway',
           cancelLabel: 'Cancel',
           showSingleButton: false,
@@ -172,8 +172,8 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
         console.log(`Extension Already Installed: ${extName}`);
 
         toastService.success({
-          title: `Extension '${extName}' Already Installed`,
-          msg: `'${extName}' is already installed. Start a new chat session to use it.`,
+          title: `Extension '${extName}' already installed`,
+          msg: `'${extName}' is already installed. Start a new chat to use it.`,
         });
         return;
       }

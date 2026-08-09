@@ -26,7 +26,7 @@ describe('SearchBar', () => {
     const onSearch = vi.fn();
     render(<SearchBar onSearch={onSearch} onClose={vi.fn()} />);
 
-    fireEvent.change(screen.getByPlaceholderText('Search conversation...'), {
+    fireEvent.change(screen.getByPlaceholderText('Search chat...'), {
       target: { value: 'agent' },
     });
 

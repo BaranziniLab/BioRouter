@@ -403,7 +403,7 @@ describe('summarizeToolCall', () => {
       );
 
       expect(screen.getByRole('alert')).toHaveTextContent('Tool details unavailable');
-      expect(screen.getByRole('alert')).toHaveTextContent('The conversation can continue');
+      expect(screen.getByRole('alert')).toHaveTextContent('The chat can continue');
     } finally {
       consoleError.mockRestore();
     }

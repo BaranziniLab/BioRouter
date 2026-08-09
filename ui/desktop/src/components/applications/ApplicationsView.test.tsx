@@ -40,7 +40,7 @@ describe('ApplicationItem', () => {
     const launch = screen.getByRole('button', { name: 'Launch Cohort Explorer in browser' });
     expect(
       screen.getByRole('button', {
-        name: 'Open the conversation where Cohort Explorer was built',
+        name: 'Open the chat where Cohort Explorer was built',
       })
     ).toBeInTheDocument();
     expect(

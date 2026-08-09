@@ -67,7 +67,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
       const data = await getScheduleSessions(sId, 20);
       setSessions(data);
     } catch (err) {
-      setSessionsError(err instanceof Error ? err.message : 'Failed to fetch sessions');
+      setSessionsError(
+        err instanceof Error ? err.message : 'Could not load the chats for this schedule'
+      );
     } finally {
       setIsLoadingSessions(false);
     }
@@ -220,9 +222,9 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
       });
       setSelectedSession(response.data);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Failed to load session';
+      const msg = err instanceof Error ? err.message : 'Could not load this chat';
       setSessionError(msg);
-      toastError({ title: 'Failed to load session', msg });
+      toastError({ title: 'Failed to load chat', msg });
     } finally {
       setIsLoadingSession(false);
     }
@@ -331,7 +333,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                   {/*
                     Issue #56. Without this the only record of a repeatedly
                     failing job is a daemon log line: each run mints a fresh
-                    session, so there is no session to open and read either.
+                    session, so there is no chat to open and read either.
                   */}
                   {scheduleDetails.last_error && (
                     <p className="text-sm text-text-danger break-words">
@@ -341,7 +343,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                   )}
                   {scheduleDetails.currently_running && scheduleDetails.current_session_id && (
                     <p className="text-sm text-text-default">
-                      <span className="font-semibold">Current Session:</span>{' '}
+                      <span className="font-semibold">Current session ID:</span>{' '}
                       {scheduleDetails.current_session_id}
                     </p>
                   )}
@@ -445,18 +447,16 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
 
           <section>
             <h2 className="text-xs font-medium text-text-muted uppercase tracking-wider mb-4">
-              Recent Sessions
+              Recent chats
             </h2>
-            {isLoadingSessions && <p className="text-text-muted">Loading sessions...</p>}
+            {isLoadingSessions && <p className="text-text-muted">Loading chats...</p>}
             {sessionsError && (
               <p className="text-text-danger text-sm p-3 bg-background-danger/10 border border-border-danger/40 rounded-md">
                 Error: {sessionsError}
               </p>
             )}
             {!isLoadingSessions && sessions.length === 0 && (
-              <p className="text-text-muted text-center py-4">
-                No sessions found for this schedule.
-              </p>
+              <p className="text-text-muted text-center py-4">No chats found for this schedule.</p>
             )}
 
             {sessions.length > 0 && (

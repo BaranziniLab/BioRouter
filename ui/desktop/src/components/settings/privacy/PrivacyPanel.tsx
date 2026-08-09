@@ -260,8 +260,7 @@ export default function PrivacyPanel() {
           </p>
           <p className="text-sm text-text-default">
             <strong>
-              While it is off, Biorouter stops recording which conversations touched private
-              material.
+              While it is off, Biorouter stops recording which chats touched private material.
             </strong>
           </p>
           <p className="text-sm text-text-default">

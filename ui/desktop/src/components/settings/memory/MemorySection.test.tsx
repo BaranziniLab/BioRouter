@@ -115,7 +115,7 @@ describe('MemorySection', () => {
     const text = dialog.textContent ?? '';
     expect(text).toContain('clinical');
     expect(text).toContain('2 memories');
-    expect(text.toLowerCase()).toContain('every conversation');
+    expect(text.toLowerCase()).toContain('every chat');
     expect(text.toLowerCase()).toContain('cannot be undone');
     // Nothing is deleted by opening the confirmation.
     expect(mockDeleteCategory).not.toHaveBeenCalled();

@@ -84,7 +84,7 @@ export function TitlebarControls({ hidden, isMacOS, onNewWindow }: TitlebarContr
         variant="ghost"
         size="sm"
         shape="round"
-        title="Start a new session in a new window"
+        title="Start a new chat in a new window"
       >
         <NewWindow className="h-4 w-4" />
       </Button>

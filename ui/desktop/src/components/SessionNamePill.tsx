@@ -129,8 +129,8 @@ export const SessionNamePill: React.FC<Props> = ({
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                aria-label="Conversation title actions"
-                title="Conversation title actions"
+                aria-label="Chat title actions"
+                title="Chat title actions"
                 className="inline-flex h-7 w-6 flex-shrink-0 items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default"
                 style={noDragStyle}
                 onPointerDown={(event) => event.stopPropagation()}

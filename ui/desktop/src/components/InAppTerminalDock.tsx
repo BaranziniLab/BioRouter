@@ -60,7 +60,7 @@ function basename(path?: string) {
 }
 
 function formatCwd(cwd?: string) {
-  if (!cwd) return 'Session terminal';
+  if (!cwd) return 'Chat terminal';
   const home = window.appConfig?.get('BIOROUTER_HOME_DIR') as string | undefined;
   if (home && cwd.startsWith(home)) return cwd.replace(home, '~');
   return cwd;
@@ -456,7 +456,7 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
         <div
           className="flex min-w-0 flex-1 items-center overflow-x-auto"
           role="tablist"
-          aria-label="Terminal sessions"
+          aria-label="Terminals"
         >
           {panes.map((pane) => {
             const active = pane.id === activePaneId;
@@ -504,11 +504,11 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
             onClick={addPane}
             disabled={panes.length >= MAX_TERMINAL_PANES}
             className="br-tab-new ml-0.5 flex h-6 w-6 flex-none items-center justify-center rounded-md text-text-muted transition-colors hover:bg-background-medium hover:text-text-default disabled:pointer-events-none disabled:opacity-40"
-            aria-label="New terminal session"
+            aria-label="New terminal"
             title={
               panes.length >= MAX_TERMINAL_PANES
-                ? `Maximum of ${MAX_TERMINAL_PANES} terminal sessions reached`
-                : 'New terminal session'
+                ? `Maximum of ${MAX_TERMINAL_PANES} terminals reached`
+                : 'New terminal'
             }
           >
             <Plus className="h-4 w-4" />

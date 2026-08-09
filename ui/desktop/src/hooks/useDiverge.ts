@@ -58,7 +58,7 @@ export function useDiverge(): UseDivergeResult {
       truncateAfterId?: string
     ): Promise<string | null> => {
       if (!sessionId) {
-        toastError({ title: 'Diverge failed', msg: 'No active session to diverge.' });
+        toastError({ title: 'Diverge failed', msg: 'No open chat to diverge from.' });
         return null;
       }
       try {
@@ -124,7 +124,7 @@ export function useDiverge(): UseDivergeResult {
               ? err.message
               : typeof err === 'string' && err.trim()
                 ? err
-                : 'Could not branch this conversation.',
+                : 'Could not branch this chat.',
         });
         return null;
       }

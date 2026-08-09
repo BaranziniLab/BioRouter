@@ -84,7 +84,7 @@ function SidebarHarness() {
 }
 
 describe('AppSidebar chat navigation', () => {
-  it('labels the standard navigation action New Session, creates an empty route, and keeps recent history one click away', async () => {
+  it('labels the standard navigation action New chat, creates an empty route, and keeps recent history one click away', async () => {
     render(
       <MemoryRouter initialEntries={['/pair?resumeSessionId=previous-session']}>
         <SidebarHarness />
@@ -92,7 +92,7 @@ describe('AppSidebar chat navigation', () => {
     );
 
     expect(screen.queryByTestId('sidebar-history-button')).toBeNull();
-    const newSessionButton = screen.getByTestId('sidebar-new-session-button');
+    const newSessionButton = screen.getByTestId('sidebar-new-chat-button');
     const homeButton = screen.getByTestId('sidebar-home-button');
     const settingsButton = screen.getByTestId('sidebar-settings-button');
     const wordmark = screen.getByTestId('sidebar-biorouter-wordmark');
@@ -100,7 +100,7 @@ describe('AppSidebar chat navigation', () => {
     const footer = document.querySelector('[data-sidebar="footer"]');
     const primaryMenu = homeButton.closest('[data-sidebar="menu"]');
 
-    expect(newSessionButton).toHaveTextContent('New Session');
+    expect(newSessionButton).toHaveTextContent('New chat');
     expect(newSessionButton).toHaveClass('h-8', 'w-full', 'px-3', 'py-2', 'text-sm');
     expect(newSessionButton).not.toHaveClass(
       'h-9',
@@ -144,7 +144,7 @@ describe('AppSidebar chat navigation', () => {
     expect(homeButton.querySelector('svg')).toHaveClass('h-4', 'w-4');
 
     // Astryx §4.1.3 REVERSED THIS PAIR. Home is first because it is where the
-    // rail returns you; New Session is beneath it because it is the one thing
+    // rail returns you; New chat is beneath it because it is the one thing
     // the rail does. An action in the top slot claims the position the eye reads
     // as "the top of the map".
     expect(wordmark.compareDocumentPosition(homeButton)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
@@ -225,7 +225,7 @@ describe('AppSidebar — the Components disclosure', () => {
   it('collapses by default, so the rail opens with three rows and not nine', () => {
     renderSidebar();
     expect(screen.getByTestId('sidebar-home-button')).toBeInTheDocument();
-    expect(screen.getByTestId('sidebar-new-session-button')).toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-new-chat-button')).toBeInTheDocument();
     expect(screen.getByTestId('sidebar-components-disclosure')).toBeInTheDocument();
     // The six destinations are reachable, not resident.
     expect(screen.queryByTestId('sidebar-components-group')).toBeNull();
@@ -274,19 +274,19 @@ describe('AppSidebar — the Components disclosure', () => {
     mocks.listApps.mockResolvedValue({ data: { apps: [{ id: 'a' }] } });
     renderSidebar();
     fireEvent.click(screen.getByTestId('sidebar-components-disclosure'));
-    expect(await screen.findByTestId('sidebar-apps-button')).toBeInTheDocument();
+    expect(await screen.findByTestId('sidebar-mcp-apps-button')).toBeInTheDocument();
   });
 });
 
 describe('AppSidebar — actions do not stay lit (§4.1.3)', () => {
-  it('never gives New Session the selected wash, even standing on /pair', () => {
+  it('never gives New chat the selected wash, even standing on /pair', () => {
     render(
       <MemoryRouter initialEntries={['/pair']}>
         <SidebarHarness />
       </MemoryRouter>
     );
-    const newSession = screen.getByTestId('sidebar-new-session-button');
-    // A destination keeps the wash because you are still there. New Session
+    const newSession = screen.getByTestId('sidebar-new-chat-button');
+    // A destination keeps the wash because you are still there. New chat
     // fires and the view moves on, so a lit row would claim a location that is
     // no longer true — which is how a two-row rail came to show two selections.
     expect(newSession).toHaveAttribute('data-active', 'false');
@@ -308,7 +308,7 @@ describe('AppSidebar — actions do not stay lit (§4.1.3)', () => {
         <SidebarHarness />
       </MemoryRouter>
     );
-    const newSession = screen.getByTestId('sidebar-new-session-button');
+    const newSession = screen.getByTestId('sidebar-new-chat-button');
 
     newSession.focus();
     // `detail > 0` is the mouse/touch signature.

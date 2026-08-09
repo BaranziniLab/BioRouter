@@ -2473,7 +2473,7 @@ export default function ChatInput({
                     : isAnyDroppedFileLoading
                       ? 'Processing dropped files...'
                       : chatState === ChatState.RestartingAgent
-                        ? 'Restarting session...'
+                        ? 'Restarting chat...'
                         : 'Send'}
                 </p>
               </TooltipContent>

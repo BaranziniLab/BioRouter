@@ -43,7 +43,7 @@ const CLIENT_INSERT_COMMANDS: Record<
     reference: { kind: 'extension', value: 'knowledge', label: undefined },
   },
   diverge: {
-    description: 'Branch this conversation into a new chat with full history. Press Enter',
+    description: 'Branch this chat into a new one with full history. Press Enter',
     insert: '/diverge',
   },
 };

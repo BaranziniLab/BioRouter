@@ -10,7 +10,12 @@ const EnvironmentBadge: React.FC = () => {
     return null;
   }
 
-  const tooltipText = isAlpha ? 'Alpha' : 'Development build';
+  // A coloured dot has no visible label, so this text IS the control's name.
+  // Naming it "Alpha" told the user only what they could already guess from the
+  // colour, so it says what the build means for them instead.
+  const tooltipText = isAlpha
+    ? 'Alpha build: experimental features are on'
+    : 'Development build: running from source, not a release';
   const bgColor = isAlpha ? 'bg-background-info' : 'bg-background-warning';
 
   return (

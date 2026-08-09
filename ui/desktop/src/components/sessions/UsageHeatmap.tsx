@@ -257,7 +257,7 @@ function Tooltip({ cell, anchor }: { cell: Cell; anchor: Anchor }) {
       )}
       {d ? (
         <>
-          <Row label="Sessions started" value={full.format(d.sessions)} />
+          <Row label="Chats started" value={full.format(d.sessions)} />
           <Row label="Tokens processed" value={tokenDisplay(d)} />
           <Row label="Messages" value={full.format(d.messages)} />
           <p className="mt-2 border-t border-border-subtle pt-2 text-supporting leading-snug text-text-subtle">
@@ -456,7 +456,7 @@ export function UsageHeatmap({ window: activity }: { window: ActivityWindow }) {
               onBlur={hide}
               aria-label={
                 cell.day
-                  ? `${cell.key}: ${cell.day.sessions} sessions, ${tokenAria(cell.day)}${cell.inStreak ? ', part of current streak' : ''}`
+                  ? `${cell.key}: ${cell.day.sessions} ${cell.day.sessions === 1 ? 'chat' : 'chats'}, ${tokenAria(cell.day)}${cell.inStreak ? ', part of current streak' : ''}`
                   : `${cell.key}: no activity`
               }
               className={[

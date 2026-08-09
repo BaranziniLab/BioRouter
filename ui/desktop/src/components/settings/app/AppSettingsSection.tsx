@@ -337,7 +337,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 <ol className="list-decimal pl-5 space-y-2">
                   <li>Open System Preferences</li>
                   <li>Click on Notifications</li>
-                  <li>Find and select Biorouter in the application list</li>
+                  <li>Find and select Biorouter in the app list</li>
                   <li>Enable notifications and adjust settings as desired</li>
                 </ol>
               </div>
@@ -347,7 +347,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
                 <ol className="list-decimal pl-5 space-y-2">
                   <li>Open Settings</li>
                   <li>Go to System &gt; Notifications</li>
-                  <li>Find and select Biorouter in the application list</li>
+                  <li>Find and select Biorouter in the app list</li>
                   <li>Toggle notifications on and adjust settings as desired</li>
                 </ol>
               </div>

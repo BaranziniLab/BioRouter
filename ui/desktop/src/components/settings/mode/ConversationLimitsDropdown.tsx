@@ -23,7 +23,7 @@ export const ConversationLimitsDropdown = ({
         onClick={toggleExpanded}
         className="biorouter-settings-row w-full flex items-center justify-between px-3 py-2.5 group"
       >
-        <h3 className="text-text-default">Conversation Limits</h3>
+        <h3 className="text-text-default">Chat limits</h3>
 
         <ChevronDown
           className={`w-4 h-4 text-text-muted transition-transform duration-200 ease-in-out ${

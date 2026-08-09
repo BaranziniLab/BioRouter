@@ -385,7 +385,7 @@ export function AppInner() {
 
   const [chat, setChat] = useState<ChatType>({
     sessionId: '',
-    name: 'Pair Chat',
+    name: 'New chat',
     messages: [],
     workflow: null,
   });

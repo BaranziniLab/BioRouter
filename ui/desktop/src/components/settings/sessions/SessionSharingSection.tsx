@@ -154,11 +154,11 @@ export default function SessionSharingSection() {
     <section id="session-sharing" className="space-y-4 pr-4 mt-1">
       <Card className="pb-2">
         <CardHeader className="pb-0">
-          <CardTitle>Session Sharing</CardTitle>
+          <CardTitle>Chat sharing</CardTitle>
           <CardDescription>
             {(envBaseUrlShare as string)
-              ? 'Session sharing is configured but fully opt-in. Sessions are shared only when you click the share button.'
-              : 'You can enable session sharing to share your sessions with others.'}
+              ? 'Chat sharing is configured but fully opt-in. A chat is shared only when you click the share button.'
+              : 'Turn on chat sharing to share a chat with others.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="px-4 py-2">
@@ -167,8 +167,8 @@ export default function SessionSharingSection() {
             <div className="flex items-center gap-3">
               <label className="text-sm cursor-pointer">
                 {(envBaseUrlShare as string)
-                  ? 'Session sharing has already been configured'
-                  : 'Enable session sharing'}
+                  ? 'Chat sharing has already been configured'
+                  : 'Enable chat sharing'}
               </label>
 
               {envBaseUrlShare ? (

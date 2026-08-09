@@ -118,14 +118,14 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
         await onSave(session.id, trimmedDescription);
         onClose();
         toastSuccess({
-          title: 'Session updated',
+          title: 'Chat updated',
           msg: 'Description saved.',
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
         console.error('Failed to update session description:', errorMessage);
         toastError({
-          title: 'Failed to update session',
+          title: 'Failed to update chat',
           msg: errorMessage,
         });
         setDescription(session.name);
@@ -164,7 +164,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
           dismissible={!isUpdating && !disabled}
           className="w-[500px] max-w-[90vw] sm:max-w-[500px]"
         >
-          <DialogTitle>Edit Session Description</DialogTitle>
+          <DialogTitle>Edit chat description</DialogTitle>
 
           <div className="space-y-4">
             <div>
@@ -174,7 +174,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
                 value={description}
                 onChange={handleInputChange}
                 className="biorouter-modal-panel w-full p-3 rounded-element text-body text-text-default"
-                placeholder="Enter session description"
+                placeholder="Enter chat description"
                 autoFocus
                 maxLength={200}
                 onKeyDown={handleKeyDown}
@@ -403,7 +403,7 @@ const SessionItem = React.memo(function SessionItem({
         type="button"
         onClick={handleCardClick}
         className="flex-1 min-w-0 cursor-pointer rounded-inner text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-border-focus"
-        aria-label={`Open session ${session.name}`}
+        aria-label={`Open chat ${session.name}`}
       >
         {/* This row's SessionItem SHADOWS the exported
             components/sessions/SessionItem.tsx — same name, different
@@ -471,7 +471,7 @@ const SessionItem = React.memo(function SessionItem({
               className="flex items-center gap-2"
               title={
                 billedTokenEstimate.lowerBound
-                  ? 'At least this many tokens; only last-turn usage is available for this legacy session'
+                  ? 'At least this many tokens; only last-turn usage is available for this older chat'
                   : 'Billed tokens across every turn, including recorded cache usage'
               }
             >
@@ -524,7 +524,7 @@ const SessionItem = React.memo(function SessionItem({
                 <Edit2 className="w-4 h-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">Edit session name</TooltipContent>
+            <TooltipContent side="top">Edit chat name</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>
@@ -537,7 +537,7 @@ const SessionItem = React.memo(function SessionItem({
                 <Download className="w-4 h-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent side="top">Export session</TooltipContent>
+            <TooltipContent side="top">Export chat</TooltipContent>
           </Tooltip>
           <DropdownMenu>
             <Tooltip>
@@ -593,7 +593,7 @@ const SessionItem = React.memo(function SessionItem({
                 aria-label={`Delete ${session.name}`}
               >
                 <Trash2 className="w-4 h-4" />
-                Delete session
+                Delete chat
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -764,7 +764,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       } catch (err) {
         console.error('Failed to load sessions:', err);
         if (!hasCachedSessions) {
-          setError('Failed to load sessions. Please try again later.');
+          setError('Could not load your chats. Try again in a moment.');
           setSessions([]);
           setFilteredSessions([]);
         }
@@ -957,14 +957,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         updateCachedSessionList(removeDeletedSession);
         setSessions(removeDeletedSession);
         toastSuccess({
-          title: 'Session deleted',
+          title: 'Chat deleted',
           msg: `"${sessionName}" was removed from chat history.`,
         });
       } catch (error) {
         console.error('Error deleting session:', error);
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         toastError({
-          title: 'Failed to delete session',
+          title: 'Failed to delete chat',
           msg: `Could not delete "${sessionName}": ${errorMessage}`,
         });
       }
@@ -995,8 +995,8 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
       toastSuccess({
-        title: 'Session exported',
-        msg: `"${session.name}" was downloaded successfully.`,
+        title: 'Chat exported',
+        msg: `"${session.name}" was downloaded.`,
       });
     }, []);
 
@@ -1008,8 +1008,8 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
       async (json: string) => {
         await importSession({ body: { json }, throwOnError: true });
         toastSuccess({
-          title: 'Session imported',
-          msg: 'The imported session is now available in chat history.',
+          title: 'Chat imported',
+          msg: 'The imported chat is now available in chat history.',
         });
         await loadSessions();
       },
@@ -1076,14 +1076,14 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         return (
           <EmptyState
             icon={MessageSquareText}
-            title="No conversations yet"
-            description="Past conversations will appear here after you start chatting. You can also import an existing session."
+            title="No chats yet"
+            description="Past chats will appear here after you start chatting. You can also import an existing chat."
             actions={
               <>
                 <Button onClick={() => navigate('/pair')}>Start a chat</Button>
                 <Button onClick={handleImportClick} variant="outline">
                   <Upload className="h-4 w-4" />
-                  Import session
+                  Import chat
                 </Button>
               </>
             }
@@ -1095,7 +1095,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
         return (
           <EmptyState
             icon={MessageSquareText}
-            title="No matching conversations"
+            title="No matching chats"
             description="Try a different name, folder, or session ID."
             compact
           />
@@ -1162,7 +1162,7 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
             <div className="flex justify-center py-8">
               <div className="flex items-center gap-2 text-secondary text-text-muted">
                 <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
-                <span>Loading more sessions...</span>
+                <span>Loading more chats...</span>
               </div>
             </div>
           )}
@@ -1189,12 +1189,12 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
                     className="flex flex-shrink-0 items-center gap-2"
                   >
                     <Upload className="w-4 h-4" />
-                    Import Session
+                    Import chat
                   </Button>
                 </div>
                 <p className="text-secondary text-text-muted">
-                  View and search your past conversations with Biorouter. {getSearchShortcutText()}{' '}
-                  to search.
+                  View and search your past chats with Biorouter. {getSearchShortcutText()} to
+                  search.
                 </p>
                 {/* §3.3's checkbox, not the OS one. A bare `<input
                     type="checkbox">` here rendered as macOS system blue in light
@@ -1264,9 +1264,9 @@ const SessionListView: React.FC<SessionListViewProps> = React.memo(
 
         <ConfirmationModal
           isOpen={showDeleteConfirmation}
-          title="Delete Session"
-          message={`Are you sure you want to delete the session "${sessionToDelete?.name}"? This action cannot be undone.`}
-          confirmLabel="Delete Session"
+          title="Delete chat?"
+          message={`Are you sure you want to delete the chat "${sessionToDelete?.name}"? This action cannot be undone.`}
+          confirmLabel="Delete"
           cancelLabel="Cancel"
           confirmVariant="destructive"
           onConfirm={handleConfirmDelete}

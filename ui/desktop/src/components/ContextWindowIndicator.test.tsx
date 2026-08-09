@@ -87,7 +87,7 @@ describe('ContextWindowGauge compaction control', () => {
       />
     );
 
-    const button = screen.getByRole('button', { name: 'Compact conversation' });
+    const button = screen.getByRole('button', { name: 'Compact chat' });
     await user.click(button);
     expect(onCompact).toHaveBeenCalledTimes(1);
   });

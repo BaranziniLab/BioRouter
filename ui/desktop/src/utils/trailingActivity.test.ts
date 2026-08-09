@@ -152,7 +152,7 @@ describe('deriveTrailingActivity', () => {
     });
 
     expect(activity?.phase).toBe('compacting');
-    expect(activity?.label).toBe('Compacting the conversation');
+    expect(activity?.label).toBe('Compacting the chat');
   });
 
   it('falls back to the turn start when no message event has landed yet', () => {

@@ -158,7 +158,7 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="ghost"
                 shape="round"
-                title={job.paused ? 'Resume' : 'Pause'}
+                title={job.paused ? 'Resume this schedule' : 'Pause this schedule'}
                 aria-label={`${job.paused ? 'Resume' : 'Pause'} ${scheduleDisplayName(job.id)}`}
               >
                 {job.paused ? <Play className="w-4 h-4" /> : <Pause className="w-4 h-4" />}

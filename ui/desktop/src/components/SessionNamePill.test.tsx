@@ -12,7 +12,7 @@ describe('session title controls', () => {
     await user.click(screen.getByText('Weather summary website'));
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /conversation title actions/i }));
+    await user.click(screen.getByRole('button', { name: /chat title actions/i }));
     await user.click(await screen.findByRole('menuitem', { name: 'Rename' }));
     expect(screen.getByRole('textbox')).toHaveValue('Weather summary website');
   });
@@ -38,7 +38,7 @@ describe('session title controls', () => {
       />
     );
 
-    await user.click(screen.getByRole('button', { name: /conversation title actions/i }));
+    await user.click(screen.getByRole('button', { name: /chat title actions/i }));
     await user.click(await screen.findByRole('menuitem', { name: 'Diverge' }));
 
     expect(onDiverge).toHaveBeenCalledTimes(1);
@@ -58,7 +58,7 @@ describe('session title controls', () => {
     // Asserted with the menu OPEN: a closed Radix menu renders no items, so the
     // same expectation on an unopened menu would pass against an implementation
     // that does put the action here.
-    await user.click(screen.getByRole('button', { name: /conversation title actions/i }));
+    await user.click(screen.getByRole('button', { name: /chat title actions/i }));
     await screen.findByRole('menuitem', { name: 'Rename' });
     expect(screen.queryByText(/Make this chat public/)).toBeNull();
   });

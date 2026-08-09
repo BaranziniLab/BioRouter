@@ -103,9 +103,11 @@ export function BottomMenuReasoningEffort() {
             </button>
           </PopoverTrigger>
         </TooltipTrigger>
-        <TooltipContent side="top">
-          Reasoning effort: {REASONING_EFFORT_LABELS[effort]}
-        </TooltipContent>
+        {/* Not the effort name again: the bars carry it, the word beside them
+            carries it whenever it is not the default, and the aria-label
+            carries it for a screen reader. The tooltip says what the control
+            is FOR instead. */}
+        <TooltipContent side="top">How hard to think on the next message</TooltipContent>
       </Tooltip>
       <PopoverContent side="top" align="center" className="w-64 p-0">
         <div className="border-b border-border-subtle px-3 py-2.5">

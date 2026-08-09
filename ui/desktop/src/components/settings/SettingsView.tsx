@@ -85,7 +85,7 @@ export default function SettingsView({
             <ReadableContent className="px-8 pt-12 pb-6">
               <h1 className="text-title mb-1 page-transition">Settings</h1>
               <p className="text-secondary text-text-muted">
-                Manage models, chat behavior, and application preferences
+                Manage models, chat behavior, and app preferences
               </p>
             </ReadableContent>
           </div>

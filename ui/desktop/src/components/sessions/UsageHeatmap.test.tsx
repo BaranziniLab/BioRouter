@@ -66,9 +66,9 @@ describe('UsageHeatmap', () => {
     render(
       <UsageHeatmap window={windowOf({ days: [day('2026-03-02', 4), day('2026-03-05', 1)] })} />
     );
-    const busy = screen.getByLabelText(/2026-03-02: 1 sessions, 1000 tokens/);
+    const busy = screen.getByLabelText(/2026-03-02: 1 chat, 1000 tokens/);
     expect(busy.className).toContain('bg-heat-4');
-    const quiet = screen.getByLabelText(/2026-03-05: 1 sessions, 1000 tokens/);
+    const quiet = screen.getByLabelText(/2026-03-05: 1 chat, 1000 tokens/);
     expect(quiet.className).toContain('bg-heat-1');
     const idle = screen.getByLabelText('2026-03-03: no activity');
     expect(idle.className).toContain('bg-heat-0');
@@ -86,7 +86,7 @@ describe('UsageHeatmap', () => {
     const tip = screen.getByRole('tooltip');
     expect(tip).toHaveTextContent('Mar 2, 2026');
     expect(tip).toHaveTextContent('128,402');
-    expect(tip).toHaveTextContent('Sessions started');
+    expect(tip).toHaveTextContent('Chats started');
 
     fireEvent.mouseLeave(screen.getByLabelText(/2026-03-02/));
     expect(screen.queryByRole('tooltip')).toBeNull();
@@ -106,7 +106,7 @@ describe('UsageHeatmap', () => {
     expect(screen.getByText(/Highest recorded estimate/)).toHaveTextContent(
       'Highest recorded estimate · 128.4K tokens'
     );
-    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, 128402 estimated tokens/);
+    const cell = screen.getByLabelText(/2026-03-02: 3 chats, 128402 estimated tokens/);
     fireEvent.mouseEnter(cell);
     expect(screen.getByRole('tooltip')).toHaveTextContent('128,402');
     expect(screen.getByRole('tooltip')).toHaveTextContent('Conservative estimate');
@@ -125,7 +125,7 @@ describe('UsageHeatmap', () => {
     );
 
     expect(screen.getByText('Token totals unavailable for older activity')).toBeInTheDocument();
-    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, token total unavailable/);
+    const cell = screen.getByLabelText(/2026-03-02: 3 chats, token total unavailable/);
     fireEvent.mouseEnter(cell);
     expect(screen.getByRole('tooltip')).toHaveTextContent('Tokens processedUnavailable');
     expect(screen.getByRole('tooltip')).toHaveTextContent('exact total cannot be shown');
@@ -141,7 +141,7 @@ describe('UsageHeatmap', () => {
       />
     );
 
-    const cell = screen.getByLabelText(/2026-03-02: 3 sessions, 42000 tokens/);
+    const cell = screen.getByLabelText(/2026-03-02: 3 chats, 42000 tokens/);
     fireEvent.mouseEnter(cell);
     expect(screen.getByRole('tooltip')).toHaveTextContent('42,000');
     expect(screen.getByRole('tooltip')).not.toHaveTextContent('Conservative estimate');

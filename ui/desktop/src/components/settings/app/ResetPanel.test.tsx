@@ -48,33 +48,33 @@ describe('ResetPanel', () => {
     const resetSelected = screen.getByRole('button', { name: 'Reset selected' });
     expect(resetSelected).toBeDisabled();
     expect(
-      screen.queryByText('Delete every application created with Agent Drafter.')
+      screen.queryByText('Delete every app created with Agent Drafter.')
     ).not.toBeInTheDocument();
 
     const applicationDetails = screen.getByRole('button', {
-      name: 'Show details for Applications',
+      name: 'Show details for Built apps',
     });
     expect(applicationDetails).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(applicationDetails);
     expect(applicationDetails).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText('Delete every application created with Agent Drafter.')).toBeVisible();
+    expect(screen.getByText('Delete every app created with Agent Drafter.')).toBeVisible();
 
     const workflowDetails = screen.getByRole('button', { name: 'Show details for Workflows' });
     fireEvent.click(workflowDetails);
     expect(applicationDetails).toHaveAttribute('aria-expanded', 'false');
     expect(
-      screen.queryByText('Delete every application created with Agent Drafter.')
+      screen.queryByText('Delete every app created with Agent Drafter.')
     ).not.toBeInTheDocument();
     expect(
       screen.getByText('Remove managed workflows and restore the Meditation workflow.')
     ).toBeVisible();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Select Applications for reset' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Select Built apps for reset' }));
     expect(resetSelected).toBeEnabled();
     fireEvent.click(resetSelected);
 
     expect(screen.getByRole('dialog')).toHaveTextContent('Reset selected data?');
-    expect(screen.getByRole('dialog')).toHaveTextContent('Applications');
+    expect(screen.getByRole('dialog')).toHaveTextContent('Built apps');
     expect(screen.getByRole('dialog')).toHaveTextContent(
       'models, provider credentials, theme, and app preferences'
     );
@@ -83,11 +83,9 @@ describe('ResetPanel', () => {
   it('submits only the selected categories and refreshes the preview', async () => {
     const onReset = vi.fn();
     render(<ResetPanel onReset={onReset} />);
-    await screen.findByText('12 conversations');
+    await screen.findByText('12 chats');
 
-    fireEvent.click(
-      screen.getByRole('button', { name: 'Select Conversation & usage history for reset' })
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Select Chat & usage history for reset' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reset selected' }));
     fireEvent.click(
       within(screen.getByRole('dialog')).getByRole('button', { name: 'Reset selected' })

@@ -20,19 +20,22 @@ beforeEach(() => {
 });
 
 describe('UserMessage edit actions', () => {
-  it('uses Diverge Session copy and emits the diverge action', () => {
+  it('uses Diverge copy and emits the diverge action', () => {
     const onMessageUpdate = vi.fn();
     render(<UserMessage message={message} onMessageUpdate={onMessageUpdate} />);
 
     fireEvent.click(screen.getByRole('button', { name: /edit message:/i }));
 
-    expect(screen.getAllByText('Diverge Session')).toHaveLength(2);
-    expect(screen.queryByText('Fork Session')).not.toBeInTheDocument();
+    // Two: the explainer's bolded term and the button itself. 'Diverge
+    // Session' lost the redundant noun with the session/chat rename; 'Fork'
+    // remains the vocabulary this control must never use.
+    expect(screen.getAllByText('Diverge')).toHaveLength(2);
+    expect(screen.queryByText(/Fork/)).not.toBeInTheDocument();
 
     fireEvent.change(screen.getByRole('textbox', { name: 'Edit message content' }), {
       target: { value: 'updated prompt' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Diverge session with edited message' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Diverge with the edited message' }));
 
     expect(onMessageUpdate).toHaveBeenCalledWith('message-1', 'updated prompt', 'diverge');
   });

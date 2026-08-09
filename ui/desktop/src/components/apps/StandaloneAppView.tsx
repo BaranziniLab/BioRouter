@@ -77,7 +77,7 @@ export default function StandaloneAppView() {
       } catch (err) {
         console.error('Failed to initialize session:', err);
         if (!cachedHtml) {
-          setError(err instanceof Error ? err.message : 'Failed to initialize session');
+          setError(err instanceof Error ? err.message : 'Could not start this app.');
           setLoading(false);
         }
       }

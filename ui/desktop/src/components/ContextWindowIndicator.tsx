@@ -277,7 +277,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
                 onCompact();
               }}
               disabled={current === 0}
-              aria-label={current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
+              aria-label={current === 0 ? 'Nothing to compact yet' : 'Compact chat'}
               className={`flex size-control-sm items-center justify-center rounded-element transition-colors ${current === 0 ? 'cursor-not-allowed text-text-muted opacity-50' : 'tint-interactive cursor-pointer text-text-muted hover:text-text-default'}`}
             >
               <ChevronsDownUp data-testid="compact-conversation-icon" className="size-4" />
@@ -285,7 +285,7 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
           </span>
         </TooltipTrigger>
         <TooltipContent side="top">
-          {current === 0 ? 'Nothing to compact yet' : 'Compact conversation'}
+          {current === 0 ? 'Nothing to compact yet' : 'Compact chat'}
         </TooltipContent>
       </Tooltip>
     </div>

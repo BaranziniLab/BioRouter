@@ -122,10 +122,11 @@ export default function AppsView() {
         <div className="bg-background-default px-8 pt-12 pb-6 border-b border-border-subtle">
           <div className="flex flex-col page-transition">
             <div className="flex justify-between items-center mb-1">
-              <h1 className="text-title">Apps</h1>
+              <h1 className="text-title">MCP apps</h1>
             </div>
             <p className="text-body text-text-muted mb-0">
-              Applications from your MCP servers that can run in standalone windows.
+              Apps your installed extensions provide, which can run in standalone windows. Apps you
+              built yourself live under Built apps.
             </p>
           </div>
         </div>

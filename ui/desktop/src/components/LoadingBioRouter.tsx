@@ -6,13 +6,13 @@ interface LoadingBioRouterProps {
 }
 
 const STATE_MESSAGES: Record<ChatState, string> = {
-  [ChatState.LoadingConversation]: 'Loading conversation…',
+  [ChatState.LoadingConversation]: 'Loading chat…',
   [ChatState.Thinking]: 'Biorouter is thinking…',
   [ChatState.Streaming]: 'Biorouter is working on it…',
   [ChatState.WaitingForUserInput]: 'Biorouter is waiting…',
-  [ChatState.Compacting]: 'Biorouter is compacting the conversation…',
+  [ChatState.Compacting]: 'Biorouter is compacting the chat…',
   [ChatState.Idle]: 'Biorouter is working on it…',
-  [ChatState.RestartingAgent]: 'Restarting session…',
+  [ChatState.RestartingAgent]: 'Restarting chat…',
 };
 
 const LoadingBioRouter = ({ message, chatState = ChatState.Idle }: LoadingBioRouterProps) => {

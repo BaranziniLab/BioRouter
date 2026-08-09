@@ -52,7 +52,7 @@ describe('handleCreateSessionError', () => {
     const restore = restoreEventFrom(dispatch);
     expect(restore!.detail).toMatchObject({ value: 'keep me', sessionId: 'sess-1' });
     expect(mockToastError).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Failed to start session' })
+      expect.objectContaining({ title: 'Failed to start chat' })
     );
 
     dispatch.mockRestore();

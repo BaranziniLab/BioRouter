@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { ReactNode } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -154,26 +154,31 @@ describe('SessionListView loading and cache', () => {
     await screen.findByText('Conversation 1');
     expect(screen.getByText('Conversation 16')).toBeInTheDocument();
     expect(screen.queryByText('Conversation 17')).not.toBeInTheDocument();
-    expect(screen.getByText('Loading more sessions...')).toBeInTheDocument();
+    expect(screen.getByText('Loading more chats...')).toBeInTheDocument();
   });
 });
 
 describe('SessionListView empty state', () => {
-  it('explains where conversations appear and offers useful next steps', async () => {
+  it('explains where chats appear and offers useful next steps', async () => {
     render(
       <MemoryRouter>
         <SessionListView onSelectSession={vi.fn()} />
       </MemoryRouter>
     );
 
-    const title = await screen.findByRole('heading', { name: 'No conversations yet' });
+    const title = await screen.findByRole('heading', { name: 'No chats yet' });
     const emptyState = title.closest('section');
 
     expect(emptyState).toHaveAccessibleDescription(
-      'Past conversations will appear here after you start chatting. You can also import an existing session.'
+      'Past chats will appear here after you start chatting. You can also import an existing chat.'
     );
     expect(screen.getByRole('button', { name: 'Start a chat' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Import session' })).toBeInTheDocument();
+    // Scoped: the page header carries an Import chat button too, and both now
+    // share one name because they are one action. Before the rename they were
+    // 'Import Session' and 'Import session', which only differed by case.
+    expect(
+      within(emptyState as HTMLElement).getByRole('button', { name: 'Import chat' })
+    ).toBeInTheDocument();
   });
 });
 
@@ -273,7 +278,7 @@ describe('SessionListView row actions', () => {
 
     await waitFor(() =>
       expect(mocks.toastSuccess).toHaveBeenCalledWith({
-        title: 'Session deleted',
+        title: 'Chat deleted',
         msg: `"${session.name}" was removed from chat history.`,
       })
     );
@@ -492,14 +497,14 @@ describe('SessionListView row actions', () => {
     );
 
     fireEvent.click(await screen.findByRole('button', { name: `Edit ${session.name}` }));
-    fireEvent.change(await screen.findByPlaceholderText('Enter session description'), {
+    fireEvent.change(await screen.findByPlaceholderText('Enter chat description'), {
       target: { value: 'Updated session name' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() =>
       expect(mocks.toastSuccess).toHaveBeenCalledWith({
-        title: 'Session updated',
+        title: 'Chat updated',
         msg: 'Description saved.',
       })
     );

@@ -33,16 +33,16 @@ export async function fetchSharedSessionDetails(
     });
 
     if (!response.ok) {
-      throw new Error(`Failed to fetch shared session: ${response.status} ${response.statusText}`);
+      throw new Error(`Could not load the shared chat: ${response.status} ${response.statusText}`);
     }
 
     const data = await safeJsonParse<SharedSessionDetails>(
       response,
-      'Failed to parse shared session'
+      'Could not read the shared chat'
     );
 
     if (baseUrl != data.base_url) {
-      throw new Error(`Base URL mismatch for shared session: ${baseUrl} != ${data.base_url}`);
+      throw new Error(`Base URL mismatch for the shared chat: ${baseUrl} != ${data.base_url}`);
     }
 
     return {
@@ -96,15 +96,15 @@ export async function createSharedSession(
     if (!response.ok) {
       if (response.status === 302) {
         throw new Error(
-          `Could not create a shared session. Check that you are on the VPN. ${response.status} ${response.statusText}`
+          `Could not create the share link. Check that you are on the VPN. ${response.status} ${response.statusText}`
         );
       }
-      throw new Error(`Failed to create shared session: ${response.status} ${response.statusText}`);
+      throw new Error(`Could not create the share link: ${response.status} ${response.statusText}`);
     }
 
     const data = await safeJsonParse<{ share_token: string }>(
       response,
-      'Failed to parse shared session response'
+      'Could not read the share-link response'
     );
     return data.share_token;
   } catch (error) {

@@ -18,7 +18,7 @@ describe('responsive Sidebar', () => {
       </SidebarProvider>
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Toggle Sidebar' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Toggle sidebar' }));
 
     const drawer = screen.getByRole('dialog');
     expect(drawer).toHaveAttribute('data-mobile', 'true');

@@ -108,7 +108,7 @@ export function deriveTrailingActivity({
   const since = lastMessageAt ?? turnStartedAt;
 
   if (chatState === ChatState.Compacting) {
-    return { phase: 'compacting', label: 'Compacting the conversation', since };
+    return { phase: 'compacting', label: 'Compacting the chat', since };
   }
 
   // (c) THE CASE THIS FEATURE EXISTS FOR: a tool just returned, the model is

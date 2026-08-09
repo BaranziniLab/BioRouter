@@ -114,7 +114,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
       });
       toastService.success({
         title: 'Skill updated',
-        msg: `${displayName} ${newEnabled ? 'enabled' : 'disabled'} for this session`,
+        msg: `${displayName} ${newEnabled ? 'enabled' : 'disabled'} for this chat`,
       });
     },
     [isHubView, persistOverrides, sessionOverrides]
@@ -209,7 +209,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     });
     toastService.success({
       title: 'Skills updated',
-      msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this session`,
+      msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat`,
     });
   }, [isHubView, persistOverrides, sortedEntries, visibleEnabledCount]);
 
