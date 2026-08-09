@@ -215,7 +215,7 @@ fn evaluate_via_helper(app: &std::path::Path, reason: &str) -> Option<MacAuthSig
     let deadline = std::time::Instant::now() + super::system_auth::PROMPT_TIMEOUT;
     while std::time::Instant::now() < deadline {
         match listener.accept() {
-            Ok((mut stream, _)) => {
+            Ok((stream, _)) => {
                 // ⚠ Identify the peer BEFORE reading a word it sent. The socket
                 // is the channel a same-user process would use to forge an
                 // approval, and the nonce alone cannot stop that — anything
