@@ -17,13 +17,14 @@ export interface SkillBundle {
 export const BIOROUTER_SKILLS_DIR = '~/.config/biorouter/skills';
 
 // Skills that ship with Biorouter. The backend re-seeds them on every session
-// start ('about-biorouter', 'develop-biorouter-extension' and
-// 'develop-biorouter-skill' via skills_extension.rs's BUILTIN_SKILLS;
+// start ('about-biorouter', 'develop-biorouter', 'develop-biorouter-extension'
+// and 'develop-biorouter-skill' via skills_extension.rs's BUILTIN_SKILLS;
 // 'update-soul' via knowledge/soul.rs), so deleting their folder has no lasting
 // effect — the UI therefore offers only the enable/disable toggle for them, not
 // deletion.
 export const BUILTIN_SKILL_NAMES = [
   'about-biorouter',
+  'develop-biorouter',
   'develop-biorouter-extension',
   'develop-biorouter-skill',
   'update-soul',

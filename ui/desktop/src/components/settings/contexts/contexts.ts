@@ -31,18 +31,22 @@ export interface ContextMeta {
 }
 
 /**
- * ⚠ Four, not five. "Develop Biorouter" was asked for but does not exist:
- * `BUILTIN_SKILLS` (`skills_extension.rs:22-35`) carries three, plus
- * `update-soul`, which is defined separately as a Rust string in `soul.rs:240`
- * rather than in that array. Adding a fifth later is one entry here plus a
- * `SKILL.md`; inventing one now would have shipped a Context pointing at
- * nothing.
+ * ⚠ Five, and every one of them must exist on the Rust side before it is
+ * listed here: `BUILTIN_SKILLS` (`skills_extension.rs`) carries four, plus
+ * `update-soul`, which is defined separately as a Rust string in `soul.rs`
+ * rather than in that array. A Context whose `SKILL.md` does not ship renders
+ * and toggles while pointing at nothing, so add the skill first.
  */
 export const CONTEXTS: readonly ContextMeta[] = [
   {
     id: 'about-biorouter',
     label: 'About Biorouter',
     description: 'What Biorouter is and how its pieces fit together.',
+  },
+  {
+    id: 'develop-biorouter',
+    label: 'Develop Biorouter',
+    description: 'Work on the Biorouter codebase: layout, commands and checks.',
   },
   {
     id: 'develop-biorouter-extension',

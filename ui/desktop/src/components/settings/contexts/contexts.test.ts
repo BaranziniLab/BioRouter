@@ -9,11 +9,17 @@ describe('contexts', () => {
    * invisible: the Context row would render and toggle, the skill would simply
    * never be filtered out, and the counts this exists to fix would stay wrong.
    * Pinned against the Rust source of truth — `BUILTIN_SKILLS` in
-   * `skills_extension.rs:22-35` plus `SOUL_SKILL_DIR` in `soul.rs:33`.
+   * `skills_extension.rs` plus `SOUL_SKILL_DIR` in `soul.rs`.
+   *
+   * ⚠ Sorted, so `develop-biorouter` sits before its two longer namesakes.
+   * The three are distinct skills, not one with variants: this one is about
+   * changing Biorouter's own source, the others about authoring a skill and
+   * packaging an extension.
    */
-  it('names exactly the four skills that actually ship', () => {
+  it('names exactly the five skills that actually ship', () => {
     expect([...CONTEXT_IDS].sort()).toEqual([
       'about-biorouter',
+      'develop-biorouter',
       'develop-biorouter-extension',
       'develop-biorouter-skill',
       'update-soul',

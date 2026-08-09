@@ -25,6 +25,10 @@ pub static BUILTIN_SKILLS: &[(&str, &str)] = &[
         include_str!("builtin_skills/about-biorouter/SKILL.md"),
     ),
     (
+        "develop-biorouter",
+        include_str!("builtin_skills/develop-biorouter/SKILL.md"),
+    ),
+    (
         "develop-biorouter-extension",
         include_str!("builtin_skills/develop-biorouter-extension/SKILL.md"),
     ),
@@ -891,14 +895,29 @@ mod tests {
     use tempfile::TempDir;
 
     /// A context for the literal `SkillsClient { … }` constructions below.
-    /// Those tests never dispatch a tool call, so the manager is never queried
-    /// — it exists only to satisfy the field BR-71's session override needs.
+    ///
+    /// ⚠ **One database per call, and that is load-bearing.** The comment here
+    /// used to say these tests never dispatch a tool call, so the manager was
+    /// never queried — and it was wrong: nine of them go through `call_tool`,
+    /// whose first act is to read the session's skill override out of SQLite.
+    /// Pointed at one fixed path, those nine concurrent tests opened one
+    /// database through nine separate pools, each running its own
+    /// initialization. When that collides `call_tool` fails CLOSED and returns
+    /// a plain-text `Error: could not determine which skills are enabled…`,
+    /// which the callers parse as JSON — so the race surfaces as
+    /// `expected value at line 1 column 1`, naming neither SQLite nor the
+    /// sharing. It is a race everywhere and was seen on macOS too; Windows'
+    /// stricter file locking simply loses it far more often.
     fn test_context() -> PlatformExtensionContext {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let unique = format!(
+            "biorouter-skills-test-sessions-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        );
         PlatformExtensionContext {
             extension_manager: None,
-            session_manager: Arc::new(SessionManager::new(
-                std::env::temp_dir().join("biorouter-skills-test-sessions"),
-            )),
+            session_manager: Arc::new(SessionManager::new(std::env::temp_dir().join(unique))),
         }
     }
 
