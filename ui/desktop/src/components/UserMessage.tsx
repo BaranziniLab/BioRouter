@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import ImagePreview from './ImagePreview';
 import { InlineImage } from './InlineImage';
 import { extractImagePaths, removeImagePathsFromText } from '../utils/imageUtils';
@@ -8,10 +8,30 @@ import MessageCopyLink from './MessageCopyLink';
 import { MessageMeta, MessageMetaAction } from './MessageMeta';
 import { ProvenanceChip } from './ProvenanceChip';
 import { formatMessageTimestamp } from '../utils/timeUtils';
-import { Edit } from './icons/app-icons';
+import { ChevronDown, ChevronUp, Edit } from './icons/app-icons';
 import { Button } from './ui/button';
 import { ResourceRefChip, ResourceRefText } from './ResourceRefChip';
 import { joinComposerText, removeComposerRefAt, splitComposerText } from '../utils/composerRefs';
+import { CLAMP_EXPAND_MS, CLAMP_MAX_HEIGHT_PX, describeMessageLength } from '../utils/messageClamp';
+import { cn } from '../utils';
+
+/**
+ * The long-message clamp has three states, not two, because the expansion has
+ * to animate from a height we know to a height we do not:
+ *
+ *   collapsed  capped at CLAMP_MAX_HEIGHT_PX, clipped, the fade drawn
+ *   expanding  cap pinned to the measured content height, so the growth
+ *              animates over --dur-med; still clipped, so the growth is visible
+ *   open       no cap at all — a 5000-line paste cannot be bounded by any
+ *              literal, so the cap is REMOVED rather than raised. The design
+ *              specimen's `max-height: 1200px` would silently clip anything
+ *              taller than 1200px, which is precisely the message this feature
+ *              exists for.
+ *
+ * Collapsing skips `expanding` entirely: the design specifies collapse as
+ * instant, "because you are moving away from it".
+ */
+type ClampState = 'collapsed' | 'expanding' | 'open';
 
 interface UserMessageProps {
   message: Message;
@@ -20,11 +40,23 @@ interface UserMessageProps {
 
 export default function UserMessage({ message, onMessageUpdate }: UserMessageProps) {
   const contentRef = useRef<HTMLDivElement | null>(null);
+  const bubbleRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [hasBeenEdited, setHasBeenEdited] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Sticky per message, and component-local on purpose. The transcript keys
+  // every message by `message.id` (`ProgressiveMessageList`), so this survives
+  // every re-render the list does — including one per streamed token of the
+  // reply below it, which is exactly the "never re-collapses while you are
+  // reading" the design asks for. It does NOT survive leaving the session and
+  // coming back, and should not: a module-level registry of expanded ids would
+  // be an unbounded cache that also decides, on your behalf, that a chat you
+  // reopened tomorrow should start unfolded.
+  const [clampState, setClampState] = useState<ClampState>('collapsed');
+  const [expandedHeight, setExpandedHeight] = useState<number | null>(null);
+  const clampBodyId = useId();
 
   // Extract text content from the message
   const textContent = getTextContent(message);
@@ -60,6 +92,51 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
   // `?? undefined` is load-bearing: the generated field is `MessageProvenance | null`
   // and the chip's prop is optional (`?:`), which TypeScript does not unify.
   const provenance = message.metadata?.provenance ?? undefined;
+
+  // Length alone decides the clamp; the content's shape decides only whether the
+  // count is stated in lines and bytes or in words. All of it is pure — see
+  // `utils/messageClamp.ts`.
+  const { shouldClamp, label: lengthLabel } = useMemo(
+    () => describeMessageLength(displayText),
+    [displayText]
+  );
+  const isOpen = clampState !== 'collapsed';
+  // `expanding` still clips: the cap is animating, so the fade has to stay until
+  // it lands or the bottom line pops into view before the bubble reaches it.
+  const isClamped = shouldClamp && clampState !== 'open';
+
+  const toggleClamp = useCallback(() => {
+    if (clampState !== 'collapsed') {
+      setClampState('collapsed');
+      return;
+    }
+    // Measured here, from the live DOM, rather than in an effect: `scrollHeight`
+    // reports the full unclipped height *while* the element is still clipped,
+    // which is both the number the animation needs and a number that stops
+    // existing the moment the cap comes off.
+    const measured = bubbleRef.current?.scrollHeight ?? 0;
+    if (measured > 0) {
+      setExpandedHeight(measured);
+      setClampState('expanding');
+    } else {
+      // No layout to measure (a hidden pane, or a test renderer that does not
+      // lay out). Open directly rather than pinning the bubble to a height of
+      // zero, which would hide the message the user just asked to see.
+      setClampState('open');
+    }
+  }, [clampState]);
+
+  useEffect(() => {
+    if (clampState !== 'expanding') return;
+    // A timer rather than `transitionend`, because `transitionend` is not
+    // guaranteed to arrive: the global `prefers-reduced-motion` reset in
+    // `main.css` cuts every transition to 0.01ms, and a hidden pane never runs
+    // one at all. A message left pinned at a stale pixel height would clip, so
+    // the release must not depend on an event. The swap itself is a visual
+    // no-op — the element is already at the height it is being released to.
+    const timer = window.setTimeout(() => setClampState('open'), CLAMP_EXPAND_MS);
+    return () => window.clearTimeout(timer);
+  }, [clampState]);
 
   // Effect to handle message content changes and ensure persistence
   useEffect(() => {
@@ -270,7 +347,44 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                     edge stated twice; it goes, and the radius joins the ladder at
                     `--radius-container` (12px) rather than sitting on Tailwind's
                     stock `rounded-xl`. Padding is the specified 10×14. */}
-                <div className="flex min-w-0 rounded-container bg-background-medium px-3.5 py-2.5">
+                {/* The clamp lives on THIS div and not on the text child below,
+                    because this is the div that carries the fill. The cut is
+                    faded with the bubble's OWN fill token, so it reads as "there
+                    is more" rather than as a rendering bug and needs no second
+                    colour chosen per theme family — and a gradient drawn on the
+                    text child would be fading to a colour that is not behind it.
+                    The clipping has to sit on the same element for the same
+                    reason: clip the text and the tint keeps its full height,
+                    leaving an empty coloured tail under the fade. */}
+                <div
+                  ref={bubbleRef}
+                  id={clampBodyId}
+                  style={
+                    isClamped
+                      ? {
+                          maxHeight:
+                            clampState === 'collapsed'
+                              ? `${CLAMP_MAX_HEIGHT_PX}px`
+                              : expandedHeight !== null
+                                ? `${expandedHeight}px`
+                                : undefined,
+                        }
+                      : undefined
+                  }
+                  className={cn(
+                    'flex min-w-0 rounded-container bg-background-medium px-3.5 py-2.5',
+                    isClamped && [
+                      'relative overflow-hidden',
+                      "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-14 after:content-['']",
+                      'after:bg-[linear-gradient(to_bottom,transparent,var(--background-medium))]',
+                    ],
+                    // Only the growth animates. Collapsing re-renders without
+                    // this class in the same frame as the smaller cap, so it is
+                    // instant, which is what the design asks for.
+                    clampState === 'expanding' &&
+                      'transition-[max-height] duration-[var(--dur-med)] ease-[var(--ease-out)]'
+                  )}
+                >
                   {/* min-w-0 is required on this flex item: overflow-wrap:break-word
                       (break-words) prevents *visual* overflow but does NOT reduce the
                       element's intrinsic min-content width, so a long unbroken token
@@ -291,6 +405,35 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                     <ResourceRefText text={displayText} />
                   </div>
                 </div>
+
+                {/* The control sits BELOW the bubble, not inside it: it belongs
+                    to the message, not to the text. It carries the count,
+                    because the count is the whole point — it is what tells you
+                    whether expanding is worth it, and a bare "Show more" does
+                    not. Geometry from the design specimen's `.pastefoot`: 6px
+                    above, 10px between the two, hugging the same edge the bubble
+                    hugs. It is a separate row from `MessageMeta` on purpose —
+                    "how big is this" and "when was it sent" are different
+                    questions, and running them together reads as one string of
+                    metadata. */}
+                {shouldClamp && (
+                  <div className="mt-1.5 flex h-5 items-center justify-end gap-2.5">
+                    <MessageMetaAction
+                      onClick={toggleClamp}
+                      icon={isOpen ? <ChevronUp /> : <ChevronDown />}
+                      aria-expanded={isOpen}
+                      aria-controls={clampBodyId}
+                    >
+                      {isOpen ? 'Show less' : 'Show more'}
+                    </MessageMetaAction>
+                    <span
+                      data-testid="message-clamp-count"
+                      className="text-supporting text-text-muted tabular-nums"
+                    >
+                      {lengthLabel}
+                    </span>
+                  </div>
+                )}
 
                 {/* Render images if any */}
                 {imagePaths.length > 0 && (
@@ -332,6 +475,12 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                   >
                     Edit
                   </MessageMetaAction>
+                  {/* Copy takes the whole thing, collapsed or not: the clamp is
+                      a view state, never a content state. Both payloads are
+                      already safe — the plain-text one is `displayText` itself,
+                      and the HTML one is cloned from `contentRef`, the text div
+                      INSIDE the clipped bubble, which holds every line whatever
+                      the cap above it says. */}
                   <MessageCopyLink text={displayText} contentRef={contentRef} />
                 </MessageMeta>
               </div>
