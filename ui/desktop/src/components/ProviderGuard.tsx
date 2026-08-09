@@ -113,7 +113,7 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
       } catch (error) {
         console.error('Error checking provider:', error);
         toastService.error({
-          title: 'Configuration Error',
+          title: 'Configuration error',
           msg: 'Failed to check provider configuration.',
           traceback: error instanceof Error ? error.stack || '' : '',
         });

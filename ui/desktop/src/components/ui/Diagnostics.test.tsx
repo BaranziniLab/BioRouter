@@ -92,7 +92,7 @@ describe('DiagnosticsModal', () => {
 
     await waitFor(() => {
       expect(toastErrorMock).toHaveBeenCalledWith({
-        title: 'Diagnostics Error',
+        title: 'Diagnostics error',
         msg: 'The diagnostics response is not a valid ZIP archive.',
       });
     });

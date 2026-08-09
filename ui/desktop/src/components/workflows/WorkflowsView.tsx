@@ -251,7 +251,7 @@ export default function WorkflowsView() {
       const filename = `${sanitizedTitle}.yaml`;
 
       const result = await window.electron.showSaveDialog({
-        title: 'Export Workflow',
+        title: 'Export workflow',
         defaultPath: filename,
         filters: [
           { name: 'YAML Files', extensions: ['yaml', 'yml'] },

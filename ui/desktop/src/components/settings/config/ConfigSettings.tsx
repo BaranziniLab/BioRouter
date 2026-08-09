@@ -70,7 +70,7 @@ export default function ConfigSettings() {
     try {
       await upsert(key, configValues[key], false);
       toastSuccess({
-        title: 'Configuration Updated',
+        title: 'Configuration updated',
         msg: `Saved "${getUiNames(key)}"`,
       });
 
@@ -83,7 +83,7 @@ export default function ConfigSettings() {
     } catch (error) {
       console.error('Failed to save config:', error);
       toastError({
-        title: 'Save Failed',
+        title: 'Save failed',
         msg: `Failed to save "${getUiNames(key)}"`,
         traceback: error instanceof Error ? error.message : String(error),
       });
@@ -96,7 +96,7 @@ export default function ConfigSettings() {
     setConfigValues(typedConfig);
     setModifiedKeys(new Set());
     toastSuccess({
-      title: 'Configuration Reset',
+      title: 'Configuration reset',
       msg: 'All changes have been reverted',
     });
   };

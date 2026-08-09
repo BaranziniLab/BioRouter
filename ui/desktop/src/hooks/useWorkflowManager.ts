@@ -219,7 +219,7 @@ export const useWorkflowManager = (chat: ChatType, workflow?: Workflow | null) =
       }
       console.error('Failed to render workflow with parameters:', error);
       toastError({
-        title: 'Workflow Rendering Failed',
+        title: 'Workflow rendering failed',
         msg: error_message,
       });
     }

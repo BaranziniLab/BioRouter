@@ -189,7 +189,7 @@ export async function addExtensionFromDeepLink(
 
   // Show success toast and navigate to extensions page
   toastService.success({
-    title: 'Extension Installed',
+    title: 'Extension installed',
     msg: `${config.name} extension has been installed successfully. Start a new chat session to use it.`,
   });
 

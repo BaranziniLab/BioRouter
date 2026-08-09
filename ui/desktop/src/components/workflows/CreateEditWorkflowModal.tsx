@@ -283,7 +283,7 @@ export default function CreateEditWorkflowModal({
     if (isSaving) return;
     if (!validateForm()) {
       toastError({
-        title: 'Validation Failed',
+        title: 'Validation failed',
         msg: 'Fill in the required fields and fix the JSON schema.',
       });
       return;
@@ -305,7 +305,7 @@ export default function CreateEditWorkflowModal({
       console.error('Failed to save workflow:', error);
 
       toastError({
-        title: 'Save Failed',
+        title: 'Save failed',
         msg: `Failed to save workflow: ${error instanceof Error ? error.message : 'Unknown error'}`,
         traceback: error instanceof Error ? error.message : String(error),
       });
@@ -318,7 +318,7 @@ export default function CreateEditWorkflowModal({
     if (isSaving) return;
     if (!validateForm()) {
       toastError({
-        title: 'Validation Failed',
+        title: 'Validation failed',
         msg: 'Fill in the required fields and fix the JSON schema.',
       });
       return;
@@ -351,7 +351,7 @@ export default function CreateEditWorkflowModal({
       console.error('Failed to save and run workflow:', error);
 
       toastError({
-        title: 'Save and Run Failed',
+        title: 'Save and run failed',
         msg: `Failed to save and run workflow: ${error instanceof Error ? error.message : 'Unknown error'}`,
         traceback: error instanceof Error ? error.message : String(error),
       });

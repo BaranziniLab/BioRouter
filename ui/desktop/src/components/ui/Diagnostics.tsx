@@ -54,7 +54,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
       onClose();
     } catch (error) {
       toastError({
-        title: 'Diagnostics Error',
+        title: 'Diagnostics error',
         msg: error instanceof Error ? error.message : 'Failed to generate diagnostics.',
       });
     } finally {

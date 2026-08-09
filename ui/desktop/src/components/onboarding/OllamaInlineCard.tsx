@@ -76,7 +76,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
     } else {
       setModelStatus('not-available');
       toastService.error({
-        title: 'Download Failed',
+        title: 'Download failed',
         msg: `Failed to download ${getPreferredModel()}. Please try again.`,
         traceback: '',
       });
@@ -98,7 +98,7 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
     } catch (error) {
       console.error('Failed to connect to Ollama:', error);
       toastService.error({
-        title: 'Connection Failed',
+        title: 'Connection failed',
         msg: `Failed to connect to Ollama: ${error instanceof Error ? error.message : String(error)}`,
         traceback: error instanceof Error ? error.stack || '' : '',
       });

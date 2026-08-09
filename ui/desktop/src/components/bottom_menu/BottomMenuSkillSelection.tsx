@@ -77,7 +77,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
     saveQueueRef.current = save;
     void save.catch(async () => {
       toastService.error({
-        title: 'Skill Update Failed',
+        title: 'Skill update failed',
         msg: 'The skill preference could not be saved.',
       });
       if (generation !== saveGenerationRef.current) return;
@@ -96,7 +96,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         setHubUpdateTrigger((prev) => prev + 1);
         persistOverrides();
         toastService.success({
-          title: 'Skill Updated',
+          title: 'Skill updated',
           msg: `${displayName} will be ${!currentEnabled ? 'enabled' : 'disabled'} in new chats`,
         });
         return;
@@ -113,7 +113,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         return next;
       });
       toastService.success({
-        title: 'Skill Updated',
+        title: 'Skill updated',
         msg: `${displayName} ${newEnabled ? 'enabled' : 'disabled'} for this session`,
       });
     },
@@ -196,7 +196,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
       setHubUpdateTrigger((prev) => prev + 1);
       persistOverrides();
       toastService.success({
-        title: 'Skills Updated',
+        title: 'Skills updated',
         msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in new chats`,
       });
       return;
@@ -208,7 +208,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
       return next;
     });
     toastService.success({
-      title: 'Skills Updated',
+      title: 'Skills updated',
       msg: `${keys.length} skill${keys.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this session`,
     });
   }, [isHubView, persistOverrides, sortedEntries, visibleEnabledCount]);

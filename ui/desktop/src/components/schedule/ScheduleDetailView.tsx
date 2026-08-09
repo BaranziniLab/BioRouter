@@ -104,16 +104,16 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     try {
       const newSessionId = await runScheduleNow(scheduleId);
       if (newSessionId === 'CANCELLED') {
-        toastSuccess({ title: 'Job Cancelled', msg: 'The job was cancelled while starting up.' });
+        toastSuccess({ title: 'Job cancelled', msg: 'The job was cancelled while starting up.' });
       } else {
-        toastSuccess({ title: 'Schedule Triggered', msg: `New session: ${newSessionId}` });
+        toastSuccess({ title: 'Schedule triggered', msg: `New session: ${newSessionId}` });
       }
       await fetchSessions(scheduleId);
       await fetchSchedule(scheduleId);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to trigger schedule';
       toastError({
-        title: 'Run Schedule Error',
+        title: 'Run schedule error',
         msg: errorMsg,
       });
     } finally {
@@ -127,10 +127,10 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     try {
       if (scheduleDetails.paused) {
         await unpauseSchedule(scheduleId);
-        toastSuccess({ title: 'Schedule Unpaused', msg: `Unpaused "${scheduleId}"` });
+        toastSuccess({ title: 'Schedule unpaused', msg: `Unpaused "${scheduleId}"` });
       } else {
         await pauseSchedule(scheduleId);
-        toastSuccess({ title: 'Schedule Paused', msg: `Paused "${scheduleId}"` });
+        toastSuccess({ title: 'Schedule paused', msg: `Paused "${scheduleId}"` });
       }
       await fetchSchedule(scheduleId);
     } catch (err) {
@@ -149,12 +149,12 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     setIsActionLoading(true);
     try {
       const result = await killRunningJob(scheduleId);
-      toastSuccess({ title: 'Job Killed', msg: result.message });
+      toastSuccess({ title: 'Job killed', msg: result.message });
       await fetchSchedule(scheduleId);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to kill job';
       toastError({
-        title: 'Kill Job Error',
+        title: 'Kill job error',
         msg: errorMsg,
       });
     } finally {
@@ -172,16 +172,16 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
           ? `${Math.floor(result.runningDurationSeconds / 60)}m ${result.runningDurationSeconds % 60}s`
           : 'Unknown';
         toastSuccess({
-          title: 'Job Inspection',
+          title: 'Job inspection',
           msg: `Session: ${result.sessionId}\nRunning for: ${duration}`,
         });
       } else {
-        toastSuccess({ title: 'Job Inspection', msg: 'No detailed information available' });
+        toastSuccess({ title: 'Job inspection', msg: 'No detailed information available' });
       }
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to inspect job';
       toastError({
-        title: 'Inspect Job Error',
+        title: 'Inspect job error',
         msg: errorMsg,
       });
     } finally {
@@ -194,13 +194,13 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     setIsActionLoading(true);
     try {
       await updateSchedule(scheduleId, payload as string);
-      toastSuccess({ title: 'Schedule Updated', msg: `Updated "${scheduleId}"` });
+      toastSuccess({ title: 'Schedule updated', msg: `Updated "${scheduleId}"` });
       await fetchSchedule(scheduleId);
       setIsModalOpen(false);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to update schedule';
       toastError({
-        title: 'Update Schedule Error',
+        title: 'Update schedule error',
         msg: errorMsg,
       });
     } finally {

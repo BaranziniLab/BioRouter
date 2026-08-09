@@ -300,7 +300,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       if (editingSchedule) {
         await updateSchedule(editingSchedule.id, payload as string);
         toastSuccess({
-          title: 'Schedule Updated',
+          title: 'Schedule updated',
           msg: `Updated schedule "${editingSchedule.id}"`,
         });
       } else {
@@ -344,7 +344,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     try {
       await pauseSchedule(id);
       toastSuccess({
-        title: 'Schedule Paused',
+        title: 'Schedule paused',
         msg: `Paused schedule "${id}"`,
       });
       await fetchSchedules();
@@ -353,7 +353,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       const errorMsg = error instanceof Error ? error.message : `Unknown error pausing "${id}".`;
       setApiError(errorMsg);
       toastError({
-        title: 'Pause Schedule Error',
+        title: 'Pause schedule error',
         msg: errorMsg,
       });
     } finally {
@@ -368,7 +368,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     try {
       await unpauseSchedule(id);
       toastSuccess({
-        title: 'Schedule Unpaused',
+        title: 'Schedule unpaused',
         msg: `Resumed schedule "${id}"`,
       });
       await fetchSchedules();
@@ -377,7 +377,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       const errorMsg = error instanceof Error ? error.message : `Unknown error unpausing "${id}".`;
       setApiError(errorMsg);
       toastError({
-        title: 'Unpause Schedule Error',
+        title: 'Unpause schedule error',
         msg: errorMsg,
       });
     } finally {
@@ -392,7 +392,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     try {
       const result = await killRunningJob(id);
       toastSuccess({
-        title: 'Job Killed',
+        title: 'Job killed',
         msg: result.message,
       });
       await fetchSchedules();
@@ -402,7 +402,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         error instanceof Error ? error.message : `Unknown error killing job "${id}".`;
       setApiError(errorMsg);
       toastError({
-        title: 'Kill Job Error',
+        title: 'Kill job error',
         msg: errorMsg,
       });
     } finally {
@@ -421,12 +421,12 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
           ? `${Math.floor(result.runningDurationSeconds / 60)}m ${result.runningDurationSeconds % 60}s`
           : 'Unknown';
         toastSuccess({
-          title: 'Job Inspection',
+          title: 'Job inspection',
           msg: `Session: ${result.sessionId}\nRunning for: ${duration}`,
         });
       } else {
         toastSuccess({
-          title: 'Job Inspection',
+          title: 'Job inspection',
           msg: 'No detailed information available for this job',
         });
       }
@@ -436,7 +436,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         error instanceof Error ? error.message : `Unknown error inspecting job "${id}".`;
       setApiError(errorMsg);
       toastError({
-        title: 'Inspect Job Error',
+        title: 'Inspect job error',
         msg: errorMsg,
       });
     } finally {

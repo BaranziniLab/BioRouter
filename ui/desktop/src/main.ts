@@ -1210,7 +1210,7 @@ const createChat = async (
     if (isUsingExternalBackend) {
       const response = dialog.showMessageBoxSync({
         type: 'error',
-        title: 'External Backend Unreachable',
+        title: 'External backend unreachable',
         message: `Could not connect to external backend at ${settings.externalBiorouterd?.url}`,
         detail: 'The external biorouterd server may not be running.',
         buttons: ['Disable External Backend & Retry', 'Quit'],
@@ -1237,7 +1237,7 @@ const createChat = async (
     } else {
       dialog.showMessageBoxSync({
         type: 'error',
-        title: 'Biorouter Failed to Start',
+        title: 'Biorouter failed to start',
         message: 'The backend server failed to start.',
         detail: errorLog.join('\n'),
         buttons: ['OK'],

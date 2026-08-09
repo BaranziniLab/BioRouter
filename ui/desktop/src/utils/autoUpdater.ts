@@ -237,7 +237,7 @@ export function registerUpdateIpcHandlers() {
         // Improved dialog with clearer instructions
         const dialogResult = (await dialog.showMessageBox({
           type: 'info',
-          title: 'Update Ready to Install',
+          title: 'Update ready to install',
           message: `Version ${githubUpdateInfo.latestVersion} is ready to install.`,
           detail: `The update has been downloaded and extracted. To complete the installation:\n\n1. Click "Open Folder" to view the new Biorouter.app\n2. Quit Biorouter (this app will close)\n3. Drag the new Biorouter.app to your Applications folder\n4. Replace the existing app when prompted\n\nThe update will be available the next time you launch Biorouter.`,
           buttons: ['Open Folder & Quit', 'Open Folder Only', 'Cancel'],
@@ -585,7 +585,7 @@ export function setupAutoUpdater(tray?: Tray) {
 
     // Show native notification
     const notification = new Notification({
-      title: 'Update Ready',
+      title: 'Update ready',
       body: `Version ${info.version} will be installed when you quit Biorouter. Click to install now.`,
     });
     notification.show();

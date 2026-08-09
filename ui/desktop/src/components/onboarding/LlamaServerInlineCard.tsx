@@ -126,7 +126,7 @@ export default function LlamaServerInlineCard({ onSuccess }: LlamaServerInlineCa
         connectingRef.current = false;
         if (mountedRef.current) setIsConnecting(false);
         toastService.error({
-          title: 'Connection Failed',
+          title: 'Connection failed',
           msg: `Failed to configure Llama Server: ${error instanceof Error ? error.message : String(error)}`,
           traceback: error instanceof Error ? error.stack || '' : '',
         });

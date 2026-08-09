@@ -136,7 +136,7 @@ export const BottomMenuExtensionSelection = ({
         setHubUpdateTrigger((prev) => prev + 1);
 
         toastService.success({
-          title: 'Extension Updated',
+          title: 'Extension updated',
           // "in new chats" over-promised: `extensionOverrides` is an in-memory
           // map that `createSession` clears, so it shapes exactly one chat.
           msg: `${formatExtensionName(extensionConfig.name)} will be ${nextEnabled ? 'enabled' : 'disabled'} in the next chat you start`,
@@ -146,7 +146,7 @@ export const BottomMenuExtensionSelection = ({
 
       if (!sessionId) {
         toastService.error({
-          title: 'Extension Toggle Error',
+          title: 'Extension toggle error',
           msg: 'Start a chat first.',
           traceback: 'No session ID available',
         });
@@ -170,7 +170,7 @@ export const BottomMenuExtensionSelection = ({
           return nextEnabled;
         } catch {
           toastService.error({
-            title: 'Extension Toggle Error',
+            title: 'Extension toggle error',
             msg: `${formatExtensionName(name)} could not be ${nextEnabled ? 'enabled' : 'disabled'}.`,
           });
           return appliedState;
@@ -187,7 +187,7 @@ export const BottomMenuExtensionSelection = ({
           if (response.data?.extensions) setSessionExtensions(response.data.extensions);
         } catch {
           toastService.error({
-            title: 'Extension Refresh Error',
+            title: 'Extension refresh error',
             msg: 'The latest extension state could not be refreshed.',
           });
         } finally {
@@ -358,7 +358,7 @@ export const BottomMenuExtensionSelection = ({
       setBulkInFlight(false);
 
       toastService.success({
-        title: 'Extensions Updated',
+        title: 'Extensions updated',
         msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} in the next chat you start`,
       });
       return;
@@ -367,7 +367,7 @@ export const BottomMenuExtensionSelection = ({
     if (!sessionId) {
       setBulkInFlight(false);
       toastService.error({
-        title: 'Extension Toggle Error',
+        title: 'Extension toggle error',
         msg: 'Start a chat first.',
         traceback: 'No session ID available',
       });
@@ -391,12 +391,12 @@ export const BottomMenuExtensionSelection = ({
       if (response.data?.extensions) setSessionExtensions(response.data.extensions);
 
       toastService.success({
-        title: 'Extensions Updated',
+        title: 'Extensions updated',
         msg: `${targets.length} extension${targets.length === 1 ? '' : 's'} ${targetEnabled ? 'enabled' : 'disabled'} for this chat`,
       });
     } catch {
       toastService.error({
-        title: 'Extension Toggle Error',
+        title: 'Extension toggle error',
         msg: 'The extension selection could not be updated.',
       });
     } finally {
