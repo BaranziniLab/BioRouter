@@ -623,15 +623,14 @@ export function AppInner() {
           library's variable rather than `z-index` also fixes the `translate3d`
           the vendor derives from it.
 
-          `top` keeps the layer off the page-header band. A toast is transient
-          chrome; a page's title, description and right-hand action are not. At
-          the library's inset the container landed at y 40–155 at 1440×960 —
-          exactly on them — and it hid Chat history's Import Session button
-          outright and truncated the description on Extensions, Applications and
-          Knowledge. Measured across every top-level route at 1440×960, the
-          lowest right-hand header ink is a description at y=136, so the layer
-          starts 8px below that and overlays scrolling content instead, which is
-          what an overlay is for. */}
+          `top` docks the layer in the CORNER, one stack gap below the titlebar
+          drag band. It briefly did the opposite — 144px, chosen to clear the
+          tallest page header so a toast could never cover a page title or Chat
+          history's Import Session button — and that is what put the
+          extension-load report halfway down the chat pane, which is the bug
+          this value closes. The reasoning and the floor live with
+          `--toast-inset-top` in main.css; do not re-derive it from a header
+          measurement here. */}
       <ToastContainer
         aria-label="Toast notifications"
         toastClassName={() => TOAST_SURFACE_CLASS_NAME}
@@ -645,6 +644,20 @@ export function AppInner() {
           } as React.CSSProperties
         }
         position="top-right"
+        /* OLDEST NEAREST THE CORNER — the stack grows DOWNWARD, so the second
+           notification lands directly below the first rather than shoving it
+           down.
+
+           ⚠ This is `false` on purpose and it CONTRADICTS the written design
+           (`docs/design/astryx-adoption/astryx-ui-adoption-design.md` §3.7 says
+           "newest nearest the corner"). The user asked for the opposite in so
+           many words, and a user instruction outranks the doc; the doc is the
+           thing that needs reconciling. It is also spelled out rather than left
+           to the library, because react-toastify's default happens to agree
+           today: without this prop the behaviour is correct by accident, and
+           the next reader following §3.7 would add `newestOnTop` and silently
+           undo a decision nothing was defending. */
+        newestOnTop={false}
         autoClose={3000}
         closeOnClick
         pauseOnHover

@@ -110,7 +110,6 @@ import {
   Send as _Send,
   Settings as _Settings,
   Share2 as _Share2,
-  Shield as _Shield,
   Sliders as _Sliders,
   SlidersHorizontal as _SlidersHorizontal,
   Sparkles as _Sparkles,
@@ -227,8 +226,8 @@ export const HeartPulse = light(_HeartPulse);
 export const History = light(_History);
 export const Home = light(_Home);
 export const Image = light(_Image);
-// The three affiliation marks (`AffiliationBadge`) and the tier mark
-// (`PrivacyBadge`). They live here for the reason every other glyph does —
+// The three affiliation marks (`AffiliationBadge`); the tier mark is `Lock`,
+// below. They live here for the reason every other glyph does —
 // `light()` pins strokeWidth 1.5 and `currentColor` (§3.8b) — and they were the
 // exception that proved why the wrapper exists: both badges imported these four
 // straight from `lucide-react`, so they shipped at lucide's default
@@ -251,6 +250,22 @@ export const Layers = light(_Layers);
 export const Link = light(_Link);
 export const Loader2 = light(_Loader2);
 export const LoaderCircle = light(_LoaderCircle);
+/**
+ * **The one mark for the private privacy tier** (issue #56) — `PrivacyBadge`,
+ * in both its pill and its dense form.
+ *
+ * ⚠ It is the same padlock `MessageSquareLock` (below) hangs on a private
+ * conversation, and that is the whole point: a private chat, a private model
+ * and a private extension are one fact — the tier that decides which models may
+ * see the data — and were once drawn with three unrelated figures (a padlocked
+ * bubble, a bare dot, and a shield). The shield is gone; do not reintroduce a
+ * second privacy glyph for a fourth subject. Name the subject in words beside
+ * the padlock instead (DR-53: one glyph, one meaning).
+ *
+ * Its older, unrelated uses — the Keychain notice, a permission prompt, an
+ * `EACCES` artifact — are "this is locked to you", not the tier, and are why
+ * the glyph reads correctly here in the first place.
+ */
 export const Lock = light(_Lock);
 export const Maximize2 = light(_Maximize2);
 export const MessageSquare = light(_MessageSquare);
@@ -285,9 +300,12 @@ export const SearchIcon = Search;
 export const Send = light(_Send);
 export const Settings = light(_Settings);
 export const Share2 = light(_Share2);
-/** The Private-tier mark (`PrivacyBadge`). See `Landmark` above. */
-export const Shield = light(_Shield);
-export const ShieldIcon = Shield;
+// `Shield` / `ShieldIcon` were the Private-tier mark and have been REMOVED
+// rather than left exported unused. They had exactly one consumer,
+// `PrivacyBadge`, which now draws the padlock every other private surface
+// draws; an idle shield sitting in this barrel is an invitation to mark the
+// next privacy surface with it and split the vocabulary again. Re-add it only
+// for a meaning that is genuinely not "private tier" — and then say which.
 export const Sliders = light(_Sliders);
 export const SlidersHorizontal = light(_SlidersHorizontal);
 export const Sparkles = light(_Sparkles);

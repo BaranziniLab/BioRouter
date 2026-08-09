@@ -77,6 +77,31 @@ floors still equal the old shipped numbers so a narrow window can never end up
 **If you add a new measure, add it to that test.** A `max-w-[1400px]` introduced
 anywhere in a layout container reintroduces this bug with nothing to stop it.
 
+### Not this: the window's own minimum size
+
+`main.ts` sets `minWidth: 1000` on the main window, and it is easy to read that
+as the same mistake. It is the opposite kind of number: a **floor under a narrow
+window**, which does nothing at all to a wide one. The measures above still
+govern how the content uses the room.
+
+It is derived rather than chosen — 240px sidebar (`SIDEBAR_WIDTH`, 15rem) plus
+the 760px reading column (`--measure-chat`) — because Home's usage heatmap is the
+one element whose size is *computed* rather than declared: it fits its cells to
+the box it is given, so a window narrow enough to squeeze the reading column
+squeezes the grid with it. Measured against the real stylesheet, the cliff is at
+989px of content width (23px cells at 989, 22px at 988, stepping down to 16px by
+800px). `styles/measures.test.ts` asserts the arithmetic, so changing either the
+sidebar width or the chat measure fails there instead of quietly letting the
+window compress the heatmap again.
+
+The height axis is deliberately **not** capped to the same standard. A short
+window shrinks the heatmap's cells too, but the `minHeight` that would prevent it
+lands near 700–800px, which is unusable on a 1280×800 display once the menu bar
+and Dock are removed — a worse bug than the one being fixed. The heatmap keeps
+its chrome locked to its own grid instead (`UsageHeatmap`'s `heatStyle` sets the
+block's width from the fitted footprint), so a compressed grid stays a coherent
+block rather than leaving its labels and legend pinned to the old edge.
+
 ## The four impostors
 
 ### Viewport emulation pins `innerWidth`

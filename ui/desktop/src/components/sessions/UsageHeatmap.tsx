@@ -26,7 +26,7 @@ const LOADING_CELLS = LOADING_WEEKS * 7;
 const MAX_CELL = 24;
 const MIN_CELL = 8;
 
-type HeatMetrics = { cell: number; gap: number; labels: number };
+type HeatMetrics = { cell: number; gap: number; labels: number; width: number };
 
 function gapFor(cell: number): number {
   return cell >= 20 ? 6 : cell >= 15 ? 4 : cell >= 11 ? 3 : 2;
@@ -43,22 +43,49 @@ function chromeFor(tokensComplete: boolean): number {
   return tokensComplete ? 104 : 150;
 }
 
+/** Everything a cell size implies, including the block's total footprint:
+ * day-label gutter, the gap after it, then one column per week. */
+function metricsFor(weeks: number, cell: number): HeatMetrics {
+  const gap = gapFor(cell);
+  return {
+    cell,
+    gap,
+    labels: gutterFor(cell),
+    width: gutterFor(cell) + gap + weeks * cell + (weeks - 1) * gap,
+  };
+}
+
 function fitMetrics(weeks: number, width: number, height: number, chrome: number): HeatMetrics {
   for (let cell = MAX_CELL; cell > MIN_CELL; cell--) {
-    const gap = gapFor(cell);
-    const gridWidth = gutterFor(cell) + gap + weeks * cell + (weeks - 1) * gap;
-    const gridHeight = 7 * cell + 6 * gap;
-    if (gridWidth <= width && gridHeight <= height - chrome) {
-      return { cell, gap, labels: gutterFor(cell) };
+    const m = metricsFor(weeks, cell);
+    const gridHeight = 7 * cell + 6 * m.gap;
+    if (m.width <= width && gridHeight <= height - chrome) {
+      return m;
     }
   }
-  return { cell: MIN_CELL, gap: gapFor(MIN_CELL), labels: gutterFor(MIN_CELL) };
+  return metricsFor(weeks, MIN_CELL);
 }
 
 /** CSS vars driving the grid, derived from the fitted metrics. Fonts shrink
  * with the cells so a label row can never be taller than its cell row. */
 function heatStyle(m: HeatMetrics): React.CSSProperties {
   return {
+    /* Bind the WHOLE block — streak header, month ruler, grid and legend — to
+       the grid's own footprint, so they can never come apart. The cells are
+       integer squares picked off a ladder, so the grid is always a little
+       narrower than the box it was fitted into (measured: 11px at a full-size
+       window, up to 49px where the gap steps down from 6 to 4). The chrome
+       rows are `justify-between`, so without this they stay pinned to the
+       box's right edge while the grid pulls left — "Longest streak" and
+       "…on your busiest day" float away from the columns they annotate. It is
+       far worse when HEIGHT is the binding constraint: a short window shrinks
+       the cells without touching the box's width, and the measured gap reached
+       339px. No window minimum can fix that case; only this can.
+
+       `min(…, 100%)` because below MIN_CELL the footprint stops shrinking, and
+       a block wider than its column would be clipped by the Hub's
+       `overflow-x-hidden` rather than merely looking narrow. */
+    width: `min(${m.width}px, 100%)`,
     '--heat-cell': `${m.cell}px`,
     '--heat-gap': `${m.gap}px`,
     '--heat-labels': `${m.labels}px`,

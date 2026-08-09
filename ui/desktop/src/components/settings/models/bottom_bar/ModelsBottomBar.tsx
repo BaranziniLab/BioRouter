@@ -289,7 +289,7 @@ export default function ModelsBottomBar({
 
   // §14.2's line for the chat's tier. A "Private" PILL cannot fit in this chip
   // — the trigger is `max-w-[120px]` and the label is already truncated at 24
-  // characters — so the chip carries the dense dot and the WORD goes where
+  // characters — so the chip carries the dense padlock and the WORD goes where
   // there is room for it: the tooltip and the dropdown header.
   const privacyLine =
     privacyTier === 'private'
@@ -347,16 +347,25 @@ export default function ModelsBottomBar({
             >
               <div className="flex min-w-0 max-w-full items-center gap-0.5 truncate">
                 <Brain className="size-[18px] flex-shrink-0" />
-                <span className="truncate text-xs">{inlineModelLabel}</span>
+                {/* `text-supporting`, the composer rails' role — see the note in
+                    ChatInput.tsx, "THE RAILS' TYPE". It was `text-xs`: the same
+                    12px by coincidence, not by role, so it would not have
+                    followed the rails when they moved. */}
+                <span className="truncate text-supporting">{inlineModelLabel}</span>
                 {/* The MODEL's tier, not the chat's.
                     The chat's ratcheted classification has its own surface —
                     `SessionNamePill`, at the top of the chat, in the full pill —
-                    so this dot repeating it was both duplicative and, next to a
+                    so this mark repeating it was both duplicative and, next to a
                     model name under a brain glyph, misattributed. On a private
                     chat holding a public model the two now disagree visibly,
-                    which is exactly the pairing Gate C refuses. */}
+                    which is exactly the pairing Gate C refuses.
+
+                    ⚠ It is a PADLOCK, the same one a private conversation and a
+                    private extension carry — see `PrivacyBadge`. It was a bare
+                    dot, which is the one form of the mark that connected to
+                    nothing else in the app. */}
                 {boundTier && <PrivacyBadge tier={boundTier} dense className="ml-1" />}
-                {/* Beside the tier dot, in its dense form — the chip is
+                {/* Beside the tier padlock, in its dense form — the chip is
                     `max-w-[120px]` with an already-truncated label, so the WORDS
                     go where there is room for them (the tooltip and the dropdown
                     header below), exactly as the tier's do. */}

@@ -97,7 +97,7 @@ const badgeOf = (ui: ReactElement) =>
 const VISIBLE_STATES: { name: string; tier: SessionClassification; dense: boolean }[] = [
   { name: 'private pill', tier: 'private', dense: false },
   { name: 'public pill', tier: 'public', dense: false },
-  { name: 'private dot', tier: 'private', dense: true },
+  { name: 'private dense mark', tier: 'private', dense: true },
 ];
 
 describe('PrivacyBadge', () => {
@@ -111,7 +111,10 @@ describe('PrivacyBadge', () => {
 
   it('renders nothing in dense mode for a public session', () => {
     const { queryByTestId } = render(<PrivacyBadge tier="public" dense />);
-    expect(queryByTestId('privacy-badge')).toBeNull(); // no dot means public
+    // No padlock means public. Deliberately not an OPEN padlock: a mark on
+    // every public row would put the two tiers at the same visual weight and
+    // train people past both.
+    expect(queryByTestId('privacy-badge')).toBeNull();
   });
 
   // ── The styling itself, not just the text ──
@@ -173,8 +176,11 @@ describe('PrivacyBadge', () => {
     const badgeGeometry = (() => {
       const badgeSource = read('src', 'components', 'ui', 'badge.tsx');
       const base = badgeSource.match(/cn\(\s*'([^']+)'/);
-      expect(base, 'badge.tsx no longer opens its cn() with a base class string — this ' +
-        'derivation is broken and every assertion below would pass vacuously').not.toBeNull();
+      expect(
+        base,
+        'badge.tsx no longer opens its cn() with a base class string — this ' +
+          'derivation is broken and every assertion below would pass vacuously'
+      ).not.toBeNull();
       return base![1].split(/\s+/).filter(Boolean);
     })();
     // The control: an empty list would make the loop below assert nothing.
@@ -190,9 +196,14 @@ describe('PrivacyBadge', () => {
     }
 
     // …and none of it is written down a second time here, which is the drift
-    // badge.tsx's own doc-comment exists to prevent. `rounded-full` on the dot
-    // is not Badge geometry and is expected, so it is excluded by construction:
-    // it is not in badge.tsx's base list.
+    // badge.tsx's own doc-comment exists to prevent. The dense branch's own
+    // classes are excluded by construction rather than by exception: it uses
+    // `inline-block` + `shrink-0`, neither of which is in badge.tsx's base list
+    // — and that is a live constraint, not an accident. The obvious spelling of
+    // that branch is the one `AffiliationBadge` uses (a flex box that centres
+    // its glyph), and it would trip this assertion on two counts, because those
+    // are Badge's words. The dense mark shrink-wraps a `block` glyph instead,
+    // which needs no alignment of its own.
     expect(source).toMatch(/from '\.\/badge'/);
     for (const geometry of badgeGeometry) {
       expect(
@@ -233,36 +244,92 @@ describe('PrivacyBadge', () => {
     }
   });
 
-  // ── The dense dot ──
+  // ── The dense mark ──
+  //
+  // ⚠ **It was a filled dot and is now the padlock**, because the app marked one
+  // fact — the issue-#56 private tier — with three unrelated figures: a
+  // padlocked speech bubble on a private chat (`chatKind.ts`), a shield on a
+  // private extension (the pill, above), and this anonymous dot on a private
+  // model. The dot is the one that carried no figure at all, so nothing
+  // connected it to the other two. The assertions below therefore moved from
+  // "is a filled circle" to "is the padlock, at the same size and ink the pill
+  // uses" — they pin the SAME properties (a real box, a shrink guard, an
+  // accessible name), against the mark the app actually draws now.
 
-  it('gives the dense dot a box, so it cannot render at zero size', () => {
-    const classes = badgeOf(<PrivacyBadge tier="private" dense />)!.className.split(/\s+/);
+  it('gives the dense mark a box, so it cannot render at zero size', () => {
+    const badge = badgeOf(<PrivacyBadge tier="private" dense />)!;
+    const classes = badge.className.split(/\s+/);
     // `width` and `height` do not apply to a non-replaced INLINE element, and a
-    // `<span>` is inline by default. `h-1.5 w-1.5` on its own therefore paints
-    // nothing at all unless whichever parent mounts it happens to be a flex or
-    // grid container that blockifies it. That is this component's own failure
-    // mode — an indicator that is silently invisible, passing every screenshot
-    // review — handed to its callers to get right.
+    // `<span>` is inline by default — so a wrapper left at its default display
+    // gets its geometry from line-height rather than from its child. That is
+    // this component's own failure mode (an indicator that is silently
+    // mis-sized, passing every screenshot review) handed to its callers.
     expect(classes).toContain('inline-block');
-    expect(classes).toContain('h-1.5');
-    expect(classes).toContain('w-1.5');
     // Dense surfaces are tight by definition — that is why they are dense. A
     // flex child with no shrink guard is the first thing squeezed to nothing,
-    // and these are exactly the rows the dot was made for.
+    // and these are exactly the rows the mark was made for.
     expect(classes).toContain('shrink-0');
+    // The box now lives on the glyph, so that is where the size is asserted.
+    // `block` as well as the size: an inline svg sits on the text baseline and
+    // reserves a descender's worth of space below itself, which is how a 12px
+    // mark silently grows the row it is dropped into.
+    const glyph = badge.querySelector('svg')!;
+    expect(glyph).not.toBeNull();
+    const glyphClasses = (glyph.getAttribute('class') ?? '').split(/\s+/);
+    expect(glyphClasses).toContain('block');
+    expect(glyphClasses).toContain('h-3');
+    expect(glyphClasses).toContain('w-3');
   });
 
-  it('marks a dense Private row with a dot that carries its own name', () => {
-    const dot = badgeOf(<PrivacyBadge tier="private" dense />)!;
-    expect(dot.getAttribute('data-privacy')).toBe('private');
-    expect(dot.textContent).toBe('');
-    expect(dot.className).toContain('rounded-full');
-    expect(dot.className).toContain('bg-text-default');
-    // Colour and shape alone carry the meaning at this size, so the dot owes an
+  it('marks a dense Private row with a padlock that carries its own name', () => {
+    const mark = badgeOf(<PrivacyBadge tier="private" dense />)!;
+    expect(mark.getAttribute('data-privacy')).toBe('private');
+    expect(mark.textContent).toBe('');
+    expect(mark.className).toContain('text-text-default');
+    // Shape alone carries the meaning at this size, so the mark owes an
     // accessible name. A bare <span> maps to role `generic`, which takes none —
-    // `title` by itself would leave it both invisible and unannounced.
-    expect(dot.getAttribute('role')).toBe('img');
-    expect(dot.getAttribute('aria-label')).toBe('Private chat');
+    // `title` by itself would leave it both unannounced and (on an <svg>, where
+    // the tooltip mechanism is a `<title>` child element) untooltipped.
+    expect(mark.getAttribute('role')).toBe('img');
+    expect(mark.getAttribute('aria-label')).toBe('Private chat');
+    expect(mark.getAttribute('title')).toMatch(/^Private —/);
+    // The glyph itself must stay decorative, or a screen reader announces the
+    // padlock twice — once from the span's label and once from the svg.
+    expect(mark.querySelector('svg')!.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  /**
+   * ⚠ **The consistency this change exists to create, asserted rather than
+   * eyeballed.** The dense mark and the pill's glyph are the same figure, so a
+   * later edit cannot quietly send one of them back to a dot or a shield while
+   * the other stays a padlock — which is exactly how the three-figure state
+   * arose in the first place.
+   *
+   * The class lucide stamps on the svg (`lucide-<kebab-name>`) is the only
+   * identity a rendered icon has in jsdom; comparing the two rendered glyphs to
+   * each other, rather than to a literal, means a deliberate move to some third
+   * glyph still passes as long as BOTH forms move together.
+   */
+  it('draws the same Private glyph in the dense mark and the pill', () => {
+    const denseGlyph = badgeOf(<PrivacyBadge tier="private" dense />)!.querySelector('svg')!;
+    const denseIcon = (denseGlyph.getAttribute('class') ?? '')
+      .split(/\s+/)
+      .filter((c) => c.startsWith('lucide-'));
+    cleanup();
+    const pillGlyph = badgeOf(<PrivacyBadge tier="private" />)!.querySelector('svg')!;
+    const pillIcon = (pillGlyph.getAttribute('class') ?? '')
+      .split(/\s+/)
+      .filter((c) => c.startsWith('lucide-'));
+
+    expect(
+      denseIcon.length,
+      'lucide no longer stamps an icon class — this assertion is vacuous'
+    ).toBeGreaterThan(0);
+    expect(denseIcon).toEqual(pillIcon);
+    // And it is the padlock, which is what `chatKind.ts` builds a private
+    // conversation's `MessageSquareLock` from. Stated once, here, so the
+    // vocabulary has one written-down anchor.
+    expect(denseIcon).toContain('lucide-lock');
   });
 
   it('passes a caller className through in both dense and full mode', () => {
@@ -286,17 +353,17 @@ describe('PrivacyBadge', () => {
     expect(screen.getByText(/enforcement off/i)).toBeInTheDocument();
   });
 
-  it('says it on the Public pill too, and on the dense dot where there is no room for words', () => {
+  it('says it on the Public pill too, and on the dense mark where there is no room for words', () => {
     // Public is a tier claim as much as Private is; with enforcement off it is
     // no more true than the other one.
     const pill = badgeOf(<PrivacyBadge tier="public" enforcementOff />)!;
     expect(pill.getAttribute('data-enforcement')).toBe('off');
     expect(pill.textContent).toMatch(/enforcement off/i);
 
-    // The dot has no words, so the accessible name carries it.
-    const dot = badgeOf(<PrivacyBadge tier="private" dense enforcementOff />)!;
-    expect(dot.getAttribute('data-enforcement')).toBe('off');
-    expect(dot.getAttribute('aria-label')).toBe('Private chat — enforcement off');
+    // The dense mark has no words, so the accessible name carries it.
+    const mark = badgeOf(<PrivacyBadge tier="private" dense enforcementOff />)!;
+    expect(mark.getAttribute('data-enforcement')).toBe('off');
+    expect(mark.getAttribute('aria-label')).toBe('Private chat — enforcement off');
   });
 
   it('says nothing about enforcement when enforcement is on', () => {

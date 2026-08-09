@@ -103,11 +103,14 @@ const CodeBlock = memo(function CodeBlock({
 
   return (
     // `bg-background-code`, not `bg-background-muted`: the syntax palette in
-    // codeTheme.ts is verified against #faf8f3 / #16120c (design.md §5.1), but
-    // --background-muted is #282217 in dark — so dark code blocks were painting
-    // a ground the palette was never measured on and `comment` fell to 4.15:1,
-    // under AA. The highlighter itself renders transparent, so this div IS the
-    // ground the reader sees.
+    // codeTheme.ts is verified against --background-code (#f5f5f3 / #1b1b19,
+    // design.md §5.1) and --background-muted is a different surface (#f4f4f2 /
+    // #232320) — so painting muted would put dark code on a ground its palette
+    // was never measured on, which is how `comment` once fell to 4.15:1, under
+    // AA. The two tokens are close now that the neutrals are shared, but they
+    // are still distinct and the generator measures against the code one.
+    // The highlighter itself renders transparent, so this div IS the ground the
+    // reader sees.
     <div className="w-full border border-border-subtle rounded-xl overflow-hidden my-2 bg-background-code">
       {/* Header bar */}
       <div className="flex items-center justify-between h-8 px-3 bg-background-default border-b border-border-subtle">

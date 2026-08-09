@@ -1111,7 +1111,32 @@ const createChat = async (
     y: initialBounds?.y ?? mainWindowState.y,
     width: initialBounds?.width ?? mainWindowState.width,
     height: initialBounds?.height ?? mainWindowState.height,
-    minWidth: 800,
+    // DERIVED, not chosen: 240px sidebar (`SIDEBAR_WIDTH`, 15rem, in
+    // components/ui/sidebar.tsx) + the 760px reading column (`--measure-chat`
+    // in styles/main.css) = 1000. `useContentSize` is on, so this is content
+    // width, which is the number the renderer sees.
+    //
+    // Below it the Home column is narrower than its own measure, and the usage
+    // heatmap — the one thing on Home whose size is computed rather than
+    // declared — starts shrinking its cells. Measured in a browser against the
+    // real stylesheet: at 990px content width the grid is still at its full
+    // 23px cells; at 980px it drops to 22px and keeps stepping down to 16px by
+    // 800px. The exact cliff is 989px; 1000 is the same number expressed in the
+    // tokens it comes from, so it survives the heatmap's cell ladder changing.
+    // `styles/measures.test.ts` asserts the arithmetic still holds.
+    //
+    // ⚠ This is a *minimum window size*, not a content `max-width` — it is not
+    // the flat pixel cap that docs/desktop-ui/window-scaling-regressions.md
+    // warns about. It puts a floor under the window; it does nothing to a wide
+    // one, where `--measure-page` still tracks the pane as a percentage.
+    //
+    // The height axis is deliberately NOT capped to the same standard. A short
+    // window shrinks the heatmap's cells too, but the minHeight that would stop
+    // it lands around 700-800px, which is unusable on a 1280x800 display once
+    // the menu bar and Dock are taken out. The heatmap keeps its chrome locked
+    // to its grid instead (see UsageHeatmap's `heatStyle`), so a squeezed grid
+    // stays a coherent block rather than desyncing from its own labels.
+    minWidth: 1000,
     minHeight: 600,
     resizable: true,
     useContentSize: true,
@@ -5302,8 +5327,9 @@ async function appMain() {
         // notion of parchment / alma-mater / roche-limit. Substituting the
         // app family's `--background-default` here would not make the window
         // family-aware — the figure would still paint its own grey — it would
-        // only replace "no flash" with "a flash of the wrong colour", which is
-        // strictly worse on Alma Mater (navy `#08213f`) and Roche (`#1b1b19`).
+        // only replace "no flash" with "a flash of the wrong colour" against
+        // the app's own `--background-default` (`#ffffff` light, `#1b1b19`
+        // dark — one shared value across all three families since 2026-08-08).
         //
         // Making this genuinely family-aware means teaching `_common.js` to
         // read a host palette (it already reads `window.__BR_VIZ_HOST_THEME__`

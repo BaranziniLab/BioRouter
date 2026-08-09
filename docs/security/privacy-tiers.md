@@ -2417,6 +2417,22 @@ people to stop seeing badges, which defeats R10's actual goal — knowing which 
 
 Never colour alone: shape plus glyph plus word.
 
+> **As shipped, the three bullets above are superseded** — the reasoning is argued at length in
+> `ui/desktop/src/components/ui/PrivacyBadge.tsx`, which is the authority.
+>
+> 1. **The glyph is a PADLOCK, not a shield.** The app was marking one fact with three unrelated
+>    figures: a padlocked speech bubble on a private conversation (`chatKind.ts`), a shield on a
+>    private extension, and a bare dot on a private model. They are the same tier, so they are now
+>    the same mark, and `Shield` has been removed from the icon barrel. Do not reintroduce a second
+>    privacy glyph for a fourth subject — name the *subject* in words beside the padlock instead.
+> 2. **Public is a filled pill, not a hairline one.** No neutral resting border token in this system
+>    clears 1.6:1 against either badge ground; in parchment:dark the hairline and its surface are
+>    literally the same colour, so the pill above would have shipped invisible.
+> 3. **The dense mark is the padlock at 12 px, not a 6 px dot**, and its one surface today is the
+>    composer's model chip — the chat lists moved to `ChatKindIcon`, which folds the tier into the
+>    glyph. Public still renders nothing there, and deliberately not an *open* padlock: a mark on
+>    every public row puts both tiers at the same weight and trains people past both.
+
 **Zero theme work.** A theme is one file (`ui/desktop/themes/<id>.theme.mjs`) and
 `npm run themes -- --check` runs inside `lint:check`. The badge uses **only existing semantic
 tokens** and adds no new token to any theme file, so it renders correctly across Parchment, Alma

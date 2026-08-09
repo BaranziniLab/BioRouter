@@ -1,7 +1,16 @@
 // The app's own set, never `lucide-react` directly — see `AffiliationBadge`'s
 // import for the defect this closes. The two badges are deliberately one
 // system, so they must also draw from one icon set at one stroke weight.
-import { ShieldIcon } from '../icons/app-icons';
+//
+// ⚠ **A padlock, and the SAME padlock the chat list draws.** This was a shield
+// in the pill and a filled dot in the dense form, which meant the app marked
+// Private with three unrelated figures at once: a padlocked speech bubble on a
+// private conversation (`chatKind.ts` → `MessageSquareLock`), a shield on a
+// private extension, and an anonymous dot on a private model. They are one
+// concept — the issue-#56 tier that decides where a transcript may go — so they
+// are now one mark, and the two forms below differ only in whether the word
+// fits beside it.
+import { Lock } from '../icons/app-icons';
 import { Badge } from './badge';
 import { cn } from '../../utils';
 import { usePrivacyTiersEnabled } from '../ConfigContext';
@@ -22,8 +31,15 @@ export interface PrivacyBadgeProps {
    */
   tier: SessionClassification;
   /**
-   * Dense surfaces (History rows, tab strips) where a full pill would crowd the
-   * row: render a single dot for Private and nothing at all for Public.
+   * Dense surfaces — today the composer's model chip — where a full pill would
+   * crowd the row: render the padlock alone and nothing at all for Public.
+   *
+   * ⚠ It used to be a plain dot, and the dot is what made this form unreadable
+   * on the one surface that still uses it. The chat lists that the doc-comment
+   * here once named moved to `ChatKindIcon`, which folds the tier into a
+   * padlocked bubble; what was left beside a model name was a bare mark with no
+   * figure to connect it to any of that. Same glyph as the pill, same glyph as
+   * the chat list — only the word is dropped.
    */
   dense?: boolean;
   /**
@@ -124,8 +140,24 @@ const TIER: Record<
  * What the fill is NOT is the carrier of the meaning. `--background-muted`
  * equals `--background-canvas` outright in three scopes and `--sidebar` in
  * parchment:dark, so on those grounds the pill reads as its label rather than as
- * a filled chip. That is why Private is a shield glyph AND the word, never a
+ * a filled chip. That is why Private is a padlock glyph AND the word, never a
  * colour: the fill is contrast for the ink, not the signal.
+ *
+ * ⚠ **The padlock is the app's ONE mark for the private tier**, shared with
+ * `chatKind.ts`'s padlocked speech bubble on a private conversation. The three
+ * subjects this badge is hung on — a conversation, a bound model, an extension
+ * — were marked with three different figures (a padlocked bubble, a dot, a
+ * shield) for one and the same fact: `ProviderTier`/`SessionClassification`
+ * `private`, the issue-#56 tier that decides which models may see the data. A
+ * reader had to learn three symbols to read one lattice, and nothing in the
+ * three shapes said they were related. Adding a fourth figure for a fourth
+ * subject is the failure mode to avoid here; there is one glyph, and its
+ * SUBJECT is named in words beside it or in the accessible name.
+ *
+ * Public gets no glyph, and deliberately no *unlocked* padlock. An open padlock
+ * is a mark, and a mark is what Private has to be able to catch the eye with;
+ * drawing one on every public row would put the two tiers at the same visual
+ * weight and train people past both. Public says its word and nothing more.
  *
  * Geometry comes from `Badge` and only from `Badge` — the radius, padding and
  * type scale are never restated here, which is the drift `badge.tsx`'s own
@@ -144,7 +176,7 @@ export function PrivacyBadge({
   const off = enforcementOff ?? !enforced;
   const spec = TIER[tier];
 
-  if (dense && !spec.markedWhenDense) return null; // no dot means public
+  if (dense && !spec.markedWhenDense) return null; // no padlock means public
 
   if (dense) {
     return (
@@ -159,9 +191,13 @@ export function PrivacyBadge({
         // and a hardcoded value is the one shape that would compile and then
         // silently mislabel the new tier as Private on every dense surface.
         data-privacy={tier}
-        // `role`, not a bare title: a plain span maps to role `generic`, which
-        // does not take an accessible name, so `title` alone would leave the
-        // dot silent to a screen reader — invisible AND unannounced.
+        // `role` and `title` on the SPAN, not on the glyph. `title` is an HTML
+        // global attribute; on an inline `<svg>` it is not the SVG tooltip
+        // mechanism (that is a `<title>` CHILD element), so hanging it there
+        // would silently drop the hover text in some engines. And a plain span
+        // maps to role `generic`, which does not take an accessible name — so
+        // `title` by itself would leave the padlock unannounced as well as
+        // untooltipped. Both live here; the glyph is decorative.
         role="img"
         aria-label={off ? 'Private chat — enforcement off' : 'Private chat'}
         title={
@@ -169,15 +205,24 @@ export function PrivacyBadge({
             ? 'Private — but privacy tiers are turned off, so nothing enforces this'
             : 'Private — only private models can read this chat'
         }
-        // `inline-block`, not the default `inline`: width and height do not
-        // apply to a non-replaced inline element, so `h-1.5 w-1.5` on a bare
-        // span paints NOTHING unless the parent that mounts it happens to be a
-        // flex or grid container. `shrink-0` because dense surfaces are tight
-        // by definition and a flex child with no shrink guard is the first
+        // `inline-block`, not the default `inline`: this wrapper shrink-wraps a
+        // glyph that carries its own box, and an inline box would additionally
+        // reserve line-height around it. `shrink-0` because dense surfaces are
+        // tight by definition and a flex child with no shrink guard is the first
         // thing squeezed away. Both belong here, not in each caller: an
         // indicator whose whole job is to be seen cannot delegate being visible.
-        className={cn('inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-text-default', className)}
-      />
+        //
+        // The ink is the token the pill's Private state uses, so the two forms
+        // cannot drift apart in colour any more than they can in shape.
+        className={cn('inline-block shrink-0 text-text-default', className)}
+      >
+        {/* `block`, so the wrapper is exactly 12×12 — an inline svg sits on the
+            text baseline and drags a descender's worth of empty space under it,
+            which is how a 12px mark ends up nudging a 28px chip's row height.
+            `h-3 w-3` is the size `AffiliationBadge`'s dense glyph already uses,
+            and the two sit side by side on the composer's model chip. */}
+        <Lock className="block h-3 w-3" aria-hidden="true" />
+      </span>
     );
   }
 
@@ -193,7 +238,7 @@ export function PrivacyBadge({
       // word is "off".
       className={cn('bg-background-muted', off ? 'text-text-muted' : spec.ink, className)}
     >
-      {spec.glyph ? <ShieldIcon className="h-3 w-3" aria-hidden="true" /> : null}
+      {spec.glyph ? <Lock className="h-3 w-3" aria-hidden="true" /> : null}
       {spec.label}
       {off ? <span className="text-text-muted">&nbsp;— enforcement off</span> : null}
     </Badge>

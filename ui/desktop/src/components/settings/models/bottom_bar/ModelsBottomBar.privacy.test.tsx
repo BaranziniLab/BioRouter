@@ -96,7 +96,7 @@ const ucsfAffiliation = {
   institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
 };
 
-describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
+describe('ModelsBottomBar — the chip carries the dense padlock, never a pill', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // The served copy is held in module state (one install, one disclosure), so
@@ -154,7 +154,7 @@ describe('ModelsBottomBar — the chip carries a dot, never a pill', () => {
    * chat's public dot beside its name, under a tooltip reading
    * `gpt-5.5-… · Public chat`, and the only subject in reach was the model.
    *
-   * The dot is the model's now. `SessionNamePill` carries the chat's, in the
+   * The mark is the model's now. `SessionNamePill` carries the chat's, in the
    * full pill, at the top of the chat — so nothing was lost and the duplicate
    * that was misattributing itself is gone.
    *
