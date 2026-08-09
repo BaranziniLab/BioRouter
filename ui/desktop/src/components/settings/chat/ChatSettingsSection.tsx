@@ -1,3 +1,4 @@
+import { ContextsSection } from '../contexts/ContextsSection';
 import { ModeSection } from '../mode/ModeSection';
 import { ResponseStylesSection } from '../response_styles/ResponseStylesSection';
 import { CapabilitiesSection } from '../capabilities/CapabilitiesSection';
@@ -48,6 +49,26 @@ export default function ChatSettingsSection() {
       {/* Directly under Capabilities, which owns the switch that turns memory
           on and off: the store and its own toggle belong together. */}
       <MemorySection />
+
+      {/*
+        ⚠ Below Memory, not above it. The brief asked for "directly beneath
+        Capabilities and directly above App SDK", and those two are not the same
+        slot: MemorySection already sits between them behind a load-bearing
+        comment pinning it under Capabilities, because Capabilities owns the
+        switch that turns memory on and off. Splitting that pair to satisfy the
+        letter of the request would break the reason it exists.
+      */}
+      <div className="biorouter-settings-section">
+        <div className="biorouter-settings-section-header">
+          <h2 className="text-caps text-text-muted mb-1">Contexts</h2>
+          <p className="text-xs text-text-muted">
+            Skills that ship with Biorouter. They load into every chat unless you turn one off.
+          </p>
+        </div>
+        <div className="biorouter-settings-list">
+          <ContextsSection />
+        </div>
+      </div>
 
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">

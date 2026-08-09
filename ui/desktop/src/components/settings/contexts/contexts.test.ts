@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { CONTEXTS, CONTEXT_IDS, contextConfigKey, isContextSkill } from './contexts';
 
 describe('contexts', () => {
@@ -46,5 +48,34 @@ describe('contexts', () => {
       expect(c.description.length).toBeGreaterThan(0);
       expect(c.description).not.toContain('—');
     }
+  });
+});
+
+/**
+ * ⚠ The section's placement is otherwise unprotected: `SettingsView.test.tsx`
+ * asserts the App tab's order and nothing asserts the Chat tab's, so a
+ * reordering would go unnoticed. This pins the sequence at the source, which is
+ * the only place it can be checked without a layout engine.
+ */
+describe('Settings -> Chat section order', () => {
+  it('puts Contexts after Capabilities and Memory, and before App SDK', () => {
+    const src = readFileSync(
+      join(__dirname, '..', 'chat', 'ChatSettingsSection.tsx'),
+      'utf8'
+    );
+    const at = (needle: string) => {
+      const i = src.indexOf(needle);
+      expect(i, `${needle} missing from ChatSettingsSection`).toBeGreaterThan(-1);
+      return i;
+    };
+    // Capabilities owns the switch that turns memory on, which is why Memory
+    // sits directly under it; Contexts goes after that pair.
+    expect(at('<CapabilitiesSection />')).toBeLessThan(at('<MemorySection />'));
+    expect(at('<MemorySection />')).toBeLessThan(at('<ContextsSection />'));
+    // ⚠ `>App SDK<`, not `App SDK`. The bare string also matches the comment
+    // in ChatSettingsSection explaining this very ordering, which sits ABOVE
+    // the section — so the loose form failed on correct code. Third time this
+    // repo has produced a guard that matched its own prose.
+    expect(at('<ContextsSection />')).toBeLessThan(at('>App SDK<'));
   });
 });
