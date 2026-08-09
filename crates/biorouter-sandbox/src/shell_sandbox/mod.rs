@@ -133,7 +133,7 @@ impl SandboxReport {
     /// `sandbox: landlock+seccomp — writes confined + network denied`.
     /// Degradations, if any, are appended after `;`.
     pub fn summary(&self) -> String {
-        let mut s = format!("sandbox: {} — {}", self.mechanism, self.tier.describe());
+        let mut s = format!("sandbox: {}, {}", self.mechanism, self.tier.describe());
         if !self.degradations.is_empty() {
             s.push_str("; ");
             s.push_str(&self.degradations.join("; "));

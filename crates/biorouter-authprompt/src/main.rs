@@ -303,7 +303,7 @@ mod tests {
         let responds: Bool = unsafe { msg_send![&*context, respondsToSelector: sel] };
         assert!(
             responds.as_bool(),
-            "LAContext does not respond to setTouchIDAuthenticationAllowableReuseDuration: — \
+            "LAContext does not respond to setTouchIDAuthenticationAllowableReuseDuration:, so \
              the F-13 hardening in evaluate() would crash the helper at runtime"
         );
     }

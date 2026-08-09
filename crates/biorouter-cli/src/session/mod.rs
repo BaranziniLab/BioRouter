@@ -1851,8 +1851,8 @@ async fn print_startup_notices() {
         println!(
             "{} {} {}",
             style("⚠").yellow(),
-            style(format!("{} not found", d.display_name)).yellow(),
-            style("— run `biorouter doctor` to set up prerequisites").dim()
+            style(format!("{} not found.", d.display_name)).yellow(),
+            style("Run `biorouter doctor` to set up prerequisites").dim()
         );
     }
     if let Ok(Some(u)) = tokio::time::timeout(
@@ -1867,7 +1867,7 @@ async fn print_startup_notices() {
                 style("↑").color256(137).bold(),
                 style(format!("Biorouter {} is available", u.latest)).color256(137),
                 style(format!(
-                    "(you have {}) — install the latest release to upgrade",
+                    "(you have {}). Install the latest release to upgrade",
                     u.current
                 ))
                 .dim()
@@ -2307,14 +2307,14 @@ fn session_store_error_hint(error_msg: &str, store: &ActiveSessionStore) -> Opti
         ActiveSessionStore::Shared(path) => format!(
             "The session store ({}) rejected an operation. If another biorouter \
              process (the desktop app, biorouterd, or a concurrent run) is using \
-             the same store, retry once it is idle — or use `--no-session` for a \
+             the same store, retry once it is idle, or use `--no-session` for a \
              fully isolated run.",
             path.display()
         ),
         ActiveSessionStore::Private(path) => format!(
             "This run's private session store ({}) rejected an operation. The \
              store is exclusive to this `--no-session` run, so another biorouter \
-             process is not the cause — check for a full disk or the OS temp \
+             process is not the cause. Check for a full disk or the OS temp \
              directory being cleaned mid-run, then retry.",
             path.display()
         ),
@@ -2522,7 +2522,7 @@ mod tests {
         assert!(is_privacy_turn_refusal(&refusal));
 
         assert!(!is_privacy_turn_refusal(
-            &Message::assistant().with_text("Sure — here is the analysis you asked for.")
+            &Message::assistant().with_text("Sure, here is the analysis you asked for.")
         ));
         // Not merely "mentions privacy": an assistant that talks ABOUT the
         // feature must not have a repair block stapled to its answer.

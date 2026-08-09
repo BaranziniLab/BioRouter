@@ -332,7 +332,7 @@ fn uv_sync_hint(stderr: &str) -> Option<&'static str> {
         // downloading a wheel.
         Some(
             "`cryptography` ≥49 no longer ships x86_64 (Intel) macOS wheels, so on an \
-             Intel Mac it must be compiled from source — which needs a Rust toolchain. \
+             Intel Mac it must be compiled from source, which needs a Rust toolchain. \
              Install rustup (https://rustup.rs) and retry, or ask the extension author \
              to cap `cryptography<49` (the last series with Intel-Mac wheels).",
         )

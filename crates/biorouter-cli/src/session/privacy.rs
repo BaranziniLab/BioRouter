@@ -250,7 +250,7 @@ pub fn repair_block(session_id: &str, private_models: &[PrivateModel]) -> String
 /// have none) and must not print `BIOROUTER_PROVIDER=` with nothing after it.
 pub fn export_capability_refusal(session_id: &str, private_models: &[PrivateModel]) -> String {
     let mut out = String::from(
-        "This chat is private, and this terminal is running a public model — so it may not \
+        "This chat is private, and this terminal is running a public model, so it may not \
          write a copy of the transcript to a file. Nothing was exported and the chat is \
          unchanged.\n",
     );

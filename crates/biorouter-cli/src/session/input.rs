@@ -338,7 +338,7 @@ fn print_help() {
     let shell: &[(&str, &str)] = &[
         (
             "biorouter knowledge",
-            "Manage knowledge bases — ingest, lint, query",
+            "Manage knowledge bases: ingest, lint, query",
         ),
         (
             "biorouter extension",

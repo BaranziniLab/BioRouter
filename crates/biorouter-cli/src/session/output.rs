@@ -969,7 +969,7 @@ pub fn render_diverge_success(new_session_id: &str) {
     );
     println!(
         "  {}",
-        style("the original conversation is unchanged — keep chatting here").dim()
+        style("the original conversation is unchanged, keep chatting here").dim()
     );
     println!();
 }
@@ -1463,7 +1463,7 @@ pub fn display_greeting() {
     println!();
     println!(
         "  {}",
-        style("Biorouter — integrated biomedical research environment").bold()
+        style("Biorouter: integrated biomedical research environment").bold()
     );
     println!(
         "  {}",

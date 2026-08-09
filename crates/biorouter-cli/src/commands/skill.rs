@@ -308,7 +308,7 @@ fn load_skills_config(path: &Path) -> Result<serde_json::Value> {
         return Ok(serde_json::json!({}));
     }
     let value: serde_json::Value = serde_json::from_str(&content)
-        .with_context(|| format!("{} is not valid JSON — fix or remove it", path.display()))?;
+        .with_context(|| format!("{} is not valid JSON. Fix or remove it", path.display()))?;
     if !value.is_object() {
         bail!("{} must contain a JSON object", path.display());
     }
@@ -509,7 +509,7 @@ fn resolve_identifier(
         _ => {
             let listed: Vec<String> = candidates.iter().map(candidate_label).collect();
             Err(ResolveError::Fatal(anyhow!(
-                "'{q}' is ambiguous — it matches {} distinct targets: {}. \
+                "'{q}' is ambiguous. It matches {} distinct targets: {}. \
                  Use the full slug for a skill, or the exact directory name for a bundle.",
                 candidates.len(),
                 listed.join("; ")
@@ -816,7 +816,7 @@ fn enable_with(skills: &[InstalledSkill], path: &Path, query: &str) -> Result<()
     {
         if disabled_set(&config).contains(bundle) {
             println!(
-                "  {} its bundle {} is still disabled — run `biorouter skill enable {}` to re-enable the whole bundle",
+                "  {} its bundle {} is still disabled. Run `biorouter skill enable {}` to re-enable the whole bundle",
                 style("!").yellow(),
                 style(bundle).bold(),
                 bundle

@@ -201,7 +201,7 @@ impl ShellSandbox for LinuxSandbox {
             Backend::None => SandboxReport::none(
                 "none",
                 "Landlock is not enabled in this kernel's `lsm=` list (or the sandbox helper is \
-                 not wired into this binary), and `bubblewrap` is not installed — install \
+                 not wired into this binary), and `bubblewrap` is not installed. Install \
                  `bubblewrap` for a namespace sandbox, or boot with Landlock enabled",
             ),
         }

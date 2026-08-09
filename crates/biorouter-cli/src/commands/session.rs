@@ -265,7 +265,7 @@ async fn print_grouped_sessions(
         match crate::commands::session_watch::running_session_ids().await {
             Ok(ids) => Some(ids),
             Err(err) => {
-                eprintln!("note: subagent liveness is unknown — {err}");
+                eprintln!("note: subagent liveness is unknown: {err}");
                 None
             }
         };
@@ -1136,7 +1136,7 @@ mod tests {
         );
         assert!(
             !narrow.iter().any(|s| s.id == child_id),
-            "without the flag a subagent row is invisible — this is the defect, \
+            "without the flag a subagent row is invisible. This is the defect, \
              and it lives in the SQL type filter"
         );
 
@@ -1349,7 +1349,7 @@ mod tests {
         for id in &hidden {
             assert!(
                 !listed.iter().any(|s| &s.id == id),
-                "{id} is listed after all — this test's premise is gone"
+                "{id} is listed after all. This test's premise is gone"
             );
         }
     }

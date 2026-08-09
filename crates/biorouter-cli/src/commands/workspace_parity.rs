@@ -354,7 +354,7 @@ mod tests {
                 .collect();
         assert!(
             !advertised.is_empty(),
-            "get_tools() returned nothing — the selector, not the surface, is broken"
+            "get_tools() returned nothing: the selector, not the surface, is broken"
         );
         let tabled: BTreeSet<String> = ALL_CAPABILITIES
             .iter()
@@ -380,7 +380,7 @@ mod tests {
         let described = workspace_tagged_operations();
         assert!(
             !described.is_empty(),
-            "no operation carries the `workspace` tag — the selector matched \
+            "no operation carries the `workspace` tag: the selector matched \
              nothing, which is how a gate exits 0 having checked nothing"
         );
         let tabled: BTreeSet<(String, String)> = ALL_CAPABILITIES
@@ -459,7 +459,7 @@ mod tests {
             .collect();
         assert!(
             asymmetric.len() <= 2,
-            "{} accepted asymmetries — each new one needs operator sign-off in \
+            "{} accepted asymmetries. Each new one needs operator sign-off in \
              the plan, not a table edit: {asymmetric:?}",
             asymmetric.len()
         );

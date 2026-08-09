@@ -540,7 +540,7 @@ enum SessionCommand {
         long_about = "Joins a session that is running RIGHT NOW. Prints the conversation \
                       so far, then follows it live; anything you type is delivered to the \
                       running turn (or starts one). Use `session --resume` instead for a \
-                      finished transcript — resuming a live session opens a second agent \
+                      finished transcript. Resuming a live session opens a second agent \
                       on it and the two do not share the daemon's turn lock."
     )]
     Attach {
@@ -1896,7 +1896,7 @@ fn parse_run_input(
         (Some(file), _, _) => {
             let contents = std::fs::read_to_string(file).unwrap_or_else(|err| {
                 eprintln!(
-                    "Instruction file not found — did you mean to use biorouter run --text?\n{}",
+                    "Instruction file not found. Did you mean to use biorouter run --text?\n{}",
                     err
                 );
                 std::process::exit(1);

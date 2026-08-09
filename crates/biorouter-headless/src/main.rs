@@ -1444,19 +1444,19 @@ fn extract_skill_bundle(entries: &[ArchiveEntry]) -> Result<serde_json::Value, S
 fn validate_brxt_bundle(path: &Path) -> Result<serde_json::Value, String> {
     let entries = read_archive(path)?;
     if !entries.iter().any(|entry| entry.name == "manifest.json") {
-        return Err("Missing manifest.json — not a valid .brxt bundle".to_string());
+        return Err("Missing manifest.json: not a valid .brxt bundle".to_string());
     }
     if !entries
         .iter()
         .any(|entry| entry.name.eq_ignore_ascii_case("README.md"))
     {
-        return Err("Missing README.md — not a valid .brxt bundle".to_string());
+        return Err("Missing README.md: not a valid .brxt bundle".to_string());
     }
     if !entries.iter().any(|entry| entry.name == "pyproject.toml") {
-        return Err("Missing pyproject.toml — not a valid .brxt bundle".to_string());
+        return Err("Missing pyproject.toml: not a valid .brxt bundle".to_string());
     }
     if !entries.iter().any(|entry| entry.name.starts_with("src/")) {
-        return Err("Missing src/ directory — not a valid .brxt bundle".to_string());
+        return Err("Missing src/ directory: not a valid .brxt bundle".to_string());
     }
 
     let manifest_entry = entries

@@ -64,7 +64,7 @@ impl ShellSandbox for WindowsSandbox {
             "Windows has no unprivileged, general-purpose write-confinement sandbox that can wrap \
              an arbitrary developer command without breaking it (AppContainer breaks git/node/\
              python; firewall network-deny needs administrator). The command runs with full user \
-             authority — use `BIOROUTER_SHELL_SANDBOX=strict` to refuse to run instead, or run \
+             authority. Use `BIOROUTER_SHELL_SANDBOX=strict` to refuse to run instead, or run \
              untrusted work on Linux/macOS where a kernel sandbox is available",
         )
     }

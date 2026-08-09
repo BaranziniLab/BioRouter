@@ -128,7 +128,7 @@ impl DaemonAuth {
 pub(crate) const NO_SECRET_KEY_HELP: &str =
     "BIOROUTER_SERVER__SECRET_KEY is not set, so this command cannot authenticate with the \
      daemon.\n\nIf the Biorouter desktop app is running: its daemon is deliberately \
-     unreachable from a terminal — it binds a random port and mints a new secret every launch, \
+     unreachable from a terminal: it binds a random port and mints a new secret every launch, \
      and neither is published. Point the app at a daemon you control instead:\n  \
      1. Start one yourself, with a port and a secret you choose:\n       \
      BIOROUTER_PORT=3000 BIOROUTER_SERVER__SECRET_KEY=<key> biorouterd agent\n  \
@@ -999,7 +999,7 @@ async fn post_reply_quiet(
                     Ok(Ok(_)) => println!("[the turn you started has ended]"),
                     Ok(Err(err)) => println!(
                         "[the turn you started stopped streaming here: {err}]\n\
-                         It may still be running — `biorouter session cancel <id>` stops it."
+                         It may still be running. `biorouter session cancel <id>` stops it."
                     ),
                     // Only reachable if the runtime is shutting down, which is
                     // the process exiting anyway.
@@ -1192,7 +1192,7 @@ async fn resolve_attach_target(
     }
     if given > 1 {
         return Err(anyhow!(
-            "attach takes exactly one target — a session id, --name or --of, not several."
+            "attach takes exactly one target: a session id, --name or --of, not several."
         ));
     }
     if let Some(id) = session_id {
@@ -1289,10 +1289,10 @@ pub async fn handle_session_attach(
     let session_id = resolve_attach_target(session_id, name, of).await?;
 
     if read_only {
-        eprintln!("attached to session {session_id} — observing only (ctrl-c to detach)");
+        eprintln!("attached to session {session_id}, observing only (ctrl-c to detach)");
     } else {
         eprintln!(
-            "attached to session {session_id} — type a message and press enter to steer it \
+            "attached to session {session_id}. Type a message and press enter to steer it \
              (ctrl-c to detach)"
         );
     }
@@ -1369,7 +1369,7 @@ pub async fn handle_session_attach(
                 match window.on_ctrl_c() {
                     CtrlCAction::Detach => {
                         eprintln!(
-                            "\ndetached. The session keeps running — \
+                            "\ndetached. The session keeps running. \
                              `biorouter session cancel {session_id}` stops it."
                         );
                         return Ok(());
@@ -1382,7 +1382,7 @@ pub async fn handle_session_attach(
                         );
                     }
                     CtrlCAction::ForceExit => {
-                        eprintln!("\nleaving — the turn you started is being cancelled.");
+                        eprintln!("\nleaving: the turn you started is being cancelled.");
                         return Ok(());
                     }
                 }
@@ -1524,7 +1524,7 @@ mod tests {
         assert_eq!(
             parse_running_ids("{\"session_ids\":[\"a\""),
             None,
-            "truncated body — the shape a chunked or compressed read would leave"
+            "truncated body: the shape a chunked or compressed read would leave"
         );
         assert_eq!(
             parse_running_ids("{\"error\":\"boom\"}"),
@@ -1924,7 +1924,7 @@ mod tests {
         assert_eq!(code, 200);
         assert!(
             !holder.is_finished(),
-            "the socket must still be held — abandoning it cancels the turn"
+            "the socket must still be held: abandoning it cancels the turn"
         );
 
         daemon

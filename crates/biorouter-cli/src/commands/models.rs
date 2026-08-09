@@ -401,7 +401,7 @@ pub async fn handle_models_local_rm(model: String) -> Result<()> {
         );
     } else {
         println!(
-            "  {} nothing to remove for {} — it was not in the Hugging Face fallback cache",
+            "  {} nothing to remove for {}: it was not in the Hugging Face fallback cache",
             style("·").dim(),
             style(&model).cyan()
         );

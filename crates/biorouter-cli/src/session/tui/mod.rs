@@ -599,7 +599,7 @@ async fn drive_response(
                             app.thinking = Some(super::thinking::get_random_thinking_message().to_string());
                         } else if super::find_elicitation_request(&message).is_some() {
                             commit_stream_to_session(app, &mut session.messages);
-                            app.push_note("This step needs an interactive form not yet supported in the TUI — cancelling. Use `BIOROUTER_CLI_CLASSIC=1` for that flow.");
+                            app.push_note("This step needs an interactive form not yet supported in the TUI, so it is being cancelled. Use `BIOROUTER_CLI_CLASSIC=1` for that flow.");
                             cancel.cancel();
                             while stream.next().await.is_some() {}
                             break;
@@ -828,7 +828,7 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
         }
         other => {
             app.push_note(&format!(
-                "`{}` isn't available in the TUI yet — run `BIOROUTER_CLI_CLASSIC=1 biorouter session` for the full command set.",
+                "`{}` isn't available in the TUI yet. Run `BIOROUTER_CLI_CLASSIC=1 biorouter session` for the full command set.",
                 other
             ));
             true
@@ -1109,7 +1109,7 @@ fn draw_queued(f: &mut Frame, app: &App, area: Rect) {
     let n = app.queued.len();
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
-        format!("⏳ {n} queued — will run next, in order:"),
+        format!("⏳ {n} queued, will run next, in order:"),
         Style::new().fg(ACCENT).add_modifier(Modifier::DIM),
     )));
     let shown = (QUEUED_PREVIEW_MAX as usize).min(n);
@@ -1447,7 +1447,7 @@ fn greeting_into(app: &mut App) {
     // version, so it tracks the release automatically).
     app.push_line(Line::from(vec![
         Span::styled(
-            "Biorouter — integrated biomedical research environment",
+            "Biorouter: integrated biomedical research environment",
             Style::new().add_modifier(Modifier::BOLD),
         ),
         Span::styled(
@@ -1704,11 +1704,11 @@ async fn push_startup_notices(app: &mut App) {
             app.push_line(Line::from(vec![
                 Span::styled("⚠ ", Style::new().fg(Color::Yellow)),
                 Span::styled(
-                    format!("{} not found", d.display_name),
+                    format!("{} not found.", d.display_name),
                     Style::new().fg(Color::Yellow),
                 ),
                 Span::styled(
-                    "  — run `biorouter doctor` to set up prerequisites".to_string(),
+                    "  Run `biorouter doctor` to set up prerequisites".to_string(),
                     Style::new().add_modifier(Modifier::DIM),
                 ),
             ]));
@@ -1731,7 +1731,7 @@ async fn push_startup_notices(app: &mut App) {
                 ),
                 Span::styled(
                     format!(
-                        "  (you have {}) — install the latest release to upgrade",
+                        "  (you have {}). Install the latest release to upgrade",
                         u.current
                     ),
                     Style::new().add_modifier(Modifier::DIM),
