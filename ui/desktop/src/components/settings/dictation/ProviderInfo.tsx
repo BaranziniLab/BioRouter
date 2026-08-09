@@ -12,7 +12,7 @@ export const ProviderInfo = ({ provider }: ProviderInfoProps) => {
     <div className="p-3 bg-background-muted rounded-element">
       {provider === 'openai' && (
         <p className="text-xs text-text-muted">
-          Uses OpenAI's Whisper API for high-quality transcription. Requires an OpenAI API key
+          Uses OpenAI's Whisper API. Requires an OpenAI API key
           configured in the Models section.
         </p>
       )}

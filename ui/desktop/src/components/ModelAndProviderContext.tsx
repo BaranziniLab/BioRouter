@@ -40,7 +40,7 @@ export const UNKNOWN_PROVIDER_MSG = 'Unknown provider in config -- please inspec
 
 // success
 const CHANGE_MODEL_TOAST_TITLE = 'Model changed';
-const SWITCH_MODEL_SUCCESS_MSG = 'Successfully switched models';
+const SWITCH_MODEL_SUCCESS_MSG = 'Switched models';
 
 /**
  * Issue #56 DR-16. The one refusal in this feature addressed to the USER rather

@@ -34,7 +34,7 @@ export const CAPABILITIES: CapabilityMeta[] = [
   {
     key: 'autovisualiser',
     label: 'Auto Visualiser',
-    description: 'Render charts, diagrams, maps, and other rich visualizations inline.',
+    description: 'Render charts, diagrams and maps inline.',
     defaultEnabled: true,
   },
   {

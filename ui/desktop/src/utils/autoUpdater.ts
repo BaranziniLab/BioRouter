@@ -77,7 +77,7 @@ export function registerUpdateIpcHandlers() {
       // Ensure auto-updater is properly initialized
       if (!autoUpdater.currentVersion) {
         log.error('Auto-updater currentVersion is null/undefined');
-        throw new Error('Auto-updater not initialized. Please restart the application.');
+        throw new Error('Auto-updater not initialized. Restart Biorouter.');
       }
 
       log.info(
@@ -161,7 +161,7 @@ export function registerUpdateIpcHandlers() {
           log.error('GitHub fallback also failed:', fallbackError);
           return {
             updateInfo: null,
-            error: 'Unable to check for updates. Please check your internet connection.',
+            error: 'Could not check for updates. Check your internet connection.',
           };
         }
       }
@@ -224,14 +224,14 @@ export function registerUpdateIpcHandlers() {
         const updatePath = githubUpdateInfo.extractedPath || githubUpdateInfo.downloadPath;
 
         if (!updatePath) {
-          throw new Error('Update file path not found. Please download the update first.');
+          throw new Error('Update file path not found. Download the update first.');
         }
 
         // Check if the update path exists
         try {
           await fs.access(updatePath);
         } catch {
-          throw new Error('Update file not found. Please download the update first.');
+          throw new Error('Update file not found. Download the update first.');
         }
 
         // Improved dialog with clearer instructions

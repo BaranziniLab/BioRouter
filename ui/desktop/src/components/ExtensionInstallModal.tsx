@@ -173,7 +173,7 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
 
         toastService.success({
           title: `Extension '${extName}' Already Installed`,
-          msg: `'${extName}' extension has already been installed successfully. Start a new chat session to use it.`,
+          msg: `'${extName}' is already installed. Start a new chat session to use it.`,
         });
         return;
       }
