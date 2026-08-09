@@ -263,18 +263,40 @@ fn collect_installed_skills() -> Vec<InstalledSkill> {
     installed_from_backend(SkillsClient::discover_skills_in_directories(&directories))
 }
 
+/// A slug is a LOGICAL identifier, not a path, so its separator is `/` on
+/// every platform: `superpowers/brainstorming` on macOS, Linux **and**
+/// Windows. That is what `skill list` prints, what the user types back at
+/// `skill enable`, and what [`collect_candidates`] splits on to get the last
+/// component. `Path::to_string_lossy` hands back `superpowers\brainstorming`
+/// on Windows, and every one of those three then quietly stops working: the
+/// printed slug is untypeable, an exact-slug query never matches, and
+/// `rsplit('/')` returns the whole slug so bundle sub-skills stop colliding
+/// on their shared last component — turning a real ambiguity into a silent
+/// "no match", which `enable` reads as a stale entry and deletes.
+///
+/// ⚠ Joining `components()` rather than `replace('\\', "/")` is deliberate:
+/// a backslash is a legal character in a Unix directory name, so the blunt
+/// replacement would invent a separator inside a real one-component name.
+fn slug_from_relative_path(relative: &Path) -> String {
+    relative
+        .components()
+        .map(|c| c.as_os_str().to_string_lossy())
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
 /// Map the backend's discovery result into rows for listing/resolution,
 /// sorted by (source root, slug) for stable grouped output.
 fn installed_from_backend(skills: HashMap<String, Skill>) -> Vec<InstalledSkill> {
     let mut out: Vec<InstalledSkill> = skills
         .into_values()
         .map(|skill| {
-            let slug = skill
-                .directory
-                .strip_prefix(&skill.source_root)
-                .unwrap_or(&skill.directory)
-                .to_string_lossy()
-                .into_owned();
+            let slug = slug_from_relative_path(
+                skill
+                    .directory
+                    .strip_prefix(&skill.source_root)
+                    .unwrap_or(&skill.directory),
+            );
             InstalledSkill {
                 slug,
                 name: skill.metadata.name,
@@ -931,6 +953,44 @@ mod tests {
             .unwrap();
         assert_eq!(sub.name, "brainstorming");
         assert_eq!(sub.bundle.as_deref(), Some("superpowers"));
+    }
+
+    /// A slug is a logical identifier with a `/` separator on every platform,
+    /// not a rendered path.
+    ///
+    /// ⚠ The first assertion is the one that was failing, and it can only
+    /// FAIL on Windows: `Path::join` is what makes the relative path
+    /// multi-component, and only there does the native separator differ from
+    /// `/`. On Unix it passes against the broken `to_string_lossy`
+    /// implementation too, so treat a green run here as no evidence — the
+    /// mutation check for it lives on Windows CI.
+    ///
+    /// The second assertion is the one with teeth everywhere: it rejects the
+    /// tempting `replace('\\', "/")` shortcut. A backslash is a legal
+    /// character in a Unix directory name, so that version would split one
+    /// real component into a fake two and hand the user a slug that resolves
+    /// to nothing.
+    #[test]
+    fn a_slug_separator_is_a_slash_on_every_platform() {
+        assert_eq!(
+            slug_from_relative_path(&Path::new("superpowers").join("brainstorming")),
+            "superpowers/brainstorming",
+            "a nested slug joins its components with '/', never the platform separator"
+        );
+
+        #[cfg(unix)]
+        assert_eq!(
+            slug_from_relative_path(Path::new("odd\\name")),
+            "odd\\name",
+            "a backslash inside a single Unix directory name is part of the name, \
+             not a separator to rewrite"
+        );
+
+        assert_eq!(
+            slug_from_relative_path(Path::new("my-skill")),
+            "my-skill",
+            "a one-component slug is unchanged"
+        );
     }
 
     // Finding 6 parity: the backend's YAML parser accepts frontmatter the old
