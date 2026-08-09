@@ -2282,7 +2282,11 @@ function BaseChatContent({
                         spelling it out as `text-2xl font-semibold tracking-tight`
                         — the same three utilities every page title in the app was
                         writing by hand before there was a token for it. */}
-                    <Greeting key={sessionId} className={cn('text-center text-title')} />
+                    <Greeting
+                      key={sessionId}
+                      animateOnceFor={sessionId}
+                      className={cn('text-center text-title')}
+                    />
                     {renderChatInput()}
                   </div>
                 </div>

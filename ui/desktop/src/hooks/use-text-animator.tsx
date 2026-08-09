@@ -153,15 +153,23 @@ export class TextAnimator {
 }
 
 interface UseTextAnimatorProps {
+  /** When false the text renders immediately, unanimated. Defaults to true. */
+  enabled?: boolean;
   text: string;
 }
 
-export function useTextAnimator({ text }: UseTextAnimatorProps) {
+export function useTextAnimator({ text, enabled = true }: UseTextAnimatorProps) {
   const elementRef = useRef<HTMLSpanElement>(null);
   const animator = useRef<TextAnimator | null>(null);
 
   useEffect(() => {
     if (!elementRef.current) return;
+
+    // ⚠ The caller decides WHETHER, this hook decides HOW. The greeting plays
+    // its unroll on a new chat and stays still on every remount of the same
+    // one, and that gate lives at the call site because only it knows which
+    // chat this is.
+    if (!enabled) return;
 
     if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       return;
@@ -182,7 +190,7 @@ export function useTextAnimator({ text }: UseTextAnimatorProps) {
         animator.current.reset();
       }
     };
-  }, [text]); // Re-run when text changes
+  }, [text, enabled]); // Re-run when text changes
 
   return elementRef;
 }
