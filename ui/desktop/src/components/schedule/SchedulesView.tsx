@@ -402,7 +402,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         error instanceof Error ? error.message : `Unknown error killing job "${id}".`;
       setApiError(errorMsg);
       toastError({
-        title: 'Kill job error',
+        title: 'Could not stop the job',
         msg: errorMsg,
       });
     } finally {

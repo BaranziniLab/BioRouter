@@ -154,7 +154,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to kill job';
       toastError({
-        title: 'Kill job error',
+        title: 'Could not stop the job',
         msg: errorMsg,
       });
     } finally {
@@ -423,7 +423,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
                     disabled={isActionLoading}
                   >
                     <Square className="w-4 h-4" />
-                    Kill Running Job
+                    Stop the running job
                   </Button>
                 </>
               )}
