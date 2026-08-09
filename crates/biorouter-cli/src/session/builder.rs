@@ -1106,8 +1106,35 @@ mod tests {
         drop(dir);
         assert!(
             !path.exists(),
-            "the private store must be cleaned up on drop"
+            "the private store must be cleaned up on drop{}",
+            why_the_store_survived(&path)
         );
+    }
+
+    /// Diagnostics for a store directory that outlived the thing meant to
+    /// remove it.
+    ///
+    /// `TempDir`'s `Drop` calls `remove_dir_all` and throws the error away, so
+    /// a failure here says only "the path is still there" and leaves the two
+    /// candidate causes indistinguishable: a file handle somebody never
+    /// released, or a removal the OS refused for a reason of its own. This
+    /// retries the removal in the foreground purely to capture the message,
+    /// and lists what is left. It runs only on the failure path, so it cannot
+    /// turn a red run green.
+    fn why_the_store_survived(path: &std::path::Path) -> String {
+        let entries = match std::fs::read_dir(path) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(", "),
+            Err(e) => format!("<unreadable: {e}>"),
+        };
+        let retry = match std::fs::remove_dir_all(path) {
+            Ok(()) => "a second removal SUCCEEDED, so the first lost a race".to_string(),
+            Err(e) => format!("a second removal also failed: {e:?}"),
+        };
+        format!("\n  still present: [{entries}]\n  {retry}")
     }
 
     #[test]
