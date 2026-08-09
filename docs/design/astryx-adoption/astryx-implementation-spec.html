@@ -284,12 +284,14 @@ footer{margin-top:70px;padding-top:20px;border-top:1px solid var(--line);font-si
       <thead><tr><th style="width:150px">Level</th><th>Recipe</th><th style="width:230px">Permitted on</th></tr></thead>
       <tbody>
         <tr><td class="mono">flat</td><td>no shadow; a 1px hairline or a surface step</td><td>cards, rows, panes, page sections, tab bars</td></tr>
-        <tr><td class="mono">low</td><td>tight contact + soft ambient, ≤10% alpha in light</td><td><b>the composer, only</b></td></tr>
+        <tr><td class="mono">micro</td><td>a single tight contact shadow, no ambient</td><td>the active document tab pill, only</td></tr>
+        <tr><td class="mono">low</td><td>tight contact + soft ambient, ≤10% alpha in light</td><td><b>nothing — no consumer</b></td></tr>
         <tr><td class="mono">medium</td><td>as low, deeper ambient, <b>+ 1px inset ring</b></td><td>menus, popovers, tooltips, toasts</td></tr>
         <tr><td class="mono">high</td><td>strongest, + inset ring at higher alpha</td><td>dialogs and sheets, only</td></tr>
       </tbody>
     </table></div>
-    <p class="note"><b>Elevation or a border, never both.</b> Floating surfaces gain the 1px inset ring so their edges stay crisp in dark families, and drop the border. Cards are flat and hover by brightening their border. Two hardcoded tab-pill shadows currently paint Parchment's warm ink under Alma Mater and Roche Limit — they become a fifth micro-elevation token. The modal surface's 44%-diluted hairline goes to full strength per D-18. <b>Decision A-07.</b></p>
+    <p class="note"><b>Elevation or a border, never both.</b> Floating surfaces gain the 1px inset ring so their edges stay crisp in dark families, and drop the border. Cards are flat and hover by brightening their border. Two hardcoded tab-pill shadows painted Parchment's warm ink under Alma Mater and Roche Limit — they became a fifth micro-elevation token. The modal surface's 44%-diluted hairline goes to full strength per D-18. <b>Decision A-07.</b></p>
+    <p class="note"><b>Shipped, and the ladder came out one tier short.</b> The micro row above is <code>--shadow-raised</code>: both pill literals are gone and <code>.br-tab[data-active]</code> resolves the token per mode, so that pill is the only live consumer of any elevation below <b>medium</b>. <b>Low has none.</b> Its one intended consumer was the composer, which shipped <b>flat</b> — a single 1px border at 60% of <code>--border-subtle</code>, no shadow (see the composer spec below). <code>--shadow-default</code> and <code>--shadow-composer</code> are declared in all three families and exposed as Tailwind utilities with <b>zero call sites</b> between them; <code>shadow-composer</code> appears in <code>ChatInput.tsx</code> only in a comment recording that it is the one-line change if the shadow is ever wanted back. Recorded rather than captioned with an aspiration: the open question is whether low gains a consumer or loses its two tokens.</p>
   </div>
 
   <div class="block" id="f-icon">
@@ -532,7 +534,7 @@ footer{margin-top:70px;padding-top:20px;border-top:1px solid var(--line);font-si
         <tr><td>Chain-of-thought</td><td>a native <code>&lt;details&gt;</code>, browser triangle, 4px radius, no motion</td><td>the standard 32px disclosure row, chevron <b>visible at rest</b></td></tr>
       </tbody>
     </table></div>
-    <p class="note"><b>One left edge.</b> Every transcript row — thinking, tool call, paragraph — starts at the same x. The hover wash breathes 8px wider than the text via a negative margin against an equal padding, so a row feels roomy without its content stepping right. Easy to break by giving one row type its own padding, which is why it is written down.</p>
+    <p class="note"><b>One left edge.</b> Every transcript row — thinking, tool call, paragraph — starts at the same x. <b>Shipped</b>, via <code>!px-0</code> on the tool-call trigger in <code>ToolCallWithResponse.tsx</code>, test-guarded; easy to break by giving one row type its own padding, which is why it is written down. <b>The hover wash is NOT shipped — it is proposed.</b> Breathe the wash 8px wider than the text via a negative margin against an equal padding, so a row feels roomy without its content stepping right. Today no transcript row has a hover wash at all: the tool-call trigger sets <code>hover:bg-transparent focus-visible:bg-transparent</code>, prose and user rows set no hover background, and no negative-margin/padding pair exists anywhere in <code>ui/desktop/src</code>. This note previously described the wash in the present tense; it was never built. Build it, do not assume it.</p>
 
     <h4>Tool state</h4>
     <div class="tw"><table>
