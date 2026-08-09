@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Button } from '../../ui/button';
+import { Progress } from '../../ui/progress';
 import {
   ExternalLink,
   CheckCircle,
@@ -149,12 +150,11 @@ export default function UpdateSection() {
                 <Download className="w-4 h-4 text-background-accent" />
                 Downloading {state.latestVersion ?? 'update'}…
               </div>
-              <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
-                <div
-                  className="h-full rounded-full bg-background-accent transition-all duration-300"
-                  style={{ width: `${Math.max(4, state.percent)}%` }}
-                />
-              </div>
+              <Progress
+                label={`Downloading ${state.latestVersion ?? 'update'}`}
+                value={state.percent}
+                minVisiblePercent={4}
+              />
               <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
             </div>
           )}

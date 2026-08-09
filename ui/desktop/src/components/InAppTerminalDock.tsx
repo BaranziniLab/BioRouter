@@ -341,6 +341,21 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
   const rootRef = useRef<HTMLElement | null>(null);
   const getRoot = useCallback(() => rootRef.current, []);
 
+  // The single painted terminal ground, read from the family's own declaration
+  // rather than hardcoded. `terminalGround` is a TOKEN NAME (e.g.
+  // `--background-muted`), and it is per-family on purpose — see the comment on
+  // TERMINAL_THEMES_BY_FAMILY above. xterm's canvas is already coloured from
+  // this exact field (`terminal.background`, derived from it by the generator),
+  // so painting the region behind it from anything else is two answers to one
+  // question. All six family/mode combinations resolve to `--background-muted`
+  // today, which is precisely why the hardcode survived: it was latent, not
+  // wrong, and the first family to move its ground would have left a rim of the
+  // old surface around a re-grounded canvas.
+  const dockThemeFamily = useThemeFamily();
+  const dockResolvedTheme = useResolvedTheme();
+  const terminalGroundToken =
+    TERMINAL_THEMES_BY_FAMILY[dockThemeFamily][dockResolvedTheme].terminalGround;
+
   const addPane = useCallback(() => {
     setPanes((current) => {
       if (current.length >= MAX_TERMINAL_PANES) return current;
@@ -447,8 +462,11 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
       style={{ height: 'min(42vh, 380px, max(100px, calc(100% - 200px)))' }}
     >
       {/* Safari-style tab strip (Ω/Ψ). .br-tabstrip owns the flex layout, the gap,
-          the padding, the sidebar-coloured ground and the bottom hairline;
-          .br-tab owns the tabs, the active pill and the divider between them.
+          the padding and the bottom hairline; `--sm` re-grounds it on the
+          SURFACE (the chat and artifact strips keep `--sidebar` to continue the
+          window's top edge — at the bottom edge that rationale inverts, and the
+          strip read as a floating slice of sidebar); .br-tab owns the tabs, the
+          active pill and the divider between them.
           Nothing here may restyle any of that — the only additions are h-10 (the
           class leaves height to the host; the dock's strip is 40px) and
           flex-shrink-0, so the strip holds its height in the dock's flex column. */}
@@ -530,9 +548,15 @@ export const InAppTerminalDock: React.FC<InAppTerminalDockProps> = ({
           <X />
         </Button>
       </div>
-      {/* The single painted terminal ground. No gutter padding: the terminal
-          bleeds to the dock edges, and the panes' own inset does the breathing. */}
-      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 bg-background-muted">
+      {/* The single painted terminal ground — the family's own `terminalGround`
+          token (see above), never a hardcoded one. No gutter padding: the
+          terminal bleeds to the dock edges, and the panes' own inset does the
+          breathing. */}
+      <div
+        className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1"
+        data-terminal-ground={terminalGroundToken}
+        style={{ background: `var(${terminalGroundToken})` }}
+      >
         {panes.map((pane) => (
           <TerminalPaneView
             key={pane.id}

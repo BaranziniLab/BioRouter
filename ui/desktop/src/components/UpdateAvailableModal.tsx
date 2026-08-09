@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from './ui/button';
+import { Progress } from './ui/progress';
 import { ModalShell } from './ModalShell';
 import { Download, ExternalLink, Loader2, AlertCircle, Rocket } from './icons/app-icons';
 import { UPDATES_ENABLED } from '../updates';
@@ -198,12 +199,13 @@ export default function UpdateAvailableModal() {
               A new version is downloading in the background. You can keep working. We&apos;ll let
               you know the moment it&apos;s ready to install.
             </p>
-            <div className="h-2 w-full overflow-hidden rounded-full bg-background-muted">
-              <div
-                className="h-full rounded-full bg-background-accent transition-all duration-300"
-                style={{ width: `${Math.max(4, state.percent)}%` }}
-              />
-            </div>
+            <Progress
+              label={`Downloading update${state.latestVersion ? ` ${state.latestVersion}` : ''}`}
+              value={state.percent}
+              // A download at 0% is still a download. Without a floor the first
+              // seconds read as a dead control.
+              minVisiblePercent={4}
+            />
             <p className="text-xs text-text-muted text-right font-mono">{state.percent}%</p>
           </div>
         )}

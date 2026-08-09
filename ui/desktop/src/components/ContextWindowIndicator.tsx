@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { ChevronsDownUp } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/Tooltip';
+import { Progress } from './ui/progress';
 import { useConfig } from './ConfigContext';
 
 interface ContextWindowGaugeProps {
@@ -178,13 +179,9 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
   const ratio = total > 0 ? Math.min(1, current / total) : 0;
   const pct = Math.round(ratio * 100);
   const overThreshold = pct >= thresholdPct;
-  const barColor = overThreshold
-    ? 'bg-background-danger'
-    : ratio <= 0.5
-      ? 'bg-background-success'
-      : ratio <= 0.75
-        ? 'bg-background-warning'
-        : 'bg-background-warning';
+  // Three bands, not four: the old ladder spelled `warning` twice (`ratio <= 0.75`
+  // and the fallback both resolved to it), so the 0.75 rung was a no-op.
+  const barTone = overThreshold ? 'danger' : ratio <= 0.5 ? 'success' : 'warning';
   return (
     <div className="flex items-center gap-2 rounded-element px-2 py-1.5">
       <span className="flex size-icon-row flex-shrink-0 items-center justify-center text-text-muted">
@@ -202,62 +199,71 @@ export const ContextWindowGauge: React.FC<ContextWindowGaugeProps> = ({
             marking the auto-compact threshold. The bar is the drag target;
             mousedown anywhere on the bar (or the triangle) jumps the
             threshold to the cursor and starts a drag. */}
+        {/* The threshold triangle is a SIBLING of the bar, not a child of it.
+            It used to live inside the track, which forced the track to run
+            `overflow-visible` so the glyph could stick out above — the one
+            reason this bar could not be the shared `Progress` (an 8px pill
+            that clips its fill). Both are absolutely positioned against this
+            same wrapper and the wrapper is exactly as wide as the track, so
+            `left: {pct}%` means the identical thing it did before; only the
+            vertical origin moved, from the track's top edge to the wrapper's
+            (hence -2px here rather than -12px, the wrapper's own pt-2.5). */}
         <div className="relative pt-2.5">
-          <div
+          <Progress
             ref={barRef}
-            className="relative h-1 rounded-full bg-background-muted overflow-visible cursor-pointer"
+            label="Context window used"
+            value={pct}
+            tone={barTone}
+            // A conversation with one message is still using context.
+            minVisiblePercent={2}
+            className="cursor-pointer"
             onMouseDown={handleDragStart}
-          >
-            <div
-              className={`h-full rounded-full ${barColor} transition-[width]`}
-              style={{ width: `${Math.max(2, pct)}%` }}
-            />
-            <Tooltip open={tooltipOpen}>
-              <TooltipTrigger asChild>
-                {/* Hit area is larger than the 10×6 visible triangle so the
-                    hover tooltip doesn't flicker when the cursor grazes the
-                    triangle edges. The visible glyph is the inner element. */}
-                <div
-                  role="slider"
-                  aria-label="Auto-compact threshold"
-                  aria-valuemin={AUTO_COMPACT_MIN_PCT}
-                  aria-valuemax={AUTO_COMPACT_MAX_PCT}
-                  aria-valuenow={thresholdPct}
-                  tabIndex={0}
-                  onKeyDown={handleKeyAdjust}
-                  onMouseDown={handleDragStart}
-                  onMouseEnter={() => setTooltipOpen(true)}
-                  onMouseLeave={() => {
-                    if (!draggingRef.current) setTooltipOpen(false);
-                  }}
-                  className="absolute flex items-end justify-center cursor-ew-resize"
+          />
+          <Tooltip open={tooltipOpen}>
+            <TooltipTrigger asChild>
+              {/* Hit area is larger than the 10×6 visible triangle so the
+                  hover tooltip doesn't flicker when the cursor grazes the
+                  triangle edges. The visible glyph is the inner element. */}
+              <div
+                role="slider"
+                aria-label="Auto-compact threshold"
+                aria-valuemin={AUTO_COMPACT_MIN_PCT}
+                aria-valuemax={AUTO_COMPACT_MAX_PCT}
+                aria-valuenow={thresholdPct}
+                tabIndex={0}
+                onKeyDown={handleKeyAdjust}
+                onMouseDown={handleDragStart}
+                onMouseEnter={() => setTooltipOpen(true)}
+                onMouseLeave={() => {
+                  if (!draggingRef.current) setTooltipOpen(false);
+                }}
+                className="absolute flex items-end justify-center cursor-ew-resize"
+                style={{
+                  left: `${thresholdPct}%`,
+                  top: '-2px',
+                  width: '22px',
+                  height: '18px',
+                  transform: 'translateX(-50%)',
+                }}
+              >
+                <span
+                  aria-hidden="true"
                   style={{
-                    left: `${thresholdPct}%`,
-                    top: '-12px',
-                    width: '22px',
-                    height: '18px',
-                    transform: 'translateX(-50%)',
+                    width: 0,
+                    height: 0,
+                    borderLeft: '5px solid transparent',
+                    borderRight: '5px solid transparent',
+                    borderTop: '6px solid currentColor',
+                    color: 'var(--color-text-default, currentColor)',
+                    pointerEvents: 'none',
                   }}
-                >
-                  <span
-                    aria-hidden="true"
-                    style={{
-                      width: 0,
-                      height: 0,
-                      borderLeft: '5px solid transparent',
-                      borderRight: '5px solid transparent',
-                      borderTop: '6px solid currentColor',
-                      color: 'var(--color-text-default, currentColor)',
-                      pointerEvents: 'none',
-                    }}
-                  />
-                </div>
-              </TooltipTrigger>
-              <TooltipContent side="top" className="text-supporting">
-                Drag to adjust auto-compact threshold ({thresholdPct}%)
-              </TooltipContent>
-            </Tooltip>
-          </div>
+                />
+              </div>
+            </TooltipTrigger>
+            <TooltipContent side="top" className="text-supporting">
+              Drag to adjust auto-compact threshold ({thresholdPct}%)
+            </TooltipContent>
+          </Tooltip>
         </div>
         <div className="flex items-center justify-between text-supporting text-text-muted tabular-nums">
           <span>

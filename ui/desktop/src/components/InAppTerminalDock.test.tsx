@@ -7,6 +7,7 @@ import {
   resetCloseTerminalPaneRegistry,
   resetNewTerminalPaneRegistry,
 } from '../utils/terminalFocus';
+import { GENERATED_THEMES } from '../styles/themes.generated';
 
 vi.mock('@xterm/xterm', () => ({
   Terminal: class {
@@ -273,7 +274,15 @@ describe('InAppTerminalDock', () => {
     expect(host).not.toHaveClass('bg-background-muted');
 
     const region = pane.parentElement as HTMLElement;
-    expect(region).toHaveClass('bg-background-muted');
+    // The ground is the FAMILY'S declared `terminalGround` token, not a
+    // hardcoded utility. All six family/mode combinations resolve to
+    // `--background-muted` today, so the old `toHaveClass('bg-background-muted')`
+    // passed for the wrong reason: it would have kept passing while the first
+    // family to move its ground left a rim of the old surface around a
+    // re-grounded xterm canvas. Assert the wiring, not the current value.
+    expect(region.dataset.terminalGround).toBe(GENERATED_THEMES.parchment.light.terminalGround);
+    expect(region.style.background).toBe(`var(${GENERATED_THEMES.parchment.light.terminalGround})`);
+    expect(region).not.toHaveClass('bg-background-muted');
     expect(region).not.toHaveClass('p-2'); // no gutter: the terminal bleeds to the dock edges
   });
 

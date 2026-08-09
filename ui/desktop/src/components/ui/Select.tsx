@@ -97,6 +97,20 @@ export const Select = (props: React.ComponentProps<typeof ReactSelect>) => {
       tabSelectsValue={true}
       openMenuOnFocus={false}
       styles={{
+        // `unstyled` does NOT strip `minHeight: spacing.controlHeight` (38px) from
+        // react-select's own control CSS — that line sits *outside* the `unstyled ? {}`
+        // branch in the library's `control` style function, so it is emitted either way.
+        // Emotion injects it unlayered, Tailwind's `h-8` lives in `@layer utilities`, and
+        // min-height beats height regardless: the trigger measured 38px against a 32px
+        // class, six pixels off the <Input> rung it is class-for-class identical to.
+        //
+        // Standing the floor down is the whole fix — the `h-8` above is then the single
+        // source of truth for the rung, exactly as the classNames block already claims.
+        //
+        // ⚠ jsdom cannot catch a regression here: it has no layout engine, so a test that
+        // renders this and reads `height` sees nothing either way. `Select.test.ts`
+        // asserts the override AT THE SOURCE instead of pretending to measure.
+        control: (base) => ({ ...base, minHeight: 0 }),
         menu: (base) => ({ ...base, pointerEvents: 'auto', zIndex: MENU_Z }),
         menuList: (base) => ({
           ...base,

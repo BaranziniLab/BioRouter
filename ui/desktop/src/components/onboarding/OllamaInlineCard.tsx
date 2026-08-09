@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useConfig } from '../ConfigContext';
 import { toastService } from '../../toasts';
 import { Button } from '../ui/button';
+import { Progress } from '../ui/progress';
 import {
   checkOllamaStatus,
   getOllamaDownloadUrl,
@@ -158,20 +159,31 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
             <div className="rounded-md border border-border-subtle bg-background-default p-3">
               <p className="text-xs text-text-default">Downloading {getPreferredModel()}…</p>
               <p className="text-[11px] text-text-muted mt-1">{downloadProgress.status}</p>
-              {downloadProgress.total && downloadProgress.completed && (
+              {/* Ollama's pull stream reports `total`/`completed` only once the
+                  manifest resolves — before that (and during the verify/extract
+                  phases) there is no denominator. That is exactly the
+                  indeterminate case, and it used to render as NOTHING: the card
+                  showed a status line with no bar at all, so a pull that had not
+                  yet reported a size looked stalled. */}
+              {downloadProgress.total && downloadProgress.completed ? (
                 <>
-                  <div className="mt-2 bg-background-medium rounded-full h-1.5 overflow-hidden">
-                    <div
-                      className="bg-background-success h-full transition-all duration-300"
-                      style={{
-                        width: `${(downloadProgress.completed / downloadProgress.total) * 100}%`,
-                      }}
-                    />
-                  </div>
+                  <Progress
+                    className="mt-2"
+                    label={`Downloading ${getPreferredModel()}`}
+                    tone="success"
+                    value={(downloadProgress.completed / downloadProgress.total) * 100}
+                  />
                   <p className="text-[11px] text-text-muted mt-1">
                     {Math.round((downloadProgress.completed / downloadProgress.total) * 100)}%
                   </p>
                 </>
+              ) : (
+                <Progress
+                  className="mt-2"
+                  label={`Downloading ${getPreferredModel()}`}
+                  tone="success"
+                  indeterminate
+                />
               )}
             </div>
           )}

@@ -7,6 +7,7 @@ import {
 } from '../../../utils/usageAccounting';
 import { Button } from '../../ui/button';
 import { Badge } from '../../ui/badge';
+import { Progress } from '../../ui/progress';
 import { Activity, Calendar, Clock, Database, Info, Layers } from '../../icons/app-icons';
 import {
   Dialog,
@@ -680,20 +681,18 @@ function UsageGauge({ testid, label, used, limit, percent, unavailableReason }: 
           {unavailableReason}
         </div>
       ) : (
-        <div
-          className="mt-1 h-2 overflow-hidden rounded-full bg-heat-0"
-          role="progressbar"
-          aria-label={label}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={clamped}
-        >
-          <div
-            className={`h-full rounded-full ${over ? 'bg-background-danger' : 'bg-heat-3'}`}
-            style={{ width: `${clamped}%` }}
-            data-testid={`${testid}-fill`}
-          />
-        </div>
+        // `heat` is the ramp pairing this gauge has always used (a heat-0 track
+        // under a heat-3 fill). Past the limit only the FILL turns danger —
+        // `track="heat"` pins the ground so the overrun reads as the same gauge
+        // rather than as a different control. Both are tones on the one primitive.
+        <Progress
+          className="mt-1"
+          label={label}
+          value={clamped}
+          tone={over ? 'danger' : 'heat'}
+          track="heat"
+          fillProps={{ 'data-testid': `${testid}-fill` }}
+        />
       )}
     </div>
   );
