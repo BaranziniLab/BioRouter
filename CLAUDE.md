@@ -667,6 +667,33 @@ like a registration bug and is not one.
 
 If the tool is missing, check all five before suspecting registration.
 
+⚠ **The gate lives in the agent's turn loop, so the HTTP API cannot be used to
+test it.** Three separate attempts to exercise it over HTTP all measured nothing,
+each for a different reason, and each looked like a working probe:
+
+- `GET /agent/tools` lists what the **ExtensionManager** holds. The advertising
+  gate is applied by the agent when it builds the model's tool list, so
+  `workspace__subagent` appears here even in a session where delegation is off.
+  Its presence is not evidence the model was offered it.
+- `POST /agent/call_tool` goes straight to `ExtensionManager::dispatch_tool_call`
+  and never passes the `is_spawn_tool_call` check at `agent.rs:3847`, so a spawn
+  invoked that way is not refused whatever the mode. That route is user-initiated
+  (secret key + `X-User-Action`) and privacy **Gate C still applies** to it, so
+  the privacy barrier is intact — what is bypassed is the model-facing capability
+  gate, not a privacy one. Do not "fix" this by duplicating the gate into the
+  route without first deciding whether a user calling the tool deliberately
+  should be bound by a gate that exists to constrain the *model*.
+- Condition 2 reads `self.config.biorouter_mode`, a **snapshot taken when the
+  Agent was constructed**. Flipping `BIOROUTER_MODE` through `/config/upsert` on
+  a running daemon does not reach an agent that already exists, so a live-toggle
+  probe reports "no change" even where the gate is wired correctly.
+
+Test the gate where it is: the unit tests in `agents/agent.rs`
+(`subagents_enabled_injects_the_workspace_extension_with_the_spawn_tool_only`,
+`an_explicit_workspace_entry_still_hides_the_spawn_tool_when_delegation_is_off`,
+`subagents_disabled_injects_nothing`), via
+`cargo test -p biorouter --lib -- subagent` (102 tests).
+
 ### Communication Flow
 
 ```
