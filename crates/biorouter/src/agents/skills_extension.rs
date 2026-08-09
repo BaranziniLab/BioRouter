@@ -42,11 +42,72 @@ pub(crate) fn install_builtin_skills() {
     SkillsClient::ensure_builtin_skills(&Paths::config_dir().join("skills"));
 }
 
-pub fn is_builtin_skill_name(name: &str) -> bool {
+/// Every shipped **Context**, by the `name:` in its `SKILL.md` frontmatter —
+/// which is also its directory name and the key it occupies in the skill map.
+///
+/// The four [`BUILTIN_SKILLS`] plus the Soul skill, which is defined as a Rust
+/// string in `soul.rs` rather than in that array. Hand-synced with
+/// `ui/desktop/src/components/settings/contexts/contexts.ts`, whose
+/// `contexts.test.ts` reads *this file* and asserts the two agree (#77).
+pub fn context_skill_names() -> impl Iterator<Item = &'static str> {
     BUILTIN_SKILLS
         .iter()
-        .any(|(builtin_name, _)| *builtin_name == name)
-        || name == crate::knowledge::soul::SOUL_SKILL_DIR
+        .map(|(name, _)| *name)
+        .chain(std::iter::once(crate::knowledge::soul::SOUL_SKILL_DIR))
+}
+
+pub fn is_builtin_skill_name(name: &str) -> bool {
+    context_skill_names().any(|builtin_name| builtin_name == name)
+}
+
+/// The config key holding one Context's enablement, as the desktop Settings
+/// switch writes it.
+///
+/// ⚠ **Must match `contextConfigKey` in
+/// `ui/desktop/src/components/settings/contexts/contexts.ts` exactly** —
+/// `` `context_${id.replace(/-/g, '_')}` ``. That key is the *entire* connection
+/// between the switch and this side: derive it differently by one character and
+/// the toggle still moves, the value is still stored, and nothing changes —
+/// which is precisely the defect this pair of functions exists to close. Both
+/// sides pin the same literal in a test.
+pub fn context_config_key(id: &str) -> String {
+    format!("context_{}", id.replace('-', "_"))
+}
+
+/// The shipped Contexts the user has switched **off** in Settings → Contexts.
+///
+/// ⚠ **Absence means ON.** These have loaded since before the switch existed,
+/// so a missing key — every install that has never opened that screen — must
+/// read as enabled. Only an explicit `false` hides one, matching the
+/// `?? true` the switch renders with.
+///
+/// ⚠ **Deliberately NOT `skills-config.json`'s `disabled[]`.** That array is
+/// honoured by [`SkillsClient::handle_load_skill`], which refuses a disabled
+/// skill outright, while `prompts/system.md` unconditionally instructs the
+/// model to load `about-biorouter`. Routing a Context through it would turn "I
+/// don't want this in my sidebar" into "the agent reports a failed skill load
+/// on every turn". Off here means **not surfaced**, never **unloadable** — the
+/// set returned here filters the catalog the model is told about
+/// ([`SkillsClient::enabled_skill_entries`], and through it `listSkills`,
+/// `searchSkills` and the `{skill_count}` sentence) and nothing else.
+fn hidden_contexts_in(config: &crate::config::Config) -> std::collections::HashSet<String> {
+    context_skill_names()
+        .filter(|name| {
+            // `Err` is "no opinion recorded" (or an unreadable config), which
+            // must read as ON — see the absence rule above. Only a literal
+            // `false` hides a Context.
+            matches!(
+                config.get_param::<bool>(&context_config_key(name)),
+                Ok(false)
+            )
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+/// [`hidden_contexts_in`] against the process's real configuration.
+fn hidden_contexts() -> std::collections::HashSet<String> {
+    hidden_contexts_in(crate::config::Config::global())
 }
 
 pub fn count_user_skills() -> usize {
@@ -521,16 +582,31 @@ impl SkillsClient {
     /// from the `McpMeta` of the dispatch in flight, never from client state
     /// (see [`SkillsClient`]). The machine-wide view is
     /// `&SessionSkillOverride::default()`.
+    ///
+    /// This is **the one surface a Context toggle acts on**: everything the
+    /// model is *told about* — `listSkills`, `searchSkills`, and the
+    /// `{skill_count}` sentence in [`Self::generate_instructions`] — comes
+    /// through here, while [`Self::handle_load_skill`] deliberately does not, so
+    /// a switched-off Context stays loadable by exact name (see
+    /// [`hidden_contexts_in`] for why that asymmetry is required rather than
+    /// merely tolerated).
     fn enabled_skill_entries(
         &self,
         over: &crate::agents::session_skills::SessionSkillOverride,
     ) -> Vec<(&String, &Skill)> {
         let disabled = Self::get_disabled_skills();
+        let hidden_contexts = hidden_contexts();
         let mut skill_list: Vec<_> = self
             .skills
             .iter()
             .filter(|(name, skill)| {
-                Self::is_skill_enabled_for_session(name, skill, &disabled, over)
+                // ⚠ Checked BEFORE the session test, not folded into it. That
+                // test's first rule is "an explicit session grant wins over
+                // everything", and a Context the user switched off in Settings
+                // is not something `workspace_set_tools` should be able to put
+                // back into the catalog on the model's say-so.
+                !hidden_contexts.contains(name.as_str())
+                    && Self::is_skill_enabled_for_session(name, skill, &disabled, over)
             })
             .collect();
         skill_list.sort_by_key(|(name, _)| *name);
@@ -2408,5 +2484,167 @@ Working dir biorouter content
             seeded.exists(),
             "builtin skill should be restored after deletion"
         );
+    }
+
+    /// ⚠ **The literal, both sides.** `contexts.test.ts` pins
+    /// `contextConfigKey('about-biorouter') === 'context_about_biorouter'`; this
+    /// pins the same string from Rust. The two files never meet at runtime — the
+    /// config key is the whole handshake — so a hyphen/underscore or prefix
+    /// change on one side is otherwise completely silent: the Settings switch
+    /// keeps moving, the value keeps being written, and this side keeps reading
+    /// a key nobody writes.
+    #[test]
+    fn the_context_config_key_matches_the_one_the_settings_switch_writes() {
+        assert_eq!(
+            context_config_key("about-biorouter"),
+            "context_about_biorouter"
+        );
+        assert_eq!(context_config_key("update-soul"), "context_update_soul");
+        assert_eq!(
+            context_config_key("develop-biorouter-extension"),
+            "context_develop_biorouter_extension"
+        );
+        // Every shipped Context must produce a plain identifier — the same
+        // assertion `contexts.test.ts` makes with /^context_[a-z0-9_]+$/.
+        for name in context_skill_names() {
+            let key = context_config_key(name);
+            let body = key
+                .strip_prefix("context_")
+                .unwrap_or_else(|| panic!("{name} derives a key without the prefix: {key}"));
+            assert!(
+                body.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{name} derives a key that is not a plain identifier: {key}"
+            );
+        }
+    }
+
+    /// Absence means ON, `false` means off, and nothing else is consulted.
+    #[test]
+    fn only_an_explicit_false_hides_a_context() {
+        let temp = TempDir::new().unwrap();
+        let config_path = temp.path().join("config.yaml");
+        let config = crate::config::Config::new_with_file_secrets(
+            &config_path,
+            temp.path().join("secrets.yaml"),
+        )
+        .unwrap();
+
+        // A config that has never seen the Contexts screen. The default MUST be
+        // "everything on": reading a missing key as off would strip five
+        // contexts from every existing install the moment this shipped.
+        assert!(
+            hidden_contexts_in(&config).is_empty(),
+            "a user who never opened Settings must lose nothing"
+        );
+
+        config.set_param("context_about_biorouter", false).unwrap();
+        config.set_param("context_develop_biorouter", true).unwrap();
+        // A key that is not a Context's must not leak into the set, and a
+        // *skill* disabled the ordinary way is not this function's business.
+        config.set_param("context_single_cell", false).unwrap();
+        assert_eq!(
+            hidden_contexts_in(&config),
+            std::collections::HashSet::from(["about-biorouter".to_string()]),
+        );
+    }
+
+    /// The whole chain, through the real `Config::global()` seam: a Context
+    /// switched off in Settings leaves the catalog the model is told about, and
+    /// stays loadable by exact name.
+    ///
+    /// ⚠ **The second half is not a nicety.** `prompts/system.md` tells the
+    /// model to load `about-biorouter` unconditionally, so a Context routed
+    /// through `skills-config.json`'s `disabled[]` — the obvious "fix" — would
+    /// make the agent report a failed skill load on every single turn. That is
+    /// why enablement lives in a config key at all, and this is the assertion
+    /// that stops someone simplifying it back.
+    ///
+    /// The overrides are task-local (`with_config_overrides`), so this neither
+    /// reads the developer's own `config.yaml` for the keys it cares about nor
+    /// mutates the process environment — the two ways a test of a
+    /// process-global singleton usually becomes order-dependent.
+    #[tokio::test]
+    async fn a_context_switched_off_leaves_the_catalog_but_stays_loadable() {
+        let temp = TempDir::new().unwrap();
+        let session_manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
+        let mut client = client_with(&["alpha"], temp.path(), session_manager);
+        client.skills.insert(
+            "about-biorouter".to_string(),
+            fixture_skill("about-biorouter", temp.path()),
+        );
+        let over = crate::agents::session_skills::SessionSkillOverride::default();
+
+        // Pin every Context key so the developer's own config cannot decide the
+        // outcome either way.
+        let all_on: std::collections::HashMap<String, String> = context_skill_names()
+            .map(|n| (context_config_key(n).to_uppercase(), "true".to_string()))
+            .collect();
+        let mut about_off = all_on.clone();
+        about_off.insert("CONTEXT_ABOUT_BIOROUTER".to_string(), "false".to_string());
+
+        let names = |client: &SkillsClient, over: &_| -> Vec<String> {
+            client
+                .enabled_skill_entries(over)
+                .into_iter()
+                .map(|(name, _)| name.clone())
+                .collect()
+        };
+
+        crate::config::with_config_overrides(all_on, async {
+            assert_eq!(
+                names(&client, &over),
+                vec!["about-biorouter".to_string(), "alpha".to_string()],
+                "switched on, a Context is in the catalog like any other skill"
+            );
+            assert!(client.generate_instructions().contains("2 skills"));
+        })
+        .await;
+
+        crate::config::with_config_overrides(about_off, async {
+            assert_eq!(
+                names(&client, &over),
+                vec!["alpha".to_string()],
+                "the switch must actually remove it from what the model is told about"
+            );
+            // The `{skill_count}` sentence is generated from the same list, so
+            // the number the model reads has to move with it.
+            assert!(
+                client.generate_instructions().contains("1 skills"),
+                "instructions still count the hidden Context: {}",
+                client.generate_instructions()
+            );
+            // listSkills is the catalog the model pages through.
+            let listed = client.handle_list_skills(None, &over).await.unwrap();
+            let listed: String = listed
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                .collect();
+            assert!(
+                !listed.contains("about-biorouter"),
+                "listSkills still advertises it: {listed}"
+            );
+
+            // …and it is still loadable, because the system prompt asks for it
+            // by name on every turn.
+            let loaded = client
+                .handle_load_skill(
+                    Some(
+                        serde_json::json!({ "name": "about-biorouter" })
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    ),
+                    &over,
+                )
+                .await
+                .expect("a hidden Context must not become unloadable");
+            let loaded: String = loaded
+                .iter()
+                .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                .collect();
+            assert!(loaded.contains("about-biorouter"), "{loaded}");
+        })
+        .await;
     }
 }

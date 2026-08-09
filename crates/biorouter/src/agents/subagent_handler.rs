@@ -184,6 +184,35 @@ fn strip_workspace_extension(
         .collect()
 }
 
+/// Load a child's granted extensions, returning **the ones that actually made
+/// it in**.
+///
+/// ⚠ A failure here is logged and skipped, not fatal: a child that lost one of
+/// six extensions still runs, and refusing the whole spawn over it would be the
+/// worse trade. The consequence is that "what was requested" and "what the
+/// child holds" are different lists on exactly the spawns that went wrong — so
+/// every claim made to the user about this child (its persisted
+/// `EnabledExtensionsState`, which `GET /sessions/{id}/extensions` serves to the
+/// tab header as authoritative, and the spawn record's "Granted extensions"
+/// prose) must be built from the return value, never from the input.
+async fn load_granted_extensions(
+    agent: &Agent,
+    extensions: Vec<crate::agents::extension::ExtensionConfig>,
+) -> Vec<crate::agents::extension::ExtensionConfig> {
+    let mut loaded = Vec::new();
+    for extension in strip_workspace_extension(extensions) {
+        match agent.add_extension(extension.clone()).await {
+            Ok(()) => loaded.push(extension),
+            Err(e) => debug!(
+                "Failed to add extension '{}' to subagent: {}",
+                extension.name(),
+                e
+            ),
+        }
+    }
+    loaded
+}
+
 /// Standalone function to run a complete subagent task, returning a structured
 /// result envelope. A run that fails, or one that ends on a tool call without a
 /// final text message, still yields a meaningful `SubagentResult` (BR-40) —
@@ -501,22 +530,25 @@ fn get_agent_messages(
             .await
             .map_err(|e| anyhow!("Failed to set provider on sub agent: {}", e))?;
 
-        // Prep binding 1: the loop below consumes `task_config.extensions` by
-        // value, so the grant list for the spawn-context record is taken first.
-        // §5: it must name what is ACTUALLY granted, so it excludes the
-        // workspace extension the loop below strips — otherwise the spawn
-        // record tells the user the child holds workspace control it does not.
+        // §5: the child never gets the workspace extension, so neither the
+        // loaded set nor anything derived from it may name it — otherwise the
+        // spawn record tells the user the child holds workspace control it does
+        // not. The strip runs ONCE, inside the helper, and everything
+        // downstream reads its result: a second copy of
+        // `!= WORKSPACE_EXTENSION_NAME` is one edit away from disagreeing with
+        // the grant it claims to describe, and the disagreement is silent,
+        // because the record is prose the user reads rather than a value
+        // anything checks.
         //
-        // It runs the SAME helper rather than repeating its predicate. A second
-        // copy of `!= WORKSPACE_EXTENSION_NAME` is one edit away from disagreeing
-        // with the grant it claims to describe, and the disagreement is silent:
-        // the record is prose the user reads, not a value anything checks. The
-        // clone is one small `Vec<ExtensionConfig>` per spawn.
-        let extension_names: Vec<String> =
-            strip_workspace_extension(task_config.extensions.clone())
-                .iter()
-                .map(|e| e.name().to_string())
-                .collect();
+        // ⚠ **`loaded` is what ACTUALLY loaded, not what was asked for** — see
+        // [`load_granted_extensions`]. Both consumers below are claims *to the
+        // user* about what this child holds, so both are built from the
+        // outcome.
+        let loaded = load_granted_extensions(&agent, task_config.extensions).await;
+
+        // Consumed by `persist_spawn_context` further down; bound here because
+        // the record is written after several other preparation steps.
+        let extension_names: Vec<String> = loaded.iter().map(|e| e.name().to_string()).collect();
 
         // ⚠ **Persist the child's OWN grant set** (issue #79).
         //
@@ -527,14 +559,22 @@ fn get_agent_messages(
         // listing every extension the USER has enabled anywhere. That is why it
         // read as "shows all available extensions": it did.
         //
-        // Written from the same `strip_workspace_extension` call the grant
-        // record and the loop below use, so the row, the prose and the loaded
-        // set cannot disagree.
+        // ⚠ **After the loop, deliberately.** Written before it, this row was
+        // the REQUESTED set, and `routes/session.rs` serves it as authoritative
+        // — so a child that failed to load an extension advertised it in its
+        // tab header anyway, which is the same class of lie as the fallback
+        // above and harder to spot. The cost of the move is a brief window
+        // during the load in which the header falls back to the global set,
+        // which is the pre-#79 behaviour and self-corrects the moment this
+        // write lands.
+        //
+        // `load_granted_extensions` takes `task_config.extensions` BY VALUE, so
+        // reaching back for the requested list here no longer compiles — the
+        // regression this fixes cannot be reintroduced by accident.
         {
             use crate::session::extension_data::ExtensionState;
             use crate::session::EnabledExtensionsState;
-            let granted = strip_workspace_extension(task_config.extensions.clone());
-            match EnabledExtensionsState::new(granted).to_value() {
+            match EnabledExtensionsState::new(loaded).to_value() {
                 Ok(value) => {
                     if let Err(e) = session_manager
                         .update_extension_state(
@@ -553,16 +593,6 @@ fn get_agent_messages(
                     }
                 }
                 Err(e) => debug!("Failed to serialize subagent extension state: {e}"),
-            }
-        }
-
-        for extension in strip_workspace_extension(task_config.extensions) {
-            if let Err(e) = agent.add_extension(extension.clone()).await {
-                debug!(
-                    "Failed to add extension '{}' to subagent: {}",
-                    extension.name(),
-                    e
-                );
             }
         }
 
@@ -849,6 +879,50 @@ mod tests {
         let granted = strip_workspace_extension(configs);
         assert_eq!(granted.len(), 1);
         assert_eq!(granted[0].name(), "todo");
+    }
+
+    /// The child's recorded grant is **what loaded**, not what was asked for.
+    ///
+    /// `GET /sessions/{id}/extensions` serves the persisted
+    /// `EnabledExtensionsState` as authoritative, so a set written from the
+    /// request makes the subagent tab header claim an extension the child does
+    /// not have — an over-claim, and the one direction that matters, because
+    /// the user reads that header to decide what the child can do.
+    ///
+    /// The failing member is an unknown **platform** name: `add_extension`
+    /// rejects it with `Unknown platform extension` before any process is
+    /// spawned, so the failure is deterministic and costs nothing.
+    #[tokio::test]
+    async fn the_recorded_grant_is_what_loaded_not_what_was_requested() {
+        let platform = |name: &str| crate::agents::extension::ExtensionConfig::Platform {
+            name: name.into(),
+            description: String::new(),
+            bundled: None,
+            available_tools: vec![],
+        };
+        let agent = Agent::new();
+
+        let loaded = load_granted_extensions(
+            &agent,
+            vec![
+                // Never granted to a child at all (§5).
+                platform("workspace"),
+                // Loads.
+                platform("todo"),
+                // Fails to load: the child does NOT hold this one.
+                platform("no-such-platform-extension"),
+            ],
+        )
+        .await;
+
+        assert_eq!(
+            loaded
+                .iter()
+                .map(|e| e.name().to_string())
+                .collect::<Vec<_>>(),
+            vec!["todo".to_string()],
+            "a requested-but-unloadable extension must not be recorded as granted"
+        );
     }
 
     /// The body of one `### `-delimited section of the spawn record, so a grant

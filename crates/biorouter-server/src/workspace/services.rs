@@ -318,25 +318,28 @@ impl WorkspaceServices for ServerWorkspaceServices {
     /// contract requires that a spawn never break because a window could not be
     /// located. Falling back to today's behaviour is strictly better than
     /// dropping the frame.
+    ///
+    /// ⚠ **"Could not be located" includes "was located and then went away."**
+    /// This used to resolve one bridge and emit into it, so a window that
+    /// detached between the two — a reload, a close, the user quitting a
+    /// window mid-spawn — produced an `Err` that both callers in
+    /// `subagent_tool.rs` discard, and the frame was silently lost even with
+    /// another window attached and able to take it. Resolution failure and
+    /// delivery failure are the same event to this contract, so they take the
+    /// same fallback; see [`emit_with_fallback`].
     async fn gui_command_near(
         &self,
         frame: serde_json::Value,
         wait_result: bool,
         near_session: &str,
     ) -> Result<serde_json::Value, String> {
-        let bridge = crate::workspace::bridge::bridge_for_session(near_session)
-            .or_else(crate::workspace::bridge::focused_or_recent)
-            .ok_or("no GUI attached")?;
-        if wait_result {
-            bridge
-                .emit_and_wait(frame, std::time::Duration::from_secs(10))
-                .await
-        } else {
-            bridge
-                .emit(frame)
-                .map(|()| serde_json::json!({ "sent": true }))
-                .map_err(|e| e.to_string())
-        }
+        emit_with_fallback(
+            crate::workspace::bridge::bridge_for_session(near_session),
+            crate::workspace::bridge::focused_or_recent,
+            frame,
+            wait_result.then_some(GUI_ROUND_TRIP_TIMEOUT),
+        )
+        .await
     }
 
     async fn gui_command(
@@ -345,15 +348,84 @@ impl WorkspaceServices for ServerWorkspaceServices {
         wait_result: bool,
     ) -> Result<serde_json::Value, String> {
         let bridge = crate::workspace::bridge::focused_or_recent().ok_or("no GUI attached")?;
-        if wait_result {
-            bridge
-                .emit_and_wait(frame, std::time::Duration::from_secs(10))
-                .await
-        } else {
-            bridge
-                .emit(frame)
-                .map(|()| serde_json::json!({ "sent": true }))
+        emit_on(
+            &bridge,
+            frame,
+            wait_result.then_some(GUI_ROUND_TRIP_TIMEOUT),
+        )
+        .await
+    }
+}
+
+/// How long a `wait_result` frame parks for the renderer's `workspace_result`.
+const GUI_ROUND_TRIP_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Put one frame on one window. `Some(timeout)` is the caller's `wait_result`:
+/// park for the renderer's `workspace_result` that long. It is a parameter
+/// rather than the constant so a test can prove the fallback does not park
+/// twice without taking twenty seconds to do it.
+async fn emit_on(
+    bridge: &crate::workspace::bridge::WorkspaceBridge,
+    frame: serde_json::Value,
+    wait: Option<std::time::Duration>,
+) -> Result<serde_json::Value, String> {
+    match wait {
+        Some(timeout) => bridge.emit_and_wait(frame, timeout).await,
+        None => bridge
+            .emit(frame)
+            .map(|()| serde_json::json!({ "sent": true })),
+    }
+}
+
+/// Deliver `frame` to `primary`, and on **any** failure — including one that
+/// only shows up at `emit` time — try once more on whatever `fallback` resolves
+/// to *then*.
+///
+/// Three details are load-bearing:
+///
+/// * `fallback` is a closure, not a value, so the registry is re-read **after**
+///   the first attempt failed. That is the whole point: the window that failed
+///   has by then dropped out of `focused_or_recent`'s `is_attached` filter, and
+///   a window that attached in the meantime is in.
+/// * The retry is skipped when the guess lands on the *same* window that just
+///   failed. Nothing is gained by re-emitting into a channel that just refused,
+///   and for a `wait_result` frame it would mean parking for a second full
+///   [`GUI_ROUND_TRIP_TIMEOUT`] on a window already known to be unresponsive.
+/// * The error reported is the **first** one, not the fallback's. "the parent's
+///   window is gone" is the diagnosis; "no GUI attached" is a consequence.
+///
+/// Split from [`ServerWorkspaceServices::gui_command_near`] for the reason
+/// `pick_target` is split from `focused_or_recent` in `bridge.rs`: `BRIDGES` is
+/// a process-wide static, so a test that asserts *which* window a frame landed
+/// on is only containment-safe against a supplied candidate.
+async fn emit_with_fallback<F>(
+    primary: Option<crate::workspace::bridge::WorkspaceBridge>,
+    fallback: F,
+    frame: serde_json::Value,
+    wait: Option<std::time::Duration>,
+) -> Result<serde_json::Value, String>
+where
+    F: FnOnce() -> Option<crate::workspace::bridge::WorkspaceBridge>,
+{
+    let mut first_error: Option<String> = None;
+    if let Some(bridge) = primary.as_ref() {
+        match emit_on(bridge, frame.clone(), wait).await {
+            Ok(value) => return Ok(value),
+            Err(e) => first_error = Some(e),
         }
+    }
+
+    let second = fallback().filter(|second| {
+        !primary
+            .as_ref()
+            .is_some_and(|first| first.same_window(second))
+    });
+
+    match second {
+        Some(second) => emit_on(&second, frame, wait)
+            .await
+            .map_err(|e| first_error.unwrap_or(e)),
+        None => Err(first_error.unwrap_or_else(|| "no GUI attached".to_string())),
     }
 }
 
@@ -804,6 +876,116 @@ mod tests {
         assert!(
             !carries_our_window(installed.layout_snapshot()),
             "a closed window's stale echo must not still be reported as GUI state"
+        );
+    }
+
+    /// A spawn frame must survive the parent's window going away *after* it was
+    /// chosen — the gap `bridge_for_session(...).or_else(focused_or_recent)`
+    /// left open, because that composition only falls back when the parent
+    /// cannot be *found*, never when the found window then refuses the frame.
+    ///
+    /// Both callers in `subagent_tool.rs` are `let _ = …`, so the loss is
+    /// silent: no error surfaces, no tab opens, no badge appears.
+    #[tokio::test]
+    async fn a_frame_survives_the_parents_window_detaching_after_it_was_chosen() {
+        use crate::workspace::bridge::WorkspaceBridge;
+
+        let parent_window = WorkspaceBridge::new();
+        let (_parent_rx, conn) = parent_window.attach();
+        let other_window = WorkspaceBridge::new();
+        let (mut other_rx, _other_conn) = other_window.attach();
+
+        // Resolution picked the parent's window; it closes before the emit.
+        parent_window.detach(conn);
+
+        let sent = emit_with_fallback(
+            Some(parent_window.clone()),
+            || Some(other_window.clone()),
+            serde_json::json!({
+                "type": "workspace", "cmd": "open_tab", "session_id": "child-1",
+            }),
+            None,
+        )
+        .await
+        .expect("a window going away must not lose the frame when another is attached");
+        assert_eq!(sent["sent"], true);
+        let frame = other_rx
+            .try_recv()
+            .expect("the frame must land on the window that is still attached");
+        assert_eq!(frame["session_id"], "child-1");
+
+        // ⚠ The other half of the rule, and the one a "always use the fallback"
+        // implementation fails: a LIVE parent window keeps its frames. Without
+        // this the test above is satisfied by deleting the routing entirely.
+        let live_parent = WorkspaceBridge::new();
+        let (mut parent_rx, _conn) = live_parent.attach();
+        emit_with_fallback(
+            Some(live_parent),
+            || Some(other_window.clone()),
+            serde_json::json!({
+                "type": "workspace", "cmd": "open_tab", "session_id": "child-2",
+            }),
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            parent_rx.try_recv().unwrap()["session_id"],
+            "child-2",
+            "the tab belongs beside its parent while that window is alive"
+        );
+        assert!(
+            other_rx.try_recv().is_err(),
+            "a live parent's frame must not also be sent to the fallback window"
+        );
+
+        // No window left anywhere: still an error, and it names the delivery
+        // failure rather than the lookup that came after it.
+        let dead = WorkspaceBridge::new();
+        let (_rx, conn) = dead.attach();
+        dead.detach(conn);
+        let err = emit_with_fallback(Some(dead), || None, serde_json::json!({}), None)
+            .await
+            .unwrap_err();
+        assert!(err.contains("no GUI window attached"), "{err}");
+    }
+
+    /// The retry must not land back on the window that just failed.
+    ///
+    /// A window that is attached but never answers fails only by *timing out*,
+    /// so a fallback that re-picks it would park for a second full
+    /// `GUI_ROUND_TRIP_TIMEOUT` against a window already known to be
+    /// unresponsive — ten seconds of a spawn's latency for nothing.
+    ///
+    /// ⚠ Asserted by COUNTING FRAMES, not by timing. `emit_and_wait` puts the
+    /// frame on the wire and *then* parks, so a second attempt is visible as a
+    /// second frame in the window's receiver; a wall-clock assertion would need
+    /// the real timeout to discriminate, and would be a stopwatch test on a
+    /// loaded CI box either way. The timeout is a parameter so this runs in
+    /// milliseconds.
+    #[tokio::test]
+    async fn the_fallback_does_not_retry_the_window_that_just_failed() {
+        use crate::workspace::bridge::WorkspaceBridge;
+
+        let wedged = WorkspaceBridge::new();
+        let (mut rx, _conn) = wedged.attach(); // attached, but nothing ever replies
+
+        let err = emit_with_fallback(
+            Some(wedged.clone()),
+            // `focused_or_recent` handing back the very same window: it is
+            // attached, so nothing filters it out.
+            || Some(wedged.clone()),
+            serde_json::json!({"type": "workspace", "cmd": "open_tab"}),
+            Some(std::time::Duration::from_millis(50)),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("timed out"), "{err}");
+
+        assert!(rx.try_recv().is_ok(), "the first attempt is made");
+        assert!(
+            rx.try_recv().is_err(),
+            "the same window must not be asked a second time"
         );
     }
 }

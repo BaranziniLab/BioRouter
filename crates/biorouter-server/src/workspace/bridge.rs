@@ -104,6 +104,19 @@ impl WorkspaceBridge {
         lock(&self.inner.conn).is_some()
     }
 
+    /// Are these two handles the same GUI window?
+    ///
+    /// `WorkspaceBridge` is a cheap `Arc` handle that `bridge_for` /
+    /// `focused_or_recent` / `bridge_for_session` hand out by cloning, so
+    /// pointer identity of the inner state *is* window identity. Used by the
+    /// `gui_command_near` fallback to tell "try another window" from "try the
+    /// window that just failed again", which for a `wait_result` frame would
+    /// mean waiting out a second full timeout on a window already known to be
+    /// unresponsive.
+    pub fn same_window(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     pub fn emit(&self, frame: Value) -> Result<(), String> {
         let guard = lock(&self.inner.conn);
         let (_, tx) = guard.as_ref().ok_or("no GUI window attached")?;
