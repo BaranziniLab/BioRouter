@@ -2659,10 +2659,21 @@ export default function ChatInput({
               <PopoverContent
                 side="top"
                 align="start"
-                // The standard §3.8 menu container — 4px padding, 2px between
-                // items. The width follows the content instead of pinning every
-                // collapsed composer to 256px regardless of what is in it.
-                className="flex min-w-[15rem] max-w-[80vw] flex-col gap-0.5 p-1"
+                // The standard §3.8 menu container: 4px padding, 2px between
+                // items.
+                //
+                // ⚠ **The width follows the CONTENT, and the floor is a floor,
+                // not a size.** This carried `min-w-[15rem]` (240px) while the
+                // three readouts inside measure 167px, so every collapsed
+                // composer drew a box 60px wider than anything in it, and wider
+                // again when cost reads "$0.00" rather than "Unavailable".
+                // Three small readouts adrift in a 240px box read as a menu
+                // that failed to load its items.
+                //
+                // 8rem is a floor against a comically narrow box when a readout
+                // is hidden, not a target. It was measured against the row's
+                // narrowest real state, not guessed.
+                className="flex w-auto min-w-[8rem] max-w-[80vw] flex-col gap-0.5 p-1"
                 data-testid="composer-tools-popover"
               >
                 {/* The directory, extensions, skills and knowledge bases are NOT

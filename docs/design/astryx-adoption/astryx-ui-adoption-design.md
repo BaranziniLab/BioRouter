@@ -232,6 +232,15 @@ Menus: 4px container padding, 2px between items, 32px items at `--radius-element
 
 Tooltips: inverse surface, 14/20 text, `4px 8px` padding, 4px offset, 165ms rise-and-fade, instant on keyboard focus, ~310ms hover-intent delay. The heatmap's bespoke light card is retired in favour of a *rich popover* (it is a data readout, not a tooltip) and leaves the toast layer it borrowed.
 
+**A floating surface is as wide as its content, and a `min-width` is a floor.**
+A menu whose width is pinned above what it holds reads as one that failed to
+load the rest of its items. Measured case: the collapsed composer's `+` popover
+carried `min-w-[15rem]` (240px) while the three readouts inside it measured
+167px, and less again whenever cost reads a short value. Set a floor only to
+stop a box collapsing to nothing when a child is hidden, size it against the
+row's narrowest real state, and let content decide everything above it.
+
+
 ### 3.8b Iconography — one set, one weight, one box
 
 Every glyph in the app comes from the shipped set: Lucide at `strokeWidth 1.5` through the `light()` wrapper that pins the weight and forces `currentColor`, plus the two hand-authored exceptions (`KnowledgeIcon`, the brand marks). The rules that follow are already written down in §3.9 of the design system; what they need is enforcement:
