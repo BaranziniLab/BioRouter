@@ -70,7 +70,7 @@ describe('ChatTabStrip — the .br-tab contract', () => {
   });
 
   it('every tab declares WebkitAppRegion no-drag (it sits inside a drag header)', () => {
-    // R1: the strip lives inside BaseChat's 52px WebkitAppRegion:'drag' header.
+    // R1: the strip lives inside BaseChat's 44px WebkitAppRegion:'drag' header.
     // Without no-drag on the tab, macOS moves the window instead of letting the
     // click through, and the whole strip becomes inert.
     const { container } = renderStrip({

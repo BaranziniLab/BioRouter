@@ -341,18 +341,25 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   return (
     <>
       <SidebarContent className="gap-0 overflow-hidden">
-        {/* The 52px titlebar band: traffic lights and the floating TitlebarControls
+        {/* The titlebar band: traffic lights and the floating TitlebarControls
             strip live over this space, so the sidebar only reserves it. Its bottom
             hairline continues the chat/preview header hairline, giving the window
             one continuous top edge.
             `-mt-2` cancels SidebarContent's 8px top padding so the band starts at
             the window's top edge (y=0), exactly like the chat/preview header —
             otherwise the band sat 8px low and its hairline fell ~9px below the tab
-            strip's, breaking the "one continuous top edge". */}
+            strip's, breaking the "one continuous top edge".
+
+            `h-chrome` (44px), not the `h-13` literal it carried: this is one of
+            the three bands that had to drop 52 -> 44 TOGETHER, because they share
+            a seam and a shrinking band beside a stationary one is a broken edge,
+            not a compaction. The traffic lights sit in the 32px drag region above
+            and clear it; the wordmark is NOT in this band (it is the row below),
+            which is what made the drop safe to take. */}
         <div
           data-testid="sidebar-titlebar-band"
           aria-hidden="true"
-          className="-mt-2 h-13 shrink-0 border-b border-sidebar-border"
+          className="-mt-2 h-chrome shrink-0 border-b border-sidebar-border"
         />
 
         <div className="shrink-0">
@@ -361,7 +368,14 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               + plain "Biorouter" text. Its left edge lands on the same 44px text
               edge as every nav label. The component recolours navy -> UCSF teal
               on a dark surface on its own. */}
-          <div className="px-2 pt-2">
+          {/* `pt-4 pb-2`, not `pt-2` with nothing below it. When the titlebar band
+              dropped 52 -> 44px the wordmark came up with it and landed 8px under
+              the hairline with the first nav row directly beneath — three things
+              stacked at one rhythm, which reads as crowded rather than dense. The
+              brand lockup is not a list item; it earns air on both sides. 16px
+              above separates it from the window chrome, 8px below separates it
+              from the navigation it is not part of. */}
+          <div className="px-2 pt-4 pb-2">
             <div
               data-testid="sidebar-biorouter-wordmark"
               className="flex h-8 items-center gap-2 px-3"
@@ -384,7 +398,12 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               stays, because it labels one list among two. */}
           <SidebarGroup className="px-2 pb-1">
             <SidebarGroupContent>
-              <SidebarMenu className="gap-0">
+              {/* 2px between rail rows, not 0. At `gap-0` the rounded washes of
+                  adjacent rows touch, so a hovered row bleeds into its neighbours
+                  and the list reads as one block of colour rather than as
+                  separable destinations. 2px is the same gap the app's own menu
+                  recipe uses between items, so the rail and the menus agree. */}
+              <SidebarMenu className="gap-0.5">
                 {primaryItems.map((entry) => renderMenuItem(entry))}
 
                 {/* The disclosure row: an item's twin, with a leading chevron in

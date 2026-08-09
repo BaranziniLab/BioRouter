@@ -343,7 +343,11 @@ export default function RecentChats({
               <p className="px-3 pb-0.5 text-xs font-normal leading-4 text-text-subtle">
                 {group.label}
               </p>
-              <div className="min-w-0">
+              {/* 2px between rows, matching the nav group above. The rail has one
+                  rhythm or it has none: with the destinations separated and the
+                  history flush, the two halves of the same column read as two
+                  different lists. */}
+              <div className="min-w-0 space-y-0.5">
                 {group.sessions.map((session) => (
                   <RecentChatRow
                     key={session.id}

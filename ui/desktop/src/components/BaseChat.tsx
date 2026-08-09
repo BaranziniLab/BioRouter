@@ -70,7 +70,6 @@ import { announceSessionName, renameSession } from '../utils/sessionNameSync';
 import { toastError } from '../toasts';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
-import { ComposerSuggestions } from './ComposerSuggestions';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import InAppTerminalDock from './InAppTerminalDock';
@@ -901,7 +900,7 @@ interface BaseChatProps {
    */
   artifactPanelEnabled?: boolean;
   /**
-   * Renders the left-hand content of the existing 52px session header in place
+   * Renders the left-hand content of the existing 44px session header in place
    * of the SessionNamePill. The chat tab strip comes through HERE rather than
    * being mounted above BaseChat, and that is deliberate:
    *
@@ -909,7 +908,7 @@ interface BaseChatProps {
    * isTerminalDockOpen / reviewOpen / session — BaseChat-local state — and
    * cannot be hoisted cheaply. Threading the strip through the seam means the
    * actions never have to move. Mount a strip ABOVE BaseChat instead and you
-   * get a strip row AND an actions row: two 52px bars.
+   * get a strip row AND an actions row: two 44px bars.
    *
    * The header row carries a WebkitAppRegion:'drag' rect (on the strip's own
    * wrap, inset by a margin — see the header markup and #74); anything
@@ -1067,7 +1066,17 @@ function BaseChatContent({
     // narrower on ONE side, so the `mx-auto` readable column centred 4px left of
     // true centre. Padding the gutter symmetrically costs 4px of width and buys
     // an actually centred column. Measured in Electron: 198/202 -> 200/200.
-    'px-1 pb-10',
+    //
+    // ⚠ NOTHING VERTICAL BELONGS HERE, and `pb-10` is why the rule is written
+    // down. `className` lands on the ScrollArea *Root*, and the Viewport inside
+    // it is `h-full` — so a bottom padding here does not put space after the
+    // last message, it makes the SCROLL VIEWPORT 40px shorter. Measured: root
+    // 646 / viewport 606. That 40px band is empty at every scroll position,
+    // cannot be scrolled into, and is invisible to anyone reading the composer's
+    // own layout. It was the largest of the three separate boxes that were each
+    // declaring part of the distance to the composer (see the composer bar's
+    // `pt-4`, which is now the only one).
+    'px-1',
     (isMobile || isSidebarCompact || sidebarState === 'collapsed') && 'pt-11'
   );
 
@@ -2124,11 +2133,29 @@ function BaseChatContent({
 
         <div ref={splitPaneRef} className="relative flex flex-1 min-h-0 min-w-0">
           <div className="flex min-w-0 flex-1 flex-col">
-            {/* Chat container with sticky workflow header */}
+            {/* Chat container with sticky workflow header.
+                NO `rounded-t-2xl` in the coherent layout, and its removal is a
+                bug fix rather than a taste call. This box starts at y=0 with
+                `overflow-hidden`, so a 16px top radius CLIPPED the tab band
+                inside it — biting two rounded notches out of the band's fill at
+                the pane's top corners. It was invisible only while the band and
+                this box were both `--background-canvas`; the moment the band took
+                the sidebar ground (so the selected tab would have any contrast at
+                all), the clip showed as a pale gap in the corner.
+
+                Square is also what the band is FOR: it continues the sidebar's
+                titlebar band across the window at the same y, and the sidebar's
+                is square. A rounded corner on one half of a continuous edge is
+                the seam it was drawn to avoid. The window's own corners are the
+                OS's business, not this element's.
+
+                (16px is `--radius-surface` besides, which the radius ladder
+                reserves for the artifact/preview sheet — so this was off-spec on
+                a second count.) */}
             <div
               className={
                 coherent
-                  ? 'flex flex-col flex-1 min-h-0 relative rounded-t-2xl overflow-hidden bg-background-canvas'
+                  ? 'flex flex-col flex-1 min-h-0 relative overflow-hidden bg-background-canvas'
                   : 'flex flex-col flex-1 mx-4 mt-4 mb-3 min-h-0 relative rounded-2xl overflow-hidden'
               }
             >
@@ -2137,7 +2164,24 @@ function BaseChatContent({
                 // beside this one; a translucent, blurred fill made the two
                 // bottom hairlines read at different weights so they never
                 // visually aligned (D-18).
-                className="relative z-[var(--z-sticky)] flex h-[52px] flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-background-canvas pr-4"
+                // `h-chrome` (44px), not the `h-[52px]` literal: one of the three
+                // bands that drop together (sidebar titlebar band, this header,
+                // the artifact strip). They meet at a seam, so they move as one.
+                //
+                // `bg-sidebar`, NOT `bg-background-canvas`, and this is a real bug
+                // fix rather than a preference. The active tab paints
+                // `--background-default`; the canvas is ALSO `--background-default`
+                // in light mode, so the selected chat tab had zero contrast against
+                // its own band and was legible only by its accent underline. The
+                // artifact strip never had this problem because `.br-tabstrip`
+                // paints `--sidebar` — so the two strips looked like different
+                // components for no reason other than which ground they happened
+                // to sit on. One ground, one tab treatment, both strips.
+                //
+                // The band being a step OFF the conversation below it is also what
+                // makes the tab read as attached to the content: tab and content
+                // share `--background-default`, and the band recedes behind both.
+                className="relative z-[var(--z-sticky)] flex h-chrome flex-shrink-0 items-center gap-3 border-b border-border-subtle bg-sidebar pr-4"
                 // THIS ROW MUST NOT DECLARE `-webkit-app-region: drag` (#74).
                 //
                 // It used to, and with the sidebar collapsed its border box
@@ -2168,7 +2212,7 @@ function BaseChatContent({
                 {/* The strip renders HERE, in place of the pill. Do not move
                     renderSessionHeaderActions() out of this row — it closes
                     over BaseChat-local state, and hoisting the strip above
-                    BaseChat instead would produce two 52px bars. */}
+                    BaseChat instead would produce two 44px bars. */}
                 {renderSessionTitle ? (
                   renderSessionTitle()
                 ) : (
@@ -2239,13 +2283,6 @@ function BaseChatContent({
                         writing by hand before there was a token for it. */}
                     <Greeting key={sessionId} className={cn('text-center text-title')} />
                     {renderChatInput()}
-                    <ComposerSuggestions
-                      sessionId={sessionId}
-                      // A workflow already put a prompt in the composer. Offering
-                      // starters that would overwrite it is the interface arguing
-                      // with itself.
-                      hidden={Boolean(initialPrompt)}
-                    />
                   </div>
                 </div>
               ) : (
@@ -2314,8 +2351,14 @@ function BaseChatContent({
                             )}
                           </>
                         </SearchView>
-
-                        <div className="block h-8" />
+                        {/* No tail spacer. A `block h-8` used to sit here, and
+                            it was the second of three boxes each declaring part
+                            of the distance to the composer — 32px of scroll
+                            CONTENT, so it also moved with the transcript and
+                            vanished the moment the user scrolled up, which is
+                            exactly when a constant margin is wanted. The
+                            composer bar's `pt-4` owns that distance now, once,
+                            and owns it at every scroll position. */}
                       </>
                     ) : null}
                   </div>
@@ -2324,11 +2367,48 @@ function BaseChatContent({
             </div>
 
             {!isCleanConversation && (
+              // `pt-7` IS THE WHOLE DISTANCE FROM THE TRANSCRIPT TO THE COMPOSER,
+              // and it is the only box that declares any of it.
+              //
+              // It used to be `pt-2`, and it was the smallest of three
+              // independent contributors: the ScrollArea Root's `pb-10` (40px,
+              // which silently shortened the scroll viewport — see
+              // `contentClassName`), a `block h-8` spacer at the tail of the
+              // transcript (32px of scroll content), and this. None of them knew
+              // about the others, which is how the band above the composer came
+              // to be 80px without anyone ever choosing 80. Measured, pinned to
+              // the bottom: 80px of layout chrome between the last message's ink
+              // and the composer's first row.
+              //
+              // 28px, and the number only makes sense PAIRED with the composer's
+              // own internal gap, which is 6px (`ChatInput`'s shell). Those two
+              // numbers are one decision:
+              //
+              //   6px inside   — the context rail, the input and the control
+              //                  rail bind into ONE object
+              //   28px outside — that object is separated from the conversation
+              //
+              // It went 80 -> 16 -> 28, and the 16 was wrong for an instructive
+              // reason. 16px is the transcript's own inter-turn rhythm (`mt-4`
+              // in `ProgressiveMessageList`), which sounded principled — the
+              // composer as "the next turn". But while the composer's internal
+              // gaps were ALSO ~10-16px, matching the transcript's rhythm meant
+              // the gap between the composer's own rows and the gap between
+              // unrelated blocks were the same distance, and the group read as
+              // three floating strips rather than one object. A group cannot be
+              // separated from its surroundings by the same measure that
+              // separates its own parts. Tighten inside, widen outside.
+              //
+              // It belongs on the BAR rather than in the scroll content because
+              // the bar's padding is constant. A spacer inside the transcript
+              // scrolls away, so mid-scroll the prose ran right up against the
+              // composer's context row — the one moment the separation is doing
+              // real work.
               <div
                 className={
                   coherent
-                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-2 bg-background-canvas'
-                    : `px-4 sm:px-6 pb-6 pt-2 flex-shrink-0 ${disableAnimation ? '' : 'animate-[appear_200ms_var(--ease-out)_forwards]'}`
+                    ? 'biorouter-chat-composer-bar flex-shrink-0 px-4 sm:px-6 pb-6 pt-7 bg-background-canvas'
+                    : `px-4 sm:px-6 pb-6 pt-7 flex-shrink-0 ${disableAnimation ? '' : 'animate-[appear_200ms_var(--ease-out)_forwards]'}`
                 }
               >
                 {renderWorkingStatus()}

@@ -882,7 +882,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     // collapse into a ▾ — never wrap." This asserted `overflow-hidden`, which is
     // none of those: past the floor the panel's tabs were clipped and simply
     // unreachable. The strip scrolls now, and `.br-tabstrip__scroll` keeps the
-    // scrollbar out of a 52px bar.
+    // scrollbar out of a 44px bar.
     expect(screen.getByRole('tablist', { name: 'Open artifact previews' })).toHaveClass(
       'overflow-x-auto'
     );

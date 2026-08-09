@@ -676,9 +676,12 @@ export default function ArtifactViewer({
       )}
 
       {/* The tab strip is `br-tabstrip` (shared, styles/main.css): its ground is the
-          sidebar colour, so the window's whole 52px top edge is one continuous
+          sidebar colour, so the window's whole 44px top edge is one continuous
           surface. Height is set here; the paint belongs to the class. */}
-      <div className="br-tabstrip no-drag relative z-50 h-[52px] flex-shrink-0">
+      {/* `h-chrome` (44px), not the `h-[52px]` literal: the third of the three
+          bands that drop together, so this strip stays level with the chat header
+          it sits beside. */}
+      <div className="br-tabstrip no-drag relative z-50 h-chrome flex-shrink-0">
         {/* The tablist nests inside the strip for a11y, so it repeats the strip's
             own 3px gap: `.br-tab + .br-tab::before` hangs its divider at -2px and
             only lands in the gap if the tabs are spaced the way the class expects. */}

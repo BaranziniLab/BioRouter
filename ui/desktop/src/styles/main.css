@@ -196,18 +196,33 @@
      `--color-block-orange` had no call sites at all and was deleted. */
   --color-block-teal: var(--color-coral-500);
 
-  /* Warm cream-gray neutral palette — calmer than the yellow-cast original */
-  --color-neutral-50: #faf8f3;
-  --color-neutral-100: #f4f0e6;
-  --color-neutral-200: #e8e1d2;
-  --color-neutral-300: #d4cab6;
-  --color-neutral-400: #b0a892;
-  --color-neutral-500: #88806a;
-  --color-neutral-600: #615a46;
-  --color-neutral-700: #403928;
-  --color-neutral-800: #282217;
-  --color-neutral-900: #16120c;
-  --color-neutral-950: #0d0a06;
+  /* ── THE SHARED NEUTRAL RAMP ──────────────────────────────────────────────
+     ONE ramp for every family. Neutrals are shared infrastructure: a theme
+     family differs from its siblings in its INK and its ACCENT, and in nothing
+     else. Backgrounds, greys, borders, elevation and the scrim are identical
+     across Parchment, Alma Mater and Roche Limit, in both modes.
+
+     These are Roche Limit's warm-neutral values, adopted as the reference set.
+     Parchment previously ran a cream ramp (#faf8f3 … #0d0a06) and Alma Mater a
+     cool blue-grey one (#f2f3f4 / #e1e3e5 / #d1d3d3); of the 35 background /
+     border / sidebar keys, the three families agreed on four. They now agree on
+     all of them.
+
+     DO NOT reintroduce a per-family grey. If a family's ink reads badly on one
+     of these surfaces, the fix is that family's TEXT token — that is the axis
+     it owns. A per-family background is what this ramp exists to prevent.
+     See docs/design/theming/theme-system-architecture.md §"Shared neutrals". */
+  --color-neutral-50: #fafaf9;
+  --color-neutral-100: #f4f4f2;
+  --color-neutral-200: #e4e4e0;
+  --color-neutral-300: #d2d2cd;
+  --color-neutral-400: #a9a7a1;
+  --color-neutral-500: #84827c;
+  --color-neutral-600: #5c5a55;
+  --color-neutral-700: #3e3d39;
+  --color-neutral-800: #2c2c29;
+  --color-neutral-900: #1b1b19;
+  --color-neutral-950: #131312;
 
   /* Status hues (D-13).
      *-100 = the DARK-theme stop: bright enough on near-black, dark ink on top.
@@ -362,30 +377,26 @@
      cannot half-implement the gesture. */
   --press-scale: 0.98;
 
-  /* Bands. One `--chrome-height` for the titlebar band, the chat header and the
-     artifact strip — today 52px written three ways, with two different hairline
-     colours and three grounds meeting at a seam the comments claim is
-     continuous. Retuning the three declarations onto this token is the phase-7
-     shell change; the token is what makes it one edit.
+  /* Bands. ONE `--chrome-height` for the titlebar band, the chat header and the
+     artifact strip. It is now WIRED: all three read `h-chrome`, in
+     `BioRouterSidebar/AppSidebar.tsx`, `BaseChat.tsx` and
+     `artifacts/ArtifactViewer.tsx`. They were 52px written three ways, which is
+     what let them drift apart at the seam they are supposed to share.
 
-     ⚠ 44 IS NOT A TYPO FOR 52, AND THIS TOKEN IS NOT YET WIRED UP. It is the
-     TARGET value, not a name for the current one: the design of record drops the
-     band 52 → 44px (`astryx-ui-adoption-design.md` §2 geometry table, §4.1
-     proposal 1, §4.2 lead, and phase 7 of the plan table — four statements, one
-     value). The 8px is bought back by the sidebar compaction in the same phase,
-     which is why the drop and the shell rework ship together and why nothing may
-     adopt `h-chrome` before then: a band that shrinks while the wordmark, the
-     16px traffic-light channel and the two titlebar controls are still laid out
-     for 52px is a regression, not a migration.
+     ⚠ THE THREE MOVE TOGETHER OR NOT AT ALL. They meet at a continuous top edge,
+     so a band that shrinks beside a stationary one does not read as a tighter
+     app, it reads as a misaligned one — which is why this stayed at 52 until all
+     three could be changed in one edit. That is also why the value lives here
+     rather than in any of the three files: there is no way to move one of them
+     now without moving all three.
 
-     So the three literals are DELIBERATELY still 52px and deliberately not this
-     token — `BioRouterSidebar/AppSidebar.tsx` (`h-13`), `BaseChat.tsx` and
-     `artifacts/ArtifactViewer.tsx` (`h-[52px]`). An adversarial review read the
-     mismatch as a bug and two stewards passed it to each other before that;
-     nobody was wrong about the numbers, only about which one was the plan. This
-     paragraph is the answer, so the next reader does not have to re-derive it
-     from the design docs. Phase 7 deletes the three literals and this warning
-     together. */
+     The 44px itself is the design of record's (`astryx-ui-adoption-design.md` §2
+     geometry table, §4.1 proposal 1, §4.2 lead, phase 7 of the plan table — four
+     statements, one value). The 8px it gives back was expected to need a sidebar
+     compaction to pay for; measured, it does not: the traffic lights occupy the
+     32px drag region above and clear a 44px band, and the wordmark sits in its
+     own row BELOW this band rather than inside it, so nothing in the band was
+     laid out against the missing 8px. */
   --chrome-height: 44px;
   --dock-height: 36px; /* terminal dock strip — one step down, same tab language */
   --tab-height: 32px; /* chat, artifact and dock tabs; pulled from 34 */
@@ -405,32 +416,60 @@
   --dialog-md: 480px; /* form */
   --dialog-lg: 640px; /* palette, detail */
   --toast-width: 400px;
-  /* Where the toast layer starts. Measured, not chosen: at 1440×960 the lowest
-     right-hand ink in any top-level page header is a description at y=136, and
-     the toast clears it by 8px. The library's own inset put the layer at y=40,
-     on top of every page title and of Chat history's Import Session button. */
-  --toast-inset-top: 144px;
+  /* Where the toast layer starts. DERIVED, and the derivation is the whole
+     point: the titlebar drag band plus one stack gap, so the first toast sits
+     immediately under the window chrome. A notification belongs in the corner —
+     that is what makes it read as chrome the app is speaking through rather
+     than as content that appeared in the page.
+
+     ⚠ This was 144px, and it is the bug this value exists to close. That number
+     came from measuring the lowest right-hand ink in any top-level page header
+     at 1440×960 (a description at y=136) and clearing it by 8px, so that a
+     toast could never cover a page title or Chat history's Import Session
+     button. It works, but it buys that by moving the layer OUT of the corner
+     and into the middle of the content pane, and the extension-load report
+     landing halfway down the chat was reported as a bug. A toast overlapping a
+     header for a few seconds is what an overlay is for; a toast that no longer
+     looks like it came from the corner is a different object. Corner wins.
+
+     The floor is not negotiable, though: anything above `--titlebar-drag-height`
+     overlaps a `-webkit-app-region: drag` rect that Electron folds LATER in DOM
+     order than this layer (the drag div lives inside App's main tree, the toast
+     container above it), and a later drag rect eats clicks on a higher-z
+     control no matter what the z-index says — issue #74. A toast whose × and
+     "View details" fell in that band would look present and be dead. */
+  --toast-inset-top: calc(var(--titlebar-drag-height) + 12px);
+  /* The macOS/Windows titlebar strip App.tsx paints as `.titlebar-drag-region`.
+     A token rather than a literal because the toast inset above is measured
+     from it, and two independent 32px literals would drift apart silently. */
+  --titlebar-drag-height: 32px;
 
   /* Reading measures. Both are already shipped as arbitrary values in
      ReadableContent.tsx; naming them is what lets the 896px replay fork be
      deleted against something rather than against a comment.
 
-     ⚠ FLUID, not fixed. They were flat pixel caps, and on a wide window that
-     read as the app refusing to use it: at 1800px the chat column sat at 760px
-     with ~400px of dead band on each side, so dragging the window wider bought
-     margin instead of content. A cap is still right — an 1800px line of prose
-     is unreadable — but the cap has to move with the window.
+     ⚠ THE CHAT MEASURE IS FLAT, AND DELIBERATELY SO. It was briefly a clamp
+     (`clamp(760px, 78%, 1180px)`) on the argument that a wide window buying
+     margin instead of content reads as the app refusing to use the room. That
+     argument is wrong *for the chat column specifically*, and the composer is
+     where it shows: a 1180px-wide input is not a more capable input, it is a
+     line of prose the eye has to track back across, and it drags the toolbar's
+     controls apart to opposite ends of the window. The design of record names
+     "the 760px column" as Biorouter's identity as an instrument
+     (docs/design/astryx-adoption/astryx-ui-adoption-design.md §1), so 760 is
+     the measure, not the floor of one.
 
-     PERCENTAGES, not `vw`. These resolve against the containing block, which is
-     the content pane; `vw` is the whole viewport and would over-count by the
-     sidebar's width, widening the column exactly when the sidebar opened and
-     took the room away.
+     `--measure-page` stays FLUID. It governs settings, sessions and the other
+     document-shaped views, where a wide window genuinely does buy content
+     (more table columns, more cards per row) rather than a longer line.
+     PERCENTAGES, not `vw`, for the reason that has not changed: a percentage
+     resolves against the containing block, which is the content pane, while
+     `vw` is the whole viewport and would over-count by the sidebar's width —
+     widening the column exactly when the sidebar opened and took the room away.
 
-     The floor is the OLD value, so nothing narrow changes: `max-width` never
-     forces a box wider than its parent, so below the floor the column is still
-     simply pane-wide. The clamp only ever raises the ceiling on a window that
-     has space to spare. */
-  --measure-chat: clamp(760px, 78%, 1180px);
+     Nothing narrow changes either way: `max-width` never forces a box wider
+     than its parent, so below 760px the chat column is simply pane-wide. */
+  --measure-chat: 760px;
   --measure-page: clamp(1120px, 88%, 1720px);
 
   --z-base: 0;
@@ -453,38 +492,40 @@
   /* `--background-app` is the WINDOW ground (body, behind everything);
      `--background-canvas` is the MAIN PANEL ground — the page the conversation
      and every top-level view are drawn on, and the surface the sidebar steps
-     away from. Parchment's canvas carries the family's warm tint while
-     `default`/`card` stay pure white and lift off it. Mirrored in
-     themes/parchment.theme.mjs; the base family's :root/.dark blocks are
-     hand-authored (the generator only emits the non-base families). */
+     away from. Both are white: the page is white and `--background-muted`
+     #f4f4f2 is the intermediate panel. The two tokens stay separate because
+     they mean different things, not because they differ in value.
+
+     SHARED, NOT PARCHMENT'S. Every surface from here down is the one neutral
+     set all three families wear; Parchment's identity is its warm ink and its
+     dark-orange accent, not its ground. Mirrored in themes/parchment.theme.mjs;
+     the base family's :root/.dark blocks are hand-authored (the generator only
+     emits the non-base families), so a change here must be made there too. */
   --background-app: var(--color-white);
-  --background-canvas: var(--color-neutral-50);
+  --background-canvas: var(--color-white);
   --background-default: var(--color-white);
   --background-card: var(--color-white);
-  --background-muted: var(--color-neutral-50);
+  --background-muted: var(--color-neutral-100);
 
-  /* The code ground (design.md §5.1). The syntax palettes in codeTheme.ts are
-     VERIFIED against these exact values — parchment "on #faf8f3 / #16120c",
-     alma "on #F2F3F4 / #08213F" — but the value is not expressible with the
-     existing tokens: light wants --background-muted while dark wants
-     --background-default. That mismatch is why the ground got duplicated
-     across codeTheme.ts, main.css and InAppTerminalDock, and why dark code
-     blocks were painting --background-muted (#282217) while their palette was
-     tuned for #16120c — `comment` rendered at 4.15:1, under AA. One token,
-     one ground, matching what the palette was measured on. */
-  --background-code: var(--color-neutral-50);
-  --background-medium: var(--color-neutral-100);
-  --background-strong: var(--color-neutral-300);
-  /* The tooltip fill. Warm near-black, NOT `--color-black`. Parchment was the
-     only family whose inverse was never tinted, so the default theme dropped a
-     pure-black chip into an otherwise warm palette. Both siblings set this to
-     their own `--text-default` (Alma Mater #052049, Roche Limit #1f1e1c, and
-     the latter's design doc says "warm near-black, not #000" in as many words);
-     this is Parchment's. White on it is 13.9:1. Mirror any change in
-     `themes/parchment.theme.mjs` — the base family's :root block is authored
+  /* The code ground (design.md §5.1). Shared, like every other surface — but
+     still its OWN token, because light wants a panel a hair off the page while
+     dark wants the card ground, and neither is expressible as an alias of an
+     existing token. That mismatch is why the ground got duplicated across
+     codeTheme.ts, main.css and InAppTerminalDock, and why dark code blocks once
+     painted --background-muted while their palette was tuned for a darker
+     surface — `comment` rendered at 4.15:1, under AA. One token, one ground,
+     and every family's syntax palette is measured against it by the generator. */
+  --background-code: #f5f5f3;
+  --background-medium: #ecece9;
+  --background-strong: #dcdcd8;
+  /* The tooltip fill. Warm near-black, NOT `--color-black`. This used to be
+     per family — each set it to its own `--text-default` — but a tooltip is a
+     SURFACE, and surfaces are now shared: all three paint #1f1e1c and place
+     their own `--text-inverse` on it. White on it is 16.4:1. Mirror any change
+     in `themes/parchment.theme.mjs` — the base family's :root block is authored
      here, but that file is still the theme's stated source of truth and feeds
      the derived artifacts. */
-  --background-inverse: #2a2520;
+  --background-inverse: #1f1e1c;
   /* Status FILLS — a solid background. The ink placed on top is --text-on-*. */
   --background-danger: var(--color-red-600);
   --background-success: var(--color-green-600);
@@ -498,19 +539,22 @@
      so `hover:border-border-strong` weakened the border (DR-06, DR-51). */
   --border-subtle: var(--color-neutral-200);
   --border-strong: var(--color-neutral-300);
-  --border-input: var(--color-neutral-200);
+  --border-input: #c9c9c3;
   --border-default: var(--border-subtle);
   --border-danger: var(--color-red-600);
   --border-success: var(--color-green-600);
   --border-warning: var(--color-yellow-700);
   --border-info: var(--color-blue-700);
 
-  /* Text. `muted` is darker than `subtle` — the old ramp had them inverted.
-     Both clear 4.5:1 on white, canvas #faf8f3, medium #f4f0e6 and the
-     two-tone sidebar #f3ede1 (the darkest ground either can land on). */
-  --text-default: #2a2520; /* min 9.34:1 */
-  --text-muted: #635c54; /* min 5.65:1 */
-  --text-subtle: #6e6760; /* min 4.78:1 */
+  /* Text. THIS IS PARCHMENT'S AXIS — the warm ink is what makes the family, now
+     that the grounds are shared. `muted` is darker than `subtle`; the old ramp
+     had them inverted. All three clear 4.5:1 on every ground they can land on:
+     white, muted #f4f4f2, medium #ecece9, code #f5f5f3 and sidebar #f7f7f5.
+     The minima below are the WORST of those, measured by check-contrast.mjs —
+     re-measure rather than carry them forward if a neutral changes. */
+  --text-default: #2a2520; /* min 12.82:1, on --background-medium */
+  --text-muted: #635c54; /* min 5.56:1, on --background-medium */
+  --text-subtle: #6e6760; /* min 5.06:1, on --background-muted */
   --text-inverse: var(--color-white);
 
   /* Status TEXT/ICON colours — must themselves pass on the page ground.
@@ -546,18 +590,21 @@
      focused field read as an alarm on a surface whose whole thesis is calm — and
      because browsers treat text inputs as always `:focus-visible`, it fired on a
      plain mouse click, not just on keyboard navigation.
-     neutral-600 clears 5.89:1 against every ground it can appear on. It is only
-     drawn under `prefers-contrast: more` / `forced-colors` — see @layer base. */
+     neutral-600 clears 3:1 against every ground it can appear on. It is only
+     drawn under `prefers-contrast: more` / `forced-colors` — see @layer base.
+     Neutral by definition, so it is SHARED: the ring, the focus fill and the
+     focused edge come from the one ramp, not from each family's ink. */
   --ring: var(--color-neutral-600);
   /* Focus is a SURFACE SHIFT, not a border (D-15). This is the fill a focused
      control takes: one step past hover, so focus and hover are distinguishable. */
-  --background-focus: #e4dcc9;
-  --border-focus: var(--text-subtle);
+  --background-focus: #e0e0dc;
+  --border-focus: #6b6963;
 
-  /* Home usage heatmap — a warm sequential ramp, monotonic in luminance so the
-     five steps read in order even in greyscale. Level 0 is the empty-day fill,
-     deliberately a shade above the canvas so the grid is legible when idle. */
-  --heat-0: #ece5d6;
+  /* Home usage heatmap. Levels 1–4 are the family's ACCENT ramp and differ per
+     family; level 0 is the empty-day fill — a grey a shade above the page, so
+     the grid is legible when idle — and is therefore shared like every other
+     neutral. Monotonic in luminance so the five steps read in greyscale. */
+  --heat-0: #eeeeea;
   --heat-1: #e9c9ab;
   --heat-2: #dda27a;
   --heat-3: #c6774c;
@@ -567,43 +614,48 @@
   --heat-gap: 6px;
   --heat-labels: 34px;
 
-  /* Two-tone canvas: the sidebar is a distinct, slightly deeper warm-beige
-     surface sitting against the lighter main canvas (Codex-style layering,
-     kept warm and low-contrast so it never reads as glaring). */
-  --sidebar: #f3ede1;
+  /* Two-tone canvas: the sidebar is a distinct, slightly deeper neutral surface
+     sitting against the white main canvas (Codex-style layering, kept
+     low-contrast so it never reads as glaring). Shared — the sidebar's greys
+     are scaffolding; what varies per family is the ink and icon on them. */
+  --sidebar: #f7f7f5;
   --sidebar-foreground: var(--text-default);
-  /* Nav-icon colour. Parchment keeps icons the same ink as their label, so this
-     is a pass-through; Alma Mater overrides it to carry the brand teal. Defined
-     here (and in .dark) so every theme resolves it and check-contrast.mjs can
-     assert it across all four. */
+  /* Nav-icon colour. PER FAMILY — one of the two axes a family owns. Parchment
+     keeps icons the same ink as their label, so this is a pass-through; Alma
+     Mater and Roche Limit override it to carry their accent. Defined here (and
+     in .dark) so every theme resolves it and check-contrast.mjs can assert it
+     across all six scopes. */
   --sidebar-icon: var(--sidebar-foreground);
-  --sidebar-hover: #ece4d4;
-  --sidebar-active: #e4d9c3;
+  --sidebar-hover: #efefec;
+  --sidebar-active: #eaeae6;
   --sidebar-accent: var(--sidebar-hover);
   --sidebar-accent-foreground: var(--text-default);
-  --sidebar-border: #e9e1d0;
+  --sidebar-border: #e7e7e3;
   --sidebar-ring: var(--ring);
 
-  /* custom shadow — flat by default; popover for elevated menus/modals */
-  /* Modal / diagnostics scrim. Tokenised so each family tints it to its own
-     ink rather than inheriting Parchment's warm brown. */
-  --scrim: rgba(32, 25, 15, 0.18);
+  /* Elevation and the scrim are neutral scaffolding, so all three families
+     share them and every alpha is cast in the same near-black #1f1e1c. They
+     were tokenised so a family COULD tint them to its own ink — Alma Mater ran
+     a navy scrim and navy shadows — but a full-screen navy backdrop is a
+     background, and backgrounds no longer vary. The token stays: a future
+     family that genuinely needs its own can re-point one name. */
+  --scrim: rgba(31, 30, 28, 0.18);
   /* The fifth, micro tier (A-07). Below `--shadow-default`: the pill lift on an
      active document tab and nothing heavier. It existed already as two literals
-     hardcoded into `.br-tab[data-active]` and its `.dark` override — which is
-     why Alma Mater and Roche Limit are currently lifted with Parchment's warm
-     brown ink. Same values, one name; a family that wants its own can now
-     re-point one token instead of finding two rules. */
-  --shadow-raised: 0px 1px 2px 0px rgba(32, 25, 15, 0.07);
-  --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12);
+     hardcoded into `.br-tab[data-active]` and its `.dark` override. Same
+     values, one name. */
+  --shadow-raised: 0px 1px 2px 0px rgba(31, 30, 28, 0.07);
+  --shadow-default:
+    0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
   /* composer: a hair more lift than --shadow-default so the chat box reads as a
      distinct, gently raised surface — deliberately very subtle */
   --shadow-composer:
-    0px 2px 6px -1px rgba(32, 25, 15, 0.08), 0px 1px 2px 0px rgba(32, 25, 15, 0.05);
-  --shadow-popover: 0px 8px 24px 0px rgba(32, 25, 15, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.15);
+    0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
+  --shadow-popover:
+    0px 8px 24px 0px rgba(31, 30, 28, 0.11), 0px 0px 1px 0px rgba(31, 30, 28, 0.16);
   --shadow-modal:
-    0px 22px 60px -18px rgba(32, 25, 15, 0.22), 0px 8px 24px -18px rgba(32, 25, 15, 0.16),
-    0px 0px 0px 1px rgba(32, 25, 15, 0.045);
+    0px 22px 60px -18px rgba(31, 30, 28, 0.22), 0px 8px 24px -18px rgba(31, 30, 28, 0.16),
+    0px 0px 0px 1px rgba(31, 30, 28, 0.05);
 
   /* ── Inset rings (§2.7, §3.2, §4.4) ──────────────────────────────────────
      An INSET ring, not an outline and not a border, and the distinction is the
@@ -631,76 +683,80 @@
   --background-accent-hover: #f0a07c;
   --border-accent: var(--color-coral-400);
   --text-accent: var(--color-coral-400);
-  --text-on-accent: var(--color-neutral-900);
+  --text-on-accent: #16120c;
   --accent-bar: var(--color-coral-400);
 
-  /* Surfaces. `default`/`card` now sit one step ABOVE the canvas so a card
-     reads as a surface rather than dissolving into the page. */
+  /* Surfaces — SHARED with every family. `default`/`card` sit one step ABOVE
+     the canvas so a card reads as a surface rather than dissolving into the
+     page. Parchment dark used to invert that ladder (canvas #282217 LIGHTER
+     than its cards) and so did Alma Mater; both now follow the one ladder,
+     because a shared neutral set cannot carry two contradictory orders.
+     Warm-neutral, not pure black, so a bright accent does not halate. */
   --background-app: var(--color-neutral-950);
-  /* Parchment dark inverts the lift: the canvas is the LIGHTER warm brown and
-     cards recess into it. This is what the family has always rendered. */
-  --background-canvas: var(--color-neutral-800);
+  --background-canvas: var(--color-neutral-950);
   --background-default: var(--color-neutral-900);
   --background-card: var(--color-neutral-900);
-  --background-muted: var(--color-neutral-800);
+  --background-muted: #232320;
   --background-code: var(--color-neutral-900);
-  --background-medium: var(--color-neutral-700);
-  --background-strong: var(--color-neutral-600);
-  --background-inverse: var(--color-neutral-200);
+  --background-medium: var(--color-neutral-800);
+  --background-strong: #3a3a36;
+  --background-inverse: #ededea;
   --background-danger: var(--color-red-100);
   --background-success: var(--color-green-100);
   --background-info: var(--color-blue-100);
   --background-warning: var(--color-yellow-100);
-  --text-on-status: var(--color-neutral-900);
+  --text-on-status: #16120c;
 
   /* Borders. `default` was neutral-900 against a neutral-950 canvas: 1.06:1,
      i.e. invisible. It is now the hairline, matching light-mode intent. */
-  --border-subtle: var(--color-neutral-800);
+  --border-subtle: #302f2c;
   --border-strong: var(--color-neutral-700);
-  --border-input: var(--color-neutral-700);
+  --border-input: #4a4945;
   --border-default: var(--border-subtle);
   --border-danger: var(--color-red-100);
   --border-success: var(--color-green-100);
   --border-warning: var(--color-yellow-100);
   --border-info: var(--color-blue-100);
 
-  /* Text. Pure white on near-black is harsh; the warm bone reads calmer and
-     still clears 17:1. `subtle` was neutral-500, which failed AA at 4.01:1 on
-     the sidebar ground; #9c937b clears 5.16:1 there. */
-  --text-default: var(--color-neutral-100);
-  --text-muted: var(--color-neutral-400); /* 6.66:1 on the sidebar */
-  --text-subtle: #9c937b; /* 5.16:1 on the sidebar */
-  --text-inverse: var(--color-neutral-900);
+  /* Text — PARCHMENT'S AXIS, written as literals rather than through the
+     neutral ramp, because that ramp is now shared and carries no family bias.
+     Pure white on near-black is harsh; the warm bone reads calmer. `subtle` was
+     neutral-500, which failed AA on the sidebar ground. Minima are the worst
+     over every asserted ground; re-measure if a neutral changes. */
+  --text-default: #f4f0e6; /* min 12.31:1, on --background-medium */
+  --text-muted: #b0a892; /* min 5.91:1, on --background-medium */
+  --text-subtle: #9c937b; /* min 5.16:1, on --background-muted */
+  --text-inverse: #16120c;
   --text-danger: var(--color-red-100);
   --text-success: var(--color-green-100);
   --text-warning: var(--color-yellow-100);
   --text-info: var(--color-blue-100);
 
-  /* Focus (D-03, revised by D-15) — neutral, not coral. 7.05:1 minimum. */
-  --ring: var(--color-neutral-300);
-  --background-focus: #4d4430;
-  --border-focus: var(--text-subtle);
+  /* Focus (D-03, revised by D-15) — neutral, not coral, and shared. */
+  --ring: #a5a39d;
+  --background-focus: #35342f;
+  --border-focus: #9c9a93;
 
-  --heat-0: #241f16;
+  --heat-0: #1e1d1b;
   --heat-1: #4a3524;
   --heat-2: #7a4d2e;
   --heat-3: #b0653a;
   --heat-4: #e8895f;
 
-  /* Dark mode mirrors the two-tone: sidebar sits one warm step above the
-     near-black main canvas, with its own hover/active steps. */
-  --sidebar: var(--background-muted);
+  /* Dark mode mirrors the two-tone: sidebar sits one step off the near-black
+     main canvas, with its own hover/active steps. Shared, like light. */
+  --sidebar: #171716;
   --sidebar-foreground: var(--text-default);
   --sidebar-icon: var(--sidebar-foreground);
-  --sidebar-hover: #322b1d;
-  --sidebar-active: #3d3524;
+  --sidebar-hover: #232320;
+  --sidebar-active: #2e2e2a;
   --sidebar-accent: var(--sidebar-hover);
   --sidebar-accent-foreground: var(--text-default);
-  --sidebar-border: var(--color-neutral-700);
+  --sidebar-border: #2a2a27;
   --sidebar-ring: var(--ring);
 
   --scrim: rgba(0, 0, 0, 0.48);
-  /* The micro tier needs its own dark weight — a 7%-alpha warm brown is invisible
+  /* The micro tier needs its own dark weight — a 7%-alpha near-black is invisible
      on near-black. Same value the `.dark .br-tab[data-active]` override carried. */
   --shadow-raised: 0px 1px 3px 0px rgba(0, 0, 0, 0.45);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
@@ -735,17 +791,17 @@
   --color-coral-500: #16a0ac;
   --color-coral-600: #14828c;
   --color-coral-700: #0e5258;
-  --color-neutral-50: #f7f8f9;
-  --color-neutral-100: #f2f3f4;
-  --color-neutral-200: #e1e3e5;
-  --color-neutral-300: #d1d3d3;
-  --color-neutral-400: #b4b9bf;
-  --color-neutral-500: #878d96;
-  --color-neutral-600: #5a6b86;
-  --color-neutral-700: #3a4a66;
-  --color-neutral-800: #1f3152;
-  --color-neutral-900: #0f2545;
-  --color-neutral-950: #04142e;
+  --color-neutral-50: #fafaf9;
+  --color-neutral-100: #f4f4f2;
+  --color-neutral-200: #e4e4e0;
+  --color-neutral-300: #d2d2cd;
+  --color-neutral-400: #a9a7a1;
+  --color-neutral-500: #84827c;
+  --color-neutral-600: #5c5a55;
+  --color-neutral-700: #3e3d39;
+  --color-neutral-800: #2c2c29;
+  --color-neutral-900: #1b1b19;
+  --color-neutral-950: #131312;
   --color-red-100: #f5768a;
   --color-red-200: #e85268;
   --color-red-600: #c40d3e;
@@ -770,20 +826,20 @@
   --background-canvas: #ffffff;
   --background-default: #ffffff;
   --background-card: #ffffff;
-  --background-muted: #f2f3f4;
-  --background-code: #f2f3f4;
-  --background-medium: #e1e3e5;
-  --background-strong: #d1d3d3;
-  --background-inverse: #052049;
+  --background-muted: #f4f4f2;
+  --background-code: #f5f5f3;
+  --background-medium: #ecece9;
+  --background-strong: #dcdcd8;
+  --background-inverse: #1f1e1c;
   --background-danger: #e61048;
   --background-success: #007242;
   --background-info: #0f388a;
   --background-warning: #8a5a00;
   --text-on-status: #ffffff;
-  --border-subtle: #e1e3e5;
-  --border-strong: #cfd3d8;
-  --border-input: #d1d3d3;
-  --border-default: #e1e3e5;
+  --border-subtle: #e4e4e0;
+  --border-strong: #d2d2cd;
+  --border-input: #c9c9c3;
+  --border-default: #e4e4e0;
   --border-danger: #c40d3e;
   --border-success: #007242;
   --border-warning: #8a5a00;
@@ -796,28 +852,28 @@
   --text-success: #007242;
   --text-warning: #8a5a00;
   --text-info: #0f388a;
-  --ring: #506380;
-  --background-focus: #d3d6d9;
-  --border-focus: #586780;
-  --heat-0: #e8f6f8;
+  --ring: #5c5a55;
+  --background-focus: #e0e0dc;
+  --border-focus: #6b6963;
+  --heat-0: #eeeeea;
   --heat-1: #b4e2e8;
   --heat-2: #60d0da;
   --heat-3: #16a0ac;
   --heat-4: #0e5258;
-  --sidebar: #eef0f0;
+  --sidebar: #f7f7f5;
   --sidebar-foreground: #052049;
   --sidebar-icon: #14828c;
-  --sidebar-hover: #e3e5e5;
-  --sidebar-active: #d8d9da;
-  --sidebar-accent: #e3e5e5;
+  --sidebar-hover: #efefec;
+  --sidebar-active: #eaeae6;
+  --sidebar-accent: #efefec;
   --sidebar-accent-foreground: #052049;
-  --sidebar-border: #e1e3e5;
-  --sidebar-ring: #506380;
-  --scrim: rgba(5, 32, 73, 0.2);
-  --shadow-default: 0px 1px 3px 0px rgba(5, 32, 73, 0.08), 0px 0px 1px 0px rgba(5, 32, 73, 0.14);
-  --shadow-composer: 0px 2px 6px -1px rgba(5, 32, 73, 0.1), 0px 1px 2px 0px rgba(5, 32, 73, 0.06);
-  --shadow-popover: 0px 8px 24px 0px rgba(5, 32, 73, 0.12), 0px 0px 1px 0px rgba(5, 32, 73, 0.18);
-  --shadow-modal: 0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16), 0px 0px 0px 1px rgba(5, 32, 73, 0.05);
+  --sidebar-border: #e7e7e3;
+  --sidebar-ring: #5c5a55;
+  --scrim: rgba(31, 30, 28, 0.18);
+  --shadow-default: 0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13);
+  --shadow-composer: 0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05);
+  --shadow-popover: 0px 8px 24px 0px rgba(31, 30, 28, 0.11), 0px 0px 1px 0px rgba(31, 30, 28, 0.16);
+  --shadow-modal: 0px 22px 60px -18px rgba(31, 30, 28, 0.22), 0px 8px 24px -18px rgba(31, 30, 28, 0.16), 0px 0px 0px 1px rgba(31, 30, 28, 0.05);
 }
 
 .dark[data-theme='alma-mater'] {
@@ -828,24 +884,24 @@
   --text-accent: #60d0da;
   --text-on-accent: #052049;
   --accent-bar: #60d0da;
-  --background-app: #04142e;
-  --background-canvas: #0d2a50;
-  --background-default: #08213f;
-  --background-card: #08213f;
-  --background-muted: #0d2a50;
-  --background-code: #08213f;
-  --background-medium: #143563;
-  --background-strong: #1e477f;
-  --background-inverse: #f2f3f4;
+  --background-app: #131312;
+  --background-canvas: #131312;
+  --background-default: #1b1b19;
+  --background-card: #1b1b19;
+  --background-muted: #232320;
+  --background-code: #1b1b19;
+  --background-medium: #2c2c29;
+  --background-strong: #3a3a36;
+  --background-inverse: #ededea;
   --background-danger: #f5768a;
   --background-success: #5fbf74;
   --background-info: #7fb3e6;
   --background-warning: #feb80a;
   --text-on-status: #052049;
-  --border-subtle: #17386a;
-  --border-strong: #24487f;
-  --border-input: #24487f;
-  --border-default: #17386a;
+  --border-subtle: #302f2c;
+  --border-strong: #3e3d39;
+  --border-input: #4a4945;
+  --border-default: #302f2c;
   --border-danger: #f5768a;
   --border-success: #5fbf74;
   --border-warning: #feb80a;
@@ -858,23 +914,23 @@
   --text-success: #5fbf74;
   --text-warning: #feb80a;
   --text-info: #7fb3e6;
-  --ring: #b4b9bf;
-  --background-focus: #163c74;
-  --border-focus: #909aa6;
-  --heat-0: #10223f;
+  --ring: #a5a39d;
+  --background-focus: #35342f;
+  --border-focus: #9c9a93;
+  --heat-0: #1e1d1b;
   --heat-1: #0e5258;
   --heat-2: #14828c;
   --heat-3: #16a0ac;
   --heat-4: #60d0da;
-  --sidebar: #071b3a;
+  --sidebar: #171716;
   --sidebar-foreground: #f2f3f4;
   --sidebar-icon: #60d0da;
-  --sidebar-hover: #0e2a50;
-  --sidebar-active: #163864;
-  --sidebar-accent: #0e2a50;
+  --sidebar-hover: #232320;
+  --sidebar-active: #2e2e2a;
+  --sidebar-accent: #232320;
   --sidebar-accent-foreground: #f2f3f4;
-  --sidebar-border: #1a3a66;
-  --sidebar-ring: #b4b9bf;
+  --sidebar-border: #2a2a27;
+  --sidebar-ring: #a5a39d;
   --scrim: rgba(0, 0, 0, 0.48);
   --shadow-default: 0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35);
   --shadow-composer: 0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3);
@@ -1645,12 +1701,60 @@
   padding-right: 0;
 }
 
+/* THE COMPOSER'S FOCUS EDGE.
+   Written here as a real rule rather than as a Tailwind `has-[...]` variant at
+   the call site, and that is not a style preference — the variant was tried
+   three ways (`has-[textarea:focus-visible]:border-border-accent`,
+   `has-[textarea:focus]:inset-shadow-accent`,
+   `has-[textarea:focus]:border-border-accent`) and only the first ever reached
+   the stylesheet. Measured each time in the running app: the class was on the
+   element, the textarea was a focused descendant, and no rule existed to match.
+   Clearing `node_modules/.vite` did not change it. Whatever the cause — the
+   renderer runs with `watch: { ignored: ['**'] }` under BIOROUTER_NO_HMR, which
+   is exactly the signal Tailwind's scanner uses to notice new class strings —
+   a focus indicator is the wrong place to depend on class-scanning working.
+   This rule cannot fail to generate: it is authored CSS.
+
+   FULL ACCENT, ONE PIXEL. `--accent-muted` (the accent at 8%) was what the
+   previous ring used, and 2px of it reads as a thick warm-grey band rather than
+   an orange edge — reported twice, first as "a very thick rim" and then as "not
+   orange, a thick border". `--border-accent` is the accent proper (coral-600
+   light, coral-400 dark, teal in Alma Mater), so the composer's own 1px edge
+   simply turns the brand colour. No second edge, no geometry change, and it
+   follows the family like every other accent in the app.
+
+   `:has(textarea:focus)`, not `:focus-within`: the composer contains buttons,
+   and focusing Send is not "typing here". */
+.biorouter-composer-card:has(textarea:focus) {
+  border-color: var(--border-accent);
+}
+
 .br-tab {
   position: relative;
   display: flex;
   align-items: center;
   gap: 7px;
-  height: 34px;
+  /* ONE TAB, THREE STRIPS. The chat header, the artifact panel and the terminal
+     dock all draw this same object at the same size, and `--tab-height` is what
+     guarantees it — it was authored for exactly this ("chat, artifact and dock
+     tabs") and, until now, only the dock's own override was near it.
+
+     A CENTRED CHIP, not a band-filling tab. This briefly used `align-self:
+     stretch` so the tab ran the full height of its strip, browser-style. The
+     dock never did — it kept an explicit height centred in its band — and that
+     is the reading that survives all three strips: the bands are three different
+     heights (44px for chat and artifact, 40px for the dock), so a tab that
+     fills its band is a DIFFERENT SIZE in each one, and the three can never look
+     like the same control. A fixed height centred in whatever band it lands in
+     is the same control everywhere. Consistency across the three beat the
+     browser idiom in one.
+
+     `align-self: center` is stated rather than inherited: `.br-tabstrip` already
+     centres, but the stretch it replaces was explicit here, and a reader
+     comparing this rule to the dock's needs to see the same instruction in both
+     places rather than infer one from the parent. */
+  height: var(--tab-height);
+  align-self: center;
   /* Shrink to a floor, then the strip scrolls. `min-width: 0` let a tab shrink
      to nothing; 88px is the floor at which a glyph + a few characters + the
      close control still read. */
@@ -1659,7 +1763,12 @@
   max-width: 190px;
   padding: 0 11px;
   border: 0;
-  border-radius: var(--radius-md);
+  /* Four corners, not two. The top-only radius was the other half of the
+     band-filling shape: it made sense when the tab's bottom edge WAS the band's
+     hairline and its lower corners were never visible. A centred chip has all
+     four corners on show, so squaring two of them just looks broken. 4px keeps
+     the square-ish register. */
+  border-radius: var(--radius-inner);
   background: transparent;
   color: var(--text-muted);
   /* D-31: sans, not mono. These labels shipped in --font-mono, borrowed from
@@ -1682,13 +1791,40 @@
     color var(--motion-fast) var(--ease-out);
 }
 
-.br-tabstrip--sm .br-tab {
-  height: 28px;
-}
+/* `--sm` NO LONGER RESIZES THE TAB. It used to drop the dock's tabs to 28px on
+   the reasoning that a dock tab is "one step down from a chat tab" — but that
+   step is exactly what made the three strips look like three different controls,
+   which is the thing being fixed. The dock's tab is now `--tab-height` like every
+   other one; its band stays shorter, so the chip simply sits in less air.
 
+   The class is kept because the strip still uses it for its own padding and
+   ground, and because a future one-step-down strip is a legitimate thing to
+   want — but if it comes back, it comes back as a token, not as a literal
+   hidden in a descendant selector. */
+
+/* THE THREE STATES ARE ONE LADDER, and they are all steps of the SAME move:
+   the tab rising off the band toward the content's own surface. Resting it is
+   transparent (the band shows through), hovered it is most of the way to
+   `--background-default`, pressed it is nearly there, and selected it IS
+   `--background-default` — the same fill as the conversation below, which is
+   what makes a selected tab read as attached to its content rather than as a
+   highlighted item in a list.
+
+   Expressing all three as percentages of one destination colour is why they
+   cannot drift apart: change the destination and the whole ladder follows. The
+   earlier version had a hover value and nothing else, so "pressed" was
+   indistinguishable from "hovered" and the control gave no feedback on click. */
 .br-tab:hover {
   background: color-mix(in srgb, var(--background-default) 62%, transparent);
   color: var(--text-default);
+}
+
+/* Pressed: one rung past hover, and it must sit BELOW the active rule in source
+   order so that pressing an already-selected tab does not dim it — `:active` and
+   `[data-active]` have the same specificity (0,2,0), so order is the whole
+   separation, exactly as with the light/dark theme blocks. */
+.br-tab:active {
+  background: color-mix(in srgb, var(--background-default) 84%, transparent);
 }
 
 .br-tab[data-active='true'] {
@@ -2297,7 +2433,9 @@ body.biorouter-headless-browser .biorouter-route-surface[data-route-path='/'] {
 
 .titlebar-drag-region {
   -webkit-app-region: drag;
-  height: 32px;
+  /* Shared with `--toast-inset-top`, which is measured from this band so the
+     toast layer cannot start inside a drag rect. See that token. */
+  height: var(--titlebar-drag-height);
   width: 100%;
   position: fixed;
   top: 0;

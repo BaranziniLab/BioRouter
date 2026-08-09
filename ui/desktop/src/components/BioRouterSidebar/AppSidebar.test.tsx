@@ -117,7 +117,12 @@ describe('AppSidebar chat navigation', () => {
     // explicitly and closes it with the hairline the chat/preview headers share.
     expect(sidebarContent).not.toHaveClass('pt-10');
     const titlebarBand = screen.getByTestId('sidebar-titlebar-band');
-    expect(titlebarBand).toHaveClass('h-13', 'border-b', 'border-sidebar-border');
+    // `h-chrome`, not a literal: this band, BaseChat's header and the artifact
+    // strip all read `--chrome-height` (44px) so they can never drift apart at
+    // the seam they share. Pinning the TOKEN rather than the number is the point
+    // — if the band ever goes back to a hardcoded height, this fails even if the
+    // number it hardcodes happens to be right today.
+    expect(titlebarBand).toHaveClass('h-chrome', 'border-b', 'border-sidebar-border');
     expect(titlebarBand.compareDocumentPosition(wordmark)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
     // The brand is a real row on the SAME text edge as every nav label. jsdom has
@@ -147,7 +152,11 @@ describe('AppSidebar chat navigation', () => {
       Node.DOCUMENT_POSITION_FOLLOWING
     );
     expect(homeButton).toHaveClass('h-8', 'px-3', 'py-2', 'text-sm');
-    expect(primaryMenu).toHaveClass('gap-0');
+    // 2px between rail rows, not the flush `gap-0` this asserted before. At zero
+    // the rows' rounded washes touch, so a hover bleeds into its neighbours and
+    // the destinations read as one block of colour. 2px is the gap the app's own
+    // menu recipe uses between items, so the rail and the menus now agree.
+    expect(primaryMenu).toHaveClass('gap-0.5');
     expect(primaryMenu).toContainElement(newSessionButton);
     expect(homeButton).not.toHaveClass('text-text-muted');
     expect(footer).toContainElement(settingsButton);
