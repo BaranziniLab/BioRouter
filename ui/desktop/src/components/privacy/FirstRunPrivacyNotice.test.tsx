@@ -259,7 +259,7 @@ describe('FirstRunPrivacyNotice', () => {
     // The disclosure is about REACHABILITY, not about a change. Saying "now
     // marked" of an extension nothing happened to would be false, and would send
     // the user looking for a setting that moved.
-    expect(paragraph).toMatch(/commercial models hosted outside UCSF/i);
+    expect(paragraph).toMatch(/commercial models hosted outside your institution/i);
     expect(paragraph).toMatch(/nothing about it has changed/i);
   });
 

@@ -95,7 +95,7 @@ describe('ProviderGrid — the privacy taxonomy, on screen', () => {
     render(<ProviderGrid providers={all} isOnboarding={false} />);
 
     // §14.5, verbatim: the reason is the recognised endpoint, not the vendor.
-    expect(screen.getByText(/recognises this specific UCSF gateway endpoint/i)).toBeInTheDocument();
+    expect(screen.getByText(/recognises this institutional gateway endpoint/i)).toBeInTheDocument();
 
     // §14.5's note: NOT "a direct cloud account, even if your institution pays
     // for it" — `azure.rs` defaults AZURE_OPENAI_ENDPOINT to the UCSF gateway

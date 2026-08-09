@@ -357,7 +357,7 @@ export function FirstRunPrivacyNotice({
                 ? 'One extension you have enabled is set up for clinical data and is not marked private: '
                 : 'Some extensions you have enabled are set up for clinical data and are not marked private: '}
               <strong>{publicClinicalExtensions.join(', ')}</strong>. Any model, including
-              commercial models hosted outside UCSF, can still call{' '}
+              commercial models hosted outside your institution, can still call{' '}
               {publicClinicalExtensions.length === 1 ? 'it' : 'them'}. Nothing about{' '}
               {publicClinicalExtensions.length === 1 ? 'it' : 'them'} has changed — this is so you
               know.

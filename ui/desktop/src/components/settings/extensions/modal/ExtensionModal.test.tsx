@@ -138,7 +138,7 @@ describe('ExtensionModal', () => {
     );
 
     expect(
-      screen.getByText(/including commercial models hosted outside UCSF/i)
+      screen.getByText(/including commercial models hosted outside your institution/i)
     ).toBeInTheDocument();
 
     await user.type(screen.getByPlaceholderText('Enter extension name...'), 'ucsfomopagent');

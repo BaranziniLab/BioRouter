@@ -343,7 +343,7 @@ export default function ExtensionModal({
   const tierNotice =
     resultingTier === 'private'
       ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
-      : 'Extensions you add by hand are always Public. Any model, including commercial models hosted outside UCSF, will be able to call this extension.';
+      : 'Extensions you add by hand are always Public. Any model, including commercial models hosted outside your institution, will be able to call this extension.';
 
   return (
     <>

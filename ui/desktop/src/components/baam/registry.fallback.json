@@ -717,7 +717,7 @@
       "name": "Scientific Research",
       "category": "Core",
       "type": "User-invocable · /scientific-research",
-      "description": "End-to-end research: scopes the question, reviews real literature, generates hypotheses, plans and verifies the analysis, then writes a cited draft. Delegates biomedical data to BioSkills and the SPOKE/CDW/OMOP extensions. It never fabricates a citation or result.",
+      "description": "End-to-end research: scopes the question, reviews real literature, generates hypotheses, plans and verifies the analysis, then writes a cited draft. Delegates biomedical data queries to whichever data extensions are installed. It never fabricates a citation or result.",
       "tags": [
         "Research",
         "Literature",

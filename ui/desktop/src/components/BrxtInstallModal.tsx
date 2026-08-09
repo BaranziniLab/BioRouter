@@ -247,7 +247,7 @@ export function BrxtInstallModal({
   const badgeNotice =
     resultingTier === 'private'
       ? 'The Biorouter marketplace publishes this name as private, so this extension will be Private: only private models will be able to call it.'
-      : 'Extensions installed from a file are always Public. Any model, including commercial models hosted outside UCSF, will be able to call this extension.';
+      : 'Extensions installed from a file are always Public. Any model, including commercial models hosted outside your institution, will be able to call this extension.';
 
   const requiredVars = envEntries.filter((e) => e.required);
   const optionalVars = envEntries.filter((e) => !e.required);

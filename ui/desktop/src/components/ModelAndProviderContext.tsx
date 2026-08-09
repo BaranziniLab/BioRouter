@@ -127,7 +127,7 @@ const privacyBarrierOf = (error: unknown): PrivacyBarrierBody | null =>
  */
 const privacyBarrierMessage = (barrier: PrivacyBarrierBody) => {
   const lines = [
-    'This chat is private, so it can only run on a private model — its contents never reach a model hosted outside UCSF.',
+    'This chat is private, so it can only run on a private model. Biorouter will not send its contents to a model hosted outside your institution.',
   ];
   if (barrier.available_private_providers.length > 0) {
     lines.push(`Available private models: ${barrier.available_private_providers.join(', ')}.`);

@@ -30,7 +30,7 @@ describe('BrxtInstallModal — issue #56 §13.5', () => {
     render(<BrxtInstallModal onClose={() => {}} onInstalled={() => {}} />);
     expect(screen.getByText(/always Public/i)).toBeInTheDocument();
     expect(
-      screen.getByText(/including commercial models hosted outside UCSF/i)
+      screen.getByText(/including commercial models hosted outside your institution/i)
     ).toBeInTheDocument();
   });
 

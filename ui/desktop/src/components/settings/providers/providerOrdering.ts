@@ -120,7 +120,7 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
     {
       key: 'institutional',
       label: 'Private · Institutional',
-      note: 'Private because Biorouter recognises this specific UCSF gateway endpoint.',
+      note: 'Private because Biorouter recognises this institutional gateway endpoint.',
       accentClassName: 'bg-background-info',
       providers: grouped.institutional,
     },

@@ -211,7 +211,7 @@ export default function ApplicationsView() {
                 <p className="text-body text-text-muted">
                   {searchTerm
                     ? 'No applications match your search.'
-                    : 'Ask Biorouter to build one. For example: "Use Agent Drafter to build a SPOKE dashboard app." It will show up here, ready to launch.'}
+                    : 'Ask Biorouter to build one, for example "use Agent Drafter to build a dashboard app". It will appear here.'}
                 </p>
               </div>
             ) : (
