@@ -529,10 +529,34 @@ impl AppState {
         self.agent_manager.peek_agent(session_id).await
     }
 
+    /// The agent for a route that is about to DO something with it.
+    ///
+    /// ⚠ **Waits for the session's extensions first, and that wait is the
+    /// point.** `/agent/start` kicks extension loading off in the background
+    /// and returns 200 immediately, so for roughly 300 ms a session reports a
+    /// couple of tools before settling to its full set. Measured 4/4, and under
+    /// concurrent starts a session became "ready" holding 10 of 116 tools.
+    ///
+    /// A turn running inside that window silently gets a degraded toolset with
+    /// no `subagent`, so the model answers "I cannot delegate" — which is
+    /// **indistinguishable from the legitimate condition-5 refusal** (no
+    /// non-injected extensions). A live stress pass corrupted one of its own
+    /// batches on this before it added a client-side readiness wait, and no
+    /// client should have to.
+    ///
+    /// `/agent/resume` already awaited the same handle; this puts the wait at
+    /// the choke point every turn-running route passes through instead, so a
+    /// new route cannot forget it.
     pub async fn get_agent_for_route(
         &self,
         session_id: String,
     ) -> Result<Arc<biorouter::agents::Agent>, StatusCode> {
+        // Best-effort: a load that failed is reported by the route that started
+        // it, and a turn on a partially-loaded session is still better than a
+        // 500 here. What matters is that we do not run BEFORE it settles.
+        self.take_extension_loading_task(&session_id).await;
+        self.remove_extension_loading_task(&session_id).await;
+
         self.get_agent(session_id).await.map_err(|e| {
             tracing::error!("Failed to get agent: {}", e);
             StatusCode::INTERNAL_SERVER_ERROR
@@ -547,6 +571,64 @@ mod tests {
     /// Begin a turn with a throwaway token and no idempotency key.
     fn begin(state: &AppState, session_id: &str) -> Result<TurnGuard, TurnConflict> {
         state.try_begin_turn_idempotent(session_id, CancellationToken::new(), None)
+    }
+
+    /// D2. A route that is about to USE an agent waits for that session's
+    /// extensions to finish loading.
+    ///
+    /// ⚠ This asserts a *wait*, which is why it uses a flag flipped by the task
+    /// rather than a duration: a timing assertion would pass on a slow machine
+    /// with the wait deleted. Delete either line in `get_agent_for_route` and
+    /// the flag is still false when the assertion runs.
+    ///
+    /// The scenario it stands for: `/agent/start` returns 200 while extensions
+    /// are still loading, the client replies immediately, and the turn runs
+    /// with a couple of tools instead of its full set — so the model answers
+    /// "I cannot delegate", which reads exactly like a real refusal.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_route_waits_for_the_sessions_extensions_before_using_the_agent() {
+        let state = AppState::new().await.unwrap();
+        let loaded = Arc::new(std::sync::atomic::AtomicBool::new(false));
+
+        let flag = loaded.clone();
+        state
+            .set_extension_loading_task(
+                "s-wait".to_string(),
+                tokio::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    Vec::new()
+                }),
+            )
+            .await;
+
+        // The agent itself may or may not build here; what is under test is the
+        // ordering, so the result is deliberately ignored.
+        let _ = state.get_agent_for_route("s-wait".to_string()).await;
+
+        assert!(
+            loaded.load(std::sync::atomic::Ordering::SeqCst),
+            "returned before the session's extensions had finished loading"
+        );
+    }
+
+    /// The wait is not a leak: the handle is consumed once and the entry drops,
+    /// so the second turn of a chat does not re-await anything.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn the_extension_wait_is_consumed_once() {
+        let state = AppState::new().await.unwrap();
+        state
+            .set_extension_loading_task("s-once".to_string(), tokio::spawn(async { Vec::new() }))
+            .await;
+
+        let _ = state.get_agent_for_route("s-once".to_string()).await;
+        assert!(
+            state
+                .take_extension_loading_task("s-once")
+                .await
+                .is_none(),
+            "the loading handle outlived the turn that awaited it"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

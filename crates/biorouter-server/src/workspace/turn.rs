@@ -421,6 +421,32 @@ async fn prepare_turn(
     reasoning_effort: Option<biorouter::agents::ReasoningEffort>,
     conversation_so_far: Option<Conversation>,
 ) -> Option<TurnSetup> {
+    // ⚠ WAIT for this session's extensions before running a turn on it.
+    //
+    // `/agent/start` kicks extension loading off in the background and returns
+    // 200 immediately, so for roughly 300 ms a session answers with a couple of
+    // tools before settling to its full set (measured 4/4; under concurrent
+    // starts one session became "ready" holding 10 of 116). A turn inside that
+    // window silently runs on a degraded toolset with no `subagent`, and the
+    // model says "I cannot delegate" — **indistinguishable from the legitimate
+    // condition-5 refusal**, which is what makes it expensive to diagnose.
+    //
+    // `/agent/resume` already awaited the same handle. This is the other half:
+    // every interactive turn funnels through here.
+    //
+    // ⚠ It must NOT go inside `AppState::get_agent`, tempting as that is — the
+    // background loader *itself* calls `get_agent` (`routes/agent.rs`), so a
+    // wait there would have the loader waiting on itself. The wait belongs at
+    // the points that consume a ready agent, not at the one that builds it.
+    //
+    // Best-effort by design: a load that failed is reported by the route that
+    // started it, and a degraded turn still beats refusing to run. What this
+    // buys is only that we do not start BEFORE the load settles. A second
+    // caller blocks on the holder's mutex rather than skipping, so concurrent
+    // waiters both wait.
+    state.take_extension_loading_task(session_id).await;
+    state.remove_extension_loading_task(session_id).await;
+
     let agent = match state.get_agent(session_id.to_string()).await {
         Ok(agent) => agent,
         Err(e) => {
@@ -890,6 +916,32 @@ async fn emit_completion_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D2, the turn half. Every interactive turn funnels through `setup`, and
+    /// it must await this session's pending extension load before it takes the
+    /// agent — otherwise a reply sent in the ~300 ms after `/agent/start`
+    /// returns runs on a partial toolset and the model reports it cannot
+    /// delegate, which is indistinguishable from the real refusal.
+    ///
+    /// ⚠ A source scan, because the behaviour needs a live `AppState` with a
+    /// provider bound and the ordering is what matters, not the return value.
+    /// It anchors on the CALL, not on the surrounding comment: a guard that
+    /// matches its own explanatory prose passes when the code is gone, and this
+    /// repo has produced that own-goal three times.
+    #[test]
+    fn a_turn_waits_for_the_sessions_extensions_before_taking_the_agent() {
+        let src = include_str!("turn.rs");
+        let wait = src
+            .find("state.take_extension_loading_task(session_id).await;")
+            .expect("run_turn's setup no longer waits for the session's extensions");
+        let take = src
+            .find("state.get_agent(session_id.to_string()).await")
+            .expect("setup no longer takes the agent");
+        assert!(
+            wait < take,
+            "the extension wait must come BEFORE the agent is taken, not after"
+        );
+    }
     use biorouter::conversation::message::Message;
     use biorouter::session::session_manager::SessionType;
     use biorouter::session_events::{self, SessionBusEvent};
