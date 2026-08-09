@@ -322,10 +322,36 @@ pub struct RunBehavior {
     pub scheduled_job_id: Option<String>,
 }
 
+/// Refuse an unconfigured run BEFORE a session row exists.
+///
+/// `build_session` is the authority on provider and model resolution, but it
+/// runs after this function, and by then the row is already in the store. So a
+/// fresh install with no provider left one orphan "CLI Session" behind for
+/// every attempt the user made before configuring. Every `create_session` call
+/// below is preceded by this check.
+///
+/// ⚠ The provider saved on the session row is absent from the resolution the
+/// caller passes in, and that is not an oversight: the row this is guarding is
+/// the one about to be created, so that slot is empty by construction. The
+/// paths here that return an EXISTING id do not call this, because such a row
+/// can legitimately carry the only provider a resumed chat has.
+fn refuse_unconfigured_before_creating_a_row(
+    provider: Option<&str>,
+    model: Option<&str>,
+) -> Result<()> {
+    if let Some(text) = crate::session::unconfigured_precondition(provider, model) {
+        crate::session::output::render_error(&text);
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 async fn get_or_create_session_id(
     identifier: Option<Identifier>,
     resume: bool,
     no_session: bool,
+    provider: Option<&str>,
+    model: Option<&str>,
 ) -> Result<Option<String>> {
     if no_session {
         return Ok(None);
@@ -340,6 +366,7 @@ async fn get_or_create_session_id(
                 Ok(Some(latest.id.clone()))
             } else {
                 eprintln!("No previous session to resume; starting a new session.");
+                refuse_unconfigured_before_creating_a_row(provider, model)?;
                 let session = session_manager
                     .create_session(
                         std::env::current_dir()?,
@@ -350,6 +377,7 @@ async fn get_or_create_session_id(
                 Ok(Some(session.id))
             }
         } else {
+            refuse_unconfigured_before_creating_a_row(provider, model)?;
             let session = session_manager
                 .create_session(
                     std::env::current_dir()?,
@@ -382,6 +410,7 @@ async fn get_or_create_session_id(
             );
         }
 
+        refuse_unconfigured_before_creating_a_row(provider, model)?;
         let session = session_manager
             .create_session(std::env::current_dir()?, name.clone(), SessionType::User)
             .await?;
@@ -401,6 +430,7 @@ async fn get_or_create_session_id(
             .ok_or_else(|| anyhow::anyhow!("Could not extract session ID from path: {:?}", path))?;
         Ok(Some(session_id))
     } else {
+        refuse_unconfigured_before_creating_a_row(provider, model)?;
         let session = session_manager
             .create_session(
                 std::env::current_dir()?,
@@ -1799,7 +1829,14 @@ async fn handle_interactive_session(
         }
     }
 
-    let session_id = get_or_create_session_id(identifier, resume, false).await?;
+    let session_id = get_or_create_session_id(
+        identifier,
+        resume,
+        false,
+        model_opts.provider.as_deref(),
+        model_opts.model.as_deref(),
+    )
+    .await?;
 
     let mut session: crate::CliSession = build_session(SessionBuilderConfig {
         session_id,
@@ -1998,8 +2035,25 @@ async fn handle_run_command(
         }
     }
 
-    let session_id =
-        get_or_create_session_id(identifier, run_behavior.resume, run_behavior.no_session).await?;
+    // The workflow's pins count as configuration: a workflow that names its own
+    // provider is a run the user CAN start without a global default.
+    let workflow_settings = workflow.as_ref().and_then(|w| w.settings.as_ref());
+    let provider_for_precheck = model_opts
+        .provider
+        .clone()
+        .or_else(|| workflow_settings.and_then(|s| s.biorouter_provider.clone()));
+    let model_for_precheck = model_opts
+        .model
+        .clone()
+        .or_else(|| workflow_settings.and_then(|s| s.biorouter_model.clone()));
+    let session_id = get_or_create_session_id(
+        identifier,
+        run_behavior.resume,
+        run_behavior.no_session,
+        provider_for_precheck.as_deref(),
+        model_for_precheck.as_deref(),
+    )
+    .await?;
 
     let mut session = build_session(SessionBuilderConfig {
         session_id,
@@ -2232,7 +2286,7 @@ async fn handle_default_session() -> Result<()> {
         return handle_configure().await;
     }
 
-    let session_id = get_or_create_session_id(None, false, false).await?;
+    let session_id = get_or_create_session_id(None, false, false, None, None).await?;
 
     let mut session = build_session(SessionBuilderConfig {
         session_id,
@@ -2370,6 +2424,57 @@ mod cli_tests {
     #[test]
     fn the_parser_is_well_formed() {
         Cli::command().debug_assert();
+    }
+
+    /// Every path in `get_or_create_session_id` that CREATES a session row
+    /// checks the provider precondition first.
+    ///
+    /// A fresh install has no provider, and `build_session` is where that is
+    /// discovered. It runs after this function, so each attempt used to leave
+    /// an orphan "CLI Session" row behind before failing. Four call sites
+    /// create a row, and a fifth is exactly the kind of thing that gets added
+    /// later without noticing this ordering, so the guard is structural rather
+    /// than one test per path.
+    ///
+    /// Scanned over the function body only. The paths that return an EXISTING
+    /// id are deliberately not required to check: a stored row can carry the
+    /// only provider a resumed chat has, so refusing there on a missing global
+    /// default would break resuming a session that works today.
+    #[test]
+    fn no_session_row_is_created_before_the_provider_precondition_is_checked() {
+        let src = include_str!("cli.rs");
+        let (_, after) = src
+            .split_once("async fn get_or_create_session_id(")
+            .expect("get_or_create_session_id is gone");
+        let (body, _) = after
+            .split_once("\nasync fn lookup_session_id(")
+            .expect("could not find the end of get_or_create_session_id");
+
+        let creates = body.match_indices(".create_session(").count();
+        assert_eq!(
+            creates, 4,
+            "the number of row-creating paths changed; re-check that each new one \
+             refuses an unconfigured run BEFORE it writes the row, then update this count"
+        );
+
+        // Every create must have the guard somewhere above it, and no two
+        // creates may share one guard.
+        let guards: Vec<usize> = body
+            .match_indices("refuse_unconfigured_before_creating_a_row(")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(
+            guards.len(),
+            creates,
+            "each row-creating path needs its own precondition check, so a fresh \
+             install cannot leave an orphan session row behind for every attempt"
+        );
+        for (create_at, _) in body.match_indices(".create_session(") {
+            assert!(
+                guards.iter().any(|g| *g < create_at),
+                "a create_session call at byte {create_at} has no precondition check above it"
+            );
+        }
     }
 
     /// BR-71 / issue #56: `biorouter sessions <verb>` really is a command.

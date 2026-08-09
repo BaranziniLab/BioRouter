@@ -475,6 +475,38 @@ fn close_ephemeral_store(ephemeral_store_dir: Option<tempfile::TempDir>) {
     }
 }
 
+/// The message for a run that cannot name a provider or a model, or `None`
+/// when both are resolved.
+///
+/// Takes the already-resolved values rather than reading config itself, so the
+/// two callers keep their own precedence and this stays a pure function a test
+/// can drive directly. `build_session` resolves four slots (CLI flag, the
+/// provider saved on the session row, a workflow pin, the global default);
+/// [`crate::cli::get_or_create_session_id`] resolves the same list minus the
+/// saved one, which is empty by construction at the point it asks, because it
+/// is about to create that row.
+///
+/// The provider is reported first when both are missing: `biorouter configure`
+/// walks the user through provider and model together, so naming two problems
+/// would describe one fix twice.
+pub fn unconfigured_precondition(provider: Option<&str>, model: Option<&str>) -> Option<String> {
+    if provider.is_none() {
+        return Some(
+            "No provider is configured.\n\
+             Run `biorouter configure` to set one up, or pass --provider <name> for this run."
+                .to_string(),
+        );
+    }
+    if model.is_none() {
+        return Some(
+            "No model is configured.\n\
+             Run `biorouter configure` to set one up, or pass --model <name> for this run."
+                .to_string(),
+        );
+    }
+    None
+}
+
 /// An [`Agent`] whose session manager is the given (private) store, with every
 /// other config knob identical to [`Agent::new`].
 fn agent_with_session_manager(session_manager: Arc<SessionManager>) -> Agent {
@@ -546,15 +578,26 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 ProviderSource::GlobalDefault,
             ),
         };
-    let provider_name =
-        resolved_provider.expect("No provider configured. Run 'biorouter configure' first");
-
-    let model_name = session_config
+    let resolved_model = session_config
         .model
         .or_else(|| saved_model_config.as_ref().map(|mc| mc.model_name.clone()))
         .or_else(|| workflow_settings.and_then(|s| s.biorouter_model.clone()))
-        .or_else(|| config.get_biorouter_model().ok())
-        .expect("No model configured. Run 'biorouter configure' first");
+        .or_else(|| config.get_biorouter_model().ok());
+
+    // A fresh install has neither, and this is the first thing it reaches. Both
+    // slots used to be `.expect()`, so the answer to "you have not configured a
+    // provider yet" was a panic: `thread 'main' panicked at`, a note about
+    // RUST_BACKTRACE, and exit 101. Every other way this function can fail
+    // renders a message and exits 1, and so does this one now.
+    if let Some(text) =
+        unconfigured_precondition(resolved_provider.as_deref(), resolved_model.as_deref())
+    {
+        output::render_error(&text);
+        close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
+        process::exit(1);
+    }
+    let provider_name = resolved_provider.expect("checked by unconfigured_precondition above");
+    let model_name = resolved_model.expect("checked by unconfigured_precondition above");
 
     let model_config = if session_config.resume
         && saved_model_config
@@ -942,6 +985,45 @@ mod tests {
         assert_eq!(
             shared_mtime_before, shared_mtime_after,
             "a --no-session run must not touch the shared session store"
+        );
+    }
+
+    /// A run that cannot name a provider or a model is refused with something
+    /// the user can act on.
+    ///
+    /// Both slots used to be `.expect()`, so the first thing a fresh install
+    /// saw was `thread 'main' panicked at`, a backtrace note and exit 101. The
+    /// text below is the contract that replaced it, and each assertion rules
+    /// out a specific wrong version: dropping the model check (it is the
+    /// second slot and the easy one to forget), reporting the model when the
+    /// provider is the thing that is missing, and a message that states the
+    /// problem without naming the fix.
+    #[test]
+    fn an_unconfigured_run_is_told_what_to_run() {
+        assert_eq!(
+            unconfigured_precondition(Some("anthropic"), Some("opus")),
+            None
+        );
+
+        let no_provider = unconfigured_precondition(None, Some("opus"))
+            .expect("a run with no provider must be refused");
+        assert!(no_provider.contains("provider"));
+        assert!(
+            no_provider.contains("biorouter configure"),
+            "the refusal must name the command that fixes it: {no_provider}"
+        );
+
+        let no_model = unconfigured_precondition(Some("anthropic"), None)
+            .expect("a run with no model must be refused, not just one with no provider");
+        assert!(no_model.contains("model"));
+        assert!(no_model.contains("biorouter configure"));
+
+        let neither =
+            unconfigured_precondition(None, None).expect("a run with neither must be refused");
+        assert_eq!(
+            neither, no_provider,
+            "with both missing, report the provider: `biorouter configure` sets up both, \
+             so naming two problems describes one fix twice"
         );
     }
 

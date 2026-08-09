@@ -29,7 +29,7 @@ use biorouter::permission::Permission;
 use biorouter::permission::PermissionConfirmation;
 use biorouter::providers::base::Provider;
 use biorouter::utils::safe_truncate;
-pub use builder::{build_session, SessionBuilderConfig};
+pub use builder::{build_session, unconfigured_precondition, SessionBuilderConfig};
 use console::Color;
 
 use anyhow::{Context, Result};
