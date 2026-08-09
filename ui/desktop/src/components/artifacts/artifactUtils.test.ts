@@ -706,12 +706,28 @@ describe('sandboxedSurface', () => {
     }
   });
 
-  // The whole point: a sandboxed preview must not paint one family's ground for
-  // all three. If these ever collapse to a single value, the previews have been
-  // re-hardcoded.
-  it('gives each family a distinct ground in dark mode', () => {
-    const grounds = THEME_FAMILY_IDS.map((family) => sandboxedSurface(family, 'dark').background);
-    expect(new Set(grounds).size).toBe(THEME_FAMILY_IDS.length);
+  // The whole point: a sandboxed preview must read the ACTIVE family's tokens,
+  // not a hardcoded pair. This used to be asserted on the GROUND — the three
+  // families were required to disagree about `background`. They no longer do:
+  // neutrals are shared infrastructure and all three dark previews paint
+  // #1b1b19 by design, so that assertion would now fail for the right reason.
+  //
+  // The guard moves to the axis that survives. A family is its INK and its
+  // accent, so `foreground` is what must still differ three ways — and it is a
+  // strictly better probe than the ground was, because a re-hardcoded preview
+  // would pin the ink too.
+  it('gives each family a distinct ink in dark mode', () => {
+    const inks = THEME_FAMILY_IDS.map((family) => sandboxedSurface(family, 'dark').foreground);
+    expect(new Set(inks).size).toBe(THEME_FAMILY_IDS.length);
+  });
+
+  // The other half of the same rule, pinned so it cannot drift back: the ground
+  // is SHARED. A family that reintroduced its own is the regression now.
+  it('paints one shared ground across families, in both modes', () => {
+    for (const mode of ['light', 'dark'] as const) {
+      const grounds = THEME_FAMILY_IDS.map((family) => sandboxedSurface(family, mode).background);
+      expect(new Set(grounds).size).toBe(1);
+    }
   });
 
   // `theme_family` is free-form localStorage: a build that once shipped a family

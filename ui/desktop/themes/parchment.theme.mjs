@@ -14,11 +14,17 @@ export default {
   swatch: '#cf6d47',
   isBase: true,
 
-  // Which token the terminal dock actually paints. The families genuinely
-  // differ here; this records the truth rather than assuming they agree.
+  // Which token the terminal dock paints. SHARED across families: all three
+  // point at `--background-muted`, in both modes. Parchment used to paint
+  // `--background-code` in dark, which was a real difference while the two
+  // tokens held different per-family values; now that the neutral set is one
+  // set, a dock that painted a different token would be the ONLY surface still
+  // varying by family. Parchment's dark ANSI palette is re-verified against the
+  // muted ground by the generator, which is what makes this a measurement
+  // rather than the assumption the contract file warns about.
   terminalGround: {
     light: '--background-muted',
-    dark: '--background-code',
+    dark: '--background-muted',
   },
 
   light: {
@@ -29,33 +35,33 @@ export default {
       'text-accent': '#b85a32',
       'text-on-accent': '#ffffff',
       'accent-bar': '#cf6d47',
+      // ── SHARED NEUTRALS ──────────────────────────────────────────────────
+      // Every surface, grey and border below is the one set all three families
+      // wear. Parchment's identity is its warm INK and its dark-orange ACCENT.
+      // Do not reintroduce a warm ground here; retune a text token instead.
+      // The base family's CSS is hand-authored in main.css — these values
+      // mirror it, and the two must be changed together.
       'background-app': '#ffffff',
-      // The canvas keeps Parchment's warm tint; `default`/`card` are pure
-      // white so a card lifts off the page.
-      'background-canvas': '#faf8f3',
+      'background-canvas': '#ffffff',
       'background-default': '#ffffff',
       'background-card': '#ffffff',
-      'background-muted': '#faf8f3',
-      'background-code': '#faf8f3',
-      'background-medium': '#f4f0e6',
-      'background-strong': '#d4cab6',
-      // The tooltip fill. Warm near-black, not `#000` — Parchment was the only
-      // family whose inverse was never tinted, so the default theme dropped a
-      // pure-black chip into an otherwise warm palette. Both siblings set this
-      // to their own `text-default` (Alma Mater `#052049`, Roche Limit
-      // `#1f1e1c`, and the latter's design doc says "warm near-black, not
-      // `#000`" in as many words); this is Parchment's, so the three now follow
-      // one rule instead of two of them following it by accident.
-      'background-inverse': '#2a2520',
+      'background-muted': '#f4f4f2',
+      'background-code': '#f5f5f3',
+      'background-medium': '#ecece9',
+      'background-strong': '#dcdcd8',
+      // The tooltip fill. Warm near-black, not `#000`. This was per family —
+      // each set it to its own `text-default` — but a tooltip is a SURFACE, so
+      // all three now paint it and place their own `text-inverse` on top.
+      'background-inverse': '#1f1e1c',
       'background-danger': '#b3261e',
       'background-success': '#1f7a3d',
       'background-info': '#1e5fbf',
       'background-warning': '#8a5a00',
       'text-on-status': '#ffffff',
-      'border-subtle': '#e8e1d2',
-      'border-strong': '#d4cab6',
-      'border-input': '#e8e1d2',
-      'border-default': '#e8e1d2',
+      'border-subtle': '#e4e4e0',
+      'border-strong': '#d2d2cd',
+      'border-input': '#c9c9c3',
+      'border-default': '#e4e4e0',
       'border-danger': '#b3261e',
       'border-success': '#1f7a3d',
       'border-warning': '#8a5a00',
@@ -68,31 +74,34 @@ export default {
       'text-success': '#1f7a3d',
       'text-warning': '#8a5a00',
       'text-info': '#1e5fbf',
-      ring: '#615a46',
-      'background-focus': '#e4dcc9',
-      'border-focus': '#6e6760',
-      'heat-0': '#ece5d6',
+      ring: '#5c5a55',
+      'background-focus': '#e0e0dc',
+      'border-focus': '#6b6963',
+      // heat-0 is the empty-day fill — a neutral, shared. 1–4 are the family's
+      // own accent ramp and stay warm orange.
+      'heat-0': '#eeeeea',
       'heat-1': '#e9c9ab',
       'heat-2': '#dda27a',
       'heat-3': '#c6774c',
       'heat-4': '#a04a27',
-      sidebar: '#f3ede1',
+      sidebar: '#f7f7f5',
       'sidebar-foreground': '#2a2520',
       'sidebar-icon': '#2a2520',
-      'sidebar-hover': '#ece4d4',
-      'sidebar-active': '#e4d9c3',
-      'sidebar-accent': '#ece4d4',
+      'sidebar-hover': '#efefec',
+      'sidebar-active': '#eaeae6',
+      'sidebar-accent': '#efefec',
       'sidebar-accent-foreground': '#2a2520',
-      'sidebar-border': '#e9e1d0',
-      'sidebar-ring': '#615a46',
-      'shadow-default': '0px 1px 3px 0px rgba(0, 0, 0, 0.06), 0px 0px 1px 0px rgba(0, 0, 0, 0.12)',
+      'sidebar-border': '#e7e7e3',
+      'sidebar-ring': '#5c5a55',
+      'shadow-default':
+        '0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13)',
       'shadow-composer':
-        '0px 2px 6px -1px rgba(32, 25, 15, 0.08), 0px 1px 2px 0px rgba(32, 25, 15, 0.05)',
+        '0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05)',
       'shadow-popover':
-        '0px 8px 24px 0px rgba(32, 25, 15, 0.1), 0px 0px 1px 0px rgba(0, 0, 0, 0.15)',
+        '0px 8px 24px 0px rgba(31, 30, 28, 0.11), 0px 0px 1px 0px rgba(31, 30, 28, 0.16)',
       'shadow-modal':
-        '0px 22px 60px -18px rgba(32, 25, 15, 0.22), 0px 8px 24px -18px rgba(32, 25, 15, 0.16), 0px 0px 0px 1px rgba(32, 25, 15, 0.045)',
-      scrim: 'rgba(32, 25, 15, 0.18)',
+        '0px 22px 60px -18px rgba(31, 30, 28, 0.22), 0px 8px 24px -18px rgba(31, 30, 28, 0.16), 0px 0px 0px 1px rgba(31, 30, 28, 0.05)',
+      scrim: 'rgba(31, 30, 28, 0.18)',
     },
     syntax: {
       plain: '#2a2520',
@@ -113,10 +122,16 @@ export default {
       black: '#2d2a26',
       red: '#b63f3f',
       green: '#22784f',
-      yellow: '#9b6818',
+      // `yellow` and `cyan` were darkened by ~2.5% (from #9b6818 and #107e89)
+      // when the neutral set was shared: the light dock ground moved from
+      // Parchment's cream #faf8f3 to the shared #f4f4f2, and both stops landed
+      // at 4.35/4.37:1 — just under AA. They now clear 4.55/4.60. This is the
+      // sanctioned repair for a shared-ground regression: retune the FAMILY'S
+      // OWN INK, never reintroduce a family-specific background.
+      yellow: '#976517',
       blue: '#255fb5',
       magenta: '#7847b8',
-      cyan: '#107e89',
+      cyan: '#107a85',
       white: '#574f46',
       brightBlack: '#6f6659',
       brightRed: '#d45252',
@@ -130,7 +145,9 @@ export default {
     mark: {
       navy: '#052049',
       coral: '#b85a32',
-      track: '#e8e1d2',
+      // The splash progress track is a hairline, so it takes the shared
+      // `border-subtle` rather than a family grey.
+      track: '#e4e4e0',
     },
   },
   dark: {
@@ -141,26 +158,30 @@ export default {
       'text-accent': '#e8895f',
       'text-on-accent': '#16120c',
       'accent-bar': '#e8895f',
-      'background-app': '#0d0a06',
-      // Parchment dark inverts the lift: the canvas is the LIGHTER warm brown
-      // and cards recess into it. This is what the family has always shipped.
-      'background-canvas': '#282217',
-      'background-default': '#16120c',
-      'background-card': '#16120c',
-      'background-muted': '#282217',
-      'background-code': '#16120c',
-      'background-medium': '#403928',
-      'background-strong': '#615a46',
-      'background-inverse': '#e8e1d2',
+      // ── SHARED NEUTRALS ──────────────────────────────────────────────────
+      // Parchment dark used to invert the surface ladder — canvas #282217
+      // LIGHTER than its #16120c cards — and Alma Mater did the same in navy.
+      // Both are gone: one shared neutral set cannot carry two contradictory
+      // orders, and the shared one is Roche Limit's (canvas darkest, cards a
+      // step up). This is the single largest visible change of the unification.
+      'background-app': '#131312',
+      'background-canvas': '#131312',
+      'background-default': '#1b1b19',
+      'background-card': '#1b1b19',
+      'background-muted': '#232320',
+      'background-code': '#1b1b19',
+      'background-medium': '#2c2c29',
+      'background-strong': '#3a3a36',
+      'background-inverse': '#ededea',
       'background-danger': '#f07575',
       'background-success': '#7ac87c',
       'background-info': '#7aabf5',
       'background-warning': '#f0c84a',
       'text-on-status': '#16120c',
-      'border-subtle': '#282217',
-      'border-strong': '#403928',
-      'border-input': '#403928',
-      'border-default': '#282217',
+      'border-subtle': '#302f2c',
+      'border-strong': '#3e3d39',
+      'border-input': '#4a4945',
+      'border-default': '#302f2c',
       'border-danger': '#f07575',
       'border-success': '#7ac87c',
       'border-warning': '#f0c84a',
@@ -173,23 +194,23 @@ export default {
       'text-success': '#7ac87c',
       'text-warning': '#f0c84a',
       'text-info': '#7aabf5',
-      ring: '#d4cab6',
-      'background-focus': '#4d4430',
-      'border-focus': '#9c937b',
-      'heat-0': '#241f16',
+      ring: '#a5a39d',
+      'background-focus': '#35342f',
+      'border-focus': '#9c9a93',
+      'heat-0': '#1e1d1b',
       'heat-1': '#4a3524',
       'heat-2': '#7a4d2e',
       'heat-3': '#b0653a',
       'heat-4': '#e8895f',
-      sidebar: '#282217',
+      sidebar: '#171716',
       'sidebar-foreground': '#f4f0e6',
       'sidebar-icon': '#f4f0e6',
-      'sidebar-hover': '#322b1d',
-      'sidebar-active': '#3d3524',
-      'sidebar-accent': '#322b1d',
+      'sidebar-hover': '#232320',
+      'sidebar-active': '#2e2e2a',
+      'sidebar-accent': '#232320',
       'sidebar-accent-foreground': '#f4f0e6',
-      'sidebar-border': '#403928',
-      'sidebar-ring': '#d4cab6',
+      'sidebar-border': '#2a2a27',
+      'sidebar-ring': '#a5a39d',
       'shadow-default': '0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35)',
       'shadow-composer':
         '0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3)',
@@ -234,7 +255,8 @@ export default {
     mark: {
       navy: '#18a3ac',
       coral: '#b85a32',
-      track: '#3a3223',
+      // Shared `border-subtle`, like the light track.
+      track: '#302f2c',
     },
   },
 };

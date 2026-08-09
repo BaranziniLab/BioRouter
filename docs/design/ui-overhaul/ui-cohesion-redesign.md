@@ -555,6 +555,15 @@ The values the mockup paints with, taken from design.md §3.1 (palette), §5.1 (
 the `InAppTerminalDock` `TERMINAL_THEMES` parchment entry. They are reproduced here so the
 numbers survive outside the browser.
 
+> **⚠ Historical — these are the mockup's numbers, not the app's.** As of **2026-08-08** the
+> backgrounds, greys and borders below are no longer Parchment's: all three families share one
+> neutral set (light `#ffffff` canvas / `#f4f4f2` ground / `#ecece9` medium / `#dcdcd8` strong /
+> `#f7f7f5` sidebar; dark `#131312` / `#1b1b19` / `#232320` / `#2c2c29`). Parchment's identity is now
+> its warm **ink** (`#2a2520` / `#f4f0e6`) and its dark-orange **accent**, both of which survive
+> below unchanged. This table is left as written because it records what the mockup painted; do not
+> read a value from it into code. Current values: `ui/desktop/themes/*.theme.mjs` and
+> [theme system architecture §8](../theming/theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
+
 | Token | Light | Dark |
 |---|---|---|
 | `--app` | `#ffffff` | `#0d0a06` |

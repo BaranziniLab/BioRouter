@@ -92,7 +92,16 @@ as the evidence for this decision, not as live options.
 |---|---|---|
 | `Bio`, and the rule's left half | UCSF Navy | `#052049` |
 | `Router`, and the rule's right half | `--color-coral-700` | `#a94f2a` |
-| Ground (opaque variant) | `--color-neutral-50` | `#faf8f3` |
+| Ground (opaque variant) | *(none — fixed brand value)* | `#faf8f3` |
+
+> **The beige ground is a literal, not a token, and that is deliberate.** It used to be documented
+> as `--color-neutral-50`, which was `#faf8f3` while Parchment's cream ramp was the app's neutral
+> ramp. On **2026-08-08** the three theme families were moved onto one shared neutral set and
+> `--color-neutral-50` became `#fafaf9`, so the mapping no longer holds. **Nothing about the mark
+> changed**: `BioRouterMark.tsx` carries `const PLATE = '#faf8f3'` with a comment stating that the
+> plate is *not* themed, because it renders the OS app-icon variant — fixed brand artwork that
+> should not shift with whatever palette the app is wearing. The cream no longer matching any app
+> token is the correct outcome, not drift. Do not "fix" it by re-pointing it at a token.
 
 `coral-700` was chosen over `coral-600` (`#b85a32`, the app's `--text-accent`/CTA fill)
 after comparing all three stops side by side on the real beige ground.

@@ -110,14 +110,23 @@ describe('NotebookPreview HTML output theming', () => {
   });
 
   // The regression guard with teeth: the three families must not agree. If a
-  // future edit re-hardcodes a colour, every family renders the same ground and
-  // the per-family assertions above would still pass for whichever family that
+  // future edit re-hardcodes a colour, every family renders identically and the
+  // per-family assertions above would still pass for whichever family that
   // hardcode happened to match.
-  it('gives each family a distinct dark ground', () => {
+  //
+  // It used to be asserted on the GROUND. That no longer works and shouldn't:
+  // neutrals are shared infrastructure, so all three dark previews paint the
+  // same #1b1b19 on purpose. The probe is the INK instead — the axis a family
+  // still owns — plus the whole rendered srcdoc, which differs only because of
+  // it. A re-hardcoded preview fails both.
+  it('gives each family a distinct dark ink, on the one shared ground', () => {
+    const inks = THEME_FAMILY_IDS.map((family) => GENERATED_THEMES[family].dark.surface.foreground);
+    expect(new Set(inks).size).toBe(THEME_FAMILY_IDS.length);
+
     const grounds = THEME_FAMILY_IDS.map(
       (family) => GENERATED_THEMES[family].dark.surface.background
     );
-    expect(new Set(grounds).size).toBe(THEME_FAMILY_IDS.length);
+    expect(new Set(grounds).size, 'neutrals are shared; a per-family ground is the bug').toBe(1);
 
     const rendered = THEME_FAMILY_IDS.map((family) => srcdocFor(family, 'dark'));
     expect(new Set(rendered).size).toBe(THEME_FAMILY_IDS.length);

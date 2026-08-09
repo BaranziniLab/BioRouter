@@ -159,22 +159,40 @@ describe('boot splash', () => {
       expect(missing, `boot splash has no rule for: ${missing.join(', ')}`).toEqual([]);
     });
 
-    it("gives every family its own ground, never inheriting another family's", () => {
+    it('gives every family the ONE shared ground per mode, and never the wrong mode', () => {
+      // This assertion used to demand that every family+mode ground be DISTINCT,
+      // on the reasoning that a duplicate meant one family was wearing another's
+      // background. That reasoning no longer holds: neutrals are now shared
+      // infrastructure, so all three families paint the same
+      // `--background-muted` by design and duplicates are the CORRECT outcome.
+      //
+      // The regression it actually protected against survives, though, and is
+      // asserted here instead: a family+mode whose rule is missing or malformed
+      // falls back to the OTHER mode's ground — which is how a cream splash once
+      // flashed on a dark ground. So: exactly one distinct ground per mode, and
+      // the two modes must differ. That is strictly stronger than distinctness
+      // was, because it also catches a single family drifting off the shared set.
       const html = readIndexHtml();
-      const grounds = [...html.matchAll(/#br-boot\s*\{[^}]*?--br-bg:\s*([^;]+);/g)].map((m) =>
-        m[1].trim()
+      const rules = [...html.matchAll(/([^\n{}]*)#br-boot\s*\{[^}]*?--br-bg:\s*([^;]+);/g)].map(
+        (m) => ({ dark: m[1].includes('.dark'), bg: m[2].trim() })
       );
-      // One per family per mode; duplicates would mean a family is wearing
-      // another family's background.
-      expect(new Set(grounds).size).toBe(grounds.length);
+
+      expect(rules.length, 'no #br-boot rules found — did the markers move?').toBeGreaterThan(1);
+
+      const light = new Set(rules.filter((r) => !r.dark).map((r) => r.bg));
+      const dark = new Set(rules.filter((r) => r.dark).map((r) => r.bg));
+
+      expect([...light], 'every family must share ONE light splash ground').toHaveLength(1);
+      expect([...dark], 'every family must share ONE dark splash ground').toHaveLength(1);
+      expect([...light][0], 'the dark ground must not equal the light one').not.toBe([...dark][0]);
     });
 
     it("pins the base family's hand-written splash values to its definition", () => {
       // The generator deliberately skips the base family's LIGHT rule: this
-      // `#br-boot` block IS that rule, and emitting a duplicate would give two
-      // rules the same ground and trip the distinctness check below. That makes
-      // these four values the one splash cell no generator gate covers — so it
-      // is covered here instead, or it drifts silently.
+      // `#br-boot` block IS that rule, and emitting a second copy would give one
+      // ground two rules. That makes these four values the one splash cell no
+      // generator gate covers — so it is covered here instead, or it drifts
+      // silently.
       const html = readIndexHtml();
       const base = html.match(/\n\s*#br-boot\s*\{([\s\S]*?)\n\s*\}/)?.[1] ?? '';
       const read = (name: string) =>
@@ -187,9 +205,11 @@ describe('boot splash', () => {
       expect(read('coral'), '--br-coral must match parchment.light mark.coral').toBe(
         parchment.mark.coral
       );
-      // The ground is the family's own --background-muted, which is what makes
-      // the hand-off to the booted app free of a colour jump.
-      expect(read('bg'), '--br-bg must be parchment light --background-muted').toBe('#faf8f3');
+      // The ground is --background-muted, which is what makes the hand-off to
+      // the booted app free of a colour jump. It is now the SHARED light
+      // neutral rather than Parchment's own cream #faf8f3 — the families
+      // differ in ink and accent (--br-navy / --br-coral above), not ground.
+      expect(read('bg'), '--br-bg must be the shared light --background-muted').toBe('#f4f4f2');
     });
 
     it('uses CSS comments inside <style>, never HTML comments', () => {
@@ -279,9 +299,7 @@ describe('boot splash', () => {
     /** The splash stylesheet with CSS comments removed, so rule matching is
      *  not thrown off by the (long) explanatory comments between rules. */
     function splashStyle(): string {
-      const match = readIndexHtml().match(
-        /<style id="br-boot-splash-style">([\s\S]*?)<\/style>/
-      );
+      const match = readIndexHtml().match(/<style id="br-boot-splash-style">([\s\S]*?)<\/style>/);
       if (!match) throw new Error('boot splash style block not found in index.html');
       return match[1].replace(/\/\*[\s\S]*?\*\//g, '');
     }
@@ -312,9 +330,7 @@ describe('boot splash', () => {
     });
 
     it('renders the mark at the same size as the loader it hands off to', () => {
-      const splashSize = ruleBody(splashStyle(), '#br-boot .br-mark').match(
-        /height:\s*(\d+)px/
-      );
+      const splashSize = ruleBody(splashStyle(), '#br-boot .br-mark').match(/height:\s*(\d+)px/);
       expect(splashSize, 'splash .br-mark must set an explicit px height').not.toBeNull();
 
       // ProviderGuard's `isChecking` branch is the screen the splash uncovers.

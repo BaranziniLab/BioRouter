@@ -118,21 +118,24 @@
            THIS BLOCK IS THE EXCEPTION. These four values are Parchment LIGHT,
            and they are hand-written because this `#br-boot` rule is also the
            base every other rule cascades from — emitting a generated
-           `html #br-boot` duplicate would give two rules the same ground and
-           trip the distinctness check in boot-splash.test.ts. They are pinned
-           to parchment.theme.mjs by a test instead, so they cannot drift.
+           `html #br-boot` duplicate would give one ground two rules. They are
+           pinned to parchment.theme.mjs by a test instead, so they cannot drift.
 
-           The values mirror --background-muted per family, which is the ground
-           the post-boot Hub uses, so handing off to the app has no colour jump.
+           --br-bg and --br-track are SHARED across families: the neutral set is
+           one set, so every family's light splash is #f4f4f2 on the same
+           hairline. Only --br-navy and --br-coral — the mark's ink and accent —
+           vary, which is the same axis that distinguishes the families in the
+           booted app. The ground mirrors --background-muted, which is what the
+           post-boot Hub uses, so the hand-off has no colour jump.
 
            EVERY theme family needs a light and a dark rule below.
            boot-splash.test.ts cross-checks this list against THEME_FAMILIES in
            src/contexts/ThemeContext.tsx and fails if one is missing, so adding
            a family cannot silently regress this screen. */
-        --br-bg: #faf8f3;
+        --br-bg: #f4f4f2;
         --br-navy: #052049;
         --br-coral: #b85a32;
-        --br-track: #e8e1d2;
+        --br-track: #e4e4e0;
 
         position: fixed;
         inset: 0;
@@ -154,22 +157,22 @@
 
       /* THEMES:GENERATED:SPLASH:START */
       html.dark #br-boot {
-        --br-bg: #282217;
+        --br-bg: #232320;
         --br-navy: #18a3ac;
         --br-coral: #b85a32;
-        --br-track: #3a3223;
+        --br-track: #302f2c;
       }
       html[data-theme='alma-mater'] #br-boot {
-        --br-bg: #f2f3f4;
+        --br-bg: #f4f4f2;
         --br-navy: #052049;
         --br-coral: #16a0ac;
-        --br-track: #e1e3e5;
+        --br-track: #e4e4e0;
       }
       html.dark[data-theme='alma-mater'] #br-boot {
-        --br-bg: #0d2a50;
+        --br-bg: #232320;
         --br-navy: #18a3ac;
         --br-coral: #16a0ac;
-        --br-track: #17386a;
+        --br-track: #302f2c;
       }
       html[data-theme='roche-limit'] #br-boot {
         --br-bg: #f4f4f2;

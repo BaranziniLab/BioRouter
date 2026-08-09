@@ -192,11 +192,18 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
     );
   }
 
-  // Issue #56. The two badge fills and the dense-surface dot.
+  // Issue #56. The two badge fills, and the unfilled dense-surface mark.
+  //
+  // The dense mark was a filled dot and is now the padlock glyph — same token,
+  // same 3:1 floor, because a stroked glyph carrying meaning owes SC 1.4.11
+  // exactly what a filled one did. The two grounds below are kept as a pair:
+  // the mark rides the composer's model chip today (`--background-default`),
+  // and `--sidebar` is the stricter of the two in several scopes, so holding
+  // both keeps the floor honest if the mark moves back onto a chat list.
   assert(`${theme}: privacy Private label`, '--text-default', '--background-muted', 4.5, scope);
   assert(`${theme}: privacy Public label`, '--text-muted', '--background-muted', 4.5, scope);
-  assert(`${theme}: privacy dot on sidebar`, '--text-default', '--sidebar', 3.0, scope);
-  assert(`${theme}: privacy dot on tab`, '--text-default', '--background-default', 3.0, scope);
+  assert(`${theme}: privacy mark on sidebar`, '--text-default', '--sidebar', 3.0, scope);
+  assert(`${theme}: privacy mark on chip`, '--text-default', '--background-default', 3.0, scope);
 
   // `--background-medium`, which the guard has only ever looked at for the
   // focus ring. Issue #56 needs it because both privacy pills sit on rows that
@@ -234,6 +241,37 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // A hairline must be perceivable against its own ground, though it is not "text".
   assert(`${theme}: border-subtle vs app`, '--border-subtle', '--background-app', 1.25, scope);
   assert(`${theme}: border-strong vs subtle`, '--border-strong', '--border-subtle', 1.1, scope);
+
+  // `--background-muted` must actually be a step off the page it sits on.
+  //
+  // This is not hypothetical. Before the neutral set was shared, canvas and
+  // muted were BYTE-IDENTICAL in three of the six scopes — parchment:light
+  // (#faf8f3), parchment:dark (#282217) and alma-mater:dark (#0d2a50) — so any
+  // element that used `bg-background-muted` to separate itself from the page
+  // vanished there. The composer's chips did exactly that. Nothing failed,
+  // because no assertion had ever compared two SURFACES to each other; every
+  // check in this file measured ink against a ground.
+  //
+  // Roche Limit was the one family that kept them apart, and taking its values
+  // for all three is what fixed it: 1.10:1 in light, 1.18:1 in dark, in every
+  // scope. The floor is deliberately well BELOW that. The bug this catches is a
+  // step of ZERO, and pinning the floor to today's measurement would fail the
+  // moment someone nudged a neutral by one unit for an unrelated reason —
+  // turning a real guard into noise. 1.05 flags a collapse and nothing else.
+  //
+  // NOT ASSERTED, for the same reason it is worth writing down: `--sidebar` vs
+  // `--background-canvas`, the two-tone step, measures 1.0363:1 in every scope
+  // today. It is a deliberately quiet step and it is below this floor, so
+  // folding it in would fail the whole suite on arrival. It is also not the
+  // same bug: the sidebar is a large region with its own border, not a chip
+  // relying on fill alone.
+  assert(
+    `${theme}: background-muted is a step off the canvas`,
+    '--background-muted',
+    '--background-canvas',
+    1.05,
+    scope
+  );
 
   // The code ground (design.md §5.1, P6 "the monospace layer is part of the
   // design system"). This guard previously never looked at it, which is how

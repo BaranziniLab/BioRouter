@@ -15,13 +15,23 @@ numbered decisions see [`design.md`](../../../design.md) at the repo root; for t
 structural redesign work see [`ui-overhaul/`](../ui-overhaul/README.md); for the logo, wordmark
 and brand assets see [`branding/`](../branding/README.md).
 
+> **The one rule to know before reading anything here (2026-08-08).** A family varies in exactly
+> two things: its **ink** and its **accent**. Backgrounds, greys, borders, focus surfaces,
+> elevation and the scrim are **one shared set**, byte-identical across all three families in
+> both modes — Roche Limit's values, adopted wholesale. Both token references below still contain
+> tables of surface hexes; those tables now describe the shared set, not that family's own, and
+> editing one moves all three families. If a family's ink fails on a shared ground, **retune the
+> ink** — reintroducing a per-family grey is the failure mode the rule exists to prevent. The
+> reasoning is
+> [Theme system architecture §8](theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
+
 ## Documents
 
 | Document | What it covers |
 |---|---|
-| [Theme system architecture](theme-system-architecture.md) | How the theme system is put together: where a theme actually lives, the single authored file per family, what is generated from it and what is derived and must never be authored, the token contract, what guards it, and the measured cost of a fourth family. Read this before either token reference — it is the authority over any hex quoted in them. |
-| [Alma Mater theme tokens](alma-mater-theme-tokens.md) | The colour-token reference for Alma Mater, BioRouter's UCSF-brand theme family: the UCSF palette it draws from, the accent decision, a complete token-by-token light/dark mapping, and the verified WCAG contrast ratios behind every value. Approved with the UCSF Teal accent, originally implemented 2026-07-10 and reconciled against the shipped code on 2026-07-18. |
-| [Roche Limit theme tokens](roche-limit-theme.md) | The colour-token reference for Roche Limit, the JupyterLab-inspired family — white page, recessed grey panels, one bright orange doing all the signalling. Approved and implemented on 2026-07-18; §9 records what was actually built. |
+| [Theme system architecture](theme-system-architecture.md) | How the theme system is put together: where a theme actually lives, the single authored file per family, what is generated from it and what is derived and must never be authored, the token contract, **what varies per family and what is shared (§8)**, what guards it, and the measured cost of a fourth family. Read this before either token reference — it is the authority over any hex quoted in them. |
+| [Alma Mater theme tokens](alma-mater-theme-tokens.md) | The colour-token reference for Alma Mater, BioRouter's UCSF-brand theme family: the UCSF palette it draws from, the accent decision, a complete token-by-token light/dark mapping, and the verified WCAG contrast ratios behind every value. Approved with the UCSF Teal accent, originally implemented 2026-07-10 and reconciled against the shipped code on 2026-07-18. **Revised 2026-08-08:** its cool blue-grey neutrals and navy dark surfaces were replaced by the shared set; navy ink and teal accent are untouched. |
+| [Roche Limit theme tokens](roche-limit-theme.md) | The colour-token reference for Roche Limit, the JupyterLab-inspired family — white page, recessed grey panels, one bright orange doing all the signalling. Approved and implemented on 2026-07-18; §9 records what was actually built. **Its neutrals are now the shared set for all three families** (§9.3), so its surface tables are BioRouter-wide rather than family-specific. |
 
 ## Interactive studios
 

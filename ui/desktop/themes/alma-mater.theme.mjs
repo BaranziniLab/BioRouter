@@ -13,8 +13,8 @@ export default {
   label: 'Alma Mater',
   swatch: '#14828c',
 
-  // Which token the terminal dock actually paints. The families genuinely
-  // differ here; this records the truth rather than assuming they agree.
+  // Which token the terminal dock paints. SHARED across families — all three
+  // point at `--background-muted`, in both modes.
   terminalGround: {
     light: '--background-muted',
     dark: '--background-muted',
@@ -28,26 +28,34 @@ export default {
       'text-accent': '#14828c',
       'text-on-accent': '#ffffff',
       'accent-bar': '#16a0ac',
+      // ── SHARED NEUTRALS ──────────────────────────────────────────────────
+      // Alma Mater used to run a COOL blue-grey scaffolding (`muted` #f2f3f4,
+      // `medium` #e1e3e5, `strong` #d1d3d3, `border-subtle` #e1e3e5) to sit
+      // with its navy ink. That is gone: neutrals are one shared set, and the
+      // family is now UCSF navy ink + UCSF teal accent on the same ground as
+      // its siblings. White page, grey sidebar — the two-tone canvas of the
+      // design mockups (tokens doc §5a) — survives, because the shared set
+      // keeps a white canvas and a lifted `sidebar`.
       'background-app': '#ffffff',
-      // White page, grey sidebar — the two-tone canvas of the design mockups
-      // (tokens doc §5a). The canvas is NOT the grey `background-muted`.
       'background-canvas': '#ffffff',
       'background-default': '#ffffff',
       'background-card': '#ffffff',
-      'background-muted': '#f2f3f4',
-      'background-code': '#f2f3f4',
-      'background-medium': '#e1e3e5',
-      'background-strong': '#d1d3d3',
-      'background-inverse': '#052049',
+      'background-muted': '#f4f4f2',
+      'background-code': '#f5f5f3',
+      'background-medium': '#ecece9',
+      'background-strong': '#dcdcd8',
+      // A tooltip is a surface, so it is shared rather than set to this
+      // family's own `text-default` navy.
+      'background-inverse': '#1f1e1c',
       'background-danger': '#e61048',
       'background-success': '#007242',
       'background-info': '#0f388a',
       'background-warning': '#8a5a00',
       'text-on-status': '#ffffff',
-      'border-subtle': '#e1e3e5',
-      'border-strong': '#cfd3d8',
-      'border-input': '#d1d3d3',
-      'border-default': '#e1e3e5',
+      'border-subtle': '#e4e4e0',
+      'border-strong': '#d2d2cd',
+      'border-input': '#c9c9c3',
+      'border-default': '#e4e4e0',
       'border-danger': '#c40d3e',
       'border-success': '#007242',
       'border-warning': '#8a5a00',
@@ -60,49 +68,59 @@ export default {
       'text-success': '#007242',
       'text-warning': '#8a5a00',
       'text-info': '#0f388a',
-      ring: '#506380',
-      'background-focus': '#d3d6d9',
-      'border-focus': '#586780',
-      'heat-0': '#e8f6f8',
+      ring: '#5c5a55',
+      'background-focus': '#e0e0dc',
+      'border-focus': '#6b6963',
+      // heat-0 is the empty-day fill — a neutral, shared. 1–4 are this
+      // family's own teal ramp.
+      'heat-0': '#eeeeea',
       'heat-1': '#b4e2e8',
       'heat-2': '#60d0da',
       'heat-3': '#16a0ac',
       'heat-4': '#0e5258',
-      sidebar: '#eef0f0',
+      sidebar: '#f7f7f5',
       'sidebar-foreground': '#052049',
       'sidebar-icon': '#14828c',
-      'sidebar-hover': '#e3e5e5',
-      'sidebar-active': '#d8d9da',
-      'sidebar-accent': '#e3e5e5',
+      'sidebar-hover': '#efefec',
+      'sidebar-active': '#eaeae6',
+      'sidebar-accent': '#efefec',
       'sidebar-accent-foreground': '#052049',
-      'sidebar-border': '#e1e3e5',
-      'sidebar-ring': '#506380',
+      'sidebar-border': '#e7e7e3',
+      'sidebar-ring': '#5c5a55',
+      // Elevation and the scrim are neutral scaffolding and therefore shared.
+      // Alma Mater used to cast every alpha in UCSF navy (rgba(5, 32, 73, …));
+      // a full-screen navy scrim is a background, and backgrounds no longer
+      // vary by family.
       'shadow-default':
-        '0px 1px 3px 0px rgba(5, 32, 73, 0.08), 0px 0px 1px 0px rgba(5, 32, 73, 0.14)',
+        '0px 1px 3px 0px rgba(31, 30, 28, 0.07), 0px 0px 1px 0px rgba(31, 30, 28, 0.13)',
       'shadow-composer':
-        '0px 2px 6px -1px rgba(5, 32, 73, 0.1), 0px 1px 2px 0px rgba(5, 32, 73, 0.06)',
+        '0px 2px 6px -1px rgba(31, 30, 28, 0.09), 0px 1px 2px 0px rgba(31, 30, 28, 0.05)',
       'shadow-popover':
-        '0px 8px 24px 0px rgba(5, 32, 73, 0.12), 0px 0px 1px 0px rgba(5, 32, 73, 0.18)',
+        '0px 8px 24px 0px rgba(31, 30, 28, 0.11), 0px 0px 1px 0px rgba(31, 30, 28, 0.16)',
       'shadow-modal':
-        '0px 22px 60px -18px rgba(5, 32, 73, 0.24), 0px 8px 24px -18px rgba(5, 32, 73, 0.16), 0px 0px 0px 1px rgba(5, 32, 73, 0.05)',
-      scrim: 'rgba(5, 32, 73, 0.2)',
+        '0px 22px 60px -18px rgba(31, 30, 28, 0.22), 0px 8px 24px -18px rgba(31, 30, 28, 0.16), 0px 0px 0px 1px rgba(31, 30, 28, 0.05)',
+      scrim: 'rgba(31, 30, 28, 0.18)',
     },
     raw: {
       'color-coral-400': '#60d0da',
       'color-coral-500': '#16a0ac',
       'color-coral-600': '#14828c',
       'color-coral-700': '#0e5258',
-      'color-neutral-50': '#f7f8f9',
-      'color-neutral-100': '#f2f3f4',
-      'color-neutral-200': '#e1e3e5',
-      'color-neutral-300': '#d1d3d3',
-      'color-neutral-400': '#b4b9bf',
-      'color-neutral-500': '#878d96',
-      'color-neutral-600': '#5a6b86',
-      'color-neutral-700': '#3a4a66',
-      'color-neutral-800': '#1f3152',
-      'color-neutral-900': '#0f2545',
-      'color-neutral-950': '#04142e',
+      // The neutral ramp is SHARED — identical to the base `@theme` block and
+      // to Roche Limit's. It is restated here only because the generator
+      // requires every non-base family to declare the full raw palette; there
+      // is nothing family-specific left in these eleven values.
+      'color-neutral-50': '#fafaf9',
+      'color-neutral-100': '#f4f4f2',
+      'color-neutral-200': '#e4e4e0',
+      'color-neutral-300': '#d2d2cd',
+      'color-neutral-400': '#a9a7a1',
+      'color-neutral-500': '#84827c',
+      'color-neutral-600': '#5c5a55',
+      'color-neutral-700': '#3e3d39',
+      'color-neutral-800': '#2c2c29',
+      'color-neutral-900': '#1b1b19',
+      'color-neutral-950': '#131312',
       'color-red-100': '#f5768a',
       'color-red-200': '#e85268',
       'color-red-600': '#c40d3e',
@@ -152,7 +170,8 @@ export default {
     mark: {
       navy: '#052049',
       coral: '#16a0ac',
-      track: '#e1e3e5',
+      // Shared `border-subtle` — the splash progress track is a hairline.
+      track: '#e4e4e0',
     },
   },
   dark: {
@@ -163,27 +182,31 @@ export default {
       'text-accent': '#60d0da',
       'text-on-accent': '#052049',
       'accent-bar': '#60d0da',
-      'background-app': '#04142e',
-      // Alma Mater dark runs a LIGHTER canvas than its cards: the navy page
-      // lifts and cards recess into it. This is the shipped, user-preferred
-      // appearance and is pinned — do not "correct" it down to `background-app`.
-      'background-canvas': '#0d2a50',
-      'background-default': '#08213f',
-      'background-card': '#08213f',
-      'background-muted': '#0d2a50',
-      'background-code': '#08213f',
-      'background-medium': '#143563',
-      'background-strong': '#1e477f',
-      'background-inverse': '#f2f3f4',
+      // ── SHARED NEUTRALS ──────────────────────────────────────────────────
+      // Alma Mater dark used to be navy all the way down, and ran a LIGHTER
+      // canvas (#0d2a50) than its cards (#08213f) — a pin that was explicitly
+      // "the shipped, user-preferred appearance". Both are gone: the neutral
+      // set is one set, and it runs canvas-darkest / cards-a-step-up. The
+      // family keeps its navy where navy belongs — the INK — and its teal
+      // accent. This is the single largest visible change of the unification.
+      'background-app': '#131312',
+      'background-canvas': '#131312',
+      'background-default': '#1b1b19',
+      'background-card': '#1b1b19',
+      'background-muted': '#232320',
+      'background-code': '#1b1b19',
+      'background-medium': '#2c2c29',
+      'background-strong': '#3a3a36',
+      'background-inverse': '#ededea',
       'background-danger': '#f5768a',
       'background-success': '#5fbf74',
       'background-info': '#7fb3e6',
       'background-warning': '#feb80a',
       'text-on-status': '#052049',
-      'border-subtle': '#17386a',
-      'border-strong': '#24487f',
-      'border-input': '#24487f',
-      'border-default': '#17386a',
+      'border-subtle': '#302f2c',
+      'border-strong': '#3e3d39',
+      'border-input': '#4a4945',
+      'border-default': '#302f2c',
       'border-danger': '#f5768a',
       'border-success': '#5fbf74',
       'border-warning': '#feb80a',
@@ -196,23 +219,23 @@ export default {
       'text-success': '#5fbf74',
       'text-warning': '#feb80a',
       'text-info': '#7fb3e6',
-      ring: '#b4b9bf',
-      'background-focus': '#163c74',
-      'border-focus': '#909aa6',
-      'heat-0': '#10223f',
+      ring: '#a5a39d',
+      'background-focus': '#35342f',
+      'border-focus': '#9c9a93',
+      'heat-0': '#1e1d1b',
       'heat-1': '#0e5258',
       'heat-2': '#14828c',
       'heat-3': '#16a0ac',
       'heat-4': '#60d0da',
-      sidebar: '#071b3a',
+      sidebar: '#171716',
       'sidebar-foreground': '#f2f3f4',
       'sidebar-icon': '#60d0da',
-      'sidebar-hover': '#0e2a50',
-      'sidebar-active': '#163864',
-      'sidebar-accent': '#0e2a50',
+      'sidebar-hover': '#232320',
+      'sidebar-active': '#2e2e2a',
+      'sidebar-accent': '#232320',
       'sidebar-accent-foreground': '#f2f3f4',
-      'sidebar-border': '#1a3a66',
-      'sidebar-ring': '#b4b9bf',
+      'sidebar-border': '#2a2a27',
+      'sidebar-ring': '#a5a39d',
       'shadow-default': '0px 1px 3px 0px rgba(0, 0, 0, 0.25), 0px 0px 1px 0px rgba(0, 0, 0, 0.35)',
       'shadow-composer':
         '0px 2px 10px -1px rgba(0, 0, 0, 0.45), 0px 1px 3px 0px rgba(0, 0, 0, 0.3)',
@@ -226,17 +249,18 @@ export default {
       'color-coral-500': '#16a0ac',
       'color-coral-600': '#14828c',
       'color-coral-700': '#0e5258',
-      'color-neutral-50': '#f7f8f9',
-      'color-neutral-100': '#f2f3f4',
-      'color-neutral-200': '#e1e3e5',
-      'color-neutral-300': '#d1d3d3',
-      'color-neutral-400': '#b4b9bf',
-      'color-neutral-500': '#878d96',
-      'color-neutral-600': '#5a6b86',
-      'color-neutral-700': '#3a4a66',
-      'color-neutral-800': '#1f3152',
-      'color-neutral-900': '#0f2545',
-      'color-neutral-950': '#04142e',
+      // Shared neutral ramp — see the note on the light block.
+      'color-neutral-50': '#fafaf9',
+      'color-neutral-100': '#f4f4f2',
+      'color-neutral-200': '#e4e4e0',
+      'color-neutral-300': '#d2d2cd',
+      'color-neutral-400': '#a9a7a1',
+      'color-neutral-500': '#84827c',
+      'color-neutral-600': '#5c5a55',
+      'color-neutral-700': '#3e3d39',
+      'color-neutral-800': '#2c2c29',
+      'color-neutral-900': '#1b1b19',
+      'color-neutral-950': '#131312',
       'color-red-100': '#f5768a',
       'color-red-200': '#e85268',
       'color-red-600': '#c40d3e',
@@ -286,7 +310,8 @@ export default {
     mark: {
       navy: '#18a3ac',
       coral: '#16a0ac',
-      track: '#17386a',
+      // Shared `border-subtle`, like the light track.
+      track: '#302f2c',
     },
   },
 };

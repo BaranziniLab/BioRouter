@@ -5,9 +5,27 @@
 > and dark mapping, and the verified WCAG contrast ratios behind every value.
 > **Status:** Current. Approved with the UCSF Teal accent, implemented, and reconciled against
 > the shipped code on 2026-07-18 (light-theme revision the same day; originally implemented
-> 2026-07-10). §9 records what was actually built.
+> 2026-07-10). **Revised 2026-08-08: the neutrals are no longer Alma Mater's own** — see the
+> banner below. §9 records what was actually built.
 > **Audience:** developers adding a component that reads colour tokens, and anyone proposing a
 > new theme family.
+
+> ## ⚠ Neutrals are shared infrastructure (2026-08-08)
+>
+> Alma Mater used to carry its own **cool blue-grey** neutral ramp (`#F2F3F4` / `#E1E3E5` /
+> `#D1D3D3`) and a navy dark mode all the way down to the page ground. It no longer does. Every
+> background, grey, border, focus surface, elevation and scrim is now **one shared set**,
+> byte-identical across Parchment, Alma Mater and Roche Limit in both modes, taken from Roche
+> Limit's warm-neutral values.
+>
+> **What the family still owns is what makes it Alma Mater: UCSF Navy as the ink, UCSF Teal as
+> the accent, and the UCSF status hues.** The rule and its reasoning are in
+> [Theme system architecture §8](theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
+>
+> Every table below has been updated to the shipped values. Where a passage argues *for* a cool
+> neutral bias, it is preserved as the record of the original design and marked — it is no longer
+> what runs. **Do not reintroduce a per-family grey**; if navy ink fails on a shared ground, retune
+> the ink.
 
 Sections are numbered and cited by number from the other theme documents, so the numbering is a
 stable reference scheme rather than decoration.
@@ -55,12 +73,28 @@ canvas, the type scale, the motion, and — as the brief required — **the exac
 
 ## 2 · The design thesis
 
-> **Alma Mater = UCSF Navy as the structural foundation + the UCSF Teal C column as the single brand accent, on neutral institutional greys.**
+> **Alma Mater = UCSF Navy as the ink + the UCSF Teal C column as the single brand accent, on the shared neutral scaffolding.**
 
 Three ideas do the work:
 
-- **Navy is the ground.** `#052049` (UCSF's "base color") anchors ink in light mode and every dark surface in dark mode. Where Parchment darkens toward warm umber, Alma Mater darkens toward deep navy. This one move makes the theme read unmistakably as UCSF.
-- **Neutrals go cool.** Parchment's bone/cream ramp is replaced by UCSF's cool grays (`#F2F3F4` → `#D1D3D3` → `#506380`) with a faint blue cast — the deliberate opposite bias to Parchment's warmth.
+- **Navy is the ink.** `#052049` (UCSF's "base color") is `--text-default` in light mode and the
+  family's whole reading colour. This one move makes the theme read unmistakably as UCSF.
+
+  > **Revised 2026-08-08.** This used to read *"navy is the ground"*, and it meant it: navy
+  > anchored ink in light mode **and every dark surface in dark mode**, so where Parchment
+  > darkened toward warm umber, Alma Mater darkened toward deep navy. The dark surfaces are now
+  > the shared warm-neutral set (`#131312` / `#1b1b19` / `#232320`) and navy survives where it
+  > always did most of its work — the ink, plus `text-on-status` and `text-inverse`. The original
+  > reasoning is kept here because it explains why the dark palette looks the way it does in the
+  > mockups, which no longer match the app.
+
+- **Neutrals are shared, not cool.** *(Revised 2026-08-08.)* The original thesis was that
+  Parchment's bone/cream ramp should be replaced by UCSF's cool greys (`#F2F3F4` → `#D1D3D3`)
+  with a faint blue cast — "the deliberate opposite bias to Parchment's warmth". That bias is
+  gone. All three families now sit on one warm-neutral set, and the deliberate opposition is
+  carried entirely by the ink and the accent. The cool greys had cost more than they bought:
+  see [architecture §8](theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
+  `#506380` (I3 Blue-Gray) survives as `--text-muted`, because that is ink.
 - **Teal is the accent (revised 2026-07-18).** The single brand accent is UCSF's **Teal "C" column**, stepped by job: **C3 `#16A0AC`** (the named "UCSF Teal") for rails and dots, **C2 `#14828C`** for the CTA fill and links, **C1 `#0E5258`** for hover — lifting to **C4 `#60D0DA`** in dark so it glows on navy. It plays exactly the role terracotta-coral plays in Parchment: primary CTAs, the active-nav rail, live-status dots, **the sidebar nav icons** — and nothing else.
 
   > The original build used the Violet **G** column (`#6C247C` eggplant → `#C45ED8` orchid), chosen to avoid the corporate-blue cliché. It was replaced because it cost the theme its recognisability: nobody pictures plum when they picture UCSF. Note the honest caveat from the brand research — teal is **not** co-iconic with navy. Navy is the single base colour and UCSF's body ink; teal is one of six peer primary hue ranges and, measured on ucsf.edu, a micro-accent (≈164k px² against navy's 1.8M). Confining it to icons and actions rather than to whole surfaces is the more literal reading of UCSF's one stated colour rule.
@@ -84,7 +118,11 @@ The columns Alma Mater actually uses:
 | **C Teal** ⭐ | **C1 `#0E5258`**, **C2 `#14828C`** | **C3 `#16A0AC`** | **C4 `#60D0DA`**, C5 `#B4E2E8`, C6 `#E8F6F8` | **The brand accent** — fill, links, rails, nav icons, heatmap |
 | **D Green** | D1 `#00483A`, **D2 `#007242`** | D3 `#32A03E` | E3 `#84C234` | **Success**, syntax `string` |
 | **L/M/N Alerts** | — | **L3 `#FEB80A`** (Yellow), M3 `#FA6E1E` (Orange), **N3 `#E61048`** (Red) | — | **Warning / Danger** |
-| **I/J/K Grays** | I3 `#506380` (Blue-Gray) | J2 `#878D96`, J3 `#B4B9BF` | K3 `#D1D3D3`, J5 `#E1E3E5`, I6 `#F2F3F4` | **Neutral ramp**, muted text |
+| **I/J/K Grays** | I3 `#506380` (Blue-Gray) | J2 `#878D96`, J3 `#B4B9BF` | K3 `#D1D3D3`, J5 `#E1E3E5`, I6 `#F2F3F4` | **Muted / subtle ink**, and the dark-mode near-white |
+
+> The light grey column (K3 / J5 / I6) used to supply this family's **neutral ramp** — the surfaces,
+> hovers and hairlines. It no longer does; those are the shared set (§5a). What survives from the UCSF
+> greys is **ink**: I3 `#506380` as `--text-muted`, and I6 `#F2F3F4` as the dark-mode `--text-default`.
 
 UCSF also publishes **digital-adjusted** variants for on-screen accessibility (e.g. Interactive Teal `#058488`, hyperlink `#0071AD`). We honour the spirit — every text colour below clears WCAG AA — but the published teal ladder already passes at the steps we use (C2 `#14828C` at 4.56:1 on white, C1 `#0E5258` at 8.87:1), so no digital-adjusted substitute was needed.
 
@@ -130,48 +168,62 @@ extrapolation along a UCSF hue column.
 
 ### 5a · Two-tone canvas (surfaces)
 
-| Token | Alma Mater Light | src | Alma Mater Dark | src |
+**All shared.** Not one value in this table is Alma Mater's own — every family paints these.
+The `src` column now records the shared ramp position rather than a UCSF swatch, because none
+of these came from the UCSF palette any more.
+
+| Token | Light | src | Dark | src |
 |---|---|---|---|---|
-| `--background-canvas` (main panel) | `#FFFFFF` | White | `#0D2A50` | derived |
-| `--background-app` (window ground) | `#FFFFFF` | White | `#04142E` | derived navy |
-| `--background-default` / `--card` | `#FFFFFF` | White | `#08213F` | derived navy |
-| `--background-muted` (panel/terminal ground) | `#F2F3F4` | I6 | `#0D2A50` | derived |
-| `--background-code` (code ground) | `#F2F3F4` | I6 | `#08213F` | derived navy |
-| `--background-medium` (hover fill) | `#E1E3E5` | J5 | `#143563` | derived |
-| `--background-strong` (pressed) | `#D1D3D3` | K3 | `#1E477F` | derived |
-| `--background-inverse` | `#052049` | Navy | `#F2F3F4` | I6 |
-| `--background-focus` (surface shift) | `#D3D6D9` | derived (one step past hover, neutralised) | `#163C74` | derived |
+| `--background-canvas` (main panel) | `#FFFFFF` | shared | `#131312` | neutral-950 |
+| `--background-app` (window ground) | `#FFFFFF` | shared | `#131312` | neutral-950 |
+| `--background-default` / `--card` | `#FFFFFF` | shared | `#1B1B19` | neutral-900 |
+| `--background-muted` (panel/terminal ground) | `#F4F4F2` | neutral-100 | `#232320` | shared |
+| `--background-code` (code ground) | `#F5F5F3` | shared | `#1B1B19` | neutral-900 |
+| `--background-medium` (hover fill) | `#ECECE9` | shared | `#2C2C29` | neutral-800 |
+| `--background-strong` (pressed) | `#DCDCD8` | shared | `#3A3A36` | shared |
+| `--background-inverse` (tooltip fill) | `#1F1E1C` | shared | `#EDEDEA` | shared |
+| `--background-focus` (surface shift) | `#E0E0DC` | shared | `#35342F` | shared |
 
 > **`--background-canvas` is not `--background-app`.** `--background-app` is the
 > *window* ground — what `body` paints, behind everything. `--background-canvas` is
 > what the main panel actually paints: the conversation, the hub and every
-> top-level view. Light mode is the two-tone canvas of the mockups — a **white**
-> panel against the `#EEF0F0` sidebar. (Before this token existed the panel painted
-> `--background-muted` and the whole canvas read grey, which is the bug this
-> separation fixes.) Dark deliberately **inverts the ladder**: the canvas `#0D2A50`
-> sits *above* the cards `#08213F`, so the navy page lifts and cards recess into
-> it. That is the shipped, preferred appearance — it is not a drift from
-> `--background-app` waiting to be "corrected".
+> top-level view. They hold the same value in the shared set, but they are separate
+> tokens because they mean separate things — see
+> [architecture §5](theme-system-architecture.md#--background-canvas-is-not---background-app).
+> Light mode is still the two-tone canvas of the mockups: a **white** panel against the
+> `#F7F7F5` sidebar. (Before this token existed the panel painted `--background-muted` and the
+> whole canvas read grey, which is the bug the separation fixes.)
+>
+> **Dark no longer inverts the ladder.** Alma Mater dark used to put the canvas `#0D2A50`
+> *above* its cards `#08213F`, so the navy page lifted and cards recessed into it, and this
+> document previously pinned that as "the shipped, preferred appearance — not a drift waiting to
+> be corrected". The shared set runs the other way (canvas darkest, cards a step up) and a single
+> neutral set cannot carry two contradictory orders. This is the largest visible change of the
+> 2026-08-08 unification, and it was made deliberately, not by drift.
 
-> **`--background-code` is not always `--background-muted`.** In light they coincide
-> (`#F2F3F4`); in dark, code sits on the *card* navy `#08213F` while the page ground is a
-> step lighter at `#0D2A50`. The syntax palette in §5g is measured against `--background-code`;
-> the terminal in §5j is grounded on `--background-muted` in **both** modes — Alma's
-> declared `terminalGround`. The two are genuinely different surfaces and the theme
-> definition records that rather than assuming they agree.
+> **`--background-inverse` is no longer this family's navy.** It used to be `#052049` in light —
+> each family set the tooltip fill to its own `--text-default`. A tooltip is a *surface*, so it
+> is shared; Alma Mater still places its own `--text-inverse` (white in light, navy in dark) on it.
+
+> **`--background-code` is not always `--background-muted`.** In light they are one unit apart
+> (`#F5F5F3` vs `#F4F4F2`); in dark, code sits on the card ground `#1B1B19` while the page ground
+> is a step lighter at `#232320`. The syntax palette in §5g is measured against
+> `--background-code`; the terminal in §5j is grounded on `--background-muted` in **both** modes.
+> The two are genuinely different surfaces and the contract records that rather than assuming
+> they agree.
 
 ### 5b · Sidebar (the two-tone signature)
 
-Cool-gray, one calm step deeper than the canvas — same restraint as Parchment's sidebar (a *slightly deeper surface*, never a dark slab). The colour on the sidebar is carried by the **accent rail on the active item**, not by tinting the whole surface.
+One calm step deeper than the canvas — same restraint as Parchment's sidebar (a *slightly deeper surface*, never a dark slab). The colour on the sidebar is carried by the **accent rail on the active item** and by `--sidebar-icon`, not by tinting the whole surface. The greys are shared; the two coloured rows are Alma Mater's.
 
 | Token | Light | src | Dark | src |
 |---|---|---|---|---|
-| `--sidebar` | `#EEF0F0` | derived neutral grey | `#071B3A` | derived |
-| `--sidebar-hover` | `#E3E5E5` | derived | `#0E2A50` | derived |
-| `--sidebar-active` | `#D8D9DA` | derived | `#163864` | derived |
-| `--sidebar-icon` | `#14828C` | C2 | `#60D0DA` | C4 |
-| `--sidebar-border` | `#E1E3E5` | J5 | `#1A3A66` | derived |
-| `--sidebar-foreground` | `#052049` | =text-default | `#F2F3F4` | =text-default |
+| `--sidebar` | `#F7F7F5` | shared | `#171716` | shared |
+| `--sidebar-hover` | `#EFEFEC` | shared | `#232320` | shared |
+| `--sidebar-active` | `#EAEAE6` | shared | `#2E2E2A` | shared |
+| `--sidebar-icon` | `#14828C` | **C2 — this family's** | `#60D0DA` | **C4 — this family's** |
+| `--sidebar-border` | `#E7E7E3` | shared | `#2A2A27` | shared |
+| `--sidebar-foreground` | `#052049` | **=text-default** | `#F2F3F4` | **=text-default** |
 | `--sidebar-primary` | =`--background-accent` | | =`--background-accent` | |
 
 > The alternative — a **navy sidebar even in light mode**, UCSF's most recognizable move — was previewed in the mockup and **not taken** (§7.2): most on-brand, but the biggest departure from Parchment's layout feel.
@@ -201,20 +253,26 @@ Cool-gray, one calm step deeper than the canvas — same restraint as Parchment'
 
 ### 5e · Borders
 
+**All shared** — borders and the focus affordances are neutral scaffolding, and the ring was
+always explicitly neutral rather than accent-coloured, so unifying it changed nothing about its
+intent. Note that `--ring` and `--border-focus` used to be Alma Mater's blue-greys (`#506380`,
+`#586780`); those hexes survive in §5d as `--text-muted` and `--text-subtle`, which is ink.
+
 | Token | Light | src | Dark | src |
 |---|---|---|---|---|
-| `--border-subtle` (hairline default) | `#E1E3E5` | J5 | `#17386A` | derived |
-| `--border-strong` (hover / emphasis) | `#CFD3D8` | derived | `#24487F` | derived |
-| `--border-input` (control edge) | `#D1D3D3` | K3 | `#24487F` | derived |
-| `--ring` / focus (neutral, high-contrast mode only) | `#506380` | I3 | `#B4B9BF` | J3 |
-| `--border-focus` | `#586780` | derived | `#909AA6` | derived |
+| `--border-subtle` (hairline default) | `#E4E4E0` | neutral-200 | `#302F2C` | shared |
+| `--border-strong` (hover / emphasis) | `#D2D2CD` | neutral-300 | `#3E3D39` | neutral-700 |
+| `--border-input` (control edge) | `#C9C9C3` | shared | `#4A4945` | shared |
+| `--ring` / focus (neutral, high-contrast mode only) | `#5C5A55` | neutral-600 | `#A5A39D` | shared |
+| `--border-focus` | `#6B6963` | shared | `#9C9A93` | shared |
 
-> **Focus stays a neutral surface shift, never the accent** — exactly as Parchment does it (design.md D-15). A saturated teal outline on every focused field would read as an alarm on a calm surface. `--background-focus` deepens the control's own fill by one cool step.
+> **Focus stays a neutral surface shift, never the accent** — exactly as Parchment does it (design.md D-15). A saturated teal outline on every focused field would read as an alarm on a calm surface. `--background-focus` deepens the control's own fill by one neutral step.
 >
 > House rule on the focus surface: **`text-default` must clear AA on it, `text-subtle` need not.**
-> Alma light is `text-default` **10.99:1** on `#D3D6D9` but `text-subtle` only **3.92:1**, and the
-> contrast guard deliberately does not assert the second pair — forcing it would mean moving the
-> hover fill and flattening the muted/medium ramp.
+> On the shared focus fill `#E0E0DC`, Alma light is `text-default` **12.12:1** and `text-subtle`
+> **4.33:1** — the latter improved from 3.92:1 on the old cool fill but is still under 4.5, and the
+> contrast guard deliberately does not assert that pair. Forcing it would mean moving the hover
+> fill and flattening the muted/medium ramp.
 
 ### 5f · Status (fill vs text/icon, split per Parchment)
 
@@ -244,7 +302,7 @@ In Alma these track the text/icon stop exactly — the border is the same ink as
 
 ### 5g · Code syntax palette (generated into `themes.generated.ts`, consumed by `codeTheme.ts`)
 
-Recoloured to UCSF families; every stop ≥4.5:1 on its code ground (light `#F2F3F4`, dark `#08213F`). **`type/class` is the accent hue** — C1 Teal `#0E5258` in light, `#5CC6D0` in dark — tying code to the accent. The **eggplant survives as `function`** (G2 `#6C247C`), the one place the original violet accent still earns its keep. Diff rows reuse status danger/success, as Parchment does.
+Recoloured to UCSF families; every stop ≥4.5:1 on its code ground — the **shared** `--background-code`, light `#F5F5F3` and dark `#1B1B19` (they were this family's own `#F2F3F4` / `#08213F` until 2026-08-08; the tightest stops now measure 5.25 light and 5.59 dark, both improved). **`type/class` is the accent hue** — C1 Teal `#0E5258` in light, `#5CC6D0` in dark — tying code to the accent. The **eggplant survives as `function`** (G2 `#6C247C`), the one place the original violet accent still earns its keep. Diff rows reuse status danger/success, as Parchment does.
 
 | Prism role | Light | src | Dark | src |
 |---|---|---|---|---|
@@ -261,68 +319,86 @@ Recoloured to UCSF families; every stop ≥4.5:1 on its code ground (light `#F2F
 
 ### 5h · Usage heatmap (sequential)
 
-Parchment uses a warm terracotta ramp; Alma Mater uses UCSF's own teal ladder — monotonic in luminance so the five steps read in order even in greyscale.
+Parchment uses a warm terracotta ramp; Alma Mater uses UCSF's own teal ladder — monotonic in
+luminance so the five steps read in order even in greyscale. **Level 0 is shared**: it is the
+empty-day fill, a grey a shade off the page rather than a step on the accent ramp, so it belongs
+to the scaffolding. Levels 1–4 are the family's.
 
-| Level | Light | Dark |
-|---|---|---|
-| 0 (idle) | `#E8F6F8` (C6) | `#10223F` |
-| 1 | `#B4E2E8` (C5) | `#0E5258` |
-| 2 | `#60D0DA` (C4) | `#14828C` |
-| 3 | `#16A0AC` (C3) | `#16A0AC` |
-| 4 | `#0E5258` (C1) | `#60D0DA` |
+| Level | Light | Dark | |
+|---|---|---|---|
+| 0 (idle) | `#EEEEEA` | `#1E1D1B` | shared |
+| 1 | `#B4E2E8` (C5) | `#0E5258` | teal ramp |
+| 2 | `#60D0DA` (C4) | `#14828C` | teal ramp |
+| 3 | `#16A0AC` (C3) | `#16A0AC` | teal ramp |
+| 4 | `#0E5258` (C1) | `#60D0DA` | teal ramp |
 
 ### 5i · Shadows and the scrim
 
-Same four elevation *shapes* as Parchment; only the tint changes — light-mode shadows shift from warm brown `rgba(32,25,15,…)` to **navy `rgba(5,32,73,…)`**; dark-mode shadows stay black. Flat-by-default rule is unchanged. `--shadow-modal-chrome-bottom` / `-top` are `none` in both modes.
+**Shared, as of 2026-08-08.** Same four elevation shapes as always, and now the same tint too:
+every alpha is cast in the shared near-black `rgba(31,30,28,…)` in light, black in dark. Alma
+Mater used to cast its light-mode shadows and its scrim in **navy `rgba(5,32,73,…)`**; a
+full-screen navy backdrop is a *background*, and backgrounds no longer vary by family. The
+flat-by-default rule is unchanged.
 
 | Token | Light | Dark |
 |---|---|---|
-| `--scrim` (modal / diagnostics overlay) | `rgba(5, 32, 73, 0.2)` — navy | `rgba(0, 0, 0, 0.48)` |
+| `--scrim` (modal / diagnostics overlay) | `rgba(31, 30, 28, 0.18)` | `rgba(0, 0, 0, 0.48)` |
 
-> **`--scrim` is a token now, and that is new.** The modal and diagnostics overlays used to be a
+> **`--scrim` is a token, and it stays one.** The modal and diagnostics overlays used to be a
 > hardcoded `rgba(32,25,15,0.18)` — Parchment's warm brown — sitting *outside* the token layer,
 > with a single hand-written rule retinting Alma Mater light. Roche Limit, added afterwards,
-> therefore silently wore Parchment's brown scrim over its own neutral-warm surfaces. Promoting
-> the value to a token is what stops the next family repeating that; `main.css` now reads
-> `background: var(--scrim)` at the one use site.
+> therefore silently wore Parchment's brown scrim over its own neutral-warm surfaces. The token
+> is what stopped that, and it is kept even though all three families now declare the same value:
+> a future family that genuinely needs its own tint re-points one name instead of finding two
+> rules. `main.css` reads `background: var(--scrim)` at the one use site.
 
 ### 5j · Terminal ANSI-16 (`InAppTerminalDock`)
 
 xterm paints to a canvas and cannot read `var()`, so the terminal needs its own literal palette.
-Alma's `terminalGround` is **`--background-muted` in both modes** (light `#F2F3F4`, dark `#0D2A50`) —
-recorded per family rather than assumed, because Parchment-dark grounds on `--background-code`
-instead. `background` and `cursorAccent` are **derived** from that ground and must not be authored.
+The ANSI stops are **this family's ink** and stay UCSF-hued; the ground under them is shared.
+`terminalGround` is `--background-muted` in both modes — **now the same declaration in all three
+families** (light `#F4F4F2`, dark `#232320`). It stays declared per family rather than hardcoded
+in the generator, because the point was that the choice be written down and measured, and that
+holds when the answer agrees. `background` and `cursorAccent` are **derived** from that ground
+and must not be authored.
 
-Ratios below are against each mode's own ground, recomputed from the hexes.
+Ratios below are against each mode's own ground, recomputed from the hexes after the ground moved.
+The dark column improved across the board: the shared `#232320` is darker than the navy `#0D2A50`
+it replaced.
 
 | Slot | Light | | Dark | |
 |---|---|---|---|---|
-| `foreground` | `#052049` | 14.44 | `#E1E3E5` | 11.15 |
-| `cursor` | `#0E5258` | 7.99 | `#8AE0E8` | 9.50 |
-| `selectionBackground` | `#D8D9DA` | 1.27 † | `#163864` | 1.22 † |
-| `black` | `#052049` | 14.44 | `#1E477F` | 1.55 † |
-| `red` | `#C40D3E` | 5.44 | `#F5768A` | 5.36 |
-| `green` | `#007242` | 5.42 | `#5FBF74` | 6.28 |
-| `yellow` | `#8A5A00` | 5.33 | `#FEB80A` | 8.25 |
-| `blue` | `#0F388A` | 9.68 | `#7FB3E6` | 6.48 |
-| `magenta` | `#6C247C` | 8.67 | `#C58AD6` | 5.45 |
-| `cyan` | `#0E5258` | 7.99 | `#5CC6D0` | 7.13 |
-| `white` | `#506380` | 5.50 | `#B4B9BF` | 7.26 |
-| `brightBlack` | `#586780` | 5.15 | `#909AA6` | 5.03 |
-| `brightRed` | `#D0143F` | 4.90 | `#FF8FA0` | 6.62 |
-| `brightGreen` | `#1F7A3D` | 4.83 | `#7FD08F` | 7.73 |
-| `brightYellow` | `#8A5A00` | 5.33 | `#FFCA4A` | 9.42 |
-| `brightBlue` | `#255FB5` | 5.59 | `#A3C9F0` | 8.31 |
-| `brightMagenta` | `#8A1FA0` | 6.79 | `#D7A5E8` | 7.13 |
-| `brightCyan` | `#106A72` | 5.68 | `#7FD8E0` | 8.74 |
-| `brightWhite` | `#052049` | 14.44 | `#F2F3F4` | 12.91 |
+| `foreground` | `#052049` | 14.56 | `#E1E3E5` | 12.25 |
+| `cursor` | `#0E5258` | 8.06 | `#8AE0E8` | 10.44 |
+| `selectionBackground` | `#D8D9DA` | 1.28 † | `#163864` | 1.34 † |
+| `black` | `#052049` | 14.56 † | `#1E477F` | 1.70 † |
+| `red` | `#C40D3E` | 5.49 | `#F5768A` | 5.88 |
+| `green` | `#007242` | 5.47 | `#5FBF74` | 6.90 |
+| `yellow` | `#8A5A00` | 5.38 | `#FEB80A` | 9.06 |
+| `blue` | `#0F388A` | 9.76 | `#7FB3E6` | 7.12 |
+| `magenta` | `#6C247C` | 8.74 | `#C58AD6` | 5.99 |
+| `cyan` | `#0E5258` | 8.06 | `#5CC6D0` | 7.84 |
+| `white` | `#506380` | 5.55 | `#B4B9BF` | 7.98 |
+| `brightBlack` | `#586780` | 5.20 | `#909AA6` | 5.52 |
+| `brightRed` | `#D0143F` | 4.95 | `#FF8FA0` | 7.27 |
+| `brightGreen` | `#1F7A3D` | 4.88 | `#7FD08F` | 8.49 |
+| `brightYellow` | `#8A5A00` | 5.38 | `#FFCA4A` | 10.35 |
+| `brightBlue` | `#255FB5` | 5.64 | `#A3C9F0` | 9.13 |
+| `brightMagenta` | `#8A1FA0` | 6.85 | `#D7A5E8` | 7.83 |
+| `brightCyan` | `#106A72` | 5.73 | `#7FD8E0` | 9.61 |
+| `brightWhite` | `#052049` | 14.56 | `#F2F3F4` | 14.18 |
+
+> `selectionBackground` is deliberately still **this family's own** cool grey `#D8D9DA` (and navy
+> `#163864` in dark) rather than a shared neutral. The terminal's selection wash sits beside the
+> `cursor`, which is per family for the same reason: both are affordances the family tints, not
+> app chrome. Neither carries a contrast floor.
 
 † Exempt by contract, with the reason recorded: `selectionBackground` is a surface, not a
 foreground (floor 1.0); ANSI `black` is a dim slot — a lifted ground by convention, not text
 (floor 1.0). Bright slots carry a documented **3:1** floor rather than 4.5, because on a light
 ground "bright" (lighter than its base) and "AA" are in direct conflict. **Alma happens to clear
 4.5:1 on every non-exempt slot in both modes anyway** — the tightest are light `brightGreen`
-4.83 and dark `brightBlack` 5.03 — so it never actually spends that relaxation.
+4.88 and dark `brightBlack` 5.52 — so it never actually spends that relaxation.
 
 ### 5k · Raw palette remap
 
@@ -334,9 +410,16 @@ they exist only to catch components that reach *past* the semantic layer and use
 Parchment's warm bias inside an otherwise cool theme. The semantic layer stays authoritative.
 
 The coral ramp is remapped straight onto the teal ladder: `coral-400` → `#60D0DA` (C4),
-`coral-500` → `#16A0AC` (C3), `coral-600` → `#14828C` (C2), `coral-700` → `#0E5258` (C1).
-The neutral ramp runs cool grey at the light end (`#F7F8F9` → `#D1D3D3`) and turns navy at
-the dark end (`#3A4A66` → `#1F3152` → `#0F2545` → `#04142E`).
+`coral-500` → `#16A0AC` (C3), `coral-600` → `#14828C` (C2), `coral-700` → `#0E5258` (C1). That
+remap is the whole point of this block and is unaffected by the unification.
+
+**The neutral half of the remap is now a no-op.** It used to run cool grey at the light end
+(`#F7F8F9` → `#D1D3D3`) and turn navy at the dark end (`#3A4A66` → `#04142E`); it now restates
+the shared ramp (`#FAFAF9` → `#F4F4F2` → `#E4E4E0` → `#D2D2CD` → … → `#131312`) verbatim,
+identical to the base `@theme` block and to Roche Limit's. It is kept only because the contract
+requires every non-base family to declare the full raw palette, which is what lets a guard resolve
+a family in isolation. There is nothing family-specific left in those eleven values — if you are
+looking for what makes Alma Mater cool, it is §5d, not here.
 
 ### 5l · Boot splash
 
@@ -344,20 +427,28 @@ The pre-React splash paints before any of this exists, so `index.html` carries i
 per-family block (`html[data-theme='alma-mater'] #br-boot`). It is generated from the theme
 file's `splash` values; `--br-bg` is **derived** from `--background-muted`.
 
-| Splash var | Light | Dark |
-|---|---|---|
-| `--br-bg` | `#F2F3F4` (derived from `--background-muted`) | `#0D2A50` (derived) |
-| `--br-navy` | `#052049` | `#052049` |
-| `--br-coral` | `#16A0AC` | `#16A0AC` |
-| `--br-track` | `#E8E1D2` | `#E8E1D2` |
+| Splash var | Light | Dark | |
+|---|---|---|---|
+| `--br-bg` | `#F4F4F2` (derived from `--background-muted`) | `#232320` (derived) | shared |
+| `--br-navy` | `#052049` | `#18A3AC` | this family's |
+| `--br-coral` | `#16A0AC` | `#16A0AC` | this family's |
+| `--br-track` | `#E4E4E0` | `#302F2C` | shared |
 
-> **The splash coral was wrong until this pass.** Alma Mater inherited Parchment's terracotta
-> `#B85A32`, so the boot mark flashed warm orange for the whole backend-startup window and then
-> jumped to teal on hydration. It is now the accent bar's own `#16A0AC` — 2.84:1 on the light
-> splash ground and 4.55:1 on the dark one. The light figure sits just under the 3:1 that SC
-> 1.4.11 asks of non-text UI, which is acceptable here only because the mark is a **logotype**,
-> explicitly exempted by that success criterion — it is brand artwork, not an interface control,
-> and nothing is actionable during the splash. `--br-track` is still the shared Parchment bone.
+> **The ground and the track are shared; only the two inks are Alma Mater's.** That is the whole
+> unification in miniature — every family's splash paints the same `#F4F4F2` / `#232320` and is
+> told apart by its mark. `--br-track` used to be Parchment's bone `#E8E1D2` in both modes for
+> every family (a leftover, not a decision); it is now the shared `--border-subtle`, which is
+> what a progress track should be.
+
+> **The splash coral was wrong until the 2026-07-18 pass.** Alma Mater inherited Parchment's
+> terracotta `#B85A32`, so the boot mark flashed warm orange for the whole backend-startup window
+> and then jumped to teal on hydration. It is now the accent bar's own `#16A0AC` — **2.86:1** on
+> the light splash ground and **5.00:1** on the dark one. The light figure sits just under the
+> 3:1 that SC 1.4.11 asks of non-text UI, which is acceptable here only because the mark is a
+> **logotype**, explicitly exempted by that success criterion — it is brand artwork, not an
+> interface control, and nothing is actionable during the splash. The generator asserts the
+> *navy* half at 3:1 (light **14.56**, dark **5.16**), which is the half that carries the mark's
+> readable structure.
 
 ---
 
@@ -370,16 +461,16 @@ Every text-carrying pair was computed from the hex. **AA floors: body ≥4.5:1, 
 | Foreground | Background | Ratio | |
 |---|---|---|---|
 | text-default `#052049` | canvas `#FFFFFF` | 16.04 | ✅ AAA |
-| text-default `#052049` | sidebar `#EEF0F0` | 14.02 | ✅ AAA |
-| text-muted `#506380` | ground `#F2F3F4` | 5.50 | ✅ AA |
-| text-subtle `#586780` | ground `#F2F3F4` | 5.15 | ✅ AA |
+| text-default `#052049` | sidebar `#F7F7F5` | 14.95 | ✅ AAA |
+| text-muted `#506380` | ground `#F4F4F2` | 5.55 | ✅ AA |
+| text-subtle `#586780` | ground `#F4F4F2` | 5.20 | ✅ AA |
 | white ink | accent fill `#14828C` | 4.56 | ✅ AA |
 | text-accent `#14828C` | canvas `#FFFFFF` | 4.56 | ✅ AA |
 | accent-bar `#16A0AC` | white | 3.15 | ✅ (UI 3:1) |
-| sidebar-icon `#14828C` | sidebar `#EEF0F0` | 3.99 | ✅ (SC 1.4.11 3:1) |
-| sidebar-icon `#14828C` | sidebar-hover `#E3E5E5` | 3.61 | ✅ (SC 1.4.11 3:1) |
-| sidebar-icon `#14828C` | sidebar-active `#D8D9DA` | 3.23 | ✅ (SC 1.4.11 3:1) |
-| text-default `#052049` | background-focus `#D3D6D9` | 10.99 | ✅ AAA |
+| sidebar-icon `#14828C` | sidebar `#F7F7F5` | 4.25 | ✅ (SC 1.4.11 3:1) |
+| sidebar-icon `#14828C` | sidebar-hover `#EFEFEC` | 3.96 | ✅ (SC 1.4.11 3:1) |
+| sidebar-icon `#14828C` | sidebar-active `#EAEAE6` | 3.78 | ✅ (SC 1.4.11 3:1) |
+| text-default `#052049` | background-focus `#E0E0DC` | 12.12 | ✅ AAA |
 | danger-text `#C40D3E` | white | 6.04 | ✅ AA |
 | white ink | danger fill `#E61048` | 4.63 | ✅ AA (≥14px) |
 | success `#007242` | white | 6.02 | ✅ AA |
@@ -387,33 +478,40 @@ Every text-carrying pair was computed from the hex. **AA floors: body ≥4.5:1, 
 | white ink | warning fill `#8A5A00` | 5.93 | ✅ AA |
 | info `#0F388A` | white | 10.75 | ✅ AAA |
 
-**Dark mode** (navy card ground `#08213F`)
+**Dark mode** (shared card ground `#1B1B19`, canvas `#131312`)
+
+Every ratio in this table improved when the ground moved off navy — the shared neutrals are
+darker than the navy surfaces they replaced, so the same navy-family inks sit on more contrast.
 
 | Foreground | Background | Ratio | |
 |---|---|---|---|
-| text-default `#F2F3F4` | canvas `#04142E` | 16.51 | ✅ AAA |
-| text-muted `#B4B9BF` | card `#08213F` | 8.18 | ✅ AAA |
-| text-subtle `#909AA6` | card `#08213F` | 5.66 | ✅ AA |
+| text-default `#F2F3F4` | canvas `#131312` | 16.73 | ✅ AAA |
+| text-muted `#B4B9BF` | card `#1B1B19` | 8.73 | ✅ AAA |
+| text-subtle `#909AA6` | card `#1B1B19` | 6.04 | ✅ AA |
 | navy ink `#052049` | accent fill `#60D0DA` | 8.81 | ✅ AAA |
-| accent-bar `#60D0DA` | canvas `#04142E` | 10.07 | ✅ (UI 3:1) |
-| text-accent `#60D0DA` | card `#08213F` | 8.87 | ✅ AAA |
-| sidebar-icon `#60D0DA` | sidebar `#071B3A` | 9.40 | ✅ (SC 1.4.11 3:1) |
-| sidebar-icon `#60D0DA` | sidebar-active `#163864` | 6.46 | ✅ (SC 1.4.11 3:1) |
-| danger `#F5768A` | card | 6.03 | ✅ AA |
-| success `#5FBF74` | card | 7.07 | ✅ AA |
-| warning `#FEB80A` | card | 9.29 | ✅ AAA |
-| info `#7FB3E6` | card | 7.30 | ✅ AAA |
+| accent-bar `#60D0DA` | canvas `#131312` | 10.21 | ✅ (UI 3:1) |
+| text-accent `#60D0DA` | card `#1B1B19` | 9.47 | ✅ AAA |
+| sidebar-icon `#60D0DA` | sidebar `#171716` | 9.85 | ✅ (SC 1.4.11 3:1) |
+| sidebar-icon `#60D0DA` | sidebar-active `#2E2E2A` | 7.49 | ✅ (SC 1.4.11 3:1) |
+| danger `#F5768A` | card | 6.44 | ✅ AA |
+| success `#5FBF74` | card | 7.55 | ✅ AA |
+| warning `#FEB80A` | card | 9.92 | ✅ AAA |
+| info `#7FB3E6` | card | 7.80 | ✅ AAA |
 | navy ink `#052049` | warning fill `#FEB80A` | 9.22 | ✅ AAA |
 | navy ink `#052049` | danger fill `#F5768A` | 5.99 | ✅ AA |
 
-Code-syntax stops all clear AA on their ground (lowest: light `comment` **5.15**, dark `comment` **5.24**).
+Code-syntax stops all clear AA on their ground (lowest: light `comment` **5.25**, dark `comment`
+**5.59**, both measured against the shared `--background-code`).
 
-> Two corrections made when these were recomputed against the shipped hexes rather than
-> carried forward: text-default on the sidebar is **14.02**, not 14.09; and the light
-> `comment` floor is **5.15**, not the 4.65 an earlier draft claimed. The `navy ink on
-> #FEB80A` row had also drifted into the *light* table — `#FEB80A` is the **dark**-mode
-> warning fill (§5f); light mode fills with `#8A5A00` under white ink at 5.93. All three
+> Two corrections made when these were first recomputed against the shipped hexes rather than
+> carried forward: the light `comment` floor was **5.15**, not the 4.65 an earlier draft claimed,
+> and the `navy ink on #FEB80A` row had drifted into the *light* table — `#FEB80A` is the
+> **dark**-mode warning fill (§5f); light mode fills with `#8A5A00` under white ink at 5.93. Both
 > were wrong in the doc only; no shipped value changed.
+>
+> Every ground-dependent figure in §5j and §6 was recomputed again on 2026-08-08 when the
+> neutrals were shared. **Do not carry these forward by hand** — they are a function of the
+> shared ramp, and `node ui/desktop/scripts/check-contrast.mjs` prints the live numbers.
 
 ---
 
@@ -426,10 +524,16 @@ the alternatives are kept as the record of what was weighed.
    with Magenta / Periwinkle / CTA-Blue as the other live options. Overturned on 2026-07-18 for
    the reasons in §4: eggplant was distinctive but not *recognisable* as UCSF. The eggplant is
    retained in exactly one place — the syntax `function` stop (§5g).
-2. **Sidebar treatment → cool-gray two-tone.** Calm, matches Parchment's discipline. The
+2. **Sidebar treatment → two-tone, not a slab.** Calm, matches Parchment's discipline. The
    navy light-mode sidebar (most on-brand, biggest departure) was previewed and passed over.
-3. **Dark-surface base → navy.** A plum-tinted dark was the alternative when the accent was
-   eggplant; with a teal accent it was moot. Every dark surface is a navy step (§5a).
+   *Amended 2026-08-08:* the two-tone survives, the cool grey does not — the sidebar is now the
+   shared neutral, and the accent lives on the icons and the active rail (§5b).
+3. **Dark-surface base → navy.** *Superseded 2026-08-08.* A plum-tinted dark was the alternative
+   when the accent was eggplant; with a teal accent it was moot, and every dark surface became a
+   navy step. Dark surfaces are now the shared warm-neutral set and navy is ink only (§5a). This
+   was the most consequential thing the unification took from this family, and it was taken
+   knowingly: a shared scaffolding is worth more than three separately-tuned dark grounds.
+   See [architecture §8](theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
 4. **How far the extended spectrum reaches → data-viz and syntax only.** Teal/green/magenta
    never become general UI chrome, which is what protects the one-accent rule.
 5. **Default theme → Parchment.** Alma Mater is opt-in via the Appearance theme-family selector.
@@ -512,11 +616,27 @@ different surface.
   long before this doc mentioned them; `--sidebar-icon` is the token that actually carries "teal
   nav icons", which §5c had been describing without naming.
 
+### The 2026-08-08 neutral unification
+
+- Alma Mater's cool blue-grey ramp and its navy dark surfaces were replaced by the shared
+  neutral set (§5a, §5b, §5e, §5k), and its navy-tinted shadows and scrim by the shared
+  near-black ones (§5i). `background-inverse`, `heat-0` and the splash track moved with them.
+- **No ink or accent changed.** Navy, teal and the UCSF status hues are untouched — the family
+  reads as itself for the same reasons it always did.
+- **No contrast assertion regressed.** Alma Mater needed no retuning at all: every ratio held or
+  improved, because the shared dark surfaces are darker than the navy ones they replaced. (The
+  one family that did need a repair was Parchment, whose terminal `yellow` and `cyan` were tuned
+  against its own cream dock ground.)
+- One measured pair is *worse* and is recorded rather than hidden: `--text-subtle` on the focus
+  fill went from 3.92:1 to 4.33:1 — an improvement, but still the pair the guard deliberately
+  does not assert (§5e).
+
 ### Verification performed
 
-- `node scripts/check-contrast.mjs` — **228/228 assertions pass**, of which **78 are Alma Mater**.
-  The guard discovers scopes by sweeping `main.css` for `[data-theme='…']`, so a new family is
-  audited with zero edits to it.
+- `node scripts/check-contrast.mjs` — **330/330 assertions pass** across three families × two
+  modes. The guard discovers scopes by sweeping `main.css` for `[data-theme='…']`, so a new
+  family is audited with zero edits to it. (Re-measure this count rather than quoting it: it
+  grows whenever an assertion is added, and it was 324 before the canvas/muted step was guarded.)
 - `node scripts/generate-themes.mjs --check` — generated artifacts current across all 3 themes.
 - Every ratio in §5j and §6 recomputed from the shipped hexes with the WCAG relative-luminance
   formula, against the token each value is actually painted on.

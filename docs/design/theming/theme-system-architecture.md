@@ -1,15 +1,22 @@
 # Theme system architecture
 
 > **What this is.** The architecture of BioRouter's theme system: where a theme actually lives,
-> what is generated from what, the token contract, and what a fourth family costs.
+> what is generated from what, the token contract, what varies per family and what does not,
+> and what a fourth family costs.
 > **Status:** Current. Implemented 2026-07-18; §5 is the shipped architecture, and §1–§4 are
-> kept as the diagnosis that motivated it. §7 names what is still open.
+> kept as the diagnosis that motivated it. **§8 (2026-08-08) is the current rule for what a family
+> may vary — read it before changing any colour.** §7 names what is still open.
 > **Audience:** developers adding a theme family, or touching any of the generated regions in
 > `main.css`, `themes.generated.ts` and `index.html`.
 
 Three families ship — Parchment, Alma Mater and Roche Limit — the team expects more, and themes
 stay baked into the app rather than being user-installable. Sections are numbered and cited by
 number from the per-family token references, so the numbering is a stable reference scheme.
+
+**A family is its ink and its accent.** Every background, grey, border, elevation and scrim is one
+shared set that all three wear identically, in both modes. That is §8, and it postdates most of
+what follows — where an earlier section reasons from three families having three neutral ramps, it
+is describing the system as it was measured, not as it runs.
 
 > §1–§4 below are the diagnosis that motivated the work and are kept as the record of what was
 > measured. **§5 is the shipped architecture.** The staged plan it originally proposed was compressed:
@@ -97,6 +104,12 @@ Three things are better than they look and should be the model for everything el
    **This is the trap a naive generator walks into**: any codegen that emits
    `terminal.background = ref('--background-code')` silently re-grounds two terminals under ANSI
    palettes tuned for a different surface. That is the same defect class as the 4.15:1 bug.
+
+   > **Resolved by §8.** All three families now point `terminalGround` at `--background-muted` in
+   > both modes, and the values behind that token are identical across families. The trap was
+   > real and the reasoning still holds — the fix was not to assume the grounds agreed but to
+   > *make* them agree and then re-measure Parchment's dark ANSI palette against the one it
+   > moved to. Two of its stops needed retuning; see §8.
 
 ### The largest untested surface
 
@@ -186,16 +199,33 @@ Two page-ish tokens, deliberately:
 | `--background-app` | the **window** ground, behind everything | `body` |
 | `--background-canvas` | the **main panel** — conversation, hub, every top-level view | `MainPanelLayout`, `Hub`, `BaseChat`, `App` root |
 
-They cannot be collapsed because the families disagree about the ladder.
-Parchment's canvas carries the warm tint (`#faf8f3`) while its window ground is
-pure white; Parchment dark and Alma Mater dark **invert** it, putting the canvas
-*above* the cards. Alma Mater and Roche Limit light both want a pure-white canvas
-against a grey sidebar. One token would force one family's ladder onto the others.
+The original reason for two tokens was that the families disagreed about the
+ladder: Parchment's canvas carried a warm tint while its window ground was pure
+white, and Parchment dark and Alma Mater dark **inverted** it, putting the canvas
+*above* the cards. §8 ended that disagreement — one ladder, canvas darkest, cards
+a step up — so that is no longer why the tokens are separate.
 
-The bug this fixed: the main panel painted `--background-muted`, so the whole
-canvas read grey and the sidebar/canvas two-tone collapsed. `--background-canvas`
-is in `TEXT_GROUNDS` in `check-contrast.mjs`, so body text is now measured against
-the surface it actually lands on (252 assertions, up from 228).
+**They stay separate because they mean different things**, and the app reads them
+in different places: `body` paints one, `MainPanelLayout` / `Hub` / `BaseChat`
+paint the other. Collapsing them would be an irreversible loss of that
+distinction for a saving of one line. In the shared set they happen to hold the
+same value (`#ffffff` light, `#131312` dark) — which is a fact about today's
+palette, not a licence to alias one to the other.
+
+Two bugs this shape has caught, both worth keeping in mind:
+
+- The main panel once painted `--background-muted`, so the whole canvas read grey
+  and the sidebar/canvas two-tone collapsed. `--background-canvas` is in
+  `TEXT_GROUNDS` in `check-contrast.mjs`, so body text is measured against the
+  surface it actually lands on.
+- `--background-canvas` and `--background-muted` were **byte-identical** in three
+  of the six family/mode scopes (parchment light and dark, alma-mater dark), so
+  anything that used `bg-background-muted` to lift itself off the page was
+  invisible there — which is exactly what happened to the composer's chips. Roche
+  Limit was the one family that kept a real step, and adopting its neutrals fixed
+  all three at once. `check-contrast.mjs` now asserts the step in every scope
+  ("background-muted is a step off the canvas"), with a floor set to catch a
+  collapse to zero rather than to pin today's 1.10:1 / 1.18:1.
 
 ### The contract
 
@@ -251,7 +281,11 @@ means recovering it from there, with fresh eyes on what it reads.
    into `@layer user-theme` loses to the existing tokens at every value, because `main.css`'s token
    blocks are unlayered and unlayered beats every layer.
 2. **Terminal ground: codified, not unified.** Each family declares which token its terminal paints.
-3. **Shadows stay raw strings**, outside the contrast set.
+   *Superseded by §8:* it is now codified **and** unified — all three declare `--background-muted`.
+   The declaration stays in the contract, because the point of codifying it was that the choice be
+   written down and measured rather than assumed, and that is still true when the answer agrees.
+3. **Shadows stay raw strings**, outside the contrast set. *Amended by §8:* still raw strings, but
+   no longer per family — elevation is neutral scaffolding and all three share one set.
 4. **Bright ANSI slots hold 3:1, base slots hold 4.5.** On a light ground "bright" (conventionally
    *lighter*) and AA are mutually exclusive; forcing 4.5 would collapse `brightCyan` into `cyan`.
 5. **`--accent-bar` is deliberately NOT asserted.** On the rail's own ground (`--sidebar-active`)
@@ -268,6 +302,95 @@ means recovering it from there, with fresh eyes on what it reads.
   but the comment's reasoning should be corrected.
 - `--sidebar-icon` on a navy sidebar, and the scoped `<div data-theme>` live preview for settings,
   remain unbuilt.
+
+---
+
+## 8 · Shared neutrals — one scaffolding, three inks
+
+**The rule.** A theme family varies in exactly two things: its **ink** (the text and syntax
+colours) and its **accent** (one hue, plus the affordances derived from it). Everything else —
+backgrounds, greys, borders, the focus ring and fill, elevation, the scrim, the empty heatmap
+step, the splash ground — is **one shared set**, byte-identical across all three families in both
+light and dark.
+
+### Why
+
+At N=3 the families had three separate neutral ramps and, of the 35 background / border / sidebar
+keys in the light block, **agreed on four**. Parchment ran a warm cream ramp (`#faf8f3` /
+`#f4f0e6` / `#d4cab6`), Alma Mater a cool blue-grey one (`#f2f3f4` / `#e1e3e5` / `#d1d3d3`), Roche
+Limit a warm neutral one. Three consequences, all of which had already shipped:
+
+- **Three ramps is three times the surface for the same bug.** The canvas/muted collapse above was
+  present in three of six scopes and absent in the fourth family that happened to pick different
+  numbers. Nothing structural distinguished the correct case from the broken ones.
+- **Every component that reasons about a surface had to be right three times.** A shared ramp
+  turns "does this read on the sidebar?" from a question with three answers into one with one.
+- **The families were not actually distinguished by their greys.** What a user recognises is the
+  ink and the accent — warm brown and dark orange, UCSF navy and teal, near-black and orange. The
+  greys carried the variation without carrying the identity.
+
+### The reference set
+
+Roche Limit's neutrals were adopted **wholesale, not averaged**: they were the set with a real
+canvas/muted step in both modes, a consistent surface ladder, and a warm-neutral cast that sits
+under a warm accent and a cool one equally. Its definition file is therefore unchanged by this
+work; `parchment.theme.mjs`, `alma-mater.theme.mjs` and the hand-written `:root` / `.dark` blocks
+in `main.css` moved onto it.
+
+### What each family still owns
+
+| Owned by the family | Shared by all families |
+|---|---|
+| `text-default`, `text-muted`, `text-subtle`, `text-inverse` | `background-app`, `-canvas`, `-default`, `-card`, `-muted`, `-code`, `-medium`, `-strong`, `-inverse` |
+| `sidebar-foreground`, `sidebar-accent-foreground` | `border-subtle`, `-strong`, `-input`, `-default` |
+| the 10 syntax stops, the 19 terminal stops | `sidebar`, `-hover`, `-active`, `-accent`, `-border` |
+| `background-accent`, `-accent-hover`, `border-accent`, `text-accent`, `text-on-accent`, `accent-bar`, `sidebar-icon`, `swatch` | `ring`, `sidebar-ring`, `background-focus`, `border-focus` |
+| `heat-1` … `heat-4` (the accent ramp), `mark.navy`, `mark.coral` | `heat-0` (the empty-day fill), `mark.track` |
+| the status hues — see below | `scrim`, the four `shadow-*`, `shadow-raised`, the whole `--color-neutral-*` ramp |
+
+Two entries in that table are worth their reasoning:
+
+- **`background-inverse` is shared**, even though each family used to set it to its own
+  `text-default`. It is the tooltip fill — a *surface* — and surfaces are shared. Each family still
+  places its own `text-inverse` on it.
+- **The status hues stay per family.** `background-danger` / `success` / `info` / `warning` and
+  their `text-` and `border-` twins are neither neutral scaffolding nor the family accent, and the
+  rule above does not reach them. Two reasons to leave them: the user's axes are grounds (shared)
+  versus ink and accent (varied), and status is a third thing that was not in scope; and Alma
+  Mater's are UCSF institutional brand values, not a palette choice. They are re-verified against
+  the shared grounds by the contrast guard like everything else.
+
+### Repairing a family that no longer reads
+
+When a family's ink fails on a shared ground, **retune the ink**. That is the axis the family owns,
+and it is why the axes are split this way. Reintroducing a per-family background to rescue a text
+colour is the failure mode this section exists to prevent — it recreates all three problems above
+to fix one ratio.
+
+This happened once during the migration, and it is the worked example: Parchment's terminal
+`yellow` (`#9b6818`) and `cyan` (`#107e89`) were tuned against its own cream dock ground `#faf8f3`,
+and on the shared `#f4f4f2` they measured 4.35:1 and 4.37:1 — just under AA. They were darkened by
+about 2.5% to `#976517` and `#107a85` (4.55 and 4.60). The generator refuses to emit on a contrast
+failure, so this was caught at build time rather than by eye.
+
+### What it costs a new family
+
+Strictly less than before. The neutral half of a definition is now copied verbatim from any
+existing family and never thought about; what a fourth family actually has to design is its ink,
+its accent, and the two palettes derived from them. The contract still requires every token to be
+declared — the generator will not infer a shared value — because an explicit restatement is what
+lets the guards resolve a family in isolation.
+
+### Guards
+
+- `npm run themes` refuses to emit if any syntax stop, terminal stop or sandboxed-surface pair
+  falls below its floor on the **shared** grounds.
+- `check-contrast.mjs` asserts 330 pairs across three families × two modes, including the
+  canvas/muted step described in §5.
+- `boot-splash.test.ts`, `artifactUtils.test.ts` and `NotebookPreview.test.tsx` each used to assert
+  that the families' **grounds** were all distinct. That premise is now inverted, and all three were
+  rewritten rather than deleted: they assert that the **ink** still differs three ways *and* that
+  the ground is shared, which catches both a re-hardcoded preview and a family drifting off the set.
 
 ## Related documentation
 

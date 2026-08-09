@@ -4,9 +4,30 @@
 > the palette it draws from, the accent ramp, a complete token-by-token light and dark mapping,
 > and the verified WCAG contrast ratios behind every value.
 > **Status:** Current. Approved and implemented on 2026-07-18; §9 records what was actually
-> built and wins wherever it disagrees with the design argument in §1–§8.
+> built and wins wherever it disagrees with the design argument in §1–§8. **On 2026-08-08 this
+> family's neutrals became the shared set for all three families** — see the banner below.
 > **Audience:** developers adding a component that reads colour tokens, and anyone proposing a
 > new theme family.
+
+> ## ⚠ These neutrals are now shared by every family (2026-08-08)
+>
+> Roche Limit's backgrounds, greys, borders, focus surfaces, elevation and scrim were adopted
+> **wholesale** as BioRouter's one neutral scaffolding. Parchment and Alma Mater moved onto them;
+> this family's definition file was not changed.
+>
+> That has a consequence worth stating plainly: **the surface tables below (§4.1, §4.3, §4.6,
+> §4.7, §4.9, §5.1, §5.3, §5.6, §5.7) are no longer a description of one theme.** Editing any
+> value in them now moves all three families, and requires a matching edit in
+> `parchment.theme.mjs`, `alma-mater.theme.mjs` and the hand-written `:root` / `.dark` blocks in
+> `main.css`. What is still Roche Limit's alone is its **ink** (§4.2, §5.2, the syntax and
+> terminal palettes) and its **orange accent** (§4.4, §5.4).
+>
+> Why this family: it was the one whose `--background-canvas` and `--background-muted` were a real
+> step apart in both modes (the other two collapsed them to a single value in three of six scopes,
+> making anything that used `bg-background-muted` to lift off the page invisible), it had a
+> consistent surface ladder, and its warm-neutral cast sits under a warm accent and a cool one
+> equally. Full reasoning:
+> [Theme system architecture §8](theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
 
 Sections are numbered and cited by number from other documents and from source — `codeTheme.ts`
 points at §4.10 and §5.8 — so the numbering is a stable reference scheme, not decoration.
@@ -215,6 +236,12 @@ Aliases (`--sidebar-foreground`, `-primary`, `-primary-foreground`, `-accent`, `
 (monotonic in luminance: 0.853 → 0.753 → 0.575 → 0.371 → 0.184)
 
 ### 4.9 Shadows — warm-neutral tint, Jupyter-flat by default
+
+**Now shared by all three families** (2026-08-08). Parchment cast its light shadows in
+`rgba(32,25,15,…)` and part of the set in flat black; Alma Mater cast the whole set — and the
+scrim — in UCSF navy `rgba(5,32,73,…)`. Elevation is neutral scaffolding and a full-screen scrim
+is a background, so both moved onto the values below. `--scrim` in light is the matching
+`rgba(31,30,28,0.18)`; dark is `rgba(0,0,0,0.48)`, which all three already agreed on.
 
 ```css
 --shadow-default:  0px 1px 3px 0px rgba(31,30,28,0.07), 0px 0px 1px 0px rgba(31,30,28,0.13);
@@ -604,12 +631,36 @@ need not.**
   worktree at HEAD with only the theme files applied (40/40 pass there). They come
   from unrelated in-flight work on the branch, not from this theme.
 
+### 9.3 · Adopted as the shared neutral set, 2026-08-08
+
+**Nothing in `roche-limit.theme.mjs` changed.** What changed is its scope: Parchment and Alma
+Mater were moved onto these neutrals, so this family's surface values are now BioRouter's, and
+the guards treat them that way.
+
+- The other two families' neutral ramps were deleted; `--color-neutral-50` … `-950` in the base
+  `@theme` block is this family's ramp, and both siblings restate it verbatim.
+- `check-contrast.mjs` gained a per-scope assertion that `--background-muted` is a real step off
+  `--background-canvas` — the invariant this family satisfied and the other two did not. 330
+  assertions now, up from 324.
+- Parchment's terminal `yellow` and `cyan` had to be darkened by ~2.5%: they were tuned against
+  its cream dock ground `#faf8f3` and measured 4.35/4.37:1 on this family's `#f4f4f2`. Roche
+  Limit itself needed no retuning, since it was already measured on these grounds.
+- `terminalGround` is now `--background-muted` in all three families. Parchment dark used to
+  point at `--background-code`; its ANSI palette was re-verified against the muted ground rather
+  than assumed compatible with it.
+
 ### Known follow-up
 
 The wordmark's `CORAL = '#b85a32'` (Parchment terracotta) now sits beside Roche's
 `#EE6C1A` — two oranges about 20° apart, a near-miss rather than a clash. Making the
 wordmark family-aware is a **brand** decision, not a theme one, so it was not taken
 unilaterally. One-line fix if wanted: derive `CORAL` from `--accent-bar`.
+
+The neutral unification did **not** touch this: the wordmark and the app-icon plate are fixed
+brand artwork (`BioRouterMark.tsx`'s `PLATE = '#faf8f3'`, and the `#faf8f3` grounds in
+[the logo and wordmark spec](../branding/logo-and-wordmark-spec.md)) and are deliberately not
+themed. That cream is brand, not a theme neutral, and it is correct that it no longer matches
+any token.
 
 ---
 

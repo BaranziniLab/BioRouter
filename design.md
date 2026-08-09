@@ -1,6 +1,6 @@
 # Biorouter Design System
 
-**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
+**Status:** ✅ **Signed off 2026-07-09** · **Sidebar density addendum 2026-07-15** · **UI cohesion pass 2026-07-16 ([Part 6b](#part-6b--ui-cohesion-pass--2026-07-16))** · **Row density superseded 2026-08-02 (Astryx A-03)** · **Neutrals shared across all three families 2026-08-08 ([§3.1](#31--colour))** · **Version:** 1.87.2 · **Owner:** Baranzini Lab, UCSF
 
 > All 14 open decisions are settled — see [Part 6](#part-6--open-decisions). Recommendations were accepted for
 > D-01 … D-11, D-13, D-14; **D-12 was refined to one fixed density profile — now 36px content rows and 32px sidebar
@@ -13,6 +13,20 @@ This is the single source of truth for how Biorouter looks and feels. It reconci
 > **Parchment**, the base theme family. Two others ship alongside it (Alma Mater, Roche Limit), selected by
 > a `data-theme` attribute. The *tokens* below are the system-wide contract; the *hexes* are Parchment's
 > answer to it.
+
+> **⚠ 2026-08-08 — most of the hexes below are no longer "Parchment's answer"; they are everyone's.**
+> Backgrounds, greys, borders, the focus ring and fill, elevation and the scrim are now **one shared set**,
+> byte-identical across all three families in both modes. A family varies in exactly two things: its **ink**
+> (text and syntax colours) and its **accent**. Parchment's identity is now its warm ink `#2a2520` / `#f4f0e6`
+> and its dark orange `#b85a32` / `#e8895f` — not its ground, which is white on `#f4f4f2` like everyone
+> else's. The rule, the reasoning and the table of what is owned versus shared are in
+> [theme system architecture §8](docs/design/theming/theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
+> **Do not reintroduce a per-family grey**: if an ink fails on a shared ground, retune the ink.
+>
+> Current-state tables below were updated. **Historical passages were not** — the drift register (Part 7),
+> the decision records (Part 6) and every "Was / Today" comparison keep the values that were true when they
+> were written, because rewriting them would falsify the record. Where such a passage states a live value,
+> it is annotated inline.
 
 > **Companion artifact:** [`docs/design/design-system-gallery.html`](docs/design/design-system-gallery.html) — also hosted at
 > **<https://claude.ai/code/artifact/0726814d-a317-4dd2-bf34-a447e5c6ae6d>** — renders every token, element, and state
@@ -131,11 +145,14 @@ The architecture — how a family is defined, generated and guarded — is
 [`docs/design/theming/theme-system-architecture.md`](docs/design/theming/theme-system-architecture.md). Two facts from it
 change how you read the rest of Part 3:
 
-**1 · The tokens are the contract; the hexes are Parchment's answer to it.** Every family re-colours the
-*same* semantic token set. So a rule stated as "hover is `--background-medium`" is a system-wide rule; a
-rule stated as "hover is `#f4f0e6`" is a Parchment value that two other families answer differently. Where
-this document prints a hex, read it as *Parchment's* value unless the surrounding text says otherwise —
-and prefer the token when writing new code, or the rule silently ships wrong in the other two families.
+**1 · The tokens are the contract; the hexes are one family's answer to it — or, increasingly, everyone's.**
+Every family re-colours the *same* semantic token set. Since the 2026-08-08 neutral unification the
+backgrounds, greys, borders, focus surfaces, elevation and scrim are **identical across all three**, so a
+rule stated as "hover is `#ecece9`" is now as portable as one stated as "hover is `--background-medium`".
+What is still per family is the **ink** and the **accent**: a rule stated as "the accent is `#b85a32`" or
+"body text is `#2a2520`" is Parchment's answer and two other families answer differently. **Prefer the
+token regardless.** A hex that is shared today is shared by decision, not by definition, and writing the
+token is what keeps a component correct if that decision is ever revisited.
 
 **2 · A theme is now ONE file.** `ui/desktop/themes/<id>.theme.mjs` is the source of truth for a family:
 its light and dark token maps, its syntax palette, its ANSI-16 terminal palette, its boot-splash stops,
@@ -157,25 +174,38 @@ that family's `--background-code`, or whose terminal palette falls below its per
 
 ### 3.1 · Colour
 
-#### The neutral ramp
+#### The neutral ramp — SHARED by every family
 
-Warm, paper-biased. Hue drifts from bone toward umber as it darkens — this is what keeps the UI from reading as grey.
+Warm neutral, very lightly paper-biased. It is deliberately quieter than the ramp Parchment used to
+carry: a ground that three different inks and three different accents all have to sit on cannot afford
+a strong cast of its own.
 
 | Token | Hex | Role |
 |---|---|---|
-| `neutral-50` | `#faf8f3` | Light canvas |
-| `neutral-100` | `#f4f0e6` | Light hover / secondary fill |
-| `neutral-200` | `#e8e1d2` | Light hairline |
-| `neutral-300` | `#d4cab6` | Light pressed / strong border |
-| `neutral-400` | `#b0a892` | Dark-mode muted text |
-| `neutral-500` | `#88806a` | Dark-mode subtle text |
-| `neutral-600` | `#615a46` | Dark strong border |
-| `neutral-700` | `#403928` | Dark border |
-| `neutral-800` | `#282217` | Dark hairline / muted surface |
-| `neutral-900` | `#16120c` | Dark surface |
-| `neutral-950` | `#0d0a06` | Dark canvas |
+| `neutral-50` | `#fafaf9` | Lightest tint |
+| `neutral-100` | `#f4f4f2` | Page ground (`--background-muted`) |
+| `neutral-200` | `#e4e4e0` | Light hairline |
+| `neutral-300` | `#d2d2cd` | Light strong border |
+| `neutral-400` | `#a9a7a1` | Mid grey |
+| `neutral-500` | `#84827c` | Mid grey |
+| `neutral-600` | `#5c5a55` | Light-mode focus ring |
+| `neutral-700` | `#3e3d39` | Dark strong border |
+| `neutral-800` | `#2c2c29` | Dark hover fill |
+| `neutral-900` | `#1b1b19` | Dark surface / card |
+| `neutral-950` | `#131312` | Dark canvas |
 
-**Canonical.** The ramp is good. Keep it unchanged.
+**Canonical, and no longer Parchment's alone.** This is Roche Limit's ramp, adopted wholesale as the one
+neutral set on 2026-08-08. Editing a value here moves all three families and requires a matching edit in
+`parchment.theme.mjs`, `alma-mater.theme.mjs` and the hand-written `:root` / `.dark` blocks in `main.css`.
+
+> **What it replaced, and why.** Parchment ran a warm cream ramp (`#faf8f3` / `#f4f0e6` / `#e8e1d2` /
+> `#d4cab6` / … / `#0d0a06`) whose hue drifted from bone toward umber, and Alma Mater a cool blue-grey one.
+> Of the 35 background / border / sidebar keys, the three families agreed on **four**. Three ramps meant
+> three times the surface for one bug — `--background-canvas` and `--background-muted` were byte-identical
+> in three of the six family/mode scopes, so anything that used `bg-background-muted` to lift off the page
+> was invisible there, and only the family that happened to pick different numbers escaped. The families
+> were never actually told apart by their greys; they are told apart by ink and accent, and that is now the
+> only place they differ.
 
 #### The accent
 
@@ -189,7 +219,7 @@ Biorouter has exactly one brand hue: a terracotta coral.
 
 > **This is the single most consequential fact in this document:** white text on `#cf6d47` is **3.54:1** and fails AA. If the primary button is coral, its fill must be `#b85a32`, not `#cf6d47`. See **[Decision D-01](#d-01--primary-cta-colour)**.
 
-**Today:** ✅ **fixed — D-01 shipped.** `--background-accent` **is** the coral: `var(--color-coral-600)` = `#b85a32` in light, `var(--color-coral-400)` = `#e8895f` in dark ([`main.css:104`, `233`](ui/desktop/src/styles/main.css#L104)). White on the light fill is **4.62:1**; `#16120c` on the dark fill is **7.26:1** — both clear AA. `--accent-bar` (the sidebar rail, tab underline and status dots) carries `--color-coral-500` `#cf6d47` in light, which is 3.04:1 on the sidebar — fine as a non-text indicator, and the reason `#cf6d47` is *only* ever a bar and never a text or button fill.
+**Today:** ✅ **fixed — D-01 shipped.** `--background-accent` **is** the coral: `var(--color-coral-600)` = `#b85a32` in light, `var(--color-coral-400)` = `#e8895f` in dark ([`main.css:104`, `233`](ui/desktop/src/styles/main.css#L104)). White on the light fill is **4.62:1**; `#16120c` on the dark fill is **7.26:1** — both clear AA. `--accent-bar` (the sidebar rail, tab underline and status dots) carries `--color-coral-500` `#cf6d47` in light, which is 3.30:1 on the shared sidebar `#f7f7f5` — fine as a non-text indicator, and the reason `#cf6d47` is *only* ever a bar and never a text or button fill.
 
 The legacy aliases survive but are now honest about what they hold: `--color-block-teal: var(--color-coral-500)` and `--color-block-orange: var(--color-coral-600)` ([`main.css:45–46`](ui/desktop/src/styles/main.css#L45)) — the misleading *names* remain, so `DR-02` stays open; the near-black primary button (`DR-01`) does not.
 
@@ -199,14 +229,20 @@ The legacy aliases survive but are now honest about what they hold: `--color-blo
 
 **Today, light and dark share the same hues.** `--text-danger` maps to `red-200` (`#e85252`) in light mode *and* `red-100` (`#f07575`) in dark. Those hues were tuned for a dark ground. On white they all fail AA as text:
 
-| Role | Today (light) | Ratio on white | Canonical (light) | Ratio | Canonical (dark) | Ratio on `#0d0a06` |
+| Role | Today (light) | Ratio on white | Canonical (light) | Ratio | Canonical (dark) | Ratio on `#131312` |
 |---|---|---|---|---|---|---|
-| Danger | `#e85252` | **3.65 ✗** | `#b3261e` | 6.54 ✓ | `#f07575` | 7.06 ✓ |
-| Success | `#5bbe5e` | **2.34 ✗** | `#1f7a3d` | 5.37 ✓ | `#7ac87c` | 9.76 ✓ |
-| Warning | `#e8b830` | **1.85 ✗** | `#8a5a00` | 5.93 ✓ | `#f0c84a` | 12.29 ✓ |
-| Info | `#5892ee` | **3.11 ✗** | `#1e5fbf` | 6.10 ✓ | `#7aabf5` | 8.44 ✓ |
+| Danger | `#e85252` | **3.65 ✗** | `#b3261e` | 6.54 ✓ | `#f07575` | 6.65 ✓ |
+| Success | `#5bbe5e` | **2.34 ✗** | `#1f7a3d` | 5.37 ✓ | `#7ac87c` | 9.19 ✓ |
+| Warning | `#e8b830` | **1.85 ✗** | `#8a5a00` | 5.93 ✓ | `#f0c84a` | 11.57 ✓ |
+| Info | `#5892ee` | **3.11 ✗** | `#1e5fbf` | 6.10 ✓ | `#7aabf5` | 7.94 ✓ |
 
 **Canonical.** Split each status into two tokens — a **fill** (for badge/banner backgrounds, where the text on top is what must pass) and a **text/icon** colour (which must itself pass 4.5:1 on the page ground). Conflating them is the root cause. `DR-03`.
+
+> **The status hues stay PER FAMILY**, and that is a deliberate exception to the shared-neutrals rule
+> (2026-08-08). They are neither neutral scaffolding nor the family accent, so the rule does not reach
+> them; and Alma Mater's are UCSF institutional brand values rather than a palette choice. They are
+> re-verified against the shared grounds by the contrast guard like everything else — the dark column
+> above was recomputed when the dark canvas moved from `#0d0a06` to the shared `#131312`.
 
 #### The usage-heatmap ramp
 
@@ -229,21 +265,35 @@ This is the same convention GitHub's contribution graph uses. Absolute values li
 
 #### Text colours
 
+**This is Parchment's axis.** Now that the grounds are shared, the ink below is most of what makes the
+family. It was not retuned by the 2026-08-08 unification — every value held on the shared grounds, and
+the minima moved only because the grounds did.
+
+The **audit** columns are the original 2026-07 finding, measured on the grounds that existed then
+(sidebar `#f3ede1` light, `#282217` dark). They are left at their measured values — a historical failure
+does not stop having happened because the ground later moved. The **min ratio** column is live, over the
+five grounds `check-contrast.mjs` enumerates today.
+
 **Light**
 
-| Role | Was | On white | On sidebar `#f3ede1` | **Canonical** | Min ratio |
+| Role | Was | Audit: on white | Audit: on sidebar `#f3ede1` | **Canonical** | Min ratio (today) |
 |---|---|---|---|---|---|
-| `--text-default` | `#2a2520` | 15.17 ✓ | 13.01 ✓ | `#2a2520` *(unchanged)* | 13.01 |
-| `--text-muted` | `#7a736c` | 4.67 ✓ | **4.01 ✗** | **`#635c54`** | 5.65 |
-| `--text-subtle` | `#948d83` | **3.28 ✗** | **2.82 ✗** | **`#6e6760`** | 4.78 |
+| `--text-default` | `#2a2520` | 15.17 ✓ | 13.01 ✓ | `#2a2520` *(unchanged)* | 13.78 |
+| `--text-muted` | `#7a736c` | 4.67 ✓ | **4.01 ✗** | **`#635c54`** | 5.98 |
+| `--text-subtle` | `#948d83` | **3.28 ✗** | **2.82 ✗** | **`#6e6760`** | 5.06 |
 
 **Dark**
 
-| Role | Was | On sidebar `#282217` | **Canonical** | Min ratio |
+| Role | Was | Audit: on sidebar `#282217` | **Canonical** | Min ratio (today) |
 |---|---|---|---|---|
-| `--text-default` | `#ffffff` | 15.77 ✓ | **`#f4f0e6`** *(warm bone; pure white is harsh)* | 13.86 |
-| `--text-muted` | `#b0a892` | 6.66 ✓ | `#b0a892` *(unchanged)* | 6.66 |
+| `--text-default` | `#ffffff` | 15.77 ✓ | **`#f4f0e6`** *(warm bone; pure white is harsh)* | 13.85 |
+| `--text-muted` | `#b0a892` | 6.66 ✓ | `#b0a892` *(unchanged)* | 6.65 |
 | `--text-subtle` | `#88806a` | **4.01 ✗** | **`#9c937b`** | 5.16 |
+
+> The minima barely moved across the unification, which is the point worth noticing: the shared
+> `--background-muted` `#f4f4f2` is very close in luminance to the warm sidebar `#f3ede1` that used to be
+> Parchment's darkest light ground, and the shared dark grounds are *darker* than the ones they replaced.
+> Parchment's ink needed no retuning at all. (Its terminal `yellow` and `cyan` did — see [§5.2](#52--the-terminal).)
 
 Three findings the arithmetic forced, none of which the original audit caught:
 
@@ -251,16 +301,18 @@ Three findings the arithmetic forced, none of which the original audit caught:
 2. `--text-subtle` failed *everywhere* in light mode, and also failed on the dark sidebar. `DR-05`
 3. **The first draft of this document had `subtle` darker than `muted`** — an inverted hierarchy. The values above restore the correct order: `default` → `muted` → `subtle`, each step lighter, all clearing 4.5:1 on the darkest ground either can land on.
 
-> **"Min ratio" means: across the four grounds body text may legitimately land on** — `--background-app`,
-> `--background-default`, `--background-muted`, `--sidebar` — which is exactly the set
-> `check-contrast.mjs` enumerates (`TEXT_GROUNDS`). It is *not* a minimum over every fill in the system.
-> `--text-default` on `--background-strong` (`#d4cab6`) is **9.34:1**; an earlier revision of this table
-> printed that number in the sidebar column, which is how a value measured against a pressed-state fill
-> came to be documented as the sidebar ratio. The sidebar figure is **13.01:1**.
+> **"Min ratio" means: across the grounds body text may legitimately land on** — `--background-app`,
+> `--background-canvas`, `--background-default`, `--background-muted`, `--sidebar` — which is exactly the
+> set `check-contrast.mjs` enumerates (`TEXT_GROUNDS`). It is *not* a minimum over every fill in the
+> system. `--text-default` on `--background-strong` (`#dcdcd8`) is **11.04:1**; an earlier revision of this
+> table printed that kind of number in the sidebar column, which is how a value measured against a
+> pressed-state fill came to be documented as the sidebar ratio. The sidebar figure is **14.15:1**.
 
 All of these are asserted by [`ui/desktop/scripts/check-contrast.mjs`](ui/desktop/scripts/check-contrast.mjs), which parses the real
 token file, resolves the `var()` chains and fails `npm run lint:check` on any regression. It runs across
-**all three theme families × light/dark** and currently makes **228 assertions**.
+**all three theme families × light/dark** and currently makes **330 assertions**. Re-measure that figure
+rather than quoting it — it grows whenever an assertion is added, and it was 324 before the canvas/muted
+step was guarded.
 
 #### Border tokens
 
@@ -275,19 +327,21 @@ In light mode `--border-default`, `--border-input`, and `--border-strong` are **
 
 It is in fact *worse* than a no-op. `--border-strong` (`neutral-100 #f4f0e6`) is **lighter** than `--border-subtle` (`neutral-200 #e8e1d2`). So `hover:border-border-strong` applied to a `border-border-subtle` surface makes the border **weaker** on hover — the exact opposite of the documented intent. Dark mode spreads the three tokens correctly, so the two themes don't mirror each other's intent either. `DR-51`.
 
-**Canonical:**
+**Canonical** — and **shared by every family** since 2026-08-08; borders are scaffolding, not identity:
 
 | Token | Light | Dark |
 |---|---|---|
-| `--border-subtle` (hairline; the default) | `#e8e1d2` | `#282217` |
-| `--border-strong` (hover, emphasis) | `#d4cab6` | `#403928` |
-| `--border-input` (control resting edge) | `#e8e1d2` | `#403928` |
+| `--border-subtle` (hairline; the default) | `#e4e4e0` (`neutral-200`) | `#302f2c` |
+| `--border-strong` (hover, emphasis) | `#d2d2cd` (`neutral-300`) | `#3e3d39` (`neutral-700`) |
+| `--border-input` (control resting edge) | `#c9c9c3` | `#4a4945` |
 
-Three real tokens.
+Three real tokens. Note that `--border-input` is now its own value rather than an alias of the
+hairline — a control's resting edge is one step firmer than a rule between rows.
 
-**Shipped, and the rule was knowingly not taken in full.** `--border-strong` is now `neutral-300`
-`#d4cab6` and `--border-subtle` `neutral-200` `#e8e1d2`, so `strong` is finally *darker* than `subtle`
-and `hover:border-border-strong` firms the edge instead of weakening it (`DR-06`, `DR-51` closed).
+**Shipped, and the rule was knowingly not taken in full.** `--border-strong` is `neutral-300` and
+`--border-subtle` `neutral-200`, so `strong` is *darker* than `subtle` and `hover:border-border-strong`
+firms the edge instead of weakening it (`DR-06`, `DR-51` closed). The ordering is asserted in all six
+theme/mode scopes, so the shared ramp cannot silently invert it again.
 
 But **`--border-default` was not deleted.** It is retained as a deprecated alias —
 `--border-default: var(--border-subtle)` ([`main.css:144`](ui/desktop/src/styles/main.css#L144)) — with a
@@ -308,17 +362,30 @@ hairline directly instead of `--border-default`. `DR-45` closed.
 
 #### The two-tone canvas
 
-The sidebar is a distinct, slightly deeper warm surface against the lighter main canvas.
+The sidebar is a distinct, slightly deeper surface against the lighter main canvas. **Shared by every
+family** — the two-tone is a structural idea, and what varies on it is the ink and the nav-icon colour.
 
 | | Light | Dark |
 |---|---|---|
-| Canvas (`--background-app`) | `#ffffff` | `#0d0a06` |
-| Page ground (`--background-muted`) | `#faf8f3` | `#282217` |
-| Sidebar (`--sidebar`) | `#f3ede1` | `#282217` |
-| Sidebar hover | `#ece4d4` | `#322b1d` |
-| Sidebar active | `#e4d9c3` | `#3d3524` |
+| Window ground (`--background-app`) | `#ffffff` | `#131312` |
+| Main panel (`--background-canvas`) | `#ffffff` | `#131312` |
+| Page ground (`--background-muted`) | `#f4f4f2` | `#232320` |
+| Sidebar (`--sidebar`) | `#f7f7f5` | `#171716` |
+| Sidebar hover | `#efefec` | `#232320` |
+| Sidebar active | `#eaeae6` | `#2e2e2a` |
 
 **Canonical.** Keep the two-tone. But see [Decision D-09](#d-09--sidebar-treatment) — and fix `--text-muted` on it (`DR-04`).
+
+> **The dark ladder changed direction on 2026-08-08.** Parchment dark used to run its canvas at
+> `#282217` — *lighter* than its `#16120c` cards, so the page lifted and cards recessed into it — and
+> Alma Mater dark did the same in navy. The shared set runs the other way: canvas darkest, cards a step
+> up, muted a step above that. One neutral set cannot carry two contradictory orders, and this is the
+> largest visible change the unification made.
+>
+> `--background-canvas` and `--background-muted` are also now guaranteed to be a **real step apart** in
+> every family and mode. They were byte-identical in three of the six scopes, which made anything using
+> `bg-background-muted` to lift off the page invisible there — the composer's chips, most recently.
+> `check-contrast.mjs` asserts the step.
 
 #### Four tokens this document had never named
 
@@ -328,9 +395,9 @@ re-invented as literals, which is how the scrim and the code ground got duplicat
 | Token | Light | Dark | What it is for |
 |---|---|---|---|
 | `--sidebar-icon` | `#2a2520` | `#f4f0e6` | The nav-icon colour, split from the label. In Parchment it is a pass-through to `--sidebar-foreground` — icons are the same ink as their label. It exists so **Alma Mater** can carry brand teal (`#14828c` / `#60d0da`) on its icons without dragging the labels with it. Declared in every family so `check-contrast.mjs` can assert it on `--sidebar`, `--sidebar-hover` and `--sidebar-active` (floor 3:1, a non-text indicator). |
-| `--background-code` | `#faf8f3` | `#16120c` | The ground code actually paints on, and the ground the [§5.1](#51--code-blocks) syntax palette is measured against. Introduced by **D-20**: light wants `--background-muted`, dark wants `--background-default`, so no existing token expressed it and the value had been copy-pasted into `codeTheme.ts`, `main.css` and `InAppTerminalDock`. |
-| `--scrim` | `rgba(32,25,15,.18)` | `rgba(0,0,0,.48)` | The modal / diagnostics backdrop. Was a hardcoded warm-brown `rgba()`, so **Roche Limit — added later — silently wore Parchment's brown scrim.** Tokenised so each family tints its own ink. |
-| `--sidebar-ring` | `#615a46` | `#d4cab6` | `--ring` scoped to the sidebar; tracks `--ring` in Parchment. |
+| `--background-code` | `#f5f5f3` | `#1b1b19` | The ground code actually paints on, and the ground the [§5.1](#51--code-blocks) syntax palette is measured against. Introduced by **D-20**: light wants a panel a hair off the page, dark wants the card ground, so no existing token expressed it and the value had been copy-pasted into `codeTheme.ts`, `main.css` and `InAppTerminalDock`. **Shared** since 2026-08-08 — every family's syntax palette is measured against these two values. |
+| `--scrim` | `rgba(31,30,28,.18)` | `rgba(0,0,0,.48)` | The modal / diagnostics backdrop. Was a hardcoded warm-brown `rgba()`, so **Roche Limit — added later — silently wore Parchment's brown scrim.** Tokenised so a family *could* tint its own ink — Alma Mater ran a navy scrim for a while. **Shared** since 2026-08-08: a full-screen backdrop is a background, and backgrounds no longer vary. The token stays so a future family can re-point one name. |
+| `--sidebar-ring` | `#5c5a55` | `#a5a39d` | `--ring` scoped to the sidebar; tracks `--ring`, which is neutral by design and therefore **shared**. |
 
 #### The boot splash
 
@@ -341,18 +408,24 @@ against `THEME_FAMILIES` by `boot-splash.test.ts` so a new family cannot silentl
 
 | Token | Parchment light | Parchment dark | Role |
 |---|---|---|---|
-| `--br-bg` | `#faf8f3` | `#282217` | The ground — tracks `--background-muted` |
-| `--br-navy` | `#052049` | `#052049` | The `Bio` letter + the left half of the underline (D-39) |
-| `--br-coral` | `#b85a32` | `#b85a32` | The `Router` letter + the right half of the underline |
-| `--br-track` | `#e8e1d2` | `#e8e1d2` | The 120×2px sweep track under the mark |
+| `--br-bg` | `#f4f4f2` | `#232320` | The ground — tracks `--background-muted`. **Shared**: every family's splash paints these. |
+| `--br-navy` | `#052049` | `#18a3ac` | The `Bio` letter + the left half of the underline (D-39). Per family. |
+| `--br-coral` | `#b85a32` | `#b85a32` | The `Router` letter + the right half of the underline. Per family. |
+| `--br-track` | `#e4e4e0` | `#302f2c` | The 120×2px sweep track under the mark — a hairline, so **shared** (`--border-subtle`). |
 
-**Drift found while documenting this.** `--br-navy` does not flip for dark mode in *any* family, and the
-mark sits directly on `--br-bg` with **no cream plate**. So on every dark boot splash the navy half of the
-mark is invisible: `#052049` measures **1.02:1** on Parchment dark `#282217`, **1.12:1** on Alma Mater dark
-`#0d2a50`, and **1.02:1** on Roche Limit dark `#232320`. The user sees a lone coral `R` above half an
-underline. **D-39 already decided this case** — "on a dark app surface UCSF navy all but vanishes, so the
-navy role becomes UCSF teal `#18A3AC`" — and `<BioRouterMark>` honours it; the splash, which is a separate
-literal path that predates the generator, never got the rule. `DR-61`.
+Since 2026-08-08 the splash is the unification in miniature: **the ground and the track are the same in
+all three families, and only the mark's two inks tell them apart** — exactly the axis that distinguishes
+them in the booted app. `--br-track` used to be Parchment's bone `#e8e1d2` in *both* modes for *every*
+family, which was a leftover rather than a decision.
+
+**Drift found while documenting this, since fixed.** `--br-navy` did not flip for dark mode in any
+family, and the mark sits directly on `--br-bg` with **no cream plate** — so on every dark boot splash
+the navy half was invisible: `#052049` measured **1.02:1** on Parchment dark `#282217`, **1.12:1** on Alma
+Mater dark `#0d2a50`, **1.02:1** on Roche Limit dark `#232320` (the grounds of the day). The user saw a
+lone coral `R` above half an underline. **D-39 had already decided this case** — "on a dark app surface
+UCSF navy all but vanishes, so the navy role becomes UCSF teal `#18A3AC`" — and `<BioRouterMark>` honoured
+it; the splash, a separate literal path predating the generator, did not. The dark inks now flip, and the
+generator asserts the navy half at 3:1 against the splash ground (Parchment dark: **5.16:1**). `DR-61`.
 
 ---
 
@@ -549,27 +622,30 @@ is added around it.
 }
 ```
 
+All three tokens are **shared** — the focus treatment was always explicitly neutral rather than accented
+(D-15), so unifying it changed its values without changing its intent.
+
 | Token | Light | Dark | Checked |
 |---|---|---|---|
-| `--background-focus` | `#e4dcc9` | `#4d4430` | text-default on it: 11.11:1 / 8.45:1 ✓ |
-| `--border-focus` | `#6e6760` (`--text-subtle`) | `#9c937b` | **4.08:1** / 3.15:1 against the focused fill ✓ (floor 3:1) |
-| `--ring` *(escape hatch only)* | `#615a46` | `#d4cab6` | ≥5.89:1 / ≥7.05:1 on the ring grounds ✓ (floor 3:1) |
+| `--background-focus` | `#e0e0dc` | `#35342f` | text-default on it: 11.46:1 / 10.96:1 ✓ |
+| `--border-focus` | `#6b6963` | `#9c9a93` | **4.15:1** / 4.43:1 against the focused fill ✓ (floor 3:1) |
+| `--ring` *(escape hatch only)* | `#5c5a55` (`neutral-600`) | `#a5a39d` | ≥5.82:1 / ≥5.55:1 on the ring grounds ✓ (floor 3:1) |
 
 The token is spelled **`--ring`**. There is no `--focus-ring` — where this document says `--focus-ring`
 (§4.1, §4.6, §4.7, §5.2) it means `--ring`, and those specs are in any case superseded by D-15: the
 default treatment is the fill shift above, not a ring.
 
 **"On every ground" is a defined set, not a flourish.** `check-contrast.mjs` measures `--ring` against
-`RING_GROUNDS` = the four text grounds plus `--background-medium`: `--background-app`,
+`RING_GROUNDS` = the text grounds plus `--background-medium`: `--background-app`, `--background-canvas`,
 `--background-default`, `--background-muted`, `--sidebar`, `--background-medium`. The ring is drawn
 *outside* the control at 2px offset, so the page ground is what it lands on — not the control's own fill.
-Across that set the light floor is **5.89:1** (set by `--sidebar`) and the dark floor is **7.05:1** (set
-by `--background-medium`).
+Across that set the light floor is **5.82:1** and the dark floor is **5.55:1**, both set by
+`--background-medium`. (Because the ring and the grounds are now all shared, these two numbers are the
+same in every family — a small, real simplification.)
 
 Two fills sit outside that set and are worth stating so the "≥" is not read as a universal claim: on
-`--background-strong` the ring measures **4.22:1** in *both* themes (`#615a46` on `#d4cab6`, and its
-mirror `#d4cab6` on `#615a46` — the same pair inverted), and on `--background-focus` the dark ring is
-**5.91:1**. All clear the 3:1 floor a non-text indicator owes.
+`--background-strong` the ring measures **5.01:1** light and **4.53:1** dark, and on `--background-focus`
+**5.20:1** light and **4.95:1** dark. All clear the 3:1 floor a non-text indicator owes.
 
 Focus must also be distinguishable from **hover**: the focused fill sits one step past the hover fill
 (1.20:1 light, 1.19:1 dark) — perceptible without being loud.
@@ -1031,7 +1107,10 @@ via `useResolvedTheme()` + `useThemeFamily()`. Code blocks paint on `--backgroun
 
 The syntax palette is derived from the system, not imported:
 
-| Token | Light (on `#faf8f3`) | Dark (on `#16120c`) |
+The palette itself is **Parchment's ink** and is unchanged by the neutral unification; the two grounds
+it is measured on are the shared `--background-code`.
+
+| Token | Light (on `#f5f5f3`) | Dark (on `#1b1b19`) |
 |---|---|---|
 | Plain / punctuation | `#2a2520` | `#e8e1d2` |
 | Comment | `#6f6659` *(italic)* | `#8d8266` *(italic)* |
@@ -1045,9 +1124,14 @@ The syntax palette is derived from the system, not imported:
 | Inserted | `#1f7a3d` on `#1f7a3d`@9% | `#7ac87c` on `#7ac87c`@10% |
 
 The two grounds above are `--background-code`, light and dark. Every foreground clears 4.5:1 on its
-stated ground — verified: the tightest stop is `comment`, **5.32:1** light and **4.90:1** dark. This is
-not a claim taken on trust: `generate-themes.mjs` recomputes all ten stops against that family's
-`--background-code` and **refuses to write the theme** if any falls below 4.5.
+stated ground — verified: the tightest stops are `inserted` at **4.92:1** light and `comment` at
+**4.53:1** dark. This is not a claim taken on trust: `generate-themes.mjs` recomputes all ten stops
+against `--background-code` and **refuses to write the theme** if any falls below 4.5.
+
+> The dark `comment` figure is the tightest number in the whole palette and it got tighter when the
+> grounds were shared — Parchment dark code used to sit on `#16120c`, and `#1b1b19` is lighter. It still
+> clears AA, and it is a stop to leave alone rather than nudge: it has 0.03 of headroom, so the generator
+> will catch the next person who moves either the ink or the ground.
 
 The diff-row tints are **9% light / 10% dark**, applied as
 `color-mix(in srgb, <stop> <tint>, transparent)` over the whole line
@@ -1065,18 +1149,23 @@ background is gone. There are now **six** terminal palettes (3 families × light
 family's `terminal` block and selected at runtime via `useResolvedTheme()` + `useThemeFamily()`;
 `grep -r fffdf7 src` returns 0 hits. `DR-41` closed.
 
-Which token the dock paints is now **recorded per family rather than assumed** — `terminalGround` in the
-theme definition. Parchment answers `--background-muted` in light (`#faf8f3`) and **`--background-code`**
-in dark (`#16120c`); the families genuinely differ here, and writing it down was cheaper than pretending
-they agree.
+Which token the dock paints is **recorded per family rather than assumed** — `terminalGround` in the
+theme definition. All three families now answer **`--background-muted`** in both modes (`#f4f4f2` /
+`#232320`). Parchment used to answer `--background-code` in dark, which was a genuine difference while
+the two tokens held different per-family values; once the neutral set became one set, a dock painting a
+different token would have been the only surface still varying by family. The declaration stays in the
+contract — the point of writing it down was that the choice be *measured*, and that is still worth doing
+when the answer agrees. Parchment's dark ANSI palette was re-verified against the ground it moved to
+rather than assumed compatible with it.
 
 **Canonical.** Font: `--font-mono` at 13px/1.5 — literally the same stack and size as code blocks, so a
 pasted command and its output look identical. Cursor: **the accent** — `#b85a32` light / `#e8895f` dark
-(`--background-accent`), block, 1.2s blink; 4.35:1 and 7.26:1 on their grounds, clearing the 3:1 a
-non-text indicator owes. Selection: **`#e4d9c3`** light (= `--sidebar-active`) and **`#403928`** dark
-(= `--background-medium`), opaque — **no alpha**. *(This paragraph previously specified the cursor as
-`--focus-ring` — a token that does not exist — and the selection as `--background-strong` at 60%. Neither
-was ever what shipped.)*
+(`--background-accent`), block, 1.2s blink; 4.19:1 and 6.13:1 on their grounds, clearing the 3:1 a
+non-text indicator owes. Selection: **`#e4d9c3`** light and **`#403928`** dark, opaque — **no alpha**.
+Those two are among the few surfaces still tinted per family: the terminal's selection wash sits beside
+the cursor, and both are affordances a family tints rather than app chrome. *(This paragraph previously
+specified the cursor as `--focus-ring` — a token that does not exist — and the selection as
+`--background-strong` at 60%. Neither was ever what shipped.)*
 
 #### The bright slots do not owe 4.5:1, and here is why
 
@@ -1085,8 +1174,12 @@ This table used to be introduced as *"the shipped values, with `blue` and the br
 claim sat in the document while five stops shipped below AA. Both halves are now addressed in code, but
 not in the same way, and the difference is the point:
 
-- **`cyan` was `#16818c` — 4.35:1, under AA.** It is a **base** slot, so it owes the full 4.5. It is now
-  **`#107e89`**, which measures **4.53:1**. Fixed properly.
+- **`cyan` was `#16818c` — 4.35:1, under AA.** It is a **base** slot, so it owes the full 4.5. It was
+  fixed properly to `#107e89`, and darkened again to **`#107a85`** (**4.60:1**) when the dock ground
+  moved to the shared `#f4f4f2`. `yellow` took the same treatment in the same pass: `#9b6818` →
+  **`#976517`** (**4.55:1**). Both were tuned against Parchment's own cream ground and fell to
+  4.37 / 4.35 on the shared one. **This is the sanctioned repair for a shared-ground regression —
+  retune the family's own ink, never reintroduce a family-specific background.**
 - **`brightRed` 3.86 · `brightBlue` 4.27 · `brightMagenta` 3.98 · `brightCyan` 3.18** are now held to a
   documented **3:1** floor, not 4.5. On a **light** ground, "bright" and AA are mutually exclusive: the
   ANSI convention is that a bright variant is *lighter* than its base, and lighter on a light ground means
@@ -1101,43 +1194,45 @@ That is a deliberate, recorded relaxation, not an oversight. The floors and the 
 `generate-themes.mjs` enforces them per slot at generation time — a palette that misses its floor cannot
 be written to disk. Two further slots are relaxed there for reasons of their own: `black` (floor 1.0 — an
 ANSI dim slot that is a lifted *ground* by convention, not text) and `brightBlack` (floor 3.0 — the
-dimmed/comment slot; it measures 5.32:1 light and 4.90:1 dark, so it clears 4.5 anyway).
+dimmed/comment slot; it measures 5.13:1 light and 4.14:1 dark, so light clears 4.5 anyway and dark
+genuinely spends the relaxation).
 
-**ANSI 16, light** — the shipped Parchment values, on `#faf8f3`. Ratios verified; **bold = below 4.5,
-held to the 3:1 bright floor**:
+**ANSI 16, light** — the shipped Parchment values, on the shared dock ground `#f4f4f2`. Ratios verified;
+**bold = below 4.5, held to the 3:1 bright floor**:
 
 | | Normal | | Bright | |
 |---|---|---|---|---|
-| Black | `#2d2a26` | 13.45 | `#6f6659` | 5.32 |
-| Red | `#b63f3f` | 5.25 | `#d45252` | **3.86** |
-| Green | `#22784f` | 5.12 | `#1f7a3d` | 5.06 |
-| Yellow | `#9b6818` | 4.51 | `#8a5a00` | 5.58 |
-| Blue | `#255fb5` | 5.85 | `#2f75d6` | **4.27** |
-| Magenta | `#7847b8` | 5.83 | `#9462d6` | **3.98** |
-| Cyan | `#107e89` | 4.53 | `#1f9aa6` | **3.18** |
-| White | `#574f46` | 7.57 | `#2d2a26` | 13.45 |
+| Black | `#2d2a26` | 12.97 | `#6f6659` | 5.13 |
+| Red | `#b63f3f` | 5.06 | `#d45252` | **3.72** |
+| Green | `#22784f` | 4.93 | `#1f7a3d` | 4.88 |
+| Yellow | `#976517` | 4.55 | `#8a5a00` | 5.38 |
+| Blue | `#255fb5` | 5.64 | `#2f75d6` | **4.11** |
+| Magenta | `#7847b8` | 5.62 | `#9462d6` | **3.83** |
+| Cyan | `#107a85` | 4.60 | `#1f9aa6` | **3.06** |
+| White | `#574f46` | 7.30 | `#2d2a26` | 12.97 |
 
-Foreground `#2d2a26` (13.45:1). Note that Parchment's light `brightGreen` and `brightYellow` are *darker*
+Foreground `#2d2a26` (12.97:1). Note that Parchment's light `brightGreen` and `brightYellow` are *darker*
 than their bases — a deliberate inversion of the convention in the two slots where it costs nothing, which
 is why they clear 4.5 while the other four do not.
 
-**ANSI 16, dark** (on `--background-code` `#16120c`) — every value clears 4.5:1 comfortably, because on a
-dark ground "brighter" and "higher contrast" point the same way:
+**ANSI 16, dark** — now on `--background-muted` `#232320` rather than `--background-code` `#16120c`.
+Every value still clears its floor, because on a dark ground "brighter" and "higher contrast" point the
+same way; but note the whole column dropped about 15%, since the shared muted ground is lighter than the
+code ground the palette was originally measured on. `brightBlack` at 4.14 is the tightest, and it is a
+3:1 slot:
 
-| | Normal | Bright |
-|---|---|---|
 | | Normal | | Bright | |
 |---|---|---|---|---|
-| Black | `#3a3324` | *1.49 — dim slot, floor 1.0* | `#8d8266` | 4.90 |
-| Red | `#e2665c` | 5.59 | `#f0857b` | 7.41 |
-| Green | `#7fbf6a` | 8.49 | `#9ad686` | 10.96 |
-| Yellow | `#d9a441` | 8.29 | `#ecc063` | 10.91 |
-| Blue | `#6f9fd8` | 6.77 | `#8fb8e8` | 9.05 |
-| Magenta | `#b98ad6` | 6.81 | `#d0a6e8` | 9.15 |
-| Cyan | `#5fb8b8` | 8.02 | `#7fd0d0` | 10.51 |
-| White | `#d4cab6` | 11.48 | `#e8e1d2` | 14.33 |
+| Black | `#3a3324` | *1.26 — dim slot, floor 1.0* | `#8d8266` | 4.14 |
+| Red | `#e2665c` | 4.72 | `#f0857b` | 6.26 |
+| Green | `#7fbf6a` | 7.18 | `#9ad686` | 9.26 |
+| Yellow | `#d9a441` | 7.01 | `#ecc063` | 9.22 |
+| Blue | `#6f9fd8` | 5.72 | `#8fb8e8` | 7.65 |
+| Magenta | `#b98ad6` | 5.75 | `#d0a6e8` | 7.73 |
+| Cyan | `#5fb8b8` | 6.78 | `#7fd0d0` | 8.88 |
+| White | `#d4cab6` | 9.70 | `#e8e1d2` | 12.10 |
 
-Foreground `#e8e1d2` (14.33:1). `black` is the one relaxed slot: at 1.49:1 it is not text but a *lifted
+Foreground `#e8e1d2` (12.10:1). `black` is the one relaxed slot: at 1.26:1 it is not text but a *lifted
 ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--terminal-ground)**.
 
 ---
@@ -1158,7 +1253,7 @@ ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--te
 > | D-08 | Select | **Migrate to Radix `Select`** (+ `Command` for searchable) — *staged, see note* |
 > | D-09 | Sidebar | **Keep two-tone**; `--text-muted` → `#6e6760` |
 > | D-10 | Code theme | **Custom warm theme**, light + dark, token-derived |
-> | D-11 | Terminal ground | **`--background-muted`** — `#faf8f3` / `#16120c` |
+> | D-11 | Terminal ground | **`--background-muted`** — today `#f4f4f2` / `#232320`, shared by all three families. *(Decided against Parchment's then-values `#faf8f3` / `#16120c`; the dark answer drifted to `--background-code` and was returned to `--background-muted` on 2026-08-08 — see [§5.2](#52--the-terminal).)* |
 > | D-12 | Row density | **36px content · 32px sidebar navigation/session** — one fixed profile, no density setting ⚠️ *refined 2026-07-15* ⚠️ *content rows 40 → 36px, 2026-08-02 — option **B** superseded by **C** (Astryx **A-03**)* |
 > | D-13 | Status colours | **Split `--fill-{s}` from `--text-{s}`**, per theme |
 > | D-14 | Decorative motion | **Delete** sidebar entrance + `Bird1–6` |
@@ -1167,7 +1262,7 @@ ground*, which is what the ANSI dim slot is for. See **[Decision D-11](#d-11--te
 >
 > | ID | Decision | Resolved value |
 > |---|---|---|
-> | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill `#e4dcc9` / `#4d4430`; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* |
+> | D-15 | Focus indication | **A surface shift, not a ring.** No outline anywhere. Focused fill — as decided `#e4dcc9` / `#4d4430`, **now the shared `#e0e0dc` / `#35342f`**; the ring returns only under `prefers-contrast: more`. *Supersedes the D-03 answer.* |
 > | D-16 | The user's turn | **Tinted, not accent.** `--background-medium` + hairline + `--text-default`. A solid coral block shouted. |
 > | D-17 | Tool calls | **Lines, not cards.** No outline, collapsed or expanded. Failure = colour + a 5% wash. A persistent rectangle reads as a stuck focus ring. |
 > | D-18 | Hairlines | **One value.** `border-border-subtle` at full strength. Eight alpha-diluted variants (`/35`…`/70`) made adjacent panels' edges read at different weights, so they never visually aligned. |
@@ -1400,7 +1495,7 @@ The rule, stated plainly: **BioRouter signals state with fills, not outlines.**
 | ID | Decision | Resolved value |
 |---|---|---|
 | D-19 | **Prose tokens** | `--tw-prose-*` remap to the Parchment tokens. Nothing had ever remapped them, so every element the class list forgot fell back to Tailwind's **cold blue-grey** on the warm ground: `<strong>`/h3/h4 at `#101828`, `<hr>` and table hairlines at **`#e5e7eb`** — a hex [Part 1's anti-patterns](#anti-patterns--what-biorouter-must-never-look-like) names a *"foreign body"*. A bold word was literally a different hue than the sentence around it. |
-| D-20 | **The code ground** | New `--background-code` (light `#faf8f3` / dark `#16120c`; alma `#f2f3f4` / `#08213f`). The syntax palettes in [§5.1](#51--code-blocks) are verified against those values, but code blocks painted `--background-muted`, which is `#282217` in dark — so dark code rendered on a ground its palette was never measured on and `comment` sat at **4.15:1, under AA**. Not expressible with existing tokens (light wants `muted`, dark wants `default`), which is exactly why the value was duplicated across `codeTheme.ts`, `main.css` and `InAppTerminalDock`. `check-contrast.mjs` now guards it (128 → 140 assertions). |
+| D-20 | **The code ground** | New `--background-code` (as decided: light `#faf8f3` / dark `#16120c`; alma `#f2f3f4` / `#08213f` — **now the shared `#f5f5f3` / `#1b1b19` for every family**). The syntax palettes in [§5.1](#51--code-blocks) are verified against those values, but code blocks painted `--background-muted`, which was `#282217` in dark — so dark code rendered on a ground its palette was never measured on and `comment` sat at **4.15:1, under AA**. Not expressible with existing tokens (light wants a panel a hair off the page, dark wants the card ground), which is exactly why the value was duplicated across `codeTheme.ts`, `main.css` and `InAppTerminalDock`. `check-contrast.mjs` now guards it. |
 | D-21 | **Tables** | [§4.17](#417--tables) enforced: hairline rows, no vertical rules, no header fill, 11px caps header, 13px body, `tabular-nums`, header and body both `middle`. They previously drew a 1px box on all four sides of every cell. |
 | D-22 | **Heading scale** | h1 18/26 · h2 16/24 · h3 15/22 · h4 13/18 muted. h3 and h4 were both 14/600 — the same object twice. Leadings pinned, since `text-lg/base/sm` each ship a line-height that collided with the plugin's, source-order-dependently. Blockquotes no longer inject the plugin's curly quotes. |
 | D-23 | **Document tabs** | Shared `.br-tabstrip` / `.br-tab`, after Safari. The strip is `--sidebar` — the **same** surface as the sidebar's titlebar band — so the window's top edge is one continuous ground and never a dark slab. Only the ACTIVE tab is painted (a floating `--background-default` pill); inactive tabs are plain text; the divider is a hairline **in the gap** that retracts around the cursor; no tab carries an outline. **Qualifies D-07:** underline stays for *navigation* tabs (settings sections); the pill is for *document* tabs (preview, terminal, and later chat groups) — things you switch between, as in Safari and VS Code. **Tab labels are `--font-sans` at 13px** (§3.2 metadata) — see D-31. |
@@ -1540,7 +1635,7 @@ The original backlog, as audited:
 | `DR-58` | Med | open | `InAppTerminalDock` carries 9+ raw warm-beige hex literals where sidebar tokens already encode the palette | `InAppTerminalDock.tsx:302,396,401,415,416,424,436,474` |
 | `DR-59` | Med | open | Empty / loading / error states hand-rolled in all 7 list views; icon sizes, alignment, text sizes and heights all differ | `WorkflowsView.tsx:651`, `SessionListView.tsx:763`, +5 |
 | `DR-60` | Med | open | Light-mode `--text-default/-muted/-subtle` are raw hex outside the neutral ramp; dark mode derives from it — asymmetric | `main.css:83–86` vs `151–153` |
-| `DR-61` | Med | open | Boot splash `--br-navy` `#052049` never flips for dark mode, and the mark has no plate — the navy half of the BR mark is invisible on **every** dark splash: **1.02:1** (Parchment `#282217`), **1.12:1** (Alma Mater `#0d2a50`), **1.02:1** (Roche Limit `#232320`). D-39 already decided this case for `<BioRouterMark>`; the splash is a separate literal path that never got the rule. | `index.html` `THEMES:GENERATED:SPLASH`; `themes/*.theme.mjs` `splash.navy` |
+| `DR-61` | Med | ✅ fixed | Boot splash `--br-navy` `#052049` never flipped for dark mode, and the mark has no plate — the navy half of the BR mark was invisible on **every** dark splash: **1.02:1** (Parchment, then `#282217`), **1.12:1** (Alma Mater, then `#0d2a50`), **1.02:1** (Roche Limit `#232320`). D-39 had already decided this case for `<BioRouterMark>`; the splash was a separate literal path that never got the rule. The dark inks now flip (Parchment and Alma Mater to teal `#18a3ac`, Roche to its light ink), and `generate-themes.mjs` asserts the navy half at 3:1 against the splash ground — **5.16:1** on the now-shared dark ground `#232320`. | `index.html` `THEMES:GENERATED:SPLASH`; `themes/*.theme.mjs` `mark.navy` |
 | `DR-62` | Med | open | Content rows, settings rows and table body rows still render **40px** against the 36px canonical ([D-12·C](#d-12--row-density), 2026-08-02). One token plus one markdown-table rule cover almost all of it; three call sites hardcode the height instead. | `main.css:97` (`--row-height`), consumed at `main.css:1528` (`.biorouter-list-row`) and `main.css:1618` (`.biorouter-settings-row`); `main.css:1918` (`.prose tbody td`, comments at `1881`/`1914`); `SessionListView.tsx:251`, `ExportAppDialog.tsx:36`, `ModelBreakdownTable.tsx:63` |
 
 **Totals:** 62 items — **18 high, 28 medium, 16 low.**

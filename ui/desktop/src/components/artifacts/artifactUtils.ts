@@ -207,10 +207,15 @@ function titleCaseWords(value: string): string {
  * it to a `sandbox=""` iframe under `default-src 'none'`. That document cannot
  * load the app stylesheet, so `var(--text-default)` resolves to nothing inside it
  * and the page would paint unstyled. Inlining literal hexes is therefore not a
- * shortcut, it is the only option — but they must be THIS family's hexes. They
- * used to be hand-picked light/dark pairs (`#242321` on dark), which belonged to
- * no family at all: Parchment's dark ground is `#16120c`, Alma Mater's is navy
- * `#08213f`, Roche Limit's is `#1b1b19`. Every family got the same wrong grey.
+ * shortcut, it is the only option — but they must come from the generated theme
+ * data rather than being picked by hand. They used to be hand-picked light/dark
+ * pairs (`#242321` on dark) that belonged to no family at all, while the three
+ * families' dark grounds were `#16120c`, navy `#08213f` and `#1b1b19`.
+ *
+ * Since the neutrals were shared (2026-08-08) the GROUND is the same for every
+ * family — `#1b1b19` in dark — so a hardcoded ground would now look right by
+ * accident. The INK is not: `--text-default` is still per family, which is what
+ * the "distinct ink" test in artifactUtils.test.ts asserts. Read both from here.
  *
  * Falls back to Parchment for an unknown family (a `theme_family` left in
  * localStorage by a build that had one we since removed), exactly as

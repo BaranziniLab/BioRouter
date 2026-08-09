@@ -13,8 +13,8 @@ export default {
   label: 'Roche Limit',
   swatch: '#ee6c1a',
 
-  // Which token the terminal dock actually paints. The families genuinely
-  // differ here; this records the truth rather than assuming they agree.
+  // Which token the terminal dock paints. SHARED across families — all three
+  // point at `--background-muted`, in both modes.
   terminalGround: {
     light: '--background-muted',
     dark: '--background-muted',
@@ -28,9 +28,18 @@ export default {
       'text-accent': '#ae4700',
       'text-on-accent': '#1f1e1c',
       'accent-bar': '#d95b08',
+      // ── SHARED NEUTRALS — THE REFERENCE SET ──────────────────────────────
+      // Every surface, grey and border from here down is the one neutral set
+      // all three families wear, and Roche Limit is where it came from: its
+      // values were adopted wholesale by Parchment and Alma Mater rather than
+      // averaged, so this block is unchanged by the unification. Editing a
+      // neutral here now moves all three families — mirror it into
+      // parchment.theme.mjs, alma-mater.theme.mjs and main.css's :root/.dark.
       'background-app': '#ffffff',
       // "White as the main colour" (roche-limit-theme.md §1): the page is pure
-      // white and `background-muted` #f4f4f2 is the intermediate panel.
+      // white and `background-muted` #f4f4f2 is the intermediate panel. The gap
+      // between the two is guarded — see check-contrast.mjs, "a step off the
+      // canvas"; the other two families used to collapse it to zero.
       'background-canvas': '#ffffff',
       'background-default': '#ffffff',
       'background-card': '#ffffff',
@@ -163,9 +172,13 @@ export default {
       'text-accent': '#f2955a',
       'text-on-accent': '#131312',
       'accent-bar': '#ee6c1a',
+      // ── SHARED NEUTRALS — THE REFERENCE SET ──────────────────────────────
       'background-app': '#131312',
       // Dark flips polarity: canvas #131312, card #1B1B19 (roche-limit-theme.md
       // §5.x). Warm-neutral, not pure black, so bright orange does not halate.
+      // This ladder — canvas darkest, cards a step up — is now the one ladder.
+      // Parchment dark and Alma Mater dark both used to invert it (canvas
+      // LIGHTER than cards); a shared set cannot carry two contradictory orders.
       'background-canvas': '#131312',
       'background-default': '#1b1b19',
       'background-card': '#1b1b19',
