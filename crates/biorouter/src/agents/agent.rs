@@ -2809,6 +2809,7 @@ impl Agent {
         output: ToolResult<CallToolResult>,
         enable_extension_request_ids: &[String],
         request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+        request_to_tool_name: &HashMap<String, String>,
         request_metadata: &HashMap<String, Option<ProviderMetadata>>,
         all_install_successful: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
@@ -2818,11 +2819,16 @@ impl Agent {
         let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
         let output = call_tool_result::validate(output);
 
-        // Scan tool output for injection markers + PII/PHI before it re-enters
-        // the model context. Default policy is annotate-only (never blocks or
-        // drops content); masking is opt-in. Off is a zero-cost pass-through.
-        let (output, guardrail_summary) =
-            crate::guardrails::tool_output::guard_tool_result(output, tool_output_guardrail);
+        // Frame tool output as untrusted data before it re-enters the model
+        // context, and scan it for injection markers + PII/PHI. The frame is
+        // unconditional (provenance, not phrase matching; see the module
+        // docs); the scan only escalates. Never blocks or drops content;
+        // masking is opt-in. Off is a zero-cost pass-through.
+        let (output, guardrail_summary) = crate::guardrails::tool_output::guard_tool_result(
+            output,
+            request_to_tool_name.get(&request_id).map(String::as_str),
+            tool_output_guardrail,
+        );
         if let Some(summary) = &guardrail_summary {
             debug!(request_id = %request_id, "tool-output guardrail flagged: {summary}");
         }
@@ -5919,9 +5925,19 @@ impl Agent {
 
                                 let mut request_to_response_map = HashMap::new();
                                 let mut request_metadata: HashMap<String, Option<ProviderMetadata>> = HashMap::new();
+                                // The tool that produced each result, for the
+                                // untrusted-data frame's provenance attribute.
+                                // Built here rather than looked up later because
+                                // this is the one place the request and its id are
+                                // together; a malformed request has no name, and the
+                                // frame says `unknown` rather than being skipped.
+                                let mut request_to_tool_name: HashMap<String, String> = HashMap::new();
                                 for (idx, request) in frontend_requests.iter().chain(remaining_requests.iter()).enumerate() {
                                     request_to_response_map.insert(request.id.clone(), tool_response_messages[idx].clone());
                                     request_metadata.insert(request.id.clone(), request.metadata.clone());
+                                    if let Ok(tool_call) = &request.tool_call {
+                                        request_to_tool_name.insert(request.id.clone(), tool_call.name.to_string());
+                                    }
                                 }
 
                                 for (idx, request) in frontend_requests.iter().enumerate() {
@@ -6150,6 +6166,7 @@ impl Agent {
                                                     output,
                                                     &enable_extension_request_ids,
                                                     &request_to_response_map,
+                                                    &request_to_tool_name,
                                                     &request_metadata,
                                                     &mut all_install_successful,
                                                     &mut post_tool_results,
