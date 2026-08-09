@@ -38,7 +38,7 @@ pub(crate) fn install_builtin_skills() {
     SkillsClient::ensure_builtin_skills(&Paths::config_dir().join("skills"));
 }
 
-fn is_builtin_skill_name(name: &str) -> bool {
+pub fn is_builtin_skill_name(name: &str) -> bool {
     BUILTIN_SKILLS
         .iter()
         .any(|(builtin_name, _)| *builtin_name == name)

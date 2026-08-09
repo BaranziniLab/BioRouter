@@ -1475,8 +1475,19 @@ fn list_skills() -> Vec<String> {
     crate::session::completion::list_skill_reference_names()
 }
 
+/// ⚠ **User-installed skills only** (#77). The four that ship with Biorouter
+/// are Contexts, managed in Settings -> Chat, and the GUI already excludes them
+/// from its chip. Counting them here made the two surfaces disagree about the
+/// same word — exactly the drift the capability exclusion below was written to
+/// fix for extensions.
+///
+/// `is_builtin_skill_name` is the same predicate the seeder and the reset path
+/// use, rather than a second list that would drift from it.
 fn count_skills() -> usize {
-    list_skills().len()
+    list_skills()
+        .iter()
+        .filter(|name| !biorouter::agents::skills_extension::is_builtin_skill_name(name))
+        .count()
 }
 
 /// The six foundational built-ins surfaced as their own "Capabilities" section
