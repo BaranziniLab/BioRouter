@@ -947,7 +947,18 @@ mod tests {
 
     /// #31: the explicit early-exit cleanup removes the private store (and
     /// tolerates `None`). `process::exit` itself is untestable; this pins the
-    /// close half that every early-exit path runs first.
+    /// removal half that every early-exit path runs.
+    ///
+    /// The pool is closed first because production always has: the only caller
+    /// of this bare helper is [`close_ephemeral_store_with_manager`], which
+    /// closes the pool before delegating here. Dropping the
+    /// `Arc<SessionManager>` is NOT a substitute — an sqlx pool does not close
+    /// synchronously on drop, so the db + WAL/-shm handles stay open and
+    /// `remove_dir_all` fails on platforms that refuse to unlink open files
+    /// (Windows), where this test used to leak the directory and fail. The
+    /// pool-closed assertion keeps that precondition load-bearing: delete the
+    /// `close().await` below and this test fails on every platform, not just
+    /// the one that can observe the handles.
     #[tokio::test]
     async fn close_ephemeral_store_removes_the_directory() {
         let (dir, manager) = ephemeral_session_store().expect("ephemeral store");
@@ -956,8 +967,18 @@ mod tests {
             .create_session(path.clone(), "CLI Session".to_string(), SessionType::Hidden)
             .await
             .expect("create session");
-        drop(manager);
         assert!(path.exists());
+
+        manager.close().await;
+        assert!(
+            manager
+                .create_session(path.clone(), "again".to_string(), SessionType::Hidden)
+                .await
+                .is_err(),
+            "the pool must be closed before the directory is removed, or the store's \
+             open handles make the removal fail where open files cannot be unlinked"
+        );
+
         close_ephemeral_store(Some(dir));
         assert!(
             !path.exists(),
@@ -1009,8 +1030,59 @@ mod tests {
             .expect("no dir handed over means the store must stay usable");
     }
 
-    /// #31: dropping the `TempDir` (end of run) removes the private store —
-    /// the best-effort cleanup contract.
+    /// #31 ordering, the half no Unix runner can observe. The behavioural test
+    /// above proves the pool ENDS closed; it cannot prove the pool closed
+    /// FIRST, because on Unix the directory is removed successfully either way.
+    /// Swapping the two statements in
+    /// [`close_ephemeral_store_with_manager`] keeps every assertion up there
+    /// green on macOS and Linux while silently restoring the Windows leak the
+    /// ordering exists to prevent — measured, not assumed.
+    ///
+    /// So this is a source-order tripwire, in the style of
+    /// `the_privacy_check_runs_before_the_provider_is_ever_created` below: it
+    /// catches the realistic regression — someone reorders or "tidies" the two
+    /// statements — and nothing subtler.
+    #[test]
+    fn the_pool_is_closed_before_the_store_directory_is_removed() {
+        let src = include_str!("builder.rs");
+        let (_, after_signature) = src
+            .split_once("async fn close_ephemeral_store_with_manager(")
+            .expect("the early-exit cleanup helper is gone");
+        // Just this function's body: the first unindented `}` closes it.
+        let (body, _) = after_signature
+            .split_once("\n}\n")
+            .expect("could not find the end of close_ephemeral_store_with_manager");
+
+        let close_pool = body.find("session_manager.close().await").expect(
+            "close_ephemeral_store_with_manager no longer closes the SQLite pool, so every \
+             early exit leaves the store's db + WAL/-shm handles open",
+        );
+        let remove_dir = body
+            .find("close_ephemeral_store(ephemeral_store_dir)")
+            .expect("close_ephemeral_store_with_manager no longer removes the store directory");
+        assert!(
+            close_pool < remove_dir,
+            "the pool close moved BELOW the directory removal; the store's handles are still \
+             open when the directory is deleted, which fails — and leaks the \
+             biorouter-no-session-* directory — on platforms that refuse to unlink open files"
+        );
+    }
+
+    /// #31: once the pool is closed, dropping the `TempDir` removes the private
+    /// store — the best-effort end-of-run contract.
+    ///
+    /// This mirrors `CliSession::close_ephemeral_store`, the real end-of-run
+    /// path: it closes the SQLite pool and only then lets the held directory
+    /// go. The pool close is the whole precondition — dropping the
+    /// `Arc<SessionManager>` does not close an sqlx pool, and `TempDir`'s
+    /// `Drop` swallows the failure, so with the db + WAL/-shm files still open
+    /// the store silently survives on platforms that refuse to unlink open
+    /// files (Windows). That is what used to fail here.
+    ///
+    /// Asserting the pool really is closed is what gives the ordering teeth on
+    /// Unix, where the deletion succeeds either way: without it, deleting the
+    /// `close().await` below still passes on macOS and Linux while quietly
+    /// re-breaking Windows.
     #[tokio::test]
     async fn dropping_the_ephemeral_store_removes_it() {
         let (dir, manager) = ephemeral_session_store().expect("ephemeral store");
@@ -1020,7 +1092,17 @@ mod tests {
             .await
             .expect("create session");
         assert!(path.exists());
-        drop(manager);
+
+        manager.close().await;
+        assert!(
+            manager
+                .create_session(path.clone(), "again".to_string(), SessionType::Hidden)
+                .await
+                .is_err(),
+            "the pool must be closed before the directory is dropped, or the drop \
+             cannot remove the store where open files cannot be unlinked"
+        );
+
         drop(dir);
         assert!(
             !path.exists(),
