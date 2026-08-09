@@ -210,6 +210,58 @@ pub fn focused_or_recent() -> Option<WorkspaceBridge> {
     pick_target(attached)
 }
 
+/// The window whose echo shows a tab for `session_id`, if one is attached.
+///
+/// ⚠ **Routing by "who holds the parent" beats routing by "who has focus"**
+/// (issue #78). `focused_or_recent` answers a question nobody asked: with
+/// several windows open it guesses, and before the renderer reported real focus
+/// it could not even discriminate. A spawned tab belongs beside its parent, and
+/// the parent's location is a fact already on the wire — the echo carries
+/// `window_id` and every tab's `session_id`.
+///
+/// It is also far more robust to the 300 ms echo debounce than focus is: a
+/// user's focus can move between the spawn and the frame, while a parent's tab
+/// rarely changes windows.
+///
+/// `None` when the parent has no tab anywhere, which is a real case (a headless
+/// spawn, or a parent tab closed mid-turn). Callers must fall back rather than
+/// drop the frame: the fire-and-forget contract says a disconnecting window
+/// must never break a spawn.
+pub fn bridge_for_session(session_id: &str) -> Option<WorkspaceBridge> {
+    let map = lock(&BRIDGES);
+    let attached: Vec<_> = map.values().filter(|b| b.is_attached()).cloned().collect();
+    drop(map);
+    pick_by_session(attached, session_id)
+}
+
+/// The lookup RULE of [`bridge_for_session`], split from the registry walk for
+/// the same reason [`pick_target`] is: so it can be tested against a supplied
+/// candidate list rather than against whatever else the test binary has
+/// attached.
+pub(crate) fn pick_by_session(
+    attached: Vec<WorkspaceBridge>,
+    session_id: &str,
+) -> Option<WorkspaceBridge> {
+    attached.into_iter().find(|bridge| {
+        bridge
+            .last_echo()
+            .and_then(|echo| echo.get("layout").cloned())
+            .and_then(|layout| layout.as_array().cloned())
+            .is_some_and(|groups| {
+                groups.iter().any(|group| {
+                    group
+                        .get("tabs")
+                        .and_then(|tabs| tabs.as_array())
+                        .is_some_and(|tabs| {
+                            tabs.iter().any(|tab| {
+                                tab.get("session_id").and_then(|s| s.as_str()) == Some(session_id)
+                            })
+                        })
+                })
+            })
+    })
+}
+
 /// The routing RULE of `focused_or_recent`, separated from its registry walk so
 /// it can be tested against a supplied candidate list.
 ///
@@ -525,6 +577,44 @@ mod tests {
     /// the renderer alone because `pick_target` is where the consequence lands:
     /// if the echo semantics ever regress, this is the test that says which
     /// half broke.
+    /// Routing by the parent's location, which is what #78 actually needs.
+    ///
+    /// Deliberately set up so a focus-based answer would be WRONG: the window
+    /// holding the parent is not the focused one, and it attached first. Both
+    /// of `pick_target`'s rules would pick the other window, so this passes
+    /// only if the lookup really is reading the layout.
+    #[test]
+    fn the_window_holding_the_parent_is_found_regardless_of_focus_or_recency() {
+        let holder = WorkspaceBridge::new();
+        let (_r1, _t1) = holder.attach();
+        holder.store_echo(json!({
+            "window_id": "w-holder",
+            "focused_session": null,
+            "layout": [{ "tabs": [{ "session_id": "parent-1" }, { "session_id": "other" }] }],
+        }));
+        std::thread::sleep(Duration::from_millis(5));
+        let decoy = WorkspaceBridge::new();
+        let (_r2, _t2) = decoy.attach(); // focused AND more recent
+        decoy.store_echo(json!({
+            "window_id": "w-decoy",
+            "focused_session": "s9",
+            "layout": [{ "tabs": [{ "session_id": "s9" }] }],
+        }));
+
+        let picked = pick_by_session(vec![decoy.clone(), holder.clone()], "parent-1")
+            .expect("the parent's window");
+        assert_eq!(
+            picked.last_echo().unwrap()["window_id"],
+            "w-holder",
+            "the tab belongs beside its parent, not beside the focused window"
+        );
+
+        // A parent with no tab anywhere is a real case (headless spawn, or the
+        // tab closed mid-turn). It must answer None so the caller can fall back
+        // rather than drop the frame.
+        assert!(pick_by_session(vec![decoy, holder], "nowhere").is_none());
+    }
+
     #[test]
     fn two_windows_both_claiming_focus_is_the_state_that_must_not_arise() {
         let a = WorkspaceBridge::new();
