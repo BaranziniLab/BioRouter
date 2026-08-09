@@ -4,7 +4,9 @@ import { BottomMenuReasoningEffort } from './BottomMenuReasoningEffort';
 import {
   getReasoningEffort,
   reasoningEffortForRequest,
+  REASONING_EFFORT_LABELS,
   resetReasoningEffortForTests,
+  setReasoningEffort,
 } from '../../store/reasoningEffort';
 
 describe('BottomMenuReasoningEffort (BR-63)', () => {
@@ -19,8 +21,32 @@ describe('BottomMenuReasoningEffort (BR-63)', () => {
     const trigger = screen.getByLabelText('Reasoning effort: Normal');
     expect(trigger).toBeInTheDocument();
     expect(trigger).not.toHaveAttribute('title');
-    expect(trigger.querySelector('svg')).toHaveClass('size-[18px]');
+    expect(trigger.querySelector('svg')).toHaveClass('size-[17px]');
     expect(screen.queryByText('Normal')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The glyph is three rising bars filled up to the level, so it carries the
+   * VALUE rather than the concept — which is the whole reason it replaced the
+   * `Gauge`, whose three states were pixel-identical. Asserting the fill count
+   * is asserting the only thing that makes the swap worth anything: a glyph that
+   * rendered the same at quick and deep would pass every other test in this file.
+   */
+  it.each([
+    ['quick', 1],
+    ['normal', 2],
+    ['deep', 3],
+  ] as const)('fills %s to %i of three bars', (level, expected) => {
+    setReasoningEffort(level);
+    render(<BottomMenuReasoningEffort />);
+
+    const bars = Array.from(
+      screen
+        .getByLabelText(`Reasoning effort: ${REASONING_EFFORT_LABELS[level]}`)
+        .querySelectorAll('rect')
+    );
+    expect(bars).toHaveLength(3);
+    expect(bars.filter((bar) => bar.getAttribute('opacity') === '1')).toHaveLength(expected);
   });
 
   it('keeps every option aligned while showing only the selected tick', () => {

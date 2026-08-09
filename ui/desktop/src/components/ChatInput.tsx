@@ -1,5 +1,5 @@
 import React, { useRef, useState, useEffect, useMemo, useCallback } from 'react';
-import { ChevronsDownUp, Plus, Send, X } from './icons/app-icons';
+import { ArrowUp, ChevronsDownUp, Plus, X } from './icons/app-icons';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { useComposerToolbarCollapsed } from './bottom_menu/useComposerToolbarCollapsed';
 import { ContextWindowIndicator } from './ContextWindowIndicator';
@@ -76,17 +76,117 @@ const MANUAL_COMPACT_TRIGGER = '/compact';
 // entirely in the renderer (never sent to the agent).
 const DIVERGE_TRIGGER = '/diverge';
 /**
- * The composer toolbar's spacing is made to MEAN something.
+ * The composer's controls are grouped by ROW, and the rows are not boxes.
  *
- * It used to run at one flat rhythm — `gap-1.5` between every child, divider or
- * not — so the row read as an undifferentiated run of glyphs and the three
- * things it actually holds (where the agent works · what it can reach · which
- * model answers) were indistinguishable. Now: chips inside a group sit at 2px,
- * and a divider opens a 21px channel between groups. Nothing was added or
- * reordered; only the spacing changed, and the spacing is now the grouping.
+ * Three arrangements have been tried. A single card holding everything read as
+ * a settings panel you could also type into. A recessed banner tucked behind a
+ * card grouped the controls correctly but paid two outlines and an 8px overlap
+ * for it. One card of three rows fixed that, and then made the card so tall and
+ * so full that "crowded" was the note two rounds running.
+ *
+ * What ships now inverts it: the CARD IS THE INPUT, and nothing else. The
+ * context row floats above it and the control row below it, both directly on
+ * the canvas, so the only boxed thing on screen is the one thing the user acts
+ * on. The grouping that needed a rule, then a tuck, then a hairline is now done
+ * by the canvas gaps alone.
+ *
+ * Chips inside one cluster sit at 8px. They were at 2px when the strip was its
+ * own recessed surface and 4px when it was a card row; on bare canvas there is
+ * no fill or edge left to hold them together, so the spacing has to do it, and
+ * a chip cluster that is merely NOT touching reads as a cramped toolbar.
  */
-const TOOLBAR_DIVIDER_CLASS = 'h-4 w-px flex-shrink-0 bg-border-subtle mx-[10px]';
-const TOOLBAR_GROUP_CLASS = 'flex flex-shrink-0 items-center gap-0.5';
+const TOOLBAR_GROUP_CLASS = 'flex flex-shrink-0 items-center gap-2';
+
+/*
+ * ═══════════════════════════════════════════════════════════════════════════
+ * THE RAILS' TYPE IS `text-supporting` (12/16), AND THAT OVERRIDES A RULE.
+ * ═══════════════════════════════════════════════════════════════════════════
+ *
+ * This governs the controls in row 1 and row 3 — the directory, the extension /
+ * skill / knowledge counts, the reasoning knob, the model, the context gauge's
+ * figure, the cost. They live in their own files (`bottom_menu/*`,
+ * `ContextWindowIndicator`), every one of which is composer-only, so the change
+ * is scoped even though it is spread. Each carries a pointer back here.
+ *
+ * ⚠ THE RULE THIS SUBORDINATES, so nobody "fixes" it back: `main.css`'s type
+ * scale states the sanctioned dense-control exception is `--text-secondary`
+ * (13px) and says in terms — "It does NOT drop to `text-supporting`; a control
+ * that renders at metadata size stops looking like something you can press."
+ * These controls were raised 12 -> 13 earlier for exactly that reason. They are
+ * now back at 12 at the USER'S EXPLICIT DIRECTION, with a stated goal: the rails
+ * should "read as annotations rather than competing UI" against the message
+ * text. That is a call about this surface's hierarchy, and it outranks a
+ * default.
+ *
+ * The ratio is the part to preserve if the body size ever moves. The spec asked
+ * for rails one clear step under a 15px body; our body is `--text-body` 14px
+ * (and the composer's input deliberately shares that role, so what you type and
+ * what it becomes are one size). One step under 14 on our scale is 12 —
+ * `text-supporting` — which also lands inside the spec's own 11.5-12.5 band.
+ * Do not import 15px, and do not invent a half-pixel role to hit it exactly.
+ *
+ * What answers the rule's actual objection — "stops looking like something you
+ * can press" — is that pressability here is not carried by type size at all.
+ * Every one of these keeps a 28px (`h-7`) hit area, a hover fill, and an icon or
+ * caret. The type shrank; the affordance did not.
+ */
+
+/**
+ * The composer's input type: `--text-body`, 14 on a 20px line — THE SAME ROLE
+ * the transcript sets message text in.
+ *
+ * This was briefly a one-off `text-[16px] leading-6`, taken from the supplied
+ * composer mockups and from a request that the text be plainly "visible". It is
+ * back on the scale, and the reason is what the app looks like as a whole rather
+ * than what the composer looks like alone: a sentence is the SAME OBJECT before
+ * and after you send it, and at 16px it visibly changed size on its way into the
+ * transcript. Two type sizes for one sentence is a seam the eye catches
+ * immediately, and it made the composer read as a separate application docked to
+ * the chat rather than as its entry point.
+ *
+ * So the rule is: the composer, the user's own bubble and the model's prose all
+ * render at `--text-body`. If the input should get larger, `--text-body` is what
+ * moves, and all three move together.
+ *
+ * Kept as a named constant even though it now names one role, because the pull
+ * toward a bespoke input size is clearly recurring — this is the second time —
+ * and a constant with this note attached is what makes the next attempt a
+ * decision rather than an accident.
+ */
+const COMPOSER_INPUT_TYPE_CLASS = 'text-body';
+
+/**
+ * The control rail's ONE separator, between the reasoning knob and the model.
+ *
+ * This is not the old toolbar vocabulary returning. That row carried several
+ * rules across eight controls, which is what made a strip of chips read as a
+ * control panel; this one separates the two settings that answer the same
+ * question — "how does the next message get answered" — from each other, and it
+ * is the only separator inside any row of the composer.
+ *
+ * A 3px DOT, not a 14px rule, and the change is not cosmetic. A vertical rule
+ * is a piece of RULING: it runs the height of its neighbours, so it reads as
+ * the beginning of a column and invites more of itself — which is exactly how
+ * the row got to eight controls and several rules the first time. A dot has no
+ * height to align to. It says "these are two groups" and nothing else, which is
+ * all this seam ever needed, and it cannot accrete into a grid.
+ *
+ * IT IS NOT A BORDER TOKEN, and that is the part that had to be measured rather
+ * than assumed. Contrast is area-dependent: the old rule laid 14 px of ink on
+ * the canvas, a 3px dot lays about 7, so a token that read as a hairline reads
+ * as dirt as a dot. Against `--background-canvas`, across all six scopes:
+ *
+ *   --border-subtle        1.27 light / 1.39 dark   invisible as a dot
+ *   --border-strong        1.52       / 1.71        still washed out
+ *   text-muted/55          2.37-2.48  / 3.01-3.62   present, clearly subordinate
+ *   --text-muted (full)    6.11-6.89  / 7.37-9.41   darker than what it divides
+ *
+ * The rail's own labels measure 5.71-6.19 light / 8.08-8.55 dark, so `/55` puts
+ * the dot at roughly 40% of the ink it separates: enough to be seen on purpose,
+ * never enough to be read as content. A separator that outweighs its neighbours
+ * — which the full token does — is just punctuation shouting.
+ */
+const TOOLBAR_DIVIDER_CLASS = 'size-[3px] flex-shrink-0 rounded-full bg-text-muted/55';
 
 function canonicalMimeType(mimeType: string): string {
   const normalized = mimeType.toLowerCase().trim();
@@ -207,7 +307,10 @@ export default function ChatInput({
 }: ChatInputProps) {
   const [_value, setValue] = useState(initialValue);
   const [displayValue, setDisplayValue] = useState(initialValue); // For immediate visual feedback
-  const [isFocused, setIsFocused] = useState(false);
+  // (`isFocused` used to live here, mirroring the textarea's focus into React
+  // purely so the card could paint a ring. The card now asks CSS directly with
+  // `has-[textarea:focus]`, which is one source of truth instead of two and
+  // cannot fall out of sync with the DOM the way a mirrored flag can.)
   const [pastedImages, setPastedImages] = useState<PastedImage[]>([]);
 
   // Derived state - chatState != Idle means we're in some form of loading state
@@ -569,27 +672,10 @@ export default function ChatInput({
     return () => window.removeEventListener('restore-chat-input', handler);
   }, [sessionId]);
 
-  // The landing state's suggestion chips write into the composer through this,
-  // NOT through `initialValue`. `initialValue` is a MOUNT value whose effect also
-  // deletes every pasted image (see above), so re-pointing it at a suggestion
-  // would silently discard an attachment the user had already added. This only
-  // sets text, and it FILLS rather than SENDS: a suggestion the user cannot edit
-  // before it runs is a button pretending to be a prompt. Matched by sessionId
-  // (`null === null` for the pre-session composer) exactly like the restore
-  // channel, so a broadcast can never land in a sibling chat.
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ sessionId?: string | null; value?: string }>).detail;
-      if ((detail?.sessionId ?? null) !== (sessionId ?? null)) return;
-      if (typeof detail?.value !== 'string' || !detail.value) return;
-      setDisplayValue(detail.value);
-      setValue(detail.value);
-      setHasUserTyped(true);
-      textAreaRef.current?.focus();
-    };
-    window.addEventListener('insert-chat-input', handler);
-    return () => window.removeEventListener('insert-chat-input', handler);
-  }, [sessionId]);
+  // (The `insert-chat-input` channel used to live here. Its only dispatcher was
+  // the landing state's suggestion chips, which are gone, so the listener went
+  // with them rather than being left as a receiver nobody calls. The `restore-`
+  // channel above is a different mechanism and is still live.)
 
   // Use shared file drop hook for ChatInput
   const {
@@ -884,7 +970,14 @@ export default function ChatInput({
     };
   }, [clearAlerts]);
 
-  const maxHeight = 10 * 24;
+  // Ten lines, counted in the line box the composer actually renders:
+  // `COMPOSER_INPUT_TYPE_CLASS` is `--text-body`, which is 14 on a 20px line.
+  // This tracked a 24px line while the input was briefly 16px; left at 24 it
+  // would now mean twelve lines, which is how this figure was wrong before.
+  // The textarea's own vertical padding is inside the measurement
+  // (`scrollHeight` includes padding), so the true ceiling is a shade under ten
+  // — the right way to be wrong for a scroll cap.
+  const maxHeight = 10 * 20;
 
   // Immediate function to update actual value - no debounce for better responsiveness
   const updateValue = React.useCallback((value: string) => {
@@ -1778,40 +1871,144 @@ export default function ChatInput({
     }
   };
 
+  // The composer's controls, defined ONCE and arranged in three places: the
+  // card's context strip (row 1), its control bar (row 3), and the collapsed
+  // "+" popover. They used to be declared inside the toolbar's IIFE, which is
+  // why the context strip could not exist — a control cannot be lifted out of
+  // the row that defines it. Hoisting them here is the whole enabling change.
+  //
+  // #44: the working dir is choosable only while the chat is completely empty
+  // (pre-session #39 path included); the first message locks it for the
+  // session's lifetime. Prefer the authoritative lock from BaseChat (hydration-
+  // and failed-submit-aware); fall back to the transcript length for callers
+  // that do not track session metadata.
+  const workingDirIsLocked = workingDirLocked ?? messagesLength > 0;
+  const dirSwitcher = (
+    <DirSwitcher
+      // NO RESTING FILL, and the reason is a token collision worth recording.
+      //
+      // This chip carried `bg-background-muted` while the context strip was a
+      // row INSIDE the card: muted is one step off `background-default`, so the
+      // fill read as a raised pill and distinguished the working directory from
+      // the three bare count chips beside it. The strip now sits on the CANVAS,
+      // and `--background-canvas` is byte-identical to `--background-muted` in
+      // both Parchment dark (#282217) and Alma Mater dark (#0d2a50) — so the
+      // pill did not merely lose contrast in two of the six combinations, it
+      // disappeared completely, taking the chip's only visible edge with it.
+      //
+      // Nothing replaces it, because nothing needs to: the design has no pill
+      // here either, and `justify-between` already says what the fill was
+      // saying — the directory is the thing on the left, the counts are the
+      // tally on the right. The chip keeps its hover fill, which is a response
+      // to the pointer rather than a permanent surface and so is allowed to be
+      // one step off whatever it happens to be standing on.
+      className="mr-0"
+      sessionId={sessionId ?? undefined}
+      locked={workingDirIsLocked}
+      workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
+      onWorkingDirChange={(newDir) => {
+        setSessionWorkingDir(newDir);
+        if (onWorkingDirChange) {
+          onWorkingDirChange(newDir);
+        }
+      }}
+      onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
+      onRestartEnd={() => setChatState?.(ChatState.Idle)}
+    />
+  );
+  const extensionsSkillsKnowledge = (
+    <>
+      <BottomMenuExtensionSelection sessionId={sessionId} privacyTier={sessionPrivacyTier} />
+      <BottomMenuSkillSelection sessionId={sessionId} />
+      <BottomMenuKnowledgeSelection />
+    </>
+  );
+  const reasoning = <BottomMenuReasoningEffort />;
+  const model = (
+    <div className="min-w-0">
+      <ModelsBottomBar
+        sessionId={sessionId}
+        privacyTier={sessionPrivacyTier}
+        dropdownRef={dropdownRef}
+        setView={setView}
+        alerts={alerts}
+        hideAlertPopover
+      />
+    </div>
+  );
+  const contextGauge = (
+    <ContextWindowIndicator
+      totalTokens={totalTokens}
+      tokenLimit={tokenLimit}
+      isTokenLimitLoaded={isTokenLimitLoaded}
+      // The control bar has the width to print the headroom, and a bare ring
+      // states only "some of it is gone" — the figure is the reason anyone
+      // looks. (Remaining, matching the arc; see the prop's own note.)
+      showRemainingPercent
+      onCompact={() => {
+        handleSubmit(
+          new CustomEvent('submit', {
+            detail: { value: MANUAL_COMPACT_TRIGGER },
+          }) as unknown as React.FormEvent
+        );
+      }}
+    />
+  );
+  const cost = COST_TRACKING_ENABLED ? (
+    <CostTracker
+      inputTokens={accumulatedInputTokens}
+      outputTokens={accumulatedOutputTokens}
+      sessionCosts={sessionCosts}
+      modelCostRows={modelCostRows}
+    />
+  ) : null;
+
   return (
+    // THE CARD IS THE INPUT. Nothing else on this surface is boxed.
+    //
+    // Three arrangements came before (see `TOOLBAR_GROUP_CLASS`), and each one
+    // put more inside the card than the card was about. The last of them — one
+    // box, three rows, a hairline under the first — grouped correctly and still
+    // drew the note "crowded", because a card that contains the directory, the
+    // extension counts, the prose, the model, the gauge, the cost and Send is a
+    // panel no matter how its rows are spaced.
+    //
+    // So the box is now drawn around the ONE thing the user acts on:
+    //
+    //   ROW 1  context   — where am I, what can I reach.   (on the canvas)
+    //   ROW 2  the card  — the prose, and Send.            (the only surface)
+    //   ROW 3  controls  — how it answers, what it costs.  (on the canvas)
+    //
+    // Nothing separates the three but canvas: no rule, no fill, no tuck. That
+    // is the whole point — the chrome reads as annotation ON the input rather
+    // than as more contents OF it, and the input gets to be the only object
+    // with an edge.
+    //
+    // `gap-1.5` IS 6px, AND THE SMALLNESS IS THE DESIGN. It was 10px, and
+    // before that 12px, on the theory that a wide gap made the card "read as
+    // one object and its two neighbours as satellites". That theory was wrong
+    // in a way worth recording, because it is the note this round came in on:
+    // ~10px is also roughly what the app puts between UNRELATED blocks, so the
+    // rails did not read as satellites of the input — they read as three
+    // separate rows that happened to be stacked, "three floating strips".
+    //
+    // Proximity is the only grouping signal available on a surface with no
+    // fills and no rules, and it is RELATIVE, not absolute: what binds the
+    // group is that its internal gaps are visibly smaller than the gap to
+    // everything around it. So the two numbers are one decision, and neither
+    // can be read alone —
+    //
+    //   6px  here                              the three rows are one object
+    //   28px `pt-7` on the composer bar        that object is not the transcript
+    //
+    // (see `BaseChat.tsx`, which carries the same note from the other side).
+    // Widening one without tightening the other just moves the looseness.
+    //
+    // The drop target stays the WRAPPER rather than the card, so a file dropped
+    // on the context row or the control row still attaches.
     <div
       className={cn(
-        // ONE 12px inset grid. Four used to meet inside this card — `px-4 pt-3
-        // pb-3` on the shell, `px-3 pt-3 pb-1.5` on the textarea, `px-2 pt-2
-        // pb-1` on the toolbar and `p-4` on the attachments — so the placeholder,
-        // the first toolbar chip and an attachment thumbnail each started at a
-        // different x. The shell now owns the inset and the children own only
-        // the vertical rhythm between them.
-        //
-        // "Only the rhythm" is now literally true, and it is ONE declaration:
-        // the textarea carries no padding at all (so its box is exactly its line
-        // box, which is what keeps the placeholder centred) and the toolbar's
-        // `pt-3` is the entire gap between them. The textarea kept a `pb-1.5`
-        // through the first pass of this refactor, which both mis-centred the
-        // placeholder and made the gap a sum of two numbers on two elements.
-        'relative z-10 flex h-auto flex-col p-3 rounded-container',
-        // ELEVATION OR A BORDER, NEVER BOTH. The composer was the one element in
-        // the app stating its edge twice: a 1px border AND --shadow-composer.
-        // The shadow is what lifts it off the canvas; the border was the
-        // redundant half. It becomes the shared floating-surface recipe —
-        // elevation plus a 1px INSET ring, which is what keeps the edge crisp in
-        // dark families where a shadow alone disappears, and which (being inside
-        // the box) costs no layout.
-        'bg-background-default shadow-composer inset-shadow-hairline',
-        'transition-[box-shadow,background-color]',
-        // Focus stops being a border-COLOUR shift and becomes the same 2px inset
-        // accent ring every other input in the system uses (§3.2) — the
-        // `inset-shadow-accent` token, composed with the elevation rather than
-        // replacing it. Nothing shifts, so drag-over can now speak the same
-        // language one step louder instead of inventing an outset `ring-2` that
-        // painted OUTSIDE the composer's box and overlapped the canvas.
-        (isFocused || isDraggingOver) && 'inset-shadow-accent',
-        isDraggingOver && 'bg-background-medium/80',
+        'relative flex w-full flex-col gap-1.5',
         !disableAnimation && 'page-transition'
       )}
       data-drop-zone="true"
@@ -1821,432 +2018,404 @@ export default function ChatInput({
       onDragOver={handleLocalDragOver}
       onDragLeave={handleLocalDragLeave}
     >
-      {/* Message Queue Display */}
-      {queuedMessages.length > 0 && (
-        <MessageQueue
-          queuedMessages={queuedMessages}
-          onRemoveMessage={handleRemoveQueuedMessage}
-          onClearQueue={handleClearQueue}
-          onStopAndSend={handleStopAndSend}
-          onSteerMessage={canSteer ? handleSteerMessage : undefined}
-          onReorderMessages={handleReorderMessages}
-          onEditMessage={handleEditMessage}
-          onTriggerQueueProcessing={handleResumeQueue}
-          editingMessageIdRef={editingMessageIdRef}
-          isPaused={queuePausedRef.current}
-          className="border-b border-border-subtle"
-        />
-      )}
-      {/* Vision-mismatch banner: shown when the user has images attached but the
+      {/* ROW 1 — CONTEXT, ON THE CANVAS. No fill, no outline, no rule under it.
+          It keeps its `data-testid` because it is still the same thing to
+          anything looking for it — "where the agent works · what it can reach"
+          — even though it is no longer inside anything.
+
+          The directory goes LEFT and the counts go RIGHT (`justify-between`)
+          rather than all four hugging the left edge. Four chips in a row read
+          as a toolbar; one chip against three across a span reads as a label
+          and a tally, which is what they are.
+
+          ⚠ `pl-3` IS NOT A FREE NUMBER, AND A FLAT INSET WILL BREAK IT. A spec
+          round asked for both rails at a flat 4px inset, with the stated goal
+          "folder icon, placeholder text and the effort bars share one left
+          edge". That is the same goal this padding already serves, by the other
+          mechanism, and the flat version was measured before it was declined:
+
+            left ink from the shell's edge     row 1 / card / row 3    spread
+            solved optically (`pl-3`/`pl-4`/`pl-3.5`)   16 / 17 / 16     1px
+            flat 4px on both rails (`pl-1`)              8 / 17 /  6    11px
+
+          A flat inset only lands one column if every chip carries the same
+          internal padding, and ours do not — the folder chip has 4px, the
+          reasoning chip 2px, and the card contributes a 1px border the rails do
+          not have. So the literal 4px would have moved the rails 8-11px LEFT of
+          the placeholder and lost the alignment it was asked for. The result was
+          kept; the mechanism was not adopted.
+
+          `pl-3` is therefore solved for, not a copy of the design's number. The
+          invariant is that the folder glyph here, the placeholder in the card
+          and the reasoning glyph below all start on ONE column; each of the
+          three sits behind a different amount of its own padding (this chip
+          4px, the card's border 1px + inset, the reasoning chip 2px), so the
+          row paddings differ precisely so the ink does not. See the card. */}
+      <div
+        data-testid="composer-context-banner"
+        className="flex min-w-0 items-center justify-between gap-4 pl-3 pr-2.5"
+      >
+        <div className="flex min-w-0 items-center">{dirSwitcher}</div>
+        <div className={TOOLBAR_GROUP_CLASS}>{extensionsSkillsKnowledge}</div>
+      </div>
+
+      {/* ROW 2 — THE CARD. The prose and Send, and everything attached to the
+          message being written: the queue ahead of it, a vision warning about
+          it, the reference chips on it, the files under it. Nothing that is a
+          SETTING lives in here any more.
+
+          `pl-4 pr-3 py-2.5` — 16px to the text, 12px to Send, 10px top and
+          bottom. The horizontal insets stayed where they were: the note two
+          rounds running was "the edge distance seems a bit too small", and
+          nothing about returning the type to 14/20 makes the SIDES tighter. The
+          vertical came in a step, because it is what "less spaced out" reaches
+          first — a 20px line inside 12px of card padding read as a small
+          sentence in a large box.
+
+          THIS CARD AND THE USER'S BUBBLE ARE ALREADY THE SAME BOX on the two
+          axes that are comparable, and the numbers are worth having here so the
+          next "make it match the chat bubble" round does not re-derive them.
+          `UserMessage.tsx` is `rounded-container bg-background-medium px-3.5
+          py-2.5`; measured against this card: radius 12 == 12, vertical padding
+          10 == 10. Only the horizontal differs (16/12 here, 14/14 there), and
+          that difference is the "edge distance too small" note above — the
+          bubble has never drawn it, this card has, twice.
+
+          What does NOT transfer is height: the bubble is 40px around a 20px line
+          and this card is 54px, because the card also has to hold a 32px Send.
+          Closing that gap means cutting the card's vertical padding BELOW the
+          bubble's — trading a padding the two boxes agree on for a height they
+          still would not. Measured and left alone.
+
+          The asymmetry is Send's: a 32px button needs less inset than a text
+          baseline does to look equally clear of the corner.
+
+          `items-end` on the input line is what keeps Send pinned to the last
+          line as the prose grows upward, instead of drifting to the middle of
+          a six-line message. */}
+      <div
+        className={cn(
+          'relative flex min-w-0 flex-col rounded-container py-2.5 pr-3 pl-4',
+          // ONE EDGE, AND IT IS A HAIRLINE. This card previously carried BOTH
+          // `--shadow-composer` and a 1px inset ring. Two edge statements on one
+          // box is what reads as "a rim of coloured pixels": in the warm
+          // families the elevation tints the pixels just outside the box while
+          // the inset ring tints the ones just inside it, so the border appears
+          // two or three pixels thick and slightly haloed rather than crisp.
+          // A single 1px border states the edge once, which is also the house
+          // rule everywhere else in the app — surfaces over elevation.
+          //
+          // The design does pair a border with a soft drop shadow, and now that
+          // the card stands alone on the canvas that is a more defensible thing
+          // to want than it was when it had a banner behind it. It is still not
+          // taken here: the user's own words about that exact pairing were "a
+          // rim of coloured pixels". `shadow-composer` is the one-line change if
+          // they ask for it.
+          //
+          // AND THE ONE EDGE IS A FRACTION OF THE TOKEN — `/60`, not the whole
+          // hairline. At full strength the note was "a very thick rim around the
+          // chat box": same 1px, but enough contrast that the eye reads an
+          // OUTLINE DRAWN AROUND the field rather than the shape OF the field.
+          //
+          // 60% is measured, not chosen by eye (Chrome, real compiled tokens,
+          // composited over the card's own fill):
+          //
+          //            border vs card fill      border vs canvas
+          //   light      1.275 -> 1.152          (canvas == fill, #ffffff)
+          //   dark       1.289 -> 1.141          1.389 -> 1.184
+          //
+          // All three families share one neutral set, so those six scopes are
+          // really two. LIGHT IS THE BINDING ONE: `--background-canvas` and
+          // `--background-default` are both #ffffff there, so the border is the
+          // only thing separating the field from the page and it may not go much
+          // lower — 44% (the `.biorouter-modal-surface` idiom) lands at 1.111 and
+          // starts to disappear, and a modal can afford that because it sits on a
+          // blurred scrim that reinforces its edge. Dark is the safer scope, not
+          // the riskier one: the card fill is already a step off the canvas
+          // (1.078:1) so the field keeps its shape there even as the hairline
+          // fades.
+          //
+          // Note this is deliberately BELOW `check-contrast.mjs`'s 1.25 floor for
+          // `--border-subtle` vs the app ground. That floor governs the TOKEN, at
+          // full strength, where a hairline is the whole statement. This call
+          // site wants one step lighter than that on purpose.
+          'bg-background-default border border-border-subtle/60',
+          'transition-[box-shadow,background-color,border-color]',
+          // NO FOCUS RING. THE EDGE ITSELF CARRIES THE STATE.
+          //
+          // This is what "the rim is still too thick" was actually about. The
+          // ring was 2px and INSET, so stacked on the 1px border it painted a
+          // 3px band — and because the composer AUTOFOCUSES on mount, it was on
+          // from the first frame of every session. It was never a focus state;
+          // it was the composer's permanent resting appearance. No amount of
+          // lightening the 1px border underneath could fix that, because the
+          // border was never the thick part.
+          //
+          // THE ORANGE RING IS BACK, BY EXPLICIT REQUEST, AND IT IS THE FOCUS
+          // STATE. It was removed once — on the reasoning below — and the user
+          // asked for it back after seeing the composer without it. Their call
+          // stands: read the rest of this note as the constraint the ring has to
+          // survive, not as an argument against it.
+          //
+          // The reasoning that removed it, which is still TRUE and still worth
+          // knowing: the composer autofocuses, so `:focus` is on from the first
+          // frame of every session, which makes anything hung on it the resting
+          // appearance rather than a state. That is why the ring must stay
+          // CHEAP — it is on nearly always, so it has to be something the eye
+          // can live beside, not an alert. What made it read as "a very thick
+          // rim" the first time was the ring at 2px stacked on a border that was
+          // then at full strength: two edges, ~3px, in two different hues. The
+          // border has since dropped to 60%, and everything around the composer
+          // has tightened, so the same ring now reads as one accented edge
+          // rather than a band.
+          //
+          // ⚠ DO NOT hang this on `:focus-visible` to make it "keyboard only".
+          // It was tried and measured: `:focus-visible` ALWAYS matches a focused
+          // text control, however focus arrived, because the element accepts
+          // keyboard input. On a textarea it is not a narrower `:focus`, it is
+          // the same selector spelled longer — so it changes nothing except how
+          // long the next person takes to work that out.
+          //
+          // CSS, not a mirrored React flag. This used to ride an `isFocused`
+          // state kept in sync by the textarea's own `onFocus`/`onBlur`. Asking
+          // the DOM directly is one source of truth instead of two, and cannot
+          // desync from it.
+          // THE RING IS THE BORDER, IN FULL ACCENT — one crisp orange pixel,
+          // not a pale band.
+          //
+          // The previous spelling was `inset-shadow-accent`, which is
+          // `--inset-accent` = `inset 0 0 0 2px var(--accent-muted)`, and
+          // `--accent-muted` is the accent at **8%**. Two pixels of 8% coral on
+          // a white card does not read as orange at all — it reads as a thick,
+          // slightly warm grey border, which is exactly how it was reported
+          // ("not orange, a thick border"). The alpha was the bug, and it is
+          // also why the same ring earlier read as "a very thick rim": a 2px
+          // near-transparent band beside a 1px real one is two edges, and
+          // neither of them looks deliberate.
+          //
+          // `--border-accent` is the full accent (coral-600 light, coral-400
+          // dark, teal in Alma Mater), so the composer's own 1px edge simply
+          // turns orange. One pixel, one edge, unmistakably the accent —
+          // and it stays a border, so nothing about the box changes.
+          'biorouter-composer-card',
+          // Drag-over keeps the ring: THAT is a transient state worth shouting,
+          // it is nothing like a resting appearance, and being inset it still
+          // costs no layout.
+          isDraggingOver && 'inset-shadow-accent',
+          isDraggingOver && 'bg-background-medium/80'
+        )}
+      >
+        {/* Message Queue Display */}
+        {queuedMessages.length > 0 && (
+          <MessageQueue
+            queuedMessages={queuedMessages}
+            onRemoveMessage={handleRemoveQueuedMessage}
+            onClearQueue={handleClearQueue}
+            onStopAndSend={handleStopAndSend}
+            onSteerMessage={canSteer ? handleSteerMessage : undefined}
+            onReorderMessages={handleReorderMessages}
+            onEditMessage={handleEditMessage}
+            onTriggerQueueProcessing={handleResumeQueue}
+            editingMessageIdRef={editingMessageIdRef}
+            isPaused={queuePausedRef.current}
+            className="border-b border-border-subtle"
+          />
+        )}
+        {/* Vision-mismatch banner: shown when the user has images attached but the
  current model does not support vision. Blocks Send until resolved. */}
-      {visionMismatch && (
-        <div className="flex items-start gap-2 px-3 py-2 mb-2 bg-background-medium/60 border border-border-subtle rounded-element text-supporting text-text-muted">
-          <svg
-            className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-60"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth={1.5}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            aria-hidden="true"
-          >
-            <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
-            <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
-            <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
-            <line x1="2" y1="2" x2="22" y2="22" />
-          </svg>
-          <span className="leading-snug">
-            The active model can&apos;t read images. Switch to a vision-capable model, or remove
-            attached images to send.
-          </span>
-        </div>
-      )}
-      {/* Attached resources (issue #65). The canonical form of a reference is a
+        {visionMismatch && (
+          <div className="flex items-start gap-2 px-3 py-2 mb-2 bg-background-medium/60 border border-border-subtle rounded-element text-supporting text-text-muted">
+            <svg
+              className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 opacity-60"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={1.5}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              aria-hidden="true"
+            >
+              <path d="M9.88 9.88a3 3 0 1 0 4.24 4.24" />
+              <path d="M10.73 5.08A10.43 10.43 0 0 1 12 5c7 0 10 7 10 7a13.16 13.16 0 0 1-1.67 2.68" />
+              <path d="M6.61 6.61A13.526 13.526 0 0 0 2 12s3 7 10 7a9.74 9.74 0 0 0 5.39-1.61" />
+              <line x1="2" y1="2" x2="22" y2="22" />
+            </svg>
+            <span className="leading-snug">
+              The active model can&apos;t read images. Switch to a vision-capable model, or remove
+              attached images to send.
+            </span>
+          </div>
+        )}
+        {/* Attached resources (issue #65). The canonical form of a reference is a
  `<biorouter-ref …>` tag, which is the only form that survives a name with a
  space or a quote in it — and is far too much markup to leave sitting in the
  user's sentence. It lives in the message text; this rail is where the user
  sees and manages it. Above the prose because a reference qualifies the whole
  message rather than a point in it, and because the row below the textarea is
  already the attachments area for images and files. */}
-      {composerRefs.length > 0 && (
-        <div
-          data-testid="composer-reference-rail"
-          className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1"
-        >
-          {composerRefs.map((ref, index) => (
-            <ResourceRefChip
-              key={`${ref.kind}:${ref.value}`}
-              refSpan={ref}
-              onRemove={() => handleRemoveReference(index)}
-            />
-          ))}
-        </div>
-      )}
-      {/* Input row — textarea only. Send/Stop button moved to the right end of
- the picker row below so the input width can shrink to the picker row's
- natural width (no extra space stolen by the Send button on this line). */}
-      <form id="bior-chat-form" onSubmit={onFormSubmit} className="relative flex items-end">
-        <div className="relative flex-1">
-          <textarea
-            data-testid="chat-input"
-            autoFocus
-            id="dynamic-textarea"
-            // The navigation hint is only true once there is something to
-            // navigate. On Home and in a brand-new session the app's primary
-            // input used to invite nothing and explain a shortcut that did
-            // nothing yet; `messagesLength` is already a prop here (#22), so the
-            // placeholder can simply tell the truth in both states.
-            placeholder={
-              (messagesLength ?? 0) > 0 ? getNavigationShortcutText() : 'Ask Biorouter anything…'
-            }
-            value={composerBody}
-            onChange={handleChange}
-            onCompositionStart={handleCompositionStart}
-            onCompositionEnd={handleCompositionEnd}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            onFocus={() => setIsFocused(true)}
-            onBlur={() => setIsFocused(false)}
-            ref={textAreaRef}
-            rows={1}
-            style={{
-              maxHeight: `${maxHeight}px`,
-              overflowY: 'auto',
-            }}
-            // No inset of its own, on EITHER axis. Horizontally: the shell's
-            // 12px IS the composer's left edge, and the placeholder has to start
-            // on it so the first toolbar chip below can line up with the text
-            // above it.
-            //
-            // Vertically `p-0` is now literal, where it used to be `p-0 pb-1.5`.
-            // That 6px was the tail of the pre-grid `px-3 pt-3 pb-1.5` recipe:
-            // when the shell took over the inset, `pt-3` moved out and `pb-1.5`
-            // was left behind with no partner. A textarea is a one-line box
-            // whose text starts at the top of its content box, so bottom-only
-            // padding does not push the text down — it grows the box underneath
-            // it. Measured: a 20px line box in a 26px border box put the
-            // placeholder's optical centre at 10px against the box's 13px, i.e.
-            // sitting 3px HIGH, which is what reads as "the placeholder is not
-            // centred". With `p-0` the border box IS the line box, so the text
-            // is centred by construction and cannot drift again.
-            //
-            // The gap down to the toolbar is not lost, it is just owned once
-            // now: the toolbar's own `pt-3` is the whole of it (it was the
-            // double-declared `pb-1.5` here + `pt-2` there), and 12px puts that
-            // rhythm on the same grid as the shell's inset.
-            //
-            // `block` is the other half of the same bug, one level up. A
-            // textarea is `inline-block` by default and sits on its parent's
-            // BASELINE, so the wrapping line box reserves descender room under
-            // it: the `relative flex-1` div measured 27px around a 20px control
-            // and the placeholder was 3.5px high *in the row the user sees*,
-            // which is the box that reads as the input. Removing the padding
-            // alone would have left that, and it is invisible to any test that
-            // measures the textarea rather than its wrapper. `block` takes the
-            // control out of the baseline flow, so wrapper height == control
-            // height == line height, and the 7px of dead space goes away.
-            className="block w-full resize-none border-none bg-transparent p-0 text-body text-text-default placeholder:text-text-muted"
-          />
-        </div>
-      </form>
-
-      {/* Combined files and images preview */}
-      {(pastedImages.length > 0 || allDroppedFiles.length > 0) && (
-        <div className="flex flex-wrap gap-2 pt-3 mt-2 border-t border-border-subtle">
-          {/* Render pasted images first */}
-          {pastedImages.map((img) => (
-            <div key={img.id} className="relative group w-20 h-20">
-              {img.dataUrl && (
-                <img
-                  src={img.dataUrl}
-                  alt={`Pasted image ${img.id}`}
-                  className={`w-full h-full object-cover rounded-element border ${img.error ? 'border-border-danger' : 'border-border-subtle'}`}
-                />
-              )}
-              {img.isLoading && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-element">
-                  <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-white"></div>
-                </div>
-              )}
-              {img.error && !img.isLoading && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded-element p-1 text-center">
-                  <p className="text-text-danger text-supporting leading-tight break-all mb-1">
-                    {img.error.substring(0, 50)}
-                  </p>
-                  {img.dataUrl && (
-                    <Button
-                      type="button"
-                      onClick={() => handleRetryImageSave(img.id)}
-                      title="Retry saving image"
-                      variant="outline"
-                      size="xs"
-                    >
-                      Retry
-                    </Button>
-                  )}
-                </div>
-              )}
-              {!img.isLoading && (
-                <Button
-                  type="button"
-                  shape="round"
-                  onClick={() => handleRemovePastedImage(img.id)}
-                  className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
-                  aria-label="Remove image"
-                  variant="outline"
-                  size="xs"
-                >
-                  <X />
-                </Button>
-              )}
-            </div>
-          ))}
-
-          {/* Render dropped files after pasted images */}
-          {allDroppedFiles.map((file) => (
-            <div key={file.id} className="relative group">
-              {file.canUploadAsImage ? (
-                // Image preview
-                <div className="w-20 h-20">
-                  {file.dataUrl && (
-                    <img
-                      src={file.dataUrl}
-                      alt={file.name}
-                      className={`w-full h-full object-cover rounded-element border ${file.error ? 'border-border-danger' : 'border-border-subtle'}`}
-                    />
-                  )}
-                  {file.isLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-element">
-                      <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-white"></div>
-                    </div>
-                  )}
-                  {file.error && !file.isLoading && (
-                    <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded-element p-1 text-center">
-                      <p className="text-text-danger text-supporting leading-tight break-all">
-                        {file.error.substring(0, 30)}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              ) : (
-                // File box preview
-                <div className="flex items-center gap-2 px-3 py-2 bg-background-medium border border-border-subtle rounded-element min-w-[120px] max-w-[200px]">
-                  <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-border-subtle rounded-inner flex items-center justify-center text-supporting font-mono text-text-muted">
-                    {file.name.split('.').pop()?.toUpperCase() || 'FILE'}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="text-secondary text-text-default truncate" title={file.name}>
-                      {file.name}
-                    </p>
-                    <p className="text-supporting text-text-muted">{file.type || 'Unknown type'}</p>
-                  </div>
-                </div>
-              )}
-              {!file.isLoading && (
-                <Button
-                  type="button"
-                  shape="round"
-                  onClick={() => handleRemoveDroppedFile(file.id)}
-                  className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
-                  aria-label="Remove file"
-                  variant="outline"
-                  size="xs"
-                >
-                  <X />
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Secondary actions and controls row below input. */}
-      <div
-        ref={toolbarRef}
-        data-testid="chat-input-toolbar"
-        // `pt-3`, not `pt-2`: this row is now the SOLE owner of the gap up to
-        // the prose (the textarea's `pb-1.5` used to supply 6px of it), and
-        // 12px is the shell's own inset, so the composer's one internal rhythm
-        // matches the grid the card is built on.
-        className="relative flex min-w-0 flex-row flex-nowrap items-center overflow-hidden pt-3"
-      >
-        {(() => {
-          // Defined once, arranged two ways: inline when the row is wide enough,
-          // and stacked inside a "+" popover when it is not. Only the rendered
-          // branch mounts, and each control reads its own state, so composing
-          // them here rather than duplicating the JSX keeps the two layouts from
-          // drifting.
-          // #44: the working dir is choosable only while the chat is completely
-          // empty (pre-session #39 path included); the first message locks it for
-          // the session's lifetime. Prefer the authoritative lock from BaseChat
-          // (hydration- and failed-submit-aware); fall back to the transcript
-          // length for callers that do not track session metadata.
-          const workingDirIsLocked = workingDirLocked ?? messagesLength > 0;
-          const dirSwitcher = (
-            <DirSwitcher
-              className="mr-0"
-              sessionId={sessionId ?? undefined}
-              locked={workingDirIsLocked}
-              workingDir={sessionWorkingDir ?? getInitialWorkingDir()}
-              onWorkingDirChange={(newDir) => {
-                setSessionWorkingDir(newDir);
-                if (onWorkingDirChange) {
-                  onWorkingDirChange(newDir);
-                }
-              }}
-              onRestartStart={() => setChatState?.(ChatState.RestartingAgent)}
-              onRestartEnd={() => setChatState?.(ChatState.Idle)}
-            />
-          );
-          const extensionsSkillsKnowledge = (
-            <>
-              <BottomMenuExtensionSelection
-                sessionId={sessionId}
-                privacyTier={sessionPrivacyTier}
+        {composerRefs.length > 0 && (
+          <div
+            data-testid="composer-reference-rail"
+            className="mb-1.5 flex flex-wrap items-center gap-1.5 px-1"
+          >
+            {composerRefs.map((ref, index) => (
+              <ResourceRefChip
+                key={`${ref.kind}:${ref.value}`}
+                refSpan={ref}
+                onRemove={() => handleRemoveReference(index)}
               />
-              <BottomMenuSkillSelection sessionId={sessionId} />
-              <BottomMenuKnowledgeSelection />
-            </>
-          );
-          const reasoning = <BottomMenuReasoningEffort />;
-          const model = (
-            <div className="min-w-0">
-              <ModelsBottomBar
-                sessionId={sessionId}
-                privacyTier={sessionPrivacyTier}
-                dropdownRef={dropdownRef}
-                setView={setView}
-                alerts={alerts}
-                hideAlertPopover
-              />
-            </div>
-          );
-          const contextGauge = (
-            <ContextWindowIndicator
-              totalTokens={totalTokens}
-              tokenLimit={tokenLimit}
-              isTokenLimitLoaded={isTokenLimitLoaded}
-              onCompact={() => {
-                handleSubmit(
-                  new CustomEvent('submit', {
-                    detail: { value: MANUAL_COMPACT_TRIGGER },
-                  }) as unknown as React.FormEvent
-                );
+            ))}
+          </div>
+        )}
+        {/* THE INPUT LINE: the prose, and the one action on it. Send lives
+            HERE now, not in the control row — it acts on what is in this box,
+            so it belongs in this box, and putting it here is also what lets the
+            control row below be settings and readouts only.
+
+            `items-end` rather than `items-center`: on one line the two children
+            are the same 32px so the two agree, but on a six-line message only
+            `end` keeps Send beside the last line the user typed.
+
+            `gap-2` (8px), down from 10. The shell above claims its `gap-2.5` is
+            "deliberately wider than any gap inside the card" — that is the whole
+            reason the card reads as one object with two satellites rather than
+            as three bands — and while this was also 10px the claim was simply
+            not true, the two were equal. Tightening the one gap INSIDE the card
+            is what makes it true, and it is the "squeeze the elements in a
+            little" the note asked for, spent where it costs nothing: 8px between
+            the prose and Send, still inside 12px to the card's edge. */}
+        <div className="flex min-w-0 items-end gap-2">
+          <form
+            id="bior-chat-form"
+            onSubmit={onFormSubmit}
+            className="relative flex min-w-0 flex-1"
+          >
+            {/* THE TYPING REGION, and the third attempt at making the text sit
+              plainly in the middle of its box. The first two put the padding in
+              the wrong place; this one puts it symmetrically on the control
+              itself, which is the only arrangement that survives the textarea
+              growing.
+
+              The physics, stated once so it stops being rediscovered: a
+              textarea's text begins at the top of its CONTENT box. So
+              bottom-only padding cannot centre anything — it grows the box
+              underneath the text and leaves the line where it was (that was the
+              original `p-0 pb-1.5` bug, measured at 3px high). SYMMETRIC
+              padding is different: it insets the content box equally top and
+              bottom, and a single line box then fills that content box exactly,
+              so the line is centred in the border box by construction.
+
+              `py-1.5` is therefore load-bearing twice over. It centres the line
+              — and it makes the textarea's border box exactly 32px, the same as
+              Send, so `items-end` above lands the two on the same baseline
+              instead of dropping the text below the button. Remove it and the
+              text does not merely lose its padding, it goes visibly low.
+
+              ⚠ THIS NUMBER IS TIED TO THE TYPE SIZE, and that coupling is what
+              made it 6px rather than 4px. The invariant is `line + 2×padding ==
+              32px`, so the input's box matches Send's: at a 24px line that was
+              `py-1`, and at `--text-body`'s 20px line it is `py-1.5`. When the
+              input was moved back onto the shared 14/20 role, leaving `py-1`
+              would have made the box 28px, and `items-end` would have hung the
+              text 4px low — reintroducing the exact bias this note exists to
+              prevent, while every padding number still looked correct.
+
+              Air, measured rather than eyeballed: the 20px line box sits inside
+              6px of the control's own padding inside 10px of the card's, so it
+              carries 16px above and 16px below — the same number, which is what
+              "not biased towards anywhere" has to mean.
+
+              `block` is the last piece. A textarea is `inline-block` by default
+              and sits on its parent's BASELINE, so a wrapping line box reserves
+              descender room under it and the row the user sees is taller than
+              the control — invisible to any test that measures the textarea
+              rather than its wrapper. It is a flex item here, which blockifies
+              it anyway, but the class states the requirement rather than
+              relying on the parent keeping `display:flex` forever. */}
+            <textarea
+              data-testid="chat-input"
+              autoFocus
+              id="dynamic-textarea"
+              // The navigation hint is only true once there is something to
+              // navigate. On Home and in a brand-new session the app's primary
+              // input used to invite nothing and explain a shortcut that did
+              // nothing yet; `messagesLength` is already a prop here (#22), so the
+              // placeholder can simply tell the truth in both states.
+              placeholder={
+                (messagesLength ?? 0) > 0 ? getNavigationShortcutText() : 'Ask Biorouter anything…'
+              }
+              value={composerBody}
+              onChange={handleChange}
+              onCompositionStart={handleCompositionStart}
+              onCompositionEnd={handleCompositionEnd}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              ref={textAreaRef}
+              rows={1}
+              style={{
+                maxHeight: `${maxHeight}px`,
+                overflowY: 'auto',
               }}
+              // `px-0` is deliberate and is the horizontal half of the
+              // alignment invariant: the CARD's 16px inset is the composer's
+              // left edge, and the placeholder has to start on it so the
+              // folder glyph above and the reasoning glyph below line up with
+              // the text. A horizontal inset here would be a second, private
+              // declaration of the same edge, and the three would drift the
+              // first time one of them changed.
+              //
+              // `py-1.5` is the vertical half, and the long note above the form
+              // is why it is not `p-0` — and why it moves with the type size.
+              className={cn(
+                'block w-full resize-none border-none bg-transparent px-0 py-1.5',
+                COMPOSER_INPUT_TYPE_CLASS,
+                'text-text-default placeholder:text-text-muted'
+              )}
             />
-          );
-          const cost = COST_TRACKING_ENABLED ? (
-            <CostTracker
-              inputTokens={accumulatedInputTokens}
-              outputTokens={accumulatedOutputTokens}
-              sessionCosts={sessionCosts}
-              modelCostRows={modelCostRows}
-            />
-          ) : null;
+          </form>
 
-          if (composerToolbarCollapsed) {
-            return (
-              <div className="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
-                <Popover>
-                  <PopoverTrigger asChild>
-                    <button
-                      type="button"
-                      aria-label="Chat tools and settings"
-                      title="Chat tools and settings"
-                      data-testid="composer-tools-collapsed"
-                      // The 32px icon-button box, so the collapsed row is exactly
-                      // as tall as the expanded one — the composer does not
-                      // resize when the artifact panel opens, only its contents
-                      // change. It was 28px, which shortened the row by 4px at
-                      // the exact moment the layout was already moving.
-                      className="flex size-8 flex-shrink-0 items-center justify-center rounded-element text-text-muted tint-interactive transition-colors hover:text-text-default"
-                    >
-                      <Plus className="size-4" />
-                    </button>
-                  </PopoverTrigger>
-                  {/* Portaled, so the enclosing overflow-hidden never clips it.
-                    side/align place it above the "+", growing up out of the row. */}
-                  <PopoverContent
-                    side="top"
-                    align="start"
-                    // The standard §3.8 menu container — 4px padding, 2px between
-                    // items — rather than the bespoke `w-64 p-2` it carried. The
-                    // width now follows the content instead of pinning every
-                    // collapsed composer to 256px regardless of what is in it.
-                    className="flex min-w-[15rem] max-w-[80vw] flex-col gap-0.5 p-1"
-                    data-testid="composer-tools-popover"
-                  >
-                    {/* The menu changes with the session, exactly as the expanded
-                        row does. While the chat is still empty the directory is a
-                        CONTROL and sits with the other controls. Once a turn has
-                        run it is a FACT — everything the agent did is relative to
-                        it — so it moves above the divider into a stated context
-                        block with its reason beneath it. It is not greyed out;
-                        it stops being a menu item. State what is true, don't
-                        disable what was once offered. */}
-                    {workingDirIsLocked ? (
-                      <div className="flex flex-col gap-0.5 px-2 py-1.5">
-                        {dirSwitcher}
-                        <p className="text-supporting text-text-muted">
-                          Set when this session started. Start a new session to work somewhere else.
-                        </p>
-                      </div>
-                    ) : (
-                      dirSwitcher
-                    )}
-                    <div className="my-0.5 h-px w-full bg-border-subtle" />
-                    <div className="flex flex-wrap items-center gap-0.5">
-                      {extensionsSkillsKnowledge}
-                    </div>
-                    <div className="my-0.5 h-px w-full bg-border-subtle" />
-                    <div className="flex flex-wrap items-center gap-0.5">
-                      {reasoning}
-                      {contextGauge}
-                      {cost}
-                    </div>
-                  </PopoverContent>
-                </Popover>
-                {/* The model NEVER collapses. It changes what the next message
-                    costs and what it can do, so hiding it behind a disclosure at
-                    exactly the width where the artifact panel is competing for
-                    attention is when it matters most. */}
-                {model}
-              </div>
-            );
-          }
+          {/* SEND / STOP — inside the card, at the end of the input line.
+              The row's one primary action, and never collapsed: the control row
+              below can fold its pickers behind a "+" at narrow widths, but the
+              way to send a message may not depend on how wide the window is.
 
-          return (
-            <div className="flex min-w-0 flex-1 items-center overflow-hidden">
-              {dirSwitcher}
-              <div className={TOOLBAR_DIVIDER_CLASS} />
-              <div className={TOOLBAR_GROUP_CLASS}>{extensionsSkillsKnowledge}</div>
-              <div className={TOOLBAR_DIVIDER_CLASS} />
-              <div className="flex min-w-0 flex-row items-center gap-0.5">
-                {reasoning}
-                {model}
-                {contextGauge}
-                {cost && <div className={TOOLBAR_GROUP_CLASS}>{cost}</div>}
-              </div>
-            </div>
-          );
-        })()}
+              Both were `variant="outline"` repainted into an accent fill by a
+              className override, which is the system's own primary variant
+              spelled out longhand: the override could (and did) drift from
+              `--background-accent-hover`, and a reader had to diff two class
+              strings to learn the button was primary. `variant="default"` IS
+              that fill.
 
-        {/* Send / Stop — the row's one primary action, and NEVER collapsed.
-            Both were `variant="outline"` repainted into an accent fill by a
-            className override, which is the system's own primary variant spelled
-            out longhand: the override could (and did) drift from
-            `--background-accent-hover`, and a reader had to diff two class
-            strings to learn the button was primary. `variant="default"` IS that
-            fill. */}
-        <div className="ml-auto flex flex-shrink-0 items-center gap-1 pl-2">
+              SEND IS ONLY ACCENT WHEN THERE IS SOMETHING TO SEND. At rest it is
+              `secondary` — `--background-medium`, which is the user bubble's own
+              fill, so the square you press is already the colour of the thing it
+              is about to make.
+
+              The note was that the composer should be "more minimalistic", and
+              on an EMPTY composer a saturated accent square was the loudest
+              thing on the chat surface while meaning nothing: there was no
+              message, and the button was disabled anyway. Now the accent is
+              information — it arrives with the first character and says "this
+              will go". Nothing is removed to get it: same 32×32 box in the same
+              place, same `aria-label`, same tooltip, same Enter path, and the
+              button still looks like a button at rest, which is the part that
+              could not be given up.
+
+              `disabled:opacity-100` is deliberate and pairs with the above. The
+              base variant fades a disabled control to 50%, which was the right
+              call while disabled meant "an accent button you may not press"; a
+              50% grey square on white is close to nothing, and the quiet FILL
+              already carries "not yet". Cursor and tooltip still say why. */}
           {isLoading && !hasSubmittableContent ? (
             <Button
               type="button"
               onClick={stopAck.trigger}
-              size="sm"
+              // 32×32, matching Send exactly: the two swap in place as a turn
+              // starts and ends, and a 28px Stop would twitch the card's
+              // height and the text's centring on each swap.
+              size="default"
               shape="round"
-              className={cn('relative', stopAck.acknowledged && 'scale-90')}
+              className={cn('relative flex-shrink-0', stopAck.acknowledged && 'scale-90')}
               data-testid="chat-stop-button"
               data-stop-acknowledged={stopAck.acknowledged}
               aria-label={stopAck.acknowledged ? 'Stopping response' : 'Stop response'}
@@ -2266,17 +2435,34 @@ export default function ChatInput({
           ) : (
             <Tooltip>
               <TooltipTrigger asChild>
-                <span>
+                <span className="flex-shrink-0">
                   <Button
                     type="submit"
                     form="bior-chat-form"
-                    size="sm"
+                    // A 32×32 ROUNDED SQUARE, not a circle and not the 28px
+                    // rung. `shape="round"` is already the square icon button
+                    // (the name is historical — see button.tsx), so `default`
+                    // is the whole change.
+                    size="default"
                     shape="round"
+                    // Quiet at rest, accent when armed. Both variants are the
+                    // same 32×32 `p-0 rounded-element` box, so the swap moves no
+                    // pixels — only `background-color` and `color`, both of which
+                    // are already in the button's own transition list, so it
+                    // eases in as you type instead of snapping.
+                    variant={isSubmitButtonDisabled ? 'secondary' : 'default'}
                     disabled={isSubmitButtonDisabled}
                     aria-label="Send message"
-                    className={cn(isSubmitButtonDisabled && 'cursor-not-allowed')}
+                    className={cn(
+                      isSubmitButtonDisabled && 'cursor-not-allowed disabled:opacity-100'
+                    )}
                   >
-                    <Send className="size-4" />
+                    {/* An UP arrow, not a paper plane. The gesture is "send
+                        this upward into the transcript", which is where the
+                        message literally goes, and the arrow says it without
+                        the plane's diagonal — the only diagonal glyph in the
+                        composer. */}
+                    <ArrowUp className="size-4" />
                   </Button>
                 </span>
               </TooltipTrigger>
@@ -2294,6 +2480,235 @@ export default function ChatInput({
             </Tooltip>
           )}
         </div>
+
+        {/* Combined files and images preview */}
+        {(pastedImages.length > 0 || allDroppedFiles.length > 0) && (
+          <div className="flex flex-wrap gap-2 pt-3 mt-2 border-t border-border-subtle">
+            {/* Render pasted images first */}
+            {pastedImages.map((img) => (
+              <div key={img.id} className="relative group w-20 h-20">
+                {img.dataUrl && (
+                  <img
+                    src={img.dataUrl}
+                    alt={`Pasted image ${img.id}`}
+                    className={`w-full h-full object-cover rounded-element border ${img.error ? 'border-border-danger' : 'border-border-subtle'}`}
+                  />
+                )}
+                {img.isLoading && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-element">
+                    <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-white"></div>
+                  </div>
+                )}
+                {img.error && !img.isLoading && (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded-element p-1 text-center">
+                    <p className="text-text-danger text-supporting leading-tight break-all mb-1">
+                      {img.error.substring(0, 50)}
+                    </p>
+                    {img.dataUrl && (
+                      <Button
+                        type="button"
+                        onClick={() => handleRetryImageSave(img.id)}
+                        title="Retry saving image"
+                        variant="outline"
+                        size="xs"
+                      >
+                        Retry
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {!img.isLoading && (
+                  <Button
+                    type="button"
+                    shape="round"
+                    onClick={() => handleRemovePastedImage(img.id)}
+                    className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
+                    aria-label="Remove image"
+                    variant="outline"
+                    size="xs"
+                  >
+                    <X />
+                  </Button>
+                )}
+              </div>
+            ))}
+
+            {/* Render dropped files after pasted images */}
+            {allDroppedFiles.map((file) => (
+              <div key={file.id} className="relative group">
+                {file.canUploadAsImage ? (
+                  // Image preview
+                  <div className="w-20 h-20">
+                    {file.dataUrl && (
+                      <img
+                        src={file.dataUrl}
+                        alt={file.name}
+                        className={`w-full h-full object-cover rounded-element border ${file.error ? 'border-border-danger' : 'border-border-subtle'}`}
+                      />
+                    )}
+                    {file.isLoading && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50 rounded-element">
+                        <div className="animate-spin rounded-full h-6 w-6 border-t-2 border-b-2 border-white"></div>
+                      </div>
+                    )}
+                    {file.error && !file.isLoading && (
+                      <div className="absolute inset-0 flex flex-col items-center justify-center bg-black bg-opacity-75 rounded-element p-1 text-center">
+                        <p className="text-text-danger text-supporting leading-tight break-all">
+                          {file.error.substring(0, 30)}
+                        </p>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  // File box preview
+                  <div className="flex items-center gap-2 px-3 py-2 bg-background-medium border border-border-subtle rounded-element min-w-[120px] max-w-[200px]">
+                    <div className="flex-shrink-0 w-8 h-8 bg-background-default border border-border-subtle rounded-inner flex items-center justify-center text-supporting font-mono text-text-muted">
+                      {file.name.split('.').pop()?.toUpperCase() || 'FILE'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-secondary text-text-default truncate" title={file.name}>
+                        {file.name}
+                      </p>
+                      <p className="text-supporting text-text-muted">
+                        {file.type || 'Unknown type'}
+                      </p>
+                    </div>
+                  </div>
+                )}
+                {!file.isLoading && (
+                  <Button
+                    type="button"
+                    shape="round"
+                    onClick={() => handleRemoveDroppedFile(file.id)}
+                    className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity z-10"
+                    aria-label="Remove file"
+                    variant="outline"
+                    size="xs"
+                  >
+                    <X />
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ROW 3 — CONTROLS, ON THE CANVAS. Settings and readouts only: Send has
+          moved into the card, where the thing it acts on is.
+
+          SPLIT IN TWO. Left is what the next message is answered BY — the
+          reasoning knob and the model, one dot between them because they
+          answer the same question. Right is what it is COSTING — headroom and
+          money — which are readouts, not pickers, and read as such once they
+          are the only things on that side.
+
+          `pl-3.5` is solved for, like row 1's `pl-3`: 14px plus the reasoning
+          chip's own 2px puts its glyph on the same column as the folder glyph
+          above and the placeholder in between. See row 1 for the measurement
+          that rejected replacing both with a flat 4px inset. No vertical
+          padding at all — the shell's `gap-1.5` is the whole distance to the
+          card, declared once, which is the mistake that produced a lopsided
+          card an earlier round. */}
+      <div
+        ref={toolbarRef}
+        data-testid="chat-input-toolbar"
+        className="relative flex min-w-0 flex-row flex-nowrap items-center overflow-hidden pr-2.5 pl-3.5"
+      >
+        {/* The controls are hoisted to the component body, because row 1 needs
+            the same objects this row does. What is left here is only the
+            ARRANGEMENT — and it is a much shorter row than it was: the
+            directory and the context group live in row 1 and Send lives in the
+            card, so this row carries four things. That is also why the collapse
+            threshold is now rarely reached.
+
+            GAPS ARE OPTICAL, not literal. The design's 10px on the left group
+            and 13px on the right are measured between bare spans; every control
+            here carries 2–6px of its own hit-area padding, so the flex gap is
+            set to leave the intended visible channel. Left: `gap-3.5` plus the
+            chips' 2px lands the dot 16px clear on both sides — wider than the
+            design's 10, deliberately, because "rammed" has been the standing
+            note and this row has room to spare. (The gap is between BORDER
+            boxes, so swapping the 1px rule for a 3px dot did not move those
+            16s.) Right: `gap-1.5` plus the gauge's 6px and the cost's 2px is
+            14px, which is the design's 13 within a pixel. */}
+        {composerToolbarCollapsed ? (
+          <div className="flex min-w-0 flex-1 items-center gap-3.5 overflow-hidden">
+            <Popover>
+              <PopoverTrigger asChild>
+                <button
+                  type="button"
+                  aria-label="Chat tools and settings"
+                  title="Chat tools and settings"
+                  data-testid="composer-tools-collapsed"
+                  // 28px, matching `h-7` on every other control in this row, so
+                  // the row is exactly as tall collapsed as expanded and the
+                  // composer does not resize when the artifact panel opens —
+                  // only its contents change. This was 32px, which was harmless
+                  // while the row carried 10px of its own vertical padding to
+                  // absorb the difference; the row has none now (the shell's
+                  // `gap-3` is the whole distance to the card), so the odd rung
+                  // would move the card by 4px on every collapse.
+                  className="flex size-7 flex-shrink-0 items-center justify-center rounded-element text-text-muted tint-interactive transition-colors hover:text-text-default"
+                >
+                  <Plus className="size-4" />
+                </button>
+              </PopoverTrigger>
+              {/* Portaled, so the enclosing overflow-hidden never clips it.
+                  side/align place it above the "+", growing up out of the row. */}
+              <PopoverContent
+                side="top"
+                align="start"
+                // The standard §3.8 menu container — 4px padding, 2px between
+                // items. The width follows the content instead of pinning every
+                // collapsed composer to 256px regardless of what is in it.
+                className="flex min-w-[15rem] max-w-[80vw] flex-col gap-0.5 p-1"
+                data-testid="composer-tools-popover"
+              >
+                {/* The directory, extensions, skills and knowledge bases are NOT
+                    here any more — they live in row 1, which has its own line
+                    and therefore never runs out of room. Collapsing is now only
+                    ever about this row. */}
+                <div className="flex flex-wrap items-center gap-0.5">
+                  {reasoning}
+                  {contextGauge}
+                  {cost}
+                </div>
+              </PopoverContent>
+            </Popover>
+            {/* The dot survives the collapse, because the "+" has taken the
+                reasoning knob's place in the row and the seam it marks — the
+                settings on one side, the model on the other — has not moved. */}
+            <span aria-hidden="true" className={TOOLBAR_DIVIDER_CLASS} />
+            {/* The model NEVER collapses. It changes what the next message costs
+                and what it can do, so hiding it behind a disclosure at exactly
+                the width where the artifact panel is competing for attention is
+                when it matters most. */}
+            {model}
+          </div>
+        ) : (
+          <div className="flex min-w-0 flex-1 flex-row items-center gap-3.5 overflow-hidden">
+            {reasoning}
+            <span aria-hidden="true" className={TOOLBAR_DIVIDER_CLASS} />
+            {model}
+          </div>
+        )}
+
+        {/* THE READOUTS, right-aligned: how much headroom is left and what the
+            conversation has cost. Both are things to READ, not controls to set,
+            and with Send gone into the card they are finally the only things on
+            this side — which is what lets them read that way instead of as two
+            more pickers.
+
+            Hidden while collapsed, because they are in the "+" popover. That
+            leaves the row with nothing on the right at narrow widths, and
+            `ml-auto` on a group that is not rendered costs nothing. */}
+        {!composerToolbarCollapsed && (
+          <div className="ml-auto flex flex-shrink-0 items-center gap-1.5 pl-2">
+            {contextGauge}
+            {cost}
+          </div>
+        )}
         <MentionPopover
           ref={mentionPopoverRef}
           isOpen={mentionPopover.isOpen}

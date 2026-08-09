@@ -431,7 +431,10 @@ export const BottomMenuExtensionSelection = ({
           <DropdownMenuTrigger asChild>
             <button
               type="button"
-              className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-xs"
+              // `text-supporting`, not the `text-secondary` main.css prescribes
+              // for a dense control — the override is explained once in
+              // ChatInput.tsx, search "THE RAILS' TYPE".
+              className="flex h-7 items-center rounded-md px-0.5 cursor-pointer [&_svg]:size-4 text-text-default/70 hover:bg-background-medium hover:text-text-default text-supporting"
               aria-label={`Manage extensions (${activeCount} enabled)`}
             >
               <Puzzle className="mr-0.5 h-4 w-4" />

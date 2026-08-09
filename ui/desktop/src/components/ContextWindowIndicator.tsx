@@ -307,6 +307,17 @@ function fmt(n: number): string {
 interface ContextWindowIndicatorProps extends ContextWindowGaugeProps {
   /** Override the popover trigger tooltip text. */
   triggerTitle?: string;
+  /**
+   * Print the headroom beside the ring instead of leaving the ring to carry it
+   * alone. Opt-in, because a ring on its own is the compact form and the
+   * composer's control bar is the only place with the width to spell it out.
+   *
+   * ⚠ The number is the REMAINING percentage, not the used one, because the arc
+   * the ring draws is the remaining arc (`strokeDashoffset` below). Printing
+   * "used" next to a "remaining" arc would put two readings of the same gauge
+   * side by side, disagreeing, at every value except 50%.
+   */
+  showRemainingPercent?: boolean;
 }
 
 /** Compact-row variant: a single remaining-context ring button which, on click,
@@ -320,6 +331,7 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
   isTokenLimitLoaded,
   onCompact,
   triggerTitle = 'Context window usage',
+  showRemainingPercent = false,
 }) => {
   const [open, setOpen] = useState(false);
   const current = totalTokens ?? 0;
@@ -377,6 +389,24 @@ export const ContextWindowIndicator: React.FC<ContextWindowIndicatorProps> = ({
                   transform="rotate(-90 12 12)"
                 />
               </svg>
+              {/* Numerals in mono, like every other figure in the control bar
+                  (the cost, the token counts). A proportional font re-measures
+                  the label on every token that streams in, and a number that
+                  twitches beside a ring that is also moving reads as a glitch
+                  rather than as progress. Hidden from the accessibility tree —
+                  `aria-label` above already states the same figure in words, and
+                  a bare "72%" would only repeat it without its subject. */}
+              {/* `text-supporting`, the composer rails' role — see the note in
+                  ChatInput.tsx, "THE RAILS' TYPE". This was `text-xs`, which is
+                  the same 12px by coincidence rather than by role: a raw
+                  Tailwind step here would not have followed the rails when they
+                  moved, and its 16px line height is Tailwind's, not the
+                  scale's. */}
+              {showRemainingPercent && (
+                <span aria-hidden="true" className="ml-1.5 font-mono text-supporting tabular-nums">
+                  {remainingPct}%
+                </span>
+              )}
               <span className="sr-only">{tooltip}</span>
             </button>
           </PopoverTrigger>

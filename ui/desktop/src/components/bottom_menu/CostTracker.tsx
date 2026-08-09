@@ -50,8 +50,11 @@ function aggregateSessionCosts(rows: SessionCostRow[]): CostEstimate {
   return { amount: hasKnownCost ? amount : null, partial };
 }
 
+// `text-supporting`, not the `text-secondary` main.css prescribes for a dense
+// control — the override is explained once in ChatInput.tsx, search
+// "THE RAILS' TYPE".
 const COST_TRIGGER_CLASS =
-  'h-7 min-w-0 px-0.5 font-mono text-xs font-normal text-text-default/70 hover:bg-background-medium hover:text-text-default';
+  'h-7 min-w-0 px-0.5 font-mono text-supporting text-text-default/70 hover:bg-background-medium hover:text-text-default';
 
 export function sessionTokensSummary(inputTokens: number, outputTokens: number): string {
   return `Input: ${inputTokens.toLocaleString()} tokens\nOutput: ${outputTokens.toLocaleString()} tokens`;
