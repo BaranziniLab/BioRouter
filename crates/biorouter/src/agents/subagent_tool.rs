@@ -648,6 +648,17 @@ async fn announce_open_frame(
         .map(|_| ())
 }
 
+/// Appended to every ad-hoc spawn's instructions (see `default_summary`).
+///
+/// The last two items are load-bearing, not padding. A subagent given an
+/// ambiguous task ("fix it and make sure it's consistent with the other one")
+/// once inferred a target, rewrote two files, and reported success; the parent
+/// had no way to tell a guess from a resolution, because the summary this
+/// prompt asks for had nowhere to put one. The child-side rule that it should
+/// stop rather than guess lives in `prompts/subagent_system.md`; this is the
+/// channel that rule returns through, and the ordering instruction exists
+/// because a parent reads this summary as a report of finished work, so a
+/// question buried under four sections of completed steps reads as done.
 const SUMMARY_INSTRUCTIONS: &str = r#"
 Important: Your parent agent will only receive your final message as a summary of your work.
 Make sure your last message provides a comprehensive summary of:
@@ -655,6 +666,11 @@ Make sure your last message provides a comprehensive summary of:
 - What actions you took
 - The results or outcomes
 - Any important findings or recommendations
+- Anything you had to guess, and anything you could not resolve at all
+
+If the task was ambiguous and you stopped rather than guess, say that in your opening line, name the candidates you
+found, and ask the one question your parent needs to answer. If you had to guess to finish something you could not
+undo, say that in the opening line too. Do not leave either of those for the end.
 
 Be concise but complete.
 "#;
@@ -703,7 +719,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
         "properties": {
             "instructions": {
                 "type": "string",
-                "description": "Instructions for the subagent. Required for ad-hoc tasks. For predefined tasks, adds additional context."
+                "description": "Instructions for the subagent. Required for ad-hoc tasks. For predefined tasks, adds additional context. The subagent CANNOT see this conversation, so resolve every referent before you delegate: write out the absolute paths, names and values you mean instead of \"it\", \"the other one\", \"that file\" or \"the same as before\". You can resolve them in one cheap step because you have the history and the user; the subagent has neither. A subagent that cannot tell what the task points at is told to stop and ask rather than guess, so an unresolved referent costs a whole round trip, and one that merely LOOKS resolvable may be resolved wrongly and written to disk."
             },
             "subworkflow": {
                 "type": "string",
@@ -783,6 +799,10 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          read while it works, and talk to. Leave `visible` and `extensions` unset and \
          you get that; setting them takes something away from the user, so set them \
          only when the task actually calls for it.\n\n\
+         A subagent starts with NO view of this conversation, so spell the task out: \
+         name the actual files, paths and values rather than \"it\" or \"the other one\". \
+         Resolving a referent costs you one step and costs the subagent a round trip \
+         (it is told to stop and ask rather than guess) or a wrong write to disk.\n\n\
          For parallel execution, make multiple `subagent` tool calls in the same message.",
     );
 
@@ -2966,6 +2986,164 @@ mod tests {
         assert!(
             desc.contains("watchable by default"),
             "the top-level description must state the norm: {desc}"
+        );
+    }
+
+    /// **The ambiguous-delegation regression.**
+    ///
+    /// Given only "Fix it and make sure it's consistent with the other one", a
+    /// subagent inferred a target, rewrote two files, and reported success. No
+    /// confirmation was sought and none should have been: Completely Autonomous
+    /// mode not asking is the mode working, and re-adding a prompt there would
+    /// be fixing the wrong thing. The defect is that the cheapest way for the
+    /// child to resolve "it" was to act, so the fix is on the instruction
+    /// layer, at both ends of the delegation.
+    ///
+    /// This half is the PARENT end: the parent holds the conversation and the
+    /// user, so it can resolve a referent in one step, and it is the only party
+    /// that can. A model reads a JSON-Schema `description` as instructions, so
+    /// this asserts what those fields TELL it. The child end is asserted by
+    /// `the_child_is_told_to_return_an_unresolvable_referent_rather_than_guess`
+    /// and the return channel by
+    /// `the_summary_contract_has_a_slot_for_what_could_not_be_resolved`.
+    #[test]
+    fn the_instructions_field_tells_the_parent_to_resolve_referents_before_delegating() {
+        let tool = create_subagent_tool(&[]);
+        let instructions = flatten_prose(
+            tool.input_schema["properties"]["instructions"]["description"]
+                .as_str()
+                .expect("instructions has a description"),
+        );
+
+        // The reason the parent must do it: the child has no access to this
+        // conversation. Without the reason the instruction reads as style advice.
+        assert!(
+            instructions.contains("cannot see this conversation"),
+            "the field must say why the parent has to resolve referents: {instructions}"
+        );
+        // Named, so the model can recognise the shape in its own draft.
+        assert!(
+            instructions.contains("referent"),
+            "the field must name what has to be resolved: {instructions}"
+        );
+        for pronoun in ["\"it\"", "\"the other one\""] {
+            assert!(
+                instructions.contains(pronoun),
+                "the field must show {pronoun}, the exact shape that caused the incident: \
+                 {instructions}"
+            );
+        }
+        // And the cost, which is what makes it worth a step rather than a nicety.
+        assert!(
+            instructions.contains("stop and ask") || instructions.contains("round trip"),
+            "the field must state what an unresolved referent costs: {instructions}"
+        );
+
+        // The top-level description, which models weight more heavily than a
+        // per-field one, says it as well.
+        let desc = flatten_prose(tool.description.as_ref().expect("tool has a description"));
+        assert!(
+            desc.contains("no view of this conversation"),
+            "the tool description must state the child's blindness: {desc}"
+        );
+        assert!(
+            desc.contains("name the actual files"),
+            "the tool description must say what to write instead: {desc}"
+        );
+    }
+
+    /// The CHILD end of the same fix, read out of the rendered system prompt.
+    ///
+    /// A subagent is handed `subagent_system.md` as a full system-prompt
+    /// override, so this file is the only place the rule can live for it.
+    /// Before the fix the file said "**Independence**: Make decisions and
+    /// execute tools within your scope" and nothing else about ambiguity, which
+    /// pointed the child at exactly the behaviour that caused the incident.
+    /// Lowercase and collapse every run of whitespace to one space, so a prose
+    /// assertion matches a phrase the source happens to line-wrap across. The
+    /// alternative is a test that fails when someone re-flows a paragraph,
+    /// which trains people to loosen the assertion.
+    #[cfg(test)]
+    fn flatten_prose(s: &str) -> String {
+        s.to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn the_child_is_told_to_return_an_unresolvable_referent_rather_than_guess() {
+        let prompt = flatten_prose(include_str!("../prompts/subagent_system.md"));
+
+        // The rule exists and is scoped to the irreversible case, so ordinary
+        // reversible work is untouched. A blanket "always ask" would make
+        // delegation useless.
+        assert!(
+            prompt.contains("when the task is ambiguous"),
+            "the child needs a section it can find: {prompt}"
+        );
+        assert!(
+            prompt.contains("not reversible") || prompt.contains("could not undo"),
+            "the rule must be scoped to irreversible actions, not to all work"
+        );
+        assert!(
+            prompt.contains("stop before doing it") || prompt.contains("stop and"),
+            "the child must be told to stop, not merely to be careful"
+        );
+        assert!(
+            prompt.contains("do not pick the most likely candidate"),
+            "the child must be told not to guess the target, which is what it did"
+        );
+        // The child is told to be efficient, bounded and complete; without this
+        // it reads stopping as failing and acts to have something to show.
+        assert!(
+            prompt.contains("completed task, not a failed one"),
+            "returning a question must be framed as success or the pressure to act wins"
+        );
+        // Try the tool first, so this does not turn into asking about everything.
+        assert!(
+            prompt.contains("settle it with a tool"),
+            "the child must exhaust tools before asking"
+        );
+        // The bullet that used to point the other way must not come back.
+        assert!(
+            !prompt
+                .contains("**independence**: make decisions and execute tools within your scope"),
+            "the unscoped independence bullet is back, and it contradicts the rule above"
+        );
+    }
+
+    /// The RETURN channel. A rule telling the child to come back is worth
+    /// nothing if the report it comes back in has no slot for a question, and
+    /// worth little if the slot is at the bottom: the parent reads this summary
+    /// as an account of finished work.
+    #[test]
+    fn the_summary_contract_has_a_slot_for_what_could_not_be_resolved() {
+        let summary = flatten_prose(SUMMARY_INSTRUCTIONS);
+        assert!(
+            summary.contains("could not resolve"),
+            "the summary must have a slot for an unresolved referent: {summary}"
+        );
+        assert!(
+            summary.contains("had to guess"),
+            "a guess the child did make must be reported too, or the parent cannot tell: {summary}"
+        );
+        assert!(
+            summary.contains("opening line"),
+            "the question must be placed where a reader of a completion report will see it: \
+             {summary}"
+        );
+        assert!(
+            summary.contains("ask the one question"),
+            "the child must be told to ask, not merely to note the ambiguity: {summary}"
+        );
+
+        // And it actually reaches the child: `default_summary` is true, and the
+        // ad-hoc builder appends this block to the instructions that become the
+        // child's system prompt.
+        assert!(
+            default_summary(),
+            "the summary contract must be on by default"
         );
     }
 
