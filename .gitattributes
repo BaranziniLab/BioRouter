@@ -1,1 +1,40 @@
+# Insta snapshots are data, not source, and GitHub's language stats should not
+# count them. Predates the line-ending pin below; kept because it answers a
+# different question.
 crates/biorouter/src/agents/snapshots/*.snap linguist-language=Text
+
+# ⚠ Pin line endings for source, so a Windows checkout cannot change file bytes.
+#
+# Git for Windows defaults to `core.autocrlf=true`, which rewrites LF to CRLF on
+# checkout. That is invisible until something reads a source file as TEXT rather
+# than compiling it, and this repo does exactly that: several tests scan their
+# own source to assert an invariant nothing else can hold (that a gate is wired
+# into dispatch, that a module's tests live where its docs claim). Two of those
+# needles contain `\n`, so on Windows they matched nothing and the tests failed
+# for eighteen days for a reason that had nothing to do with the code.
+#
+# Normalising in each test works and is what shipped, but it treats a repository
+# property as a per-test concern and the next such test will be written without
+# it. This is the root fix.
+*.rs        text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.js        text eol=lf
+*.mjs       text eol=lf
+*.json      text eol=lf
+*.toml      text eol=lf
+*.md        text eol=lf
+*.css       text eol=lf
+*.html      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.sh        text eol=lf
+
+# Shell scripts and binaries that must not be touched at all.
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.icns      binary
+*.gguf      binary
+*.brxt      binary
+*.brkb      binary
