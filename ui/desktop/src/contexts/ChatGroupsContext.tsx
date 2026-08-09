@@ -415,11 +415,45 @@ export function ChatGroupsProvider({ children }: { children: React.ReactNode }) 
     enabled: workspaceChannelEnabled,
   });
 
+  /**
+   * ⚠ **`focused_session` has to mean FOCUSED, or the daemon cannot tell two
+   * windows apart** (issue #78).
+   *
+   * The daemon chooses which window receives an `open_tab` with
+   * `bridge::focused_or_recent()`, whose first branch takes the first bridge
+   * whose echo carries a non-null `focused_session`. This effect used to put
+   * the window's ACTIVE TAB in that field, with no OS-focus input anywhere on
+   * the path — so every window holding a chat reported "focused", permanently,
+   * and the tie fell through to `HashMap::values()` order: arbitrary, but
+   * stable for the life of the process. That is exactly the reported symptom,
+   * a spawned subagent tab landing in one particular *other* window each time.
+   *
+   * Tracking real focus makes that branch mean what it says. It does not
+   * replace threading the originating window id through the spawn path, which
+   * is the robust fix and stays open on #78 — it removes the ambiguity that
+   * made the guess wrong in the ordinary case.
+   */
+  const [windowFocused, setWindowFocused] = useState(() =>
+    typeof document === 'undefined' ? true : document.hasFocus()
+  );
+  useEffect(() => {
+    const onFocus = () => setWindowFocused(true);
+    const onBlur = () => setWindowFocused(false);
+    window.addEventListener('focus', onFocus);
+    window.addEventListener('blur', onBlur);
+    return () => {
+      window.removeEventListener('focus', onFocus);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, []);
+
   // Keyed on `state`, so it runs on every commit — the same placement as
   // acknowledgeNewTabCommit. `activeSessionId` is '' for an empty active group.
   useEffect(() => {
-    sendEcho(buildEchoFrame(windowIdRef.current, activeSessionId || null, state));
-  }, [state, activeSessionId, sendEcho]);
+    sendEcho(
+      buildEchoFrame(windowIdRef.current, windowFocused ? activeSessionId || null : null, state)
+    );
+  }, [state, activeSessionId, sendEcho, windowFocused]);
 
   const value = useMemo<ChatGroupsContextValue>(
     () => ({

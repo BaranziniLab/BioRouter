@@ -509,6 +509,58 @@ mod tests {
         assert!(pick_target(vec![]).is_none());
     }
 
+    /// ⚠ **The case the fixture above never produced, and the one that was
+    /// actually broken** (issue #78).
+    ///
+    /// That test gives one window a focused session and the other `null`. The
+    /// renderer never produced that state: it filled `focused_session` from the
+    /// window's ACTIVE TAB with no OS-focus input at all, so every window
+    /// holding a chat reported non-null, permanently. Rule 1 was therefore
+    /// being asked a question that never arose, while the question that did
+    /// arise — two windows both claiming focus — fell through to
+    /// `HashMap::values()` order and picked arbitrarily.
+    ///
+    /// The renderer now reports focus for real, so at most one window claims it
+    /// and this asserts the tie is gone. It is pinned here rather than left to
+    /// the renderer alone because `pick_target` is where the consequence lands:
+    /// if the echo semantics ever regress, this is the test that says which
+    /// half broke.
+    #[test]
+    fn two_windows_both_claiming_focus_is_the_state_that_must_not_arise() {
+        let a = WorkspaceBridge::new();
+        let (_r1, _t1) = a.attach();
+        a.store_echo(json!({"window_id": "w-a", "focused_session": "s1"}));
+        std::thread::sleep(Duration::from_millis(5));
+        let b = WorkspaceBridge::new();
+        let (_r2, _t2) = b.attach();
+        b.store_echo(json!({"window_id": "w-b", "focused_session": "s2"}));
+
+        // Both claim focus. `pick_target` can only return SOMETHING, and which
+        // one is genuinely arbitrary — that is the defect, and it is why the
+        // fix has to be upstream in what the renderer reports rather than in a
+        // cleverer tie-break here.
+        let picked = pick_target(vec![a.clone(), b.clone()]).expect("a target");
+        let id = picked.last_echo().unwrap()["window_id"].clone();
+        assert!(id == "w-a" || id == "w-b", "got {id}");
+
+        // With the renderer honest, the blurred window reports null and the
+        // focused one wins unambiguously, regardless of candidate order or
+        // which attached more recently.
+        a.store_echo(json!({"window_id": "w-a", "focused_session": null}));
+        let picked = pick_target(vec![a.clone(), b.clone()]).expect("a target");
+        assert_eq!(
+            picked.last_echo().unwrap()["window_id"],
+            "w-b",
+            "exactly one window claims focus, so it is the target"
+        );
+        let picked = pick_target(vec![b.clone(), a.clone()]).expect("a target");
+        assert_eq!(
+            picked.last_echo().unwrap()["window_id"],
+            "w-b",
+            "and the answer does not depend on candidate order"
+        );
+    }
+
     /// A registered-but-never-connected window must never win the recency
     /// fallback.
     ///
