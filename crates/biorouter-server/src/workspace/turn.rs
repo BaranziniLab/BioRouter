@@ -1167,6 +1167,46 @@ mod tests {
         seen
     }
 
+    fn is_terminal(ev: &SessionBusEvent) -> bool {
+        matches!(
+            ev,
+            SessionBusEvent::TurnError { .. } | SessionBusEvent::TurnFinished { .. }
+        )
+    }
+
+    /// Collect events up to and including the turn's terminal frame, giving up
+    /// only at `deadline`.
+    ///
+    /// ⚠ This is NOT [`drain`], and the difference is why it exists. `drain`
+    /// stops after a 200 ms *gap*, which answers "has the bus gone quiet?" —
+    /// the right question for a test asserting that nothing more is coming.
+    /// Ask it of an event that IS coming and the 200 ms silently becomes a race
+    /// against the machine: a turn publishes its terminal only after
+    /// `prepare_turn` has awaited the session's extension load and built an
+    /// agent (config reads, session I/O), which on a loaded CI runner takes
+    /// longer than the gap. The test then reports zero terminals and prints an
+    /// empty vector, which reads as a lost event rather than a short wait.
+    ///
+    /// So wait on the *condition* — the terminal frame — with a deadline no
+    /// healthy run comes near. A slow machine makes this slower, never red.
+    async fn events_until_terminal(
+        rx: &mut session_events::Subscription,
+        deadline: std::time::Duration,
+    ) -> Vec<SessionBusEvent> {
+        let mut seen = Vec::new();
+        let collect = async {
+            while let Ok(ev) = rx.recv().await {
+                let terminal = is_terminal(&ev);
+                seen.push(ev);
+                if terminal {
+                    break;
+                }
+            }
+        };
+        let _ = tokio::time::timeout(deadline, collect).await;
+        seen
+    }
+
     /// The abort path end-to-end through the stream loop, which no test could
     /// reach before `drive_stream` was split out: `run_turn` needs a provider to
     /// get this far, and a provider-less session exits via
@@ -1490,18 +1530,20 @@ mod tests {
             .unwrap();
         assert!(matches!(first, SessionBusEvent::TurnStarted { .. }));
 
-        // And the terminal, which on this provider-less path follows within
-        // microseconds of the start.
-        let terminals: Vec<_> = drain(&mut started.events)
-            .await
-            .into_iter()
-            .filter(|ev| {
-                matches!(
-                    ev,
-                    SessionBusEvent::TurnError { .. } | SessionBusEvent::TurnFinished { .. }
-                )
-            })
-            .collect();
+        // And the terminal. ⚠ Wait for the frame itself, never for the bus to
+        // fall quiet for 200 ms: this path is only "microseconds" on an idle
+        // machine, and `prepare_turn` awaits the session's extension load and
+        // builds an agent before it can fail. Under CI contention that
+        // outran a `drain`, which then reported zero terminals and an empty
+        // vector — indistinguishable from the lost-event bug this test exists
+        // to catch.
+        let mut lifecycle =
+            events_until_terminal(&mut started.events, std::time::Duration::from_secs(30)).await;
+        // Only now is silence meaningful: a second terminal would be an extra
+        // publish, and by here the first has already arrived.
+        lifecycle.extend(drain(&mut started.events).await);
+
+        let terminals: Vec<_> = lifecycle.into_iter().filter(is_terminal).collect();
         assert_eq!(terminals.len(), 1, "exactly one terminal: {terminals:?}");
     }
 
