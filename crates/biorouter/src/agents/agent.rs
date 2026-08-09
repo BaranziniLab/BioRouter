@@ -4390,7 +4390,7 @@ impl Agent {
     /// `normalize(name_to_key("workspace")) == "workspace"`, so this is
     /// simultaneously the `PLATFORM_EXTENSIONS` registry key, the
     /// extension-manager map key, and the advertised tool prefix.
-    const SPAWN_EXTENSION: &'static str = "workspace";
+    pub(crate) const SPAWN_EXTENSION: &'static str = "workspace";
 
     /// Idempotently load the workspace extension for a session that may
     /// delegate. Never downgrades a user-enabled entry, and never claims one:
@@ -9702,6 +9702,42 @@ mod tests {
             .map(|t| t.name.to_string())
             .collect();
         assert!(!names.iter().any(|n| n.contains("subagent")), "{names:?}");
+    }
+
+    /// ⚠ **The same rule, arriving by the other door** (#76).
+    ///
+    /// The test above covers an AUTO-INJECTED workspace. Once Workspace became
+    /// a default-on capability it loads as `Explicit` instead, and an
+    /// origin-only predicate would have been satisfied by workspace itself in
+    /// every session, permanently — the gate would still compile, still pass
+    /// that test, and mean nothing.
+    ///
+    /// So `has_non_injected_extensions` excludes it by NAME as well as by
+    /// origin, and this is the test that says so. Without it the inversion of
+    /// `default_enabled` is a silent semantic regression rather than a product
+    /// decision.
+    #[tokio::test]
+    async fn an_explicit_workspace_does_not_keep_the_subagent_gate_open_either() {
+        let (agent, session_id) = agent_with_one_extension_for_tests().await;
+
+        // Explicit, exactly as a default-on capability arrives — not the
+        // injection path.
+        agent
+            .add_extension(ExtensionConfig::Platform {
+                name: Agent::SPAWN_EXTENSION.to_string(),
+                description: "workspace".to_string(),
+                bundled: Some(true),
+                available_tools: Vec::new(),
+            })
+            .await
+            .unwrap();
+
+        agent.remove_extension("todo").await.unwrap(); // the last real one
+
+        assert!(
+            !agent.subagents_enabled(&session_id).await,
+            "an explicitly-enabled workspace is still not a capability the USER              granted for the purpose the gate asks about"
+        );
     }
 
     /// ACP loads the user's extensions onto ONE `Agent` and serves every

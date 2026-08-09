@@ -1139,12 +1139,26 @@ impl ExtensionManager {
     /// own earlier turn derived. In-process per-app servers DO count here
     /// (unlike in `get_extension_configs`): they are real capability, they are
     /// just not re-spawnable from a config.
+    ///
+    /// ⚠ **Origin is no longer sufficient, so the name is excluded too.** Once
+    /// `workspace` became a default-on capability it loads as `Explicit`, not
+    /// `AutoInjected` — so an origin-only test would be satisfied by workspace
+    /// itself, in every session, permanently. The predicate would still compile,
+    /// still pass its tests, and mean nothing: "the user gave this agent at
+    /// least one real capability" would degenerate to "true".
+    ///
+    /// That is the self-sustaining grant this function was written to prevent,
+    /// arriving by the other door. Excluding it by name as well as by origin is
+    /// what keeps the question honest.
     pub async fn has_non_injected_extensions(&self) -> bool {
         self.extensions
             .lock()
             .await
-            .values()
-            .any(|extension| extension.origin != ExtensionOrigin::AutoInjected)
+            .iter()
+            .any(|(name, extension)| {
+                extension.origin != ExtensionOrigin::AutoInjected
+                    && !name.eq_ignore_ascii_case(crate::agents::agent::Agent::SPAWN_EXTENSION)
+            })
     }
 
     pub async fn add_client(

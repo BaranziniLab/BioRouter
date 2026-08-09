@@ -74,9 +74,21 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: workspace_extension::EXTENSION_NAME,
                 description:
-                    "Operate the BioRouter workspace: list/open/read conversations, inject prompts, \
-                     change tool sets, and run glass-box subagents in visible tabs",
-                default_enabled: false,
+                    "Operate the Biorouter workspace: list, open and read conversations, send \
+                     prompts, change tool sets, and run subagents in visible tabs",
+                // ⚠ Default ON as a built-in capability rather than an
+                // extension (#76). This grants the FULL surface — available_tools
+                // is empty, which means all of them, including reading and
+                // steering other conversations. That is deliberate: "Workspace
+                // Control" IS that capability, and the user asked for it on by
+                // default.
+                //
+                // The delegation gate no longer counts it.
+                // `has_non_injected_extensions` excludes it by NAME as well as
+                // by origin, because a config-enabled workspace loads as
+                // Explicit and would otherwise satisfy that gate by itself, in
+                // every session, forever.
+                default_enabled: true,
                 client_factory: |ctx| {
                     Box::new(workspace_extension::WorkspaceClient::new(ctx).unwrap())
                 },
@@ -687,10 +699,22 @@ mod tests {
     use super::PLATFORM_EXTENSIONS;
     use crate::agents::*;
 
+    /// ⚠ **Default ON, and it grants the FULL surface** (#76).
+    ///
+    /// This test asserted the opposite until Workspace became a built-in
+    /// capability. The inversion is deliberate, but it is not free, and the
+    /// second assertion is the one that matters: `available_tools` is empty,
+    /// which means every workspace tool, including reading and steering other
+    /// conversations. A future change that keeps the default but narrows the
+    /// grant would be a different product decision, so it should fail here and
+    /// be made on purpose rather than noticed later.
     #[test]
-    fn workspace_platform_extension_is_registered_and_off_by_default() {
+    fn workspace_is_a_default_on_capability_granting_its_whole_surface() {
         assert_eq!(PLATFORM_EXTENSIONS.len(), 6);
-        assert!(!PLATFORM_EXTENSIONS["workspace"].default_enabled);
+        assert!(
+            PLATFORM_EXTENSIONS["workspace"].default_enabled,
+            "workspace is a capability now, so it ships on"
+        );
     }
 
     #[test]
