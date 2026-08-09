@@ -2401,11 +2401,11 @@ The fail direction is settled; these make the consequences legible **before** th
 with sensitive work.
 
 - **Extensions settings** shows a badge plus provenance on every card, in three distinct strings:
-  *"Private — published on the Biorouter marketplace"*, *"Public — published on the Biorouter
-  marketplace"*, *"Public — installed from a file, not on the marketplace. Any model can call it."*
+  *"Private: published on the Biorouter marketplace"*, *"Public: published on the Biorouter
+  marketplace"*, *"Public: installed from a file, not on the marketplace. Any model can call it."*
 - **The `.brxt` install modal** shows the resulting badge above the Install button with:
   *"Extensions installed from a file are always Public. Any model, including commercial models
-  hosted outside UCSF, will be able to call this extension."* The manual "Add stdio extension" form
+  hosted outside your institution, will be able to call this extension."* The manual "Add stdio extension" form
   carries the same line.
 - **A one-time notice on first launch after upgrade** names any **enabled** extension that is Public
   and declares clinical-looking credentials. On this machine it names `medcp`. It informs; it does

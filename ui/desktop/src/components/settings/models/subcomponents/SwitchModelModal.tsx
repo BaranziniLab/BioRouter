@@ -146,7 +146,7 @@ const modelOptionSearchText = (option: ModelOption) =>
  * puts the buttons.
  */
 const PUBLIC_MODEL_IN_PRIVATE_CHAT =
-  'Unavailable — this is a private chat, so only private models may run in it';
+  'Unavailable: this is a private chat, so only private models may run in it';
 
 const renderModelOptionLabel = (
   rawOption: unknown,

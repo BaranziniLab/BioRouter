@@ -183,7 +183,7 @@ const PRESENTATION: Record<
       title:
         `Covered by ${named}${institutions.length > 1 ? '’' : '’s'} agreements. ` +
         'Reaching another institution’s private extension is a cross-institutional flow, ' +
-        'and needs your approval first — compliance does not transfer between institutions.',
+        'and needs your approval first. Compliance does not transfer between institutions.',
     };
   },
   unstated: () => ({

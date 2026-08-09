@@ -113,7 +113,7 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
     {
       key: 'local',
       label: 'Private · Local',
-      note: 'Private because inference runs on this machine — nothing leaves it.',
+      note: 'Private because inference runs on this machine. Nothing leaves it.',
       accentClassName: 'bg-background-success',
       providers: grouped.local,
     },
@@ -134,7 +134,7 @@ export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedP
       // when it in fact resolves to that gateway — conservative and fail-safe,
       // but the copy must not claim something the configuration contradicts.
       label: 'Public · Commercial',
-      note: "Public — Biorouter can't verify where this account's endpoint points, even one your institution pays for.",
+      note: "Public. Biorouter can't verify where this account's endpoint points, even one your institution pays for.",
       accentClassName: 'bg-background-warning',
       providers: grouped.commercial,
     },

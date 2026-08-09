@@ -158,7 +158,7 @@ describe('affiliationPresentation', () => {
       institutions: [{ id: 'ucsf', display_name: 'UCSF' }],
     });
     expect(words?.label).toBe('UCSF');
-    expect(words?.title).toContain('compliance does not transfer');
+    expect(words?.title).toContain('Compliance does not transfer');
   });
 
   /** Every kind has words. A `Record` keyed on the union makes this structural. */

@@ -95,6 +95,6 @@ describe('AffiliationBadge', () => {
     expect(badge).toHaveAttribute('data-affiliation', 'institutions');
     // No visible text in the dense form; the words live in the label and title.
     expect(badge.textContent?.trim()).toBe('');
-    expect(badge.getAttribute('title')).toContain('compliance does not transfer');
+    expect(badge.getAttribute('title')).toContain('Compliance does not transfer');
   });
 });

@@ -293,7 +293,7 @@ export default function ModelsBottomBar({
   // there is room for it: the tooltip and the dropdown header.
   const privacyLine =
     privacyTier === 'private'
-      ? 'Private chat — only private models can read it'
+      ? 'Private chat. Biorouter only lets a private model open it.'
       : privacyTier === 'public'
         ? 'Public chat'
         : null;

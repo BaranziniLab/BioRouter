@@ -199,11 +199,11 @@ export function PrivacyBadge({
         // `title` by itself would leave the padlock unannounced as well as
         // untooltipped. Both live here; the glyph is decorative.
         role="img"
-        aria-label={off ? 'Private chat — enforcement off' : 'Private chat'}
+        aria-label={off ? 'Private chat, enforcement off' : 'Private chat'}
         title={
           off
-            ? 'Private — but privacy tiers are turned off, so nothing enforces this'
-            : 'Private — only private models can read this chat'
+            ? 'Private, but privacy tiers are turned off, so nothing enforces this'
+            : 'Private. Biorouter only lets a private model open this chat.'
         }
         // `inline-block`, not the default `inline`: this wrapper shrink-wraps a
         // glyph that carries its own box, and an inline box would additionally

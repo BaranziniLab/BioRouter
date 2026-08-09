@@ -100,7 +100,7 @@ export default function ExtensionItem({
    */
   const builtIn = isBuiltInExtension(extension);
   const provenance = builtIn
-    ? 'Public — built into Biorouter, not on the marketplace. Any model can call it.'
+    ? 'Public: built into Biorouter, not on the marketplace. Any model can call it.'
     : catalog
       ? extensionProvenance(catalog.registry, extension.name)
       : null;

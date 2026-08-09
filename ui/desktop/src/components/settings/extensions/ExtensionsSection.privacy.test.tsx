@@ -108,9 +108,9 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
     render(<ExtensionsSection hideButtons />);
 
     expect(
-      await screen.findByText('Private — published on the Biorouter marketplace')
+      await screen.findByText('Private: published on the Biorouter marketplace')
     ).toBeInTheDocument();
-    expect(screen.getByText('Public — published on the Biorouter marketplace')).toBeInTheDocument();
+    expect(screen.getByText('Public: published on the Biorouter marketplace')).toBeInTheDocument();
     // The catalogue on screen is the bundled one, and the screen says so.
     expect(screen.getByText(/showing bundled catalog \(offline\)/i)).toBeInTheDocument();
   });
@@ -167,7 +167,7 @@ describe('ExtensionsSection — the pairing state Settings can actually compute'
 
     expect(
       await screen.findByText(
-        'Public — installed from a file, not on the marketplace. Any model can call it.'
+        'Public: installed from a file, not on the marketplace. Any model can call it.'
       )
     ).toBeInTheDocument();
   });

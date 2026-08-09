@@ -27,7 +27,7 @@ import { setExtensionOverride, getExtensionOverrides } from '../../store/extensi
 
 /** §14.5's reason, in the composer's own words. Public model → private tool. */
 const PAIRING_REFUSED_REASON =
-  'Unavailable in this chat — a private extension needs a private model';
+  'Unavailable in this chat: a private extension needs a private model';
 
 interface BottomMenuExtensionSelectionProps {
   sessionId: string | null;

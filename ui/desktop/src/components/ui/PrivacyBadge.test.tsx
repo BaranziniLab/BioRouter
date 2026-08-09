@@ -292,7 +292,7 @@ describe('PrivacyBadge', () => {
     // the tooltip mechanism is a `<title>` child element) untooltipped.
     expect(mark.getAttribute('role')).toBe('img');
     expect(mark.getAttribute('aria-label')).toBe('Private chat');
-    expect(mark.getAttribute('title')).toMatch(/^Private —/);
+    expect(mark.getAttribute('title')).toMatch(/^Private\. Biorouter only lets a private model/);
     // The glyph itself must stay decorative, or a screen reader announces the
     // padlock twice — once from the span's label and once from the svg.
     expect(mark.querySelector('svg')!.getAttribute('aria-hidden')).toBe('true');
@@ -363,7 +363,7 @@ describe('PrivacyBadge', () => {
     // The dense mark has no words, so the accessible name carries it.
     const mark = badgeOf(<PrivacyBadge tier="private" dense enforcementOff />)!;
     expect(mark.getAttribute('data-enforcement')).toBe('off');
-    expect(mark.getAttribute('aria-label')).toBe('Private chat — enforcement off');
+    expect(mark.getAttribute('aria-label')).toBe('Private chat, enforcement off');
   });
 
   it('says nothing about enforcement when enforcement is on', () => {

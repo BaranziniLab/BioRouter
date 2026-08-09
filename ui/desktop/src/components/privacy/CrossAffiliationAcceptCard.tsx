@@ -148,7 +148,7 @@ export function CrossAffiliationAcceptCard({
           same dead end one press further along.
         */}
         <p className="min-w-0 [overflow-wrap:anywhere] mt-2 text-text-muted">
-          Ask the assistant to try that step again — it was told not to retry on its own.
+          Ask the assistant to try that step again. It was told not to retry on its own.
         </p>
       </div>
     );

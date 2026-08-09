@@ -249,7 +249,7 @@ describe('the prose the badge travels with', () => {
       extensions: [{ extension_name: 'cdwagent', privacy: 'private' } as never],
     };
     expect(extensionProvenance(listed, 'cdwagent')).toBe(
-      'Private — published on the Biorouter marketplace'
+      'Private: published on the Biorouter marketplace'
     );
   });
 

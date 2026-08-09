@@ -341,13 +341,13 @@ export function extensionProvenance(registry: BaamRegistry, name: string): strin
     // provenance to compare against. That is open question 28, not a wording
     // problem.
     return listed
-      ? 'Private — published on the Biorouter marketplace'
-      : 'Private — the Biorouter marketplace publishes this name as private';
+      ? 'Private: published on the Biorouter marketplace'
+      : 'Private: the Biorouter marketplace publishes this name as private';
   }
   if (listed) {
-    return 'Public — published on the Biorouter marketplace';
+    return 'Public: published on the Biorouter marketplace';
   }
-  return 'Public — installed from a file, not on the marketplace. Any model can call it.';
+  return 'Public: installed from a file, not on the marketplace. Any model can call it.';
 }
 
 /**
