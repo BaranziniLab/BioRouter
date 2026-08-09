@@ -2315,7 +2315,7 @@ pub(crate) mod diverge_tests {
             "the renderer cannot tell this refusal from a 500: {COPY_OF_PRIVATE_NEEDS_USER}"
         );
         // And deliberately NOT the model picker's marker. The two refusals are
-        // different acts with different remedies — one is "switch this chat's
+        // different acts with different remedies, one is "switch this chat's
         // model", the other is "branch this chat" — and a toast that answered
         // for both would tell the user to do the wrong thing.
         assert!(

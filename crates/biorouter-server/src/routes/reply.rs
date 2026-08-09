@@ -1212,7 +1212,7 @@ fn attach_response(
 /// already hold frames 0..N of a turn", which only an attach can say. A first
 /// POST never sends it (see [`ChatRequest::from_seq`] and the client's
 /// `buildAttachRequest`), so a request carrying it is an attach and is answered
-/// as one — including when the answer is "that turn is gone".
+/// as one. Including when the answer is "that turn is gone".
 ///
 /// Asked BEFORE the turn lock, deliberately: taking the lock to find out would
 /// mint a turn entry for a turn that does not exist, and inserting it evicts
@@ -4505,7 +4505,7 @@ mod adversarial_lifecycle {
     /// The cost is not confined to the late attacher: `close()` synthesizes an
     /// Error terminal and `publish` then refuses the real `Finish`, so EVERY
     /// observer of a healthy turn — including the one that watched it from the
-    /// start — is told "The stream for this turn ended without a result."
+    /// start, is told "The stream for this turn ended without a result."
     #[tokio::test(flavor = "multi_thread")]
     async fn a_late_attach_must_not_steal_the_terminal_from_a_draining_pump() {
         let state = AppState::new().await.unwrap();

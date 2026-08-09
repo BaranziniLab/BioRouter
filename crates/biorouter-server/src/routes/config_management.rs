@@ -329,7 +329,7 @@ pub async fn upsert_config(
     // ⚠ **A copy left in `config.yaml` would defeat the move.** Task 30 closed
     // the HTTP channel to this key, but DR-17 descoped the filesystem barrier
     // that DR-14 had put around `config.yaml`, so writing the key into that file
-    // by hand stayed a next-launch disable — and "only on restart" is not a
+    // by hand stayed a next-launch disable, and "only on restart" is not a
     // control, because daemons restart routinely and a model can wait. Writing
     // the value here and *also* persisting it there would keep both files
     // agreeing today and hand the retired key its meaning back tomorrow.
@@ -577,7 +577,7 @@ pub async fn remove_config(
     // resolves to ON while the running daemon keeps whatever its atomic held.
     // Both halves of that divergence are in the safe direction, and there is no
     // legitimate caller — Settings > Privacy writes 'on' or 'off' and never
-    // deletes — so the honest answer is "not through this verb", which leaves
+    // deletes. So the honest answer is "not through this verb", which leaves
     // exactly one way for the value to change and one place to look for it.
     if biorouter::privacy::is_privacy_tiers_key(&query.key) {
         return Err((StatusCode::FORBIDDEN, master_switch_refusal(&query.key)));
@@ -1774,7 +1774,7 @@ mod affiliation_wire_tests {
     }
 
     /// ⚠ **Beside the metadata, not inside it.** `ProviderMetadata` is the
-    /// type-level claim — its own `tier` field carries "do not hang a badge on
+    /// type-level claim. Its own `tier` field carries "do not hang a badge on
     /// this field" — and this value is instance-resolved. A renderer that read
     /// `row.metadata.affiliation` would find nothing, so the two must not be
     /// allowed to swap silently.

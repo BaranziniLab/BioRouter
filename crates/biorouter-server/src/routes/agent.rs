@@ -970,7 +970,7 @@ async fn update_agent_provider(
     // Issue #56 DR-26 at the BIND surface, and the whole of what this route was
     // missing. `Agent::update_provider` has detected this mismatch since Task 48
     // and has only ever written it to `tracing::warn!`, where the person who just
-    // switched models cannot see it — so the ruling's "warn the user, naming both
+    // switched models cannot see it, so the ruling's "warn the user, naming both
     // institutions, before proceeding" was, on this surface, unimplemented.
     //
     // ⚠ **It warns; it does not refuse, and the ordering says so.** This is read
@@ -1543,7 +1543,7 @@ async fn stop_agent(
 
     // BR-62: stop the *turn*, not just the agent entry. Evicting the session from
     // the LRU below drops the manager's handle, but an in-flight `/reply` task
-    // holds its own `Arc<Agent>` and kept running — so "stop" left a turn burning
+    // holds its own `Arc<Agent>` and kept running, so "stop" left a turn burning
     // tokens and streaming into a socket nobody was reading. Trip the running
     // turn's cancellation token first; the reply task then unwinds and releases
     // the turn lock. No-op when nothing is running.
@@ -2199,7 +2199,7 @@ mod cross_affiliation_grant_route_tests {
     ///
     /// Everything else here is a source scan, for the reason the module header
     /// gives. That leaves the most important claim of all — *only the user may
-    /// grant* — resting on `handler.contains("user_action_proof(")`, which
+    /// grant*, resting on `handler.contains("user_action_proof(")`, which
     /// survives a refactor that turns the `Unproven` arm into `=> {}`. The
     /// mapping from a proof verdict to a refusal is pure, so it lives in
     /// [`super::refuse_grant_unless_user`] and this drives all three arms.
@@ -2845,7 +2845,7 @@ mod add_extension_resolver_tests {
 
 #[cfg(test)]
 mod cross_affiliation_notice_route_tests {
-    //! Issue #56 DR-26 — the two surfaces where "warn the user, naming both
+    //! Issue #56 DR-26, the two surfaces where "warn the user, naming both
     //! institutions, before proceeding" was **log-only**, and the shape of the
     //! repair that can silently come undone.
     //!
