@@ -130,12 +130,21 @@ export function countWindowTabs(state: ChatGroupsState): number {
  * Keep the drag ghost inside the window it is being dragged out of (design D7,
  * obligation 4).
  *
- * Electron cannot paint outside a window's frame, so once the cursor leaves, the
- * ghost physically cannot follow it. Left alone it flies past the edge and gets
- * clipped, which reads as the tab having been eaten rather than as a tab that is
- * about to become a window. Clamped, it stays pinned to the edge the cursor left
- * through — and the `data-detach` state change (flat, outlined) is what carries
- * the meaning, exactly as D7 specifies.
+ * A RENDERER cannot paint outside its own window's frame, so once the cursor
+ * leaves, this ghost physically cannot follow it. Left alone it flies past the
+ * edge and gets clipped, which reads as the tab having been eaten rather than as
+ * a tab that is about to become a window. Clamped, it stays pinned to the edge
+ * the cursor left through — and the `data-detach` state change (flat, outlined)
+ * is what carries the meaning, exactly as D7 specifies.
+ *
+ * ⚠ THIS IS THE FALLBACK PATH NOW, AND IT IS STILL REACHED. Phase 4b (issue #75)
+ * gave the gesture a ghost that DOES follow the cursor onto the desktop, but it
+ * is a second `BrowserWindow` opened by main (`dragGhostWindow.ts`), not this
+ * element — a renderer's reach has not changed. Between the first move that
+ * leaves the window and that window appearing, and on every path where it cannot
+ * be built (the DOM probe fails, the page fails to load, a platform where it is
+ * refused), the clamped ghost below is what the user sees. Deleting it would
+ * restore the original defect on exactly the frames the OS ghost does not cover.
  *
  * Takes the ghost's MEASURED size rather than assuming one. A tab's width
  * depends on its title (88–190px per `.br-tab`), so a constant here would clamp

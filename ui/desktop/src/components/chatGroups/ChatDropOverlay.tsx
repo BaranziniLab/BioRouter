@@ -1,4 +1,4 @@
-import { CSSProperties, useLayoutEffect, useRef, useState } from 'react';
+import { CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { MessageSquare } from '../icons/app-icons';
 import { DropZone } from './dropZones';
@@ -54,30 +54,64 @@ export function ChatDropOverlay({ zone }: { zone: DropZone }) {
  * the DOM would re-flow every divider in the strip mid-drag.
  *
  * `detached` marks the moment the drag left the window and the drop would make a
- * new one (tear-off design D7). Electron cannot paint outside a window's frame,
- * so the ghost cannot follow the cursor onto the desktop; instead it changes
- * what it IS — the tilt returns to 0 and it takes the dashed accent outline the
- * drop zones already use, because a flat, outlined rectangle detached from the
- * strip reads as a window and a tilted one riding the strip reads as a tab.
+ * new one (tear-off design D7): the tilt returns to 0 and it takes the dashed
+ * accent outline the drop zones already use, because a flat, outlined rectangle
+ * detached from the strip reads as a window and a tilted one riding the strip
+ * reads as a tab.
+ *
+ * ═════════════════════════════════════════════════════════════════════════
+ * THERE ARE NOW TWO GHOSTS, AND ONLY ONE OF THEM IS EVER ON SCREEN.
+ *
+ * A renderer paints only into its own `BrowserWindow`, so this `<div>` cannot
+ * follow the cursor onto the desktop — the clamp below is what that impossibility
+ * costs. Phase 4b (issue #75) added the other kind: main opens a real
+ * transparent, click-through, always-on-top window and flies THAT under the
+ * cursor (`dragGhostWindow.ts`). When it is up it sends `tab-drag:ghost-window`
+ * `{active: true}` and this one goes `visibility: hidden` — two tabs in the air
+ * at once, one pinned at the window edge and one on the desktop, would read as a
+ * duplication bug.
+ *
+ * IT HIDES RATHER THAN UNMOUNTING, on purpose. The element stays measured and in
+ * the tree, so coming back inside the window (which destroys the OS ghost and
+ * clears the flag) restores it in the same frame instead of paying a remount, and
+ * main can still read it. THE CLAMP AND ITS TESTS STAY for exactly the same
+ * reason: the OS ghost is best-effort — the probe can fail, the window can fail
+ * to load, and there is no OS ghost at all until the first `detach` reaches main
+ * — and in every one of those cases this element is what the user sees.
+ *
+ * MAIN READS THIS ELEMENT'S DOM. `dragGhostWindow.ts`'s `GHOST_PROBE_SCRIPT`
+ * selects `.br-tab-ghost` and reads `data-grab-x`/`data-grab-y`, the measured
+ * box and the resolved theme colours out of it, because `tab-drag:move` carries
+ * only `{screenX, screenY}` and nothing else on the wire can describe the tab.
+ * Renaming the class or dropping those attributes silently downgrades the OS
+ * ghost to its defaults — a generic untitled chip.
+ * ═════════════════════════════════════════════════════════════════════════
  *
  * THE CLAMP IS HERE, THE PAINT RULE IS NOT. Obligation 4 of Phase 3 is the
- * clamp: a detached ghost is held inside this window's content rect, because
- * Electron cannot paint outside a window's frame and an unclamped ghost is
- * simply clipped at the edge — which reads as the tab having been eaten rather
- * than as one about to become a window. It is done HERE and not in the hook
- * because it needs the ghost's RENDERED SIZE, which only the element that
- * renders it can measure (a tab is 88–190px wide depending on its title, so a
- * constant would clamp a long one short and let a short one hang off).
- *
- * `.br-tab-ghost[data-detach='true']` — the flat, outlined, un-tilted look
- * itself — is one block in main.css, which belongs to another campaign and
- * lands with Phase 4. Until it does, a detached ghost is correctly POSITIONED
- * and looks like an ordinary tab; the attribute is absent (not `"false"`) when
- * not set, so the selector cannot half-match in the meantime.
+ * clamp: a detached ghost is held inside this window's content rect, because an
+ * unclamped ghost is simply clipped at the edge — which reads as the tab having
+ * been eaten rather than as one about to become a window. It is done HERE and
+ * not in the hook because it needs the ghost's RENDERED SIZE, which only the
+ * element that renders it can measure (a tab is 88–190px wide depending on its
+ * title, so a constant would clamp a long one short and let a short one hang
+ * off).
  */
 export function ChatTabGhost({ ghost, detached }: { ghost: DragGhost; detached?: boolean }) {
   const ghostRef = useRef<HTMLDivElement | null>(null);
   const [size, setSize] = useState({ width: 0, height: 0 });
+  const [osGhostUp, setOsGhostUp] = useState(false);
+
+  // Subscribed once per drag (this component mounts with the gesture and
+  // unmounts with it), so the flag cannot survive into the next one — which
+  // matters, because a stale `true` would hide a ghost with no OS window behind
+  // it and the user would drag nothing at all.
+  useEffect(() => {
+    const desktop = typeof window !== 'undefined' ? window.electron : undefined;
+    if (!desktop?.on) return;
+    return desktop.on('tab-drag:ghost-window', (_event, payload) => {
+      setOsGhostUp(!!(payload as { active?: boolean } | undefined)?.active);
+    });
+  }, []);
 
   // Measured when the CONTENT changes, not on every position update — the ghost
   // is repositioned per pointermove and its box does not move with it, so
@@ -123,8 +157,20 @@ export function ChatTabGhost({ ghost, detached }: { ghost: DragGhost; detached?:
       className="br-tab br-tab-ghost"
       data-testid="chat-tab-ghost"
       data-detach={detached ? 'true' : undefined}
+      // Read by main, not by CSS and not by a test: the OS ghost has to sit
+      // under the same point inside the tab that the cursor grabbed, and this is
+      // the only place that number exists in the DOM. It is the same offset
+      // `tornOffWindowBounds` subtracts, so the ghost and the window it becomes
+      // land at one origin.
+      data-grab-x={ghost.grabOffsetX}
+      data-grab-y={ghost.grabOffsetY}
+      data-os-ghost={osGhostUp ? 'true' : undefined}
       aria-hidden="true"
-      style={{ left: position.x, top: position.y }}
+      style={{
+        left: position.x,
+        top: position.y,
+        ...(osGhostUp ? { visibility: 'hidden' as const } : null),
+      }}
     >
       <MessageSquare className="h-4 w-4 flex-none" />
       <span className="br-tab__label">{ghost.title}</span>

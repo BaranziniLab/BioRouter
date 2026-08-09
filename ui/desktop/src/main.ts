@@ -45,6 +45,7 @@ import {
   StripBandRegistry,
   electronScreenGeometry,
   grabOffsetFromWire,
+  normalizeToDip,
   resolveDropTargetForRawPoint,
   screenPointFromWire,
   screenPointToWire,
@@ -53,6 +54,16 @@ import {
   type Rect as DragRect,
   type ScreenGeometry,
 } from './windowDrag';
+import {
+  DragGhostWindowController,
+  GHOST_OPAQUE_INSET,
+  GHOST_PROBE_SCRIPT,
+  GHOST_TRANSPARENT_INSET,
+  ghostWindowDataUrl,
+  ghostWindowHtml,
+  type GhostSpec,
+  type GhostWindowHandle,
+} from './dragGhostWindow';
 import { expandTilde } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import { isFilePathAllowedForPreview } from './utils/pathContainment';
@@ -1646,6 +1657,129 @@ const tabDragBroker = new TabDragBroker({
 });
 
 /**
+ * THE GHOST THAT FOLLOWS THE CURSOR ONTO THE DESKTOP (issue #75, design Phase 4b).
+ *
+ * The rules — placement, markup, lifecycle — are in `dragGhostWindow.ts`, which
+ * imports no Electron so they can be tested. This is only the Electron they
+ * need: read the source window's DOM ghost, build one window, tell the source
+ * renderer to hide its own `<div>` ghost while ours is up.
+ *
+ * THE WINDOW RECIPE IS THE LAUNCHER'S, MINUS THE PARTS THAT WOULD END THE
+ * GESTURE. `createLauncher` below is already frameless, darwin-transparent,
+ * always-on-top and off the taskbar, which is most of what is wanted. Three
+ * differences, and each is load-bearing:
+ *
+ *   - `focusable: false` + `setIgnoreMouseEvents(true)` + `showInactive()`. The
+ *     source window holds the pointer capture that IS the drag; raising or
+ *     focusing any window drops it and the gesture dies in mid-air. The launcher
+ *     wants focus (it destroys itself on blur); this must never take it.
+ *   - NO `vibrancy`. The design flags it as a hazard, and a 30px chip does not
+ *     want a blurred backdrop of whatever it is flying over.
+ *   - `hasShadow: false`. The window is bigger than the chip (transparent slack
+ *     for the outline and the CSS shadow), so a NATIVE shadow would trace that
+ *     larger rectangle and draw a box around a ghost that has no box.
+ */
+async function createDragGhostWindow(
+  bounds: DragRect,
+  spec: GhostSpec
+): Promise<GhostWindowHandle | null> {
+  const transparent = process.platform === 'darwin';
+  const ghost = new BrowserWindow({
+    x: bounds.x,
+    y: bounds.y,
+    width: bounds.width,
+    height: bounds.height,
+    show: false,
+    frame: false,
+    transparent,
+    backgroundColor: transparent ? '#00000000' : spec.style.background,
+    hasShadow: false,
+    focusable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    resizable: false,
+    movable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    acceptFirstMouse: false,
+    webPreferences: {
+      // NO PRELOAD, no node, no app bundle. The page is a static chip; giving it
+      // the app's preload would put every IPC door this process exposes behind a
+      // window created inside a pointer gesture, for a document that has nothing
+      // to say.
+      nodeIntegration: false,
+      contextIsolation: true,
+      sandbox: true,
+      devTools: false,
+      spellcheck: false,
+    },
+  });
+  // Click-through: the cursor is mid-drag and every event belongs to the source
+  // window. A ghost that swallowed one would end the gesture under itself.
+  ghost.setIgnoreMouseEvents(true);
+  // Above the source window AND above other apps' windows — the ghost is drawn
+  // over the desktop the user is dragging across, not over ours alone.
+  ghost.setAlwaysOnTop(true, 'screen-saver');
+
+  // Attached BEFORE the load: `ready-to-show` can fire while `loadURL`'s promise
+  // is still settling, and a listener added afterwards would wait for an event
+  // that has already gone by until the timeout rescued it.
+  const painted = new Promise<void>((resolve) => {
+    ghost.once('ready-to-show', () => resolve());
+    setTimeout(resolve, 250);
+  });
+  try {
+    await ghost.loadURL(ghostWindowDataUrl(ghostWindowHtml(spec, { transparent })));
+    await painted;
+  } catch (error) {
+    log.warn('[tab-drag] ghost window failed to load:', error);
+    if (!ghost.isDestroyed()) ghost.destroy();
+    return null;
+  }
+  if (ghost.isDestroyed()) return null;
+
+  return {
+    setPosition: (x, y) => {
+      if (!ghost.isDestroyed()) ghost.setPosition(x, y, false);
+    },
+    // showInactive, NEVER show(): `show()` activates, and activation is exactly
+    // the focus theft that ends the drag.
+    show: () => {
+      if (!ghost.isDestroyed()) ghost.showInactive();
+    },
+    destroy: () => {
+      if (!ghost.isDestroyed()) ghost.destroy();
+    },
+  };
+}
+
+const dragGhostWindows = new DragGhostWindowController(
+  {
+    probeSource: async (sourceWindowId) => {
+      const win = windowMap.get(sourceWindowId);
+      if (!win || win.isDestroyed()) return null;
+      try {
+        return await win.webContents.executeJavaScript(GHOST_PROBE_SCRIPT, false);
+      } catch (error) {
+        // A reloading or dying renderer. The controller falls back to defaults
+        // rather than showing nothing.
+        log.warn('[tab-drag] ghost probe failed:', error);
+        return null;
+      }
+    },
+    createWindow: (_sourceWindowId, bounds, spec) => createDragGhostWindow(bounds, spec),
+    notifySource: (sourceWindowId, active) => {
+      const win = windowMap.get(sourceWindowId);
+      if (!win || win.isDestroyed()) return;
+      win.webContents.send('tab-drag:ghost-window', { active });
+    },
+    onError: (message, error) => log.warn(`[tab-drag] ${message}:`, error),
+  },
+  { inset: process.platform === 'darwin' ? GHOST_TRANSPARENT_INSET : GHOST_OPAQUE_INSET }
+);
+
+/**
  * `tab-drag:commit`'s payload as it arrives — every field still unproven.
  *
  * `point` and `grabOffset` are `unknown` rather than their wire shapes on
@@ -1733,8 +1867,14 @@ function forgetWindowFromTabDrag(windowId: number, reason: string): void {
   const wasInDrag =
     tabDragBroker.previewWindow === windowId ||
     tabDragBroker.dragSourceWindow === windowId ||
-    tabDragBroker.pendingMergeCount > 0;
+    tabDragBroker.pendingMergeCount > 0 ||
+    dragGhostWindows.sourceWindow === windowId;
   tabDragBroker.forgetWindow(windowId);
+  // A ghost window outlives nothing. Its source is the only thing that would
+  // ever have told it to go away, so a source that crashed, reloaded or closed
+  // would otherwise strand a click-through chip on top of every other app, with
+  // no gesture behind it and no way for the user to dismiss it.
+  dragGhostWindows.releaseIfSource(windowId, reason);
   if (wasInDrag) log.info(`[tab-drag] released window ${windowId}:`, reason);
 }
 
@@ -4882,9 +5022,35 @@ async function appMain() {
     } else {
       tabDragBroker.clearPreview();
     }
+
+    // ── The ghost that leaves the window (issue #75) ───────────────────────
+    // NORMALISED AGAIN RATHER THAN THREADED THROUGH THE HIT TEST. `resolveDrop-
+    // TargetForRawPoint` does its own `normalizeToDip` internally, and unpicking
+    // it to share one conversion would restructure the proven path for a pure
+    // function that is the identity on macOS and one native call elsewhere. What
+    // must NOT happen is positioning a window from `rawPoint`: `BrowserWindow`
+    // bounds are DIP and raw screen coordinates are not under Windows
+    // per-monitor DPI (windowDrag.ts D4).
+    //
+    // `detach` only. A `merge` already has a caret in the target window saying
+    // where the tab will land, and a ghost flying over it would be a second,
+    // competing answer to the same question; `local` is the in-window drag,
+    // which the DOM ghost owns.
+    if (phase.kind === 'detach') {
+      dragGhostWindows.follow(source.id, normalizeToDip(rawPoint, tabDragGeometry()));
+    } else {
+      dragGhostWindows.release(`phase ${phase.kind}`);
+    }
   });
 
-  ipcMain.on('tab-drag:end', () => tabDragBroker.endDrag());
+  ipcMain.on('tab-drag:end', () => {
+    tabDragBroker.endDrag();
+    // Also the message the source sends when the cursor comes BACK INSIDE
+    // (`ChatGroupsShell` reports a `local` phase through this same door), so
+    // this is the ordinary "the ghost is no longer wanted" path, not only the
+    // teardown one.
+    dragGhostWindows.release('drag ended');
+  });
 
   // ATTRIBUTED TO THE SENDER. `tabDragAckMerge` is on every renderer's preload,
   // so a bare request id from anyone would do: the broker believes an ack only
@@ -4901,6 +5067,13 @@ async function appMain() {
   });
 
   ipcMain.handle('tab-drag:commit', async (event, request: unknown) => {
+    // FIRST STATEMENT, ahead of every early return and of the merge round trip:
+    // the button is up, so the ghost has nothing left to represent whatever this
+    // handler decides. Waiting for the outcome would leave it hanging over the
+    // desktop for the whole 2s ack window of a merge that may yet be refused,
+    // and returning early would leave it there for good.
+    dragGhostWindows.release('drag committed');
+
     const source = BrowserWindow.fromWebContents(event.sender);
     // Every early return is `noop`, which means "keep the tab". There is no
     // failure here that should cost the user a chat.
