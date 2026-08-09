@@ -431,8 +431,15 @@ pub const TURN_REFUSAL_MARKER: &str = "this turn was not sent";
 /// and must never reach the sentence. The unit test below is what holds that.
 pub fn turn_refusal(session: &Session) -> String {
     format!(
-        "This chat is private, so only a private model — one hosted inside the institution — \
-         may run in it. The model this chat is set to (`{provider}`) is public, so \
+        // ⚠ "one your institution hosts, OR one that runs on this machine."
+        // The old gloss said only "hosted inside the institution", which is
+        // wrong: a local model is Private too, for the other of the two reasons
+        // a model is safe to point at patient data. On a machine whose only
+        // private model is local, that advice sent the user looking for
+        // something that does not exist there.
+        "This chat is private, so only a private model may run in it: one your institution \
+         hosts, or one that runs on this machine. The model this chat is set to \
+         (`{provider}`) is public, so \
          {TURN_REFUSAL_MARKER}. Switch this chat to a private model (Settings → Models, or the \
          model chip in the composer) and send it again. Nothing about the chat has been changed.",
         provider = session.provider_name.as_deref().unwrap_or("no model"),
@@ -448,8 +455,8 @@ pub fn turn_refusal(session: &Session) -> String {
 /// names no target — not the session, not its working directory — because
 /// §11.4 classifies both as CONTENT.
 pub const fn chatrecall_load_refusal() -> &'static str {
-    "This chat history is private: it was created under a model hosted inside the institution, \
-     so only a private model may read it. This session is running on a public model. Ask the user \
+    "This chat history is private: it was created under a private model, so only a private \
+     model may read it. This session is running on a public model. Ask the user \
      to switch this chat to a private model — Settings → Models, or the model chip in the \
      composer — and try again. Do not retry with a different session id or through another tool; \
      the boundary is the same everywhere."

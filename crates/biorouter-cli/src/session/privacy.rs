@@ -130,7 +130,8 @@ pub async fn available_private_models() -> Vec<PrivateModel> {
 pub fn tier_row(classification: SessionClassification) -> String {
     match classification {
         SessionClassification::Private => {
-            "Private — only a model hosted inside the institution may run here".to_string()
+            // Same gloss fix as refusal.rs: a local model is private too.
+            "Private: only a private model may run here".to_string()
         }
         SessionClassification::Public => "Public".to_string(),
     }
