@@ -4777,16 +4777,28 @@ async function appMain() {
 
   ipcMain.on(
     'create-chat-window',
-    async (_, query, dir, version, resumeSessionId, viewType, workflowId) => {
+    async (event, query, dir, version, resumeSessionId, viewType, workflowId) => {
       if (!dir?.trim()) {
         const recentDirs = loadRecentDirs();
         dir = recentDirs.length > 0 ? recentDirs[0] : undefined;
       }
 
-      // Offset the new window from the one that triggered it (e.g. the Diverge
+      // Offset the new window from the one that triggered it (e.g. the Branch
       // button) so it's clearly a distinct second window, then bring it to the
-      // front — the originating window stays exactly where it is.
-      const anchor = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0];
+      // front. The originating window stays exactly where it is.
+      //
+      // ⚠ **Anchor on the SENDER, not on whatever happens to be focused**
+      // (#78). The handler discarded its `event` and asked
+      // `BrowserWindow.getFocusedWindow()`, which is a different question: with
+      // several windows open, an agent-driven `placement: "window"` arrives
+      // without the user having clicked anything, so the focused window is
+      // whichever one they last touched rather than the one that asked. The new
+      // window then appeared offset from a stranger. `event.sender` names the
+      // renderer that actually sent this, which is the only honest anchor.
+      const anchor =
+        BrowserWindow.fromWebContents(event.sender) ??
+        BrowserWindow.getFocusedWindow() ??
+        BrowserWindow.getAllWindows()[0];
       const win = await createChat(
         app,
         query,
