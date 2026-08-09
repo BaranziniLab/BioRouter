@@ -106,9 +106,20 @@ jobs:
         run: sudo apt-get update && sudo apt-get install --yes libdbus-1-dev libxcb1-dev pkg-config
 
       # Start narrow (lib + bins on every OS) so the matrix is green on arrival;
-      # widen as it proves stable. Excludes the network/cassette-dependent
-      # integration suites, which need BIOROUTER_RECORD_MCP fixtures + provider
-      # keys the runners do not have.
+      # widen as it proves stable. This selector leaves out `tests/`, so the
+      # cassette- and key-dependent integration suites (BIOROUTER_RECORD_MCP
+      # fixtures, provider credentials the runners do not have) never run here.
+      #
+      # ⚠ It does NOT follow that nothing in this step touches the network. The
+      # selector filters by TARGET, not by behaviour, and a test that lives in
+      # `src/` is a unit test as far as cargo is concerned however far it dials.
+      # `biorouter-server/src/tunnel/lapstone_test.rs` did exactly that against a
+      # third-party Cloudflare worker, and because `biorouter-server/src/main.rs`
+      # re-declares `mod tunnel;` rather than using the library, both `--lib` and
+      # `--bins` carried it: 2 tests x 2 targets x 3 platforms, twelve live
+      # requests per run, red whenever that worker had a bad day. It is now
+      # opt-in behind BIOROUTER_TEST_LAPSTONE_TUNNEL. Gate the test, not the
+      # selector, if another one appears.
       - name: cargo test (workspace, lib + bins)
         run: cargo test --workspace --lib --bins --locked
 

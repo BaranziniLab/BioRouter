@@ -21,6 +21,31 @@ use tokio::sync::{mpsc, RwLock};
 const TEST_TUNNEL_SECRET: &str = "test-tunnel-secret-12345";
 const TEST_SERVER_SECRET: &str = "test-server-secret-67890";
 
+/// Opt-in switch for the two tunnel tests below.
+///
+/// They dial a real third-party Cloudflare worker
+/// (`cloudflare-tunnel-proxy.michael-neale.workers.dev`) over the public
+/// internet. That makes them an integration suite that happens to live in
+/// `src/`, and it means a red run can be a fact about somebody else's service
+/// rather than about this repository. Measured on 2026-08-09: a DNS failure
+/// with the network down, and a plain `503 Service Unavailable` from the
+/// worker with it up. Neither is a regression anyone here can fix.
+///
+/// ⚠ The cost was larger than it looks, because the same two tests ran
+/// TWELVE times per CI run. `.github/workflows/rust.yml` runs
+/// `cargo test --workspace --lib --bins` across a three-OS matrix, and
+/// `biorouter-server/src/main.rs` re-declares `mod tunnel;` rather than using
+/// the library, so the `--lib` and `--bins` targets each carry a copy:
+/// 2 tests x 2 targets x 3 platforms.
+///
+/// Gating on an env var rather than `#[ignore]` follows
+/// `crates/biorouter/tests/providers.rs`, which self-skips the same way when
+/// its credentials are absent. Run them with
+/// `BIOROUTER_TEST_LAPSTONE_TUNNEL=1 cargo test -p biorouter-server --lib tunnel::`.
+fn tunnel_tests_enabled() -> bool {
+    std::env::var("BIOROUTER_TEST_LAPSTONE_TUNNEL").is_ok()
+}
+
 async fn find_available_port() -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -72,6 +97,12 @@ async fn start_test_http_server(port: u16) -> tokio::task::JoinHandle<()> {
 
 #[tokio::test]
 async fn test_tunnel_end_to_end() {
+    if !tunnel_tests_enabled() {
+        println!(
+            "Skipping test_tunnel_end_to_end - set BIOROUTER_TEST_LAPSTONE_TUNNEL to dial the live tunnel worker"
+        );
+        return;
+    }
     let port = find_available_port().await;
     let server_handle = start_test_http_server(port).await;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
@@ -122,6 +153,12 @@ async fn test_tunnel_end_to_end() {
 
 #[tokio::test]
 async fn test_tunnel_post_request() {
+    if !tunnel_tests_enabled() {
+        println!(
+            "Skipping test_tunnel_post_request - set BIOROUTER_TEST_LAPSTONE_TUNNEL to dial the live tunnel worker"
+        );
+        return;
+    }
     let port = find_available_port().await;
     let server_handle = start_test_http_server(port).await;
     tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
