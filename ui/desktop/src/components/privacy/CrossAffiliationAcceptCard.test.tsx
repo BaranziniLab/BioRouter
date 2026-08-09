@@ -86,7 +86,7 @@ describe('CrossAffiliationAcceptCard', () => {
     expect(mockAccept).not.toHaveBeenCalled();
   });
 
-  it('offers the same control under strict, and warns that the system will ask', async () => {
+  it('offers the same control under strict, and warns the system may ask', async () => {
     // Issue #56, DR-27. Its three modes differ in what the press COSTS, never
     // in whether there is one — the extra proof is the daemon's to demand
     // (`strict_mode_authorization` reads `mixing::policy()` and raises DR-20's
@@ -100,9 +100,16 @@ describe('CrossAffiliationAcceptCard', () => {
     // Told BEFORE the press, not after: a system dialog nobody was warned about
     // is one people dismiss as spurious, and dismissing it leaves the flow
     // refused.
-    expect(await screen.findByTestId('cross-affiliation-strict-notice')).toHaveTextContent(
-      /operating system will ask you/i
-    );
+    //
+    // ⚠ "may ask", never "will ask". F-13 measured macOS approving
+    // `evaluatePolicy` instantly, with no dialog at all, off a recent
+    // authentication; whether an explicit reuse duration of 0 defeats that is
+    // still untested. Promising a dialog that then does not appear is worse
+    // than not promising one: it teaches the user that a silent approval on
+    // this prompt is normal, and this prompt is the one gating enforcement.
+    const notice = await screen.findByTestId('cross-affiliation-strict-notice');
+    expect(notice).toHaveTextContent(/operating system may ask you/i);
+    expect(notice).not.toHaveTextContent(/will ask you/i);
 
     // …and the control itself is the same one, posting the same triple.
     await user.click(await screen.findByRole('button', { name: /approve this flow/i }));

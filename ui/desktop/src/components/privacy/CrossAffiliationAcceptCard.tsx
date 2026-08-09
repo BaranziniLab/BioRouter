@@ -182,8 +182,14 @@ export function CrossAffiliationAcceptCard({
           data-testid="cross-affiliation-strict-notice"
           className="min-w-0 [overflow-wrap:anywhere]"
         >
+          {/* ⚠ "may", not "will". F-13: macOS has been observed approving
+              `evaluatePolicy` instantly with no dialog off a recent
+              authentication, and whether an explicit reuse duration of 0 defeats
+              that is untested. Promising a dialog that does not appear teaches
+              the user that a silent approval is normal, which is exactly the
+              wrong lesson for the prompt that gates enforcement. */}
           This machine&rsquo;s privacy policy is set to <strong>strict</strong>, so your operating
-          system will ask you to confirm it is you before this is recorded.
+          system may ask you to confirm it is you before this is recorded.
         </p>
       )}
       {/*

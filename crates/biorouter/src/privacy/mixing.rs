@@ -521,9 +521,13 @@ fn loosening_reason(from: MixingPolicy, to: MixingPolicy) -> String {
             "Change Biorouter from {from} to open, so data crosses between institutions with no \
              confirmation at all."
         ),
+        // ⚠ Not "your system password". F-13: on macOS the prompt behind this
+        // can be satisfied by a recent authentication with no dialog and no
+        // password typed, so describing the cost as a password overstates what
+        // the user is actually giving up by loosening the policy.
         _ => format!(
             "Change Biorouter from {from} to {to}, so crossing between institutions no longer \
-             takes your system password."
+             needs your operating system to confirm it is you."
         ),
     }
 }

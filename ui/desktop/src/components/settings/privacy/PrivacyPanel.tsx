@@ -179,10 +179,18 @@ export default function PrivacyPanel() {
       <div className="biorouter-settings-row flex items-start justify-between gap-4 px-3 py-2.5">
         <div className="min-w-0">
           <p className="text-sm font-medium text-text-default">Privacy tiers</p>
+          {/* ⚠ Two clauses, not three, and the third is the reason. It used to
+              end "and can't reach your knowledge bases through the shell",
+              which is false: the general filesystem read-deny did not ship, and
+              the served disclosure four elements above this one says so. A
+              panel contradicting the disclosure it renders is worse than either
+              statement alone. The triad also read as rhythm rather than fact —
+              the limb that was doing the least work was the one that was wrong.
+              Private is defined by the rule, not by naming a provider. */}
           <p className="text-xs text-text-muted mt-0.5">
-            Chats on private models (Versa, or a local model) stay private: a public model
-            can&rsquo;t read them, can&rsquo;t call a private extension, and can&rsquo;t reach your
-            knowledge bases through the shell.
+            Chats on private models stay private: a public model can&rsquo;t read them and
+            can&rsquo;t call a private extension. A private model is one your institution hosts,
+            or one that runs on this machine.
           </p>
         </div>
         <Switch
@@ -235,10 +243,20 @@ export default function PrivacyPanel() {
             This turns off <strong>every</strong> privacy guardrail on this machine, for every
             conversation.
           </p>
+          {/* ⚠ The shell clause moved OUT of this list, and that is the point.
+              Everything here is a consequence of turning the switch off, so
+              listing shell reads among them told the user they were prevented
+              while it was on. They are not: §9.5's filesystem read-deny did not
+              ship. Naming it separately keeps the warning honest in both
+              directions — the list stays true, and the thing that is never
+              blocked is still disclosed rather than quietly dropped. */}
           <p className="text-sm text-text-default">
-            Commercial models will be able to call UCSF clinical extensions, read private chat
-            history, read and write your knowledge bases, and read your saved chats, memories and
-            Biorouter apps straight off the disk through the shell.
+            Commercial models will be able to call your private extensions, read private chat
+            history, and read and write your knowledge bases.
+          </p>
+          <p className="text-sm text-text-default">
+            Reading your saved chats, memories and Biorouter apps off the disk through the shell is
+            not blocked either way.
           </p>
           <p className="text-sm text-text-default">
             <strong>
