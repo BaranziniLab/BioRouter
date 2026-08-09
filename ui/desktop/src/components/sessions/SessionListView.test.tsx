@@ -500,7 +500,7 @@ describe('SessionListView row actions', () => {
     await waitFor(() =>
       expect(mocks.toastSuccess).toHaveBeenCalledWith({
         title: 'Session updated',
-        msg: 'The session description was saved successfully.',
+        msg: 'Description saved.',
       })
     );
     expect(mocks.updateSessionName).toHaveBeenCalledWith({

@@ -320,7 +320,7 @@ export const SwitchModelModal = ({
 
     if (usePredefinedModels) {
       if (!selectedPredefinedModel) {
-        errors.model = 'Please select a model';
+        errors.model = 'Select a model';
         formIsValid = false;
       } else {
         // This branch swaps both selects for a flat radio list and reaches the
@@ -335,12 +335,12 @@ export const SwitchModelModal = ({
       }
     } else {
       if (!provider) {
-        errors.provider = 'Please select a provider';
+        errors.provider = 'Select a provider';
         formIsValid = false;
       }
 
       if (!model) {
-        errors.model = 'Please select or enter a model';
+        errors.model = 'Select or type a model name';
         formIsValid = false;
       }
 

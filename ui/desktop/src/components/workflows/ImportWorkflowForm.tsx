@@ -75,7 +75,7 @@ export default function ImportWorkflowForm({
         onSuccess();
         toastSuccess({
           title: workflow.title?.trim() || 'Workflow',
-          msg: 'Workflow imported successfully',
+          msg: 'Workflow imported',
         });
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));

@@ -249,7 +249,7 @@ export function IngestPanel() {
         setDigestState('idle');
         toastError({
           title: 'Model unreachable',
-          msg: `${data?.error ?? 'Unknown model error'}. Please switch to a different model.`,
+          msg: `${data?.error ?? 'Unknown model error'}. Switch to a different model.`,
         });
         return;
       }

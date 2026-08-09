@@ -35,7 +35,7 @@ export async function addToAgent(
       toastService.dismiss(toastId);
       toastService.success({
         title: extensionName,
-        msg: `Successfully added extension`,
+        msg: `Extension added`,
       });
     }
     // Issue #56 DR-26 — the user's enable path, and the surface where the ruling
@@ -93,7 +93,7 @@ export async function removeFromAgent(
       toastService.dismiss(toastId);
       toastService.success({
         title: extensionName,
-        msg: `Successfully removed extension`,
+        msg: `Extension removed`,
       });
     }
   } catch (error) {

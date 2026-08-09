@@ -81,7 +81,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
       const body = `**Describe the bug**
 
-💡 Before filing, please check common issues:  
+💡 Before filing, check common issues:  
 https://github.com/BaranziniLab/biorouter/docs/troubleshooting
 
 📦 To help us debug faster, attach your **diagnostics zip** if possible.  

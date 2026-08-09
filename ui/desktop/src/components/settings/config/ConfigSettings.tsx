@@ -71,7 +71,7 @@ export default function ConfigSettings() {
       await upsert(key, configValues[key], false);
       toastSuccess({
         title: 'Configuration Updated',
-        msg: `Successfully saved "${getUiNames(key)}"`,
+        msg: `Saved "${getUiNames(key)}"`,
       });
 
       // Remove this key from modified keys since it's now saved

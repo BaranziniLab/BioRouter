@@ -305,7 +305,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
         await updateSchedule(editingSchedule.id, payload as string);
         toastSuccess({
           title: 'Schedule Updated',
-          msg: `Successfully updated schedule "${editingSchedule.id}"`,
+          msg: `Updated schedule "${editingSchedule.id}"`,
         });
       } else {
         const newPayload = payload as NewSchedulePayload;
@@ -349,7 +349,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       await pauseSchedule(id);
       toastSuccess({
         title: 'Schedule Paused',
-        msg: `Successfully paused schedule "${id}"`,
+        msg: `Paused schedule "${id}"`,
       });
       await fetchSchedules();
     } catch (error) {
@@ -373,7 +373,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
       await unpauseSchedule(id);
       toastSuccess({
         title: 'Schedule Unpaused',
-        msg: `Successfully unpaused schedule "${id}"`,
+        msg: `Resumed schedule "${id}"`,
       });
       await fetchSchedules();
     } catch (error) {

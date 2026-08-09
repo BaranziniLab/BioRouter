@@ -87,7 +87,7 @@ export default function SessionSharingSection() {
       const updated = { ...sessionSharingConfig, baseUrl: newBaseUrl };
       localStorage.setItem('session_sharing_config', JSON.stringify(updated));
     } else {
-      setUrlError('Invalid URL format. Please enter a valid URL (e.g. https://example.com/api).');
+      setUrlError('Enter a valid URL, for example https://example.com/api');
     }
   };
 
@@ -118,7 +118,7 @@ export default function SessionSharingSection() {
       if (response.status < 500) {
         setTestResult({
           status: 'success',
-          message: 'Connection successful!',
+          message: 'Connected',
         });
       } else {
         setTestResult({
@@ -132,7 +132,7 @@ export default function SessionSharingSection() {
 
       if (error instanceof TypeError && error.message.includes('fetch')) {
         errorMessage +=
-          'Unable to reach the server. Please check the URL and your network connection.';
+          'Could not reach the server. Check the URL and your network connection.';
       } else if (error instanceof Error) {
         if (error.name === 'AbortError') {
           errorMessage += 'Connection timed out. The server may be slow or unreachable.';

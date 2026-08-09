@@ -378,7 +378,7 @@ export default function CreateWorkflowFromSessionModal({
         msg:
           error instanceof Error
             ? error.message
-            : 'An unexpected error occurred while creating the workflow. Please try again.',
+            : 'Could not create the workflow. Try again.',
       });
     } finally {
       setIsCreating(false);

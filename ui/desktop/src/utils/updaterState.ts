@@ -153,7 +153,7 @@ export function reduceUpdaterEvent(prev: UpdaterState, payload: UpdaterEventPayl
           ? payload.data
           : payload.data instanceof Error
             ? payload.data.message
-            : 'Update failed. Please try again later.';
+            : 'Update failed. Try again.';
       // A background error after a successful download must not hide the
       // ready-to-install state — the user can still restart into the update.
       if (prev.phase === 'downloaded') return prev;

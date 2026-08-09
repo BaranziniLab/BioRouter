@@ -119,7 +119,7 @@ const EditSessionModal = React.memo<EditSessionModalProps>(
         onClose();
         toastSuccess({
           title: 'Session updated',
-          msg: 'The session description was saved successfully.',
+          msg: 'Description saved.',
         });
       } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';

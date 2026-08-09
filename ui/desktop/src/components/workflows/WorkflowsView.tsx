@@ -166,7 +166,7 @@ export default function WorkflowsView() {
       setWorkflowToDelete(null);
       toastSuccess({
         title: workflowManifest.workflow.title,
-        msg: 'Workflow deleted successfully',
+        msg: 'Workflow deleted',
       });
     } catch (err) {
       console.error('Failed to delete workflow:', err);

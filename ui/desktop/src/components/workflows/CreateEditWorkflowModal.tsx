@@ -284,7 +284,7 @@ export default function CreateEditWorkflowModal({
     if (!validateForm()) {
       toastError({
         title: 'Validation Failed',
-        msg: 'Please fill in all required fields and ensure JSON schema is valid.',
+        msg: 'Fill in the required fields and fix the JSON schema.',
       });
       return;
     }
@@ -299,7 +299,7 @@ export default function CreateEditWorkflowModal({
 
       toastSuccess({
         title: (workflow.title || '').trim(),
-        msg: 'Workflow saved successfully',
+        msg: 'Workflow saved',
       });
     } catch (error) {
       console.error('Failed to save workflow:', error);
@@ -319,7 +319,7 @@ export default function CreateEditWorkflowModal({
     if (!validateForm()) {
       toastError({
         title: 'Validation Failed',
-        msg: 'Please fill in all required fields and ensure JSON schema is valid.',
+        msg: 'Fill in the required fields and fix the JSON schema.',
       });
       return;
     }
@@ -345,7 +345,7 @@ export default function CreateEditWorkflowModal({
 
       toastSuccess({
         title: workflow.title,
-        msg: 'Workflow saved and launched successfully',
+        msg: 'Workflow saved and started',
       });
     } catch (error) {
       console.error('Failed to save and run workflow:', error);

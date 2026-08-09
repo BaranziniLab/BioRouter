@@ -147,7 +147,7 @@ export const BottomMenuExtensionSelection = ({
       if (!sessionId) {
         toastService.error({
           title: 'Extension Toggle Error',
-          msg: 'No active session found. Please start a chat session first.',
+          msg: 'Start a chat first.',
           traceback: 'No session ID available',
         });
         return;
@@ -368,7 +368,7 @@ export const BottomMenuExtensionSelection = ({
       setBulkInFlight(false);
       toastService.error({
         title: 'Extension Toggle Error',
-        msg: 'No active session found. Please start a chat session first.',
+        msg: 'Start a chat first.',
         traceback: 'No session ID available',
       });
       return;

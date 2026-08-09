@@ -50,7 +50,7 @@ export default function ProviderConfigurationModal({
 
   const descriptionText = showDeleteConfirmation
     ? isActiveProvider
-      ? `You cannot delete this provider while it's currently in use. Please switch to a different model first.`
+      ? `This provider is in use. Switch to a different model first.`
       : 'This will permanently delete the current provider configuration.'
     : `Add your API key(s) for this provider to integrate into Biorouter`;
 
