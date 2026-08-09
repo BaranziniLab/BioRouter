@@ -169,12 +169,19 @@ export const SYNTAX_STOPS = [
 
 /**
  * xterm ANSI-16 plus the four chrome slots. `background` is NOT here: it is
- * DERIVED from the family's own `terminalGround` token, because the three
- * families genuinely disagree about which token the dock paints (Parchment dark
- * uses --background-code; the others use --background-muted) and hardcoding one
- * answer would silently re-ground two terminals under palettes tuned for a
- * different surface. `cursorAccent` is likewise derived — it is always the
- * ground.
+ * DERIVED from the family's own `terminalGround` token rather than hardcoded,
+ * because hardcoding one answer would silently re-ground a terminal under a
+ * palette tuned for a different surface.
+ *
+ * The three families currently AGREE — all declare `--background-muted` for
+ * both modes — and that is a measurement, not a rule. It was not always so:
+ * Parchment's dark dock painted `--background-code` until the families were
+ * moved onto one shared set of neutrals, and its dark ANSI palette had to be
+ * re-measured against the ground it moved to. So the field stays per-family and
+ * this stays derived: read what a family declares, never assume, in either
+ * direction. Agreement today is not a licence to collapse the field tomorrow.
+ *
+ * `cursorAccent` is likewise derived — it is always the ground.
  */
 export const TERMINAL_STOPS = [
   'foreground',
