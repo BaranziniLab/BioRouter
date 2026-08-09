@@ -68,7 +68,7 @@ export default function SkillItem({
               size="sm"
               className="text-text-danger"
               onClick={() => onDelete()}
-              title="Delete"
+              title="Delete this skill"
               aria-label={`Delete ${skill.name}`}
             >
               <Trash2 className="h-4 w-4" />

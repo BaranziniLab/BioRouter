@@ -368,7 +368,7 @@ export function ApplicationItem({
           variant="ghost"
           size="sm"
           className="h-7 w-7 p-0 text-text-danger hover:bg-background-danger/10"
-          title="Delete"
+          title="Delete this app"
           aria-label={`Delete ${app.title}`}
         >
           <Trash2 className="w-4 h-4" />

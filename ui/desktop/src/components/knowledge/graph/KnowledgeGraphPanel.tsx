@@ -79,7 +79,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             size="sm"
             onClick={() => primaryKb && void exportArchive(primaryKb.id, primaryKb.name)}
             disabled={!primaryKb}
-            title="Export current knowledge base as .brkb"
+            title="Includes sources, markdown and git history"
           >
             <Download className="mr-1 h-4 w-4" />
             Export as .brkb
@@ -89,7 +89,7 @@ export function KnowledgeGraphPanel({ onOpenChangeLog, previewSha, onClearPrevie
             size="sm"
             onClick={onOpenChangeLog}
             disabled={!primaryKbId}
-            title="Open change log"
+            title="What changed, and when"
           >
             <History className="h-4 w-4 mr-1" />
             Change log

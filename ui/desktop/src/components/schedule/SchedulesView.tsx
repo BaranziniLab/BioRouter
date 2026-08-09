@@ -141,7 +141,7 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="ghost"
                 shape="round"
-                title="Edit"
+                title="Edit schedule"
                 aria-label={`Edit ${scheduleDisplayName(job.id)}`}
               >
                 <Edit className="w-4 h-4" />
@@ -175,7 +175,7 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="ghost"
                 shape="round"
-                title="Inspect"
+                title="Show the current run"
                 aria-label={`Inspect ${scheduleDisplayName(job.id)}`}
               >
                 <Eye className="w-4 h-4" />
@@ -188,7 +188,7 @@ const ScheduleCard: React.FC<{
                 disabled={actionInProgress}
                 variant="ghost"
                 shape="round"
-                title="Kill"
+                title="Stop the running job"
                 aria-label={`Kill ${scheduleDisplayName(job.id)}`}
               >
                 <Square className="w-4 h-4" />
@@ -204,7 +204,7 @@ const ScheduleCard: React.FC<{
             variant="ghost"
             size="sm"
             className="text-text-danger"
-            title="Delete"
+            title="Delete schedule"
             aria-label={`Delete ${scheduleDisplayName(job.id)}`}
           >
             <Trash2 className="w-4 h-4" />
@@ -392,7 +392,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
     try {
       const result = await killRunningJob(id);
       toastSuccess({
-        title: 'Job killed',
+        title: 'Job stopped',
         msg: result.message,
       });
       await fetchSchedules();

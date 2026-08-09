@@ -104,7 +104,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     try {
       const newSessionId = await runScheduleNow(scheduleId);
       if (newSessionId === 'CANCELLED') {
-        toastSuccess({ title: 'Job cancelled', msg: 'The job was cancelled while starting up.' });
+        toastSuccess({ title: 'Job stopped', msg: 'The job was stopped while starting up.' });
       } else {
         toastSuccess({ title: 'Schedule triggered', msg: `New session: ${newSessionId}` });
       }
@@ -149,7 +149,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
     setIsActionLoading(true);
     try {
       const result = await killRunningJob(scheduleId);
-      toastSuccess({ title: 'Job killed', msg: result.message });
+      toastSuccess({ title: 'Job stopped', msg: result.message });
       await fetchSchedule(scheduleId);
     } catch (err) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to kill job';

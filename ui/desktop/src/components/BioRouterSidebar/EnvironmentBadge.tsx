@@ -10,7 +10,7 @@ const EnvironmentBadge: React.FC = () => {
     return null;
   }
 
-  const tooltipText = isAlpha ? 'Alpha' : 'Dev';
+  const tooltipText = isAlpha ? 'Alpha' : 'Development build';
   const bgColor = isAlpha ? 'bg-background-info' : 'bg-background-warning';
 
   return (
