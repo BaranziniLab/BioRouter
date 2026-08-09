@@ -5445,14 +5445,23 @@ pub(crate) mod tests {
     #[test]
     fn every_gate_this_file_owns_is_wired_into_dispatch() {
         const SELF: &str = include_str!("workspace_extension.rs");
+        // ⚠ Normalize line endings before scanning. `include_str!` embeds the
+        // file's bytes verbatim, and a Windows checkout has CRLF ones (Git for
+        // Windows defaults `core.autocrlf` to true and nothing in
+        // `.gitattributes` pins `*.rs` to LF), so the `\n` in the needle below
+        // matches nothing there and this whole guard dies on that platform
+        // alone — which is exactly what it did. Every needle here is written
+        // with `\n`, so normalizing once at the top is the fix that keeps them
+        // all honest.
+        let self_source = SELF.replace("\r\n", "\n");
         // Anchored on the WHOLE opening line, not on `#[cfg(test)]` alone: this
         // file has a `#[cfg(test)] const RETIRED_TOOL_NAMES` up in production,
         // and cutting there would drop most of the production text and make
         // every assertion below vacuously true.
-        let cut = SELF
+        let cut = self_source
             .find("#[cfg(test)]\npub(crate) mod tests {")
             .expect("workspace_extension.rs no longer has a `#[cfg(test)] mod tests`");
-        let (production, tests) = SELF.split_at(cut);
+        let (production, tests) = self_source.split_at(cut);
         assert!(
             !production.contains("for_test_restricted"),
             "the cut did not remove the test module, so the assertions below prove nothing"

@@ -15256,7 +15256,15 @@ mod tests {
         /// truncates the slice above every symbol these tests are about and turns
         /// a `find` into the failure. (It did.)
         fn production_source() -> String {
-            let src = std::fs::read_to_string("src/session/session_manager.rs").unwrap();
+            // ⚠ Normalize line endings first. A Windows checkout has CRLF ones
+            // (Git for Windows defaults `core.autocrlf` to true and nothing in
+            // `.gitattributes` pins `*.rs` to LF), while every needle scanned
+            // out of this string — the cut below, and the `\n            }`
+            // that closes a match arm in the caller — is written with `\n`. A
+            // raw read therefore fails on Windows alone, which is what it did.
+            let src = std::fs::read_to_string("src/session/session_manager.rs")
+                .unwrap()
+                .replace("\r\n", "\n");
             let cut = src
                 .find("\n#[cfg(test)]\nmod tests {")
                 .expect("this file's main test module moved");

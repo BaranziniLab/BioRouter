@@ -680,7 +680,17 @@ mod tests {
                 // Innocent content, but the target is the store.
                 json!({ "command": "write", "path": file.clone(), "file_text": "hello\n" }),
                 json!({ "command": format!("cat {file}") }),
-                json!({ "command": format!("sh -c \"cat {file}\"") }),
+                // ⚠ The inner path is QUOTED, and on Windows that is the whole
+                // difference between a command that reads the store and one
+                // that cannot. `sh -c "cat C:\Users\…\sessions.db"` hands the
+                // inner line to a POSIX shell, which reads every `\` as an
+                // escape and opens `C:UsersAppData…` — a file that is not the
+                // store, and that `shell_command_names_store`'s POSIX
+                // tokenizer therefore (correctly) declines to call the store.
+                // Quoting is what makes the path survive the sub-shell, so it
+                // is the spelling that actually names the store operatively on
+                // both platforms — which is the claim this case exists to make.
+                json!({ "command": format!("sh -c \"cat '{file}'\"") }),
             ] {
                 assert!(
                     session_store_gate(&args(arguments.clone())).is_some(),

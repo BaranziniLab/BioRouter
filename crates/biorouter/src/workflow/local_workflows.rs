@@ -926,9 +926,21 @@ mod tests {
             "a declared library is anchored to the directory that was current \
              when the search list was built"
         );
+        // ⚠ Spelled per-platform on purpose. `anchor_to_working_dir` asks
+        // `Path::is_absolute`, and on Windows that wants a prefix (`C:\…`) or a
+        // UNC root — `/abs/wf` merely *has a root* there, so Windows reads it
+        // as relative and the entry is dropped. The claim under test is about
+        // absoluteness, not about slashes, so the fixture has to be absolute in
+        // the host's own spelling for the assertion to mean anything.
+        let absolute = if cfg!(windows) {
+            PathBuf::from(r"C:\abs\wf")
+        } else {
+            PathBuf::from("/abs/wf")
+        };
+        assert!(absolute.is_absolute(), "the fixture must be absolute here");
         assert_eq!(
-            anchor_to_working_dir(PathBuf::from("/abs/wf"), None),
-            Some(PathBuf::from("/abs/wf")),
+            anchor_to_working_dir(absolute.clone(), None),
+            Some(absolute),
             "an absolute entry needs no working directory"
         );
         assert_eq!(
