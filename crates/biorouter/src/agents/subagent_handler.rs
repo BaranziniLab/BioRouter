@@ -518,6 +518,44 @@ fn get_agent_messages(
                 .map(|e| e.name().to_string())
                 .collect();
 
+        // ⚠ **Persist the child's OWN grant set** (issue #79).
+        //
+        // `GET /sessions/{id}/extensions` reads `EnabledExtensionsState` and,
+        // finding none, falls back to `config::get_enabled_extensions()` — the
+        // whole globally-enabled set. Nothing wrote this field for a subagent,
+        // so the tab header was not listing what the child holds; it was
+        // listing every extension the USER has enabled anywhere. That is why it
+        // read as "shows all available extensions": it did.
+        //
+        // Written from the same `strip_workspace_extension` call the grant
+        // record and the loop below use, so the row, the prose and the loaded
+        // set cannot disagree.
+        {
+            use crate::session::extension_data::ExtensionState;
+            use crate::session::EnabledExtensionsState;
+            let granted = strip_workspace_extension(task_config.extensions.clone());
+            match EnabledExtensionsState::new(granted).to_value() {
+                Ok(value) => {
+                    if let Err(e) = session_manager
+                        .update_extension_state(
+                            &session_id,
+                            EnabledExtensionsState::EXTENSION_NAME,
+                            EnabledExtensionsState::VERSION,
+                            move |_| Ok(value),
+                        )
+                        .await
+                    {
+                        // Not fatal. A child running with the right tools but an
+                        // unwritten row is strictly better than a refused spawn,
+                        // and the header degrades to the old fallback rather
+                        // than breaking.
+                        debug!("Failed to persist subagent extension state: {e}");
+                    }
+                }
+                Err(e) => debug!("Failed to serialize subagent extension state: {e}"),
+            }
+        }
+
         for extension in strip_workspace_extension(task_config.extensions) {
             if let Err(e) = agent.add_extension(extension.clone()).await {
                 debug!(
