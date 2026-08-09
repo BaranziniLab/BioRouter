@@ -1,3 +1,4 @@
+import { isContextSkill } from '../settings/contexts/contexts';
 import { useState, useEffect, useCallback } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { Button } from '../ui/button';
@@ -48,9 +49,14 @@ export default function SkillsView() {
         loadSkillsFromDirs([BIOROUTER_SKILLS_DIR]),
         loadSkillsFromDirs(OTHER_SKILL_DIRS),
       ]);
-      setBioRouterSkills(brResult.singles);
+      // ⚠ Filtered HERE, not inside `loadSkillsFromDirs`. That helper is shared
+      // with the composer popup and the workflow pickers, so a filter inside it
+      // would need a per-caller opt-out and would quietly change three surfaces
+      // at once. Contexts are shipped, not installed: they belong in
+      // Settings -> Chat -> Contexts, not in a list of the user's own skills.
+      setBioRouterSkills(brResult.singles.filter((s) => !isContextSkill(s.name)));
       setBioBundles(brResult.bundles);
-      setOtherSkills(otherResult.singles);
+      setOtherSkills(otherResult.singles.filter((s) => !isContextSkill(s.name)));
       setOtherBundles(otherResult.bundles);
     } catch {
       setBioRouterSkills([]);

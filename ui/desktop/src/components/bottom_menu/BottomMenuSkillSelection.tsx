@@ -1,3 +1,4 @@
+import { isContextSkill } from '../settings/contexts/contexts';
 import { useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { Layers } from '../icons/app-icons';
 import {
@@ -48,7 +49,13 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
   const loadAll = useCallback(() => {
     return loadSkillOverrides().then(() => {
       return loadSkillsFromDirs(ALL_SKILL_DIRS).then(({ singles, bundles }) => {
-        setAllSkills(singles);
+        // ⚠ Contexts ship with the app, so they are not what a user means by
+        // "skills enabled". Filtering here fixes the chip count, the
+        // Enable/Disable-all counts and all four toasts at once, because every
+        // one of them derives from this array. Filtering inside
+        // `loadSkillsFromDirs` instead would silently change the workflow
+        // pickers too, which share that helper.
+        setAllSkills(singles.filter((skill) => !isContextSkill(skill.name)));
         setAllBundles(bundles);
       });
     });
