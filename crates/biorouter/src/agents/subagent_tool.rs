@@ -244,12 +244,23 @@ pub fn max_visible_child_tabs() -> usize {
 /// told why a tab did not appear instead of silently believing one did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChildVisibility {
-    /// A tab will be announced for this child.
+    /// A tab was announced for this child and a window took the frame.
     Visible,
     /// The caller passed `visible: false`.
     OptedOut,
-    /// No GUI is attached (headless CLI, server-only) — today's behaviour.
+    /// No GUI is attached (headless CLI, server-only) and the caller did not
+    /// ask for a tab — today's behaviour.
     Headless,
+    /// A tab was asked for, the frame was sent, and **no window took it**: the
+    /// app is closed, or its workspace socket was between reconnects.
+    ///
+    /// This is not `Headless` and must never be folded into it. The caller
+    /// asked for a tab; a spawn that quietly runs invisibly instead is the
+    /// defect (a live stress pass saw the renderer's workspace socket reconnect
+    /// five times in one run, and every spawn that landed in one of those
+    /// windows returned no tab and no word about it). `parent_note` is what
+    /// stops it being silent.
+    TabUndelivered { reason: String },
     /// A GUI is attached, but the user turned on "never open tabs
     /// automatically" (decision 7 / Task 29). No tab is opened; a notification
     /// names the child instead.
@@ -265,11 +276,30 @@ impl ChildVisibility {
         matches!(self, ChildVisibility::Visible)
     }
 
-    /// One sentence for the parent's tool result. Only the capped and
-    /// announce-only cases need explaining; the others are what the caller
-    /// asked for or already knows.
+    /// One sentence for the parent's tool result.
+    ///
+    /// ⚠ **Every outcome that is not a tab says so.** `OptedOut` is the single
+    /// silent case, and only because the caller asked for it. The empty string
+    /// used to be the answer for `Headless` too, which is precisely how a
+    /// transient socket blip became invisible behaviour: a `visible: true`
+    /// spawn resolved to `Headless`, said nothing, and the model went on
+    /// believing the user could watch a tab that was never opened. If a spawn
+    /// asked for a tab and did not get one, the parent is told, whatever the
+    /// reason.
     pub fn parent_note(&self, child_session_id: &str) -> String {
         match self {
+            ChildVisibility::Headless => format!(
+                "Subagent {child_session_id} is running without a tab: no desktop window is \
+                 attached to this backend. Do not tell the user you opened a tab or that they \
+                 can watch it — read the child with workspace_read_conversation and report what \
+                 it did yourself."
+            ),
+            ChildVisibility::TabUndelivered { reason } => format!(
+                "Subagent {child_session_id} is running, but NO TAB was opened: the desktop \
+                 window did not take the request ({reason}). Do not tell the user you opened a \
+                 tab. They can open it from History, and you can read it with \
+                 workspace_read_conversation."
+            ),
             ChildVisibility::BackgroundCapped { cap } => format!(
                 "Subagent {child_session_id} is running in the background: you already have \
                  {cap} subagent tabs open, which is the limit. It is listed in History under \
@@ -308,6 +338,17 @@ impl ChildVisibility {
 /// 4 subagent tabs open, which is the limit" when the true count is zero. That
 /// is the same class of lie Task 29 exists to prevent on the `workspace_open`
 /// path. Announce-only therefore claims no slot, like `Headless`.
+///
+/// ⚠ **An explicit `visible: true` is NOT overruled by `gui_attached`.** That
+/// bool is a *sample* of a socket that reconnects: `WorkspaceBridge::attach`
+/// installs a fresh sender on every renderer reload, and between the old
+/// connection dropping and the new one attaching, `any_attached()` is false for
+/// a few hundred milliseconds. A live stress pass saw five such reconnects in
+/// one run, and a spawn that happened to resolve inside one of those windows
+/// became `Headless` — silently, because `Headless` said nothing. Pre-deciding
+/// on a sample is the bug; whether a tab really opened is decided by whether a
+/// window took the frame, which only [`announce_subagent_tab`] can know.
+/// `Headless` therefore now means "no GUI **and** nobody asked for one".
 pub fn resolve_visibility(
     requested: Option<bool>,
     gui_attached: bool,
@@ -316,7 +357,7 @@ pub fn resolve_visibility(
     if requested == Some(false) {
         return ChildVisibility::OptedOut;
     }
-    if !gui_attached {
+    if !gui_attached && requested != Some(true) {
         return ChildVisibility::Headless;
     }
     if announce_only {
@@ -411,9 +452,20 @@ fn validate_placement(requested: Option<&str>) -> Result<&'static str, String> {
 /// Returns the resolved visibility so the caller can fold
 /// `ChildVisibility::parent_note` into the tool result.
 ///
-/// Fire-and-forget on the wire: a refused split or a disconnecting window must
-/// never break a spawn.
-fn announce_subagent_tab(
+/// A refused split or a disconnecting window must never break a spawn — but it
+/// must not be *silent* either, which is the half this used to get wrong. The
+/// open frame is now awaited, and a delivery failure becomes
+/// [`ChildVisibility::TabUndelivered`] (slot released, parent told) instead of
+/// a `Visible` whose note is empty.
+///
+/// ⚠ Awaiting costs nothing measurable and is not the thing the fire-and-forget
+/// rule was protecting against. Every frame here is sent with
+/// `wait_result: false`, so `gui_command_near` bottoms out in
+/// `WorkspaceBridge::emit` — a lock and a send on an *unbounded* channel, with
+/// no round trip. The 10 s exposure the rule exists for belongs to
+/// `emit_and_wait`, which is only reachable with `wait_result: true`. Do not
+/// pass `true` here.
+async fn announce_subagent_tab(
     child_session_id: &str,
     parent_session_id: &str,
     params: &SubagentParams,
@@ -437,7 +489,7 @@ fn announce_subagent_tab(
     // fifth child of a fan-out told "you already have 4 subagent tabs open,
     // which is the limit" while zero tabs exist.
     let mut visibility = visibility;
-    let guard = if visibility.is_visible() {
+    let mut guard = if visibility.is_visible() {
         // The cap is the claim: no separate read of the counter, so a parallel
         // fan-out cannot slip past it. Failing to claim is not a refusal — the
         // child runs, it just runs in the background, and `parent_note` tells
@@ -456,6 +508,16 @@ fn announce_subagent_tab(
     };
 
     let Some(services) = services else {
+        // Reachable only via an explicit `visible: true` with no daemon at all
+        // (`resolve_visibility` sends every other no-GUI case to `Headless`).
+        // There is no wire to put a frame on, so say that rather than hand back
+        // a `Visible` that means nothing.
+        if visibility.is_visible() {
+            guard = None;
+            visibility = ChildVisibility::TabUndelivered {
+                reason: "no desktop app is connected to this backend".to_string(),
+            };
+        }
         return (visibility, guard);
     };
 
@@ -474,44 +536,73 @@ fn announce_subagent_tab(
     // without going through that check — the failure mode is a silent tab, so
     // the belt is cheaper than the diagnosis.
     let placement = validate_placement(params.placement.as_deref()).unwrap_or("tab");
-    let child = child_session_id.to_string();
-    let parent = parent_session_id.to_string();
-    tokio::spawn(async move {
-        if open_a_tab {
-            announce_open_frame(services.as_ref(), &child, &parent, placement, announce_only).await;
+
+    if open_a_tab {
+        if let Err(reason) = announce_open_frame(
+            services.as_ref(),
+            child_session_id,
+            parent_session_id,
+            placement,
+            announce_only,
+        )
+        .await
+        {
+            // No window took the frame. The child still runs — a spawn is far
+            // more expensive to lose than a tab is — but the slot it was
+            // holding is released (nothing is occupying a tab, so counting it
+            // toward the cap would tell the NEXT child "you already have 4 tabs
+            // open" when zero exist), and the parent is told, which is the
+            // whole point of this branch.
+            //
+            // `AnnounceOnly` is deliberately left alone: its note already says
+            // no tab was opened, which stays true whether or not the
+            // notification landed.
+            if visibility.is_visible() {
+                guard = None;
+                visibility = ChildVisibility::TabUndelivered { reason };
+            }
         }
-        // The badge is NOT focus-stealing, so it is sent for every child this
-        // function announced at all — including a capped one, which has no tab
-        // yet and is exactly the child the user opens later from History. The
-        // renderer stores it by session id (`ChatGroupsContext`'s
-        // `tabAnnotations`), so it is already waiting when that tab appears.
-        // ⚠ Routed to the PARENT's window (#78), the same as the open frame
-        // below. Sending them through different routes is how a badge and its
-        // tab ended up in different windows, after which the receiving window
-        // observes a session it has no tab for.
-        let _ = services
-            .gui_command_near(
-                serde_json::json!({
-                    "type": "workspace", "cmd": "annotate_tab",
-                    "session_id": child, "badge": "subagent", "parent_session_id": parent,
-                }),
-                false,
-                &parent,
-            )
-            .await;
-    });
+    }
+
+    // The badge is NOT focus-stealing, so it is sent for every child this
+    // function announced at all — including a capped one, which has no tab yet
+    // and is exactly the child the user opens later from History. The renderer
+    // stores it by session id (`ChatGroupsContext`'s `tabAnnotations`), so it is
+    // already waiting when that tab appears.
+    // ⚠ Routed to the PARENT's window (#78), the same as the open frame above.
+    // Sending them through different routes is how a badge and its tab ended up
+    // in different windows, after which the receiving window observes a session
+    // it has no tab for.
+    // Its failure is NOT reported: an annotation that did not land costs a badge,
+    // not a wrong belief about where the child is.
+    let _ = services
+        .gui_command_near(
+            serde_json::json!({
+                "type": "workspace", "cmd": "annotate_tab",
+                "session_id": child_session_id, "badge": "subagent",
+                "parent_session_id": parent_session_id,
+            }),
+            false,
+            parent_session_id,
+        )
+        .await;
     (visibility, guard)
 }
 
 /// The `open_tab` / `open_window` half of [`announce_subagent_tab`], split out so
 /// the capped path can skip it without duplicating the badge send.
+///
+/// `Err(reason)` means **no window took the frame** — the app is closed, or the
+/// window that held the parent went away and no other one was attached to take
+/// the fallback. The caller turns that into
+/// [`ChildVisibility::TabUndelivered`]; it never fails the spawn.
 async fn announce_open_frame(
     services: &dyn crate::workspace_services::WorkspaceServices,
     child_session_id: &str,
     parent_session_id: &str,
     placement: &'static str,
     announce_only: bool,
-) {
+) -> Result<(), String> {
     // Frame vocabulary parity with workspace_open (Task 24): "window" is its
     // own cmd; tab/split ride open_tab. Focus etiquette (Task 29) downgrades
     // either to a notification when announce-only is on — which is exactly the
@@ -526,36 +617,35 @@ async fn announce_open_frame(
             "session_id": child_session_id, "placement": placement, "focus": false,
         })
     };
-    // ⚠ KNOWN TRADE-OFF, stated because it is otherwise invisible.
-    // `wait_result: false` means a GUI *refusal* — `refuse("split refused:
-    // already at 4 groups")`, or `open_tab` failing for any other reason — is
-    // discarded here, while the caller has already been handed
-    // `ChildVisibility::Visible` (whose `parent_note` is empty). So in that
-    // narrow case the model believes a tab opened when none did, and the cap
-    // slot stays claimed for the child's whole run. `workspace_open` does
-    // better on its own path because `place_in_gui` can afford to park on the
-    // round-trip and thread the answer into `open_result_text`.
+    // ⚠ KNOWN TRADE-OFF, NARROWED — read which half is which.
     //
-    // Not fixed here, deliberately: turning the note honest would mean awaiting
-    // this frame before `announce_subagent_tab` returns, which couples every
-    // spawn to the renderer — `emit_and_wait` gives up only after 10 s, so one
-    // wedged window would stall every fan-out. The rule for this path is
-    // fire-and-forget: a refused split or a disconnecting window must never
-    // break a spawn, and a spawn is far more expensive to lose than a misplaced
-    // tab is to notice. The lie is also bounded — the child exists, runs, and is
-    // reachable from History and `workspace_read_conversation` wherever its tab
-    // did or did not land.
+    // DELIVERY is now reported: `Err` here means no window accepted the frame,
+    // and the caller turns that into `ChildVisibility::TabUndelivered`, which
+    // has a note. That is the half that used to make a reconnecting socket look
+    // like a working spawn with an invisible child.
+    //
+    // A GUI *REFUSAL* is still discarded, and still deliberately: `refuse("split
+    // refused: already at 4 groups")` arrives on the `workspace_result` return
+    // channel, which only `wait_result: true` parks for — and `emit_and_wait`
+    // gives up after 10 s, so one wedged window would stall every fan-out.
+    // `workspace_open` can afford that park (`place_in_gui` threads the answer
+    // into `open_result_text`); a spawn cannot. So a window that TOOK the frame
+    // and then declined it still leaves the parent believing a tab exists. That
+    // residue is bounded: the child exists, runs, and is reachable from History
+    // and `workspace_read_conversation` wherever its tab did or did not land.
+    //
     // ⚠ The spawned tab belongs beside its parent (#78). Before this, the
     // daemon was never told which window meant, so it guessed with
     // `focused_or_recent` and — with several windows open — landed in one
     // particular wrong window, consistently, off `HashMap` iteration order.
-    let _ = services
+    services
         .gui_command_near(
             crate::agents::workspace_extension::apply_focus_etiquette(open_frame, announce_only),
             false,
             parent_session_id,
         )
-        .await;
+        .await
+        .map(|_| ())
 }
 
 const SUMMARY_INSTRUCTIONS: &str = r#"
@@ -627,7 +717,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             "extensions": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Extensions to enable. Omit to inherit all, empty array for none."
+                "description": "OMIT this to give the subagent the same extensions you have, which is almost always right. Naming a subset restricts it to those. An empty array leaves it with NO tools at all — it can only think and write text, so use that only for a pure reasoning or writing task."
             },
             "settings": {
                 "type": "object",
@@ -645,7 +735,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             },
             "visible": {
                 "type": "boolean",
-                "description": "Show this subagent in its own tab that the user can watch and talk to. Defaults to true when the desktop app is open. Pass false to run it silently."
+                "description": "OMIT this field. A subagent works in its own tab that the user can watch and talk to, and that is the norm — the default is already true whenever the desktop app is open, and false when it is not, so there is nothing to decide. Pass false ONLY for a long mechanical job with nothing to watch (a bulk rename, a scripted sweep). Passing false hides the subagent's work from the user, who cannot then see what it did, correct it, or stop it; it is a deliberate exception, never the safe or tidy choice."
             },
             "placement": {
                 "type": "string",
@@ -689,6 +779,10 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          3. Augmented: Provide both `subworkflow` and `instructions` to add context\n\n\
          The subagent has access to the same tools as you by default. \
          Use `extensions` to limit which extensions the subagent can use.\n\n\
+         Subagents are WATCHABLE by default: each one gets its own tab the user can \
+         read while it works, and talk to. Leave `visible` and `extensions` unset and \
+         you get that; setting them takes something away from the user, so set them \
+         only when the task actually calls for it.\n\n\
          For parallel execution, make multiple `subagent` tool calls in the same message.",
     );
 
@@ -896,7 +990,8 @@ async fn execute_subagent(
             session.id,
             inflight,
             max_pending,
-        ));
+        )
+        .await);
     }
 
     // Door 1 of 2 onto the concurrency semaphore (door 2 is inside
@@ -928,7 +1023,7 @@ async fn execute_subagent(
     // BR-71 decision 24: glass-box by default. The guard lives for the child's
     // whole run, so the slot is released exactly when the child finishes.
     let (visibility, _visible_guard) =
-        announce_subagent_tab(&session.id, &task_config.parent_session_id, &params);
+        announce_subagent_tab(&session.id, &task_config.parent_session_id, &params).await;
     let visibility_note = visibility.parent_note(&session.id);
     // Taken before `task_config` is moved into the run below.
     let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
@@ -1234,7 +1329,12 @@ async fn overridden_task_config(
 /// replacement for the old `subagent_status { cancel: true }`) and the BR-42
 /// active-work view (registered inside `run_complete_subagent_task`) both route
 /// to it.
-fn spawn_background_subagent(
+///
+/// `async` only to announce the child (below): the announce awaits a
+/// non-blocking channel send so a tab that did not open can be reported instead
+/// of assumed. Nothing else here waits — the run itself is still detached, and
+/// this still returns before the child's first turn.
+async fn spawn_background_subagent(
     config: AgentConfig,
     workflow: Workflow,
     task_config: TaskConfig,
@@ -1259,7 +1359,7 @@ fn spawn_background_subagent(
     // the visible-tab slot is released when the child's run ends, not when this
     // function returns (which is immediately).
     let (visibility, visible_guard) =
-        announce_subagent_tab(&child_session_id, &task_config.parent_session_id, params);
+        announce_subagent_tab(&child_session_id, &task_config.parent_session_id, params).await;
     // Taken before `task_config` moves into the detached task below.
     let privacy_note = dropped_extension_note(&task_config.dropped_private_extensions);
     let affiliation_note =
@@ -2146,11 +2246,66 @@ mod tests {
         // Decision 24: glass-box is the default when there is somewhere to show it.
         // (requested, gui_attached, announce_only)
         assert!(resolve_visibility(None, true, false).is_visible());
-        assert!(!resolve_visibility(None, false, false).is_visible());
+        assert_eq!(
+            resolve_visibility(None, false, false),
+            ChildVisibility::Headless
+        );
         // Explicit opt-out wins in both cases.
         assert!(!resolve_visibility(Some(false), true, false).is_visible());
-        // Explicit opt-IN cannot conjure a GUI.
-        assert!(!resolve_visibility(Some(true), false, false).is_visible());
+        assert_eq!(
+            resolve_visibility(Some(false), false, false),
+            ChildVisibility::OptedOut
+        );
+    }
+
+    /// ⚠ THIS LINE USED TO ASSERT THE OPPOSITE, and the opposite was the bug.
+    ///
+    /// `gui_attached` is a *sample* of a socket that reconnects on every
+    /// renderer reload (a live stress pass saw five reconnects in one run).
+    /// Reading it as "there is no GUI, downgrade to Headless" turned a
+    /// few-hundred-millisecond blip into a `visible: true` spawn that opened no
+    /// tab and — because `Headless`'s note was empty — said nothing about it.
+    ///
+    /// An explicit ask is honoured; whether a tab really opened is then decided
+    /// by whether a window took the frame, which is a fact rather than a sample.
+    #[test]
+    fn an_explicit_visible_true_is_not_overruled_by_a_momentary_gui_sample() {
+        assert!(resolve_visibility(Some(true), false, false).is_visible());
+        // …and it still respects the user's "never open tabs automatically".
+        assert_eq!(
+            resolve_visibility(Some(true), false, true),
+            ChildVisibility::AnnounceOnly
+        );
+    }
+
+    /// The defect D5 is really about: a spawn that asked for a tab, got none,
+    /// and was told NOTHING. Every non-tab outcome except the one the caller
+    /// asked for (`OptedOut`) has to explain itself.
+    #[test]
+    fn every_outcome_that_is_not_a_tab_tells_the_parent_so() {
+        for v in [
+            ChildVisibility::Headless,
+            ChildVisibility::AnnounceOnly,
+            ChildVisibility::BackgroundCapped { cap: 4 },
+            ChildVisibility::TabUndelivered {
+                reason: "no GUI attached".to_string(),
+            },
+        ] {
+            let note = v.parent_note("child-42");
+            assert!(!note.is_empty(), "{v:?} says nothing about having no tab");
+            assert!(note.contains("child-42"), "{v:?}: {note}");
+            assert!(
+                note.contains("no tab")
+                    || note.contains("without a tab")
+                    || note.contains("NO TAB")
+                    || note.contains("background"),
+                "{v:?} does not say a tab is missing: {note}"
+            );
+        }
+        // The two that need no explanation: a real tab, and one the caller
+        // explicitly declined.
+        assert_eq!(ChildVisibility::Visible.parent_note("child-42"), "");
+        assert_eq!(ChildVisibility::OptedOut.parent_note("child-42"), "");
     }
 
     /// Decisions 7 × 26 must not collide. With announce-only ON, no tab is ever
@@ -2371,13 +2526,22 @@ mod tests {
     #[derive(Default)]
     struct FakeGui {
         gui: bool,
+        /// Whether the wire ACCEPTS a frame, which is a different fact from
+        /// `gui_attached()` and the one D5 turned on: `WorkspaceBridge::emit`
+        /// answers "no GUI window attached" whenever `conn` is `None`, so a
+        /// renderer between reconnects is attached-then-not within one spawn.
+        deliver: bool,
         frames: std::sync::Mutex<Vec<Value>>,
     }
 
     impl FakeGui {
         fn install(gui: bool) -> std::sync::Arc<Self> {
+            Self::install_with(gui, true)
+        }
+        fn install_with(gui: bool, deliver: bool) -> std::sync::Arc<Self> {
             let me = std::sync::Arc::new(Self {
                 gui,
+                deliver,
                 frames: std::sync::Mutex::new(Vec::new()),
             });
             crate::workspace_services::set_for_tests(Some(me.clone()));
@@ -2463,7 +2627,12 @@ mod tests {
             Default::default()
         }
         async fn gui_command(&self, frame: Value, _wait_result: bool) -> Result<Value, String> {
+            // Recorded either way: "it was attempted and refused" and "it was
+            // never sent" are the two cases these tests have to tell apart.
             self.frames.lock().unwrap().push(frame);
+            if !self.deliver {
+                return Err("no GUI window attached".to_string());
+            }
             Ok(serde_json::json!({ "ok": true }))
         }
     }
@@ -2490,7 +2659,7 @@ mod tests {
         let parent = "announce-visible-parent";
 
         let (visibility, guard) =
-            announce_subagent_tab("child-a", parent, &spawn_params(None, Some("split")));
+            announce_subagent_tab("child-a", parent, &spawn_params(None, Some("split"))).await;
 
         assert_eq!(visibility, ChildVisibility::Visible);
         assert!(guard.is_some(), "a visible child must hold a slot");
@@ -2525,7 +2694,7 @@ mod tests {
         let parent = "announce-window-parent";
 
         let (_visibility, guard) =
-            announce_subagent_tab("child-w", parent, &spawn_params(None, Some("window")));
+            announce_subagent_tab("child-w", parent, &spawn_params(None, Some("window"))).await;
 
         let frames = gui.settle(2).await;
         assert_eq!(gui.cmds(), vec!["open_window", "annotate_tab"]);
@@ -2555,7 +2724,8 @@ mod tests {
         let mut guards = Vec::new();
         for i in 0..cap {
             let (visibility, guard) =
-                announce_subagent_tab(&format!("child-{i}"), parent, &spawn_params(None, None));
+                announce_subagent_tab(&format!("child-{i}"), parent, &spawn_params(None, None))
+                    .await;
             assert_eq!(visibility, ChildVisibility::Visible, "child {i}");
             guards.push(guard.expect("within the cap"));
         }
@@ -2563,7 +2733,7 @@ mod tests {
         gui.settle(cap * 2).await;
 
         let (visibility, guard) =
-            announce_subagent_tab("child-past-cap", parent, &spawn_params(None, None));
+            announce_subagent_tab("child-past-cap", parent, &spawn_params(None, None)).await;
         assert_eq!(visibility, ChildVisibility::BackgroundCapped { cap });
         assert!(guard.is_none(), "the capped child holds no slot");
         assert_eq!(
@@ -2609,7 +2779,7 @@ mod tests {
         )]);
 
         let (visibility, guard) = crate::config::with_config_overrides(overrides, async {
-            announce_subagent_tab("child-quiet", parent, &spawn_params(None, None))
+            announce_subagent_tab("child-quiet", parent, &spawn_params(None, None)).await
         })
         .await;
 
@@ -2637,7 +2807,8 @@ mod tests {
             "child-silent",
             "announce-optout-parent",
             &spawn_params(Some(false), None),
-        );
+        )
+        .await;
         assert_eq!(visibility, ChildVisibility::OptedOut);
         assert!(guard.is_none());
         assert_eq!(visible_children_of("announce-optout-parent"), 0);
@@ -2652,11 +2823,150 @@ mod tests {
             "child-headless",
             "announce-headless-parent",
             &spawn_params(None, None),
-        );
+        )
+        .await;
         assert_eq!(visibility, ChildVisibility::Headless);
         assert!(guard.is_none());
         assert_eq!(visible_children_of("announce-headless-parent"), 0);
+        // …but it is not SILENT. Nothing went to a GUI; the parent is still
+        // told there is no tab, so it cannot report one to the user.
+        assert!(!visibility.parent_note("child-headless").is_empty());
         crate::workspace_services::clear_test_override();
+    }
+
+    /// D5, at the call site: a window that takes nothing (`emit` answering
+    /// "no GUI window attached", which is exactly what a bridge between
+    /// reconnects does) produced a `ChildVisibility::Visible` whose note is
+    /// empty — a spawn that opened no tab, reported as one that did, while the
+    /// cap slot stayed claimed for the child's whole run.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn a_tab_no_window_took_is_reported_and_releases_its_slot() {
+        let gui = FakeGui::install_with(/* gui_attached */ true, /* deliver */ false);
+        let parent = "announce-undelivered-parent";
+
+        let (visibility, guard) =
+            announce_subagent_tab("child-lost", parent, &spawn_params(Some(true), None)).await;
+
+        assert!(
+            matches!(visibility, ChildVisibility::TabUndelivered { .. }),
+            "got {visibility:?}"
+        );
+        assert!(
+            guard.is_none(),
+            "a tab that never opened must not hold a cap slot"
+        );
+        assert_eq!(
+            visible_children_of(parent),
+            0,
+            "…or the next child is told the cap is full while zero tabs exist"
+        );
+        let note = visibility.parent_note("child-lost");
+        assert!(note.contains("NO TAB"), "got: {note}");
+        assert!(note.contains("child-lost"), "got: {note}");
+
+        // It really tried — the frame reached the wire and was refused there.
+        assert_eq!(gui.cmds(), vec!["open_tab", "annotate_tab"]);
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// The blip, end to end. `gui_attached()` samples false because the
+    /// renderer's socket is mid-reconnect, and the caller passed
+    /// `visible: true`. Two things must hold, and the second is the repair:
+    /// the parent is told (no silent run), and the tab is ATTEMPTED rather than
+    /// pre-empted by the sample — so a socket that has come back by the time
+    /// the frame is written gets its tab.
+    #[tokio::test]
+    #[serial_test::serial(workspace_services)]
+    async fn an_explicit_tab_request_survives_a_socket_blip() {
+        // Still down when the frame is written: reported, not silent.
+        let gui = FakeGui::install_with(/* gui_attached */ false, /* deliver */ false);
+        let parent = "announce-blip-down-parent";
+        let (visibility, guard) =
+            announce_subagent_tab("child-blip", parent, &spawn_params(Some(true), None)).await;
+        assert!(
+            matches!(visibility, ChildVisibility::TabUndelivered { .. }),
+            "got {visibility:?}"
+        );
+        assert!(guard.is_none());
+        assert!(!visibility.parent_note("child-blip").is_empty());
+        assert_eq!(
+            gui.cmds().first().map(String::as_str),
+            Some("open_tab"),
+            "the sample must not pre-empt the attempt"
+        );
+
+        // Back by the time the frame is written: a real tab, no note.
+        let gui = FakeGui::install_with(/* gui_attached */ false, /* deliver */ true);
+        let parent = "announce-blip-back-parent";
+        let (visibility, guard) =
+            announce_subagent_tab("child-back", parent, &spawn_params(Some(true), None)).await;
+        assert_eq!(visibility, ChildVisibility::Visible);
+        assert!(guard.is_some(), "a real tab holds a slot");
+        assert_eq!(visibility.parent_note("child-back"), "");
+        assert_eq!(gui.cmds(), vec!["open_tab", "annotate_tab"]);
+
+        drop(guard);
+        assert_eq!(visible_children_of(parent), 0);
+        crate::workspace_services::clear_test_override();
+    }
+
+    /// D6, measured: in 4 of 4 spawns where the tester did not dictate
+    /// `visible`, the model sent `visible: false` — and one sent
+    /// `extensions: []` unprompted. The capability is not the problem (a silent
+    /// child is occasionally right); the INVITATION was. "Defaults to true when
+    /// the desktop app is open. Pass false to run it silently." reads as a
+    /// tidiness option with a stated way to take it, so the model took it, and
+    /// the glass box the whole feature exists for was closed by default.
+    ///
+    /// A model reads a JSON-Schema `description` as instructions, so this
+    /// asserts what that field TELLS it, not merely that a field exists.
+    #[test]
+    fn the_visible_field_presents_a_tab_as_the_norm_rather_than_an_option_to_decline() {
+        let tool = create_subagent_tool(&[]);
+        let schema = &tool.input_schema;
+        let visible = schema["properties"]["visible"]["description"]
+            .as_str()
+            .expect("visible has a description")
+            .to_lowercase();
+
+        // The instruction is to leave it alone…
+        assert!(
+            visible.contains("omit"),
+            "the field must tell the model to omit it: {visible}"
+        );
+        // …because a watchable tab is the norm, not a mode to opt into.
+        assert!(visible.contains("norm"), "got: {visible}");
+        // …and `false` is scoped to a narrow case, with its cost stated.
+        assert!(visible.contains("only"), "got: {visible}");
+        assert!(
+            visible.contains("hides") || visible.contains("cannot then see"),
+            "the cost of false must be stated: {visible}"
+        );
+        // The wording that was measured producing 4-of-4 opt-outs.
+        assert!(
+            !visible.contains("pass false to run it silently"),
+            "the old invitation is back: {visible}"
+        );
+
+        // Same defect, same spawn: `extensions: []` was volunteered too.
+        let extensions = schema["properties"]["extensions"]["description"]
+            .as_str()
+            .expect("extensions has a description")
+            .to_lowercase();
+        assert!(extensions.contains("omit"), "got: {extensions}");
+        assert!(
+            extensions.contains("no tools"),
+            "an empty array must state what it costs: {extensions}"
+        );
+
+        // And the tool description, which models weight more heavily than a
+        // per-field one, says it as well.
+        let desc = tool.description.as_ref().unwrap().to_lowercase();
+        assert!(
+            desc.contains("watchable by default"),
+            "the top-level description must state the norm: {desc}"
+        );
     }
 
     #[test]
