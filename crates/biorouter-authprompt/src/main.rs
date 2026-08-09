@@ -183,6 +183,36 @@ mod macos {
         // SAFETY: `+[LAContext new]` takes no arguments and returns a +1 instance.
         let context: Retained<AnyObject> = unsafe { msg_send![class, new] };
 
+        // ⚠ **Refuse a cached authentication (F-13).** DR-20 point 2 admits no
+        // cached grant, and the Linux prompter honours that literally: it turns
+        // down `pkexec` because `auth_admin_keep` caches the authorization for
+        // minutes, which would let a second declassification through with no
+        // prompt at all. macOS reaches the same end by a different road — this
+        // repo has observed `evaluatePolicy` returning success *instantly, with
+        // no dialog*, off a recent authentication. On the prompt that gates
+        // turning enforcement OFF, that is an approval the user did not
+        // knowingly give for this operation.
+        //
+        // Zero is already the documented default for this property, so this
+        // call is belt-and-braces: it stops a future macOS (or a stray
+        // configuration) from reusing an earlier Touch ID, and it states the
+        // requirement in code rather than relying on a default staying put.
+        //
+        // ⚠ It is **not** proven sufficient. If the instant approval comes from
+        // a system-level grace period rather than this context's reuse window,
+        // `LAContext` cannot override it and no setting here will. In that case
+        // the honest repair is the disclosure text, not this line — do not read
+        // the presence of this call as a freshness guarantee.
+        //
+        // SAFETY: `-setTouchIDAuthenticationAllowableReuseDuration:` takes an
+        // NSTimeInterval (a `double`) and returns void.
+        let _: () = unsafe {
+            msg_send![
+                &*context,
+                setTouchIDAuthenticationAllowableReuseDuration: 0.0f64
+            ]
+        };
+
         let mut probe_error: *mut AnyObject = std::ptr::null_mut();
         // SAFETY: `-canEvaluatePolicy:error:` takes an LAPolicy and an
         // out-pointer to an NSError, and returns BOOL.
@@ -241,5 +271,40 @@ mod macos {
             ]
         };
         Some(string)
+    }
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use objc2::msg_send;
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Bool, Sel};
+
+    /// ⚠ **`msg_send!` is dynamic dispatch, so a misspelled selector compiles
+    /// cleanly and then kills the process at runtime** — "unrecognized selector
+    /// sent to instance" — inside the one code path whose whole job is to be
+    /// trustworthy. A crash there is not a soft failure: the helper dies without
+    /// writing a verdict, and the operation is refused for a reason that has
+    /// nothing to do with the user's answer.
+    ///
+    /// This asserts the freshness setter (F-13) is a real LAContext method
+    /// rather than a plausible-looking string. It does **not** prompt.
+    #[test]
+    fn the_reuse_duration_setter_is_a_real_selector() {
+        let Some(class) = AnyClass::get(c"LAContext") else {
+            // No LocalAuthentication on this host: nothing to assert against,
+            // and failing here would be a false alarm about the code.
+            return;
+        };
+        // SAFETY: `+[LAContext new]` takes no arguments and returns a +1 instance.
+        let context: Retained<AnyObject> = unsafe { msg_send![class, new] };
+        let sel = Sel::register(c"setTouchIDAuthenticationAllowableReuseDuration:");
+        // SAFETY: `-respondsToSelector:` takes a SEL and returns BOOL.
+        let responds: Bool = unsafe { msg_send![&*context, respondsToSelector: sel] };
+        assert!(
+            responds.as_bool(),
+            "LAContext does not respond to setTouchIDAuthenticationAllowableReuseDuration: — \
+             the F-13 hardening in evaluate() would crash the helper at runtime"
+        );
     }
 }
