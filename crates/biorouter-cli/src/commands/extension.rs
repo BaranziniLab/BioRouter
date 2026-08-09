@@ -116,7 +116,7 @@ pub async fn handle_install(
         if pred {
             Ok(())
         } else {
-            bail!("{} — not a valid .brxt bundle", msg)
+            bail!("{}: not a valid .brxt bundle", msg)
         }
     };
     require(
@@ -188,7 +188,7 @@ pub async fn handle_install(
             envs.insert(var.key.clone(), val.clone());
         } else if var.required {
             println!(
-                "  {} required env var {} not provided — set it later with `--env {}=...`",
+                "  {} required env var {} not provided. Set it later with `--env {}=...`",
                 style("⚠").yellow(),
                 style(&var.key).yellow(),
                 var.key
@@ -318,7 +318,7 @@ fn uv_sync_hint(stderr: &str) -> Option<&'static str> {
         // steer users to the self-contained rustup toolchain and tell them to
         // remove the Homebrew one so it wins on PATH.
         Some(
-            "your Homebrew Rust toolchain is broken — `rustc` aborts because Homebrew's \
+            "your Homebrew Rust toolchain is broken. `rustc` aborts because Homebrew's \
              `llvm` was upgraded out from under it (a known Homebrew issue). \
              `brew upgrade rust` usually does NOT fix this. Install the self-contained \
              rustup toolchain and remove the Homebrew one so it takes priority:\n    \

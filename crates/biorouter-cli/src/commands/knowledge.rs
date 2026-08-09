@@ -174,7 +174,7 @@ fn render_list(svc: &KnowledgeService, format: &str) -> Result<String> {
     if bases.is_empty() {
         out.push_str(&format!(
             "    {}",
-            style("none yet — create one with `biorouter knowledge create <id> --name <name>`")
+            style("none yet. Create one with `biorouter knowledge create <id> --name <name>`")
                 .dim()
         ));
         return Ok(out);
@@ -320,7 +320,7 @@ fn active_command(
             bail!(
                 "--inherit drops a chat's own primary so it follows the machine-wide one, so it \
                  needs --session <id>. The machine-wide primary has nothing above it to inherit \
-                 — use --clear to unset it."
+                 Use --clear to unset it."
             );
         };
         let selection = svc.set_selection(Some(session), None, PrimaryUpdate::Inherit)?;
@@ -423,7 +423,7 @@ fn create_command(
             "\n  {} {}",
             style("·").dim(),
             style(format!(
-                "no primary knowledge base yet — set one with `biorouter knowledge active --set {}`",
+                "no primary knowledge base yet. Set one with `biorouter knowledge active --set {}`",
                 manifest.id
             ))
             .dim()
@@ -721,7 +721,7 @@ pub async fn handle_lint(
     spinner.stop("");
 
     let r = &result.report;
-    section(&format!("Lint report — {}", kb_id));
+    section(&format!("Lint report: {}", kb_id));
 
     let group = |label: &str, items: &[String]| {
         let count = items.len();
@@ -806,7 +806,7 @@ pub async fn handle_query(
 
     spinner.stop("");
 
-    section(&format!("Answer — {}", kb_id));
+    section(&format!("Answer: {}", kb_id));
     println!("{}", result.answer);
 
     if !result.cited_pages.is_empty() {

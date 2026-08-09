@@ -64,7 +64,7 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
         ),
         None => {
             println!(
-                "    {} not on PATH — run {} to call `biorouter` from any terminal",
+                "    {} not on PATH. Run {} to call `biorouter` from any terminal",
                 style("○").yellow(),
                 style("biorouter setup-path").fg(ACCENT).bold()
             );
@@ -177,10 +177,8 @@ fn print_llama_status(status: &SidecarStatus, model_cache_dir: &str) {
         None => println!(
             "    {} binary {}",
             style("·").dim(),
-            style(
-                "not found — set BIOROUTER_LLAMACPP_BIN, or use the desktop app which bundles it"
-            )
-            .dim()
+            style("not found. Set BIOROUTER_LLAMACPP_BIN, or use the desktop app which bundles it")
+                .dim()
         ),
     }
     println!(

@@ -56,7 +56,7 @@ async fn handle_first_time_setup(config: &Config) -> anyhow::Result<()> {
         .item(
             "local",
             "Local Model (Llama Server)",
-            "Run a private model on this computer — free, no account or API key needed",
+            "Run a private model on this computer. Free, no account or API key needed",
         )
         .item(
             "openrouter",
@@ -1429,7 +1429,7 @@ pub async fn configure_lead_worker_dialog() -> anyhow::Result<()> {
         .get_biorouter_model()
         .unwrap_or_else(|_| "your default model".to_string());
     let _ = cliclack::log::success(format!(
-        "Lead/worker mode enabled — {} ({}) leads, {} handles the rest.",
+        "Lead/worker mode enabled. {} ({}) leads, {} handles the rest.",
         model, provider_meta.display_name, worker_model
     ));
     Ok(())
