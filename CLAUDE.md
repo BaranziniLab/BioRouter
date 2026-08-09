@@ -350,16 +350,23 @@ visualizations. It opens automatically on the newest artifact.
      Only successful tool responses count. See `fileArtifactPathsFromToolCall`.
   3. File paths the assistant mentions in its prose (the original behaviour).
 - **How each kind renders:** HTML → sandboxed `srcdoc` iframe; images → inline;
-  directories → a clickable listing; `.md`/`.Rmd`/`.qmd` → rendered prose with a
+  directories → `DirectoryTreePreview`, a left rail holding a filter box and an
+  expandable `role="tree"` (branch chip and per-entry status dots on a
+  `gitDirectory`) beside a live preview of the selected entry;
+  `.md`/`.Rmd`/`.qmd` → rendered prose with a
   Preview/Raw toggle; `.csv`/`.tsv` → a real table (quoted fields honoured,
   capped at 500 rows) with a Table/Raw toggle; everything else → syntax-
   highlighted, line-numbered code with a language chip and Copy.
-- **Syntax highlighting** follows the app theme. The one palette lives in
-  `ui/desktop/src/styles/codeTheme.ts` (`codeThemes.light` / `codeThemes.dark`) and
-  is shared by the panel's code view and chat's markdown code blocks, so they can
-  never drift. Leaf components read the theme with `useResolvedTheme()` from
-  `contexts/ThemeContext` — it falls back to `light` outside a provider instead of
-  throwing like `useTheme()`.
+- **Syntax highlighting** follows the app theme *and* the theme family. The one
+  palette lives in `ui/desktop/src/styles/codeTheme.ts` and is selected as
+  `codeThemesByFamily[useThemeFamily()][useResolvedTheme()]` — the identical
+  expression in the panel, chat's markdown code blocks, `ToolCallWithResponse`
+  and `NotebookPreview`, so they can never drift. The older `codeThemes.light` /
+  `codeThemes.dark` export is Parchment-only back-compat with no consumers left;
+  reaching for it pins code to Parchment under the other two families. Leaf
+  components read the mode with `useResolvedTheme()` from `contexts/ThemeContext`
+  — it falls back to `light` outside a provider instead of throwing like
+  `useTheme()`.
   - **Never combine `wrapLongLines` with `showLineNumbers`** in
     `react-syntax-highlighter`: it then sets `display: flex` on every line
     (`highlight.js:106`), turning each token into a flex item and shredding long
@@ -370,11 +377,13 @@ visualizations. It opens automatically on the newest artifact.
     A markdown table in a code block emits `<span class="token table">`, which
     Tailwind's `.table { display: table }` turned into a table box — one source
     line became a vertical stack of cells, orphaning the line numbers. `main.css`
-    ends with an unlayered `code [class~='token'] { display: inline; }` that wins
-    over Tailwind's `utilities` layer. jsdom does not apply Tailwind, so only a
-    real browser catches this class of bug; sweep the panel with the harness
-    (`.artifact-harness`) across md / csv / json / yaml / xml / R / py / sql /
-    css / sh / toml / rs / ts after touching the code view.
+    carries an unlayered `code [class~='token'] { display: inline; }` that wins
+    over Tailwind's `utilities` layer regardless of specificity. *Unlayered* is
+    the load-bearing part, not its position — it no longer sits at the end of the
+    file, so grep the selector rather than reading the tail. jsdom does not apply
+    Tailwind, so only a real browser catches this class of bug; sweep the panel
+    with the harness (`.artifact-harness`) across md / csv / json / yaml / xml /
+    R / py / sql / css / sh / toml / rs / ts after touching the code view.
 - **No delete control on in-chat artifact cards.** Deleting an Agent Drafter app
   is destructive (removes files from disk) and lives only in the **Applications**
   tab (`ApplicationsView.tsx`) — never on the in-chat card in `MCPUIResourceRenderer`,
@@ -404,7 +413,10 @@ visualizations. It opens automatically on the newest artifact.
   watching, no hot reload). Without it, any save anywhere under `ui/desktop/src/`
   full-reloads the page and destroys the chat session under test — which makes
   agent-browser/Playwright runs fail in ways that look like app bugs. Combine with
-  the sandboxing and CDP port from `just agent-browser-ui`.
+  the sandboxing and CDP port from `just agent-browser-ui`. It has a second
+  consequence that reads as a completely different bug — it also blinds Tailwind's
+  class scanner, so a *newly written* utility never reaches the stylesheet; see
+  "Desktop shell geometry" below.
 
 - **Launching the GUI from an agent shell — read
   [`docs/desktop-ui/launching-the-dev-gui.md`](docs/desktop-ui/launching-the-dev-gui.md) first.**
@@ -434,9 +446,10 @@ visualizations. It opens automatically on the newest artifact.
 ### Theme families (Parchment / Alma Mater / Roche Limit)
 
 Two orthogonal axes: light/dark mode (a `.dark` class on `<html>`) and **theme
-family** (a `data-theme` attribute). Three families ship — Parchment (default,
-warm), Alma Mater (UCSF navy + teal), Roche Limit (JupyterLab-inspired). Themes
-are **baked into the app by decision**; they are not user-installable.
+family** (a `data-theme` attribute). Three families ship — Parchment (default;
+warm ink + coral, not a warm ground — see "one neutral set" below), Alma Mater
+(UCSF navy + teal), Roche Limit (JupyterLab-inspired). Themes are **baked into
+the app by decision**; they are not user-installable.
 
 **A theme is ONE file.** `ui/desktop/themes/<id>.theme.mjs` is the source of
 truth; `npm run themes` generates everything else:
@@ -460,19 +473,97 @@ Key invariants, each learned from a real bug:
   `.dark[data-theme=X]` have identical specificity (0,2,0) — only source order
   separates them. Reversing the pair renders light tokens in dark mode while
   every contrast ratio still passes. `check-contrast.mjs` asserts the ordering.
-- **`terminalGround` is per family.** Parchment dark paints `--background-code`;
-  the others paint `--background-muted`. Never assume they agree — doing so
-  re-grounds terminals under palettes tuned for a different surface.
+- **One neutral set, three inks.** All three families now wear the SAME neutrals
+  — every surface, grey and structural border is Roche Limit's, in both modes,
+  including dark's ladder (canvas darkest, cards a step up; Parchment dark and
+  Alma Mater dark both used to invert it, and one shared set cannot carry two
+  contradictory orders). What still varies is a family's *ink*, its *accent*
+  (plus the accent-derived heat ramp) and its status hues — measured, 28 of 58
+  light tokens and 30 of 58 dark ones differ, and not one of them is a surface.
+  **Nothing enforces the sharing:** `check-contrast.mjs` audits each family on
+  its own, so a diverged neutral passes every assertion. Roche Limit's file is
+  the reference set; moving a neutral means editing all three `*.theme.mjs`
+  files *and* `main.css`'s hand-authored `:root`/`.dark` base block together.
+- **`terminalGround` is now the same token in all three** — `--background-muted`,
+  in both modes. The warning that used to sit here was right and still is, aimed
+  at a changed fact: Parchment dark really did paint `--background-code`, and
+  that was a real difference while the two tokens held different per-family
+  values. So read each family's `terminalGround` field rather than assuming
+  either way — the agreement is a measurement (the generator resolves every
+  family's ANSI palette against its own ground), not a rule, and it can change
+  back.
 - **Derived, never authored:** terminal/code/splash grounds, picker label and
   swatch, the family list. These are the values that historically drifted.
 - **`check-contrast.mjs` discovers families** from the stylesheet; a new family
-  is audited with zero edits to it (228 assertions at three families).
+  is audited with zero edits to it (330 assertions at three families, measured
+  2026-08-08 — re-measure rather than trusting this figure).
 
 Design docs: [`docs/design/theming/theme-system-architecture.md`](docs/design/theming/theme-system-architecture.md)
 (architecture + the decisions and their reasons), plus one per family —
 [`design.md`](design.md) at the **repo root** (Parchment; note it self-reports an
 older version than the tree), and `docs/design/theming/alma-mater-theme-tokens.md`
 and `docs/design/theming/roche-limit-theme.md`.
+
+### Desktop shell geometry (layout tokens in `main.css`)
+
+Not per family — these live in `:root` and are the same under every
+`data-theme`. Each is the fix for a drift that had already happened, so the
+value's *location* is as load-bearing as the number.
+
+- **`--chrome-height: 44px` is wired, not a target.** All three top bands read
+  `h-chrome`: the sidebar's titlebar band (`BioRouterSidebar/AppSidebar.tsx`),
+  the chat header (`BaseChat.tsx`) and the artifact tab strip
+  (`artifacts/ArtifactViewer.tsx`). They were 52px written three ways, which is
+  exactly what let them drift at the seam they share. ⚠ **The three move
+  together or not at all** — they meet at one continuous top edge, so a band
+  that shrinks beside a stationary one reads as misalignment rather than as a
+  tighter app. That is why the value lives in `:root` and in none of the three
+  files. `--tab-height` (32px) does the same job for `.br-tab`, drawn identically
+  in the chat header, the artifact panel and the terminal dock: a fixed height
+  *centred* in its band, because the bands differ and a band-filling tab would be
+  a different size in each one.
+- **`--measure-chat` is a flat `760px`.** It was briefly widened into a clamp and
+  that was wrong for this measure specifically — a 1180px composer is a line of
+  prose the eye has to track back across. `styles/measures.test.ts` asserts the
+  whole string, because every loose matcher (`/760px/`) is satisfied by
+  `clamp(760px, 78%, 1180px)`, the value being ruled out.
+- **The composer's card is the input, and nothing else** (`ChatInput.tsx`). Three
+  rows — context above, the card holding the prose *and* Send, controls below —
+  with the outer two directly on the canvas, so the only boxed thing on screen is
+  the one thing the user acts on. The focus edge is that card's own 1px border
+  turning `--border-accent` (not `--accent-muted`, which at 2px reads as a thick
+  warm-grey band), and it is **authored CSS** —
+  `.biorouter-composer-card:has(textarea:focus)` in `main.css` — never a Tailwind
+  `has-[...]` variant at the call site.
+  - ⚠ **The reason generalises far past the composer: a newly written Tailwind
+    class can silently fail to generate.** Under `BIOROUTER_NO_HMR` the renderer
+    runs `watch: { ignored: ['**'] }` (`vite.renderer.config.mts`), which is the
+    same signal Tailwind's scanner uses to notice new class strings. Three
+    spellings were each measured in the running app — the class on the element, a
+    focused `textarea` descendant, and no matching rule anywhere in the
+    stylesheet. Clearing `node_modules/.vite` changed nothing. Nothing
+    load-bearing should depend on class-scanning having worked; author the rule.
+  - `styles/composerFocus.test.ts` asserts the declaration **at the source**, and
+    has to: jsdom has no layout engine, never runs Tailwind and does not evaluate
+    `:has()`, so a component test that focuses the textarea and reads
+    `borderColor` sees the resting value and passes whether the rule exists or
+    not.
+- **Long messages fold** (`utils/messageClamp.ts`): above 10 lines *or* 600
+  characters, clipped to 200px behind a fade with an expand control. The
+  arithmetic is deliberately free of React and the DOM — `UserMessage.tsx` owns
+  the clipping, the fade and the control and none of the thresholds — because a
+  threshold you can only exercise by rendering a component is one nobody
+  re-tests. It fires on length alone; there is no paste-origin signal.
+- **Toasts sit in the top-right corner**, at `--toast-inset-top =
+  --titlebar-drag-height + 12px`. It was 144px, derived by measuring the lowest
+  ink in the tallest page header so a toast could never cover a page title —
+  which worked, and put the extension-load report halfway down the chat pane.
+  ⚠ **The floor is not negotiable.** Anything above `--titlebar-drag-height`
+  overlaps the `-webkit-app-region: drag` rect `App.tsx` paints, and Electron
+  folds drag rects in **DOM order** — the drag div lives inside App's main tree,
+  *later* than the toast container — so a later drag rect eats clicks on a
+  higher-z control no matter what the z-index says (issue #74). A toast's × and
+  "View details" would look present and be dead. `styles/toastLayer.test.ts`.
 
 ### Auto Visualiser feature
 
