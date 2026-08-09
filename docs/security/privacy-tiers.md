@@ -69,6 +69,21 @@ this section is the ledger.
   predicate decides both so they cannot drift apart. In the desktop app, and as
   `biorouter session declassify <id>` in the CLI, which is the only surface that reaches a private
   chat no listing shows.
+
+  ⚠ **R18's "no cached grant" is honoured on Linux and NOT guaranteed on macOS (F-13).** R18 asks
+  for a prompt "raised once per operation (no session, no cached grant)". The Linux prompter
+  implements that literally — it declines `pkexec`'s `org.freedesktop.policykit.exec` *because*
+  `auth_admin_keep` caches the authorization for minutes, and declares a dedicated `auth_self`
+  action instead. macOS reaches the cached outcome by another road: this repo has observed
+  `LAContext.evaluatePolicy` returning success **instantly, with no dialog**, off a recent
+  authentication (`crates/biorouter-authprompt/src/main.rs:116-122`, written to explain a lifecycle
+  bug and only later read as a security property). The helper now sets
+  `touchIDAuthenticationAllowableReuseDuration = 0` explicitly, which is already the documented
+  default — so if the instant approval survives it, the cause is a system-level grace period that
+  `LAContext` cannot override, and the requirement is unmet on macOS rather than merely
+  unconfigured. **Untested as of 2026-08-08**; it needs two authentications a minute apart on real
+  hardware. Do not describe R18 as fully satisfied on macOS until that runs. See
+  `docs/releases/v1.89.0-verification-log.md` § F-13.
 - **The master switch** (R7 / DR-15 / DR-22) in Settings → Privacy: one control that disables every
   gate and the ratchet, behind a typed confirmation, stored in its own record beside `config.yaml`
   rather than in it — because a switch an agent can edit with `text_editor` is not a switch.
