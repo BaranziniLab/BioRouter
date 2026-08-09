@@ -169,7 +169,7 @@ async fn a_failing_tool_does_not_cancel_its_siblings() {
     for name in ["a.log", "b.log"] {
         assert!(
             root.join(name).exists(),
-            "sibling side effect {name} missing — the failure aborted the batch"
+            "sibling side effect {name} missing, so the failure aborted the batch"
         );
     }
 
@@ -229,13 +229,13 @@ async fn two_writers_to_the_same_path_never_interleave() {
         distinct.len(),
         1,
         "the contended file mixes both writers' output ({} distinct line values) \
-         — the per-path write lock did not serialize them",
+         so the per-path write lock did not serialize them",
         distinct.len()
     );
     assert_eq!(
         lines.len(),
         200,
-        "the contended file is truncated/doubled ({} lines) — the two writers \
+        "the contended file is truncated/doubled ({} lines), so the two writers \
          overlapped rather than running strictly one after the other",
         lines.len()
     );

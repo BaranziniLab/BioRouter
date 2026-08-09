@@ -63,13 +63,13 @@ pub const NOT_CAPABILITY_CONFIG_KEYS: &[(&str, &str)] = &[
     //   not to DR-16 — and it is recorded here rather than left unstated.
     (
         "AZURE_OPENAI_ENDPOINT",
-        "moves a Private provider's endpoint; does not raise a tier — see Task 5",
+        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
     ),
     ("AZURE_OPENAI_DEPLOYMENT_NAME", "deployment selection"),
     ("AZURE_OPENAI_API_VERSION", "wire version"),
     (
         "AWS_ENDPOINT_URL_BEDROCK",
-        "moves a Private provider's endpoint; does not raise a tier — see Task 5",
+        "moves a Private provider's endpoint; does not raise a tier (see Task 5)",
     ),
     ("AWS_REGION", "region selection"),
     ("BEDROCK_MAX_RETRIES", "retry policy"),
@@ -183,7 +183,7 @@ mod tests {
                 .any(|(k, _why)| *k == key.as_str());
             assert!(
                 cap ^ not,
-                "{key} is in neither list, or in both — classify it"
+                "{key} is in neither list, or in both; classify it"
             );
         }
         // BIOROUTER_PROVIDER is read through the `config_value!` macro

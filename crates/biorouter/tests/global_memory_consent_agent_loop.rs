@@ -481,7 +481,7 @@ async fn approving_the_card_returns_the_memory_to_the_model() {
     let responses = tool_response_text(&messages);
     assert!(
         responses.contains("cohort 4217 had 12 responders"),
-        "the user approved the disclosure and the model got nothing — a prompt \
+        "the user approved the disclosure and the model got nothing, so a prompt \
          that never resumes is not a consent flow: {responses}"
     );
 }
@@ -534,7 +534,7 @@ async fn denying_the_card_withholds_the_memory_and_says_why() {
     );
     assert!(
         lower.contains("user"),
-        "the refusal has to name *who* decided — a bare error reads as a broken \
+        "the refusal has to name *who* decided; a bare error reads as a broken \
          tool: {responses}"
     );
 }

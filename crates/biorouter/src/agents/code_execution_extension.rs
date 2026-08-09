@@ -483,7 +483,7 @@ const BOA_NOT_CALLABLE: &str = "not a callable function";
 fn annotate_opaque_js_error(message: &str) -> String {
     if message.contains(BOA_NOT_CALLABLE) {
         format!(
-            "{message} — you called something that is not a function. A tool call \
+            "{message}. You called something that is not a function. A tool call \
              returns a parsed object when the tool's result is JSON, and a string \
              otherwise, so string methods such as .trim()/.split() fail on a JSON \
              result. Inspect the shape first (record_result(value)) or convert it \
@@ -614,11 +614,11 @@ fn annotate_parse_error(code: &str, message: &str) -> String {
         return message.to_string();
     }
     format!(
-        "{message} — the script likely embeds shell/CSS/markdown text in a template \
+        "{message}. The script likely embeds shell/CSS/markdown text in a template \
          literal. String.raw does NOT make ${{…}} literal: every ${{…}} in ANY template \
          literal (String.raw included) is parsed as a JavaScript expression, and a \
          backtick inside the payload terminates the literal early. To emit a literal \
-         dollar-brace write ${{\"$\"}}{{VAR}} — or avoid the template entirely: pass the \
+         dollar-brace write ${{\"$\"}}{{VAR}}, or avoid the template entirely: pass the \
          payload as a plain quoted JS string with \\n escapes, or write it to a file \
          with developer/text_editor (write) and run that file via developer/shell."
     )
@@ -732,7 +732,7 @@ fn module_not_found_message(specifier: &str, available: &[String]) -> String {
         message.push_str(" No modules are importable in this session.");
     } else {
         message.push_str(&format!(
-            " Importable modules are exactly: {} — nothing else can be imported. \
+            " Importable modules are exactly: {}. Nothing else can be imported. \
              Call search_modules to find which one holds the tool you need, or \
              read_module(\"<module>\") to list its tools.",
             available.join(", ")
@@ -1405,7 +1405,7 @@ impl CodeExecutionClient {
                 WHEN NOT TO USE THIS EXTENSION:
                 - Do NOT use execute_code for basic file or system operations. Listing a directory,
                   reading or writing a single file, copying, moving, deleting, or finding files, and
-                  running a single command are simpler and clearer with the developer extension —
+                  running a single command are simpler and clearer with the developer extension:
                   call `developer/shell` (ls, cp, mv, rm, mkdir, rg) or `developer/text_editor`
                   (view, write, str_replace) DIRECTLY, not wrapped in a JavaScript script.
                 - A single tool call is a single tool call. Only reach for execute_code once you
@@ -1720,7 +1720,7 @@ impl CodeExecutionClient {
             // fed the failure-streak counters for what was a perfectly good
             // search that simply matched nothing.
             return Ok(vec![Content::text(format!(
-                "No tools matched: {}. This catalog contains only the installed MCP tools — \
+                "No tools matched: {}. This catalog contains only the installed MCP tools, \
                  it does not include skills, web search, documents, or knowledge bases, and \
                  it does not answer questions. Try broader or different terms, or call \
                  read_module(\"<module>\") for a module you already know from the \
@@ -2072,11 +2072,11 @@ impl McpClientTrait for CodeExecutionClient {
 
                         DO NOT use this for basic file or system operations. Listing a directory, reading or
                         writing a single file, copying, moving, deleting, or finding files, and running one
-                        command are simpler with the developer extension — call `developer/shell` (ls, cp, mv,
+                        command are simpler with the developer extension: call `developer/shell` (ls, cp, mv,
                         rm, mkdir, rg) or `developer/text_editor` (view, write, str_replace) DIRECTLY instead
                         of wrapping them in a script here.
-                        - WRONG: execute_code to `ls`, copy a file, or `rm` — use developer/shell directly.
-                        - WRONG: one execute_code call that wraps a single tool call — just call that tool.
+                        - WRONG: execute_code to `ls`, copy a file, or `rm`; use developer/shell directly.
+                        - WRONG: one execute_code call that wraps a single tool call; just call that tool.
                         - RIGHT: several dependent calls, or a loop/aggregation over their outputs, in one script.
 
                         EXAMPLE - Chain dependent calls with logic between them (ONE call):
@@ -2112,7 +2112,7 @@ impl McpClientTrait for CodeExecutionClient {
                           "not a callable function". Check with typeof, or use JSON.stringify(value).
 
                         MODULES:
-                        - Only the modules listed in "Modules:" above are importable — these and only these.
+                        - Only the modules listed in "Modules:" above are importable: these and only these.
                         - There is NO Node.js or browser standard library here: no "fs", "path", "os",
                           "child_process", "http", "https", "crypto", "process", and no fetch/require.
                           For files and commands import from "developer": import { shell, text_editor } from "developer";
@@ -2185,7 +2185,7 @@ impl McpClientTrait for CodeExecutionClient {
                     "search_modules".to_string(),
                     indoc! {r#"
                         Find which MCP TOOL/MODULE to import inside an execute_code script, by matching a
-                        tool's name or description. This searches the local catalog of installed tools only —
+                        tool's name or description. This searches the local catalog of installed tools only:
                         it does NOT search the web, documents, or knowledge bases, and it does not answer
                         questions. Use it solely to locate a tool you intend to call from execute_code.
 
@@ -2199,7 +2199,7 @@ impl McpClientTrait for CodeExecutionClient {
                         Returns ranked tools with complete import syntax and parameter signatures, ready for execute_code.
                         Use this only when you are about to write an execute_code script and don't know which
                         module contains the tool you need. For a web-research or factual question, use a web
-                        tool or answer directly — not this.
+                        tool or answer directly, not this.
                         Do not follow it with read_module unless the needed tool was not returned.
                     "#}
                     .to_string(),
@@ -2279,11 +2279,11 @@ impl McpClientTrait for CodeExecutionClient {
             indoc::indoc! {r#"
                 Modules: {}
 
-                Those are the only importable modules — there is no Node.js or browser standard library
+                Those are the only importable modules: there is no Node.js or browser standard library
                 (no "fs", "path", "os", "child_process", "http"); use `import {{ shell, text_editor }} from "developer"`
                 for files and commands. Names are case-sensitive.
                 A tool call returns a parsed object when its result is JSON, a string otherwise.
-                String.raw does NOT make ${{...}} literal — a ${{...}} or backtick inside an embedded
+                String.raw does NOT make ${{...}} literal: a ${{...}} or backtick inside an embedded
                 shell/markdown payload still breaks the parse; write such payloads to a file instead.
 
                 For an unfamiliar task, call search_modules once. Its results contain complete imports and signatures.

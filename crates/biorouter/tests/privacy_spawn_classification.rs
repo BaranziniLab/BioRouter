@@ -272,7 +272,7 @@ async fn a_child_spawned_while_the_switch_is_off_still_carries_its_parents_class
         assert_eq!(
             children[0].privacy_tier, expected_child,
             "{parent_tier:?} background={background}: a row minted while the switch was off cannot be \
-             corrected by turning it back on (AR-7) — the opt-out laundered the parent's \
+             corrected by turning it back on (AR-7): the opt-out laundered the parent's \
              classification"
         );
         // And re-enabling did not retro-classify anything: the parent is where

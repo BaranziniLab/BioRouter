@@ -246,7 +246,7 @@ fn report_path() -> std::path::PathBuf {
 
 fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
     let mut md = String::new();
-    md.push_str("# Llama Server — Embedded llama.cpp Model Survey\n\n");
+    md.push_str("# Llama Server: Embedded llama.cpp Model Survey\n\n");
     md.push_str(
         "Engine: Biorouter managed `llama-server` sidecar (build pinned). \
          Host: Apple M4 Max / 128 GB. Each model tested through the real \
@@ -286,7 +286,7 @@ fn write_report(reports: &[ModelReport], in_progress: Option<&str>) {
     for r in reports {
         md.push_str(&format!("### {} (`{}`)\n\n", r.display_name, r.name));
         md.push_str(&format!(
-            "- HF spec: `{}` — {}, ctx {}\n",
+            "- HF spec: `{}`, {}, ctx {}\n",
             r.hf_spec, r.download_size, r.context_limit
         ));
         if let Some(s) = r.load_secs {
@@ -363,7 +363,7 @@ async fn survey_all_models() {
             ..Default::default()
         };
         println!(
-            "\n=== {} ({}) — {} ===",
+            "\n=== {} ({}): {} ===",
             entry.display_name, entry.name, entry.download_size
         );
 

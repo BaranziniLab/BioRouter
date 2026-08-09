@@ -64,7 +64,7 @@ async fn a_wide_batch_never_exceeds_the_eight_permit_ceiling() {
     // The cap holds: never more than 8 tools in flight at once.
     assert!(
         peak <= 8,
-        "observed {peak} tools running concurrently, above the 8-permit ceiling — \
+        "observed {peak} tools running concurrently, above the 8-permit ceiling. \
          the dispatch semaphore is not bounding the batch"
     );
 
@@ -73,7 +73,7 @@ async fn a_wide_batch_never_exceeds_the_eight_permit_ceiling() {
     // would still satisfy the assertion above.
     assert!(
         peak > 1,
-        "observed no parallelism at all (peak {peak}) — the batch serialized, so \
+        "observed no parallelism at all (peak {peak}): the batch serialized, so \
          this run did not actually exercise the concurrency ceiling"
     );
 }

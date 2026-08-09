@@ -356,7 +356,7 @@ fn reflect_nudge(
 
     if escalated {
         format!(
-            "Reflect and replan — second warning: {streak} tool calls in a row have now \
+            "Reflect and replan, second warning: {streak} tool calls in a row have now \
              failed{which}, and the earlier warning changed nothing. Your current plan is \
              not working. Stop executing it. Either take a materially different route, or \
              stop now and tell the user exactly what is blocking you and what you need \
@@ -368,7 +368,7 @@ fn reflect_nudge(
              failures usually means an assumption behind the plan is wrong, not that the \
              next call needs a small tweak. Before calling another tool, say briefly: what \
              the failures actually told you, which assumption of yours they contradict, and \
-             what you will do differently — a different tool, a different input, or stopping \
+             what you will do differently: a different tool, a different input, or stopping \
              to ask the user for what you are missing.{classes}"
         )
     }
@@ -388,7 +388,7 @@ fn failure_classes(kinds: &[ToolErrorKind]) -> String {
         .join(", ");
     if kinds.iter().copied().all(ToolErrorKind::retryable) {
         format!(
-            " (These failures were all classed {named} — retryable, so the environment may \
+            " (These failures were all classed {named}, i.e. retryable, so the environment may \
              be at fault rather than your plan. A bounded retry or a different route is \
              reasonable; hammering the same call is not.)"
         )

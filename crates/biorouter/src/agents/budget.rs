@@ -302,7 +302,7 @@ pub fn wrapup_instruction(snapshot: &BudgetSnapshot) -> String {
     format!(
         "[budget] This reply has used its budget ({}). Stop starting new work: \
          run no further tools unless one is strictly required to answer, and \
-         reply now with what you have — what you did, what you found, and the \
+         reply now with what you have: what you did, what you found, and the \
          exact next step you would take.{remaining} The user can ask you to \
          continue, which starts a fresh budget.",
         snapshot.describe()
@@ -313,7 +313,7 @@ pub fn wrapup_instruction(snapshot: &BudgetSnapshot) -> String {
 /// stop is a budget stop, not a completion, and how to keep going or raise it.
 pub fn stopped_message(snapshot: &BudgetSnapshot) -> String {
     format!(
-        "I've reached the budget for this reply ({}), so I'm stopping here — not \
+        "I've reached the budget for this reply ({}), so I'm stopping here, not \
          because the task is necessarily complete. Would you like me to continue? \
          (raise or clear the cap with `BIOROUTER_REPLY_BUDGET_SECONDS` / \
          `BIOROUTER_REPLY_BUDGET_TOKENS` / `BIOROUTER_REPLY_BUDGET_USD`.)",
@@ -324,7 +324,7 @@ pub fn stopped_message(snapshot: &BudgetSnapshot) -> String {
 /// The progress meter: a single heads-up as the reply nears its ceiling.
 pub fn progress_note(snapshot: &BudgetSnapshot) -> String {
     format!(
-        "⏳ Budget {:.0}% used ({}) — I'll wrap up if it runs out.",
+        "⏳ Budget {:.0}% used ({}); I'll wrap up if it runs out.",
         (snapshot.fraction * 100.0).min(100.0),
         snapshot.describe()
     )

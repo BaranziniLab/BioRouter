@@ -428,7 +428,7 @@ async fn slow_fired_hook_does_not_stall_the_turn() {
     assert_eq!(
         agent.hooks_manager().pending_fire_count(),
         1,
-        "the slow hook should still be in flight — the turn did not wait for it"
+        "the slow hook should still be in flight, so the turn did not wait for it"
     );
 }
 

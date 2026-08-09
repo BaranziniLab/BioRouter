@@ -83,7 +83,7 @@ async fn only_a_model_that_is_none_of_the_three_triggers_it() {
         assert_eq!(
             disclosure::required_for(&m),
             m.tier != ProviderTier::Private,
-            "`{}` — the disclosure predicate disagreed with the tier",
+            "`{}`: the disclosure predicate disagreed with the tier",
             m.name
         );
     }

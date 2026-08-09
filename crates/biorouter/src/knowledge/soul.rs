@@ -180,13 +180,13 @@ instructions: |-
   Follow the `update-soul` skill exactly.
 
   Goal: turn the user's recent interaction history into durable, high-signal,
-  personalised knowledge about THE USER — not a summary of every chat.
+  personalised knowledge about THE USER, not a summary of every chat.
 
   Procedure:
   1. Find the user's recent REAL chat sessions with the `chatrecall` tool
      (search mode, with a recent date range and broad queries). Collect their
      session ids. Skip scheduled-job sessions (names starting with
-     "Scheduled job:") — especially this very session.
+     "Scheduled job:"), especially this very session.
   2. Call `platform__ingest_conversation` with EXPLICIT `session_ids` for the
      most relevant recent session(s), targeting the `soul` knowledge base.
      Never omit `session_ids`: omitting it defaults to the current scheduled
@@ -243,9 +243,9 @@ description: >-
   Update the user's personal "Soul" knowledge base from their conversation
   history. Load this skill when running a Meditation, or whenever asked to learn
   about, remember, or record durable facts about the user. It defines what to
-  keep — how the user approaches scientific questions, the tools and commands
+  keep: how the user approaches scientific questions, the tools and commands
   they use, the tool responses they rely on, and personal details such as name,
-  role, affiliation, and stated preferences — and what to leave out (greetings,
+  role, affiliation, and stated preferences, and what to leave out (greetings,
   small talk, and one-off transient details). It also covers how to write Soul
   pages: which page kinds to use, how to cross-link with [[wiki-links]], and to
   prefer a few durable facts over many shallow ones.
@@ -255,7 +255,7 @@ description: >-
 
 "Soul" is the user's personal knowledge base (`soul`). Its purpose is to make
 future assistance better by remembering durable, high-signal facts about **the
-user** — not to log conversations verbatim.
+user**, not to log conversations verbatim.
 
 ## What to capture (high value)
 
@@ -265,7 +265,7 @@ user** — not to log conversations verbatim.
 - **Tools and extensions.** Which tools the user reaches for, in what order, and
   why. Note recurring workflows.
 - **Commands and tool calls.** Concrete commands and the shape of tool calls the
-  user runs (e.g. specific CLIs, query patterns, file layouts) — generalise them
+  user runs (e.g. specific CLIs, query patterns, file layouts); generalise them
   into reusable knowledge rather than copying one-off arguments.
 - **Tool responses they rely on.** What outputs the user treats as authoritative
   or acts upon.
@@ -277,7 +277,7 @@ user** — not to log conversations verbatim.
 
 - Greetings, sign-offs, and small talk ("hi", "thanks", "ok").
 - One-off, irrelevant, or transient details that won't help future sessions.
-- Anything already recorded — update the existing page instead of duplicating.
+- Anything already recorded; update the existing page instead of duplicating.
 
 ## How to write it
 

@@ -239,7 +239,7 @@ fn render_summary(
 
     let mut out = format!(
         "The `{tool}` tool returned a large result: {lines} lines, {chars} characters, \
-         ~{tokens} tokens — over the {limit}-token inline limit, so it is not included in full.\n",
+         ~{tokens} tokens, over the {limit}-token inline limit, so it is not included in full.\n",
         tool = ctx.tool_name,
         lines = stats.lines,
         chars = stats.chars,

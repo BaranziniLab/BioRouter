@@ -776,7 +776,7 @@ mod tests {
             Vec::<String>::new(),
             "these files call a prompter directly instead of through \
              `authenticate_or_refuse`, so their `.await` is unbounded. On macOS that does not \
-             time out — it never returns, and the caller's response is never sent."
+             time out: it never returns, and the caller's response is never sent."
         );
     }
 

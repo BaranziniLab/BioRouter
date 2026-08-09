@@ -191,7 +191,7 @@ async fn the_private_set_is_a_table_of_reviewed_decisions() {
             decided.iter().any(|(n, _why)| *n == name),
             "{name} ships ProviderTier::Private and is in no tier table. Declaring a provider \
              private is a decision about what a private session may be bound to, so it needs a \
-             row saying why, in `private_tier_providers` in providers/factory.rs — beside the \
+             row saying why, in `private_tier_providers` in providers/factory.rs, beside the \
              ones already there, which each name the predicate or endpoint their tier is decided \
              from."
         );

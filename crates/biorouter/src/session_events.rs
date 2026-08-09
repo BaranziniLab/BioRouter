@@ -448,7 +448,7 @@ mod tests {
             assert!(
                 tracked,
                 "round {round}: subscribe handed out a receiver on a channel the \
-                 registry no longer holds — that receiver is orphaned and closed"
+                 registry no longer holds; that receiver is orphaned and closed"
             );
         }
     }

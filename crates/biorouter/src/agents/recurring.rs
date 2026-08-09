@@ -40,7 +40,7 @@ fn loop_max_runs() -> u32 {
         .unwrap_or(LOOP_DEFAULT_MAX_RUNS)
 }
 
-const SCHEDULE_USAGE: &str = "Usage: `/schedule <spec> <prompt>` — spec is an interval \
+const SCHEDULE_USAGE: &str = "Usage: `/schedule <spec> <prompt>`, where spec is an interval \
                               (`5m`, `2h`, `1d`), a shorthand (`@hourly`, `@daily`, \
                               `@weekly`, `@monthly`), or a quoted cron expression \
                               (`\"0 9 * * 1\"`).\nManage with `/schedule list`, \
@@ -151,7 +151,7 @@ fn format_job_line(job: &ScheduledJob) -> String {
         None => String::new(),
     };
 
-    format!("- `{}` — cron `{}`{state}{runs}{last}", job.id, job.cron)
+    format!("- `{}`: cron `{}`{state}{runs}{last}", job.id, job.cron)
 }
 
 impl Agent {
@@ -245,7 +245,7 @@ impl Agent {
         session_id: &str,
     ) -> Result<Option<Message>> {
         let arg = params_str.trim();
-        const USAGE: &str = "Usage: `/loop <interval> <prompt>` — interval like `30s`, \
+        const USAGE: &str = "Usage: `/loop <interval> <prompt>`, with an interval like `30s`, \
                              `5m`, `2h`, `1d`.\nManage with `/loop` (list) and \
                              `/loop stop <id|all>`.";
 
@@ -335,13 +335,13 @@ impl Agent {
             .create_recurring_job(LOOP_ID_PREFIX, &cron, prompt, session_id, Some(max_runs))
             .await?;
         Ok(Some(Message::assistant().with_text(format!(
-            "🔁 Loop `{id}` created — runs {human} (cron `{cron}`).\n\
+            "🔁 Loop `{id}` created; runs {human} (cron `{cron}`).\n\
              Prompt: {}\n\n\
              Each iteration runs as its own scheduled session: view them with \
              `/schedule sessions {id}`, stop with `/loop stop {id}`. Iterations fire \
              while a Biorouter process (the GUI's server or an open CLI session) is \
              running. Overlapping runs are skipped (a slow iteration won't stack), and \
-             the loop auto-stops after {max_runs} runs — for durable, unbounded \
+             the loop auto-stops after {max_runs} runs. For durable, unbounded \
              recurrence use `/schedule` instead.",
             ellipsize(prompt, 200)
         ))))
@@ -397,7 +397,7 @@ impl Agent {
             .create_recurring_job(SCHEDULE_ID_PREFIX, &cron, &prompt, session_id, None)
             .await?;
         Ok(Some(Message::assistant().with_text(format!(
-            "📅 Schedule `{id}` created — runs {human} (cron `{cron}`).\n\
+            "📅 Schedule `{id}` created; runs {human} (cron `{cron}`).\n\
              Prompt: {}\n\n\
              Each run is its own scheduled session: `/schedule sessions {id}` lists \
              them, `/schedule remove {id}` deletes the task. Runs fire while a \
@@ -448,7 +448,7 @@ impl Agent {
                     }
                 });
                 Ok(Some(Message::assistant().with_text(format!(
-                    "▶️ Started `{rest}` in the background — results appear under \
+                    "▶️ Started `{rest}` in the background; results appear under \
                      `/schedule sessions {rest}`."
                 ))))
             }
@@ -487,7 +487,7 @@ impl Agent {
                 } else {
                     let lines: Vec<String> = sessions
                         .iter()
-                        .map(|(id, s)| format!("- `{}` — {}", id, s.created_at))
+                        .map(|(id, s)| format!("- `{}`: {}", id, s.created_at))
                         .collect();
                     format!("Recent runs of `{rest}`:\n{}", lines.join("\n"))
                 };

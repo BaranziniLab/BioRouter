@@ -401,7 +401,7 @@ fn validate_placement(requested: Option<&str>) -> Result<&'static str, String> {
         "split" => Ok("split"),
         "window" => Ok("window"),
         other => Err(format!(
-            "unknown placement {other:?} — use \"tab\" (default), \"split\" or \"window\""
+            "unknown placement {other:?}: use \"tab\" (default), \"split\" or \"window\""
         )),
     }
 }
@@ -1164,7 +1164,7 @@ fn dropped_extension_note(dropped: &[String]) -> Option<String> {
         "Note: this subagent is running on a public model, so it was NOT given these private \
          extensions of yours: {}. They reach data held inside the institution, so only a private \
          model may call them. Do not ask the subagent to use them, and do not re-spawn it to try \
-         again — the boundary is the same every time. If the task needs them, do it in this chat \
+         again; the boundary is the same every time. If the task needs them, do it in this chat \
          instead, or {}",
         dropped.join(", "),
         crate::privacy::refusal::ASK_THE_USER_TO_SWITCH
@@ -1206,7 +1206,7 @@ fn cross_affiliation_drop_note(dropped: &[(String, String)]) -> Option<String> {
         "Note: this subagent was NOT given these extensions of yours, because they hold another \
          institution's data and the subagent's model is covered by a different institution's \
          agreements:\n{each}\nDo not ask the subagent to use them, and do not re-spawn it to try \
-         again — the boundary is the same every time. Compliance does not transfer between \
+         again; the boundary is the same every time. Compliance does not transfer between \
          institutions. If the task needs them, do it in this chat instead, or tell the user what \
          you were trying to do and let them decide."
     ))
@@ -2034,7 +2034,7 @@ mod tests {
         assert_eq!(
             sm.count_all_sessions().await.unwrap(),
             0,
-            "a spawn refused by the queue must leave no session behind — the \
+            "a spawn refused by the queue must leave no session behind: the \
              blocking door refuses before `create_subagent_session`"
         );
 
@@ -2136,7 +2136,7 @@ mod tests {
                 "assert_eq!(SUBAGENT_SEMAPHORE.available_permits(), 0);",
             ],
             "someone added a use of the concurrency semaphore outside the bounded \
-             gate. Call `acquire_subagent_permit(max_pending)` instead — a direct \
+             gate. Call `acquire_subagent_permit(max_pending)` instead; a direct \
              `acquire()` queues without bound."
         );
     }
@@ -3288,7 +3288,7 @@ mod tests {
                 assert_eq!(
                     parent.get_name(),
                     "ollama",
-                    "get_name answers for the LEAD alone — this is the whole mechanism"
+                    "get_name answers for the LEAD alone: this is the whole mechanism"
                 );
 
                 let task_config =
@@ -4290,7 +4290,7 @@ mod tests {
             assert_eq!(
                 parent.get_name(),
                 "ollama",
-                "get_name answers for the LEAD alone — this is the whole mechanism"
+                "get_name answers for the LEAD alone: this is the whole mechanism"
             );
             assert_eq!(
                 parent.affiliation(),
@@ -4439,7 +4439,7 @@ mod tests {
         )
         .result
         .await
-        .expect("the spawn itself is permitted — only the extension is dropped");
+        .expect("the spawn itself is permitted; only the extension is dropped");
 
         let text = result
             .content

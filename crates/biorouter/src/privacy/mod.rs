@@ -504,7 +504,7 @@ mod tests {
         let crates = root.join("crates");
         assert!(
             crates.is_dir(),
-            "the audit walks {} — if that path is wrong, every assertion below passes \
+            "the audit walks {}; if that path is wrong, every assertion below passes \
              for the wrong reason",
             crates.display()
         );
@@ -580,7 +580,7 @@ mod tests {
         assert!(
             imports.is_empty(),
             "`floor` must be called through its qualified `privacy::floor(..)` path so this \
-             audit can see it — do not import the bare name: {imports:#?}"
+             audit can see it; do not import the bare name: {imports:#?}"
         );
         let found: Vec<(String, usize)> = calls.into_iter().collect();
         // `found` comes out of a BTreeMap, so it is path-sorted; `want` would

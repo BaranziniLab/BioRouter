@@ -79,7 +79,7 @@ pub fn reprompt_message(errors: &[String], schema: &Value) -> String {
     let schema_pretty = serde_json::to_string_pretty(schema).unwrap_or_else(|_| schema.to_string());
     format!(
         "Your response did not match the required output schema.\n\nErrors:\n{}\n\n\
-         Return ONLY a single JSON object conforming to this schema — no prose, no \
+         Return ONLY a single JSON object conforming to this schema: no prose, no \
          Markdown fences:\n{}",
         errors.join("\n"),
         schema_pretty

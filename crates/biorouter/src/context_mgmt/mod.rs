@@ -432,7 +432,7 @@ async fn compact_messages_with_window(
     // compaction would have had to produce anyway.
     if !messages_to_compact.iter().any(|msg| msg.is_agent_visible()) {
         warn!(
-            "#51: nothing to summarize — every agent-visible message is either a \
+            "#51: nothing to summarize: every agent-visible message is either a \
              preserved message or already hidden; leaving the conversation as it is"
         );
         let mut final_messages = messages.clone();
@@ -3059,7 +3059,7 @@ mod pin_tests {
         // suite — which is the exact defect this pair exists to catch.
         assert!(
             !find(&compacted, &twin_body).is_agent_visible(),
-            "an UNPINNED note is summarized away — that is why `note` pins"
+            "an UNPINNED note is summarized away, which is why `note` pins"
         );
     }
 }

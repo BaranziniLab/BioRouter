@@ -546,7 +546,7 @@ mod tests {
         assert_eq!(
             shlex::split(r"Remove-Item -Recurse -Force C:\Users\me\proj").unwrap(),
             vec!["Remove-Item", "-Recurse", "-Force", "C:Usersmeproj"],
-            "this is what the old POSIX tokenizer did — the reason for pwsh.rs"
+            "this is what the old POSIX tokenizer did, and the reason for pwsh.rs"
         );
     }
 

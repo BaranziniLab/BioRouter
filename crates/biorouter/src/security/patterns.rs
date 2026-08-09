@@ -186,7 +186,7 @@ pub const CATASTROPHIC_RULES: &[CatastrophicRule] = &[
     CatastrophicRule {
         name: "win_vssadmin_delete_shadows",
         description:
-            "deleting Volume Shadow Copies / restore points (vssadmin delete shadows, wmic shadowcopy delete, Win32_ShadowCopy .Delete) — the canonical ransomware step, with no legitimate agent use",
+            "deleting Volume Shadow Copies / restore points (vssadmin delete shadows, wmic shadowcopy delete, Win32_ShadowCopy .Delete): the canonical ransomware step, with no legitimate agent use",
         scope: RuleScope::FullText,
         matcher: Matcher::Parsed(is_win_vssadmin_delete_shadows),
         platforms: WINDOWS_ONLY,
@@ -211,7 +211,7 @@ pub const CATASTROPHIC_RULES: &[CatastrophicRule] = &[
     CatastrophicRule {
         name: "win_reg_delete_hive",
         description:
-            "deleting a registry hive root (reg delete HKLM\\SYSTEM /f, Remove-Item HKLM:\\SOFTWARE) — corrupts the system configuration",
+            "deleting a registry hive root (reg delete HKLM\\SYSTEM /f, Remove-Item HKLM:\\SOFTWARE): corrupts the system configuration",
         scope: RuleScope::FullText,
         matcher: Matcher::Parsed(is_win_reg_delete_hive),
         platforms: WINDOWS_ONLY,

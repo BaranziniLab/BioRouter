@@ -168,7 +168,7 @@ async fn failing_silent_and_slow_children_all_surface() {
     );
     assert_eq!(
         structured["mute"]["status"], "completed",
-        "SUB-03: a turn-capped child still grades `completed` — see the comment above"
+        "SUB-03: a turn-capped child still grades `completed`; see the comment above"
     );
     assert!(
         !mute.1.contains("No text content in last message"),
@@ -370,7 +370,7 @@ async fn a_subagent_is_linked_to_its_parent_and_gains_no_grant_by_being_spawned(
     assert_eq!(
         children.len(),
         1,
-        "a delegation must stamp exactly one child with this parent's id — without \
+        "a delegation must stamp exactly one child with this parent's id; without \
          that column the grant walk has nothing to climb, and 'a subagent inherits \
          its parent's grants' is true of nothing"
     );

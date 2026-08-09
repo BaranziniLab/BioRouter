@@ -131,7 +131,7 @@ fn goal_judge_rule(condition: &str, attempt: u32, previous_feedback: Option<&str
         Some(prev) => format!(
             "\nThis is evaluation attempt #{attempt}. Your previous feedback was:\n\"{}\"\n\
              If the agent has NOT meaningfully progressed past that feedback, or it is \
-             repeating the same kind of output without converging, the loop is stuck — \
+             repeating the same kind of output without converging, the loop is stuck, \
              prefer returning control to the user (see below).",
             ellipsize(prev, 600)
         ),
@@ -141,7 +141,7 @@ fn goal_judge_rule(condition: &str, attempt: u32, previous_feedback: Option<&str
         "A goal condition is active for this session. The agent just tried to finish its \
          turn. Decide whether the goal is met.\n\n\
          Goal condition:\n{condition}\n{history}\n\n\
-         IMPORTANT — how to read the evidence:\n\
+         IMPORTANT, how to read the evidence:\n\
          • The event JSON's `transcript_tail` is only a RECENT EXCERPT of the \
          conversation, not the whole thing. Earlier output has scrolled out of view. \
          Do NOT treat \"the full output isn't visible in this excerpt\" as proof the \
@@ -158,11 +158,11 @@ fn goal_judge_rule(condition: &str, attempt: u32, previous_feedback: Option<&str
          question, a permission was denied);\n\
          • the goal cannot be satisfied as literally specified (e.g. it would require \
          far more output than fits in chat), OR the agent has stopped making real \
-         progress across attempts — in these cases returning control to the user with a \
+         progress across attempts. In these cases returning control to the user with a \
          best-effort answer is the right outcome.\n\n\
          Respond {{\"ok\": false, \"reason\": \"<short, concrete next step>\"}} ONLY when \
          the goal is genuinely not met AND a specific, different action would move it \
-         forward. When in doubt after several attempts, prefer {{\"ok\": true}} — do not \
+         forward. When in doubt after several attempts, prefer {{\"ok\": true}}; do not \
          keep the agent looping."
     )
 }
@@ -430,14 +430,14 @@ impl Agent {
             let text = match self.active_goal(session_id).await {
                 Some(goal) => format!(
                     "🎯 Active goal (set {} ago, {} evaluation(s) so far):\n{}\n\nThe goal \
-                     clears automatically once met — or after {} attempts if it can't \
+                     clears automatically once met, or after {} attempts if it can't \
                      converge; `/goal clear` stops it early.",
                     format_elapsed(goal.set_at),
                     goal.iterations,
                     goal.condition,
                     GOAL_MAX_ITERATIONS,
                 ),
-                None => "No active goal. Set one with `/goal <condition>` — a verifiable end \
+                None => "No active goal. Set one with `/goal <condition>`, a verifiable end \
                          state, e.g. `/goal cargo test exits 0 and git status is clean`. \
                          Biorouter keeps working until an automatic evaluator confirms the \
                          condition is met, then hands back a best-effort answer if it can't."
@@ -460,7 +460,7 @@ impl Agent {
         // the goal starts immediately (mirrors workflow slash commands).
         Ok(Some(Message::user().with_text(format!(
             "A goal has been set for this session. Work toward it now and keep working \
-             until it is verifiably met. When you believe it is met, finish your turn — \
+             until it is verifiably met. When you believe it is met, finish your turn; \
              an automatic evaluator checks the condition and sends feedback if it is not \
              met yet, in which case you must keep going. Prefer durable deliverables \
              (e.g. saving large output to a file) over pasting huge volumes into chat. \

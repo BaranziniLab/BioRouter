@@ -16,7 +16,7 @@ pub fn read_session_blob_tool() -> Tool {
             to keep in the conversation.
 
             When a tool returns a very large result, Biorouter stores it with the
-            session and leaves a stub in its place — a size summary, a head/tail
+            session and leaves a stub in its place: a size summary, a head/tail
             preview, and a blob id. Use this tool with that blob id to get the
             rest, instead of re-running the original tool.
 
@@ -56,8 +56,8 @@ pub fn ingest_conversation_tool() -> Tool {
 
             Use this when the user asks to "save", "remember", "ingest", or
             "add this conversation to my knowledge base". It captures the full
-            transcript — user input, model output, every tool call with its
-            arguments, and every tool response — renders it to markdown, and runs
+            transcript (user input, model output, every tool call with its
+            arguments, and every tool response), renders it to markdown, and runs
             the standard knowledge ingestion pipeline so it becomes wiki pages
             with credibility, links and git history.
 

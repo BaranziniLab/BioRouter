@@ -94,7 +94,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         recommended_gpu_memory_gib: 16,
         context_limit: 131_072,
         active_params_b: 4,
-        speed_hint: "Fast — ~4B active parameters",
+        speed_hint: "Fast, ~4B active parameters",
     },
     CatalogEntry {
         name: "gemma4-e2b",
@@ -109,7 +109,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         recommended_gpu_memory_gib: 16,
         context_limit: 131_072,
         active_params_b: 2,
-        speed_hint: "Fastest — ~2B active parameters",
+        speed_hint: "Fastest, ~2B active parameters",
     },
     CatalogEntry {
         name: "gemma4-12b",
@@ -124,7 +124,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         recommended_gpu_memory_gib: 32,
         context_limit: 262_144,
         active_params_b: 12,
-        speed_hint: "Fast — dense 12B, quick to load",
+        speed_hint: "Fast, dense 12B, quick to load",
     },
     CatalogEntry {
         name: "gemma4-26b",
@@ -139,7 +139,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         recommended_gpu_memory_gib: 48,
         context_limit: 262_144,
         active_params_b: 26,
-        speed_hint: "Moderate — dense 26B",
+        speed_hint: "Moderate, dense 26B",
     },
     CatalogEntry {
         name: "gemma4-31b",
@@ -154,7 +154,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         recommended_gpu_memory_gib: 64,
         context_limit: 262_144,
         active_params_b: 31,
-        speed_hint: "Moderate — dense 31B",
+        speed_hint: "Moderate, dense 31B",
     },
     CatalogEntry {
         name: "qwen3.6",
@@ -169,7 +169,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         recommended_gpu_memory_gib: 64,
         context_limit: 262_144,
         active_params_b: 3,
-        speed_hint: "Fast per token — 3B active (MoE), but a 24 GB download and heavy to load",
+        speed_hint: "Fast per token, 3B active (MoE), but a 24 GB download and heavy to load",
     },
     CatalogEntry {
         name: "qwen3.6-27b",
@@ -184,7 +184,7 @@ pub const MODEL_CATALOG: &[CatalogEntry] = &[
         recommended_gpu_memory_gib: 48,
         context_limit: 262_144,
         active_params_b: 27,
-        speed_hint: "Moderate — dense 27B",
+        speed_hint: "Moderate, dense 27B",
     },
 ];
 

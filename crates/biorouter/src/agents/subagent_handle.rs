@@ -234,7 +234,7 @@ impl HandleSnapshot {
     pub fn to_line(&self) -> String {
         match (&self.state, &self.result) {
             (HandleState::Finished, Some(result)) => format!(
-                "{} — {} ({}, {}s): {}",
+                "{}: {} ({}, {}s): {}",
                 self.handle,
                 self.title,
                 result.status.as_str(),
@@ -242,7 +242,7 @@ impl HandleSnapshot {
                 first_line(&result.summary),
             ),
             (state, _) => format!(
-                "{} — {} ({}, {}s elapsed)",
+                "{}: {} ({}, {}s elapsed)",
                 self.handle,
                 self.title,
                 match state {

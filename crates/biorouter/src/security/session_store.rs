@@ -322,12 +322,12 @@ fn references_session_store(args: &Map<String, Value>) -> bool {
 fn session_store_refusal() -> String {
     "Refused: this call names Biorouter's session database by path. That file (and its \
      -wal / -shm siblings) holds the transcript of every conversation on this computer, \
-     across every project — including sessions classified private — and reading it as a \
+     across every project (including sessions classified private), and reading it as a \
      file bypasses every check that decides which of them you are allowed to see. The \
      refusal is about the channel, not about your capability: it applies to a \
      private-capability session exactly as it does to a public one. Use the chatrecall \
-     tool to search past conversations or load one by id — it returns only what this \
-     session may see — and ask the user directly for anything it will not give you. The \
+     tool to search past conversations or load one by id (it returns only what this \
+     session may see), and ask the user directly for anything it will not give you. The \
      user can browse, export or delete their own sessions from the Biorouter session \
      list. This project's own files are not affected."
         .to_string()

@@ -549,7 +549,7 @@ impl WorkspaceClient {
             Self::tool(
                 "workspace_close",
                 "Close down a conversation at one of three scopes. tab: close its \
-                 GUI tab only — the session and any running turn survive. turn: \
+                 GUI tab only; the session and any running turn survive. turn: \
                  cancel the turn it is running (idempotent; not an error when idle). \
                  agent: cancel and evict its agent; the session record is kept.",
                 serde_json::to_value(schema_for!(WorkspaceCloseParams)).unwrap(),
@@ -1007,7 +1007,7 @@ impl WorkspaceClient {
         let clipped = if body.chars().count() > max_chars {
             let cut: String = body.chars().take(max_chars).collect();
             format!(
-                "{cut}\n… [clipped at {max_chars} chars — narrow with `last` or \
+                "{cut}\n… [clipped at {max_chars} chars; narrow with `last` or \
                  `from_msg_uid`, or raise `max_chars` (up to 200000). A raised cap \
                  is not silently truncated: a result too large to return inline is \
                  kept in full and the reply says where to read it.]"
@@ -1114,7 +1114,7 @@ impl WorkspaceClient {
             valid @ ("tab" | "split" | "window") => valid.to_string(),
             other => {
                 return Err(format!(
-                    "unknown placement {other:?} — use \"tab\" (default), \"split\" or \"window\""
+                    "unknown placement {other:?}: use \"tab\" (default), \"split\" or \"window\""
                 ));
             }
         };
@@ -1212,7 +1212,7 @@ impl WorkspaceClient {
             Some(dir) => std::path::PathBuf::from(dir),
             None => caller_dir.clone().ok_or(
                 "no working_dir given and the calling session's directory could not be \
-                 read — pass working_dir explicitly",
+                 read; pass working_dir explicitly",
             )?,
         };
         let differs = caller_dir
@@ -1317,7 +1317,7 @@ impl WorkspaceClient {
                         return Ok(vec![Content::text(format!(
                             "Session {session_id} was created but the GUI did not place it \
                              ({e}).{dir_note} It exists and can be reached with \
-                             workspace_send_prompt — do NOT create another."
+                             workspace_send_prompt. Do NOT create another."
                         ))]);
                     }
                     // Nothing was created, so there is nothing to orphan.
@@ -1350,7 +1350,7 @@ impl WorkspaceClient {
                 ))])
             }
             _ => Ok(vec![Content::text(format!(
-                "Session {session_id} ready (gui_attached: false — no tab opened; \
+                "Session {session_id} ready (gui_attached: false, no tab opened; \
                  the session exists headlessly).{dir_note}"
             ))]),
         }
@@ -1514,7 +1514,7 @@ impl WorkspaceClient {
         let args: WorkspaceSendPromptParams = parse_args(arguments)?;
         if args.session_id == caller_session_id {
             return Err(
-                "refusing to inject into your own session — just continue the conversation".into(),
+                "refusing to inject into your own session; just continue the conversation".into(),
             );
         }
         if args.text.trim().is_empty() {
@@ -1619,7 +1619,7 @@ impl WorkspaceClient {
         let services = services
             .ok_or("steer requires the BioRouter daemon (no workspace services installed)")?;
         if !services.is_turn_active(&args.session_id) {
-            return Err("target session has no turn in flight — use mode:\"turn\" instead".into());
+            return Err("target session has no turn in flight; use mode:\"turn\" instead".into());
         }
         let agent_manager = crate::execution::manager::AgentManager::instance()
             .await
@@ -1647,7 +1647,7 @@ impl WorkspaceClient {
             .try_queue_soft_interrupt(args.text, Some(provenance.clone()))
             .map_err(|refused| {
                 format!(
-                    "steer refused for session {}: {refused} — use mode:\"turn\" instead",
+                    "steer refused for session {}: {refused}; use mode:\"turn\" instead",
                     args.session_id
                 )
             })?;
@@ -2195,7 +2195,7 @@ impl WorkspaceClient {
         match (provider, model) {
             (None, None) => Ok(None),
             (None, Some(_)) => Err(
-                "`model` requires `provider` — a model name is ambiguous across providers; \
+                "`model` requires `provider`: a model name is ambiguous across providers; \
                  pass both (e.g. provider:\"anthropic\", model:\"claude-opus-5\")"
                     .into(),
             ),
@@ -2414,7 +2414,7 @@ impl WorkspaceClient {
                     if !announcement_delivered(&result) {
                         return Ok(vec![Content::text(format!(
                             "The GUI did NOT close the tab for session {} ({}). The session \
-                             is untouched — do not tell the user the tab is gone.",
+                             is untouched; do not tell the user the tab is gone.",
                             args.session_id,
                             gui_detail(&result).unwrap_or("no reason given")
                         ))]);
@@ -2425,7 +2425,7 @@ impl WorkspaceClient {
                     ))])
                 }
                 _ => Ok(vec![Content::text(
-                    "No GUI attached — nothing to close at tab scope (gui_attached: false)."
+                    "No GUI attached, so nothing to close at tab scope (gui_attached: false)."
                         .to_string(),
                 )]),
             },
@@ -2641,7 +2641,7 @@ impl WorkspaceClient {
         if completed.is_empty() {
             report.push_str(&format!(
                 "No conversation finished within {}s. Still running: {}. \
-                 They keep running — watch again or read them later.\n",
+                 They keep running; watch again or read them later.\n",
                 timeout.as_secs(),
                 still_running
                     .iter()
@@ -2654,7 +2654,7 @@ impl WorkspaceClient {
                 // observed them working.
                 report.push_str(
                     "(No BioRouter daemon is attached, so whether they had started \
-                     could not be checked — some of these may never have been \
+                     could not be checked, so some of these may never have been \
                      running.)\n",
                 );
             }
@@ -3139,7 +3139,7 @@ pub(crate) fn apply_focus_etiquette(
         "level": "info",
         "message": format!(
             "An agent wants to show you conversation {session_id}. \
-             Open it from History — automatic tab opening is turned off in Settings."
+             Open it from History; automatic tab opening is turned off in Settings."
         ),
     })
 }
@@ -3218,13 +3218,13 @@ pub(crate) fn open_result_text(
         if outcome == TabOutcome::Focused {
             return format!(
                 "Session {session_id} already has a {noun} in the GUI, but the user has \
-                 turned OFF automatic tab opening, so it was NOT brought to the front — \
+                 turned OFF automatic tab opening, so it was NOT brought to the front. \
                  {handoff}. Do not tell the user you opened or switched to a {noun}."
             );
         }
         return format!(
             "Session {session_id} is ready, but the user has turned OFF automatic tab \
-             opening, so no {noun} was opened — {handoff}. Do not tell the user you \
+             opening, so no {noun} was opened; {handoff}. Do not tell the user you \
              opened a {noun}."
         );
     }
@@ -3263,7 +3263,7 @@ pub(crate) fn open_result_text(
         ),
         TabOutcome::Focused => format!(
             "Session {session_id} was already open in the GUI; its existing tab was \
-             brought to the front ({placement}{focus_note}) — no new tab was \
+             brought to the front ({placement}{focus_note}), and no new tab was \
              opened.{detail}"
         ),
     }
@@ -5047,7 +5047,7 @@ pub(crate) mod tests {
         }
         assert!(
             !pinned_off.contains("enabled: false"),
-            "#42's refusal — an answer about this machine — reached a caller who may not \
+            "#42's refusal, an answer about this machine, reached a caller who may not \
              have the connector at all: {pinned_off}"
         );
         assert!(
@@ -6018,7 +6018,7 @@ pub(crate) mod tests {
         };
         assert!(
             !crate::context_mgmt::pins::pin_is_eligible(&unpinned),
-            "without the marker there is nothing to honour — so the assertion \
+            "without the marker there is nothing to honour, so the assertion \
              above is testing the pin"
         );
     }
@@ -6847,7 +6847,7 @@ pub(crate) mod tests {
         );
         assert_eq!(
             queued[0].text, "use Python instead",
-            "the RAW text is queued — the drain loop frames it, so framing here \
+            "the RAW text is queued: the drain loop frames it, so framing here \
              would wrap it twice"
         );
         let p = queued[0].provenance.as_ref().expect("stamped");
@@ -8093,7 +8093,7 @@ pub(crate) mod tests {
         assert_eq!(
             recorder.session_dirs(),
             vec![dir_a.clone(), dir_b.clone()],
-            "each new session takes ITS caller's directory — a hardcoded default, the \
+            "each new session takes ITS caller's directory; a hardcoded default, the \
              process cwd, or temp_dir() all produce two identical entries here"
         );
 

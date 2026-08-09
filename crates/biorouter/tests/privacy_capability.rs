@@ -121,7 +121,7 @@ const EXPECTED: &[Site] = &[
         what: "`call_prefetch_tool` (which dispatches before the turn), the agent \
                loop's own tool-call sample, `cross_affiliation_grant_subject` \
                (which composes the sentence the user is asked to accept), and the \
-               schedule branch of `dispatch_tool_call` — which returns before the \
+               schedule branch of `dispatch_tool_call`, which returns before the \
                loop's own sample, so `platform__manage_schedule` had no capability \
                in scope while two of its actions read another chat's content",
     },
@@ -129,7 +129,7 @@ const EXPECTED: &[Site] = &[
         needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/knowledge_tool.rs",
         count: 1,
-        what: "`handle_ingest_conversation` — the conversation-ingest branch of \
+        what: "`handle_ingest_conversation`, the conversation-ingest branch of \
                `dispatch_tool_call`, which returns before the agent loop's own \
                sample exactly as the schedule branch does. It reads `p.tier()` \
                alone before audit finding 17: the tier fed a candidate list that \
@@ -143,14 +143,14 @@ const EXPECTED: &[Site] = &[
         count: 2,
         what: "`extension_reach` (Gate E's discovery filter and mark, which \
                `cross_affiliation_warnings` also reads through) and \
-               `assert_extension_reachable` (Gate F's non-tool-call entry points) — \
+               `assert_extension_reachable` (Gate F's non-tool-call entry points): \
                each falling back to a sample only when handed no admitted capability",
     },
     Site {
         needle: "CallCapability::public_enforced(",
         file: "crates/biorouter-server/src/routes/agent.rs",
         count: 1,
-        what: "`POST /agent/call_tool` — an entry with no caller identity, which \
+        what: "`POST /agent/call_tool`, an entry with no caller identity, which \
                therefore takes the most restrictive pair this type can express",
     },
     // ---------------------------------------------------------- DR-26's third
@@ -161,14 +161,14 @@ const EXPECTED: &[Site] = &[
         needle: "affiliation::gate_cross_affiliation",
         file: "crates/biorouter-server/src/routes/agent.rs",
         count: 1,
-        what: "DR-26 bypassing path 1 — `POST /agent/add_extension`, an HTTP route \
+        what: "DR-26 bypassing path 1, `POST /agent/add_extension`, an HTTP route \
                and not a tool dispatch, so there is no admitted capability to inherit",
     },
     Site {
         needle: "affiliation::gate_cross_affiliation",
         file: "crates/biorouter/src/agents/subagent_tool.rs",
         count: 1,
-        what: "DR-26 bypassing path 2 — the subagent spawn's extension filter, which \
+        what: "DR-26 bypassing path 2, the subagent spawn's extension filter, which \
                is constructing a whole new agent and reads the child's own provider",
     },
     Site {
@@ -182,7 +182,7 @@ const EXPECTED: &[Site] = &[
         needle: "affiliation::gate_cross_affiliation",
         file: "crates/biorouter/src/privacy/grant.rs",
         count: 1,
-        what: "NOT a production decider — `mod tests`' `statement()` helper, which \
+        what: "NOT a production decider: `mod tests`' `statement()` helper, which \
                composes the user-facing prompt through the real gate rather than \
                re-deriving it. Counted because a line-wise grep cannot tell a \
                `#[cfg(test)]` block from production, and a filter that tried would \
@@ -199,7 +199,7 @@ const EXPECTED: &[Site] = &[
         needle: "affiliation::refusing_mismatch",
         file: "crates/biorouter/src/privacy/capability.rs",
         count: 1,
-        what: "`CallCapability::cross_affiliation_warning` — the REFUSAL spelling of \
+        what: "`CallCapability::cross_affiliation_warning`, the REFUSAL spelling of \
                the gate, which Gate C's dispatch denial, `assert_extension_reachable`'s \
                eight entry points and `extensionmanager__manage_extensions` all read \
                through, so none of them reads a mode of its own",
@@ -208,7 +208,7 @@ const EXPECTED: &[Site] = &[
         needle: "affiliation::refusing_mismatch",
         file: "crates/biorouter/src/agents/agent.rs",
         count: 1,
-        what: "`Agent::cross_affiliation_warnings` — the bind-time statement, which is \
+        what: "`Agent::cross_affiliation_warnings`, the bind-time statement, which is \
                the same sentence `/agent/add_extension` logs from the other end and so \
                must go quiet in `open` with it. The RESOLUTION it is built on stays \
                mode-blind",
@@ -223,18 +223,18 @@ const EXPECTED: &[Site] = &[
         file: "crates/biorouter-mcp/src/knowledge/server.rs",
         count: 1,
         what: "`kb_export` forcing a private base's `.brkb` into the model-export \
-               directory — its own read, not one inherited from `assert_reachable`, \
+               directory: its own read, not one inherited from `assert_reachable`, \
                because choosing the destination is a decision rather than a barrier",
     },
     Site {
         needle: "crate::privacy_toggle::privacy_tiers_enabled()",
         file: "crates/biorouter-mcp/src/knowledge/tier.rs",
         count: 3,
-        what: "DR-26 bypassing path 3 — the knowledge-base gates: the affiliation \
+        what: "DR-26 bypassing path 3, the knowledge-base gates: the affiliation \
                ratchet (`add_owners_unlocked`), the barrier (`assert_reachable`) \
                and the tier ratchet (`raise_unlocked`). Every knowledge-base \
                LISTING inherits the toggle from the barrier here rather than \
-               reading it — see audit finding 17",
+               reading it; see audit finding 17",
     },
 ];
 
@@ -265,7 +265,7 @@ fn production_sources() -> Vec<(String, String)> {
     let crates = root.join("crates");
     assert!(
         crates.is_dir(),
-        "the audit walks {} — if that path is wrong, every assertion below passes \
+        "the audit walks {}; if that path is wrong, every assertion below passes \
          for the wrong reason",
         crates.display()
     );
@@ -494,7 +494,7 @@ fn compatible_is_the_only_function_that_compares_two_affiliations() {
         hand_rolled.is_empty(),
         "an affiliation is compared outside `privacy::affiliation::compatible` (and its \
          cross-crate mirror `knowledge::affiliation::reachable`). DR-26's table has one \
-         implementation on purpose — a second will disagree with the first on the row \
+         implementation on purpose; a second will disagree with the first on the row \
          nobody thought about, and the disagreement is silent. Call `compatible`, \
          `owners_compatible`, `CallCapability::cross_affiliation` or \
          `affiliation::gate_cross_affiliation` instead:\n{hand_rolled:#?}"
@@ -537,7 +537,7 @@ fn compatible_is_the_only_function_that_compares_two_affiliations() {
         naming, want,
         "a new file names `ExtensionAffiliation`. That type is the extension side of \
          DR-26's comparison, and obtaining it is the first move of any hand-rolled \
-         reach decision — including one that binds its operands to locals and so slips \
+         reach decision, including one that binds its operands to locals and so slips \
          past the line-wise scan above. If the new file really only reads an \
          affiliation rather than comparing one, add it with a comment saying which."
     );

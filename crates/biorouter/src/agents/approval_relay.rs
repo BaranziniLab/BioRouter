@@ -413,7 +413,7 @@ pub fn lookup(request_id: &str, from_session_id: &str) -> Option<AskId> {
             request_id,
             from_session_id,
             "Ambiguous tool-confirmation route: more than one pending ask carries this \
-             request id at this surface. Refusing to guess — answer it in the sub-agent's \
+             request id at this surface. Refusing to guess; answer it in the sub-agent's \
              own tab, where the session pairing is unique."
         );
         return None;

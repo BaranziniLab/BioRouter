@@ -62,7 +62,7 @@ fn specs() -> &'static [Spec] {
             probes: &[("aws", &["--version"])],
             required: false,
             doc_url: "https://aws.amazon.com/cli/",
-            purpose: "Optional — UCSF Bedrock / Amazon Bedrock credentials",
+            purpose: "Optional: UCSF Bedrock / Amazon Bedrock credentials",
         },
         Spec {
             name: "llama-server",

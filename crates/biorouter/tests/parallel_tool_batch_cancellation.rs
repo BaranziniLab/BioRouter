@@ -97,7 +97,7 @@ async fn cancelling_mid_batch_leaves_no_unmatched_tool_use_persisted() {
         assert!(
             answered.contains(*id),
             "persisted tool_use {id} has no matching tool_result after a mid-batch \
-             cancel — replaying this session makes the provider reject the turn. \
+             cancel, so replaying this session makes the provider reject the turn. \
              Persisted blocks: {blocks:?}"
         );
     }

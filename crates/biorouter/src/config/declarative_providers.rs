@@ -450,7 +450,7 @@ mod tests {
             assert!(
                 moonshot.models.iter().any(|m| m.name == name),
                 "{name}: priced in pricing::MOONSHOT_SYNC_PRICING but missing from \
-                 moonshot.json — remove it from the sync table or restore it in the JSON"
+                 moonshot.json; remove it from the sync table or restore it in the JSON"
             );
         }
     }

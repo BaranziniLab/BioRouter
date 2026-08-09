@@ -623,7 +623,7 @@ mod tests {
             assert!(
                 merged.needs_approval.is_empty(),
                 "{order}: a denied call must never also be queued for an approval \
-                 card — the card's AllowOnce dispatches it"
+                 card; the card's AllowOnce dispatches it"
             );
             assert!(merged.approved.is_empty(), "{order}");
         }

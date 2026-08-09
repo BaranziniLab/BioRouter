@@ -493,7 +493,7 @@ fn named_by_path_refusal(tool_name: &str) -> String {
     format!(
         "Refused: this call names Biorouter's machine-wide memory store by path. That store \
          is shared by every Biorouter session on this computer, and reading, changing or \
-         deleting it has to be shown to the user and approved by category — which a file \
+         deleting it has to be shown to the user and approved by category, which a file \
          path cannot be. Use the memory tools instead: \
          retrieve_memories(category=\"<name>\", is_global=true) to read a category, \
          remember_memory(...) to add to one, remove_memory_category / \
@@ -513,13 +513,13 @@ fn named_by_path_refusal(tool_name: &str) -> String {
 /// themselves are refused at the dispatch boundary whatever the user answers.
 fn script_touches_memory_card() -> String {
     "🔒 This script looks like it wants cross-session memory.\n\
-     It appears to read or write the global memory store — the machine-wide store \
+     It appears to read or write the global memory store, the machine-wide store \
      shared by every Biorouter session on this computer, in every project. Tool \
      calls made from inside a script are not itemised, so there is nothing here for \
      you to approve one by one, and Biorouter therefore refuses global memory \
      operations attempted from inside a script whatever you decide now.\n\
-     So this asks about the rest of what the script does. Approve it to run it — its \
-     global memory calls will fail with an explanation — or deny it and ask for the \
+     So this asks about the rest of what the script does. Approve it to run it (its \
+     global memory calls will fail with an explanation) or deny it and ask for the \
      memory calls to be made directly, where each one is shown to you by category."
         .to_string()
 }
@@ -574,8 +574,8 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         // strictly narrower substitute that is always available.
         (RETRIEVE_MEMORIES, true) => GlobalMemoryGate::Refuse(
             "Refused: retrieve_memories(category=\"*\", is_global=true) would disclose the entire \
-             machine-wide memory store — every global memory written by every other session on \
-             this computer — in one call, to answer a question that needs some of it. Read one \
+             machine-wide memory store, every global memory written by every other session on \
+             this computer, in one call, to answer a question that needs some of it. Read one \
              category at a time instead: retrieve_memories(category=\"<name>\", is_global=true), \
              which asks the user about that category by name. The global category names are \
              listed in your system prompt, so nothing is out of reach. Local bulk retrieval \
@@ -584,17 +584,17 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         ),
         (RETRIEVE_MEMORIES, false) => GlobalMemoryGate::Ask(format!(
             "🔒 Cross-session memory read.\n\
-             This conversation is asking to read the global memory category \"{category}\" — the \
+             This conversation is asking to read the global memory category \"{category}\": the \
              machine-wide store that every Biorouter session on this computer shares, including \
              sessions in other projects. Its contents were written by other conversations and are \
              not otherwise part of this one.\n\
              Approve it to disclose that category here, or deny it. To read \"{category}\" \
-             yourself first — or delete what is in it — open Settings → Chat → Memory. \
+             yourself first, or delete what is in it, open Settings → Chat → Memory. \
              Project-local memories (.biorouter/memory) are unaffected and never prompt."
         )),
         (REMEMBER_MEMORY, _) => GlobalMemoryGate::Ask(format!(
             "🔒 Cross-session memory write.\n\
-             This conversation is asking to save a memory to the global category \"{category}\" — \
+             This conversation is asking to save a memory to the global category \"{category}\", \
              the machine-wide store, readable from now on by every Biorouter session on this \
              computer, in every project.\n\
              Approve it to let this note follow you across projects, or deny it and ask for a \
@@ -611,7 +611,7 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         // is not consent (#63 review, finding 6).
         (REMOVE_MEMORY_CATEGORY, true) => GlobalMemoryGate::Ask(
             "🔒 Deletes every global memory.\n\
-             This conversation is asking to clear the entire machine-wide memory store — every \
+             This conversation is asking to clear the entire machine-wide memory store: every \
              global category any session on this computer ever saved, and everything in them. \
              Biorouter keeps no copy: this cannot be undone.\n\
              Approve it only if you asked for your global memories to be wiped. To see what \
@@ -623,7 +623,7 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         (REMOVE_MEMORY_CATEGORY, false) => GlobalMemoryGate::Ask(format!(
             "🔒 Deletes a whole global memory category.\n\
              This conversation is asking to delete every memory in the global category \
-             \"{category}\", and the category itself — from the machine-wide store shared by \
+             \"{category}\", and the category itself, from the machine-wide store shared by \
              every Biorouter session on this computer, so it goes for every project. Biorouter \
              keeps no copy: this cannot be undone.\n\
              To see what is in \"{category}\" before you decide, or to delete single memories \
@@ -632,7 +632,7 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         (REMOVE_SPECIFIC_MEMORY, _) => GlobalMemoryGate::Ask(format!(
             "🔒 Deletes one global memory.\n\
              This conversation is asking to delete one memory from the global category \
-             \"{category}\" — the machine-wide store shared by every Biorouter session on this \
+             \"{category}\", the machine-wide store shared by every Biorouter session on this \
              computer, so it goes for every project. The rest of \"{category}\" is kept. \
              Biorouter keeps no copy of what is removed: this cannot be undone.\n\
              {quoted}\n\
@@ -649,7 +649,7 @@ pub fn global_memory_gate(tool_name: &str, args: &Map<String, Value>) -> Option<
         // added to the server without a rule here fails closed.
         _ => GlobalMemoryGate::Ask(format!(
             "🔒 Cross-session memory access.\n\
-             This conversation is asking to use the global memory category \"{category}\" — the \
+             This conversation is asking to use the global memory category \"{category}\": the \
              machine-wide store shared by every Biorouter session on this computer, in every \
              project.\n\
              Approve it, or deny it."
@@ -674,8 +674,8 @@ impl UninspectedBoundary {
             Self::ExecuteCodeScript => {
                 "Tool calls made from inside a script are not shown to the user one by one, so \
                  there is nothing for them to approve. Make the memory call directly, outside \
-                 execute_code — retrieve_memories / remember_memory / remove_memory_category / \
-                 remove_specific_memory with is_global=true — and the user will be shown that \
+                 execute_code, with retrieve_memories / remember_memory / remove_memory_category / \
+                 remove_specific_memory and is_global=true, and the user will be shown that \
                  exact operation and asked to approve it."
             }
             Self::AgentCallToolRoute => {
@@ -726,9 +726,9 @@ pub fn uninspected_boundary_refusal(
         "Refused a machine-wide memory operation at a boundary that cannot ask the user"
     );
     Some(format!(
-        "Refused: this call would read, write or delete the global memory store — the \
+        "Refused: this call would read, write or delete the global memory store, the \
          machine-wide store shared by every Biorouter session on this computer, in every \
-         project — and every such operation has to be shown to the user and approved first. \
+         project, and every such operation has to be shown to the user and approved first. \
          {}",
         boundary.remedy()
     ))
@@ -979,7 +979,7 @@ mod tests {
         );
         assert!(
             one_entry.contains("cohort 4217 responded"),
-            "the single-entry card must quote the memory being destroyed — it is \
+            "the single-entry card must quote the memory being destroyed: it is \
              the only way the user can tell which one: {one_entry}"
         );
         assert!(
@@ -1003,7 +1003,7 @@ mod tests {
         ] {
             assert!(
                 message.contains("cannot be undone"),
-                "the {what} card must say the loss is irreversible — Biorouter \
+                "the {what} card must say the loss is irreversible: Biorouter \
                  keeps no copy: {message}"
             );
         }
@@ -1478,7 +1478,7 @@ record_result(all);"#;
         assert!(
             checked_one_that_quotes_the_store,
             "none of the sampled docs quote the store path, so this test proved \
-             nothing — re-point it at a doc that does"
+             nothing; re-point it at a doc that does"
         );
     }
 

@@ -621,7 +621,7 @@ fn a_composite_spanning_two_institutions_reaches_an_extension_that_allows_both()
     assert!(
         compatible(&folded, &allows_both),
         "a pair covered by ucsf AND stanford must reach a connector whose allowlist \
-         names both — it is the flow both institutions' agreements already cover. \
+         names both: it is the flow both institutions' agreements already cover. \
          {folded:?} did not, which means the fold is still encoding the pair as \
          something other than the two institutions it spans"
     );
@@ -718,7 +718,7 @@ fn the_spans_institutions_sentinel_is_gone() {
         .join("crates");
     assert!(
         root.is_dir(),
-        "the scan walks {} — if that path is wrong, this test passes for the wrong reason",
+        "the scan walks {}; if that path is wrong, this test passes for the wrong reason",
         root.display()
     );
 
@@ -768,7 +768,7 @@ fn the_spans_institutions_sentinel_is_gone() {
     assert!(
         offenders.is_empty(),
         "the spanning-institutions sentinel is back. A fake institution id is not a \
-         representation — it is correct only until someone registers an institution \
+         representation: it is correct only until someone registers an institution \
          with that id, and then a pair spanning two institutions silently clears one \
          of them. `ModelAffiliation::Institutions` represents the pair; use it:\n{offenders:#?}"
     );

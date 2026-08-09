@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(read_in(dir.path()), None);
         assert!(
             exists_in(dir.path()),
-            "a corrupt record must not re-open the migration — one bad byte would \
+            "a corrupt record must not re-open the migration: one bad byte would \
              otherwise make the retired key live again"
         );
     }
@@ -504,7 +504,7 @@ mod tests {
         assert_eq!(
             read_for(&config),
             Some(true),
-            "the retired key was read a second time — 'once, at migration' means once"
+            "the retired key was read a second time; 'once, at migration' means once"
         );
     }
 

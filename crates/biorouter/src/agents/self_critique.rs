@@ -100,12 +100,12 @@ impl SelfCritiqueConfig {
 /// refutes), never style, tone, or "could add more detail".
 pub(crate) fn critique_rule() -> String {
     "The agent has just finished its answer to the user and is about to return \
-     it. Re-read that final answer for CORRECTNESS before it is delivered — this \
+     it. Re-read that final answer for CORRECTNESS before it is delivered. This \
      is a science-accuracy safeguard, not a style review.\n\n\
-     IMPORTANT — how to read the evidence:\n\
+     IMPORTANT, how to read the evidence:\n\
      • The event JSON's `transcript_tail` is only a RECENT EXCERPT of the \
      conversation. Earlier context and tool output have scrolled out of view. Do \
-     NOT treat \"I can't see the supporting work in this excerpt\" as an error — \
+     NOT treat \"I can't see the supporting work in this excerpt\" as an error; \
      judge only what is actually present.\n\
      • Judge the substance of the final answer, not its formatting, length, or \
      tone.\n\n\
@@ -114,7 +114,7 @@ pub(crate) fn critique_rule() -> String {
      • a factual or scientific error (a wrong gene/drug/dose, a mis-stated \
      mechanism, a mathematical or unit mistake);\n\
      • an internal contradiction (the answer asserts two incompatible things);\n\
-     • a fabricated specific — a citation, statistic, identifier, or quantitative \
+     • a fabricated specific: a citation, statistic, identifier, or quantitative \
      claim stated with confidence but unsupported by anything in the transcript;\n\
      • a conclusion the transcript's own tool results directly refute.\n\
      The `reason` must name the specific problem and what to fix, so the agent \
@@ -122,7 +122,7 @@ pub(crate) fn critique_rule() -> String {
      Respond {\"ok\": true} in EVERY other case, including: the answer is sound; \
      it is a reasonable judgment call, an opinion, or an appropriately hedged \
      estimate; it is merely incomplete or could go deeper; or you are unsure \
-     whether something is actually wrong. When in doubt, respond {\"ok\": true} — \
+     whether something is actually wrong. When in doubt, respond {\"ok\": true}; \
      do NOT invent problems, and do NOT ask for more detail. A correct answer \
      must never be sent back."
         .to_string()
@@ -137,7 +137,7 @@ pub(crate) fn revise_instruction(reason: &str) -> String {
          before it reaches the user:\n\n\"{}\"\n\n\
          If this is a real error, correct it and give the user your revised final \
          answer now. If, on reflection, your original answer was actually right, \
-         briefly say why and restate it — do not start unrelated new work.",
+         briefly say why and restate it, and do not start unrelated new work.",
         crate::agents::goal::ellipsize(reason, 600)
     )
 }
@@ -198,10 +198,7 @@ mod tests {
     #[test]
     fn default_is_off() {
         let cfg = SelfCritiqueConfig::default();
-        assert!(
-            !cfg.enabled,
-            "BR-50 must default OFF — it costs an LLM call"
-        );
+        assert!(!cfg.enabled, "BR-50 must default OFF: it costs an LLM call");
         assert!(!cfg.is_active());
     }
 

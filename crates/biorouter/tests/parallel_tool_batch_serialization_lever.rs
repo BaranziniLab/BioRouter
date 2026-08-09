@@ -66,7 +66,7 @@ async fn max_concurrent_one_serializes_the_whole_batch() {
             .expect("probe wrote a number");
         assert_eq!(
             observed, 1,
-            "probe {i} saw {observed} tools running at once — \
+            "probe {i} saw {observed} tools running at once; \
              BIOROUTER_TOOL_MAX_CONCURRENT=1 did not serialize the batch, so the \
              documented rollback lever no longer works"
         );

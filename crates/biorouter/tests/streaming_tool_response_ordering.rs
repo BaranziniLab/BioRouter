@@ -289,7 +289,7 @@ async fn streamed_responses_follow_completion_order_persisted_keeps_request_orde
         persisted_resp_ids,
         vec![SLOW_ID.to_string(), FAST_ID.to_string()],
         "persisted tool_result blocks must stay in request order (slow, fast) even \
-         though the streamed transcript used completion order — the tool_result \
+         though the streamed transcript used completion order; the tool_result \
          blocks must correspond to the preceding assistant turn's tool_use blocks"
     );
 

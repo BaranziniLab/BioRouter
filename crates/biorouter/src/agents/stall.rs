@@ -366,7 +366,7 @@ Respond with ONLY a JSON object, no prose, no code fences:
 {"looping": false} if the agent is making progress, or
 {"looping": true, "reason": "<one sentence: what it keeps repeating, and what it should do instead>"} if it is stuck.
 
-Be conservative. Long, varied, advancing work is NOT a loop — different tools, different files, new information, or steady movement through a plan all mean {"looping": false}. The excerpt is only a tail, so earlier progress is not visible; never infer a loop from what is missing. Report a loop ONLY when the excerpt itself shows concrete repetition or a lack of progress."#;
+Be conservative. Long, varied, advancing work is NOT a loop: different tools, different files, new information, or steady movement through a plan all mean {"looping": false}. The excerpt is only a tail, so earlier progress is not visible; never infer a loop from what is missing. Report a loop ONLY when the excerpt itself shows concrete repetition or a lack of progress."#;
 
 #[derive(Deserialize)]
 struct LoopVerdict {
@@ -487,7 +487,7 @@ pub fn giveup_instruction(reason: &str) -> String {
 /// the turn has to be ended for it.
 pub fn stopped_message(reason: &str) -> String {
     format!(
-        "I've stopped this turn because I wasn't making progress — I'm not finishing because \
+        "I've stopped this turn because I wasn't making progress. I'm not finishing because \
          the task is necessarily complete. The progress check found: {}\n\nTell me how you'd \
          like to proceed (a narrower step, a different approach, or more context). \
          (Disable this check with `BIOROUTER_STALL_CHECK=false`.)",

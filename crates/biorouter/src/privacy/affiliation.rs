@@ -632,7 +632,7 @@ fn owners_label(owners: &BTreeSet<InstitutionId>) -> String {
         // Not a sentence with a blank in it: an empty allowlist is a real state
         // (a hand-edited snapshot), it permits nothing, and saying so is more
         // useful than naming zero institutions.
-        return "no institution at all — its allowlist names none".to_string();
+        return "no institution at all: its allowlist names none".to_string();
     }
     owners
         .iter()
@@ -741,7 +741,7 @@ fn covering_agreements(bound: InstitutionSet) -> String {
 /// which is the opposite of what the gate just decided.
 pub fn model_affiliation_label(model: Option<ModelAffiliation>) -> String {
     match model {
-        Some(ModelAffiliation::Local) => "this machine — a local model, covered by no \
+        Some(ModelAffiliation::Local) => "this machine, a local model covered by no \
              institution's agreements because nothing leaves the machine"
             .to_string(),
         Some(ModelAffiliation::Institutions(bound)) => join_and(bound.iter().map(label).collect()),
@@ -870,7 +870,7 @@ fn compose_mismatch(
         mark: format!(
             "⚠ Cross-institutional: `{extension}` holds data belonging to {}, and this chat's \
              model is covered by {}. A call is refused unless the user has approved \
-             this flow — tell them what you need it for and let them decide.",
+             this flow; tell them what you need it for and let them decide.",
             owners_label_capped(owners),
             covered_by_capped(bound)
         ),
@@ -1074,7 +1074,7 @@ fn compose_unstated(extension: &str, owners: &BTreeSet<InstitutionId>) -> CrossA
         mark: format!(
             "⚠ Cross-institutional: `{extension}` holds data belonging to {}, and this chat's \
              model does not state whose agreements cover it. A call is refused unless the user \
-             has approved this flow — tell them what you need it for and let them decide.",
+             has approved this flow; tell them what you need it for and let them decide.",
             owners_label_capped(owners)
         ),
     }
@@ -2126,7 +2126,7 @@ mod tests {
         );
 
         let finding = cross_affiliation_owners(model, "this chat history", &both).expect(
-            "a mismatch the union rule found must have copy — at chat recall `None` is not \
+            "a mismatch the union rule found must have copy: at chat recall `None` is not \
              a missing sentence, it is the recall proceeding",
         );
         for named in ["ucsf", "stanford"] {

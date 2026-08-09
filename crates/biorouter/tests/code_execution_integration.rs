@@ -1165,7 +1165,7 @@ async fn case28_error_result_still_carries_call_telemetry() {
     );
     let meta = result
         .meta
-        .expect("telemetry must survive on the error result — it matters most there");
+        .expect("telemetry must survive on the error result: it matters most there");
     let calls = meta
         .0
         .get("biorouter/tool-calls")

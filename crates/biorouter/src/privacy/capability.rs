@@ -572,7 +572,7 @@ mod tests {
             )
             .is_some(),
             "`open` let a PUBLIC model reach a private extension. It governs the \
-             affiliation axis only — turning the tier system off is what the master \
+             affiliation axis only; turning the tier system off is what the master \
              switch does, and Task 52 must not duplicate it"
         );
         assert!(
@@ -589,7 +589,7 @@ mod tests {
         assert_eq!(
             crate::privacy::privacy_tiers_enabled(),
             before,
-            "moving the mixing policy moved the MASTER SWITCH — that is a different \
+            "moving the mixing policy moved the MASTER SWITCH, which is a different \
              control, with a different disclosure and a different write"
         );
     }

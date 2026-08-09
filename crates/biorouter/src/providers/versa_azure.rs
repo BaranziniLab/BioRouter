@@ -198,7 +198,7 @@ impl Provider for VersaAzureProvider {
         ProviderMetadata::with_models(
             "versa_azure",
             "Versa API Azure",
-            "UCSF ChatGPT via Azure OpenAI. API Key only — endpoint and deployment are pre-configured.",
+            "UCSF ChatGPT via Azure OpenAI. API Key only; endpoint and deployment are pre-configured.",
             VERSA_AZURE_DEPLOYMENT,
             models,
             VERSA_AZURE_DOC_URL,

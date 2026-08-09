@@ -51,7 +51,7 @@ pub const CHAT_MODE_TOOL_SKIPPED_RESPONSE: &str = "Let the user know the tool ca
 
 pub const EXPIRED_RESPONSE: &str = "The permission prompt for this tool call expired before the \
     user answered it, so the tool was NOT run. The user is likely away. Do not silently retry the \
-    same call — summarize what you were about to do and stop.";
+    same call; summarize what you were about to do and stop.";
 
 /// PAR-04: the result recorded for a tool that was still running when the user
 /// cancelled the turn, so its slot in the batch is never left empty.

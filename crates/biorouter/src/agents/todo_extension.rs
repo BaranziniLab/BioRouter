@@ -320,8 +320,8 @@ impl TodoClient {
             tool_from_schema::<TodoUpdateParams>(
                 "todo_update",
                 indoc! {r#"
-                    Update a single checklist item by its `#N` id — change its
-                    status (pending/in_progress/completed) and/or its text —
+                    Update a single checklist item by its `#N` id: change its
+                    status (pending/in_progress/completed) and/or its text,
                     without touching the rest of the list.
                 "#},
                 false,

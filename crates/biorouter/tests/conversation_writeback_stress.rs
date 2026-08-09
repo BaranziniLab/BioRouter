@@ -330,7 +330,7 @@ async fn three_hundred_concurrent_appends_survive_sixty_rewrites() {
         .sum();
     assert!(
         preserved > 0,
-        "the tail-preservation path never fired — the test did not actually race"
+        "the tail-preservation path never fired, so the test did not actually race"
     );
 
     let final_conversation = stored(&sm, &id).await;
@@ -1056,13 +1056,13 @@ async fn the_unguarded_rewrite_still_destroys_concurrent_appends() {
     );
     assert!(
         lost.iter().any(|u| *u == VICTIM),
-        "the unguarded rewrite kept an append it demonstrably never read — it has \
+        "the unguarded rewrite kept an append it demonstrably never read, so it has \
          grown a guard it must not have, and every other test in this file is now \
          asserting a property nothing is testing"
     );
     assert!(
         !lost.is_empty(),
-        "the unguarded rewrite destroyed nothing under a 300-append storm — either \
+        "the unguarded rewrite destroyed nothing under a 300-append storm; either \
          the workload stopped racing (in which case every other test in this file \
          is now vacuous) or `replace_conversation` grew a guard it must not have"
     );
@@ -1425,7 +1425,7 @@ async fn a_rewrite_basis_cannot_cross_a_wipe_that_recycled_the_session_id() {
         outcome,
         ReplaceOutcome::Stale,
         "a basis from a previous incarnation of a recycled id must never be \
-         accepted — same id and same rowids are not the same conversation"
+         accepted: same id and same rowids are not the same conversation"
     );
 
     let final_conversation = stored(&sm, &second).await;

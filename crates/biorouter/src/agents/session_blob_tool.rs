@@ -41,7 +41,7 @@ impl Agent {
             .ok_or_else(|| {
                 ErrorData::new(
                     ErrorCode::INVALID_PARAMS,
-                    "`blob_id` is required — use the id printed in the stub that replaced the tool result".to_string(),
+                    "`blob_id` is required: use the id printed in the stub that replaced the tool result".to_string(),
                     None,
                 )
             })?;
@@ -127,7 +127,7 @@ fn grep(payload: &str, pattern: &str, limit: usize) -> ToolResult<String> {
 
     let shown = kept.len();
     let mut out = format!(
-        "{matches} of {total} lines match `{pattern}`; showing {shown}.\n(line numbers are 1-based — read around a hit with `offset`/`limit`)\n\n"
+        "{matches} of {total} lines match `{pattern}`; showing {shown}.\n(line numbers are 1-based; read around a hit with `offset`/`limit`)\n\n"
     );
     out.push_str(&kept.join("\n"));
     Ok(cap(out, matches > shown))
@@ -163,7 +163,7 @@ fn cap(mut out: String, more_lines: bool) -> String {
     }
     if truncated || more_lines {
         out.push_str(
-            "\n\n[output truncated — narrow it with a more specific `pattern`, or a smaller \
+            "\n\n[output truncated; narrow it with a more specific `pattern`, or a smaller \
              `offset`/`limit` range]",
         );
     }

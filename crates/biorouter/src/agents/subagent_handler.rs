@@ -1199,7 +1199,7 @@ mod tests {
             Some(true) => {}
             Some(false) => panic!(
                 "the run's teardown evicted the cached agent it found under the child's id. \
-                 Release must be `deregister_agent_if_same`, which clears only the pin — a \
+                 Release must be `deregister_agent_if_same`, which clears only the pin; a \
                  `remove_session` here also pops the LRU, discarding an entry this run never \
                  created (in production, a consulted worker's own agent) and evicting live \
                  registrations belonging to other runs"
@@ -1557,7 +1557,7 @@ mod tests {
         let mid_run = spy.mid_run();
         assert!(
             mid_run.lease_held,
-            "the lease must still be HELD while the child works — a run that released it \
+            "the lease must still be HELD while the child works; a run that released it \
              immediately reports the child idle for its whole run, and `mode:\"turn\"` on a \
              busy child would be accepted instead of refused"
         );
@@ -1640,7 +1640,7 @@ mod tests {
                 events.last(),
                 Some(SessionBusEvent::TurnFinished { reason, .. }) if reason == "cancelled"
             ),
-            "tripping the token the run handed to `begin_turn` must stop THE RUN — it is \
+            "tripping the token the run handed to `begin_turn` must stop THE RUN; it is \
              the run's own token, not a fresh one made to satisfy the signature; got {events:?}"
         );
         assert!(
@@ -1939,7 +1939,7 @@ mod tests {
         );
         assert!(
             !first.metadata.agent_visible,
-            "…and stay out of the child's model context (Task 32) — a run that \
+            "…and stay out of the child's model context (Task 32); a run that \
              re-persisted it as an ordinary row would double-inject the system prompt"
         );
     }
@@ -2143,7 +2143,7 @@ mod tests {
         );
         assert!(
             matches!(events.first(), Some(SessionBusEvent::TurnStarted { .. })),
-            "the bracket must be OPEN before the work that can die — the lease is \
+            "the bracket must be OPEN before the work that can die: the lease is \
              already held, so the daemon is already reporting this child busy; \
              got {events:?}"
         );

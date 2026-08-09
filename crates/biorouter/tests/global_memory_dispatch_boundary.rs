@@ -502,7 +502,7 @@ async fn a_private_capability_may_not_write_a_global_memory_through_the_real_dis
     assert!(
         text.contains("public model") && text.contains("cannot read it back"),
         "the disclosure no longer tells the user a public-model chat cannot read \
-         this back — the half they act on: {text}"
+         this back, which is the half they act on: {text}"
     );
 
     // And the same two calls on a PUBLIC capability, or the assertions above

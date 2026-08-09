@@ -107,7 +107,7 @@ const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation
 const MAX_TRUNCATION_CONTINUATIONS: u32 = 12;
 /// Injected when auto-continuing a length-truncated turn, so the model resumes
 /// instead of the agent ending the turn on a half-finished response.
-const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off — do not repeat what you already wrote.";
+const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
 
 /// The message id to stamp on the assistant-side messages the loop rebuilds for
 /// a reply that requested tools (the preserved thinking block and the tool
@@ -373,7 +373,7 @@ mod persisted_ordering {
         debug_assert!(
             !events.is_empty(),
             "`yielded_then_named` with nothing to yield is `named_but_never_yielded` \
-             or `named_after_earlier_yield` — the shape has to be stated, not \
+             or `named_after_earlier_yield`; the shape has to be stated, not \
              defaulted to whichever one looks safest"
         );
         events.extend(persisted_event(named));
@@ -5691,7 +5691,7 @@ impl Agent {
                                 .with_system_notification(
                                     SystemNotificationType::InlineMessage,
                                     format!(
-                                        "⏳ Stopped looping after {flags} progress check(s) — {why}. \
+                                        "⏳ Stopped looping after {flags} progress check(s): {why}. \
                                          Wrapping up with a best-effort answer."
                                     ),
                                 )
@@ -7149,7 +7149,7 @@ impl Agent {
                                         .with_system_notification(
                                             SystemNotificationType::InlineMessage,
                                             format!(
-                                                "🎯 Goal met — cleared: {}",
+                                                "🎯 Goal met and cleared: {}",
                                                 crate::agents::goal::ellipsize(&goal.condition, 200)
                                             ),
                                         )
@@ -7201,7 +7201,7 @@ impl Agent {
                                     (
                                         crate::agents::goal::giveup_instruction(&reason),
                                         format!(
-                                            "🎯 Goal stopped after {attempts} attempt(s) — {why}. \
+                                            "🎯 Goal stopped after {attempts} attempt(s): {why}. \
                                              Wrapping up with a best-effort answer; refine with a \
                                              narrower /goal if needed."
                                         ),
@@ -8939,13 +8939,13 @@ mod tests {
             assert!(
                 WORKSPACE_TOOL_NAMES.contains(&name.as_str()),
                 "{name} is advertised by the workspace extension but is not in \
-                 WORKSPACE_TOOL_NAMES — a subagent could call it"
+                 WORKSPACE_TOOL_NAMES, so a subagent could call it"
             );
         }
         for name in WORKSPACE_TOOL_NAMES {
             assert!(
                 advertised.iter().any(|a| a == name),
-                "{name} is refused for subagents but is no longer advertised — \
+                "{name} is refused for subagents but is no longer advertised, so \
                  the list is stale"
             );
         }
@@ -10003,7 +10003,7 @@ mod rewrite_basis_tests {
         for seed_id in &seed_ids {
             assert!(
                 named.contains(seed_id),
-                "known_with must name every id the seed carried — {seed_id} is missing, so the \
+                "known_with must name every id the seed carried; {seed_id} is missing, so the \
                  store would treat that row as another writer's append and recover it verbatim \
                  onto the tail of its own summary; named: {named:?}"
             );
@@ -10308,8 +10308,8 @@ mod persisted_ordering_guard {
             calls, 0,
             "{calls} call(s) to the private frame builder live outside the \
              ordering seam. Every publication site must name which of the three \
-             legitimate shapes it is — `yielded_then_named`, \
-             `named_but_never_yielded` or `named_after_earlier_yield` — so the \
+             legitimate shapes it is: `yielded_then_named`, \
+             `named_but_never_yielded` or `named_after_earlier_yield`, so the \
              invariant can be audited by reading the constructor instead of \
              tracing control flow out from it."
         );
@@ -10685,7 +10685,7 @@ mod gate_a_bind_tests {
                 err.downcast_ref::<PrivacyRefusal>(),
                 Some(PrivacyRefusal::PublicModelOnPrivateSession { .. })
             ),
-            "the WHERE clause did not see a ratchet that committed before it — \
+            "the WHERE clause did not see a ratchet that committed before it; \
              either the predicate is evaluated in Rust before the UPDATE, or the \
              seam drifted back out of bind_provider_if_allowed"
         );
@@ -10778,7 +10778,7 @@ mod gate_a_bind_tests {
         assert!(
             !before.has_fired(),
             "a bind armed for after_bind_before_swap announced itself at \
-             before_bind_write — it consumed an arm belonging to another test, \
+             before_bind_write, so it consumed an arm belonging to another test, \
              whose own bind then runs unforced"
         );
     }
@@ -10841,7 +10841,7 @@ mod gate_a_bind_tests {
         }
         assert!(
             bound > 0 && refused > 0,
-            "{iterations} iterations produced {bound} bound / {refused} refused — one-sided, so \
+            "{iterations} iterations produced {bound} bound / {refused} refused, which is one-sided, so \
              the loop raced nothing. That is the state this test used to report as a pass."
         );
     }
@@ -11153,7 +11153,7 @@ mod gate_b_turn_tests {
         assert!(
             !events.iter().any(is_refusal),
             "an elicitation answer is a user action on a parked tool call, not a \
-             disclosure — the gate sits after this early return:\n{}",
+             disclosure; the gate sits after this early return:\n{}",
             rendered(&events)
         );
     }
@@ -11582,7 +11582,7 @@ mod gate_c_dispatch_tests {
         let (_dir, agent, session) = agent_with_the_private_extension(local).await;
         assert!(
             agent.cross_affiliation_warnings().await.is_empty(),
-            "a local model reaches everything private — no transfer occurs at all"
+            "a local model reaches everything private, so no transfer occurs at all"
         );
 
         let elsewhere: Arc<dyn Provider> = Arc::new(ProviderCoveredBy {
@@ -11769,7 +11769,7 @@ mod gate_c_dispatch_tests {
              warn-and-proceed surfaces. DR-26 requires the user be told at the bind \
              (`POST /agent/update_provider`) AND at their own enable \
              (`POST /agent/add_extension`); a composer with no caller is exactly the \
-             defect this method was added to fix, and it fails silently — the daemon \
+             defect this method was added to fix, and it fails silently: the daemon \
              keeps logging and the user keeps seeing nothing."
         );
     }
@@ -11942,7 +11942,7 @@ mod gate_c_dispatch_tests {
             .expect("dispatch")
             .result
             .await
-            .expect("UCSF's model may reach UCSF's connector — this is the approved flow");
+            .expect("UCSF's model may reach UCSF's connector: this is the approved flow");
 
         // 2. Re-bound to another institution's model. The bind WARNS and still
         //    succeeds (DR-19 on the third axis), and the very same call is now

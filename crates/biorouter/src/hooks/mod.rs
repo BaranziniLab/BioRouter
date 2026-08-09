@@ -1214,7 +1214,7 @@ Stop:
             manager.session_classification("oldest"),
             None,
             "eviction is oldest-first, and the evicted entry must read as \
-             unknown — which refuses — not as Public"
+             unknown (which refuses) rather than as Public"
         );
         assert_eq!(
             manager.session_classification("chat-0"),

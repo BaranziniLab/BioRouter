@@ -166,11 +166,11 @@ impl ReasoningEffort {
     pub fn describe(self) -> &'static str {
         match self {
             Self::Quick => {
-                "quick — low reasoning effort, no extended thinking, halved exploration budget"
+                "quick: low reasoning effort, no extended thinking, halved exploration budget"
             }
-            Self::Normal => "normal — the model's default depth (no overrides)",
+            Self::Normal => "normal: the model's default depth (no overrides)",
             Self::Deep => {
-                "deep — high reasoning effort, extended thinking, doubled exploration budget"
+                "deep: high reasoning effort, extended thinking, doubled exploration budget"
             }
         }
     }

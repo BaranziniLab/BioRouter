@@ -3041,7 +3041,7 @@ impl ExtensionManager {
 /// off by the operator, so the model must not treat the listing as an
 /// invitation to enable them on its own (`manage_extensions` refuses anyway —
 /// see `extension_manager_extension::check_enable_allowed`).
-pub(crate) const CONFIG_DISABLED_LABEL: &str = "(disabled by user — do not enable without asking)";
+pub(crate) const CONFIG_DISABLED_LABEL: &str = "(disabled by user; do not enable without asking)";
 
 /// One listing line per config-disabled extension. Only entries the operator
 /// actually wrote into the config file (`persisted`, keyed by
@@ -4253,7 +4253,7 @@ mod tests {
             .expect("injected default-off entry must stay listed");
         assert!(
             !chatrecall.contains(CONFIG_DISABLED_LABEL),
-            "no operator disabled chatrecall — it must not be labeled: {chatrecall}"
+            "no operator disabled chatrecall, so it must not be labeled: {chatrecall}"
         );
         let custom = lines
             .iter()
@@ -4427,7 +4427,7 @@ mod tests {
         let names: Vec<&str> = tools.iter().map(|t| t.name.as_ref()).collect();
         assert!(
             !names.iter().any(|n| n.starts_with("ucsfomopagent__")),
-            "Gate E itself regressed — this test would then pass for the wrong \
+            "Gate E itself regressed, so this test would then pass for the wrong \
              reason: {names:?}"
         );
 
@@ -5004,7 +5004,7 @@ mod tests {
         ] {
             assert!(
                 child_env.lines().any(|l| l.starts_with(expected)),
-                "extension child lost {expected:?} — removing too much is its own \
+                "extension child lost {expected:?}; removing too much is its own \
                  regression.\nchild env:\n{child_env}"
             );
         }
@@ -5944,7 +5944,7 @@ mod tests {
         assert_eq!(
             crate::privacy::classify_extension_entry("gate32-mystuff", Some(&renamed)),
             Private,
-            "a record naming an id the snapshot does not publish displaced the one that did — \
+            "a record naming an id the snapshot does not publish displaced the one that did; \
              the sources are unioned, not tried in order"
         );
 
@@ -6007,7 +6007,7 @@ mod tests {
         assert_eq!(
             crate::privacy::classify_extension_entry("residual-mystuff", Some(&renamed)),
             crate::privacy::ProviderTier::Public,
-            "with no record to find, a renamed entry falls back to the config-name join — this \
+            "with no record to find, a renamed entry falls back to the config-name join, and this \
              is the documented residual, and if it ever changes §5.3 is now wrong"
         );
 
@@ -6235,7 +6235,7 @@ mod tests {
         assert_eq!(
             row.privacy_tier,
             crate::privacy::SessionClassification::Public,
-            "AR-7: with the master opt-out off, DR-4's triggers do not fire — a \
+            "AR-7: with the master opt-out off, DR-4's triggers do not fire, so a \
              classification written while the user believes the feature is off is \
              permanent, and re-enabling never revisits it"
         );
@@ -7538,8 +7538,8 @@ mod tests {
         assert_eq!(
             affiliation_sites, tier_sites,
             "the two chat-side ratchets no longer fire from the same place. They \
-             answer the same question about one turn — what did this chat just \
-             take in — and a chat that ratcheted one axis and not the other is \
+             answer the same question about one turn (what did this chat just \
+             take in), and a chat that ratcheted one axis and not the other is \
              recallable by a model no one decided may see it."
         );
     }

@@ -577,7 +577,7 @@ pub fn classify_bedrock_converse_error(err: SdkError<ConverseError>) -> Provider
             ProviderError::ServerError(format!("Bedrock service unavailable (transient): {:?}", e))
         }
         ConverseError::ResourceNotFoundException(e) => ProviderError::ExecutionError(format!(
-            "Bedrock resource not found — check the model id / access: {:?}",
+            "Bedrock resource not found; check the model id / access: {:?}",
             e
         )),
         // `Unhandled` (and any future variant): the proxy returned an error the SDK
@@ -725,7 +725,7 @@ pub fn classify_bedrock_converse_stream_error(err: SdkError<ConverseStreamError>
         }
         ConverseStreamError::ResourceNotFoundException(e) => {
             ProviderError::ExecutionError(format!(
-                "Bedrock resource not found — check the model id / access: {:?}",
+                "Bedrock resource not found; check the model id / access: {:?}",
                 e
             ))
         }

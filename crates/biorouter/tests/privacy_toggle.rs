@@ -954,7 +954,7 @@ async fn the_matrix_doubles_are_not_registry_providers() {
             !registered.contains(&double.to_string()),
             "the test double `{double}` collides with a real provider, so Gate B's \
              repair arm will construct that provider for real and block this binary \
-             on the developer's OS keyring — registered: {registered:?}"
+             on the developer's OS keyring; registered: {registered:?}"
         );
     }
 }

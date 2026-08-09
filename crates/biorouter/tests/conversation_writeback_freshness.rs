@@ -897,7 +897,7 @@ async fn a_failed_retry_still_bills_the_first_summarization_and_finishes_the_tur
     assert_eq!(
         provider.main_call_count(),
         2,
-        "a failed RETRY must not end the turn — the first compaction is still \
+        "a failed RETRY must not end the turn: the first compaction is still \
          usable in memory"
     );
 
@@ -1350,7 +1350,7 @@ async fn overflow_recovery_preserves_a_note_appended_before_the_basis_was_read()
     assert_eq!(
         h.stored_occurrences(NOTE).await,
         1,
-        "and exactly once — a split basis can duplicate a row as easily as it \
+        "and exactly once: a split basis can duplicate a row as easily as it \
          can delete one; stored: {stored:#?}"
     );
 }
@@ -1596,7 +1596,7 @@ async fn a_failed_first_persist_still_bills_the_summarization_and_finishes_the_t
     assert_eq!(
         provider.main_call_count(),
         2,
-        "a failed persist must not end the turn — the compaction is still \
+        "a failed persist must not end the turn: the compaction is still \
          usable in memory"
     );
 
@@ -1792,7 +1792,7 @@ async fn a_pin_set_on_a_message_the_normalizer_already_froze_is_still_honoured()
         stored_pins(&h).await,
         vec![(MARKED.to_string(), true)],
         "a marker set after the normalizer froze that message must still be \
-         honoured — a stale cached prefix erases it durably"
+         honoured; a stale cached prefix erases it durably"
     );
     assert!(
         !agent_sees(&h, "q0").await,
@@ -2119,7 +2119,7 @@ async fn a_row_the_user_is_never_shown_is_published_as_not_user_visible() {
         .collect();
     assert!(
         !streamed_message_ids.contains(&hidden[0]),
-        "the model-only row must NOT be drawn — it is not yielded as a Message"
+        "the model-only row must NOT be drawn: it is not yielded as a Message"
     );
 
     // ...and it is published, flagged as not-for-drawing.
@@ -2259,7 +2259,7 @@ async fn a_published_user_visible_row_is_not_an_instruction_to_draw() {
     assert!(
         !split_rows.is_empty(),
         "expected at least one user-visible ASSISTANT row the client was never \
-         streamed — the split `tool_use` row. If that stopped being true, the \
+         streamed: the split `tool_use` row. If that stopped being true, the \
          split rows were probably re-flagged hidden, which erases the assistant \
          side of every tool call from a re-read session.\nstored: {:#?}\n\
          streamed ids: {drawn:#?}",
@@ -2270,7 +2270,7 @@ async fn a_published_user_visible_row_is_not_an_instruction_to_draw() {
             published.get(id),
             Some(&true),
             "row {id} is a user-visible assistant row the client never saw, so \
-             `MessagesPersisted` must publish it as user_visible=true — which is \
+             `MessagesPersisted` must publish it as user_visible=true, which is \
              precisely why that flag cannot mean \"draw this\".\npublished: \
              {published:#?}"
         );
@@ -2405,7 +2405,7 @@ async fn an_undeliverable_elicitation_answer_is_ordered_the_same_way() {
     assert_eq!(
         event_shapes(&events),
         vec!["Message(assistant)", "MessagesPersisted[1]"],
-        "content first, then the accounting frame — the same order every batch \
+        "content first, then the accounting frame, in the same order every batch \
          uses, so the rule can be checked by reading rather than by re-deriving \
          which rows happen to be yielded at each site"
     );

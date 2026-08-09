@@ -317,7 +317,7 @@ mod tests {
             vec!["cdwagent", "ucsfomopagent"],
             "the compiled-in private set changed. It is generated from the \
              data-privacy annotations in landing/baam.html by \
-             landing/scripts/build-registry.mjs — if that change is intended, \
+             landing/scripts/build-registry.mjs. If that change is intended, \
              say so here; if it is not, the generator or the page is wrong"
         );
     }
@@ -474,7 +474,7 @@ mod tests {
         assert_eq!(
             classify_extension("mystuff"),
             ProviderTier::Public,
-            "the name-only form cannot see the install directory — a caller holding a config \
+            "the name-only form cannot see the install directory, so a caller holding a config \
              must pass it, and this is why"
         );
     }

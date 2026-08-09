@@ -368,7 +368,7 @@ pub(crate) mod tests {
                 "azure_openai",
                 "public: a large cloud. ⚠ azure.rs ships the UCSF gateway as \
                  AZURE_OPENAI_ENDPOINT's default, so this one *looks* institutional \
-                 and is not — only versa_azure carries the agreement",
+                 and is not; only versa_azure carries the agreement",
             ),
             ("databricks", "public: general commercial endpoint"),
             ("gcp_vertex_ai", "public: general commercial endpoint"),
@@ -429,7 +429,7 @@ pub(crate) mod tests {
             let in_public = public.iter().any(|(n, _why)| n == name);
             assert!(
                 in_private ^ in_public,
-                "{name} is in neither tier table, or in both — decide it \
+                "{name} is in neither tier table, or in both; decide it \
                  (may a private session be bound to this provider's models?). \
                  A row reading `public: general commercial endpoint` is a \
                  complete and correct answer."
@@ -445,7 +445,7 @@ pub(crate) mod tests {
             };
             assert_eq!(
                 *shipped, recorded,
-                "{name} ships {shipped:?} but is filed under {recorded:?} — \
+                "{name} ships {shipped:?} but is filed under {recorded:?}: \
                  fix the table, not the provider (changing a tier is Task 5's \
                  `the_private_set_is_a_table_of_reviewed_decisions`, which needs \
                  an operator ruling)"
@@ -538,7 +538,7 @@ pub(crate) mod tests {
             let is_not = unaffiliated.iter().any(|(n, _why)| n == name);
             assert!(
                 is_affiliated ^ is_not,
-                "{name} is in neither affiliation table, or in both — classify it \
+                "{name} is in neither affiliation table, or in both; classify it \
                  (DR-26: does an instance of it carry Local, an Institution, or nothing?)"
             );
         }
@@ -622,7 +622,7 @@ pub(crate) mod tests {
                 assert!(
                     why.starts_with("Local:"),
                     "{name}'s affiliation row must begin `Local:` or `Institution(<id>):` so the \
-                     institution it claims can be checked against the registry — got {why:?}"
+                     institution it claims can be checked against the registry; got {why:?}"
                 );
                 continue;
             };
@@ -635,9 +635,9 @@ pub(crate) mod tests {
                 )
                 .is_some(),
                 "{name} claims institution {id:?}, which the registry snapshot does not publish \
-                 (privacy::registry_private::INSTITUTIONS). Either it is a typo — in which case \
+                 (privacy::registry_private::INSTITUTIONS). Either it is a typo, in which case \
                  it silently mismatches every connector, because an unpublished id is in no \
-                 allowlist — or the institution is real and belongs in INSTITUTIONS in \
+                 allowlist, or the institution is real and belongs in INSTITUTIONS in \
                  landing/scripts/build-registry.mjs, which is the one place an institution is \
                  declared."
             );
@@ -649,7 +649,7 @@ pub(crate) mod tests {
             "no row named an institution, so every assertion above was skipped and this test \
              proved nothing about the registry. If the build genuinely ships no institutional \
              provider, that is a change to what DR-26's third axis governs and belongs in the \
-             table's own doc — not in a silently green test."
+             table's own doc, not in a silently green test."
         );
     }
 

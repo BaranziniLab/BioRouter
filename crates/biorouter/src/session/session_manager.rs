@@ -1962,7 +1962,7 @@ pub const EXPORTED_BY_USER: &str = "exported_by_user";
 /// differently.
 pub const EXPORT_NOT_PROTECTED: &str =
     "This chat is private. The file this writes is NOT protected: it is an ordinary file on \
-     disk, readable by any model, any tool and anything that syncs your folders — the privacy \
+     disk, readable by any model, any tool and anything that syncs your folders. The privacy \
      tier does not travel with it. The chat itself stays private, and the export is recorded in \
      the classification ledger.";
 
@@ -4163,7 +4163,7 @@ impl SessionStorage {
         // two shapes that reach this branch.
         if !Self::table_has_column(pool, "sessions", "provider_name").await? {
             warn!(
-                "issue #56: skipping the privacy backfill — this database's `sessions` \
+                "issue #56: skipping the privacy backfill; this database's `sessions` \
                  table has no `provider_name`, so no row's tier can be inferred"
             );
             return Ok(BackfillCounts::default());
@@ -4195,7 +4195,7 @@ impl SessionStorage {
         if !turn_ledger {
             warn!(
                 "issue #56: this database has no usable turn ledger, so the backfill reads \
-                 only each row's bound provider — chats that switched providers may stay public"
+                 only each row's bound provider, so chats that switched providers may stay public"
             );
         }
 
@@ -4357,7 +4357,7 @@ impl SessionStorage {
             ),
             Err(error) => warn!(
                 %error,
-                "issue #56: could not rewind the schema counter — imported legacy chats may \
+                "issue #56: could not rewind the schema counter; imported legacy chats may \
                  stay classified public"
             ),
         }
@@ -7222,7 +7222,7 @@ mod blob_tests {
             .expect("an oversized replay must be idempotent success");
         assert_eq!(
             replay, "big-uid",
-            "the replay returns the SAME uid — no re-mint for identical content"
+            "the replay returns the SAME uid, with no re-mint for identical content"
         );
 
         let loaded = sm.get_session(&id, true).await.unwrap();
@@ -12304,7 +12304,7 @@ mod tests {
         assert!(
             uids.len() >= 150,
             "only {} of 200 appends were acknowledged ({busy_appends} lost the \
-             write lock) — too few for this to still be testing anything",
+             write lock): too few for this to still be testing anything",
             uids.len()
         );
         // 4. Every rewrite reported a real, non-silent outcome.
@@ -12419,7 +12419,7 @@ mod tests {
         assert!(
             uids.len() >= 60,
             "only {} of 80 cross-pool appends were acknowledged \
-             ({busy_appends} lost the write lock) — too few to test anything",
+             ({busy_appends} lost the write lock): too few to test anything",
             uids.len()
         );
 
@@ -12914,7 +12914,7 @@ mod tests {
                         }
                         assert!(
                             std::time::Instant::now() < deadline,
-                            "the writer stopped appending — there is no race \
+                            "the writer stopped appending, so there is no race \
                              left to grade"
                         );
                         tokio::task::yield_now().await;
@@ -12940,8 +12940,8 @@ mod tests {
         // error. A delete that opens with a READ fails right here, instantly.
         assert!(
             errors.is_empty(),
-            "{} of {DOOMED} deletes failed (a `database is locked` — code 5 or \
-             its SQLITE_BUSY_SNAPSHOT variant 517 — here means the transaction \
+            "{} of {DOOMED} deletes failed (a `database is locked`, code 5 or \
+             its SQLITE_BUSY_SNAPSHOT variant 517, here means the transaction \
              read before it wrote): {:?}",
             errors.len(),
             &errors[..errors.len().min(5)]
@@ -12956,7 +12956,7 @@ mod tests {
         assert!(
             committed_during * 2 >= DOOMED,
             "only {committed_during} writes committed alongside {DOOMED} \
-             deletes ({busy_appends} lost the write lock) — too little overlap \
+             deletes ({busy_appends} lost the write lock): too little overlap \
              for this to still be testing anything"
         );
         // 3. Every delete actually landed, and the writer's session did not.
@@ -15015,8 +15015,8 @@ mod tests {
             assert_eq!(
                 s1.privacy_reason.as_deref(),
                 Some("turn:ollama"),
-                "the ledger is an OBSERVED turn, so the provenance — and with it §12.4's \
-                 declassification grade — must say so"
+                "the ledger is an OBSERVED turn, so the provenance (and with it §12.4's \
+                 declassification grade) must say so"
             );
             // …and the grade that provenance buys is the one the live ratchet
             // would have given the same fact. Read through the real predicate, not
@@ -15095,7 +15095,7 @@ mod tests {
             assert_eq!(counts.private_from_turn_history, 0);
             assert_eq!(
                 counts.declassified_skipped, 2,
-                "both rows matched the evidence and were held back by the guard — a 0 here \
+                "both rows matched the evidence and were held back by the guard, so a 0 here \
                  would mean the statements simply found nothing, which is a different fact"
             );
         }
@@ -15140,7 +15140,7 @@ mod tests {
             assert_eq!(
                 imported.provider_name.as_deref(),
                 Some("ollama"),
-                "the import did not carry the provider through — the assertion below would \
+                "the import did not carry the provider through, so the assertion below would \
                  then pass or fail for an unrelated reason"
             );
             assert_eq!(
@@ -15390,7 +15390,7 @@ mod tests {
                 let arm = after_arm.get(..arm_len).expect("find yields a boundary");
                 assert!(
                     arm.lines().count() > 1,
-                    "the `{version} =>` arm range is empty — every assertion below would \
+                    "the `{version} =>` arm range is empty, so every assertion below would \
                      pass vacuously"
                 );
                 arm.to_string()
@@ -15416,7 +15416,7 @@ mod tests {
             assert!(
                 pool_body.contains("Self::import_legacy(")
                     && pool_body.contains("Self::backfill_privacy_from_recorded_provenance("),
-                "the fresh-database branch imports legacy sessions without classifying them — \
+                "the fresh-database branch imports legacy sessions without classifying them. \
                  a reset `sessions.db` restores every legacy chat as public"
             );
 
@@ -15434,8 +15434,8 @@ mod tests {
             ] {
                 assert!(
                     names.contains(&required),
-                    "`{required}` is not in the per-startup reconcile's reachable set {names:?} \
-                     — the walk broke, and every assertion below would pass vacuously"
+                    "`{required}` is not in the per-startup reconcile's reachable set {names:?}: \
+                     the walk broke, and every assertion below would pass vacuously"
                 );
             }
 
@@ -15539,7 +15539,7 @@ mod tests {
             ] {
                 assert!(
                     guard.contains(required),
-                    "the guard no longer excludes rows the user declassified — it does not \
+                    "the guard no longer excludes rows the user declassified; it does not \
                      mention `{required}`: {guard}"
                 );
             }
@@ -15586,7 +15586,7 @@ mod tests {
             }
             assert!(
                 scanned >= 30,
-                "only {scanned} provider modules were scanned — a broken walk \
+                "only {scanned} provider modules were scanned; a broken walk \
                  reports the same empty set as a clean tree"
             );
             declaring.sort();

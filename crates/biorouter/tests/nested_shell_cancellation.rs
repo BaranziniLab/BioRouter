@@ -119,7 +119,7 @@ async fn assert_tree_was_reaped(dir: &Path, token: CancellationToken) {
     assert!(
         !survived.exists(),
         "issue #72: cancelling the turn left a descendant of the shell command \
-         running — it woke up after the turn ended and wrote {}",
+         running: it woke up after the turn ended and wrote {}",
         survived.display()
     );
 }

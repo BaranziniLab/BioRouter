@@ -374,7 +374,7 @@ pub async fn ingest_conversation(
             ),
             source: SourceInput::Text {
                 text: rendered.markdown,
-                title: Some(format!("Conversation — {}", rendered.title)),
+                title: Some(format!("Conversation: {}", rendered.title)),
             },
             completer: args.completer,
             focus,

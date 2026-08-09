@@ -262,7 +262,7 @@ pub fn build_summary(
     }
 
     let mut header = String::from(
-        "Workspace file map (gitignore-aware; names only, may be truncated or slightly stale — run tools for the live tree):",
+        "Workspace file map (gitignore-aware; names only, may be truncated or slightly stale; run tools for the live tree):",
     );
     if total > shown || scan_truncated {
         header.push_str(&format!(

@@ -1216,7 +1216,7 @@ mod tests {
             .unwrap_or_else(|e| panic!("the audit could not read {}: {e}", path.display()));
         assert!(
             src.len() > 10_000,
-            "the audit read {} bytes — a truncated read reports the same absence \
+            "the audit read {} bytes; a truncated read reports the same absence \
              as a removed call site",
             src.len()
         );

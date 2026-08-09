@@ -170,7 +170,7 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter-mcp/src/memory/mod.rs",
                 counts: c(2, 0, 0),
                 kind: SiteKind::Unrelated,
-                what: "`Audience::may_read` on the memory server — an unrelated method that \
+                what: "`Audience::may_read` on the memory server, an unrelated method that \
                        happens to share the name. Left in the map on purpose: it is the \
                        standing proof that a name match is not a call site, because these \
                        two hits alone would satisfy a census that only counted matches",
@@ -179,7 +179,7 @@ const REGISTRY: &[Guard] = &[
                 file: VISIBILITY,
                 counts: c(2, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`refuse_unless_readable`'s two asks — the short-circuit for a caller \
+                what: "`refuse_unless_readable`'s two asks: the short-circuit for a caller \
                        that may read Private at all, and the decision on the resolved row",
             },
         ],
@@ -187,7 +187,7 @@ const REGISTRY: &[Guard] = &[
     Guard {
         ident: "appears_in_list",
         defined_in: VISIBILITY,
-        decides: "whether a session may appear in a listing at all — omission, not redaction, \
+        decides: "whether a session may appear in a listing at all: omission, not redaction, \
                   because an LLM-generated title is content",
         status: Status::Wired,
         sites: &[
@@ -237,7 +237,7 @@ const REGISTRY: &[Guard] = &[
                   not merely see it",
         status: Status::Unwired(
             "OPERATOR DECISION OUTSTANDING. §7's write row needs the lineage half, and no \
-             production code resolves a target's `parent_session_id` into a `Lineage` — see \
+             production code resolves a target's `parent_session_id` into a `Lineage`; see \
              `lineage_of` below, which is unwired for the same reason. Until it exists, \
              `workspace_close` and `workspace_set_tools` take no capability at all: a public \
              caller can cancel a private chat's turn, evict its agent, add extensions to it \
@@ -252,7 +252,7 @@ const REGISTRY: &[Guard] = &[
         ident: "lineage_of",
         defined_in: VISIBILITY,
         decides: "classifies a target as self / child / other from its stored \
-                  `parent_session_id` — one hop, never transitive",
+                  `parent_session_id`, one hop and never transitive",
         status: Status::Unwired(
             "Nothing in the tree resolves a `parent_session_id` into a `Lineage`, so \
              `may_write` cannot be called correctly even by a caller that wanted to. These two \
@@ -266,9 +266,9 @@ const REGISTRY: &[Guard] = &[
         decides: "whether a write is a downgrade crossing (private caller → public target) and \
                   so must disclose its payload the first time",
         status: Status::Unwired(
-            "OPERATOR DECISION OUTSTANDING. The documented disclosure — the first \
+            "OPERATOR DECISION OUTSTANDING. The documented disclosure (the first \
              `workspace_send_prompt` / `workspace_set_tools` from a given caller into a given \
-             public target raises an approval showing the exact payload — never fires. There \
+             public target raises an approval showing the exact payload) never fires. There \
              is no caller and no (caller, target) first-crossing state anywhere in the tree. \
              The predicate is pure and correct; the state it needs was never built.",
         ),
@@ -300,7 +300,7 @@ const REGISTRY: &[Guard] = &[
                 counts: c(0, 2, 0),
                 kind: SiteKind::Unrelated,
                 what: "`pub mod session_reach;` and the `session_reach::gate_knowledge_active` \
-                       path in the knowledge layer — the MODULE's name, not the function's",
+                       path in the knowledge layer: the MODULE's name, not the function's",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/reply.rs",
@@ -314,7 +314,7 @@ const REGISTRY: &[Guard] = &[
                 counts: c(2, 2, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions/{id}` (the transcript) and `GET /sessions/{id}/export` \
-                       (the same transcript, `to_string_pretty`) — the export sibling was \
+                       (the same transcript, `to_string_pretty`); the export sibling was \
                        ungated until this sweep",
             },
             Site {
@@ -322,14 +322,14 @@ const REGISTRY: &[Guard] = &[
                 counts: c(1, 1, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /sessions/{id}/events`, which opens with a full-conversation \
-                       snapshot frame and then tails it live — ungated until this sweep",
+                       snapshot frame and then tails it live, ungated until this sweep",
             },
             Site {
                 file: "crates/biorouter-server/src/routes/status.rs",
                 counts: c(1, 1, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /diagnostics/{id}`, whose zip carries `session.json` straight from \
-                       `export_session` — the third spelling of the same transcript — plus \
+                       `export_session` (the third spelling of the same transcript) plus \
                        this session's log files, which carry its prompts. It was the one \
                        session-addressing route in the tree with ZERO `session_reach` calls \
                        after the first sweep, and this census could not see that: a file with \
@@ -354,7 +354,7 @@ const REGISTRY: &[Guard] = &[
             counts: c(0, 1, 0),
             kind: SiteKind::Guard,
             what: "`from_fn_with_state(state, session_reach::gate_knowledge_active)` on the \
-                   nested knowledge router. A REFERENCE, not a call — which is why this census \
+                   nested knowledge router. A REFERENCE, not a call, which is why this census \
                    counts references as wiring: a middleware never appears with parentheses, \
                    and a census that demanded a call would have reported this live gate as dead",
         }],
@@ -391,7 +391,7 @@ const REGISTRY: &[Guard] = &[
         ident: "resolve_extension",
         defined_in: EXTENSIONS,
         decides: "an extension's tier AND affiliation together, from the registry plus \
-                  provenance — one resolution, one call (DR-26)",
+                  provenance: one resolution, one call (DR-26)",
         status: Status::Wired,
         sites: &[
             Site {
@@ -417,7 +417,7 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter/src/privacy/refusal.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`extension_enable_refusal`, the ONE enable gate — the resolution the \
+                what: "`extension_enable_refusal`, the ONE enable gate, the resolution the \
                        tier arm and the affiliation arm both read off, which is why there is \
                        one of it. It absorbed the two separate resolutions that used to sit in \
                        `extension_manager_extension.rs` and `workspace_extension.rs`, one per \
@@ -445,14 +445,14 @@ const REGISTRY: &[Guard] = &[
             "Deliberate and not a defect: production resolves tier and affiliation together \
              through `resolve_extension`, which consults the registry and provenance rather \
              than joining on a name. Recorded so the zero is on the record as a decision \
-             rather than as an oversight — those two look identical from the outside, which \
+             rather than as an oversight; those two look identical from the outside, which \
              is the whole reason this census exists.",
         ),
         sites: &[Site {
             file: "crates/biorouter/src/privacy/mod.rs",
             counts: c(0, 0, 1),
             kind: SiteKind::Guard,
-            what: "the `pub use` re-export — an import, and imports are not wiring",
+            what: "the `pub use` re-export, an import, and imports are not wiring",
         }],
     },
     Guard {
@@ -463,7 +463,7 @@ const REGISTRY: &[Guard] = &[
         status: Status::Unwired(
             "Superseded by `resolve_extension` (DR-26 / Task 47: affiliation rides the same \
              resolution, in the same call). Its one call site is inside `classify_extension`, \
-             which is itself unwired — a two-link dead chain, which is why it is filed here \
+             which is itself unwired: a two-link dead chain, which is why it is filed here \
              rather than as `WiredThrough`.",
         ),
         sites: &[
@@ -543,7 +543,7 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter/src/agents/agent.rs",
                 counts: c(4, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`Agent::update_provider` and the turn barrier — the reason a public \
+                what: "`Agent::update_provider` and the turn barrier, the reason a public \
                        caller cannot use `workspace_set_tools`' provider switch to read a \
                        private chat",
             },
@@ -570,7 +570,7 @@ const REGISTRY: &[Guard] = &[
     Guard {
         ident: "privacy_refusal",
         defined_in: "crates/biorouter/src/privacy/refusal.rs",
-        decides: "composes the refusal a tier gate returns — the one sentence every gate uses, \
+        decides: "composes the refusal a tier gate returns: the one sentence every gate uses, \
                   so a hand-rolled comparison is visible in review",
         status: Status::Wired,
         sites: &[
@@ -597,7 +597,7 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter/src/privacy/refusal.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`extension_enable_refusal`'s tier arm — the enable doors' one ask. \
+                what: "`extension_enable_refusal`'s tier arm, the enable doors' one ask. \
                        `workspace_extension.rs` used to ask it directly and \
                        `extension_manager_extension.rs` hand-wrote the same rule in its own \
                        words; both now go through the shared gate, which is what fixed the \
@@ -609,7 +609,7 @@ const REGISTRY: &[Guard] = &[
         ident: "extension_enable_refusal",
         defined_in: "crates/biorouter/src/privacy/refusal.rs",
         decides: "whether an extension may be ENABLED: the tier arm, then the affiliation arm, \
-                  then #42's operator pin — one clause order, shared by every agent-facing \
+                  then #42's operator pin: one clause order, shared by every agent-facing \
                   enable door, with both privacy arms above the one arm that speaks about this \
                   machine",
         status: Status::Wired,
@@ -618,7 +618,7 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter/src/agents/extension_manager_extension.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`check_enable_allowed` — `extensionmanager__manage_extensions \
+                what: "`check_enable_allowed`, i.e. `extensionmanager__manage_extensions \
                        {action:\"enable\"}`, which is now the gate plus a not-found branch",
             },
             Site {
@@ -636,7 +636,7 @@ const REGISTRY: &[Guard] = &[
         ident: "tier_refuses",
         defined_in: "crates/biorouter/src/privacy/refusal.rs",
         decides: "the boolean under `privacy_refusal`: private extension, non-private caller. \
-                  One rule, three renderings — the model's sentence, the typed HTTP body, and a \
+                  One rule, three renderings: the model's sentence, the typed HTTP body, and a \
                   bare `if`",
         status: Status::Wired,
         sites: &[
@@ -644,7 +644,7 @@ const REGISTRY: &[Guard] = &[
                 file: "crates/biorouter-server/src/routes/agent.rs",
                 counts: c(1, 0, 0),
                 kind: SiteKind::Guard,
-                what: "`POST /agent/add_extension` — the USER's enable door. It cannot call \
+                what: "`POST /agent/add_extension`, the USER's enable door. It cannot call \
                        `extension_enable_refusal` (its refusal is the typed \
                        `PrivateExtensionOverHttp` body, and a user proceeds past the other two \
                        arms), so it asks the predicate instead of re-typing it, which is what \
@@ -666,8 +666,8 @@ const REGISTRY: &[Guard] = &[
                   raises the price of a yes)",
         status: Status::Unwired(
             "OPERATOR DECISION OUTSTANDING, and the smallest of the three. The production \
-             grant route re-derives the same rule inline — `routes/agent.rs`: `if policy != \
-             MixingPolicy::Strict { return Ok(()); }` — instead of asking the predicate. The \
+             grant route re-derives the same rule inline (`routes/agent.rs`: `if policy != \
+             MixingPolicy::Strict { return Ok(()); }`) instead of asking the predicate. The \
              two agree today. That is the 'one table becomes seven slightly-different tables' \
              shape this campaign keeps citing, and the repair is one line at the route, not a \
              new mechanism.",
@@ -1159,7 +1159,7 @@ fn the_registry_covers_every_guard_module() {
         "a public function was added to a guard module and no census row classifies it: \
          {missing:?}\n\n\
          Every public function in these modules is a reach decision, so a new one is either \
-         wired (add a `Status::Wired` row naming its callers) or it is the next `may_read` — \
+         wired (add a `Status::Wired` row naming its callers) or it is the next `may_read`, \
          a correct, tested predicate that nothing calls. Deciding which is the point of the \
          build being red."
     );
@@ -1205,7 +1205,7 @@ fn every_privacy_guard_has_a_live_caller_or_a_reason() {
         drift.is_empty(),
         "the places a privacy guard is named have changed:\n\n{}\n\
          If a call was ADDED, add or grow the site row saying what it is. If a call was \
-         REMOVED, that is the defect this census exists to catch — a guard loses its last \
+         REMOVED, that is the defect this census exists to catch: a guard loses its last \
          caller and every behavioural test still passes, because the unit under test is still \
          correct.",
         drift.join("\n")
@@ -1277,7 +1277,7 @@ fn every_privacy_guard_has_a_live_caller_or_a_reason() {
                     failures.push(format!(
                         "  {} has no production caller and is not mentioned anywhere in the \
                          tree's test text either. Either it is dead code, or this census is \
-                         reading nothing — and those two look identical from a green build.",
+                         reading nothing, and those two look identical from a green build.",
                         guard.ident
                     ));
                 }

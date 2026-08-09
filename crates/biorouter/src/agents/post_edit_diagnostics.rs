@@ -196,7 +196,7 @@ pub fn frame_post_edit_diagnostics(files: &[FileDiagnostics]) -> String {
     let mut body = String::new();
     for file in files {
         body.push_str(&format!(
-            "`{}` — {} syntax issue(s) after your edit:\n",
+            "`{}`: {} syntax issue(s) after your edit:\n",
             file.path,
             file.lines.len()
         ));

@@ -30,7 +30,7 @@ use rmcp::model::{ErrorCode, ErrorData};
 /// including by Task 18's `check_enable_allowed` arm, which Task 18A rewrote to
 /// use it. Two audiences, one vocabulary.
 pub const ASK_THE_USER_TO_SWITCH: &str =
-    "ask the user to switch this chat to a private model first — in the desktop app under \
+    "ask the user to switch this chat to a private model first, in the desktop app under \
      Settings > Models, or with the model chip in the composer.";
 
 /// The substring that marks a refusal as *"this request carried no proof it came
@@ -135,7 +135,7 @@ pub enum PrivacyRefusal {
     #[error(
         "Switching this chat to a private model {}. The request to switch it to '{requested}' \
          did not come from the model picker, so the chat is unchanged and still on its current \
-         model. Do not retry — the same call will be refused again. If this task genuinely needs \
+         model. Do not retry; the same call will be refused again. If this task genuinely needs \
          a private model, stop and {}",
         USER_ACTION_REFUSAL_MARKER,
         ASK_THE_USER_TO_SWITCH
@@ -185,7 +185,7 @@ pub enum PrivacyRefusal {
     #[error(
         "This chat is running on a public model, so it cannot delegate to a private one: a \
          subagent may never reach further than the chat that started it. No subagent was \
-         started and this chat is unchanged. Do not retry — the same call will be refused \
+         started and this chat is unchanged. Do not retry; the same call will be refused \
          again. If this task genuinely needs a private model, stop and {}",
         ASK_THE_USER_TO_SWITCH
     )]
@@ -215,7 +215,7 @@ pub enum PrivacyRefusal {
          prompt is private-origin text, sending it would put that text on a model outside \
          the institution, and this request came from the assistant rather than from the \
          person at the keyboard. No subagent was started and this chat is unchanged. Do not \
-         retry — the same call will be refused again, and no setting, hook or permission mode \
+         retry; the same call will be refused again, and no setting, hook or permission mode \
          changes it. If the task really belongs on that model, tell the user so: they can \
          start a new chat on it and give it the task directly."
     )]
@@ -245,7 +245,7 @@ pub enum PrivacyRefusal {
     #[error(
         "An app's model is fixed when its session is created, so this app cannot be switched to \
          '{requested}', which is a more private model than the one it started on. Nothing was \
-         changed and the app is still on its current model. Do not retry — the same call will be \
+         changed and the app is still on its current model. Do not retry; the same call will be \
          refused again, and no manifest field, frame or setting changes it. If this app really \
          needs that model, it has to be *created* on it: tell the user, so they can set the app's \
          model and start a fresh session for it."
@@ -294,12 +294,12 @@ pub enum PrivacyRefusal {
          agreements, in either direction: one direction gives the child reach this chat does not \
          have (a local model is covered by nothing because nothing leaves the machine, so it \
          reaches everything private), and the other sends this chat's text somewhere it was not \
-         going. Compliance does not transfer — a model approved at one institution has no \
+         going. Compliance does not transfer: a model approved at one institution has no \
          permission over another's data. This narrows `settings.provider` rather than disabling \
          it: a subagent may still be moved to any model with the SAME affiliation (a UCSF chat \
          can move its child between `versa_azure` and `versa_bedrock`, which are both UCSF), but \
          not to one with a different affiliation (`llamacpp` runs on this machine and is covered \
-         by no institution). No subagent was started and this chat is unchanged. Do not retry — \
+         by no institution). No subagent was started and this chat is unchanged. Do not retry; \
          the same call will be refused again, and no setting, hook or permission mode changes it. \
          If the task really belongs on that model, tell the user: they can start a new chat on it \
          and give it the task directly."
@@ -457,8 +457,8 @@ pub fn turn_refusal(session: &Session) -> String {
 pub const fn chatrecall_load_refusal() -> &'static str {
     "This chat history is private: it was created under a private model, so only a private \
      model may read it. This session is running on a public model. Ask the user \
-     to switch this chat to a private model — Settings → Models, or the model chip in the \
-     composer — and try again. Do not retry with a different session id or through another tool; \
+     to switch this chat to a private model (Settings → Models, or the model chip in the \
+     composer) and try again. Do not retry with a different session id or through another tool; \
      the boundary is the same everywhere."
 }
 
@@ -490,11 +490,11 @@ pub const fn chatrecall_load_refusal() -> &'static str {
 /// loops).
 pub fn workspace_out_of_reach() -> String {
     format!(
-        "That conversation is private, or there is no conversation with that id — this chat is \
+        "That conversation is private, or there is no conversation with that id. This chat is \
          running on a public model, and the two answers are deliberately the same so that nothing \
          about the conversation is disclosed. Nothing was read and nothing was changed. Do not \
          retry: not with another view, not with a different session id, and not through another \
-         workspace tool or code execution — the boundary is the same everywhere. If this task \
+         workspace tool or code execution; the boundary is the same everywhere. If this task \
          genuinely needs that conversation, {ASK_THE_USER_TO_SWITCH}"
     )
 }
@@ -515,7 +515,7 @@ pub fn workspace_out_of_reach() -> String {
 pub fn chatrecall_cross_affiliation_refusal(warning: &str) -> String {
     format!(
         "{warning} This chat history was not read. Only the user can accept a \
-         cross-institutional risk, and only after it has been stated to them, so do not retry — \
+         cross-institutional risk, and only after it has been stated to them, so do not retry: \
          not with a different session id, not through a search, and not through code execution. \
          Tell the user what you were trying to do and ask them to switch this chat to a model \
          covered by that institution's agreements."
@@ -573,8 +573,8 @@ pub fn privacy_refusal(
         format!(
             "`{extension}` is a private extension: it reaches data held inside the institution, \
              so only a private model may call it. This session is running on a public model. \
-             Ask the user to switch this chat to a private model — Settings > Models, or the \
-             model chip in the composer — and then try again. This is a data-protection \
+             Ask the user to switch this chat to a private model (Settings > Models, or the \
+             model chip in the composer) and then try again. This is a data-protection \
              boundary set by the Biorouter marketplace, not something to work around: do not \
              retry with a different tool name, through code execution, or through a resource \
              read."
@@ -642,7 +642,7 @@ pub fn cross_affiliation_refusal(warning: &str, acceptable: Option<&str>) -> Err
         ErrorCode::INVALID_REQUEST,
         format!(
             "{warning} This call was not made. Only the user can accept a cross-institutional \
-             risk, and only after it has been stated to them, so do not retry — not with a \
+             risk, and only after it has been stated to them, so do not retry: not with a \
              different tool name, not through code execution, and not through a resource read. \
              Tell the user what you were trying to do and ask them to approve this specific flow \
              or to switch this chat to a model covered by the same institution's \
@@ -782,8 +782,8 @@ pub fn extension_enable_refusal(
                 format!(
                     "Extension '{extension}' is disabled in the Biorouter configuration \
                      (enabled: false). The operator turned it off deliberately, so do not \
-                     enable it yourself — not here, and not on another conversation. If it \
-                     is needed for this task, ask the user to re-enable it — in the desktop \
+                     enable it yourself, not here and not on another conversation. If it \
+                     is needed for this task, ask the user to re-enable it: in the desktop \
                      app under Settings > Extensions, with `biorouter configure`, or by \
                      editing the extension's entry in config.yaml."
                 ),
@@ -914,7 +914,7 @@ mod tests {
             .expect("a Stanford-covered model may not spawn a UCSF connector");
         assert!(
             !mismatch.message.contains("enabled: false"),
-            "the operator pin — an answer about this machine — reached a caller the \
+            "the operator pin, an answer about this machine, reached a caller the \
              affiliation arm refuses: {}",
             mismatch.message
         );
@@ -1123,7 +1123,7 @@ mod tests {
         // in that loop held against a refusal that named nothing at all.
         assert!(
             msg.contains("llamacpp"),
-            "the caller's own name may be named — and must be, or the loop above is vacuous"
+            "the caller's own name may be named, and must be, or the loop above is vacuous"
         );
 
         // The private extension set comes from the generator, not from a

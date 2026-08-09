@@ -406,7 +406,7 @@ mod tests {
         let peeked = manager.peek_agent(&session).await.expect("now live");
         assert!(
             Arc::ptr_eq(&created, &peeked),
-            "peek must hand back THE live agent, not an equivalent one — the \
+            "peek must hand back THE live agent, not an equivalent one: the \
              caller reads its `config.biorouter_mode`"
         );
     }
@@ -655,7 +655,7 @@ mod tests {
             .unwrap();
         assert!(
             Arc::ptr_eq(&placeholder, &after),
-            "the placeholder must resurface — `register_agent` deliberately does \
+            "the placeholder must resurface: `register_agent` deliberately does \
              not evict the LRU, because from in here it cannot tell a placeholder \
              from a consulted worker's own cached agent"
         );
@@ -763,7 +763,7 @@ mod tests {
         assert!(
             Arc::ptr_eq(&successor, &resolved),
             "a finished run's deregistration must only ever clear its OWN \
-             registration — after a stop it owns nothing, and the live successor \
+             registration; after a stop it owns nothing, and the live successor \
              has to survive both of its releases"
         );
     }
@@ -1028,7 +1028,7 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_secs(2), manager.pinned.write())
                 .await
                 .expect(
-                    "has_session must not hold the pin lock while it waits on the LRU — a \
+                    "has_session must not hold the pin lock while it waits on the LRU: a \
              `pinned -> sessions` nesting here deadlocks any future path that takes \
              them the other way round",
                 );

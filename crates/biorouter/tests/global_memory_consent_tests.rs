@@ -288,7 +288,7 @@ async fn a_shell_command_that_reads_the_global_store_is_refused() {
         assert_eq!(
             result.denied.len(),
             1,
-            "{command:?} must be refused outright — approving \"run this shell \
+            "{command:?} must be refused outright; approving \"run this shell \
              command\" is not consent to disclose a memory category, and there is \
              a call that asks by name"
         );

@@ -178,7 +178,7 @@ fn floor_is_nonempty_on_every_platform() {
             .count();
         assert!(
             eligible > 0,
-            "the catastrophic floor is empty on {platform:?} — platform-gating must never do this"
+            "the catastrophic floor is empty on {platform:?}; platform-gating must never do this"
         );
     }
     // And a canonical catastrophic command for each platform is denied.
@@ -218,7 +218,7 @@ fn alias_abbrev_encoding_variants_all_block() {
         assert_eq!(
             screen(&engine, Windows, PowerShell, v),
             Outcome::Deny("win_remove_item_root".to_string()),
-            "variant {v:?} must block — an alias/abbrev-blind rule would let it through"
+            "variant {v:?} must block; an alias/abbrev-blind rule would let it through"
         );
     }
 }

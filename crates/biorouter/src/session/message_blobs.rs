@@ -178,7 +178,7 @@ fn stub_text(uid: &str, payload: &str) -> String {
          This tool result was large ({bytes} bytes, {lines} lines) and is stored outside the \
          conversation, so it does not consume context on every turn. The full output is kept \
          with this session under blob id `{uid}`.\n\
-         Do NOT re-run the tool to see the rest — read it back with `platform__read_session_blob` \
+         Do NOT re-run the tool to see the rest; read it back with `platform__read_session_blob` \
          (`blob_id: \"{uid}\"`), optionally with `pattern` to grep it or `offset`/`limit` for a \
          line range.\n\
          \n--- preview: head and tail ---\n{preview}\n--- end of preview ---",

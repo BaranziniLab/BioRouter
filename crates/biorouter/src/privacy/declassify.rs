@@ -1004,7 +1004,7 @@ mod tests {
         let dialog = root.join("ui/desktop/src/components/sessions/DeclassifySessionDialog.tsx");
         assert!(
             dialog.is_file(),
-            "the audit reads {} — if that path is wrong the assertions below prove nothing",
+            "the audit reads {}; if that path is wrong the assertions below prove nothing",
             dialog.display()
         );
         let src = std::fs::read_to_string(&dialog).unwrap();
@@ -1284,7 +1284,7 @@ mod tests {
         let crates = root.join("crates");
         assert!(
             crates.is_dir(),
-            "the audit walks {} — if that path is wrong every assertion below passes \
+            "the audit walks {}; if that path is wrong every assertion below passes \
              for the wrong reason",
             crates.display()
         );

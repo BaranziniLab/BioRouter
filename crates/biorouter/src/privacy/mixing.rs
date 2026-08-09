@@ -111,7 +111,7 @@ pub const MIXING_POLICY_CONFIG_KEY: &str = "BIOROUTER_PRIVACY_MIXING_POLICY";
 /// changes nothing else. Copy that implied more would recruit users into turning
 /// off a control they meant to keep.
 pub const OPEN_DISCLOSURE: &str =
-    "Open: Biorouter stops asking before data crosses between institutions — those flows happen \
+    "Open: Biorouter stops asking before data crosses between institutions, so those flows happen \
      silently. Nothing else changes: private chats, private models and private extensions are \
      still separated from public ones exactly as before.";
 
@@ -926,7 +926,7 @@ mod tests {
             src.contains(MIXING_POLICY_CONFIG_KEY),
             "the renderer addresses the mixing policy by a different key from the one the \
              daemon answers for. That read resolves to `standard` for ever and NOTHING \
-             fails — re-mirror {MIXING_POLICY_CONFIG_KEY} into {}.",
+             fails. Re-mirror {MIXING_POLICY_CONFIG_KEY} into {}.",
             mirror.display()
         );
         for mode in ALL {
@@ -951,7 +951,7 @@ mod tests {
         assert!(
             switch_src.contains(super::super::PRIVACY_TIERS_CONFIG_KEY),
             "Settings > Privacy addresses the master switch by a different key from the one \
-             the daemon answers for — re-mirror it into {}.",
+             the daemon answers for. Re-mirror it into {}.",
             switch_mirror.display()
         );
     }
@@ -1087,7 +1087,7 @@ mod tests {
         assert!(
             loads_switch.len() >= 3,
             "the master switch's start-up load was found in {loads_switch:?}, which is \
-             fewer files than its own definition plus two hosts — the scan is broken, \
+             fewer files than its own definition plus two hosts, so the scan is broken, \
              not the tree"
         );
         assert_eq!(
@@ -1122,7 +1122,7 @@ mod tests {
         let crates = root.join("crates");
         assert!(
             crates.is_dir(),
-            "the audit walks {} — if that path is wrong every assertion below passes \
+            "the audit walks {}; if that path is wrong every assertion below passes \
              for the wrong reason",
             crates.display()
         );
@@ -1285,8 +1285,8 @@ mod tests {
                 .filter(|l| l.contains(concat!("install", "(")))
                 .count(),
             3,
-            "the private installer's definition plus its two sanctioned callers — the \
-             start-up load and `set_policy` — is three lines. A fourth is a third way \
+            "the private installer's definition plus its two sanctioned callers (the \
+             start-up load and `set_policy`) is three lines. A fourth is a third way \
              to move what every gate reads."
         );
     }

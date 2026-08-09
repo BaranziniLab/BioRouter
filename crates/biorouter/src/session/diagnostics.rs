@@ -136,7 +136,7 @@ impl UsageDiagnostics {
     pub fn to_text(&self) -> String {
         let mut out = String::new();
         out.push_str(&format!("Session: {}\n\n", self.session_id));
-        out.push_str("Last turn (context-window occupancy — NOT the billed total):\n");
+        out.push_str("Last turn (context-window occupancy, NOT the billed total):\n");
         out.push_str(&format!(
             "  total={}  input={}  output={}\n\n",
             opt_i32(self.last_turn_total_tokens),

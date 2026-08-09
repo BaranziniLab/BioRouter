@@ -433,13 +433,13 @@ pub fn failure_loop_nudge(
 fn failure_diagnosis(kind: Option<ToolErrorKind>) -> String {
     match kind {
         Some(kind) if kind.retryable() => format!(
-            " The failures are classified '{}' — retryable, so the tool itself may recover, \
+            " The failures are classified '{}', i.e. retryable, so the tool itself may recover, \
              but blind repetition is not a plan: back off, change the request, or take a \
              different route.",
             kind.as_str()
         ),
         Some(kind) => format!(
-            " The failures are classified '{}' — not retryable: {}",
+            " The failures are classified '{}', which is not retryable: {}",
             kind.as_str(),
             kind.guidance()
         ),
@@ -457,7 +457,7 @@ fn soft_failure_nudge(tool_name: &str, streak: u32, kind: Option<ToolErrorKind>)
     format!(
         "No progress: '{tool_name}' has now failed {streak} times in a row with the \
          same error. {repetition} Read what the \
-         error actually says and fix its cause, or take a different route — a different \
+         error actually says and fix its cause, or take a different route: a different \
          tool, a different input, or stopping to tell the user what is blocking you.{diagnosis}"
     )
 }
@@ -496,7 +496,7 @@ fn failure_stop_reason(tool_name: &str, streak: u32) -> String {
     format!(
         "Biorouter did not run this tool call: '{tool_name}' has already failed \
          {streak} times in a row with the same error, and the warnings changed nothing. \
-         The user did NOT decline it — this is an automatic no-progress guard. Repeating \
+         The user did NOT decline it; this is an automatic no-progress guard. Repeating \
          a call that keeps failing the same way cannot make progress. Fix the cause the \
          error names, use a different tool or approach, or stop and tell the user exactly \
          what is blocking you. (If you call '{tool_name}' again and it keeps failing the \
@@ -894,7 +894,7 @@ impl RepetitionInspector {
         format!(
             "Biorouter stopped this tool call: '{tool_name}' has now been called \
              with identical arguments {repeat_count} times in this user turn. The user did \
-             NOT decline it — this is an automatic repetition guard. Repeating the \
+             NOT decline it; this is an automatic repetition guard. Repeating the \
              same call will not produce a different result. Change approach: vary \
              the arguments, use a different tool, or explain what is blocking you \
              and stop."
@@ -921,7 +921,7 @@ impl RepetitionInspector {
              ids and whitespace are ignored). Small edits to the same call rarely \
              produce a different result. If you are deliberately iterating over \
              genuinely different inputs, ignore this and continue; otherwise stop \
-             tweaking and change approach — use a different tool, re-read what the \
+             tweaking and change approach: use a different tool, re-read what the \
              last result actually said, or explain what is blocking you."
         )
     }
@@ -930,7 +930,7 @@ impl RepetitionInspector {
         format!(
             "Biorouter stopped this tool call: '{tool_name}' has been called {run} \
              times in a row with near-identical arguments (only minor tweaks). The \
-             user did NOT decline it — this is an automatic loop guard. Change \
+             user did NOT decline it; this is an automatic loop guard. Change \
              approach: use a different tool, re-read the last result, or explain \
              what is blocking you and stop."
         )
@@ -943,7 +943,7 @@ impl RepetitionInspector {
              two calls (…the most recent being '{tool_name}'), each repeated with \
              the same arguments. An A/B/A/B cycle repeats work rather than making \
              progress. If you are polling for a result that genuinely changes over \
-             time, say so and continue; otherwise break the cycle — try a different \
+             time, say so and continue; otherwise break the cycle: try a different \
              approach or explain what is blocking you."
         )
     }
@@ -952,7 +952,7 @@ impl RepetitionInspector {
         format!(
             "Biorouter stopped this tool call: your last {run} tool calls alternate \
              between the same two calls (…the most recent being '{tool_name}'), each \
-             with unchanged arguments. The user did NOT decline it — this is an \
+             with unchanged arguments. The user did NOT decline it; this is an \
              automatic loop guard. Break the cycle: try a different approach, or \
              explain what is blocking you and stop."
         )
@@ -1351,7 +1351,7 @@ mod tests {
         assert_eq!(
             trailing_oscillation_run(&[a.clone(), b.clone(), a.clone()]),
             0,
-            "A/B/A is one and a half cycles — not enough"
+            "A/B/A is one and a half cycles, which is not enough"
         );
         assert_eq!(
             trailing_oscillation_run(&[a.clone(), b.clone(), a.clone(), b.clone()]),

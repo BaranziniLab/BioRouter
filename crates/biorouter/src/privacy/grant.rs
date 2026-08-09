@@ -436,7 +436,7 @@ mod tests {
         );
         assert!(
             !is_granted(&sm, &id, "ucsfomopagent", bound_to("mayo")).await,
-            "a grant is per model affiliation — re-binding invalidates it"
+            "a grant is per model affiliation, so re-binding invalidates it"
         );
         assert!(
             !is_granted(&sm, &id, "ucsfomopagent", Some(ModelAffiliation::Local)).await,
@@ -489,7 +489,7 @@ mod tests {
         );
         assert!(
             !is_granted(&sm, &id, "ucsfomopagent", spanning(&["ucsf", "stanford"])).await,
-            "a pair spanning two institutions must not inherit one half's approval — it \
+            "a pair spanning two institutions must not inherit one half's approval; it \
              discloses to an endpoint the user was never shown"
         );
 
@@ -642,7 +642,7 @@ mod tests {
             .unwrap();
         assert!(
             is_granted(&sm, &a, "ucsfomopagent", bound_to("stanford")).await,
-            "the ancestor walk did not run — a cycle test with no grant in it \
+            "the ancestor walk did not run: a cycle test with no grant in it \
              cannot tell that apart from a bounded walk that found nothing"
         );
         // …and a triple nobody granted is still not granted, so the assertion
@@ -785,7 +785,7 @@ mod tests {
         let crates = root.join("crates");
         assert!(
             crates.is_dir(),
-            "the audit walks {} — if that path is wrong every assertion below \
+            "the audit walks {}; if that path is wrong every assertion below \
              passes for the wrong reason",
             crates.display()
         );
@@ -958,7 +958,7 @@ mod tests {
         assert!(
             src.contains(GRANT_SCOPE_COPY),
             "the renderer states a different scope from the one the daemon records. The dialog \
-             that asks and the audit row that answers must not differ by a word — re-mirror \
+             that asks and the audit row that answers must not differ by a word. Re-mirror \
              GRANT_SCOPE_COPY into {}.",
             mirror.display()
         );

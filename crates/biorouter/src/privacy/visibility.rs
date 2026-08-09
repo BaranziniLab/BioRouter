@@ -290,7 +290,7 @@ mod tests {
                     .then(|| before.len() - "#[cfg(test)]".len())
             })
             .expect(
-                "workspace_extension.rs no longer has a `#[cfg(test)]` test module — this scan \
+                "workspace_extension.rs no longer has a `#[cfg(test)]` test module, so this scan \
                  cuts the file there, so it cannot run without one",
             );
         let (production, tests) = WORKSPACE.split_at(cut);

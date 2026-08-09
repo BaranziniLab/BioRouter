@@ -278,7 +278,7 @@ impl Provider for VersaBedrockProvider {
         ProviderMetadata::with_models(
             "versa_bedrock",
             "Versa API Bedrock",
-            "UCSF Anthropic models via Amazon Bedrock. Access key + secret only — endpoint and region are pre-configured.",
+            "UCSF Anthropic models via Amazon Bedrock. Access key + secret only; endpoint and region are pre-configured.",
             VERSA_BEDROCK_DEFAULT_MODEL,
             models,
             VERSA_BEDROCK_DOC_LINK,

@@ -133,7 +133,7 @@ pub(crate) fn gate_instruction(failures: &[String]) -> String {
     format!(
         "A done-ness check ran before your turn was allowed to finish and some \
          conditions are not yet met:\n\n{list}\n\n\
-         Fix the underlying problem in the current work, then finish your turn — \
+         Fix the underlying problem in the current work, then finish your turn. \
          the same checks re-run automatically and will let you stop once they all \
          pass. Do NOT restart from scratch, and do NOT claim the work is done \
          while a check is still failing; if a check cannot be satisfied, say so \
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn default_is_off_and_inert() {
         let cfg = DoneGateConfig::default();
-        assert!(!cfg.enabled, "BR-48 must default OFF — checks cost work");
+        assert!(!cfg.enabled, "BR-48 must default OFF: checks cost work");
         assert!(!cfg.is_active(), "no checks configured ⇒ inert");
     }
 

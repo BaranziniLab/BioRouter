@@ -113,7 +113,7 @@ impl Provider for SteeringProvider {
                 }
             }
             return Ok((
-                Message::assistant().with_text("Done — I used Python."),
+                Message::assistant().with_text("Done. I used Python."),
                 usage,
             ));
         }
@@ -496,7 +496,7 @@ async fn the_reply_loop_opens_the_acceptance_window_and_closes_it_at_exit() {
                     *self.accepted_turn.lock().unwrap() = Some(landed.as_str().to_string());
                 }
                 return Ok((
-                    Message::assistant().with_text("Done — I used Python."),
+                    Message::assistant().with_text("Done. I used Python."),
                     usage,
                 ));
             }

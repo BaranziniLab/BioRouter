@@ -171,7 +171,7 @@ impl ToolErrorKind {
                 "The call exceeded its deadline. One retry (or a narrower request) is reasonable."
             }
             Self::InvalidArgs => {
-                "The arguments were rejected. Fix the call itself — the same arguments will fail again."
+                "The arguments were rejected. Fix the call itself; the same arguments will fail again."
             }
             Self::Transient => {
                 "A dependency failed transiently. One retry is reasonable; do not keep hammering it."
