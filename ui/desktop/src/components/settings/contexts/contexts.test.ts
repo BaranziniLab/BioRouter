@@ -79,3 +79,53 @@ describe('Settings -> Chat section order', () => {
     expect(at('<ContextsSection />')).toBeLessThan(at('>App SDK<'));
   });
 });
+
+/**
+ * ⚠ **Three copies of this list exist and nothing asserted they agree.**
+ *
+ * Rust owns the truth: `BUILTIN_SKILLS` in `skills_extension.rs` plus
+ * `SOUL_SKILL_DIR` in `soul.rs`, combined by `is_builtin_skill_name`, which is
+ * what the seeder, the reset path and now the CLI count all use. The UI carries
+ * two more — `skillUtils.BUILTIN_SKILL_NAMES` (for the "Built-in" badge and for
+ * hiding Delete) and `CONTEXTS` here (for filtering and the Settings section).
+ *
+ * Drift between them is silent and asymmetric, which is what makes it worth a
+ * test: a name missing from `CONTEXTS` leaves a shipped skill sitting in the
+ * user's skill list and counted; a name missing from Rust means the seeder
+ * stops writing a file the UI still advertises.
+ *
+ * Reading the Rust source is the only way to check this from here, and it is
+ * the same approach `measures.test.ts` takes for a value only the source can
+ * settle.
+ */
+describe('the built-in skill list, across all three copies', () => {
+  const rustNames = () => {
+    const root = join(__dirname, '..', '..', '..', '..', '..', '..', 'crates', 'biorouter', 'src');
+    const skills = readFileSync(join(root, 'agents', 'skills_extension.rs'), 'utf8');
+    const soul = readFileSync(join(root, 'knowledge', 'soul.rs'), 'utf8');
+
+    // The `("<name>", include_str!(...))` pairs of BUILTIN_SKILLS.
+    const block = skills.slice(
+      skills.indexOf('BUILTIN_SKILLS'),
+      skills.indexOf('];', skills.indexOf('BUILTIN_SKILLS'))
+    );
+    // rustfmt breaks each pair across lines, so the name and `include_str!`
+    // are not adjacent. Matching on the name that PRECEDES an include_str! is
+    // what survives that, and it still cannot pick up an unrelated string.
+    const bundled = [...block.matchAll(/"([a-z0-9-]+)",\s*\n?\s*include_str!/g)].map((m) => m[1]);
+
+    const soulMatch = soul.match(/SOUL_SKILL_DIR:\s*&str\s*=\s*"([a-z0-9-]+)"/);
+    expect(soulMatch, 'SOUL_SKILL_DIR not found in soul.rs').not.toBeNull();
+
+    return [...bundled, soulMatch![1]].sort();
+  };
+
+  it('CONTEXTS names exactly what Rust ships', () => {
+    expect([...CONTEXT_IDS].sort()).toEqual(rustNames());
+  });
+
+  it('skillUtils agrees with Rust too', async () => {
+    const { BUILTIN_SKILL_NAMES } = await import('../../skills/skillUtils');
+    expect([...BUILTIN_SKILL_NAMES].sort()).toEqual(rustNames());
+  });
+});
