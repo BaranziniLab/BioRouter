@@ -828,7 +828,7 @@ describe('ArtifactViewer', { timeout: 20_000 }, () => {
     const expandButton = screen.getByRole('button', {
       name: /open active artifact outside preview/i,
     });
-    const closeButton = screen.getByRole('button', { name: /close artifact viewer/i });
+    const closeButton = screen.getByRole('button', { name: /close preview panel/i });
     expect(viewer).toHaveClass('no-drag');
     expect(expandButton).toHaveClass('no-drag');
     expect(closeButton).toHaveClass('no-drag');

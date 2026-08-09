@@ -59,7 +59,7 @@ function userFacingMessage(error: ChatTurnErrorData): string {
   if (decoded) return decoded;
 
   if (isBackendUnreachable(error)) {
-    return "BioRouter's backend is restarting or unreachable. Your conversation is safe — retry in a moment, or check that the app is running.";
+    return "Biorouter's backend is restarting or unreachable. Your conversation is safe — retry in a moment, or check that the app is running.";
   }
 
   if (isMidStreamDrop(error)) {

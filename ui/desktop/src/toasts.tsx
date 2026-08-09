@@ -310,7 +310,7 @@ function ToastErrorContent({
             variant="secondary"
             onClick={() => startNewSession(getInitialWorkingDir(), recoverHints, setView)}
           >
-            Ask biorouter
+            Ask Biorouter
           </Button>
         )}
         {traceback && (

@@ -110,7 +110,7 @@ function ExtensionLoadReport({
                         variant="secondary"
                         onClick={() => onAskBiorouter(ext.recoverHints!)}
                       >
-                        Ask biorouter
+                        Ask Biorouter
                       </Button>
                     )}
                     <Button

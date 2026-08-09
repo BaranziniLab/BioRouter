@@ -144,7 +144,7 @@ export default function TunnelSection() {
             <div className="flex items-start gap-2 p-2 bg-background-info/10 border border-border-info/40 rounded">
               <Info className="h-4 w-4 text-text-info flex-shrink-0 mt-0.5" />
               <div className="text-xs text-text-info">
-                <strong>Preview feature:</strong> Enable remote access to biorouter from mobile
+                <strong>Preview feature:</strong> Enable remote access to Biorouter from mobile
                 devices using secure tunneling.{' '}
                 <a
                   href={IOS_APP_STORE_URL}
@@ -229,7 +229,7 @@ export default function TunnelSection() {
               </div>
 
               <div className="text-center text-sm text-text-muted">
-                Scan this QR code with the biorouter mobile app. Do not share this code with anyone
+                Scan this QR code with the Biorouter mobile app. Do not share this code with anyone
                 else as it is for your personal access.
               </div>
 
@@ -318,7 +318,7 @@ export default function TunnelSection() {
             </div>
 
             <div className="text-center text-sm text-text-muted">
-              Scan this QR code with your iPhone camera to install the biorouter mobile app from the
+              Scan this QR code with your iPhone camera to install the Biorouter mobile app from the
               App Store
             </div>
 

@@ -804,7 +804,7 @@ export default function ArtifactViewer({
           type="button"
           onClick={onClose}
           className={cn(HEADER_ACTION_BUTTON_CLASS, 'relative z-50 shrink-0')}
-          aria-label="Close artifact viewer"
+          aria-label="Close preview panel"
           title="Close preview panel"
         >
           <X className="h-4 w-4" aria-hidden="true" />

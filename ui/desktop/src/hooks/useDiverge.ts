@@ -23,7 +23,7 @@ export const PRIVATE_COPY_TOAST_TITLE = "Can't branch this private chat";
 export const PRIVATE_COPY_TOAST_MSG =
   'Branching a private chat creates another chat on the same private model, so only you can ' +
   'do it — and this backend could not confirm the request came from you. Nothing was branched ' +
-  'and this chat is unchanged. If you started the backend yourself, branch from a BioRouter ' +
+  'and this chat is unchanged. If you started the backend yourself, branch from a Biorouter ' +
   'window instead.';
 
 export interface UseDivergeResult {

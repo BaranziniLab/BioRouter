@@ -46,8 +46,8 @@ export default function MessageDivergeLink({
       onClick={handleDiverge}
       disabled={busy}
       icon={<GitBranch />}
-      aria-label="Diverge conversation into a new chat"
-      title="Branch this conversation into a new window (keeps full history)"
+      aria-label="Branch this chat into a new window"
+      title="Branch this chat into a new window (keeps full history)"
     >
       {busy ? 'Diverging…' : 'Diverge'}
     </MessageMetaAction>

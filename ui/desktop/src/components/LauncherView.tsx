@@ -33,7 +33,7 @@ export default function LauncherView() {
           onChange={(e) => setQuery(e.target.value)}
           onKeyDown={handleKeyDown}
           className="w-full h-full bg-transparent text-text-default text-xl px-6 placeholder-text-muted"
-          placeholder="Ask biorouter anything..."
+          placeholder="Ask Biorouter anything..."
           autoFocus
         />
       </form>
