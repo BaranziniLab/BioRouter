@@ -59,8 +59,19 @@ enum Commands {
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+/// ⚠ **Not `#[tokio::main]`.** That macro builds a runtime with tokio's default
+/// worker stack, which is `std::thread`'s 2 MiB, and a `workspace__subagent`
+/// spawn polls the CHILD's `Agent::reply` inline on the PARENT's stack. Two
+/// agent state machines on one 2 MiB worker overflowed it: every delegation
+/// took this daemon down about 2.3 s in, and Electron does not respawn it, so
+/// the app read "Backend disconnected" and never came back.
+///
+/// See `biorouter::execution::runtime` for the measurement and the size.
+fn main() -> anyhow::Result<()> {
+    biorouter::execution::runtime::build_agent_runtime()?.block_on(async_main())
+}
+
+async fn async_main() -> anyhow::Result<()> {
     // BR-69: if this process was re-exec'd as the shell-sandbox helper (hidden
     // `__br-sandbox` marker, Linux only), apply the in-process Landlock/seccomp
     // restrictions and `execve` the target program. Never returns in that case;

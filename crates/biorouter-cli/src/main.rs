@@ -10,8 +10,16 @@ use std::process::ExitCode;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-#[tokio::main]
-async fn main() -> ExitCode {
+/// ⚠ Not `#[tokio::main]`: the CLI hosts agent turns too, and a subagent spawn
+/// polls the child's reply on the parent's stack. See
+/// `biorouter::execution::runtime`.
+fn main() -> ExitCode {
+    biorouter::execution::runtime::build_agent_runtime()
+        .expect("build the agent runtime")
+        .block_on(async_main())
+}
+
+async fn async_main() -> ExitCode {
     // BR-69: if this process was re-exec'd as the shell-sandbox helper (hidden
     // `__br-sandbox` marker, Linux only), apply the in-process Landlock/seccomp
     // restrictions and `execve` the target program. Never returns in that case;
