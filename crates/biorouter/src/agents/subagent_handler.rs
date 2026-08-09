@@ -178,9 +178,24 @@ const WORKSPACE_EXTENSION_NAME: &str = "workspace";
 fn strip_workspace_extension(
     extensions: Vec<crate::agents::extension::ExtensionConfig>,
 ) -> Vec<crate::agents::extension::ExtensionConfig> {
+    // ⚠ **Case-INSENSITIVE, because the two spellings are both real.** The
+    // registry key is `workspace`; the name the daemon puts in a config entry
+    // and sends to the GUI is `Workspace` (`workspace_extension::EXTENSION_NAME`).
+    // A `!=` comparison therefore missed the entry that actually appears in an
+    // inherited list, and a measured child was advertised seven workspace tools
+    // including `workspace_read_conversation` and `workspace_send_prompt`.
+    //
+    // The security boundary held: dispatch refuses them for a SubAgent whatever
+    // is advertised. But the child was invited to call tools that always fail
+    // and spent a turn doing it, and the tab header reported a grant the child
+    // did not hold.
+    //
+    // `has_non_injected_extensions` already compares this same name with
+    // `eq_ignore_ascii_case`, so the two were disagreeing about one word. They
+    // agree now.
     extensions
         .into_iter()
-        .filter(|e| e.name() != WORKSPACE_EXTENSION_NAME)
+        .filter(|e| !e.name().eq_ignore_ascii_case(WORKSPACE_EXTENSION_NAME))
         .collect()
 }
 
@@ -892,6 +907,42 @@ mod tests {
     /// The failing member is an unknown **platform** name: `add_extension`
     /// rejects it with `Unknown platform extension` before any process is
     /// spawned, so the failure is deterministic and costs nothing.
+    /// ⚠ **The daemon spells it `Workspace`, the registry spells it `workspace`.**
+    ///
+    /// Found by a live stress pass, not by a test: a real child was advertised
+    /// seven workspace tools because this filter compared with `!=` against the
+    /// name that actually appears in an inherited config list. Dispatch still
+    /// refused them, so the boundary held, but the child was invited to call
+    /// tools that always fail and the tab header claimed a grant it did not
+    /// hold.
+    #[test]
+    fn the_workspace_strip_ignores_case_because_both_spellings_are_real() {
+        use crate::agents::extension::ExtensionConfig;
+        let entry = |name: &str| ExtensionConfig::Platform {
+            name: name.to_string(),
+            description: String::new(),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        };
+
+        for spelling in ["workspace", "Workspace", "WORKSPACE"] {
+            let kept = strip_workspace_extension(vec![entry(spelling), entry("todo")]);
+            assert_eq!(
+                kept.len(),
+                1,
+                "{spelling} should have been stripped, got {:?}",
+                kept.iter()
+                    .map(|e| e.name().to_string())
+                    .collect::<Vec<_>>()
+            );
+            assert_eq!(kept[0].name(), "todo");
+        }
+
+        // And it must not strip something that merely contains the word.
+        let kept = strip_workspace_extension(vec![entry("workspace-notes")]);
+        assert_eq!(kept.len(), 1, "only the exact name is the workspace grant");
+    }
+
     #[tokio::test]
     async fn the_recorded_grant_is_what_loaded_not_what_was_requested() {
         let platform = |name: &str| crate::agents::extension::ExtensionConfig::Platform {
