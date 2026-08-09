@@ -83,86 +83,34 @@ const chatrecallEntry = (enabled: boolean) => ({
   enabled,
 });
 
-describe('ExtensionsSection chatrecall suggestion', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    resetChatrecallSuggestionForTests();
-    mocks.extensionsList = [workspaceEntry(false), chatrecallEntry(false)];
-  });
-
-  it('suggests chatrecall once when Workspace Control is switched on', async () => {
-    render(<ExtensionsSection hideButtons />);
-
-    const toggle = await screen.findByRole('switch', { name: WORKSPACE_SWITCH });
-    fireEvent.click(toggle);
-    await waitFor(() => expect(mocks.success).toHaveBeenCalledTimes(1));
-    expect(mocks.toggleExtensionDefault).toHaveBeenCalledWith(
-      expect.objectContaining({ toggle: 'toggleOn' })
-    );
-
-    // …and never again. `ExtensionItem` disables its switch for the duration of
-    // the in-flight toggle (`isToggling`), so each further click must wait for
-    // the previous one to settle — clicking three times in a row would fire
-    // exactly one event and prove nothing.
-    await waitFor(() => expect(toggle).not.toBeDisabled());
-    fireEvent.click(toggle);
-    await waitFor(() => expect(mocks.toggleExtensionDefault).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(toggle).not.toBeDisabled());
-    fireEvent.click(toggle);
-    await waitFor(() => expect(mocks.toggleExtensionDefault).toHaveBeenCalledTimes(3));
-
-    expect(mocks.success).toHaveBeenCalledTimes(1);
-  });
-
-  // The suggestion is fired once per install and the flag is burned the moment it
-  // is shown, so a 3s auto-close (`toastSuccess`'s default) would let decision
-  // 14's single prompt expire before a 150-character message can be read — and it
-  // never comes back. It must wait to be dismissed.
-  it('shows the suggestion as a toast that does not auto-close', async () => {
-    render(<ExtensionsSection hideButtons />);
-
-    fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
-    await waitFor(() => expect(mocks.success).toHaveBeenCalledTimes(1));
-
-    expect(mocks.success).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Workspace Control enabled' }),
-      expect.objectContaining({ autoClose: false })
-    );
-  });
-
-  it('does not suggest chatrecall when it is already enabled', async () => {
-    mocks.extensionsList = [workspaceEntry(false), chatrecallEntry(true)];
-    render(<ExtensionsSection hideButtons />);
-
-    fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
-    await waitFor(() => expect(mocks.toggleExtensionDefault).toHaveBeenCalledTimes(1));
-    expect(mocks.success).not.toHaveBeenCalled();
-  });
-
-  it('does not suggest chatrecall when Workspace Control is switched OFF', async () => {
+/**
+ * ⚠ **The chatrecall-suggestion suite was retired here, not weakened** (#76).
+ *
+ * Decision 14's prompt fired when the user turned Workspace Control ON **from
+ * the Extensions tab**. Workspace is now a built-in capability: it is filtered
+ * out of this surface entirely (`ExtensionsSection.tsx` drops anything
+ * `isCapabilityExtension`), and it ships enabled. So the trigger this suite
+ * drove — `findByRole('switch', { name: 'Toggle Workspace extension' })` —
+ * cannot exist here, and every test in it was asserting against a control that
+ * no longer renders.
+ *
+ * What replaces it is the assertion that matters now: Workspace must NOT appear
+ * on this screen. That is the actual requirement, and it is the one that would
+ * regress if someone removed the capability key.
+ *
+ * ⚠ The suggestion itself still needs a home. Its toast lives in
+ * `ExtensionsSection.tsx` on a branch that is now unreachable, and re-homing it
+ * on the Capabilities toggle is tracked on #76 — it is a product question
+ * (a default-on capability arguably has nothing to suggest at enable time)
+ * rather than a mechanical move, so it is not being decided by a test edit.
+ */
+describe('ExtensionsSection — Workspace is a capability, not an extension', () => {
+  it('does not render Workspace among the toggleable extensions', async () => {
     mocks.extensionsList = [workspaceEntry(true), chatrecallEntry(false)];
-    render(<ExtensionsSection hideButtons />);
+    render(<ExtensionsSection />);
 
-    fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
     await waitFor(() =>
-      expect(mocks.toggleExtensionDefault).toHaveBeenCalledWith(
-        expect.objectContaining({ toggle: 'toggleOff' })
-      )
+      expect(screen.queryByRole('switch', { name: /Toggle Workspace/i })).not.toBeInTheDocument()
     );
-    expect(mocks.success).not.toHaveBeenCalled();
-  });
-
-  // The config keys are the other shape this seam sees — `.brxt` and custom
-  // entries carry the key itself — so both must keep working. Pinning only the
-  // display names would just move the blind spot.
-  it('still works when the entries carry the config keys instead', async () => {
-    mocks.extensionsList = [
-      { type: 'platform', name: 'workspace', description: 'Workspace Control', enabled: false },
-      { type: 'platform', name: 'chatrecall', description: 'Recall chats', enabled: false },
-    ];
-    render(<ExtensionsSection hideButtons />);
-
-    fireEvent.click(await screen.findByRole('switch', { name: WORKSPACE_SWITCH }));
-    await waitFor(() => expect(mocks.success).toHaveBeenCalledTimes(1));
   });
 });

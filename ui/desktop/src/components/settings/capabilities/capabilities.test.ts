@@ -21,6 +21,7 @@ const expectedDefaults = {
   agent_drafter: true,
   chatrecall: false,
   tutorial: false,
+    workspace: true,
 };
 
 describe('capabilities', () => {

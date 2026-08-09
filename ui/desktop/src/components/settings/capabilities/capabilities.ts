@@ -91,6 +91,25 @@ export const CAPABILITIES: CapabilityMeta[] = [
     description: 'Access interactive tutorials and step-by-step guides.',
     defaultEnabled: false,
   },
+  {
+    /*
+     * ⚠ Workspace is a capability, not an extension (#76).
+     *
+     * This one entry is the whole UI half of that change. The Extensions
+     * tab and the composer popup both filter on `isCapabilityExtension`,
+     * and the chip count, the bulk Enable/Disable counts and the load
+     * toast's denominator all derive from the same predicate, so adding
+     * the key here removes it from every one of them at once.
+     *
+     * Lowercase `workspace`: the daemon sends `name: "Workspace"` and the
+     * match runs through `nameToKey`.
+     */
+    key: 'workspace',
+    label: 'Workspace Control',
+    description:
+      'Work across several chats: open, read and steer other conversations, and run subagents in visible tabs.',
+    defaultEnabled: true,
+  },
 ];
 
 /** Set of normalized capability keys, for quick membership checks. */
@@ -128,4 +147,20 @@ export function shouldDefaultEnableAgentDrafter(extension: {
   enabled: boolean;
 }): boolean {
   return !extension.enabled && nameToKey(extension.name) === 'agent_drafter';
+}
+
+/**
+ * ⚠ **Without this the Rust default reaches almost nobody** (#76).
+ *
+ * `default_enabled` is read only when `config.yaml` has no stored entry. But
+ * saving any extension persists the WHOLE injected map, so the first time a
+ * user toggles anything, `workspace: {enabled: false}` is written and honoured
+ * from then on. Flipping the Rust flag alone would change behaviour for fresh
+ * installs only.
+ */
+export function shouldDefaultEnableWorkspace(extension: {
+  name: string;
+  enabled: boolean;
+}): boolean {
+  return !extension.enabled && nameToKey(extension.name) === 'workspace';
 }

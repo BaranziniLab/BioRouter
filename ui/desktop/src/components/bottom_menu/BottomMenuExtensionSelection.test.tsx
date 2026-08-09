@@ -85,10 +85,10 @@ vi.mock('../ConfigContext', () => ({
       },
       {
         type: 'stdio',
-        name: 'workspace',
+        name: 'notetaker',
         display_name: 'Workspace',
         description: 'User-installed extension',
-        cmd: 'workspace',
+        cmd: 'notetaker',
         args: [],
         enabled: true,
       },
@@ -188,7 +188,7 @@ describe('BottomMenuExtensionSelection', () => {
           { type: 'platform', name: 'code_execution' },
           { type: 'platform', name: 'chatrecall' },
           { type: 'stdio', name: 'example' },
-          { type: 'stdio', name: 'workspace' },
+          { type: 'stdio', name: 'notetaker' },
         ],
       },
     } as never);
@@ -256,7 +256,7 @@ describe('BottomMenuExtensionSelection', () => {
       data: {
         extensions: [
           { type: 'builtin', name: 'autovisualiser' },
-          { type: 'stdio', name: 'workspace' },
+          { type: 'stdio', name: 'notetaker' },
         ],
       },
     } as never);
@@ -335,7 +335,7 @@ describe('BottomMenuExtensionSelection', () => {
     expect(await screen.findAllByRole('menuitemcheckbox')).toHaveLength(3);
     expect(screen.getByText('example')).toBeInTheDocument();
     expect(screen.getByText('spoke')).toBeInTheDocument();
-    expect(screen.getByText('workspace')).toBeInTheDocument();
+    expect(screen.getByText('notetaker')).toBeInTheDocument();
     expect(screen.queryByText('autovisualiser')).not.toBeInTheDocument();
     expect(screen.queryByText('code_execution')).not.toBeInTheDocument();
     expect(screen.queryByText('chatrecall')).not.toBeInTheDocument();

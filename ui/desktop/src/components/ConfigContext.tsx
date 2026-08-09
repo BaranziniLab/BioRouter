@@ -23,6 +23,7 @@ import { userActionHeaders } from '../utils/userAction';
 import {
   isCapabilityDefaultEnabled,
   shouldDefaultEnableAgentDrafter,
+  shouldDefaultEnableWorkspace,
   shouldDefaultEnablePromotedCapability,
 } from './settings/capabilities/capabilities';
 import { PRIVACY_TIERS_KEY, privacyTiersEnabledFromConfig } from './settings/privacy/privacyTiers';
@@ -376,6 +377,15 @@ export const ConfigProvider: React.FC<ConfigProviderProps> = ({ children }) => {
           {
             flag: 'biorouter.capabilities.agentDrafterDefault.v3',
             shouldEnable: shouldDefaultEnableAgentDrafter,
+          },
+          {
+            // #76. Required, not optional: the Rust `default_enabled` is only
+            // consulted when config.yaml has no stored entry, and saving any
+            // extension persists the whole injected map — so most installs
+            // already carry `workspace: {enabled: false}` and would never see
+            // the new default.
+            flag: 'biorouter.capabilities.workspaceDefault.v4',
+            shouldEnable: shouldDefaultEnableWorkspace,
           },
         ];
 

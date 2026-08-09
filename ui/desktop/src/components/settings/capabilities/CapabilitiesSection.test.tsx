@@ -30,7 +30,7 @@ describe('CapabilitiesSection', () => {
   it('shows all capabilities and uses their declared defaults while config loads', () => {
     render(<CapabilitiesSection />);
 
-    expect(screen.getAllByRole('switch')).toHaveLength(12);
+    expect(screen.getAllByRole('switch')).toHaveLength(13);
     expect(screen.getByRole('switch', { name: 'Toggle Auto Visualiser capability' })).toBeChecked();
     expect(screen.getByRole('switch', { name: 'Toggle Code Execution capability' })).toBeChecked();
     expect(
