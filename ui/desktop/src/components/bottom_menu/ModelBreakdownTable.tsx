@@ -45,7 +45,7 @@ export function ModelBreakdownTable({ rows, currency = '$' }: ModelBreakdownTabl
   return (
     <table className="w-full border-collapse text-left text-xs" data-testid="model-breakdown-table">
       <thead>
-        <tr className="h-8 border-b border-border-subtle text-[11px] uppercase tracking-wider text-text-muted">
+        <tr className="h-8 border-b border-border-subtle text-caps text-text-muted">
           <th className="pr-3 font-medium">Model</th>
           <th className="px-2 text-right font-medium">Turns</th>
           <th className="px-2 text-right font-medium">Fresh in</th>

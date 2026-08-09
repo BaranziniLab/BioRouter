@@ -458,7 +458,7 @@ export const BottomMenuExtensionSelection = ({
             placeholder="Search extensions..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 text-[13px]"
+            className="h-8"
             autoFocus
           />
         </div>
@@ -472,7 +472,7 @@ export const BottomMenuExtensionSelection = ({
               type="button"
               onClick={handleBulkToggle}
               disabled={bulkInFlight || pendingExtensionNames.size > 0}
-              className="mr-2 shrink-0 cursor-pointer rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-medium hover:text-text-default disabled:cursor-not-allowed disabled:opacity-50"
+              className="mr-2 shrink-0 cursor-pointer rounded-sm px-1.5 py-0.5 text-chip text-text-muted transition-colors duration-[var(--motion-fast)] hover:bg-background-medium hover:text-text-default disabled:cursor-not-allowed disabled:opacity-50"
             >
               {visibleEnabledCount === 0
                 ? `Enable all (${toggleableExtensions.length})`
@@ -502,7 +502,7 @@ export const BottomMenuExtensionSelection = ({
            * repair — it would make disabling an extension in one chat disable it
            * in every other.
            */
-          <div className="px-3 pb-1.5 pt-0.5 text-[11px] leading-4 text-text-muted">
+          <div className="px-3 pb-1.5 pt-0.5 text-supporting text-text-muted">
             {isHubView
               ? 'Applies to the next chat you start. Settings → Extensions sets the default for all new chats.'
               : 'Applies to this chat. Settings → Extensions sets the default for new chats.'}
@@ -510,7 +510,7 @@ export const BottomMenuExtensionSelection = ({
         )}
         <div className="max-h-[400px] overflow-y-auto">
           {sortedExtensions.length === 0 ? (
-            <div className="px-3 py-4 text-center text-[13px] leading-[18px] text-text-muted">
+            <div className="px-3 py-4 text-center text-secondary text-text-muted">
               {searchQuery ? 'No extensions found' : 'No extensions available'}
             </div>
           ) : (
@@ -558,7 +558,7 @@ export const BottomMenuExtensionSelection = ({
                       {isBuiltInExtension(ext) && <BuiltInBadge />}
                     </div>
                     {pairingRefused && (
-                      <div className="text-[11px] leading-4 text-text-muted">
+                      <div className="text-supporting text-text-muted">
                         Unavailable in this chat (public model)
                       </div>
                     )}

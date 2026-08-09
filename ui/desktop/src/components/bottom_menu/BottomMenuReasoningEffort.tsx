@@ -107,10 +107,10 @@ export function BottomMenuReasoningEffort() {
           Reasoning effort: {REASONING_EFFORT_LABELS[effort]}
         </TooltipContent>
       </Tooltip>
-      <PopoverContent side="top" align="center" className="w-64 p-0 font-sans">
+      <PopoverContent side="top" align="center" className="w-64 p-0">
         <div className="border-b border-border-subtle px-3 py-2.5">
-          <div className="text-sm font-medium text-text-default">Reasoning effort</div>
-          <div className="mt-0.5 text-[11px] leading-4 text-text-muted">
+          <div className="text-label text-text-default">Reasoning effort</div>
+          <div className="mt-0.5 text-supporting text-text-muted">
             How hard to think on the next message. Also settable with /effort.
           </div>
         </div>
@@ -130,10 +130,10 @@ export function BottomMenuReasoningEffort() {
                 className="h-auto w-full items-start justify-start gap-2 rounded-md px-2 py-1.5 text-left whitespace-normal hover:bg-background-medium/40"
               >
                 <div className="min-w-0 flex-1">
-                  <div className="text-xs font-medium text-text-default">
+                  <div className="font-medium text-text-default">
                     {REASONING_EFFORT_LABELS[level]}
                   </div>
-                  <div className="text-[10px] leading-3.5 text-text-muted">
+                  <div className="text-supporting text-text-muted">
                     {REASONING_EFFORT_DESCRIPTIONS[level]}
                   </div>
                 </div>

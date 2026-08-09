@@ -96,13 +96,26 @@ describe('BottomMenuKnowledgeSelection', () => {
     fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false });
 
     const menu = await screen.findByRole('menu');
-    expect(menu).toHaveClass('w-64', 'font-sans');
-    expect(screen.getByPlaceholderText('search knowledge bases...')).toHaveClass('h-8', 'text-sm');
+    // ⚠ Width only. `font-sans` used to be pinned here and on two of the five
+    // popups, absent on the other three — a no-op today (`--font-sans` is
+    // already the body font) but a latent divergence that read as deliberate
+    // intent which was not there. The search input carries no type class
+    // either: the Input primitive already owns it, and a call site restating
+    // the size is how the four popups on this rail drifted to three different
+    // row sizes in the first place.
+    expect(menu).toHaveClass('w-64');
+    expect(menu).not.toHaveClass('font-sans');
+    expect(screen.getByPlaceholderText('search knowledge bases...')).toHaveClass('h-8');
     expect(screen.queryByText('Chat knowledge discovery')).not.toBeInTheDocument();
 
     const soul = screen.getByRole('menuitemcheckbox', { name: /Soul/ });
     expect(soul).toHaveClass('px-2', 'py-2');
-    expect(screen.getByText('Soul')).toHaveClass('text-sm', 'font-medium');
+    // ⚠ No size class on the row label. It inherits `text-secondary` (13/18)
+    // from the shared menu row, which is the declared token for menu rows.
+    // Pinning `text-sm` here is what held this popup a step larger than the
+    // Extensions popup beside it on the same rail.
+    expect(screen.getByText('Soul')).toHaveClass('font-medium');
+    expect(screen.getByText('Soul')).not.toHaveClass('text-sm');
 
     fireEvent.change(screen.getByPlaceholderText('search knowledge bases...'), {
       target: { value: 'brain' },

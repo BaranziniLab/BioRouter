@@ -91,7 +91,7 @@ export function BottomMenuKnowledgeSelection() {
       <DropdownMenuContent
         side="top"
         align="center"
-        className="w-64 font-sans"
+        className="w-64"
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
         <div className="p-2">
@@ -100,14 +100,14 @@ export function BottomMenuKnowledgeSelection() {
             placeholder="search knowledge bases..."
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
-            className="h-8 text-sm"
+            className="h-8"
             autoFocus
           />
           {filteredBases.length > 0 && (
             <button
               type="button"
               onClick={handleBulkToggle}
-              className="mt-1.5 cursor-pointer text-xs text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
+              className="mt-1.5 cursor-pointer text-supporting text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
             >
               {filteredVisibleCount === 0
                 ? `Show all (${filteredBases.length})`
@@ -117,7 +117,7 @@ export function BottomMenuKnowledgeSelection() {
         </div>
         <div className="max-h-[400px] overflow-y-auto">
           {filteredBases.length === 0 ? (
-            <div className="px-2 py-4 text-center text-sm text-text-default/70">
+            <div className="px-3 py-4 text-center text-secondary text-text-muted">
               {searchQuery ? 'no knowledge bases found' : 'no knowledge bases available'}
             </div>
           ) : (
@@ -133,7 +133,7 @@ export function BottomMenuKnowledgeSelection() {
                   className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
                 >
                   <div className="flex min-w-0 items-center gap-1.5 pr-2">
-                    <div className="truncate text-sm font-medium text-text-default">
+                    <div className="truncate font-medium text-text-default">
                       {base.name}
                     </div>
                     {isBuiltinKnowledgeBase(base.id) && (

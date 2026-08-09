@@ -246,14 +246,14 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
             placeholder="search skills..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="h-8 text-sm"
+            className="h-8"
             autoFocus
           />
           {sortedEntries.length > 0 && (
             <button
               type="button"
               onClick={handleBulkToggle}
-              className="mt-1.5 cursor-pointer text-xs text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
+              className="mt-1.5 cursor-pointer text-supporting text-text-default/70 underline-offset-2 hover:text-text-default hover:underline"
             >
               {visibleEnabledCount === 0
                 ? `Enable all (${sortedEntries.length})`
@@ -263,7 +263,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         </div>
         <div className="max-h-[400px] overflow-y-auto">
           {sortedEntries.length === 0 ? (
-            <div className="px-2 py-4 text-center text-sm text-text-default/70">
+            <div className="px-3 py-4 text-center text-secondary text-text-muted">
               {searchQuery ? 'no skills found' : 'no skills available'}
             </div>
           ) : (
@@ -281,7 +281,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
                     title={skill.description || skill.name}
                   >
                     <div className="flex items-center gap-1.5 min-w-0 pr-2">
-                      <div className="text-sm font-medium text-text-default truncate">
+                      <div className="font-medium text-text-default truncate">
                         {skill.name}
                       </div>
                       {isBuiltinSkill(skill.name) && <BuiltInBadge />}
@@ -307,11 +307,11 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
                   title={`Bundle: ${subNames}`}
                 >
                   <div className="flex-1 min-w-0 pr-2">
-                    <div className="text-sm font-medium text-text-default">
+                    <div className="font-medium text-text-default">
                       {bundle.bundleName}
-                      <span className="ml-1 text-[11px] text-text-subtle font-normal">bundle</span>
+                      <span className="ml-1 text-supporting text-text-subtle">bundle</span>
                     </div>
-                    <div className="text-[11px] text-text-subtle truncate">{subNames}</div>
+                    <div className="text-supporting text-text-subtle truncate">{subNames}</div>
                   </div>
                   <div className="pointer-events-none mt-0.5 flex-shrink-0" aria-hidden="true">
                     <Switch checked={enabled} variant="mono" tabIndex={-1} aria-hidden="true" />
