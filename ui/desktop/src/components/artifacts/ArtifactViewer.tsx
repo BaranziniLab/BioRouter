@@ -1049,8 +1049,12 @@ const gitStatusPresentation: Record<
   },
   committed: {
     label: 'Committed',
-    textClass: 'text-text-danger',
-    dotClass: 'bg-background-danger',
+    // ⚠ NOT the danger hue. A committed file is the settled, wanted state,
+    // and the app's error colour said something had gone wrong with the file
+    // the user had just finished with. Muted ink puts it where "nothing to
+    // do here" belongs, beside `pushed`.
+    textClass: 'text-text-muted',
+    dotClass: 'bg-text-muted',
   },
   pushed: {
     label: 'Pushed',
@@ -1385,6 +1389,13 @@ function CodeBlock({
         textAlign: 'right',
         opacity: 0.35,
         userSelect: 'none',
+        // ⚠ Corrections, not decoration. `react-syntax-highlighter` seeds the
+        // gutter span from the theme's `comment` style, and ours is italic
+        // (`codeTheme.ts`), so the line numbers leaned. Nothing reset it, so the
+        // lean was inherited rather than chosen.
+        fontStyle: 'normal',
+        // A gutter is the one place where digit alignment is the whole job.
+        fontVariantNumeric: 'tabular-nums',
       }}
       // No `wrapLongLines`: combined with `showLineNumbers` the highlighter makes
       // every line `display: flex` (highlight.js:106), which turns each token into
