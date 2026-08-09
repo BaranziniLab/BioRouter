@@ -211,7 +211,7 @@ fn evaluate_via_helper(app: &std::path::Path, reason: &str) -> Option<MacAuthSig
     // Poll the listener rather than block on `accept`: the helper is launched
     // through LaunchServices, so there is no child to wait on, and a blocking
     // accept could not be bounded. Same budget the caller uses.
-    use std::io::Read;
+    use std::io::BufRead;
     let deadline = std::time::Instant::now() + super::system_auth::PROMPT_TIMEOUT;
     while std::time::Instant::now() < deadline {
         match listener.accept() {
@@ -231,10 +231,34 @@ fn evaluate_via_helper(app: &std::path::Path, reason: &str) -> Option<MacAuthSig
                 if !super::system_auth_peer::peer_is_ours(&stream) {
                     return Some(MacAuthSignal::EvaluationFailed(0));
                 }
-                let mut reply = String::new();
-                if stream.read_to_string(&mut reply).is_err() {
+                // ⚠ **Clear O_NONBLOCK on the accepted socket.** On macOS and
+                // the BSDs the accepted socket INHERITS the listener's
+                // non-blocking flag — POSIX says it should not, and Linux does
+                // not. Left set, `read_to_string` returns `WouldBlock`
+                // immediately, which this code reads as a failed reply: the
+                // request was refused in ~1s having never shown a prompt, and
+                // the symptom is indistinguishable from a rejected peer.
+                if stream.set_nonblocking(false).is_err() {
                     return Some(MacAuthSignal::EvaluationFailed(0));
                 }
+                // The helper connects first and prompts second, so this read is
+                // waiting on a human. Bounded anyway: a helper that dies
+                // holding the socket open must not park this thread forever.
+                let _ = stream.set_read_timeout(Some(super::system_auth::PROMPT_TIMEOUT));
+                // ⚠ **One LINE, not to EOF.** The helper holds the connection
+                // open until we close it — that is what keeps its pid alive
+                // across the peer check above — so waiting for EOF here would
+                // deadlock: each side waiting for the other to hang up. The
+                // verdict is a single line and ends with `\n`.
+                let mut reply = String::new();
+                if std::io::BufReader::new(&stream)
+                    .read_line(&mut reply)
+                    .is_err()
+                {
+                    return Some(MacAuthSignal::EvaluationFailed(0));
+                }
+                // Closing is the helper's signal to exit.
+                drop(stream);
                 // The nonce stays as well: it binds this reply to THIS prompt,
                 // which the peer check does not — a signed helper answering a
                 // different, older request is still not an answer to this one.

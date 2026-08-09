@@ -113,6 +113,21 @@ fn main() {
     if let Some(mut stream) = stream.take() {
         let _ = stream.write_all(line.as_bytes());
         let _ = stream.flush();
+        // ⚠ **Stay alive until the daemon closes.** The daemon identifies us by
+        // asking the kernel for the pid on its end of this socket, and a pid
+        // only names a process while that process exists. macOS can approve
+        // `evaluatePolicy` INSTANTLY from a recent authentication — no dialog at
+        // all — so without this the helper writes and exits in milliseconds,
+        // the daemon's next poll finds a dead pid, the signature lookup fails,
+        // and a perfectly good approval is rejected as an impostor.
+        //
+        // Reading is how we wait: the daemon drops its end once it has the
+        // verdict, which lands here as EOF. Bounded by the daemon's own timeout
+        // on the other side, so a daemon that dies cannot pin this process.
+        use std::io::Read;
+        let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(90)));
+        let mut ignored = Vec::new();
+        let _ = stream.read_to_end(&mut ignored);
         drop(stream);
         return;
     }
