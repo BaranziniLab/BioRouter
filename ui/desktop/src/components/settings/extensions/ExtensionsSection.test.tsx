@@ -1,6 +1,5 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { resetChatrecallSuggestionForTests } from './chatrecallSuggestion';
+import { render, screen, waitFor } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   extensionsList: [] as Array<Record<string, unknown>>,
@@ -55,7 +54,6 @@ import ExtensionsSection from './ExtensionsSection';
 // extension` (`subcomponents/ExtensionItem.tsx`), and `getFriendlyTitle` for a
 // `platform` entry named `Workspace` is `formatExtensionName('Workspace')` =
 // 'Workspace' (it is not in PLATFORM_EXTENSION_DISPLAY_NAMES).
-const WORKSPACE_SWITCH = 'Toggle Workspace extension';
 
 /**
  * ⚠ These fixtures use the names the DAEMON sends, not the config keys.
