@@ -438,7 +438,9 @@ footer{margin-top:70px;padding-top:20px;border-top:1px solid var(--line);font-si
         <tr><td>Nav rows</td><td class="num">288 (9×32)</td><td class="num">96 (3×32)</td></tr>
         <tr><td>Divider block</td><td class="num">18</td><td class="num">10</td></tr>
         <tr><td>Recents header</td><td class="num">32</td><td class="num">32</td></tr>
-        <tr><td><b>Before the first chat</b></td><td class="num"><b>462px</b></td><td class="num"><b>222px</b></td></tr>
+        <tr><td>Air around the wordmark <span style="opacity:.7">(16 above, 8 below)</span></td><td class="num">8</td><td class="num">24</td></tr>
+        <tr><td>Gaps between rail rows <span style="opacity:.7">(2 × 2px)</span></td><td class="num">0</td><td class="num">4</td></tr>
+        <tr><td><b>Before the first chat</b></td><td class="num"><b>462px</b></td><td class="num"><b>242px</b></td></tr>
       </tbody>
     </table></div>
     <ul class="spec" style="margin-top:14px">
@@ -723,7 +725,7 @@ footer{margin-top:70px;padding-top:20px;border-top:1px solid var(--line);font-si
     <div class="dec"><span class="id">A-05</span><div><h4>Interaction tints replace the hand-authored per-family hover/active hexes</h4><p>Every family authors those by hand today, with no documented relationship to their ground.</p><p class="rec"><b>Yes.</b> Removes the exact drift class the theming doc warns about and shrinks what a new family must author.</p></div></div>
     <div class="dec"><span class="id">A-06</span><div><h4>Selection — achromatic wash and weight, with one accent mark per surface</h4><p>Astryx drops accent colour from selection entirely so the accent stays reserved for CTAs. You asked to keep the colour, and the straightened rail already shipped.</p><p class="rec"><b>Adopt the wash, keep the rail.</b> Selection then reads even where colour is not the signal.</p></div></div>
     <div class="dec"><span class="id">A-07</span><div><h4>Toast tiering — a notification centre for compound reports</h4><p>The grouped extension report is a 400px interactive panel living in a transient layer. Nothing else in the census needs more than three lines and two buttons.</p><p class="rec"><b>Yes.</b> Split it out; let the toast link to it.</p></div></div>
-    <div class="dec"><span class="id">A-08</span><div><h4>Sidebar — Home and New Session only, everything else behind Components</h4><p>Returns 240px of rail — more than half of it on a 720p window — and drops the top level from nine items to three.</p><p class="rec"><b>Yes.</b> The nav grouping is what users notice, so it is the most worth iterating on if you disagree.</p></div></div>
+    <div class="dec"><span class="id">A-08</span><div><h4>Sidebar — Home and New Session only, everything else behind Components</h4><p>Returns 220px of rail — more than half of it on a 720p window — and drops the top level from nine items to three.</p><p class="rec"><b>Yes.</b> The nav grouping is what users notice, so it is the most worth iterating on if you disagree.</p></div></div>
     <div class="dec"><span class="id">A-09</span><div><h4>Focus — keep the surface shift, add an instant 2px outline for <code>:focus-visible</code> only</h4><p>These are separable: pointer focus keeps the surface shift, keyboard focus gets a real indicator. Today keyboard focus is nearly invisible on several controls.</p><p class="rec"><b>Yes.</b></p></div></div>
     <div class="dec"><span class="id">A-10</span><div><h4>Scope — all ten phases, or a subset?</h4><p>Phases 1–3 are pure infrastructure; they are what make the rest small.</p><p class="rec"><b>All ten, in order.</b> Stopping after 5 leaves two systems running at once — which is the state the app is already in.</p></div></div>
   </div>

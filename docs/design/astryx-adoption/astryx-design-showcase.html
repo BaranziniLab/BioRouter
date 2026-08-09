@@ -188,7 +188,7 @@ code, .mono, .num { font-family:ui-monospace,"SF Mono",SFMono-Regular,Menlo,Cons
 a { color:var(--accent-ink); }
 :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 
-/* --- top chrome: the proposed 44px band, dog-fooded ---------- */
+/* --- top chrome: the 44px band, now shipped, dog-fooded here - */
 .chrome {
   position:sticky; top:0; z-index:50; height:var(--chrome);
   display:flex; align-items:center; gap:16px; padding:0 16px 0 20px;
@@ -430,7 +430,19 @@ tbody tr:hover { background:var(--ov-hover); }
         border-bottom:1px solid var(--rail-line); margin:0 -8px 8px;
         transition:height var(--dur-med) var(--ease); }
 .tbctl { display:flex; align-items:center; gap:2px; }
-.brandrow { display:flex; align-items:center; height:32px; padding:0 10px; margin-bottom:2px; }
+/* SHIPPED. The brand lockup is not a list item, so it takes air on both sides:
+   16px above separating it from the window chrome, 8px below separating it
+   from the navigation it is not part of (`px-2 pt-4 pb-2` in AppSidebar.tsx).
+   It was `pt-2` with nothing below, and when the band dropped 52 -> 44 the
+   wordmark came up with it and landed 8px under the hairline with the first
+   nav row directly beneath — three things stacked at one rhythm, which reads
+   as crowded rather than dense.
+   The 16px is set on the BAND's margin, not this row's: adjacent vertical
+   margins collapse, so a margin-top here would lose to the band's own 8px
+   rather than add to it. The Today rail keeps that 8px, which is the `pt-2`
+   it actually shipped with. */
+.railbox--proposed .band { margin-bottom:16px; }
+.brandrow { display:flex; align-items:center; height:32px; padding:0 10px; margin-bottom:8px; }
 .dots { display:flex; gap:6px; }
 .dots i { width:11px; height:11px; border-radius:999px; display:block; }
 .navrow {
@@ -449,6 +461,15 @@ tbody tr:hover { background:var(--ov-hover); }
 .navrow--action.on, .navrow--action.on::before { background:transparent; }
 .navrow .ic { width:16px; height:16px; color:var(--rail-icon); flex:none; }
 .navrow .sp { flex:1; }
+/* SHIPPED, proposed rail only. 2px between rail rows, not 0: at `gap-0` the
+   rounded washes of adjacent rows touch, so a hovered row bleeds into its
+   neighbours and the destinations read as one block of colour rather than as
+   separable places. 2px is the gap the app's own menu recipe already uses
+   between items, so the rail and the menus agree. `--row-height-rail` is
+   untouched at 32px — only the gaps moved, giving a 34px pitch. Recents takes
+   the same gap (`space-y-0.5` in RecentChats.tsx): one rhythm down the whole
+   column, or the two halves read as two different lists. */
+.railbox--proposed .navrow { margin-bottom:2px; }
 .caps { font-size:var(--t-caps); letter-spacing:.08em; text-transform:uppercase; color:var(--ink-subtle);
         display:flex; align-items:center; height:var(--rail-row); padding:0 10px; }
 .hr { height:1px; background:var(--rail-line); margin:8px 14px; }
@@ -703,21 +724,88 @@ dialog::backdrop { animation:fade var(--dur-med) var(--ease) backwards; }
              overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
 /* the working directory: a control before the first message, a fact after it */
-.cchip--set { border:0; font:inherit; font-size:12px; cursor:pointer; color:var(--ink-muted); }
-.cchip--set .chev-sm { width:12px; height:12px; opacity:.7; margin-left:-1px; }
+.cchip--set { border:0; font:inherit; font-size:var(--t-support); cursor:pointer; color:var(--ink-muted); }
 .cchip--locked { cursor:default; }
 .cchip--locked:hover { background:transparent; color:var(--ink-muted); }
-/* the collapsed composer: one "+" stands in for the whole toolbar */
-.composer--narrow { max-width:340px; }
-.cpop-fact { padding:8px 8px 6px; }
-.cpop-fact-row { display:flex; align-items:center; gap:8px; font-size:var(--t-body); color:var(--ink-muted); }
-.cpop-fact-why { margin-top:4px; padding-left:24px; font-size:var(--t-support); color:var(--ink-subtle);
-                 line-height:16px; }
-.cpop { width:264px; padding:4px; background:var(--surface); border-radius:var(--r-container);
+/* the collapsed control rail: one "+" stands in for the settings and readouts.
+   The width follows the content rather than pinning every collapsed composer to
+   a fixed 264px, so the floor is a min and not a size. */
+.cpop { min-width:240px; padding:4px; background:var(--surface); border-radius:var(--r-container);
         box-shadow:var(--elev-2), var(--ring-inset); display:flex; flex-direction:column; gap:2px; }
 .cdiv { width:1px; height:16px; background:var(--line); flex:none; }
 .sendbtn-today { width:28px; height:28px; padding:0; border:1px solid var(--line-strong);
                  border-radius:var(--r-element); background:var(--accent); color:var(--on-accent); }
+
+/* ============================================================
+   THE SHIPPED COMPOSER — three rows, and only the middle one is a box.
+   Its own vocabulary rather than more `.composer--*` modifiers, because those
+   classes still draw the pre-design comparison above and the queue bar in §10,
+   and both of those are about the old single-card shape.
+   ============================================================ */
+/* 6px between the rows, and the smallness is the design: what binds a group on
+   a surface with no fills and no rules is that its internal gaps are visibly
+   smaller than the gap to everything around it (28px above, to the transcript).
+   At ~10px the three read as three floating strips rather than as one object. */
+.cstack { display:flex; flex-direction:column; gap:6px; }
+.cstack--narrow { max-width:360px; }
+
+/* THE RAILS SIT DIRECTLY ON THE CANVAS — no fill, no outline, no rule. Their
+   left insets differ (12 / 16 / 14px down the stack) precisely so the ink does
+   not: each control hides behind a different amount of its own padding, and the
+   folder glyph, the placeholder and the effort glyph all land on one column. */
+.crail { display:flex; align-items:center; min-width:0; }
+.crail--ctx { padding:0 10px 0 12px; justify-content:space-between; gap:16px; }
+.crail--ctl { padding:0 10px 0 14px; }
+.crail .cchip { padding:0 2px; gap:4px; font-size:var(--t-support); }
+.crail .cchip--dir { padding:0 4px; }
+/* the counts are one cluster at 8px; the two settings sit 14px apart, the two
+   readouts 6px — measured to leave the intended visible channel once every
+   control's own 2-4px of hit area is counted */
+.cgroup { display:flex; align-items:center; gap:8px; flex:none; }
+.cleft { display:flex; align-items:center; gap:14px; min-width:0; }
+.cright { display:flex; align-items:center; gap:6px; margin-left:auto; padding-left:8px; flex:none; }
+
+/* ROW 2 — the one boxed object. ONE edge, and it is a hairline: no shadow.
+   Elevation AND a border is what read as "a rim of coloured pixels". */
+.ccard { background:var(--surface); border:1px solid var(--line);
+         border-radius:var(--r-container); padding:10px 12px 10px 16px; outline:0;
+         transition:border-color var(--dur-fast) var(--ease),
+                    border-radius var(--dur-med) var(--ease); }
+/* FOCUS IS THE BORDER, IN FULL ACCENT — one crisp pixel, not a band. The
+   composer autofocuses, so this is on from the first frame of nearly every
+   session; that is why it has to stay CHEAP enough to live beside. A 2px inset
+   ring was tried and read as "a very thick rim" both times: two edges, ~3px, in
+   two hues, and the inner one at 8% alpha so it was not even legibly the accent.
+   The existing 1px edge simply turning accent is one edge, one hue, no layout. */
+.ccard:focus, .ccard:focus-within { border-color:var(--accent); }
+.cline { display:flex; align-items:flex-end; gap:8px; min-width:0; }
+.cline .cinput { flex:1; min-width:0; padding:0;
+                 font-size:var(--t-body); line-height:20px; }
+/* Send is QUIET AT REST — the user bubble's own fill, so the square you press
+   is already the colour of the thing it is about to make. It takes the accent
+   only once there is something to send. */
+.csend--rest { background-color:var(--medium); color:var(--ink-muted); }
+
+/* the rail's ONE separator, and it is a 3px dot. A rule has a height to align
+   to, so it reads as the start of a column and invites more of itself; a dot
+   cannot accrete into a grid.
+   IT IS NOT A BORDER TOKEN, and that had to be measured rather than assumed:
+   contrast is area-dependent, a 14px rule lays 14px of ink and a 3px dot about
+   7, so the tokens that read as a hairline measure as dirt as a dot (subtle
+   1.27:1 light, strong 1.52:1). It is the MUTED INK at 55% — roughly 40% of the
+   ink it separates: seen on purpose, never read as content. The full token is
+   darker than what it divides, which is punctuation shouting. */
+.cdot { width:3px; height:3px; border-radius:999px; flex:none;
+        background:color-mix(in srgb, var(--ink-muted) 55%, transparent); }
+/* the collapsed rail's "+": 28px, the rail's own rung, NOT the 32px icon-button
+   box. The rail carries no vertical padding of its own — the 6px stack gap is
+   the whole distance to the card — so an odd rung here would move the card by
+   4px every time the artifact panel opened. */
+.cplus { width:28px; height:28px; padding:0; color:var(--ink-muted); }
+/* the effort glyph: three rising bars, filled to the level that is set. A
+   filled glyph in a stroked set, and it is earned — the fill IS the data. */
+.effort { width:17px; height:17px; flex:none; display:block; fill:currentColor; stroke:none; }
+.effort .off { opacity:.25; }
 
 /* markdown ramp — today vs proposed */
 .md-today h1 { font-size:18px; line-height:26px; font-weight:600; letter-spacing:-.005em; margin-bottom:6px; }
@@ -858,6 +946,10 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
   <symbol id="i-folderdot" viewBox="0 0 24 24"><path d="M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.93a2 2 0 0 1-1.66-.9l-.82-1.2A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2Z"/><circle cx="12" cy="13" r="1"/></symbol>
   <symbol id="i-brain" viewBox="0 0 24 24"><path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/></symbol>
   <symbol id="i-send" viewBox="0 0 24 24"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></symbol>
+  <!-- Send, as shipped: an UP arrow, not the paper plane above. The message
+       goes upward into the transcript, and the arrow says so without the
+       plane's diagonal — which was the only diagonal glyph in the composer. -->
+  <symbol id="i-arrowup" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
   <symbol id="i-newwindow" viewBox="0 0 24 24"><path d="M21 9V6a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2v10c0 1.1.9 2 2 2h4"/><rect width="10" height="7" x="12" y="13" rx="2"/></symbol>
   <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"/><path d="m15 5 4 4"/></symbol>
   <symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
@@ -913,12 +1005,13 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
 
   <main>
     <header class="mast">
-      <p class="eyebrow">Design of record · proposed 2026-07-28</p>
+      <p class="eyebrow">Design of record · proposed 2026-07-28 · approved and mostly built</p>
       <h1>The interface, rebuilt on one set of parts.</h1>
       <p class="lede">Biorouter's design language was written down and never built. Every view re-derived it, and the audit counted the cost: five row-title treatments, four error dialects, five spinner constructions, six modal shells, 140 hand-written <code>text-[11px]</code> classes, and a toast surface hosting a 400-pixel scrollable report.</p>
       <p class="lede">This page proposes the correction, and is rendered in it. Every control below is live and built from the proposed tokens — so the three switches in the bar above are not illustrations. <b>Family</b> proves the construction survives all three palettes. <b>System</b> flips the page between today's geometry and the proposal, so the diff is the page itself.</p>
+      <p class="lede" style="font-size:var(--t-secondary);color:var(--ink-muted)"><b>Read the switch as written, not as a mirror of the app.</b> This was approved and mostly executed — phases 1–7, 9 and 10 have landed, phase 8 only partly. <b>System&nbsp;·&nbsp;Today</b> therefore means <i>the geometry before the adoption began</i>, which is no longer what a running Biorouter looks like; it is kept because the argument for each change is only legible against what it replaced. Where a passage describes something already built it says so and gives the file; everything else is the remaining plan, left verbatim so it stays executable. The folder <code>README.md</code> carries the per-phase ledger.</p>
       <div class="statusline">
-        <span class="pill">Status: proposed</span>
+        <span class="pill ok">Status: phases 1–7, 9, 10 shipped</span>
         <span class="pill">11-agent audit · file:line evidence</span>
         <span class="pill">Astryx measured live 2026-07-27</span>
         <span class="pill ok">Palette &amp; theming unchanged</span>
@@ -934,7 +1027,7 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
         <div class="card"><h3>The theming pipeline stays</h3><p class="rule">One authored file per family, generate-and-refuse-on-contrast-failure, the light-before-dark ordering invariant, 252 contrast assertions. The audit called it the strongest part of the system; we extend what a family may declare, not how.</p></div>
         <div class="card"><h3>The calm register stays</h3><p class="rule">No bounce, no glow, no gradient, no lift on hover, no colour as decoration. Astryx agrees almost everywhere, which is what makes it a viable donor.</p></div>
         <div class="card"><h3>Corners stay square-ish</h3><p class="rule">Astryx makes buttons, badges and avatars full pills. We refuse. We take the semantic ladder and the concentric-nesting rule, mapped onto squarer values; <code>radius-full</code> survives on status dots, the switch knob and avatars.</p></div>
-        <div class="card"><h3>Chat density stays</h3><p class="rule">The 760px column, tool-calls as lines (D-17), rows not cards (P2), mono for data (P6). Astryx's roomier marketing rhythm does not enter the transcript.</p></div>
+        <div class="card"><h3>Chat density stays</h3><p class="rule">The 760px column, tool-calls as lines (D-17), rows not cards (P2), mono for data (P6). Astryx's roomier marketing rhythm does not enter the transcript.</p><p class="rule" style="margin-top:8px;color:var(--ink-subtle)"><b>760 is the measure, not the floor of one.</b> <code>--measure-chat</code> is a <b>flat 760px</b>, and the composer and the transcript both key off it so they cannot drift. It was briefly <code>clamp(760px, 78%, 1180px)</code>, on the argument that a wide window buying margin instead of content reads as the app refusing to use the room. That is right for <code>--measure-page</code>, which stays fluid because a settings or sessions view genuinely buys content from the width — and wrong here: an 1180px composer is not a more capable input, it is a line the eye has to track back across, with the toolbar's controls dragged to opposite ends of the window.</p></div>
         <div class="card" style="border-color:color-mix(in srgb,var(--accent) 40%,var(--line))"><h3>Two things are on the table</h3><p class="rule">The typeface (A-01) and the sidebar's vertical budget (A-08) — both because you asked for them. Everything else in §11 is a recommendation you can overturn.</p></div>
       </div>
     </section>
@@ -978,7 +1071,7 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             <span class="mono" style="font-size:12px;color:var(--ink-subtle)">32 × 32, 16px glyph</span>
           </div>
         </div>
-        <p class="note"><b>Chrome:</b> one <code>--chrome-height</code> token at 44px replaces 52px written three ways, with two different hairline colours and three different grounds meeting at a seam the code comments claim is continuous. <b>Rows:</b> content lists 40 → 36px (<span class="pill" style="height:20px">A-03</span> — this contradicts D-12·B; the rhythm survives, the value tightens one grid step).</p>
+        <p class="note"><b>Chrome:</b> <span class="pill ok" style="height:20px">shipped</span> one <code>--chrome-height</code> token at 44px, now <b>wired</b>: all three bands read <code>h-chrome</code> — the titlebar band in <code>BioRouterSidebar/AppSidebar.tsx</code>, the chat header in <code>BaseChat.tsx</code>, the artifact strip in <code>artifacts/ArtifactViewer.tsx</code>. It replaced 52px written three ways, with two different hairline colours and three different grounds meeting at a seam the code comments claimed was continuous. The three had to move in one edit or not at all: a band that shrinks beside a stationary one does not read as a tighter app, it reads as a misaligned one — which is why the value lives in the token rather than in any of the three files. The 8px was expected to need the sidebar compaction to pay for it; measured, it did not — the traffic lights sit in the 32px drag region above and clear a 44px band, and the wordmark is in its own row <i>below</i> the band, not inside it. Verified in the running app: both bands measure 44px and their bottom hairlines meet at y=44. <b>Rows:</b> content lists 40 → 36px (<span class="pill" style="height:20px">A-03</span> — this contradicts D-12·B; the rhythm survives, the value tightens one grid step).</p>
       </div>
 
       <div class="card">
@@ -1427,8 +1520,8 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
               </div>
             </div>
           </div>
-          <div class="railbox">
-            <div class="cap"><span>Proposed</span><span class="mono" style="color:var(--accent-ink)">≈222px · 3 rows</span></div>
+          <div class="railbox railbox--proposed">
+            <div class="cap"><span>Proposed</span><span class="mono" style="color:var(--accent-ink)">≈242px · 3 rows</span></div>
             <div class="railbody">
               <div class="band" style="height:44px">
                 <span class="dots"><i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i></span>
@@ -1460,16 +1553,19 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
             </div>
           </div>
           <div style="display:flex;flex-direction:column;gap:14px">
-            <div class="lbl" style="margin:0">Where the 240px comes from</div>
+            <div class="lbl" style="margin:0">Where the 220px comes from</div>
             <div class="tally">
               <div><span>Band 52 → 44</span><span>−8</span></div>
               <div><span>"MENU" header deleted</span><span>−32</span></div>
               <div><span>Nine nav rows → three</span><span>−192</span></div>
               <div><span>Divider block halved</span><span>−8</span></div>
-              <div class="tot"><span>Returned to content</span><span>−240px</span></div>
+              <div><span>Air around the wordmark</span><span>+16</span></div>
+              <div><span>2px between rail rows</span><span>+4</span></div>
+              <div class="tot"><span>Returned to content</span><span>−220px</span></div>
             </div>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The rail carries only what you reach for constantly — <b>Home</b> and <b>New Session</b> — plus one <b>Components</b> disclosure holding the six destination views. <span style="color:var(--accent-ink)">Click it</span> to expand; the group remembers its state, and everything below it is history.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The wordmark keeps its own line. Sharing the band with the traffic lights saved 32px but buried the brand between two rows of controls; on its own line it introduces the app properly, and the compaction still lands because the row count does the work. In the band, a 16px channel separates the OS's traffic lights from our two controls, and the pair itself sits at 2px — one control group, not two loose buttons.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)"><b>Twenty of those pixels come back, and the rail is better for it.</b> <span class="pill ok" style="height:20px">shipped</span> When the band dropped 52 → 44 the wordmark came up with it and landed 8px under the hairline with the first nav row directly beneath — three elements stacked at one rhythm, which reads as crowded rather than dense. The brand block now takes <b>16px above and 8px below</b> (<code>px-2 pt-4 pb-2</code>), and the nav rows sit at <b>2px</b> rather than flush: at zero the rounded washes touch, so a hover bleeds into its neighbours and the destinations read as one block of colour. 2px is the gap the menu recipe already uses between items, so the rail and the menus agree, and Recents takes the same gap — one rhythm down the whole column, or its two halves read as two different lists. Row height is untouched: <code>--row-height-rail</code> is still 32px, at a 34px pitch. Measured in the app: band 44px at y=0, wordmark 32px at y=60, first nav row at y=100.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The Recents <b>well is gone</b> — the app's only surface grounded on a <code>color-mix</code> of a <i>border</i> token, at a radius nothing else in the rail uses. The list now sits directly on the rail like every other list, glyphs at their real weight: a chat is a message square, a diverged session is a branch. Running sessions get a trailing status dot; the ring-and-glow stays in the chat.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)"><b>"Apps" is not a concept.</b> Biorouter has Applications, full stop. The second row is a conditional entry (hidden unless an extension advertises MCP apps) listing a different source — <code>/agent/list_apps</code> rather than the apps you built — under a name a user cannot tell apart from its neighbour. It folds into Applications as a section there. Width stays 240px; rows stay 32px — already the rail rhythm, now written down.</p>
           </div>
@@ -1727,79 +1823,97 @@ IndexError: index out of range for axis 0 with size 18452</div>
       </div>
 
       <div class="card">
-        <h3>The composer — the same principle, one surface up</h3>
-        <p class="rule">The user bubble drops its border because the fill already separates it. The composer has the stronger version of that argument: it carries a 1px border <i>and</i> <code>--shadow-composer</code>, so it is the one element in the app stating its edge twice. The shadow is what lifts it off the canvas; the border is the redundant half.</p>
+        <h3>The composer — the card is the input, and nothing else</h3>
+        <p class="rule">This one is <span class="pill ok" style="height:20px">shipped</span>, and it did not land where the proposal pointed. The proposal kept the single card and argued about its edge: elevation <i>or</i> a border, never both, so drop the border and keep the shadow. What shipped inverts that and then goes further — the box is drawn around the <b>one thing the user acts on</b>, and everything that was merely near the input moved out of it onto the canvas. Three arrangements were tried and rejected first, each recorded in <code>ChatInput.tsx</code>: one card holding everything read as a settings panel you could also type into; a recessed banner tucked behind a card grouped correctly but paid two outlines and an 8px overlap for it; one card of three rows fixed that and drew the note <i>crowded</i> two rounds running.</p>
         <div class="vs">
           <div class="vs-col">
             <div class="vs-tag">Today</div>
-            <div class="composer composer--today">
-              <div class="cinput">Ctrl+↑/Ctrl+↓ to navigate messages</div>
-              <div class="ctools">
-                <span class="cchip"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
-                <span class="cdiv"></span>
-                <span class="cchip"><svg class="ico sm"><use href="#i-puzzle"/></svg>4</span>
-                <span class="cchip"><svg class="ico sm"><use href="#i-layers"/></svg>11</span>
-                <span class="cchip"><svg class="ico sm"><use href="#i-knowledge"/></svg>2</span>
-                <span class="cdiv"></span>
-                <span class="cchip"><svg class="ico sm" style="width:18px;height:18px"><use href="#i-brain"/></svg>gpt-5.5</span>
-                <span class="sp" style="flex:1"></span>
-                <button class="btn sendbtn-today" aria-label="Send"><svg class="ico" style="width:14px;height:14px"><use href="#i-send"/></svg></button>
+            <div class="stage">
+              <div class="composer composer--today">
+                <div class="cinput">Ctrl+↑/Ctrl+↓ to navigate messages</div>
+                <div class="ctools">
+                  <span class="cchip"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
+                  <span class="cdiv"></span>
+                  <span class="cchip"><svg class="ico sm"><use href="#i-puzzle"/></svg>4</span>
+                  <span class="cchip"><svg class="ico sm"><use href="#i-layers"/></svg>11</span>
+                  <span class="cchip"><svg class="ico sm"><use href="#i-knowledge"/></svg>2</span>
+                  <span class="cdiv"></span>
+                  <span class="cchip"><svg class="ico sm" style="width:18px;height:18px"><use href="#i-brain"/></svg>gpt-5.5</span>
+                  <span class="sp" style="flex:1"></span>
+                  <button class="btn sendbtn-today" aria-label="Send"><svg class="ico" style="width:14px;height:14px"><use href="#i-send"/></svg></button>
+                </div>
               </div>
             </div>
             <p class="vnote">Border <b>and</b> shadow. Radius 16 where every other floating surface is 12. Four different insets inside one card — shell <code>px-4 pt-3 pb-3</code>, textarea <code>px-3 pt-3 pb-1.5</code>, toolbar <code>px-2 pt-2 pb-1</code>, attachments <code>p-4</code>. Icons mix 16 and 18px on one row, chips pad <code>px-0.5</code> (≈20px hit zones), and Send is an <code>outline</code> Button repainted into an accent fill by a className override. The focus branch of the shell's class string is byte-identical to the unfocused one — dead code; focus actually comes from a CSS <code>:focus-within</code> border shift.</p>
           </div>
           <div class="vs-col">
-            <div class="vs-tag on">Proposed</div>
-            <div class="composer composer--new" tabindex="0">
-              <div class="cinput">Ask anything, or drop a file</div>
-              <div class="ctools">
-                <span class="cchip"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
-                <span class="cdiv"></span>
-                <span class="cchip"><svg class="ico sm"><use href="#i-puzzle"/></svg>4</span>
-                <span class="cchip"><svg class="ico sm"><use href="#i-layers"/></svg>11</span>
-                <span class="cchip"><svg class="ico sm"><use href="#i-knowledge"/></svg>2</span>
-                <span class="cdiv"></span>
-                <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
-                <span class="sp" style="flex:1"></span>
-                <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+            <div class="vs-tag on">Shipped</div>
+            <div class="stage">
+              <div class="cstack">
+                <div class="crail crail--ctx">
+                  <span class="cchip cchip--dir"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
+                  <span class="cgroup">
+                    <span class="cchip"><svg class="ico sm"><use href="#i-puzzle"/></svg>4</span>
+                    <span class="cchip"><svg class="ico sm"><use href="#i-layers"/></svg>11</span>
+                    <span class="cchip"><svg class="ico sm"><use href="#i-knowledge"/></svg>2</span>
+                  </span>
+                </div>
+                <div class="ccard" tabindex="0">
+                  <div class="cline">
+                    <div class="cinput">Ask Biorouter anything…</div>
+                    <button class="btn iconbtn csend--rest" aria-label="Send message"><svg class="ico"><use href="#i-arrowup"/></svg></button>
+                  </div>
+                </div>
+                <div class="crail crail--ctl">
+                  <span class="cleft">
+                    <span class="cchip"><svg class="effort" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1"/><rect class="off" x="11.9" y="3" width="2.6" height="11" rx="1"/></svg></span>
+                    <span class="cdot"></span>
+                    <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
+                  </span>
+                  <span class="cright">
+                    <span class="cchip"><svg class="ico sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-opacity=".28"/><circle cx="12" cy="12" r="9" stroke-dasharray="56.5" stroke-dashoffset="15.8" transform="rotate(-90 12 12)"/></svg><span class="mono">72%</span></span>
+                    <span class="cchip mono">$0.42</span>
+                  </span>
+                </div>
               </div>
             </div>
-            <p class="vnote"><b>No border.</b> The elevation lifts it; a 1px inset ring keeps the edge crisp in dark families where a shadow alone disappears — the shared floating-surface recipe from §02. Radius 16 → 12 with everything else, and one 12px inset grid replaces the four that meet inside the card today. <b>The toolbar tightens and groups.</b> Same controls in the same order, but the spacing now says something: chips inside a group sit at 2px and carry a real 6px hit area (14px between adjacent glyphs), while a divider opens a 22px channel between groups — directory, then context, then model. The first chip's inset matches the placeholder's, so the toolbar starts on the <b>same left edge</b> as the text above it. Today the row runs at one flat rhythm with 2px hit targets, so it reads as an undifferentiated run of glyphs. <span style="color:var(--accent-ink)">Click the composer</span>: focus is a 2px inset accent ring — the same one every input in §03 uses, so nothing shifts layout and drag-over can speak the same language.</p>
+            <p class="vnote"><b>Three rows, and only the middle one is a box.</b> Context above (where am I, what can I reach), the input card, controls below (how it answers, what it costs). Nothing separates them but canvas — no rule, no fill, no tuck — so the chrome reads as annotation <i>on</i> the input rather than as more contents <i>of</i> it. <b>Send moved into the card</b>, because it acts on what is in the box; that is also what lets the row below be settings and readouts only. <b>The edge is a hairline and there is no shadow</b> — the opposite of the proposal, and for the reason the proposal itself gives: two edge statements on one box read as a rim of coloured pixels, because the elevation tints the pixels just outside while the inset ring tints the ones just inside. It is drawn at 60% of <code>--border-subtle</code>, measured rather than eyeballed, because at full strength it read as an outline drawn <i>around</i> the field instead of the shape <i>of</i> it. <span style="color:var(--accent-ink)">Click the card</span>: <b>the edge itself turns accent</b> — the same one pixel, a different colour. The composer autofocuses, so this is on from the first frame of nearly every session, which is exactly why it has to be one edge and not two: a 2px inset ring stacked on the border drew a ~3px band in two hues and was reported both times as "a very thick rim".</p>
           </div>
         </div>
-        <p class="note">This is the element the design system already singles out as the only one permitted <code>--elev-composer</code>. Making it the one element that also draws a border was never a decision — it accumulated. Dropping it costs nothing and settles the rule for every raised surface: <b>elevation or a border, never both.</b></p>
+        <p class="note">The rule the proposal was reaching for still holds — <b>elevation or a border, never both</b> — but the composer settled it the other way, and the reason generalises: <b>a surface earns elevation by floating over something, and this one does not.</b> The card sits in the flow of the chat column with its own rails above and below it, so a shadow was buying separation the canvas gap already gives. <code>--elev-composer</code> is now unused by the composer. <b>Two numbers are one decision</b>: 6px between the three rows and 28px above the whole group. Proximity is the only grouping signal on a surface with no fills and no rules, and it is relative — widen one without tightening the other and the looseness just moves. At the ~10px first tried, the rails did not read as satellites of the input; they read as three floating strips.</p>
+        <p class="note"><b>What the eye is meant to do here, stated once.</b> The composer holds seven things and they are not equal. One is the message; two are the settings that decide how it is answered; two are readouts you glance at; two are facts about where you are. Making all seven the same weight is what "crowded" meant. So the type says it — the input is <code>--text-body</code>, the same 14/20 as the message it becomes, and every control on both rails is <b>12px</b>, one clear step under. The rails read as annotations rather than competing UI. <b>The affordance did not shrink with the type:</b> every one keeps a 28px hit area, a hover fill, and a glyph or caret. This subordinates the type scale's own dense-control rule — which says a control must not drop to metadata size — deliberately and at the operator's direction, and <code>main.css</code>, <code>ChatInput.tsx</code> and all six control files carry the note so nobody quietly puts it back.</p>
 
         <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--line)">
           <h3 style="font-size:var(--t-sub);margin-bottom:4px">Working directory — a control before the first message, a fact after it</h3>
-          <p class="rule">The directory can only be chosen while a session is still empty; once a turn has run, everything the agent did is relative to it and changing it would silently invalidate the transcript. The app enforces this already — the chip becomes a plain label — but the two states look near enough alike that the second one reads as a control that stopped working. They should not look alike at all.</p>
+          <p class="rule"><span class="pill ok" style="height:20px">partly shipped</span> The directory can only be chosen while a session is still empty; once a turn has run, everything the agent did is relative to it and changing it would silently invalidate the transcript. It now lives at the left of the <b>context rail</b> — row 1, on the canvas — so both states are shown here as that row alone.</p>
           <div class="vs">
             <div class="vs-col">
               <div class="vs-tag on">Before the first message — editable</div>
-              <div class="composer composer--new composer--narrow">
-                <div class="cinput">Ask anything, or drop a file</div>
-                <div class="ctools">
-                  <button class="cchip cchip--set"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop<svg class="ico sm chev-sm"><use href="#i-chevrondown"/></svg></button>
-                  <span class="cdiv"></span>
-                  <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
-                  <span class="sp" style="flex:1"></span>
-                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+              <div class="stage">
+                <div class="crail crail--ctx">
+                  <button class="cchip cchip--dir cchip--set"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</button>
+                  <span class="cgroup">
+                    <span class="cchip"><svg class="ico sm"><use href="#i-puzzle"/></svg>4</span>
+                    <span class="cchip"><svg class="ico sm"><use href="#i-layers"/></svg>11</span>
+                    <span class="cchip"><svg class="ico sm"><use href="#i-knowledge"/></svg>2</span>
+                  </span>
                 </div>
               </div>
-              <p class="vnote">It looks like a control because it is one: a trailing chevron, the hover wash, a pointer cursor. Clicking opens the directory picker. This is the only window in which it is offered, so it should be the most obviously clickable thing on the row.</p>
+              <p class="vnote">A real <code>&lt;button&gt;</code>: hover wash, pointer cursor, and it prints the <b>full path</b>, truncated from the left so the end you recognise survives. Clicking opens the directory picker; ⌘-click reveals it in Finder. This is the only window in which the choice is offered.</p>
             </div>
             <div class="vs-col">
               <div class="vs-tag">After the session has started — settled</div>
-              <div class="composer composer--new composer--narrow">
-                <div class="cinput">Ask anything, or drop a file</div>
-                <div class="ctools">
-                  <span class="cchip cchip--locked" title="Set when this session started. Start a new session to work somewhere else."><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
-                  <span class="cdiv"></span>
-                  <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
-                  <span class="sp" style="flex:1"></span>
-                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+              <div class="stage">
+                <div class="crail crail--ctx">
+                  <span class="cchip cchip--dir cchip--locked"><svg class="ico sm"><use href="#i-folderdot"/></svg>Desktop</span>
+                  <span class="cgroup">
+                    <span class="cchip"><svg class="ico sm"><use href="#i-puzzle"/></svg>4</span>
+                    <span class="cchip"><svg class="ico sm"><use href="#i-layers"/></svg>11</span>
+                    <span class="cchip"><svg class="ico sm"><use href="#i-knowledge"/></svg>2</span>
+                  </span>
                 </div>
               </div>
-              <p class="vnote">No chevron, no hover wash, no pointer — it reads as a stated fact, the same weight as the model beside it. The tooltip carries both the full path <i>and</i> the reason: "Set when this session started. Start a new session to work somewhere else." A disabled-looking control invites a click and then refuses it; a label never makes the offer.</p>
+              <p class="vnote">A <code>&lt;span&gt;</code>, not a disabled button: no hover wash, no pointer, no text selection — and it drops to the <b>basename</b>, because a fact needs naming, not locating. It reads as a stated fact at the same weight as the counts across from it. <b>Two pieces of this are still outstanding:</b> the editable state has no trailing chevron, and the settled state's tooltip carries the path but not the reason — it should say <i>"Set when this session started. Start a new session to work somewhere else."</i></p>
             </div>
           </div>
           <p class="note">The same rule generalises: <b>state what is true, don't disable what was once offered.</b> A greyed-out control is a promise the interface has already broken — where an action is genuinely no longer available, the affordance should disappear rather than persist in a dead form.</p>
@@ -1807,47 +1921,50 @@ IndexError: index out of range for axis 0 with size 18452</div>
 
         <div style="margin-top:22px;padding-top:18px;border-top:1px solid var(--line)">
           <h3 style="font-size:var(--t-sub);margin-bottom:4px">Collapsed — when the artifact panel takes the width</h3>
-          <p class="rule">Open a preview beside the chat and the column narrows until the toolbar cannot hold its row; the app already folds every control behind a single <b>+</b> at the lower left. That state exists but was never designed — it inherits the same four insets and the same repainted Send. Here it is on the proposed surface.</p>
+          <p class="rule"><span class="pill ok" style="height:20px">shipped</span> Open a preview beside the chat and the column narrows until a row can no longer lay its controls out. <b>Only the control rail collapses</b>, and only it ever did — the context rail and the card have their own lines and never run out of room. The threshold is therefore reached far less often than it was, because the rail that used to carry eight things now carries four.</p>
           <div class="vs">
             <div class="vs-col">
               <div class="vs-tag on">Collapsed</div>
-              <div class="composer composer--new composer--narrow" tabindex="0">
-                <div class="cinput">Ask anything, or drop a file</div>
-                <div class="ctools">
-                  <button class="btn btn--ghost iconbtn" id="cpopBtn" aria-expanded="false" aria-label="Show composer controls"><svg class="ico"><use href="#i-plus"/></svg></button>
-                  <span class="cchip" style="color:var(--ink-subtle)">gpt-5.5</span>
-                  <span class="sp" style="flex:1"></span>
-                  <button class="btn btn--primary iconbtn" aria-label="Send"><svg class="ico"><use href="#i-send"/></svg></button>
+              <div class="stage">
+                <div class="cstack cstack--narrow">
+                  <div class="crail crail--ctx">
+                    <span class="cchip cchip--dir"><svg class="ico sm"><use href="#i-folderdot"/></svg>…/Desktop</span>
+                    <span class="cgroup">
+                      <span class="cchip"><svg class="ico sm"><use href="#i-puzzle"/></svg>4</span>
+                      <span class="cchip"><svg class="ico sm"><use href="#i-layers"/></svg>11</span>
+                      <span class="cchip"><svg class="ico sm"><use href="#i-knowledge"/></svg>2</span>
+                    </span>
+                  </div>
+                  <div class="ccard">
+                    <div class="cline">
+                      <div class="cinput">Ask Biorouter anything…</div>
+                      <button class="btn iconbtn csend--rest" aria-label="Send message"><svg class="ico"><use href="#i-arrowup"/></svg></button>
+                    </div>
+                  </div>
+                  <div class="crail crail--ctl">
+                    <span class="cleft">
+                      <button class="btn btn--ghost cplus" aria-expanded="false" aria-label="Chat tools and settings"><svg class="ico"><use href="#i-plus"/></svg></button>
+                      <span class="cdot"></span>
+                      <span class="cchip"><svg class="ico sm"><use href="#i-brain"/></svg>gpt-5.5</span>
+                    </span>
+                  </div>
                 </div>
               </div>
-              <p class="vnote">The <b>+</b> takes the 32px icon-button box, so the collapsed row is the same height as the expanded one — the composer does not change size when the panel opens, only its contents do. Two things never collapse: the <b>model</b>, because it changes what your next message costs and does, and <b>Send</b>. Everything else is one click away.</p>
+              <p class="vnote">The <b>+</b> takes the rail's own 28px rung, so the collapsed rail is exactly as tall as the expanded one and the composer does not change size when the panel opens — only its contents do. <b>The dot survives the collapse</b>, because the <code>+</code> has taken the effort knob's place and the seam it marks — settings on one side, the model on the other — has not moved. Two things never collapse: the <b>model</b>, because it decides what the next message costs and can do, and <b>Send</b>, because the way to send a message may not depend on how wide the window is. Send could not collapse now in any case: it lives in the card, and the card is not this row.</p>
             </div>
             <div class="vs-col">
-              <div class="vs-tag on">What the + opens — before the first message</div>
+              <div class="vs-tag on">What the + opens</div>
               <div class="stage" style="padding:14px;display:flex;justify-content:center">
                 <div class="cpop">
-                  <div class="mi"><svg class="ico"><use href="#i-folderdot"/></svg>Working directory<span class="sp"></span><span class="kbd">…/Desktop</span><svg class="ico sm" style="opacity:.5;margin-left:4px;transform:rotate(-90deg)"><use href="#i-chevrondown"/></svg></div>
-                  <div class="mi"><svg class="ico"><use href="#i-puzzle"/></svg>Extensions<span class="sp"></span><span class="kbd">4</span></div>
-                  <div class="mi"><svg class="ico"><use href="#i-layers"/></svg>Skills<span class="sp"></span><span class="kbd">11</span></div>
-                  <div class="mi"><svg class="ico"><use href="#i-knowledge"/></svg>Knowledge bases<span class="sp"></span><span class="kbd">2</span></div>
-                </div>
-              </div>
-              <p class="vnote">Four menu items. The directory carries a trailing chevron because it opens a picker rather than toggling something — the one row that leads somewhere else.</p>
-
-              <div class="vs-tag" style="margin-top:18px">…and after the session has started</div>
-              <div class="stage" style="padding:14px;display:flex;justify-content:center">
-                <div class="cpop">
-                  <div class="cpop-fact">
-                    <div class="cpop-fact-row"><svg class="ico"><use href="#i-folderdot"/></svg><span>Working directory</span><span class="sp" style="flex:1"></span><span class="mono" style="font-size:12px;color:var(--ink)">…/Desktop</span></div>
-                    <p class="cpop-fact-why">Set when this session started. Start a new session to work somewhere else.</p>
+                  <div style="display:flex;flex-wrap:wrap;align-items:center;gap:2px;padding:2px">
+                    <span class="cchip" style="padding:0 2px;gap:4px;font-size:var(--t-support)"><svg class="effort" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="9" width="2.6" height="5" rx="1"/><rect x="6.7" y="6" width="2.6" height="8" rx="1"/><rect class="off" x="11.9" y="3" width="2.6" height="11" rx="1"/></svg></span>
+                    <span class="cchip" style="padding:0 2px;gap:4px;font-size:var(--t-support)"><svg class="ico sm" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" stroke-opacity=".28"/><circle cx="12" cy="12" r="9" stroke-dasharray="56.5" stroke-dashoffset="15.8" transform="rotate(-90 12 12)"/></svg><span class="mono">72%</span></span>
+                    <span class="cchip mono" style="padding:0 2px;font-size:var(--t-support)">$0.42</span>
                   </div>
-                  <div class="msep" style="margin:4px -4px"></div>
-                  <div class="mi"><svg class="ico"><use href="#i-puzzle"/></svg>Extensions<span class="sp"></span><span class="kbd">4</span></div>
-                  <div class="mi"><svg class="ico"><use href="#i-layers"/></svg>Skills<span class="sp"></span><span class="kbd">11</span></div>
-                  <div class="mi"><svg class="ico"><use href="#i-knowledge"/></svg>Knowledge bases<span class="sp"></span><span class="kbd">2</span></div>
                 </div>
               </div>
-              <p class="vnote"><b>The directory stops being a menu item.</b> It moves above the divider into a small context block — a stated fact with its reason, in the same place your eye already goes for "what is set" — while extensions, skills and knowledge bases stay interactive, because those genuinely can change mid-session. Nothing is greyed out: the row does not become a dead control, it becomes a different kind of thing. This is the same rule the expanded toolbar follows, applied to the menu: <b>state what is true, don't disable what was once offered.</b></p>
+              <p class="vnote"><b>Three controls, not a menu.</b> The popover holds the same objects the rail was holding — the effort knob, the context gauge, the cost — laid out as a wrapping row rather than translated into menu items, so nothing has to be redrawn or renamed to fold away. It is portaled, so the rail's <code>overflow:hidden</code> cannot clip it, and it grows upward out of the <code>+</code>. Its width follows its contents past a 240px floor instead of pinning every collapsed composer to one size.</p>
+              <p class="vnote"><b>The directory and the counts are not in here any more</b>, and that is the substantive change: they moved to the context rail, which has its own line and therefore never collapses. Which also retires the question the old menu had to answer — how to present a working directory that can no longer be changed inside a list of things that can. The two states now differ on the rail itself, where there is room to simply look different.</p>
             </div>
           </div>
         </div>
@@ -2070,6 +2187,7 @@ IndexError: index out of range for axis 0 with size 18452</div>
     <section id="phases">
       <div class="sec-head"><span class="n">13</span><h2>Ten phases</h2></div>
       <p class="sec-intro">Each is one commit on this worktree, independently revertible, gated on the full frontend suite (1,654 tests), <code>lint:check</code>, the theme <code>--check</code> and the 252 contrast assertions. Phases 1–3 change no pixels by themselves — they are what make 4–10 small.</p>
+      <p class="sec-intro" style="font-size:var(--t-secondary)"><b>Nine of the ten have landed.</b> Phases 1–7, 9 and 10 are committed; <b>phase 8 is only partly done</b> — Chat history, Settings and Knowledge converged on the header recipe, the row spec and the table spec, while the file explorer's directory and preview panels (§09 above) and <code>ScheduleDetailView</code> are outstanding. Phase 4 landed and was then retuned: the face moved to Arial by operator preference, but every size, weight, line-height and letter-spacing role in §02 is the one that shipped. The table below is the <i>plan as written</i> and is deliberately not rewritten into a status board — a landed phase does not mean every bullet inside it shipped, so check the code before assuming an element matches its specification here. The folder <code>README.md</code> carries the commit-by-commit ledger.</p>
       <div class="card scroll-x">
         <table>
           <thead><tr><th style="width:36px">#</th><th>Phase</th><th>What lands</th><th style="width:88px">Risk</th></tr></thead>

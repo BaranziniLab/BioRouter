@@ -282,9 +282,13 @@ The audit measured **~462px of fixed chrome above the first recent chat**: a 52p
 | Nav rows | 288 (9 × 32) | 96 (3 × 32) |
 | Divider block | 18 | 10 |
 | Recents header | 32 | 32 |
-| **Before the first chat** | **462px** | **222px** |
+| Air around the wordmark | 8 | 24 (16 above, 8 below) |
+| Gaps between rail rows | 0 | 4 (2 × 2px) |
+| **Before the first chat** | **462px** | **242px** |
 
-Net: **240px** of rail returned to content. The sidebar keeps 240px of width, and rows stay 32px — already the rail rhythm, now written down.
+Net: **220px** of rail returned to content. The sidebar keeps 240px of width, and rows stay 32px — already the rail rhythm, now written down.
+
+The last two rows are a **correction made after the compaction shipped**, and the figure was 222px before them. Dropping the band brought the wordmark up with it, landing it 8px under the hairline with the first nav row directly beneath — three elements stacked at one rhythm, which reads as crowded rather than dense. The brand block takes 16px above and 8px below (`px-2 pt-4 pb-2` in `AppSidebar.tsx`); it is a lockup, not a list item, and the air is what says so. Rail rows sit at a 2px gap rather than flush, because at zero their rounded washes touch and a hovered row bleeds into its neighbours — 2px is the gap the menu recipe (§3.8) already uses between items, so the rail and the menus agree, and Recents takes the same (`space-y-0.5` in `RecentChats.tsx`). `--row-height-rail` is untouched at 32px; only the gaps moved, giving a 34px pitch. Twenty pixels is a cheap price for a rail that reads as a list of places rather than a block of colour.
 
 **There is no "Apps" — there is Applications.** The rail ships two adjacent rows whose names a user cannot tell apart, and they are not the same list: `/applications` shows the apps you built with Agent Drafter (`GET /apps`), while `//apps` shows apps advertised by installed extensions (`GET /agent/list_apps`, backed by `McpAppCache`). The second is already second-class — a conditional row, hidden unless some extension happens to advertise one — so it is a destination most users never see, under a name that collides with the one they do.
 
@@ -323,7 +327,7 @@ Change:
   **The menu changes with the session, the same way the toolbar does.** Before the first message it holds four items, the directory carrying a trailing chevron because it opens a picker rather than toggling something — the one row that leads somewhere else. Once a turn has run, **the directory stops being a menu item**: it moves above a divider into a small context block — a stated fact with its reason beneath it, in the same place the eye already goes for "what is set" — while extensions, skills and knowledge bases stay interactive, because those genuinely can change mid-session. Nothing is greyed out; the row does not become a dead control, it becomes a different kind of thing. The dead focus ternary is deleted, and Send becomes a real primary icon button instead of an `outline` repainted by a className override.
 - **Composer toolbar chips**: one recipe — 16px icons (retiring the 18px outliers), ≥6px horizontal padding (today `px-0.5` gives ~20px hit zones), one metadata size in their popovers (today: 10, 11, 12 and 13px).
 - **Tool-call interiors** get one inset grid, replacing five recipes, and arguments render in mono per the app's own mono-for-data rule. The disclosure chevron becomes visible at rest — today it appears on hover, so first-run users get no signal that rows expand.
-- **Landing state** adopts Astryx's AI-chat template: the greeting, the composer card, and a row of ghost suggestion chips beneath it — optional, and the one place a "what can I ask?" affordance genuinely belongs.
+- **Landing state — the greeting and the composer, and nothing else.** This bullet used to propose Astryx's AI-chat template: greeting, composer, and a row of ghost suggestion chips beneath it, on the argument that the empty chat is the one place a "what can I ask?" affordance genuinely belongs. The chips were built in phase 9 and **have since been removed, by decision** — `ComposerSuggestions.tsx` and its test are deleted, the render site in `BaseChat.tsx` is gone, and the `insert-chat-input` listener in `ChatInput.tsx` that existed only to serve them went with it. **This is not an oversight and must not be "restored".** The deletion is the operator's call, taken after seeing the chips shipped and running; no defect was involved, so there is nothing here for a later reader to repair. The landing state is the greeting and the composer. If a "what can I ask?" affordance is ever wanted again, it is a new proposal that has to make its own argument — this bullet is not it, and reviving it would be reinstating something already decided against.
 - **User bubble** and the 896px replay column both move onto the standard radius and the 760px measure.
 
 #### The transcript, element by element
@@ -423,7 +427,7 @@ The dock's CSS claims "one tab language, both sizes", and that holds for how a t
 
 **Changes.** Bar 40 → **36px** and tabs 28 → **32px**, one step under the 44px chrome and on the one control ladder. Icon gap 6 → 8px. Close reveals on hover *and* focus, exactly like a chat tab. Overflow adopts the chat ladder. The cwd readout becomes `supporting` mono, truncating from the left so the leaf directory always survives. And the ground moves off `--sidebar`: that token was chosen so the chat strip could continue the *top* edge, and at the bottom edge the rationale inverts — the dock currently reads as a floating slice of sidebar. It grounds on the surface with a top hairline.
 
-**The ground is a step within the family's own hue — never black.** A terminal is not an inverted panel dropped into the app; in a paper-coloured product a black well reads as a hole punched through the page. Each family's terminal ground is one deliberate step off its panel surface, in its own hue and its own mode:
+**The ground is a step off the panel surface — never black.** A terminal is not an inverted panel dropped into the app; in a paper-coloured product a black well reads as a hole punched through the page. The terminal ground is one deliberate step off the panel surface, in each mode:
 
 | Family | Light | Dark |
 |---|---|---|
@@ -431,9 +435,20 @@ The dock's CSS claims "one tab language, both sizes", and that holds for how a t
 | Alma Mater | `#f2f3f4` | `#0d2a50` |
 | Roche Limit | `#f4f4f2` | `#232320` |
 
-Ink is the family's own `--text-default`, so a light-mode terminal is dark-on-warm rather than light-on-black. This is a change of *value*, not of mechanism: the per-family ground token already exists and is already generated. It does mean the ANSI palettes must be re-verified against the new light grounds — which is exactly what the generator's per-slot contrast floors are for, and it will refuse to emit if a slot fails.
+> **⚠ This table's premise expired on 2026-08-08, after this proposal was written.** Neutrals are now
+> **shared**: all three families paint the same `--background-muted`, so the terminal ground is `#f4f4f2`
+> light and `#232320` dark **for every family** — the Roche Limit row, applied to all three. The other two
+> rows describe grounds that no longer exist. The proposal's *substance* survives intact, because Roche's
+> values are exactly the "one step off the panel surface, never black" the paragraph argues for; what does
+> not survive is "in the family's own hue", since the hue is now the same everywhere and the family shows
+> up in the **ink**. See [theme system architecture §8](../theming/theme-system-architecture.md#8--shared-neutrals--one-scaffolding-three-inks).
+>
+> **Do not implement this table as written** — it would reintroduce the per-family greys that were
+> deliberately removed.
 
-**What must not change**, because each is an invariant with a bug behind it: the **per-family terminal ground** as a concept (Parchment, Alma Mater and Roche Limit each resolve their own — a generator that assumed they agree would re-ground two terminals under palettes tuned for a different surface); the **19-stop ANSI palette** and its per-slot contrast floors; and mono at **13/20**, byte-identical to code blocks.
+Ink is the family's own `--text-default`, so a light-mode terminal is dark-on-warm rather than light-on-black. This is a change of *value*, not of mechanism: the ground token already exists and is already generated. It does mean the ANSI palettes must be re-verified against the light ground — which is exactly what the generator's per-slot contrast floors are for, and it will refuse to emit if a slot fails. *(That re-verification has since happened: Parchment's `yellow` and `cyan` needed darkening by ~2.5% to clear AA on the shared light ground.)*
+
+**What must not change**, because each is an invariant with a bug behind it: the **declared terminal ground** as a concept (each family states which token its dock paints, rather than the generator assuming — an assumption would re-ground a terminal under a palette tuned for a different surface; the three now happen to give the same answer, which is a measurement, not a licence to hardcode); the **19-stop ANSI palette** and its per-slot contrast floors; and mono at **13/20**, byte-identical to code blocks.
 
 ### 4.7 Files, directories and code
 
@@ -529,7 +544,7 @@ Ten phases, each a commit on this worktree, each independently revertible, each 
 | 6 | **Overlays** | One dialog shell + size scale, six shells migrated, one close affordance, one toast tier model, notification centre | High — most files, most behaviour |
 | 7 | **Shell** | 44px band, sidebar compaction (§4.1), tabs at 32px, one icon-label gap | Medium — the compaction you asked for |
 | 8 | **Views** | Header recipe, row spec, list/table, empty/loading/error convergence, ScheduleDetailView and Settings rebuilt | High — broadest surface |
-| 9 | **Chat** | Metadata sizing, `MessageMeta`, composer grid and radius, toolbar chips, tool-call interiors, landing chips | Medium |
+| 9 | **Chat** | Metadata sizing, `MessageMeta`, composer grid and radius, toolbar chips, tool-call interiors (~~landing chips~~ — built here, then removed by decision; see §4.4) | Medium |
 | 10 | **Sweep** | The §7 deletions, doc reconciliation (`design.md` amended, not appended), gallery regenerated | Low |
 
 Verification is not "it compiles". Each phase ships with: the existing unit tests green, the contrast script green, and **screenshots at 1440×900, 1120×800 and 800×600 in light and dark for every family** — driven through the same Vite + agent-browser harness used to verify the heatmap work in this worktree, because jsdom cannot catch a Tailwind class collision and Electron cannot be launched from an agent shell. Phases 6 and 8 additionally get a manual pass in the real dev GUI.
