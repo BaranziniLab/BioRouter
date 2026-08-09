@@ -73,13 +73,13 @@ impl EvidenceServer {
 
     #[tool(
         name = "report_evidence",
-        description = "Record — as a MACHINE-READABLE verdict, not just prose — whether you \
+        description = "Record, as a MACHINE-READABLE verdict rather than just prose, whether you \
                        actually had the inputs needed to answer. Call this BEFORE you return, \
                        every time. If the honest answer is that the data was insufficient, say \
                        so here with `status: \"insufficient_data\"` and name what was missing. \
                        This is load-bearing: the main agent's page-publishing actions can declare \
                        that they depend on those inputs, and your verdict is what stops it from \
-                       inventing numbers to fill the gap. Prose alone cannot do that — it has \
+                       inventing numbers to fill the gap. Prose alone cannot do that, because it has \
                        been read and ignored."
     )]
     pub async fn report_evidence(
@@ -109,7 +109,7 @@ impl EvidenceServer {
                 ErrorCode::INVALID_PARAMS,
                 "reporting `insufficient_data` requires naming what was missing (e.g. \
                  `missing: [\"sumstats\", \"ld_reference\"]`). The names are what the main \
-                 agent's actions check against — an unnamed gap blocks nothing."
+                 agent's actions check against; an unnamed gap blocks nothing."
                     .to_string(),
                 None,
             ));
@@ -142,7 +142,7 @@ impl ServerHandler for EvidenceServer {
             instructions: Some(
                 "Before you return your answer, call `report_evidence` to state whether you \
                  actually had the inputs you needed. If you did not, say so and name what was \
-                 missing — that verdict is what prevents the main agent from inventing the \
+                 missing. That verdict is what prevents the main agent from inventing the \
                  numbers you declined to produce."
                     .to_string(),
             ),

@@ -285,7 +285,7 @@ mod tests {
         let crates = root.join("crates");
         assert!(
             crates.is_dir(),
-            "the audit walks {} — if that path is wrong every assertion below \
+            "the audit walks {}; if that path is wrong every assertion below \
              passes for the wrong reason",
             crates.display()
         );

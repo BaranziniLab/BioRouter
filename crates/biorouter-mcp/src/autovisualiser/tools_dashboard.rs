@@ -255,7 +255,7 @@ impl<'de> Deserialize<'de> for RenderDashboardParams {
         let raw: RenderDashboardParamsRaw = serde_json::from_value(value).map_err(|e| {
             DeError::custom(format!(
                 "{e}. `render_dashboard` takes the report directly \
-                 (title, summary, sections/panels) — not wrapped in a `data` argument."
+                 (title, summary, sections/panels), not wrapped in a `data` argument."
             ))
         })?;
         Ok(RenderDashboardParams {
@@ -495,7 +495,7 @@ Panel width is `full` (default) or `half` (two per row). Use `sections` for grou
 
 Set `theme` to `light` or `dark` if the user asks for a specific background; the default `auto` follows the app's own light/dark setting.
 
-Call this ONCE per report: the report appears in the side panel the moment the call returns — you do not need a second call to display, finalise or confirm it. Call it again only if the user asks to change the report, or to re-render figures that failed."#
+Call this ONCE per report: the report appears in the side panel the moment the call returns, so you do not need a second call to display, finalise or confirm it. Call it again only if the user asks to change the report, or to re-render figures that failed."#
     )]
     pub async fn render_dashboard(
         &self,
@@ -700,7 +700,7 @@ Call this ONCE per report: the report appears in the side panel the moment the c
             // observed ~20% duplicate-call rate that just burns tokens and drops a
             // second, redundant card into the chat).
             label.push_str(
-                " The report is complete and already displayed in the side panel — you do \
+                " The report is complete and already displayed in the side panel, so you do \
                  not need to call render_dashboard again to display, finalise or confirm it. \
                  Call it again only if the user asks to change the report.",
             );

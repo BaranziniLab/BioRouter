@@ -42,7 +42,7 @@ impl TutorialServer {
         let instructions = formatdoc! {r#"
             Because the tutorial extension is enabled, be aware that the user may be new to Biorouter
             or looking for help with specific features. Proactively offer the relevant tutorial when the
-            conversation touches its topic — for example offer getting-started to a new user,
+            conversation touches its topic, for example offer getting-started to a new user,
             knowledge-bases when they mention papers or documents to keep, create-workflows when they
             repeat a task, schedule-automations when they want something to run regularly, and
             create-skills when they keep re-explaining their preferred methods.

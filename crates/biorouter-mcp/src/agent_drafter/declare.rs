@@ -259,7 +259,7 @@ pub fn validate_profile_key(key: &str) -> Result<(), String> {
         return Err(format!(
             "worker-profile key '{key}' must be a stable identifier: lowercase letters, digits \
              and underscores only (e.g. `prosecutor`, `fine_mapper`). Put the display name in \
-             the profile's `description` — the key is what `consult(agent: …)` targets, and a \
+             the profile's `description`; the key is what `consult(agent: …)` targets, and a \
              capitalised or spaced key silently fails to resolve."
         ));
     }
@@ -316,7 +316,7 @@ mod tests {
         ] {
             assert!(
                 THEME_PACKS.contains(&pack.as_str()),
-                "'{}' is not in THEME_PACKS — the enum has drifted from the CSS",
+                "'{}' is not in THEME_PACKS: the enum has drifted from the CSS",
                 pack.as_str()
             );
         }

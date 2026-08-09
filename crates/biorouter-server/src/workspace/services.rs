@@ -796,7 +796,7 @@ mod tests {
         };
         assert!(
             carries_our_window(installed.layout_snapshot()),
-            "layout_snapshot must carry this window's echo — it IS workspace_list's `gui`"
+            "layout_snapshot must carry this window's echo: it IS workspace_list's `gui`"
         );
 
         // …and it is live, not a captured constant: closing the window drops it.

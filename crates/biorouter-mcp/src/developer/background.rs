@@ -49,8 +49,8 @@ impl JobStatus {
     fn describe(&self) -> String {
         match self {
             JobStatus::Running => "running".to_string(),
-            JobStatus::Exited(0) => "exited(0) — success".to_string(),
-            JobStatus::Exited(code) => format!("exited({code}) — non-zero"),
+            JobStatus::Exited(0) => "exited(0), success".to_string(),
+            JobStatus::Exited(code) => format!("exited({code}), non-zero"),
             JobStatus::Ended(why) => format!("ended ({why})"),
             JobStatus::Killed => "killed".to_string(),
         }
@@ -258,7 +258,7 @@ impl BackgroundJobs {
             new_output
         };
         Ok(format!(
-            "job {id} [{}] — status: {status} ({elapsed}s elapsed)\nnew output since last check:\n{body}",
+            "job {id} [{}], status: {status} ({elapsed}s elapsed)\nnew output since last check:\n{body}",
             job.label
         ))
     }
@@ -280,7 +280,7 @@ impl BackgroundJobs {
             Ok(format!("{snap}\n\nThe job has finished."))
         } else {
             Ok(format!(
-                "{snap}\n\nStill running after {dur_secs}s. The job was NOT killed — call shell_wait again to keep watching, or do other work and check back."
+                "{snap}\n\nStill running after {dur_secs}s. The job was NOT killed. Call shell_wait again to keep watching, or do other work and check back."
             ))
         }
     }
@@ -337,7 +337,7 @@ impl BackgroundJobs {
                 ""
             };
             lines.push(format!(
-                "- {id} [{}]: {status} ({}s elapsed){pending} — `{}`",
+                "- {id} [{}]: {status} ({}s elapsed){pending}, `{}`",
                 job.label,
                 job.started.elapsed().as_secs(),
                 job.command

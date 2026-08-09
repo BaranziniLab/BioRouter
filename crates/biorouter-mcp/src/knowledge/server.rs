@@ -582,7 +582,7 @@ impl KnowledgeServer {
                 format!(
                     "kb_id not supplied and this session has no primary knowledge base. \
                      Pass kb_id explicitly (one of: {}), or call kb_set_active to make one \
-                     the primary — that is also where KB-less writes go.",
+                     the primary; that is also where KB-less writes go.",
                     ids.join(", ")
                 )
             },
@@ -635,7 +635,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_list_pages",
-        description = "List knowledge pages in a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
+        description = "List knowledge pages in a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id; you never need to change the primary to read."
     )]
     pub async fn kb_list_pages(
         &self,
@@ -652,7 +652,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_read_page",
-        description = "Read a single knowledge page by path. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
+        description = "Read a single knowledge page by path. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id; you never need to change the primary to read."
     )]
     pub async fn kb_read_page(
         &self,
@@ -670,7 +670,7 @@ impl KnowledgeServer {
         name = "kb_write_page",
         description = "Create or overwrite a knowledge page and commit. The path must be under \
                        knowledge/ (e.g. knowledge/<topic>.md) or be index.md/schema.md/log.md; \
-                       raw/ holds immutable ingested sources and is read-only — to add or update \
+                       raw/ holds immutable ingested sources and is read-only. To add or update \
                        a source, use kb_add_raw_source or re-ingest it."
     )]
     pub async fn kb_write_page(
@@ -738,7 +738,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_get_graph",
-        description = "Return the cached node+edge graph for a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
+        description = "Return the cached node+edge graph for a knowledge base. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id; you never need to change the primary to read."
     )]
     pub async fn kb_get_graph(
         &self,
@@ -753,7 +753,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_list_history",
-        description = "List recent change-log entries from the git history. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id — you never need to change the primary to read."
+        description = "List recent change-log entries from the git history. Omit kb_id to use this session's primary knowledge base. To read a different base, pass its kb_id; you never need to change the primary to read."
     )]
     pub async fn kb_list_history(
         &self,
@@ -1045,7 +1045,7 @@ impl KnowledgeServer {
 
     #[tool(
         name = "kb_set_active",
-        description = "Make one knowledge base this session's primary: the base that KB-less writes land in and that single-base reads default to. It does not change what you can search — kb_search with no kb_id already covers every knowledge base in this session, tagging each hit with its kb_id. To read or write another base, pass its kb_id; do not switch the primary to get at it. The base must be one of this session's knowledge bases."
+        description = "Make one knowledge base this session's primary: the base that KB-less writes land in and that single-base reads default to. It does not change what you can search: kb_search with no kb_id already covers every knowledge base in this session, tagging each hit with its kb_id. To read or write another base, pass its kb_id; do not switch the primary to get at it. The base must be one of this session's knowledge bases."
     )]
     pub async fn kb_set_active(
         &self,
@@ -1336,7 +1336,7 @@ fn not_a_member(kb_id: &str, visible: &[String], session_id: Option<&str>) -> St
              ({available}). Add it to the session first, or pass kb_id explicitly to read it once."
         ),
         None => format!(
-            "knowledge base '{kb_id}' is not available ({available}) — it does not exist, or it \
+            "knowledge base '{kb_id}' is not available ({available}): it does not exist, or it \
              is hidden."
         ),
     }
@@ -1459,7 +1459,7 @@ mod tests {
         assert_eq!(
             server.kb_id_or_primary(Some("alpha".to_string()), None)?,
             "alpha",
-            "an explicit kb_id always wins — that is how a base outside the set is reached"
+            "an explicit kb_id always wins; that is how a base outside the set is reached"
         );
         Ok(())
     }
@@ -1784,7 +1784,7 @@ mod tests {
             // through a euid comparison.
             assert!(
                 std::fs::write(elsewhere.path().join(".probe"), b"x").is_err(),
-                "the read-only fixture did not take (running as root?) — this test \
+                "the read-only fixture did not take (running as root?), so this test \
                  would silently degrade to the assertion it was written to replace"
             );
         }
@@ -3328,7 +3328,7 @@ mod tests {
         },
         ExemptTool {
             name: "kb_get_active",
-            why: "reports the selection; filters the VIEW — ids omitted, pointer null",
+            why: "reports the selection; filters the VIEW, ids omitted, pointer null",
             pinned_by: "kb_get_active_does_not_enumerate_a_private_base_or_point_at_one",
         },
         ExemptTool {
@@ -3339,7 +3339,7 @@ mod tests {
         },
         ExemptTool {
             name: "kb_create_base",
-            why: "names a base that does not exist yet — nothing to leak (Task 10A (3))",
+            why: "names a base that does not exist yet, so nothing to leak (Task 10A (3))",
             pinned_by: "a_public_chat_can_still_create_and_import_a_knowledge_base",
         },
         ExemptTool {
@@ -3758,7 +3758,7 @@ mod tests {
             production.matches(re_spelling).count(),
             1,
             "a listing filter re-spelled the reachability question instead of asking \
-             assert_kb_reachable — that is exactly how finding 17 happened"
+             assert_kb_reachable; that is exactly how finding 17 happened"
         );
         // The ONE permitted direct read, and it is not a reachability question:
         // `kb_export` decides *where the archive lands*, over a base CP1 has

@@ -86,8 +86,8 @@ pub const CAPABILITY_TIER_META_KEY: &str = "biorouter-capability-tier";
 pub const KB_PRIVATE_REFUSAL: &str = "\
 This knowledge base is private: a session running an institutional or self-hosted model has \
 ingested into it, so only a private model may read or write it. This session is running on a \
-public model. Ask the user to switch this chat to a private model — Settings > Models, or the \
-model chip in the composer — and try again. Do not retry with a different knowledge base id, \
+public model. Ask the user to switch this chat to a private model (Settings > Models, or the \
+model chip in the composer) and try again. Do not retry with a different knowledge base id, \
 through an export, or through a raw-source search; the boundary is the same everywhere.";
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -497,7 +497,7 @@ pub fn add_owners_unlocked(root: &Path, kb_id: &str, owners: BTreeSet<String>) -
 /// act on, which is the shape [`KB_PRIVATE_REFUSAL`] already takes.
 fn cross_affiliation_refusal(owners: &BTreeSet<String>, caller: &CallerAffiliation) -> String {
     let held_by = if owners.is_empty() {
-        "an institution this build cannot determine — the classification store could not be read"
+        "an institution this build cannot determine, because the classification store could not be read"
             .to_string()
     } else {
         owners.iter().cloned().collect::<Vec<_>>().join(", ")
@@ -525,7 +525,7 @@ fn cross_affiliation_refusal(owners: &BTreeSet<String>, caller: &CallerAffiliati
          boundary. Compliance does not transfer between institutions: a model approved at one has \
          no permission over another's data unless a BAA, DUA or IRB approval covers this specific \
          flow. Ask the user to switch this chat to a model covered by that institution's \
-         agreements — Settings > Models, or the model chip in the composer. Do not retry with a \
+         agreements: Settings > Models, or the model chip in the composer. Do not retry with a \
          different knowledge base id, through an export, or through a raw-source search; the \
          boundary is the same everywhere."
     )

@@ -51,7 +51,7 @@ fn a_declared_signal_is_accepted_before_the_agent_has_called_anything() {
         bridge
             .validate_signal("criterion_clicked", &json!({"id": "age"}))
             .is_ok(),
-        "the user clicks before the agent's first tool call — a declared signal \
+        "the user clicks before the agent's first tool call, so a declared signal \
          must already be subscribed, or the gesture is lost exactly when it matters"
     );
 }

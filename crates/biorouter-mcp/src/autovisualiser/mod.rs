@@ -469,7 +469,7 @@ impl AutoVisualiserRouter {
             Match the data format to the chart type you have chosen. The user may request a specific
             chart, or you can pick the most appropriate one and shape the data to fit it.
 
-            ## Combining figures — read this first
+            ## Combining figures: read this first
             **If your answer needs more than one figure, call `render_dashboard` once instead of
             calling several `render_*` tools.** Each `render_*` call produces a separate artifact
             that the user must open on its own; a reader faced with six of them has to click six

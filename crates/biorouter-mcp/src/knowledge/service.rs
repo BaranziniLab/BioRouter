@@ -45,8 +45,8 @@ When you write or update any knowledge page:
 4. Prefer linking over re-stating. If a fact lives on another page, write
    `See [[Page Name]]` instead of restating it.
 
-The lint workflow (`kb_lint`) reports pages with no inbound links as orphans
-— fix them by adding inbound `[[links]]` from related pages.
+The lint workflow (`kb_lint`) reports pages with no inbound links as orphans;
+fix them by adding inbound `[[links]]` from related pages.
 "#;
 
 #[derive(Clone)]
@@ -1227,7 +1227,7 @@ fn find_uuid(s: &str) -> Option<&str> {
 fn source_markdown_with_quality_banner(converted: &convert::Converted) -> String {
     if converted.needs_llm_fallback {
         format!(
-            "> **Warning — poor extraction quality.** This source appears to be \
+            "> **Warning: poor extraction quality.** This source appears to be \
              scanned or image-based; its text could not be extracted faithfully. \
              Treat the content below (if any) as incomplete.\n\n{}",
             converted.markdown
@@ -1874,7 +1874,7 @@ impl KnowledgeService {
                              explicitly to read it once."
                         ),
                         None => anyhow::bail!(
-                            "knowledge base '{id}' is not available ({available}) — it does not \
+                            "knowledge base '{id}' is not available ({available}): it does not \
                              exist, or it is hidden."
                         ),
                     }
@@ -2248,7 +2248,7 @@ mod tests {
     #[test]
     fn title_from_markdown_prefers_first_heading() {
         let md =
-            "> **Warning — poor extraction quality.**\n\n# A Study of Airway Deposition\n\nbody";
+            "> **Warning: poor extraction quality.**\n\n# A Study of Airway Deposition\n\nbody";
         assert_eq!(
             title_from_markdown(md).as_deref(),
             Some("A Study of Airway Deposition")
@@ -3444,7 +3444,7 @@ mod tests {
     /// Legacy schema fingerprint: minimal pre-Plan-5-Task-2 schema (no
     /// "Cross-reference rules" section).
     const LEGACY_SCHEMA: &str =
-        "# Knowledge Base — Maintenance Schema\n\n## Layout\n\n- wiki/sources/...\n";
+        "# Knowledge Base: Maintenance Schema\n\n## Layout\n\n- wiki/sources/...\n";
 
     #[test]
     fn migrate_schema_appends_cross_reference_rules_when_missing() {

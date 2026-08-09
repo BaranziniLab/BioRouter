@@ -32,7 +32,7 @@ fn a_manifest_without_server_metadata_still_parses() {
 
     let m: biorouter_mcp::agent_drafter::store::Manifest = serde_json::from_value(json).expect(
         "a model has no way to know created_at, and no \
-                                             business inventing it — it must not be required",
+                                             business inventing it, so it must not be required",
     );
     assert_eq!(m.id, "app");
     assert_eq!(
@@ -116,7 +116,7 @@ fn a_v1_manifest_gains_no_surface_or_theme_key() {
     );
     assert!(
         raw.get("theme").is_none(),
-        "nor a `theme` key — v1 manifests must round-trip unchanged"
+        "nor a `theme` key: v1 manifests must round-trip unchanged"
     );
     assert!(raw.get("requires").is_none(), "nor a `requires` key");
 }
@@ -161,7 +161,7 @@ fn merging_a_surface_preserves_the_initial_state_document() {
     assert_eq!(
         existing.state_initial,
         Some(serde_json::json!({ "cohort": { "baselineN": 12500 } })),
-        "a merged surface must carry the initial document — dropping it silently is \
+        "a merged surface must carry the initial document; dropping it silently is \
          how the model ends up thrashing against a tool that lies about succeeding"
     );
     assert_eq!(

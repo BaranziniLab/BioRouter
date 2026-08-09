@@ -2176,7 +2176,7 @@ async fn hiding_the_primary_promotes_for_an_inheriting_chat_too() {
     .await;
     assert_eq!(
         inherits.1["primary_kb"], pinned.1["primary_kb"],
-        "one gesture, one answer — whether the chat pinned its primary or inherited it"
+        "one gesture, one answer, whether the chat pinned its primary or inherited it"
     );
     assert_eq!(inherits.1["primary_kb"].as_str(), Some("beta"));
     assert_eq!(

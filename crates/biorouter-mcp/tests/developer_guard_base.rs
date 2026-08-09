@@ -108,7 +108,7 @@ async fn secret_guard_follows_the_env_working_dir_for_a_directly_constructed_ser
     let err = match err {
         Ok(text) => panic!(
             "the working directory's .biorouterignore was never read: the protected \
-             file came back as {text:?} — the secret guard is rooted somewhere the \
+             file came back as {text:?}, so the secret guard is rooted somewhere the \
              file tools are not"
         ),
         Err(e) => e,

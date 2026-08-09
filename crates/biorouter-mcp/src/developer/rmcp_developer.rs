@@ -261,8 +261,8 @@ mod screen_recording_permission {
 const SCREEN_RECORDING_DENIED: &str = "macOS has not granted Biorouter permission to record the \
      screen, so screenshots would show only the desktop wallpaper with every window missing, and \
      window titles would all come back empty.\n\nBiorouter has just asked macOS for that \
-     permission. If a system dialog appeared, choose Allow and try again. If it did not — macOS \
-     only offers it once per app — open System Settings → Privacy & Security → Screen Recording \
+     permission. If a system dialog appeared, choose Allow and try again. If it did not (macOS \
+     only offers it once per app), open System Settings → Privacy & Security → Screen Recording \
      and switch Biorouter on; the request just made puts it in that list. Either way, QUIT AND \
      REOPEN Biorouter afterwards: macOS applies a new screen-recording grant only to a freshly \
      launched process.";
@@ -512,7 +512,7 @@ impl ServerHandler for DeveloperServer {
                 to list, copy, move, delete, or find files and to run commands, and use `text_editor` to read
                 (`view`), create/overwrite (`write`), and edit (`str_replace`, `insert`) files. Prefer these
                 direct tools over routing a simple file or shell operation through a code-execution script or
-                another extension — reach for those only when a task needs real computation, control flow, or a
+                another extension. Reach for those only when a task needs real computation, control flow, or a
                 specialized capability.
 
                 Leverage `analyze` through `return_last_only=true` subagents for deep codebase understanding with lean context
@@ -543,7 +543,7 @@ impl ServerHandler for DeveloperServer {
             to list, copy, move, delete, or find files (`ls`, `cp`, `mv`, `rm`, `mkdir`, `rg`) and to run
             commands, and use `text_editor` to read (`view`), create/overwrite (`write`), and edit
             (`str_replace`, `insert`) files. Prefer these direct tools over routing a simple file or shell
-            operation through a code-execution script or another extension — reach for those only when a task
+            operation through a code-execution script or another extension. Reach for those only when a task
             needs real computation, control flow, or a specialized capability. When you just need a file's
             contents, use `text_editor` view rather than `cat`/`head` in shell.
 
@@ -641,7 +641,7 @@ impl ServerHandler for DeveloperServer {
             Avoid commands that produce a large amount of output, and consider piping those outputs to files.
 
             A command run in the foreground has a wall-clock budget (240 seconds by default). When it
-            expires the command's whole process group is killed and the call fails — nothing is left
+            expires the command's whole process group is killed and the call fails, and nothing is left
             running. Work that may legitimately take longer belongs in background=true, where
             shell_wait / shell_output / shell_kill let you watch it without blocking the turn.
 
@@ -1204,7 +1204,7 @@ impl DeveloperServer {
                              display instead.",
                             window_title,
                             if titles.is_empty() {
-                                "  (none — no titled windows are currently open)".to_string()
+                                "  (none: no titled windows are currently open)".to_string()
                             } else {
                                 titles
                                     .iter()
@@ -1607,7 +1607,7 @@ impl DeveloperServer {
 
     #[tool(
         name = "shell_wait",
-        description = "Wait for a background shell job (started by shell with background=true) for up to timeout_secs (default 120, max 600). Returns the moment the job exits, or at the timeout with status: running (the job is NOT killed — call again to keep watching). Use this to wait for background work without ending your turn or busy-looping."
+        description = "Wait for a background shell job (started by shell with background=true) for up to timeout_secs (default 120, max 600). Returns the moment the job exits, or at the timeout with status: running (the job is NOT killed; call again to keep watching). Use this to wait for background work without ending your turn or busy-looping."
     )]
     pub async fn shell_wait(
         &self,
@@ -1910,7 +1910,7 @@ impl DeveloperServer {
                 tokio::time::sleep(super::shell::FOREGROUND_HEARTBEAT).await;
                 let elapsed = super::shell::humanize_secs(started.elapsed());
                 let message = format!(
-                    "shell: still running after {elapsed} — {}",
+                    "shell: still running after {elapsed}: {}",
                     first_line(&command)
                 );
                 if peer
@@ -3056,7 +3056,7 @@ mod tests {
 
         let err = outcome.expect_err(
             "a path outside the session dir must stay refused after the session dir \
-             disappears — the jail must not be re-rooted onto the process cwd",
+             disappears: the jail must not be re-rooted onto the process cwd",
         );
         assert!(
             err.message.contains("no longer exists"),
@@ -3091,7 +3091,7 @@ mod tests {
         assert!(
             !unbound.is_ignored(&denied),
             "sanity: with no session dir bound, the project's ignore file is not this \
-             server's to read — otherwise the test proves nothing"
+             server's to read; otherwise the test proves nothing"
         );
 
         let server = DeveloperServer::new().with_working_dir(session.path().to_path_buf());
@@ -3182,7 +3182,7 @@ mod tests {
 
         let err = outcome.expect_err(
             "a path outside the session dir must stay refused after the session dir \
-             disappears — the jail must not widen to BIOROUTER_WORKING_DIR",
+             disappears: the jail must not widen to BIOROUTER_WORKING_DIR",
         );
         assert!(
             err.message.contains("no longer exists"),
@@ -4941,7 +4941,7 @@ mod tests {
                 kind,
                 Some("tool_failure"),
                 "the command ran and nothing was missing or refused, so it is a plain \
-                 tool failure — not whatever its output happens to spell, got: {:?}",
+                 tool failure, not whatever its output happens to spell, got: {:?}",
                 result.structured_content
             );
         });
@@ -5692,7 +5692,7 @@ mod tests {
 
             assert!(
                 !survived.exists(),
-                "issue #72: dropping the shell future left a grandchild running — \
+                "issue #72: dropping the shell future left a grandchild running: \
                  it woke up afterwards and wrote {}",
                 survived.display()
             );

@@ -429,7 +429,7 @@ mod tests {
         // Page B is referenced by A so it must NOT be an orphan.
         assert!(
             !orphan_paths.contains(&"knowledge/entities/b.md"),
-            "page b is referenced by a — not an orphan"
+            "page b is referenced by a, so not an orphan"
         );
     }
 

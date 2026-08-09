@@ -54,7 +54,7 @@ const MAX_SIDEBAR_SESSION_LIMIT: u32 = 50;
 /// It ends by foreclosing the retry for the same reason every refusal in this
 /// feature does — a model that reads a refusal as transient loops on it.
 const COPY_OF_PRIVATE_NEEDS_USER: &str =
-    "This chat is private, and branching it creates a new chat that inherits its private model — \
+    "This chat is private, and branching it creates a new chat that inherits its private model, \
      so only the person at the keyboard may do it, and this request carried no proof it came \
      from them. Nothing was branched and this chat is unchanged. Do not retry; the same call \
      will be refused again. If this task genuinely needs the branch, stop and ask the user to \
@@ -1059,7 +1059,7 @@ async fn edit_in_place(
                  request) is unchecked; the cut is still under the turn lock and bounded to the \
                  {} message(s) the server just read. The reply stream now publishes the ids a \
                  turn persisted (issue #59, `MessagesPersisted`), so a client that consumes that \
-                 frame can supply a view — this one did not.",
+                 frame can supply a view; this one did not.",
                 session_id,
                 stored.messages().len()
             );
@@ -1571,7 +1571,7 @@ pub(crate) mod diverge_tests {
         );
         assert!(
             biorouter_server::auth::is_user_action(&headers),
-            "the user-action digest this test installs did not take — something else in this \
+            "the user-action digest this test installs did not take: something else in this \
              test binary installed a different one first, and every authorised arm below would \
              otherwise report a 403 as a policy result"
         );
@@ -2352,7 +2352,7 @@ pub(crate) mod diverge_tests {
         );
         assert!(
             !minted_capability_without_proof(Public, false),
-            "branching a public chat mints no capability and needs no proof — a gate \
+            "branching a public chat mints no capability and needs no proof; a gate \
              that fires on every branch is one people route around"
         );
         assert!(!minted_capability_without_proof(Public, true));
@@ -2528,7 +2528,7 @@ pub(crate) mod diverge_tests {
         drop(guard);
         assert!(
             !get_running(state.clone()).await.contains(&busy),
-            "TurnGuard::drop clears the slot, so the route must read LIVE state — \
+            "TurnGuard::drop clears the slot, so the route must read LIVE state: \
              a snapshot taken at construction passes every assertion above and \
              fails this one"
         );
@@ -3434,7 +3434,7 @@ mod declassify_tests {
         );
         assert!(
             !DECLASSIFY_SYSTEM_AUTH_REFUSED.contains(only_true_of_mcp),
-            "this route never read the row, so it cannot say {only_true_of_mcp:?} — it is false \
+            "this route never read the row, so it cannot say {only_true_of_mcp:?}: it is false \
              for `backfill:*` and `imported`, which dominate day one"
         );
     }

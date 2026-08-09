@@ -635,7 +635,7 @@ mod tests {
             "the outright tier refusal takes a FOURTH input beyond the extension's \
              classification, the bound provider's tier, and DR-15's master opt-out. If that \
              input is the caller, attaching a private extension to a public chat has become a \
-             raise the user can authorize, which DR-16 says it is not — and a helper would \
+             raise the user can authorize, which DR-16 says it is not, and a helper would \
              hide it from the scan below. Guard reads: {condition}"
         );
         for proof in ["user_action_proof(", "is_user_action(", "X-User-Action"] {

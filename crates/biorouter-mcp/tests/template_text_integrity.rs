@@ -46,7 +46,7 @@ fn templates_contain_no_nul_bytes() {
 
     assert!(
         offenders.is_empty(),
-        "NUL byte(s) in template text files — grep will treat these as binary and \
+        "NUL byte(s) in template text files: grep will treat these as binary and \
          git diff will not show changes to them. Use an escape sequence (\\u0000) \
          instead of a literal NUL:\n  {}",
         offenders.join("\n  ")

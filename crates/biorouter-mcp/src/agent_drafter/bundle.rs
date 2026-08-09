@@ -85,7 +85,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 
     // (2) Self-contained — no external/CDN assets.
     if il.contains("src=\"http") || il.contains("src='http") {
-        error(&mut out, "index.html loads an external <script src=\"http…\">. Apps must be self-contained — remove it and use the Biorouter App SDK instead.");
+        error(&mut out, "index.html loads an external <script src=\"http…\">. Apps must be self-contained: remove it and use the Biorouter App SDK instead.");
     }
     if il.contains("<link") && (il.contains("href=\"http") || il.contains("href='http")) {
         error(&mut out, "index.html links an external stylesheet. Remove it; the Biorouter design system is injected automatically.");
@@ -93,7 +93,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     for cdn in ["cdn.", "unpkg.com", "jsdelivr", "googleapis", "cdnjs"] {
         if il.contains(cdn) {
             error(&mut out, &format!(
-                "index.html references a CDN ('{cdn}'). Remove external assets — exported apps must run offline."
+                "index.html references a CDN ('{cdn}'). Remove external assets; exported apps must run offline."
             ));
             break;
         }
@@ -147,7 +147,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 
     // (1) Backend wiring through the App SDK / agent protocol.
     if is_agentic && !main.contains("./sdk") {
-        error(&mut out, "src/main.ts must `import { createApp } from \"./sdk\"` — that's how the app reaches the Biorouter backend.");
+        error(&mut out, "src/main.ts must `import { createApp } from \"./sdk\"`, which is how the app reaches the Biorouter backend.");
     }
     for line in main.lines() {
         let t = line.trim_start();
@@ -155,7 +155,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
             error(
                 &mut out,
                 &format!(
-                    "src/main.ts has a non-local import — only import from \"./sdk\": {}",
+                    "src/main.ts has a non-local import; only import from \"./sdk\": {}",
                     t.trim()
                 ),
             );
@@ -207,7 +207,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     {
         out.push(LintFinding {
             level: LintLevel::Warn,
-            msg: "index.html has interactive controls but src/main.ts wires no events (addEventListener). The controls won't do anything — wire them to br.run(...).".into(),
+            msg: "index.html has interactive controls but src/main.ts wires no events (addEventListener). The controls won't do anything, so wire them to br.run(...).".into(),
         });
     }
 
@@ -222,7 +222,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
             out.push(LintFinding {
                 level: LintLevel::Error,
                 msg: format!(
-                    "src/main.ts references element id '#{rid}' that is not in index.html — getElementById would return null and crash. Add the element or fix the id."
+                    "src/main.ts references element id '#{rid}' that is not in index.html, so getElementById would return null and crash. Add the element or fix the id."
                 ),
             });
         }
@@ -230,10 +230,10 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
 
     // (3) Aesthetic alignment with the design system.
     if il.contains("<style") {
-        warning(&mut out, "index.html contains a <style> block — prefer the design-system classes/CSS variables over custom CSS for a native look.");
+        warning(&mut out, "index.html contains a <style> block; prefer the design-system classes/CSS variables over custom CSS for a native look.");
     }
     if il.contains("color:#") || il.contains("color: #") || il.contains("background:#") {
-        warning(&mut out, "index.html uses raw hex colors — use var(--br-text)/var(--br-accent)/… tokens so the app matches Biorouter's theme.");
+        warning(&mut out, "index.html uses raw hex colors; use var(--br-text)/var(--br-accent)/… tokens so the app matches Biorouter's theme.");
     }
     if !il.contains("br-") {
         warning(&mut out, "index.html uses no Biorouter design-system classes (br-*). The UI will look off-theme; compose with br-card/br-btn/br-select/etc.");
@@ -294,7 +294,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     // (5) Agent-driven UI coherence.
     if !ui_enabled {
         if main.contains("br.ui.") {
-            error(&mut out, "src/main.ts uses `br.ui` but this app sets capabilities.ui.enabled = false — the agent can never send a UI command, so those handlers are dead. Enable the capability or drop the code.");
+            error(&mut out, "src/main.ts uses `br.ui` but this app sets capabilities.ui.enabled = false, so the agent can never send a UI command, so those handlers are dead. Enable the capability or drop the code.");
         }
         if system_prompt.contains("ui_") {
             warning(&mut out, "The system prompt tells the agent to call ui_* tools, but capabilities.ui.enabled = false so it has none. Enable the capability or rewrite the prompt.");
@@ -307,7 +307,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
         for n in &names {
             if !seen.insert(*n) {
                 warning(&mut out, &format!(
-                    "index.html declares data-br-region=\"{n}\" more than once. The agent's `@region:{n}` target resolves to the first one only — give each region a unique name."
+                    "index.html declares data-br-region=\"{n}\" more than once. The agent's `@region:{n}` target resolves to the first one only; give each region a unique name."
                 ));
             }
         }
@@ -349,13 +349,13 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     // agent's instances of a component the manifest never declares.
     for name in &undeclared {
         error(&mut out, &format!(
-            "src/ registers a custom component \"{name}\" (components.register) that the manifest's surface.components never declares. Declare it with a props schema so the agent's instances are validated server-side, or remove the registration — custom components fail closed."
+            "src/ registers a custom component \"{name}\" (components.register) that the manifest's surface.components never declares. Declare it with a props schema so the agent's instances are validated server-side, or remove the registration. Custom components fail closed."
         ));
     }
     // (6b) Fail closed on a dynamic registration name: without a string literal the
     // props schema can't be statically extracted and declared.
     if has_dynamic_registration {
-        error(&mut out, "A components.register(...) call uses a non-literal component name. Component registrations must use a string literal so the schema can be declared and validated (custom components fail closed) — e.g. components.register(\"pathway_map\", { … }).");
+        error(&mut out, "A components.register(...) call uses a non-literal component name. Component registrations must use a string literal so the schema can be declared and validated (custom components fail closed), e.g. components.register(\"pathway_map\", { … }).");
     }
     // (6c) Declared but never registered in main.ts → the agent can emit instances
     // the app has no renderer for.
@@ -378,7 +378,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
             && stmt.contains("props.")
     });
     if prop_fed_sink {
-        warning(&mut out, "src/main.ts feeds component `props` into innerHTML/insertAdjacentHTML. Component props are agent-controlled (prompt-injectable) — render them via textContent or sanitize the HTML instead of injecting markup into the app's own origin.");
+        warning(&mut out, "src/main.ts feeds component `props` into innerHTML/insertAdjacentHTML. Component props are agent-controlled (prompt-injectable), so render them via textContent or sanitize the HTML instead of injecting markup into the app's own origin.");
     }
 
     // (6e) Reactive-state bindings without a declared schema. The default structural
@@ -432,14 +432,14 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     for reg in action_regs.iter().flatten() {
         if !declared_action_names.contains(reg.as_str()) {
             error(&mut out, &format!(
-                "src/main.ts registers an action \"{reg}\" (actions.register) that the manifest's surface.actions never declares. Declare it with a params schema so the agent's app_call is validated server-side, or remove the registration — typed actions fail closed."
+                "src/main.ts registers an action \"{reg}\" (actions.register) that the manifest's surface.actions never declares. Declare it with a params schema so the agent's app_call is validated server-side, or remove the registration. Typed actions fail closed."
             ));
         }
     }
     // (7c) Fail closed on a dynamic registration name: without a string literal the
     // params schema can't be statically declared and validated.
     if action_regs.iter().any(|r| r.is_none()) {
-        error(&mut out, "An actions.register(...) call uses a non-literal action name. Action registrations must use a string literal so the action can be declared and validated (typed actions fail closed) — e.g. actions.register(\"run_query\", { … }).");
+        error(&mut out, "An actions.register(...) call uses a non-literal action name. Action registrations must use a string literal so the action can be declared and validated (typed actions fail closed), e.g. actions.register(\"run_query\", { … }).");
     }
 
     // (7d) Signals the app emits, across all authored TS (`sdk.ts` excluded — it
@@ -472,7 +472,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
     // Dynamic emit → Warning only: emits are validated server-side at runtime, so a
     // computed name is survivable (unlike a registration, which fails closed).
     if has_dynamic_emit {
-        warning(&mut out, "A signals.emit(...) call uses a non-literal signal name. Emits are validated server-side at runtime, so a dynamic name is survivable, but it can't be checked against surface.signals here — prefer a string-literal signal name.");
+        warning(&mut out, "A signals.emit(...) call uses a non-literal signal name. Emits are validated server-side at runtime, so a dynamic name is survivable, but it can't be checked against surface.signals here, so prefer a string-literal signal name.");
     }
 
     // (7e) An app that declares typed actions but still hand-assembles an English
@@ -488,7 +488,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
             None => false,
         });
         if concat_into_run {
-            warning(&mut out, "src/main.ts assembles an English prompt into .run(...), but this app declares typed actions — prefer br.call(name, args) over assembling English prompts.");
+            warning(&mut out, "src/main.ts assembles an English prompt into .run(...), but this app declares typed actions; prefer br.call(name, args) over assembling English prompts.");
         }
     }
 
@@ -546,7 +546,7 @@ pub fn lint_app(project_dir: &Path) -> Vec<LintFinding> {
                  `surface.state_initial`, so every bound element renders BLANK until the first \
                  agent turn writes to the shared state. Declare the initial document \
                  (`declare_surface` → `state_initial`) rather than keeping a private local \
-                 `state` object — a local copy silently diverges from the document the agent reads.",
+                 `state` object, because a local copy silently diverges from the document the agent reads.",
             );
         }
     }
@@ -896,7 +896,7 @@ pub fn build_app(project_dir: &Path) -> std::io::Result<BuildReport> {
         return Ok(BuildReport {
             ok: false,
             used: "none".into(),
-            log: "src/main.ts not found — nothing to build".into(),
+            log: "src/main.ts not found, so there is nothing to build".into(),
         });
     }
     let refreshed = refresh_sdk(project_dir);
@@ -2104,7 +2104,7 @@ document.getElementById("run")!.addEventListener("click", () => br.run("visualiz
             let child_env = run_esbuild_leak_probe(CANARY);
             assert!(
                 !child_env.contains(CANARY),
-                "issue #62: the daemon's auth secret reached the bundler child — with the \
+                "issue #62: the daemon's auth secret reached the bundler child, and with the \
                  `npx --yes esbuild` fallback that hands biorouterd's key to a package \
                  downloaded at build time.\nchild env:\n{child_env}"
             );
@@ -2128,7 +2128,7 @@ document.getElementById("run")!.addEventListener("click", () => br.run("visualiz
             ] {
                 assert!(
                     child_env.lines().any(|l| l.starts_with(expected)),
-                    "{expected} — stripping the daemon credential must not censor the \
+                    "{expected} is missing: stripping the daemon credential must not censor the \
                      environment the bundler needs:\n{child_env}"
                 );
             }

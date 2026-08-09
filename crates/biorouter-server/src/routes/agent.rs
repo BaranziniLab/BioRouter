@@ -1194,7 +1194,7 @@ async fn agent_add_extension(
 const CROSS_AFFILIATION_GRANT_NEEDS_USER: &str =
     "Accepting a cross-institutional data flow is a decision only the person at the keyboard can \
      make, and this request carried no proof it came from them. Nothing was recorded. Do not \
-     retry — the same call will be refused again, and no setting, hook or permission mode \
+     retry; the same call will be refused again, and no setting, hook or permission mode \
      changes it. Tell the user which extension you need and what for, and let them approve it.";
 
 /// …and when the daemon holds no user-action key at all.
@@ -1205,7 +1205,7 @@ const CROSS_AFFILIATION_GRANT_NEEDS_USER: &str =
 /// hand-run `biorouterd agent` and every headless deployment land here.
 const CROSS_AFFILIATION_GRANT_NO_KEY: &str =
     "This daemon was started without a user-action key, so it cannot verify that a request came \
-     from the person at the keyboard — and accepting a cross-institutional data flow requires \
+     from the person at the keyboard, and accepting a cross-institutional data flow requires \
      that proof. Nothing was recorded. This control is unavailable on this daemon; use the \
      desktop app, or bind this chat to a model covered by the same institution's agreements.";
 
@@ -1236,8 +1236,8 @@ const CROSS_AFFILIATION_GRANT_NOTHING_TO_ACCEPT: &str =
 /// the chat here to answer would read the process default instead — a grant
 /// recorded against the wrong institution, which no later call would match.
 const CROSS_AFFILIATION_GRANT_CHAT_NOT_LOADED: &str =
-    "That chat is not loaded in this daemon right now, so the model it is bound to — and \
-     therefore whose agreements cover it — cannot be read. Nothing was recorded. Open the chat \
+    "That chat is not loaded in this daemon right now, so the model it is bound to, and \
+     therefore whose agreements cover it, cannot be read. Nothing was recorded. Open the chat \
      and approve the flow there.";
 
 /// A verdict from [`user_action_proof`] to the grant route's answer: `Ok(())`
@@ -2743,9 +2743,9 @@ mod add_extension_resolver_tests {
             squeezed().contains(&needle),
             "`/agent/add_extension` no longer hands the resolver the config it was given. \
              A renamed private extension resolves Public from its name alone, so this route \
-             would attach a clinical connector to a public session — see DR-23. It must also \
+             would attach a clinical connector to a public session; see DR-23. It must also \
              be the resolution that carries the AFFILIATION, or the two axes can disagree \
-             about the same entry — see DR-26."
+             about the same entry; see DR-26."
         );
     }
 
@@ -2916,7 +2916,7 @@ mod cross_affiliation_notice_route_tests {
         assert!(
             signature.contains("-> Result<String,"),
             "`/agent/update_provider` no longer returns a body, so the warning it composes \
-             cannot reach the user — which is the state this fix found it in: {signature}"
+             cannot reach the user, which is the state this fix found it in: {signature}"
         );
     }
 
@@ -2943,7 +2943,7 @@ mod cross_affiliation_notice_route_tests {
         assert!(
             attached < asked,
             "the notice is composed BEFORE the extension is attached, so it answers for a chat \
-             that no longer exists — and omits the connector the request was about"
+             that no longer exists, and omits the connector the request was about"
         );
         let signature = returns("async fn agent_add_extension(");
         assert!(
@@ -3239,7 +3239,7 @@ mod knowledge_selection_tests {
         assert_eq!(
             visible,
             ids(&["a", "b"]),
-            "b must be in the set — it is the primary"
+            "b must be in the set: it is the primary"
         );
         assert_eq!(primary.as_deref(), Some("b"));
     }

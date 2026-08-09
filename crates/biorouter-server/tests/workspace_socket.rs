@@ -135,7 +135,7 @@ async fn the_mounted_socket_authenticates_and_carries_frames_both_ways() {
                 .expect_err("a wrong secret must be refused")
         ),
         axum::http::StatusCode::FORBIDDEN,
-        "the socket's own gate must reject a wrong secret — and the query key is `secret`"
+        "the socket's own gate must reject a wrong secret, and the query key is `secret`"
     );
     assert_eq!(
         refusal_status(

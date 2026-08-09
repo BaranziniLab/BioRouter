@@ -94,16 +94,16 @@ fn web_scrape_status_is_retryable(status: reqwest::StatusCode) -> bool {
 fn web_scrape_status_hint(status: reqwest::StatusCode) -> &'static str {
     match status.as_u16() {
         403 => {
-            " The site blocks automated clients — try an alternative source, \
+            " The site blocks automated clients. Try an alternative source, \
                  or browser automation if available."
         }
-        404 => " The URL does not exist — verify the URL or pick another source.",
+        404 => " The URL does not exist. Verify the URL or pick another source.",
         429 => {
-            " The site is rate-limiting requests — wait before retrying, or use \
+            " The site is rate-limiting requests. Wait before retrying, or use \
                  another source."
         }
         code if (500..600).contains(&code) => {
-            " The server failed — retry later or use another source."
+            " The server failed. Retry later or use another source."
         }
         _ => "",
     }
@@ -502,18 +502,18 @@ impl ComputerControllerServer {
 
             1. Work PROGRESSIVELY in small, verifiable steps. Do ONE action
                (activate an app, click a control, type text), then confirm its
-               effect — take a screenshot or query the UI/app state — BEFORE the
+               effect (take a screenshot or query the UI/app state) BEFORE the
                next action. Do not chain many blind UI actions at once.
             2. NEVER repeat an action that did not visibly change anything. If the
                same step fails or has no effect twice, STOP repeating it. Re-read
                the latest screenshot/output, change your approach, or report what
-               you observe and ask the user — looping wastes their tokens.
+               you observe and ask the user; looping wastes their tokens.
             3. PERMISSIONS are the most common real failure, not your script. If a
                control script reports a permission/accessibility/automation error
                (e.g. "not allowed", "assistive access", "not authorized"), the OS
                is blocking automation. Tell the user exactly which permission to
                grant (e.g. Accessibility / Screen Recording / Automation for the
-               app) and stop — do NOT retry the same script until they confirm.
+               app) and stop. Do NOT retry the same script until they confirm.
             4. Prefer the most RELIABLE method available, in this order: (a) the
                application's own automation/scripting interface or a CLI, (b)
                keyboard navigation and shortcuts, (c) clicking a named UI element,
@@ -534,12 +534,12 @@ impl ComputerControllerServer {
                dismiss the popup (Escape again if needed), take a screenshot to see
                the real state, and only then choose your next action. Never keep
                typing into a popup that isn't responding, and never re-send a script
-               that just timed out — fix the situation first.
+               that just timed out. Fix the situation first.
 
             ## Driving messaging & chat apps (Slack, Teams, Discord, Mail, etc.)
 
             These apps are generally NOT scriptable through their automation
-            interface, so you must drive their UI — and you must follow their actual
+            interface, so you must drive their UI, and you must follow their actual
             UX rather than guessing:
             - To SEND a message: the composer is the text box at the BOTTOM of the
               open conversation. Click into it (it is usually already focused), type
@@ -563,7 +563,7 @@ impl ComputerControllerServer {
               - Fetch content from html websites and APIs
               - Save as text, JSON, or binary files
               - Content is cached locally for later use
-              - PREFER this as the FIRST tool for fetching any known URL — do not hand-roll
+              - PREFER this as the FIRST tool for fetching any known URL. Do not hand-roll
                 HTTP fetches in shell scripts (curl/wget/python urllib). Reserve browser
                 automation for JS-heavy or interactive sites.
             cache
@@ -786,7 +786,7 @@ impl ComputerControllerServer {
 
             This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
             When embedding a multiline script inside execute_code, beware: String.raw`...` ONLY preserves backslashes.
-            It does NOT make ${...} literal — every ${...} (PowerShell's ${env:Path} included) is still parsed as a
+            It does NOT make ${...} literal: every ${...} (PowerShell's ${env:Path} included) is still parsed as a
             JavaScript expression, and any backtick in the script (PowerShell's escape character) terminates the
             template literal early. Escape a literal dollar-brace as ${\"$\"}{ , or pass the script as a plain quoted
             JS string with \\n escapes, or write it to a file with developer/text_editor (write) and run that file.
@@ -815,7 +815,7 @@ impl ComputerControllerServer {
 
             This can run network-aware scripts for web, API, RSS, or news searches when no dedicated search tool exists.
             When embedding a multiline script inside execute_code, beware: String.raw`...` ONLY preserves backslashes.
-            It does NOT make ${...} literal — every ${...} (bash's ${VAR:-default} or ${!v} included) is still parsed
+            It does NOT make ${...} literal: every ${...} (bash's ${VAR:-default} or ${!v} included) is still parsed
             as a JavaScript expression, and any backtick in the script (command substitution, markdown fences)
             terminates the template literal early. Escape a literal dollar-brace as ${\"$\"}{ , or pass the script as a
             plain quoted JS string with \\n escapes, or write it to a file with developer/text_editor (write) and run
@@ -1108,7 +1108,7 @@ impl ComputerControllerServer {
                         ErrorCode::INTERNAL_ERROR,
                         format!(
                             "Computer control script timed out after {timeout_secs}s and was \
-                         abandoned. The UI is almost certainly blocked — by a modal dialog, an \
+                         abandoned. The UI is almost certainly blocked by a modal dialog, an \
                          open search/autocomplete popup, a menu, or a pending permission prompt. \
                          Do NOT re-run this script. Instead: take a screenshot to see the current \
                          state, press Escape to dismiss any popup, and try a different approach."
@@ -1125,7 +1125,7 @@ impl ComputerControllerServer {
         let mut result = if output.trim().is_empty() {
             "Script ran with no errors and produced no output (this is normal for UI actions \
              like activating an app or clicking). Verify the effect (e.g. take a screenshot) \
-             before assuming it did or did not work — do not blindly repeat the same step."
+             before assuming it did or did not work, and do not blindly repeat the same step."
                 .to_string()
         } else {
             format!("Script completed successfully.\n\nOutput:\n{}", output)
@@ -1853,7 +1853,7 @@ mod web_and_script_tests {
         ] {
             assert!(
                 says(kept),
-                "{kept} — stripping the daemon credential must not censor the user's \
+                "{kept} is missing: stripping the daemon credential must not censor the user's \
                  environment:\n{report}"
             );
         }
@@ -1982,7 +1982,7 @@ mod web_and_script_tests {
         let message = error.to_string();
         assert!(message.contains("404"), "status must survive: {message}");
         assert!(
-            message.contains("verify the URL"),
+            message.contains("Verify the URL"),
             "404 must carry the verify-URL hint: {message}"
         );
     }

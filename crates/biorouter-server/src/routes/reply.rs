@@ -2260,7 +2260,7 @@ mod tests {
 
         assert!(
             !cancel.is_cancelled(),
-            "a departing observer must NEVER cancel the turn — this is the bug"
+            "a departing observer must NEVER cancel the turn: this is the bug"
         );
         assert!(
             state.is_turn_active(&session_id),
@@ -2282,7 +2282,7 @@ mod tests {
         let replayed = collect_sse(&stream).await.join("");
         assert!(
             replayed.contains("before") && replayed.contains("after"),
-            "the whole turn — across the gap with no observers — must be replayable: {replayed}"
+            "the whole turn, across the gap with no observers, must be replayable: {replayed}"
         );
     }
 
@@ -2447,7 +2447,7 @@ mod tests {
         );
         assert!(
             !state.is_turn_active(&session_id),
-            "…and starts no second turn — the tokens are spent once"
+            "…and starts no second turn: the tokens are spent once"
         );
     }
 
@@ -4335,7 +4335,7 @@ mod adversarial_output_correctness {
         assert!(
             got.contains("OPENING-MARKER"),
             "the opening of an un-persisted running message was evicted and the storage \
-             resync cannot restore it — R1 says no progress is ever lost"
+             resync cannot restore it. R1 says no progress is ever lost"
         );
     }
 
@@ -4485,7 +4485,7 @@ mod adversarial_lifecycle {
             ended.is_ok(),
             "the attached response never ended: the turn is over and the client is \
              still parked on a stream nothing will ever close. It received only \
-             {:?} — the composer stays disabled (chatState = Streaming) until the \
+             {:?}, and the composer stays disabled (chatState = Streaming) until the \
              window is reloaded.",
             frames_of(&received)
         );

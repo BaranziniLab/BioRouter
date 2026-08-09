@@ -304,7 +304,7 @@ mod tests {
         write_page(
             &kb,
             "knowledge/sources/wanjun-gu---google-scholar-d7f205.md",
-            "---\ntitle: Wanjun Gu — Google Scholar (URL reference)\nkind: source\n---\n\
+            "---\ntitle: Wanjun Gu, Google Scholar (URL reference)\nkind: source\n---\n\
              References [[knowledge/entities/wanjun-gu|Wanjun Gu]] and\n\
              also [[knowledge/entities/wanjun-gu.md|Wanjun Gu]] (with .md).\n",
             "add source",

@@ -80,7 +80,7 @@ fn every_kb_listing_predicate_follows_the_master_toggle() {
     assert!(ucsf.can_reach(root, "omop"), "the owner reads its own base");
     assert!(
         !stanford.can_reach(root, "omop"),
-        "the affiliation axis — the one finding 17's listings could not ask. \
+        "the affiliation axis, the one finding 17's listings could not ask. \
          A private caller passes the tier axis, so without this row a listing \
          that asked the tier alone would look correct."
     );

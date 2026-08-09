@@ -258,7 +258,7 @@ async fn memory_delete_entry(
         EntryDeletion::ContentMismatch => Err((
             StatusCode::CONFLICT,
             format!(
-                "The memory at position {} of category \"{}\" is not the one that was listed — \
+                "The memory at position {} of category \"{}\" is not the one that was listed: \
                  the category changed since then, most likely because a conversation wrote to \
                  it. Nothing was deleted; reload and try again.",
                 req.index, req.category

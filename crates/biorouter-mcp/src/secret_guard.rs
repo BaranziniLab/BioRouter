@@ -586,7 +586,7 @@ mod tests {
         let after = SecretGuard::cached_for_dir(dir.path());
         assert!(
             after.is_denied(Path::new("private-notes.txt")),
-            "STALE GUARD: a .biorouterignore edit was not honoured — the agent \
+            "STALE GUARD: a .biorouterignore edit was not honoured. The agent \
              would read a file the user explicitly protected"
         );
     }

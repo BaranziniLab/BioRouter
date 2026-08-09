@@ -440,7 +440,7 @@ mod tests {
         assert_eq!(
             log.len(),
             2,
-            "seed + squashed-ingest only — no intermediate commits"
+            "seed + squashed-ingest only: no intermediate commits"
         );
     }
 

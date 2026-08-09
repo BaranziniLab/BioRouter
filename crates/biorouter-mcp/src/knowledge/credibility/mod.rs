@@ -195,7 +195,7 @@ fn deterministic_default(input: &SourceInput) -> Result<Credibility> {
         ),
         SourceInput::Text { .. } => (
             CredibilityTier::Personal,
-            "Pasted text with no provenance — personal.",
+            "Pasted text with no provenance, personal.",
         ),
     };
     Ok(Credibility {

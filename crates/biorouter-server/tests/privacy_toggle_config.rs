@@ -542,7 +542,7 @@ async fn a_hand_edited_config_yaml_cannot_turn_the_feature_off() {
 
     assert!(
         biorouter::privacy::privacy_tiers_enabled(),
-        "a hand-written `config.yaml` key disabled the master switch across a restart — \
+        "a hand-written `config.yaml` key disabled the master switch across a restart. \
          the retired key must be IGNORED, not honoured for compatibility"
     );
 }
@@ -655,14 +655,14 @@ async fn an_unreadable_store_falls_back_to_enforcing_and_never_to_the_retired_ke
 
     assert!(
         biorouter::privacy::privacy_tiers_enabled(),
-        "an unreadable store fell through to the retired `config.yaml` key — a \
+        "an unreadable store fell through to the retired `config.yaml` key: a \
          record that does not parse must resolve to ON, never to whatever the \
          key says"
     );
     assert_eq!(
         retired_key_on_disk(),
         Some(Value::String("off".to_string())),
-        "the migration ran against a store that already exists — one corrupt \
+        "the migration ran against a store that already exists: one corrupt \
          byte must not re-open it"
     );
 }
@@ -696,7 +696,7 @@ async fn the_retired_key_is_migrated_once_and_then_ignored() {
     );
     assert!(
         config_dir().join("privacy-tiers.json").exists(),
-        "the migration must leave the store behind — its existence is what stops \
+        "the migration must leave the store behind: its existence is what stops \
          the migration running a second time"
     );
     assert_eq!(
@@ -729,7 +729,7 @@ async fn the_retired_key_is_migrated_once_and_then_ignored() {
     biorouter::privacy::load_privacy_tiers_from_config();
     assert!(
         biorouter::privacy::privacy_tiers_enabled(),
-        "the retired key was read a second time — 'once, at migration' means once"
+        "the retired key was read a second time; 'once, at migration' means once"
     );
 }
 
@@ -930,7 +930,7 @@ async fn relaxing_the_mixing_policy_needs_the_operating_system_and_tightening_do
     let _ok = upsert_config(user_action_headers(), Json(mixing_upsert("strict", false)))
         .await
         .expect(
-            "entering `strict` must cost nothing — requiring a password to be \
+            "entering `strict` must cost nothing: requiring a password to be \
                  careful punishes the careful user",
         );
     assert_eq!(biorouter::privacy::mixing::policy(), MixingPolicy::Strict);

@@ -236,7 +236,7 @@ pub fn assemble_card(manifest: &Manifest, index_html: &str) -> String {
     let banner = format!(
         "<div style=\"position:sticky;top:0;z-index:10;background:var(--br-medium);\
          color:var(--br-text-muted);font-size:12px;padding:6px 12px;border-bottom:1px solid var(--br-border);\">\
-         Preview of <strong>{}</strong> — launch from the Applications panel to use the live agent.</div>\n",
+         Preview of <strong>{}</strong>. Launch from the Applications panel to use the live agent.</div>\n",
         html_escape(&manifest.title)
     );
     inject_after(&html, "<body>", &banner)
@@ -283,17 +283,17 @@ die() {{ echo "error: $*" >&2; exit 1; }}
 
 # ── 1. Find biorouterd ────────────────────────────────────────────────────
 # A bare `biorouterd` on PATH is the common case, but the desktop app ships its
-# own copy and never puts it on PATH — so look there too. (The old launcher
+# own copy and never puts it on PATH, so look there too. (The old launcher
 # backgrounded a bare `biorouterd` inside `( ... & )`, which returns 0 even when
 # the binary is missing, so `set -e` never caught it and the user just saw a
 # dead page 40 seconds later.)
 find_biorouterd() {{
   # Guard optional vars with `:-`: run.sh runs under `set -u`, so a bare
-  # $BIOROUTERD_BIN (normally UNSET — biorouterd on PATH is the common case)
+  # $BIOROUTERD_BIN (normally UNSET, since biorouterd on PATH is the common case)
   # would abort the whole launcher with "unbound variable" before the PATH
   # lookup ever ran.
   if [ -n "${{BIOROUTERD_BIN:-}}" ] && [ -x "${{BIOROUTERD_BIN:-}}" ]; then echo "${{BIOROUTERD_BIN}}"; return 0; fi
-  # A "fat" export bundles the daemon under payload/bin — prefer it so the
+  # A "fat" export bundles the daemon under payload/bin, so prefer it and keep the
   # folder is self-contained (no Biorouter install required on the target).
   if [ -x "$DIR/payload/bin/biorouterd" ]; then echo "$DIR/payload/bin/biorouterd"; return 0; fi
   if command -v biorouterd >/dev/null 2>&1; then command -v biorouterd; return 0; fi
@@ -317,7 +317,7 @@ find_biorouterd() {{
 # re-syncing every run means `npm run build` edits show up on refresh.
 install_app() {{
   mkdir -p "$STORE"
-  [ -f "$DIR/manifest.json" ] || die "manifest.json missing from this folder — re-export the app."
+  [ -f "$DIR/manifest.json" ] || die "manifest.json missing from this folder. Re-export the app."
   cp "$DIR/manifest.json" "$STORE/manifest.json"
   cp "$DIR/index.html" "$STORE/index.html" 2>/dev/null || true
   for sub in src dist assets; do
@@ -846,19 +846,19 @@ daemon using whatever LLM provider you have configured.
 ## Run it
 
 Double-click **`run.command`** (macOS), run **`bash run.sh`** (Linux/WSL), or
-double-click **`run.bat`** (Windows — it runs `run.ps1`).
+double-click **`run.bat`** (Windows; it runs `run.ps1`).
 
 That's the whole thing. The launcher:
 
 1. installs the app into your local Biorouter store (`manifest.json` and all),
-2. installs any first-run payload this export carries (`payload/` — knowledge
-   bases and skills — with your consent; see `payload/export.json`),
+2. installs any first-run payload this export carries (`payload/`: knowledge
+   bases and skills, with your consent; see `payload/export.json`),
 3. reuses a running `biorouterd`, or starts one on the first free port,
 4. checks the daemon can actually serve the app, and
 5. opens it in your browser.
 
 No Node, no `npm install`, no build step. You need Biorouter installed with a
-provider configured (`biorouter configure`) — unless this is a **fat** export,
+provider configured (`biorouter configure`), unless this is a **fat** export,
 which bundles `biorouterd` under `payload/bin/` and needs nothing installed. If
 `biorouterd` lives somewhere unusual, set `BIOROUTERD_BIN=/path/to/biorouterd`.
 
@@ -872,7 +872,7 @@ which bundles `biorouterd` under `payload/bin/` and needs nothing installed. If
 ## Editing the UI
 
 `src/main.ts` is the app logic; `src/sdk.ts` is the Biorouter App SDK. To
-iterate, use the dev server — it serves *this* folder and proxies the agent, so
+iterate, use the dev server: it serves *this* folder and proxies the agent, so
 your rebuilt bundle shows up on refresh:
 
     npm install
@@ -888,7 +888,7 @@ origin, nothing hard-codes a port.
 - **Don't open `index.html` straight off disk.** A `file://` page has no origin
   to derive the agent socket from; it falls back to `ws://127.0.0.1:3000`, which
   only works if a daemon happens to be on that port. Use `run.sh` or `npm start`.
-- The daemon uses **your existing Biorouter configuration** — provider, model,
+- The daemon uses **your existing Biorouter configuration**: provider, model,
   and credentials from your OS keychain. Biorouter supports many providers
   (Anthropic, OpenAI, Azure, Bedrock, Ollama, Xiaomi MiMo, local llama.cpp, …);
   this app is provider-agnostic. If a key isn't in your keychain, export it

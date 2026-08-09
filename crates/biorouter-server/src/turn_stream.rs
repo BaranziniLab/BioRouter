@@ -1135,7 +1135,7 @@ mod tests {
         match reader.recv().await {
             ReaderEvent::Frame(f, _) => assert_eq!(
                 f.seq, 63,
-                "the newest frame — the un-persisted tail — is what survives"
+                "the newest frame, the un-persisted tail, is what survives"
             ),
             other => panic!("expected the retained tail, got {other:?}"),
         }

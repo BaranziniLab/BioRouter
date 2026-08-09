@@ -54,7 +54,7 @@ fn every_integration_test_binary_declares_the_sandbox() {
 
     assert!(
         !checked.is_empty(),
-        "found no test binaries to check — this guard has stopped guarding anything, \
+        "found no test binaries to check: this guard has stopped guarding anything, \
          which is worse than the defect it exists to catch"
     );
 

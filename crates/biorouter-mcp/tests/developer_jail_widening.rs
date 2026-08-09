@@ -132,7 +132,7 @@ async fn text_editor_jail_does_not_widen_to_the_env_base() {
     assert!(
         !relative_escaped,
         "a relative path escaped into BIOROUTER_WORKING_DIR once the session dir \
-         vanished: {} was created — the jail base widened to the parent",
+         vanished: {} was created, so the jail base widened to the parent",
         escaped_relative.display()
     );
     let err = relative.expect_err("with no base to resolve against, the call must fail");

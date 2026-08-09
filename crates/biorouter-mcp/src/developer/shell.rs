@@ -292,7 +292,7 @@ pub fn shell_sandbox_status_line(working_dir: Option<&std::path::Path>) -> Optio
     let report = shell_sandbox::detect().probe();
     if report.tier == SandboxTier::None {
         // `auto` fell open (strict would have errored before reaching output).
-        return Some("[sandbox: none — command ran with full user authority]".to_string());
+        return Some("[sandbox: none, command ran with full user authority]".to_string());
     }
 
     let policy = build_sandbox_policy(working_dir);
@@ -309,7 +309,7 @@ pub fn shell_sandbox_status_line(working_dir: Option<&std::path::Path>) -> Optio
         "network NOT denied"
     };
     let mut line = format!(
-        "[sandbox: {} — writes confined to {}; {}",
+        "[sandbox: {}, writes confined to {}; {}",
         report.mechanism,
         roots.join(", "),
         net
@@ -1037,7 +1037,7 @@ mod tests {
         ] {
             assert!(
                 child_env.lines().any(|l| l.starts_with(expected)),
-                "shell child lost {expected:?} — removing too much is its own \
+                "shell child lost {expected:?}; removing too much is its own \
                  regression.\nchild env:\n{child_env}"
             );
         }

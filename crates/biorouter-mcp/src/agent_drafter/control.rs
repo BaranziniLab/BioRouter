@@ -397,7 +397,7 @@ fn json_schema_errors(value: &Value, schema: &Value) -> Result<(), String> {
         return Ok(());
     }
     let validator = jsonschema::validator_for(schema).map_err(|e| {
-        format!("the declared JSON Schema failed to compile — fix the app manifest: {e}")
+        format!("the declared JSON Schema failed to compile. Fix the app manifest: {e}")
     })?;
     let errors: Vec<String> = validator
         .iter_errors(value)
@@ -1205,7 +1205,7 @@ impl UiBridge {
     pub fn check_write_allowed(&self, path: &str) -> Result<(), String> {
         match self.owner_of_path(path) {
             Some(action) => Err(format!(
-                "\"{path}\" is owned by the action \"{action}\" — you cannot write it directly. \
+                "\"{path}\" is owned by the action \"{action}\", so you cannot write it directly. \
                  Call app_call(name: \"{action}\", …) so the app's own handler makes the change. \
                  Writing the value yourself would put a number on the page that the app never \
                  computed."
@@ -1315,7 +1315,7 @@ fn validate_widget_kind(t: &str, ctx: &WidgetCtx) -> Result<(), String> {
             return Ok(());
         }
         return Err(format!(
-            "\"{t}\" nodes cannot be placed in a widget tree directly — they are only \
+            "\"{t}\" nodes cannot be placed in a widget tree directly: they are only \
              produced by the ui_{t} tool, which sanitizes/renders their contents \
              server-side. Call ui_{t} instead."
         ));
@@ -1875,7 +1875,7 @@ fn validate_against_schema(value: &Value, schema: &Value, comp: &str) -> Result<
     }
     let validator = jsonschema::validator_for(schema).map_err(|e| {
         format!(
-            "component \"{comp}\" has an invalid props schema in the app manifest — fix the \
+            "component \"{comp}\" has an invalid props schema in the app manifest. Fix the \
              declared schema (it failed to compile: {e})"
         )
     })?;
@@ -2020,7 +2020,7 @@ fn unknown_id_msg(i: usize, id: &str, reg: &HashMap<String, Value>) -> String {
     let mut known: Vec<&str> = reg.keys().map(String::as_str).collect();
     known.sort_unstable();
     if known.is_empty() {
-        return format!("ops[{i}]: unknown id \"{id}\"; no instances exist yet — add one first");
+        return format!("ops[{i}]: unknown id \"{id}\"; no instances exist yet, so add one first");
     }
     let shown: Vec<&str> = known.iter().take(20).copied().collect();
     let more = known.len().saturating_sub(shown.len());
@@ -2811,7 +2811,7 @@ impl AppControlServer {
         }
         if unchanged {
             ok_text(format!(
-                "(Surface unchanged since your last ui_describe — no need to call it \
+                "(Surface unchanged since your last ui_describe, so no need to call it \
                  again this turn.)\n{body}"
             ))
         } else {
@@ -2821,7 +2821,7 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_panel",
-        description = "Mount (or replace, or remove) a panel in the app — a side panel, a \
+        description = "Mount (or replace, or remove) a panel in the app: a side panel, a \
                        dashboard, an inspector. This is the main way to give the user \
                        something richer than a paragraph.\n\n\
                        `body` is an array of widget nodes. Node shapes:\n\
@@ -2841,7 +2841,7 @@ impl AppControlServer {
                        back to you as your next turn.\n\n\
                        `place` picks where it mounts: a dock slot (\"dock\" default / \
                        \"left\" / \"right\" / \"bottom\" / \"main\" / \"modal\"), OR a target \
-                       naming the author's own layout — \"@region:<name>\", \"@panel:<id>\", \
+                       naming the author's own layout: \"@region:<name>\", \"@panel:<id>\", \
                        or a CSS selector. To fill a region the author declared (e.g. \
                        @region:dashboard), pass it as `place` directly."
     )]
@@ -2911,7 +2911,7 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_render",
-        description = "Render widget nodes into an existing part of the app — an \
+        description = "Render widget nodes into an existing part of the app: an \
                        author-declared region (`@region:results`), a panel you created \
                        (`@panel:summary`), or a CSS selector (`#out`). Use `ui_describe` to \
                        discover targets. Same `body` node schema as `ui_panel`."
@@ -2946,7 +2946,7 @@ impl AppControlServer {
                        Single series: {\"type\":\"bar\",\"title\":\"…\",\"data\":[{\"label\":\"A\",\"value\":12}]}.\n\
                        Multiple series on one axis (e.g. train vs validation loss, actual vs forecast, \
                        two arms): {\"type\":\"line\",\"title\":\"…\",\"series\":[{\"name\":\"train\",\
-                       \"data\":[{\"label\":\"e1\",\"value\":0.9}, …]},{\"name\":\"val\",\"data\":[…]}]} — \
+                       \"data\":[{\"label\":\"e1\",\"value\":0.9}, …]},{\"name\":\"val\",\"data\":[…]}]}, giving \
                        overlaid lines / grouped bars with a legend, series index-aligned by label. \
                        Omit `target` to put it in a dock panel."
     )]
@@ -3061,8 +3061,8 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_layout",
-        description = "Set the app's layout. Either a preset — \"single\", \"sidebar-right\", \
-                       \"sidebar-left\", \"split\", or \"dashboard\" (a responsive grid) — or a \
+        description = "Set the app's layout. Either a preset (\"single\", \"sidebar-right\", \
+                       \"sidebar-left\", \"split\", or \"dashboard\", a responsive grid), or a \
                        grid grammar via `areas` (rows of area names, ≤4×4) with optional `sizes`. \
                        Pair with ui_panel/@region: to fill the regions."
     )]
@@ -3142,7 +3142,7 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_suggest",
-        description = "Offer up to five non-blocking suggestion chips — next steps the user can tap \
+        description = "Offer up to five non-blocking suggestion chips: next steps the user can tap \
                        to send (or ignore). Unlike `ui_ask`, this never blocks the turn: it renders \
                        a lightweight 'you might want to…' rail the user can dismiss. Each chip is a \
                        short label plus an optional prompt sent on click (omit the prompt to hand \
@@ -3276,7 +3276,7 @@ impl AppControlServer {
             ok_text(serde_json::to_string(&snapshot).unwrap_or_default())
         } else {
             ok_text(format!(
-                "No change — the state document already holds these values, so nothing was \
+                "No change: the state document already holds these values, so nothing was \
                  re-sent. Current state: {}",
                 serde_json::to_string(&snapshot).unwrap_or_default()
             ))
@@ -3285,7 +3285,7 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_patch_state",
-        description = "Apply an RFC-6902 JSON Patch to the app's shared state document — an array \
+        description = "Apply an RFC-6902 JSON Patch to the app's shared state document: an array \
                        of operations, e.g. [{\"op\":\"add\",\"path\":\"/cohort/count\",\"value\":42}]. \
                        Capped at 64 operations. Bumps the document version and pushes the delta to \
                        the page (bound elements re-render). Prefer this over `ui_state` for \
@@ -3364,15 +3364,15 @@ impl AppControlServer {
 
     #[tool(
         name = "ui_patch",
-        description = "Incrementally edit the UI by node id — the preferred way to update an app \
+        description = "Incrementally edit the UI by node id, the preferred way to update an app \
                        once something is on the page (it preserves scroll, focus, and input \
                        state instead of re-rendering). `ops` is an array (≤ 32) of:\n\
                        {\"op\":\"add\",\"id\":\"kpi-cases\",\"target\":\"@region:results\",\"node\":{…}} \
-                       — mount a new node (target defaults to the main results region; use \
+                       mounts a new node (target defaults to the main results region; use \
                        \"parent\":<id> to nest inside an existing node);\n\
-                       {\"op\":\"replace\",\"id\":\"kpi-cases\",\"node\":{…}} — swap a node's contents;\n\
-                       {\"op\":\"set_props\",\"id\":\"kpi-cases\",\"props\":{…}} — shallow-merge keys into a node;\n\
-                       {\"op\":\"remove\",\"id\":\"kpi-cases\"} — delete a node.\n\
+                       {\"op\":\"replace\",\"id\":\"kpi-cases\",\"node\":{…}} swaps a node's contents;\n\
+                       {\"op\":\"set_props\",\"id\":\"kpi-cases\",\"props\":{…}} shallow-merges keys into a node;\n\
+                       {\"op\":\"remove\",\"id\":\"kpi-cases\"} deletes a node.\n\
                        Nodes you create with ui_panel/ui_render get ids (returned in their tool \
                        result); use those ids here. Same node grammar as ui_panel."
     )]
@@ -3564,7 +3564,7 @@ impl AppControlServer {
                        \"render_kaplan_meier\", \"render_forest\", \"render_sankey\", \
                        \"render_chord\", \"render_heatmap\", \"render_choropleth\", \
                        \"render_dashboard\") and that tool's exact `args`. The figure is rendered \
-                       server-side and shown in a sandboxed frame — richer and more correct than \
+                       server-side and shown in a sandboxed frame, richer and more correct than \
                        hand-built ui_chart output. Omit `target` for a dock panel."
     )]
     pub async fn ui_figure(
@@ -3593,7 +3593,7 @@ impl AppControlServer {
                        result is their answers, so you branch on them without ending your turn.\n\n\
                        ALWAYS use this instead of asking the user a question in prose. If you are \
                        about to write \"please provide…\", \"paste your data\", \"which would you \
-                       like?\" or otherwise stop and wait for a reply — call `ui_ask` instead. \
+                       like?\" or otherwise stop and wait for a reply, call `ui_ask` instead. \
                        Many apps have no chat box, so a prose question reaches nobody."
     )]
     pub async fn ui_ask(
@@ -3677,7 +3677,7 @@ impl AppControlServer {
 
     #[tool(
         name = "app_call",
-        description = "Invoke an APP-DEFINED function on the page — one of the verbs the app author \
+        description = "Invoke an APP-DEFINED function on the page: one of the verbs the app author \
                        declared in `surface.actions` and registered a handler for. Unlike the \
                        other ui_* tools (which mutate the DOM), this calls into the app's own \
                        logic and returns its result to you as this tool's result. Call \
@@ -3775,7 +3775,7 @@ impl AppControlServer {
                     "\"{action}\" depends on evidence a worker reported it does NOT have: {}. \
                      Publishing numbers here would present invented values as computed ones. \
                      Either render the insufficient-data state and tell the user what is missing, \
-                     or — if a demonstration is genuinely what you want — call this action again \
+                     or (if a demonstration is genuinely what you want) call this action again \
                      with `_provenance: {{\"source\": \"synthetic\"}}`, and the values will be \
                      labelled DEMO on the page.",
                     blocking.join(", ")
@@ -3888,7 +3888,7 @@ impl AppControlServer {
         Some(if moved.is_empty() {
             format!(
                 "[readback] \"{}\" returned, but did NOT change any state pointer it declares it \
-                 writes ({}). Do not tell the user the change was applied — it was not. Say what \
+                 writes ({}). Do not tell the user the change was applied; it was not. Say what \
                  happened, or try a different argument.",
                 decl.name,
                 decl.writes.join(", ")
@@ -3912,7 +3912,7 @@ impl AppControlServer {
         Parameters(p): Parameters<EmitResultParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let Some((call_id, schema)) = self.bridge.take_pending_output() else {
-            return ok_text("no structured call is pending — reply in prose instead.");
+            return ok_text("no structured call is pending, so reply in prose instead.");
         };
 
         let result = unstringify(&p.result);
@@ -3923,7 +3923,7 @@ impl AppControlServer {
         if serialized.len() > APP_PAYLOAD_MAX {
             self.bridge.set_pending_output(call_id, schema);
             return Err(invalid(format!(
-                "the structured result is {} bytes; cap is {APP_PAYLOAD_MAX} — return a smaller \
+                "the structured result is {} bytes; cap is {APP_PAYLOAD_MAX}. Return a smaller \
                  result (summarize, drop rows, or reference data instead of inlining it)",
                 serialized.len()
             )));
@@ -4098,7 +4098,7 @@ impl AppControlServer {
                     let mut msg = format!(
                         "The \"{agent}\" profile did NOT answer within {elapsed}s and was \
                          cancelled. You have no result from it. Do not present its conclusion as \
-                         if you had one — either work without it and say so, or tell the user."
+                         if you had one. Either work without it and say so, or tell the user."
                     );
                     if let Some(p) = partial {
                         msg.push_str(&format!("\n\nPartial output before cancellation:\n{p}"));
@@ -4128,7 +4128,7 @@ impl AppControlServer {
                 self.bridge.forget_consult(&id);
                 Ok(CallToolResult::error(vec![Content::text(format!(
                     "The \"{agent}\" profile did not answer within {secs}s and the app's worker \
-                     loop did not respond. You have no result from it — do not invent one."
+                     loop did not respond. You have no result from it, so do not invent one."
                 ))]))
             }
         }
@@ -4243,13 +4243,13 @@ impl ServerHandler for AppControlServer {
                  restyle (ui_theme), rearrange (ui_layout), notify (ui_notify), share state \
                  (ui_state), and ask the user structured questions mid-turn (ui_ask). Once \
                  something is on the page, prefer ui_patch to edit individual nodes by id \
-                 (add / replace / set_props / remove) instead of re-rendering — it preserves \
+                 (add / replace / set_props / remove) instead of re-rendering: it preserves \
                  scroll, focus, and input state. For publication-grade figures (volcano, \
                  Kaplan-Meier, Sankey, forest, heatmap, maps, Mermaid diagrams, multi-figure \
                  dashboards) call ui_figure with the Auto Visualiser tool name and its args. \
                  ui_html renders sanitized rich HTML, but only when the app grants it. Call \
                  app_call to invoke a function the app author declared (its verbs live in the \
-                 declared surface — call ui_describe to see the app's declared actions and their \
+                 declared surface, so call ui_describe to see the app's declared actions and their \
                  argument schemas), emit_result to hand the app a structured result when it is \
                  awaiting one, and ui_subscribe to listen for app→agent signals. Call \
                  ui_describe first to learn what the page already offers (regions, node ids, \
@@ -4268,8 +4268,8 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
         "\n\n## Driving this app's interface\n\
          You are not limited to writing text. This app grants you `ui_*` tools that change the \
          page the user is looking at. Two rules override your usual habits:\n\n\
-         **1. Never ask the user for information in prose.** If you are missing an input — data \
-         to analyse, a threshold, a cohort, a file, a confirmation — call `ui_ask`. It renders a \
+         **1. Never ask the user for information in prose.** If you are missing an input (data \
+         to analyse, a threshold, a cohort, a file, a confirmation), call `ui_ask`. It renders a \
          form and returns their answers to you as the tool result, so you keep going in the same \
          turn. Writing \"please paste your data\" and stopping is a failure: many of these apps \
          have no chat box at all, so the user has nowhere to answer you. Check `hasChat` in \
@@ -4284,29 +4284,29 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
          - Long jobs → `ui_notify` for progress.\n\n\
          Call `ui_describe` once, up front, so you render into regions that actually exist. \
          Panels are addressed by a stable `id`: reuse the id to refresh a panel in place rather \
-         than stacking near-duplicates. Then keep your prose short — say what changed and why it \
+         than stacking near-duplicates. Then keep your prose short: say what changed and why it \
          matters, not what the panel already shows.\n\n\
-         Be economical with tool calls — you have a bounded number of actions per turn. Call \
+         Be economical with tool calls: you have a bounded number of actions per turn. Call \
          `ui_describe` ONCE (the page rarely changes mid-turn). Do NOT re-send `ui_state` values \
-         you already set — set a key only when it actually changes; identical repeats do nothing \
+         you already set. Set a key only when it actually changes; identical repeats do nothing \
          and waste the budget. Batch your UI updates: build each panel/chart once with its final \
          content rather than nudging it repeatedly. A turn is for acting on the user's input, not \
          for polling the page.\n\n\
          **3. Update in place, don't re-render.** Once a panel or region is on the page, prefer \
-         `ui_patch` to change individual nodes by id — `add`, `replace`, `set_props`, `remove`. \
+         `ui_patch` to change individual nodes by id: `add`, `replace`, `set_props`, `remove`. \
          It keeps scroll, focus, and input state alive where a full re-render would destroy them. \
          Nodes you build with `ui_panel`/`ui_render` come back with stable ids (listed in the \
          tool result and in `ui_describe`); target those.\n\n\
-         **4. Reach for real figures.** For anything publication-grade — volcano, Manhattan, \
+         **4. Reach for real figures.** For anything publication-grade (volcano, Manhattan, \
          Kaplan-Meier, forest, Sankey, chord, heatmap, maps, Mermaid diagrams, or a multi-figure \
-         dashboard — call `ui_figure` with the Auto Visualiser tool name and its arguments \
+         dashboard), call `ui_figure` with the Auto Visualiser tool name and its arguments \
          instead of hand-building a chart. It is richer and more correct than `ui_chart`.\n\n\
          **5. Call into the app's own logic.** Some apps declare *actions* (verbs the author \
          wired to real handlers) and *signals* (notifications the app can push you). Use \
-         `app_call` to run a declared action — call `ui_describe` first to see the app's declared \
+         `app_call` to run a declared action, and call `ui_describe` first to see the app's declared \
          actions and their argument schemas. When the app is awaiting a structured answer, use \
          `emit_result` to hand it a typed object rather than writing prose.\n\n\
-         You are ALREADY subscribed to every signal the app declares — you do not need to call \
+         You are ALREADY subscribed to every signal the app declares, so you do not need to call \
          `ui_subscribe` to start receiving them, and calling it to \"turn them on\" is wasted \
          budget. (The user clicks before your first tool call, so a subscription you had to \
          request would always arrive too late.) Signals you have received appear in your turn \
@@ -4328,7 +4328,7 @@ pub fn ui_system_prompt(cap: &UiCapability) -> String {
     if cap.allow_html {
         s.push_str(
             "\n\nThis app grants `ui_html`: you may render rich HTML (it is sanitized \
-             server-side — scripts, styles, forms, iframes and unsafe URLs are stripped). \
+             server-side: scripts, styles, forms, iframes and unsafe URLs are stripped). \
              Prefer widgets and `ui_figure` for structured content; reach for `ui_html` only \
              when you genuinely need free-form markup.",
         );

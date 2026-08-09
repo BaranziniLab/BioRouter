@@ -79,7 +79,7 @@ fn a_drag_only_surface_is_an_error() {
     );
     assert!(
         errs.iter().any(|e| e.contains("br.dnd.catalog")),
-        "and the error must name the working alternative — a rule with no alternative \
+        "and the error must name the working alternative: a rule with no alternative \
          just makes the model hand-roll something worse: {findings:?}"
     );
 }

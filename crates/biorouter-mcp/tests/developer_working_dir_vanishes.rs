@@ -135,7 +135,7 @@ async fn text_editor_keeps_its_jail_when_the_session_directory_is_deleted() {
     assert!(
         !relative_escaped,
         "a relative path escaped into the process cwd once the session dir vanished: \
-         {} was created — the jail base was silently re-rooted",
+         {} was created, so the jail base was silently re-rooted",
         escaped_relative.display()
     );
     let err = relative.expect_err("with no base to resolve against, the call must fail");

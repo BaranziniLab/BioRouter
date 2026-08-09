@@ -180,7 +180,7 @@ mod tests {
             production.matches(re_spelling).count(),
             0,
             "the carrier re-spelled the reachability question instead of delegating \
-             to the barrier — that is exactly how finding 17 happened"
+             to the barrier; that is exactly how finding 17 happened"
         );
         assert_eq!(
             production.matches("privacy_tiers_enabled").count(),

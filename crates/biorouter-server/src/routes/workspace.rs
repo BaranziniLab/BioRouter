@@ -348,7 +348,7 @@ mod tests {
         assert_eq!(
             bridge.last_echo().unwrap()["focused_session"],
             "s1",
-            "workspace_echo must land in the bridge's last_echo — it IS workspace_list's `gui`"
+            "workspace_echo must land in the bridge's last_echo: it IS workspace_list's `gui`"
         );
         assert_eq!(
             bridge.last_echo().unwrap()["window_id"],

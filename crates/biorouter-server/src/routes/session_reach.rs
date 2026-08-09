@@ -193,7 +193,7 @@ pub const CALLER_PROVIDER_HEADER: &str = "X-Caller-Provider";
 /// Versa was told to go and be a human, when what it needed was to be told it
 /// already had the capability and merely was not saying so.
 pub const SESSION_OUT_OF_REACH: &str =
-    "That chat is private, or there is no chat with that id — this request was made on a public \
+    "That chat is private, or there is no chat with that id. This request was made on a public \
      model and carried no proof it came from the person at the keyboard, and the two answers are \
      deliberately the same so that nothing about the chat is disclosed. Nothing was read and \
      nothing was changed. Do not retry as you are; the same call will be refused again, and no \
@@ -218,7 +218,7 @@ pub const SESSION_OUT_OF_REACH: &str =
 /// caller*, which the caller already knows, never *states of the session*.
 pub const SESSION_REACH_NO_KEY: &str =
     "This daemon was started without a user-action key, so it cannot verify that a request came \
-     from the person at the keyboard — and reaching into a private chat requires that proof. \
+     from the person at the keyboard, and reaching into a private chat requires that proof. \
      Nothing was read and nothing was changed. This control is unavailable on this daemon; use \
      the desktop app.";
 
@@ -803,7 +803,7 @@ mod tests {
                 events_rs,
                 "pub async fn observe_session_events(",
                 "session_events::subscribe(",
-                "the bus subscription, which would outlive the refusal — and the \
+                "the bus subscription, which would outlive the refusal, and the \
                  full-conversation snapshot frame right behind it",
             ),
             (
@@ -1764,7 +1764,7 @@ mod bypass_tests {
         );
         assert!(
             body.contains(NO_SUCH_KB),
-            "this 400 did not come from `set_selection` — only it echoes the kb id: {body}"
+            "this 400 did not come from `set_selection`: only it echoes the kb id: {body}"
         );
 
         // A body naming NO session addresses the machine-wide scope, not a
@@ -1783,7 +1783,7 @@ mod bypass_tests {
         );
         assert!(
             body.contains(NO_SUCH_KB),
-            "this 400 did not come from `set_selection` — only it echoes the kb id: {body}"
+            "this 400 did not come from `set_selection`: only it echoes the kb id: {body}"
         );
     }
 }

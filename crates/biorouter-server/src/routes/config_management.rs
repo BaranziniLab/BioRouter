@@ -513,7 +513,7 @@ const MASTER_SWITCH_AUTH_REFUSED: &str =
 const MIXING_POLICY_NEEDS_USER: &str =
     "Biorouter's cross-institution mixing policy is a setting only the person at the keyboard may \
      change, and this request carried no proof it came from them. Nothing was changed. Do not \
-     retry — the same call will be refused again, and no setting, hook or permission mode changes \
+     retry; the same call will be refused again, and no setting, hook or permission mode changes \
      it. Tell the user what you need and let them decide.";
 
 /// …and when the value is not one of the three modes.

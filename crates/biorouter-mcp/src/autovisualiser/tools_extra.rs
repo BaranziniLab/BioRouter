@@ -433,8 +433,8 @@ impl AutoVisualiserRouter {
         name = "render_flowchart",
         description = r#"Render a flowchart from typed nodes and edges (compiled to Mermaid).
 
-- nodes (optional): [{id, label?, shape?}] — shape: rectangle|rounded|stadium|circle|diamond|hexagon|subroutine|cylinder
-- edges (required): [{from, to, label?, style?}] — style: solid|dotted|thick|open
+- nodes (optional): [{id, label?, shape?}]; shape: rectangle|rounded|stadium|circle|diamond|hexagon|subroutine|cylinder
+- edges (required): [{from, to, label?, style?}]; style: solid|dotted|thick|open
 - direction (optional): TD (default) | LR | RL | BT
 - title (optional)
 
@@ -541,7 +541,7 @@ Example:
         description = r#"Render a sequence diagram (compiled to Mermaid).
 
 - participants (optional): ordered list of names (otherwise inferred)
-- messages (required): [{from, to, text, arrow?}] — arrow: solid (default)|dashed|open|cross
+- messages (required): [{from, to, text, arrow?}]; arrow: solid (default)|dashed|open|cross
 - title (optional)
 
 Example:
@@ -649,8 +649,8 @@ Example:
         name = "render_er_diagram",
         description = r#"Render an entity-relationship (ER) diagram (compiled to Mermaid).
 
-- entities (required): [{name, attributes?: [{name, type?, key?}]}] — key: PK|FK|UK
-- relationships (optional): [{from, to, label?, cardinality?}] — cardinality: one-to-one|one-to-many (default)|many-to-one|many-to-many
+- entities (required): [{name, attributes?: [{name, type?, key?}]}]; key: PK|FK|UK
+- relationships (optional): [{from, to, label?, cardinality?}]; cardinality: one-to-one|one-to-many (default)|many-to-one|many-to-many
 - title (optional)
 
 Example:
@@ -707,7 +707,7 @@ Example:
         name = "render_state_diagram",
         description = r#"Render a state machine diagram (compiled to Mermaid stateDiagram-v2).
 
-- transitions (required): [{from, to, label?}] — use "[*]" as from for the start state or as to for an end state
+- transitions (required): [{from, to, label?}]; use "[*]" as from for the start state or as to for an end state
 - title (optional)
 
 Example:
@@ -746,7 +746,7 @@ Example:
         description = r#"Render a class (UML) diagram (compiled to Mermaid).
 
 - classes (required): [{name, attributes?: ["+String name", ...], methods?: ["+save()", ...]}]
-- relationships (optional): [{from, to, type?, label?}] — type: inheritance|composition|aggregation|association (default)|dependency|realization
+- relationships (optional): [{from, to, type?, label?}]; type: inheritance|composition|aggregation|association (default)|dependency|realization
 - title (optional)
 
 Example:

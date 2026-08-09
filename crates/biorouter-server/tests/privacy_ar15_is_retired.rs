@@ -225,7 +225,7 @@ fn the_banner_names_what_closed_it() {
         assert!(
             b.contains(needed),
             "AR-15's retirement banner does not mention `{needed}`. A marker that does not name \
-             the ruling, the task, the commit and the gate is not a record of the closure — the \
+             the ruling, the task, the commit and the gate is not a record of the closure: the \
              next reader cannot check it, and an unverifiable claim is how this entry went stale \
              in the first place.\nBanner reads:\n{b}"
         );
@@ -294,7 +294,7 @@ fn every_reference_resolves_to_the_retired_heading() {
         }
         assert!(
             seen > 0,
-            "{name} does not link AR-15 at all — it cannot be saying what became of it"
+            "{name} does not link AR-15 at all, so it cannot be saying what became of it"
         );
         total += seen;
     }
@@ -364,7 +364,7 @@ fn the_documented_closure_is_the_one_the_code_performs() {
     ] {
         assert!(
             condition.contains(token),
-            "the tier-raise refusal no longer branches on `{token}`, so AR-15 is open again — and \
+            "the tier-raise refusal no longer branches on `{token}`, so AR-15 is open again, and \
              three documents, including the user-facing one, now say it is closed. Either restore \
              the gate or un-retire AR-15 in all of them.\nGuard reads: {condition}"
         );

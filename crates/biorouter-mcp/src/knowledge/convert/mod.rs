@@ -131,72 +131,72 @@ fn convert_file(bytes: &[u8], filename: &str, mime: Option<&str>) -> Result<Conv
     let effective_mime = normalize_mime(filename, mime, bytes);
     match effective_mime.as_str() {
         "text/html" | "application/xhtml+xml" => {
-                    let s = String::from_utf8_lossy(bytes);
-                    let c = html::html_to_markdown(&s)?;
-                    Ok(Converted {
-                        markdown: c.markdown,
-                        title: c.title,
-                        mime: effective_mime,
-                        needs_llm_fallback: false,
-                    })
-                }
-                "application/pdf" => {
-                    let c = pdf::pdf_to_markdown(bytes)?;
-                    Ok(Converted {
-                        markdown: c.markdown,
-                        title: c.title,
-                        mime: effective_mime,
-                        needs_llm_fallback: c.needs_llm_fallback,
-                    })
-                }
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
-                    let md = docx::docx_to_markdown(bytes)?;
-                    Ok(Converted {
-                        markdown: md,
-                        title: None,
-                        mime: effective_mime,
-                        needs_llm_fallback: false,
-                    })
-                }
-                "text/csv" => {
-                    let md = csv::csv_to_markdown(bytes)?;
-                    Ok(Converted {
-                        markdown: md,
-                        title: None,
-                        mime: effective_mime,
-                        needs_llm_fallback: false,
-                    })
-                }
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                | "application/vnd.ms-excel.sheet.macroenabled.12"
-                | "application/vnd.ms-excel"
-                | "application/vnd.oasis.opendocument.spreadsheet" => {
-                    let md = spreadsheet::spreadsheet_to_markdown(bytes)?;
-                    Ok(Converted {
-                        markdown: md,
-                        title: None,
-                        mime: effective_mime,
-                        needs_llm_fallback: false,
-                    })
-                }
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
-                    let c = pptx::pptx_to_markdown(bytes)?;
-                    Ok(Converted {
-                        markdown: c.markdown,
-                        title: c.title,
-                        mime: effective_mime,
-                        needs_llm_fallback: false,
-                    })
-                }
-                "application/vnd.ms-powerpoint" => anyhow::bail!(
-                    "legacy .ppt files are not supported — please re-save the deck as .pptx and ingest that"
-                ),
-                "text/markdown" | "text/plain" => Ok(Converted {
-                    markdown: String::from_utf8_lossy(bytes).into_owned(),
-                    title: None,
-                    mime: effective_mime,
-                    needs_llm_fallback: false,
-                }),
+            let s = String::from_utf8_lossy(bytes);
+            let c = html::html_to_markdown(&s)?;
+            Ok(Converted {
+                markdown: c.markdown,
+                title: c.title,
+                mime: effective_mime,
+                needs_llm_fallback: false,
+            })
+        }
+        "application/pdf" => {
+            let c = pdf::pdf_to_markdown(bytes)?;
+            Ok(Converted {
+                markdown: c.markdown,
+                title: c.title,
+                mime: effective_mime,
+                needs_llm_fallback: c.needs_llm_fallback,
+            })
+        }
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document" => {
+            let md = docx::docx_to_markdown(bytes)?;
+            Ok(Converted {
+                markdown: md,
+                title: None,
+                mime: effective_mime,
+                needs_llm_fallback: false,
+            })
+        }
+        "text/csv" => {
+            let md = csv::csv_to_markdown(bytes)?;
+            Ok(Converted {
+                markdown: md,
+                title: None,
+                mime: effective_mime,
+                needs_llm_fallback: false,
+            })
+        }
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        | "application/vnd.ms-excel.sheet.macroenabled.12"
+        | "application/vnd.ms-excel"
+        | "application/vnd.oasis.opendocument.spreadsheet" => {
+            let md = spreadsheet::spreadsheet_to_markdown(bytes)?;
+            Ok(Converted {
+                markdown: md,
+                title: None,
+                mime: effective_mime,
+                needs_llm_fallback: false,
+            })
+        }
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation" => {
+            let c = pptx::pptx_to_markdown(bytes)?;
+            Ok(Converted {
+                markdown: c.markdown,
+                title: c.title,
+                mime: effective_mime,
+                needs_llm_fallback: false,
+            })
+        }
+        "application/vnd.ms-powerpoint" => anyhow::bail!(
+            "legacy .ppt files are not supported; please re-save the deck as .pptx and ingest that"
+        ),
+        "text/markdown" | "text/plain" => Ok(Converted {
+            markdown: String::from_utf8_lossy(bytes).into_owned(),
+            title: None,
+            mime: effective_mime,
+            needs_llm_fallback: false,
+        }),
         other => anyhow::bail!("unsupported mime: {other}"),
     }
 }

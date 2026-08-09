@@ -260,8 +260,8 @@ impl AutoVisualiserRouter {
         name = "render_network",
         description = r#"Render an interactive force-directed network (node-link) graph. Ideal for knowledge graphs, gene/protein interaction networks, dependency graphs.
 
-- nodes (required): [{id, label?, group?, value?}] — group colours nodes, value sizes them
-- links (required): [{source, target, value?, label?}] — source/target reference node ids
+- nodes (required): [{id, label?, group?, value?}]; group colours nodes, value sizes them
+- links (required): [{source, target, value?, label?}]; source/target reference node ids
 - directed (optional, default false): draw arrowheads
 - title (optional)
 
@@ -311,7 +311,7 @@ Example:
 
 - xLabels (required): column labels
 - yLabels (required): row labels
-- values (required): values[row][col] — one row per yLabel, one entry per xLabel
+- values (required): values[row][col]; one row per yLabel, one entry per xLabel
 - title, xAxisLabel, yAxisLabel (optional)
 
 Example:

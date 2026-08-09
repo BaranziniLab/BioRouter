@@ -502,7 +502,7 @@ const TIER_NEEDS_USER: &str =
 /// the user hunting for a permission that does not exist.
 const TIER_NEEDS_A_DAEMON_KEY: &str =
     "This Biorouter backend was started without a user-action key, so it cannot tell a request \
-     made by you from one made by a model — and changing a knowledge base's privacy is yours to \
+     made by you from one made by a model, and changing a knowledge base's privacy is yours to \
      decide. Nothing was changed. The desktop app supplies that key; a backend started by `just \
      run-server`, by running `biorouterd agent` by hand, or as a headless server deployment does \
      not, and cannot offer this control. Use the desktop app for this change.";

@@ -26,7 +26,7 @@ pub fn check_knowledge_base(kb: &str, catalog: &Catalog) -> Result<(), String> {
     // the generic "invalid characters" message did not stop it.
     if kb == "br.kb" || kb.starts_with("br.") {
         return Err(format!(
-            "'{kb}' is not a knowledge-base id — `br.kb` is the CLIENT API namespace \
+            "'{kb}' is not a knowledge-base id. `br.kb` is the CLIENT API namespace \
              your app calls at runtime, never an id. Installed knowledge bases: {}. \
              If this app needs a knowledge base that is not installed here, leave \
              `knowledge_base` unset and record the need in `requires` instead.",
@@ -46,7 +46,7 @@ pub fn check_knowledge_base(kb: &str, catalog: &Catalog) -> Result<(), String> {
     if !catalog.has_kb(kb) {
         return Err(format!(
             "knowledge base '{kb}' is not installed on this Biorouter. Installed: {}. \
-             Do not invent an id — an app configured with a knowledge base that does not \
+             Do not invent an id: an app configured with a knowledge base that does not \
              exist arms KB tools scoped to nothing and fails on its first turn. Leave \
              `knowledge_base` unset and record the need in `requires` instead.",
             Catalog::render_list(&catalog.kb_ids())
@@ -72,7 +72,7 @@ pub fn check_skills(skills: &[String], catalog: &Catalog) -> Result<(), String> 
         "these skills are not installed on this Biorouter: {}. Installed skills: {}. \
          Configuring a skill that does not exist makes the agent's first turn fail \
          (it is told to load a skill that cannot load). Leave it out and record the \
-         need in `requires` instead — an app may legitimately want a skill this \
+         need in `requires` instead. An app may legitimately want a skill this \
          machine does not have.",
         missing.join(", "),
         Catalog::render_list(&catalog.skill_ids())

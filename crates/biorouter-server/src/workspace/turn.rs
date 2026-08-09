@@ -1575,7 +1575,7 @@ mod tests {
         assert_eq!(scope, TurnErrorScope::Provider);
         assert!(
             retryable,
-            "a rate limit is transient — the client retries it"
+            "a rate limit is transient: the client retries it"
         );
         assert_eq!(
             kind.as_deref(),

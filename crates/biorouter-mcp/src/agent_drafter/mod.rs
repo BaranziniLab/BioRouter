@@ -858,7 +858,7 @@ fn run_smoke(dir: &Path) -> Result<String, String> {
     match out.status.code() {
         Some(0) => Ok(format!("smoke check PASSED.\n{stdout}")),
         Some(1) => Ok(format!(
-            "smoke check found real defects — a user would hit these:\n{stdout}"
+            "smoke check found real defects; a user would hit these:\n{stdout}"
         )),
         _ => Err(format!("{stderr}{stdout}").trim().to_string()),
     }
@@ -1561,8 +1561,8 @@ fn export_summary(
     let mut msg = format!(
         "Exported '{}' ({mode} mode) to {} ({} scaffold files). \
          To run it: double-click run.command (macOS), `bash run.sh` (Linux), or run.bat (Windows). \
-         That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser — \
-         no npm install, no build step.",
+         That installs the app, starts a biorouterd if one isn't already up, and opens it in the browser, with \
+         no npm install and no build step.",
         id,
         target.display(),
         scaffold_files
@@ -1725,7 +1725,7 @@ impl AgentDrafterServer {
         let instructions = formatdoc! {r#"
             Agent Drafter builds interactive **Biorouter apps** for the user:
             TypeScript front-ends wired to a real Biorouter agent. Think "Claude
-            artifacts", but each app embeds a genuine Biorouter backend — when the
+            artifacts", but each app embeds a genuine Biorouter backend: when the
             user sends a message, Biorouter runs the full agent loop (the app's own
             model, extensions, skills, knowledge base) and streams the answer back
             into the app. The GUI presents a clickable preview and the CLI prints
@@ -1737,29 +1737,29 @@ impl AgentDrafterServer {
             - "static": a plain interactive page with no agent.
 
             Project layout (kept consistent):
-            - `index.html` — the UI shell you author.
-            - `src/main.ts` — your app logic (TypeScript), `import`ing `./sdk`.
-            - `src/sdk.ts` — the Biorouter App SDK (provided): opens the agent
+            - `index.html`: the UI shell you author.
+            - `src/main.ts`: your app logic (TypeScript), `import`ing `./sdk`.
+            - `src/sdk.ts`: the Biorouter App SDK (provided), which opens the agent
               WebSocket, streams markdown, handles multimodal (image) input, and can
               auto-mount a chat panel into any element with `data-br-chat`.
-            - `dist/app.js` — the esbuild bundle (produced by `build_app`).
+            - `dist/app.js`: the esbuild bundle (produced by `build_app`).
 
-            ARCHETYPES FIRST — the #1 rule: do NOT make every app a chat box.
+            ARCHETYPES FIRST, and the #1 rule: do NOT make every app a chat box.
             `create_app` seeds a starter **archetype** (pass `archetype`, or one
             is inferred from the title/description). Each non-chat archetype ships
             a working, lint-clean `index.html` + `src/main.ts` + a declared
-            `surface` you then extend — teaching by example. Pick the shape that
+            `surface` you then extend, teaching by example. Pick the shape that
             fits the task:
-            - `explorer`  — a graph/network the agent renders + inspector + search.
-            - `dashboard` — a KPI grid bound to shared state + a refresh action.
-            - `workbench` — a data table + row-select signal + a bound detail panel.
-            - `wizard`    — a staged form that writes state, then submits.
-            - `canvas`    — an author-registered draw surface + agent-called
+            - `explorer`:   a graph/network the agent renders + inspector + search.
+            - `dashboard`:  a KPI grid bound to shared state + a refresh action.
+            - `workbench`:  a data table + row-select signal + a bound detail panel.
+            - `wizard`:     a staged form that writes state, then submits.
+            - `canvas`:     an author-registered draw surface + agent-called
               actions (the avatar / scene / simulation shape).
-            - `chat`      — today's chat card; pick it ONLY for a pure
+            - `chat`:       today's chat card; pick it ONLY for a pure
               assistant/Q&A. `chat` is one option among six, never the default.
             One compact exemplar per archetype (the starter files are the full
-            version — read/extend them, don't rewrite from scratch):
+            version, so read/extend them rather than rewriting from scratch):
               // explorer: agent centers a node; the inspector is bound to it.
               br.actions.register("focus_node", (a) => br.state.set("/selection", a));
               // dashboard: agent writes a KPI tile; the bound grid re-renders it.
@@ -1770,34 +1770,34 @@ impl AgentDrafterServer {
               submit.onclick = () => br.call("submit", {{ name, goal }});
               // canvas: agent moves the avatar; the scene redraws from /scene.
               br.actions.register("move_avatar", (a) => world.move(a.direction, a.steps));
-              // chat: the default — createApp() auto-mounts a [data-br-chat] panel.
+              // chat: the default, where createApp() auto-mounts a [data-br-chat] panel.
 
-            DECLARE THE SURFACE — an app's contract is `manifest.surface` (seed it
+            DECLARE THE SURFACE. An app's contract is `manifest.surface` (seed it
             in `create_app`, or edit the seeded one). Registrations in `main.ts`
-            must match the declarations exactly — typed actions/components fail
+            must match the declarations exactly, because typed actions/components fail
             closed:
-            - `actions`     — verbs the AGENT may call (`app_call`). Register each
+            - `actions`:      verbs the AGENT may call (`app_call`). Register each
               with `br.actions.register("name", fn)`; the handler's return value
               resolves the agent's tool call.
-            - `signals`     — app→agent notifications the agent may subscribe to.
+            - `signals`:      app→agent notifications the agent may subscribe to.
               Emit with `br.signals.emit("name", payload)`; every emitted name
               must be declared.
-            - `components`  — custom catalog kinds you draw. Register with
+            - `components`:   custom catalog kinds you draw. Register with
               `br.components.register("name", {{ mount, update? }})`; props are
-              agent-controlled (untrusted) — render via textContent, not innerHTML.
-            - `state_schema`— JSON Schema for the shared state doc. Declare one
+              agent-controlled (untrusted), so render via textContent, not innerHTML.
+            - `state_schema`: JSON Schema for the shared state doc. Declare one
               whenever you use `data-br-bind`, so the agent's writes are validated.
 
-            WIRE TYPED CALLS, NOT PROMPT STRINGS — when the app declares actions,
+            WIRE TYPED CALLS, NOT PROMPT STRINGS. When the app declares actions,
             drive the agent with structured data, not hand-assembled English:
               const r = await br.call("rank_genes", {{ cohort, top: 10 }}); // typed
             Keep `br.run(prompt, '#out')` for genuine natural-language asks
             ("explain this selection") and to stream markdown into a result
-            surface — but do NOT concatenate control state into a prompt string
+            surface, but do NOT concatenate control state into a prompt string
             when a typed action/call fits. The agent invokes your actions via
             `app_call`; you never parse prose to discover intent.
 
-            SHARED REACTIVE STATE + BINDINGS — one JSON state document both sides
+            SHARED REACTIVE STATE + BINDINGS: one JSON state document both sides
             write:
               <span data-br-bind="/cohort/count"></span>   // re-renders on write
               br.state.set("/cohort/count", 42);            // author write (agent too)
@@ -1805,15 +1805,15 @@ impl AgentDrafterServer {
             Bind the parts of the UI the agent should keep live; the runtime
             re-renders only the bound nodes, so focus/scroll/input survive.
 
-            THE DYNAVIS RULE — after fulfilling a natural-language request that
+            THE DYNAVIS RULE. After fulfilling a natural-language request that
             CHANGED a parameter, emit a *persistent bound control* for it, so the
             user refines by direct manipulation instead of re-prompting. E.g.
             after "make the KM curve use a 90-day window", `ui_patch` in a slider
             bound to `/plot/km_window`. NL bootstraps; a synthesized control
-            refines — the single most user-validated GenUI pattern. Reach for it
+            refines, which is the single most user-validated GenUI pattern. Reach for it
             every time a prompt tuned a knob.
 
-            PRESENCE & NARRATION — make agent UI changes legible, not startling:
+            PRESENCE & NARRATION. Make agent UI changes legible, not startling:
             - The SDK renders an ambient activity chip for every `ui_*` frame;
               give `ui_highlight` a `narrate` note ("scoring the top variants…").
             - Observe, don't hijack: agent updates MARK rather than steal focus
@@ -1821,20 +1821,20 @@ impl AgentDrafterServer {
             - Prefer `ui_ask` (blocking) for a required answer; `ui_suggest`
               (dismissible chips) for optional nudges.
 
-            PUBLICATION FIGURES — for a real scientific figure (volcano, Manhattan,
+            PUBLICATION FIGURES. For a real scientific figure (volcano, Manhattan,
             Kaplan-Meier, Sankey, chord, map, Mermaid…) have the agent emit a
             `ui_figure` (an Auto Visualiser fragment) into your results region,
             rather than a hand-rolled chart. Reserve the lighter `ui_chart` /
             `ui_graph` for quick inline glances.
 
-            THEME PACK — choose a `theme` pack that fits the domain instead of
+            THEME PACK. Choose a `theme` pack that fits the domain instead of
             shipping the default light theme everywhere: `biorouter` (default),
             `clinical`, `lab-notebook`, `terminal`, `journal`, `midnight` (each
             with its own native light or dark palette). Compose within the pack's
             tokens; for distinctive, non-generic layouts within the token system,
             consult the **frontend-design** skill.
 
-            DESIGN CONTRACT — the user's requested product design is the source of
+            DESIGN CONTRACT. The user's requested product design is the source of
             truth. Do not force a pre-designed app pattern, dashboard structure, or
             visual style when the user specified something else. Biorouter injects
             a design system only as a dependable primitive set and fallback. Use
@@ -1852,7 +1852,7 @@ impl AgentDrafterServer {
             only when it would materially change the result; otherwise use a calm,
             readable Biorouter-native style and keep it easy to revise.
 
-            THEME TOKENS — colour every piece of text with the design tokens, never
+            THEME TOKENS. Colour every piece of text with the design tokens, never
             a hardcoded hex/rgb. Use `var(--br-text)` for primary text,
             `var(--br-text-muted)` for secondary/placeholder text, `var(--br-surface)`
             / `var(--br-bg)` for backgrounds, `var(--br-border)` for lines. A
@@ -1861,7 +1861,7 @@ impl AgentDrafterServer {
             default; a selected pack supplies its native palette, and the agent may
             switch it with `ui_theme`.
 
-            AGENT DESIGN CONTRACT — before or while authoring an agentic app,
+            AGENT DESIGN CONTRACT. Before or while authoring an agentic app,
             make the agent's operational choices explicit:
             - preferred provider/model and generation settings (`model.settings`);
               omit the model only when the user wants to inherit Biorouter's global
@@ -1889,9 +1889,9 @@ impl AgentDrafterServer {
               br.signals.emit("event", payload);              // notify a subscribed agent
               br.on("message", (e) => {{ if (e.type === "message") {{}} }}); // low-level stream
 
-            CONTROL PALETTE — the starter archetypes already wire a custom UI; when
+            CONTROL PALETTE. The starter archetypes already wire a custom UI; when
             you add or replace controls, use the themed, Biorouter-native ones and
-            wire them to `br.call(...)` / `br.run(...)` — a mix that fits the task:
+            wire them to `br.call(...)` / `br.run(...)`, in a mix that fits the task:
             - buttons / button grids: `br-btn`, `br-grid`
             - dropdowns: `<select class="br-select">`
             - sliders: `<input type="range" class="br-slider">` (+ `br-slider-val`)
@@ -1904,7 +1904,7 @@ impl AgentDrafterServer {
             On `change`/`click`/`drop`: prefer a typed `br.call(action, args)` or
             an emitted signal built from the control state; fall back to
             `br.run(...)` only for a genuine natural-language ask. Each app should
-            look and interact differently from the others — the archetypes make
+            look and interact differently from the others, and the archetypes make
             that the default, not an afterthought.
 
             Typical workflow:
@@ -1919,24 +1919,24 @@ impl AgentDrafterServer {
             5. `launch_app` to open it in the browser (returns the URL).
             6. `export_app` for a standalone runnable project.
 
-            Use `list_apps`, `read_app`, and `preview_app` to inspect existing apps —
+            Use `list_apps`, `read_app`, and `preview_app` to inspect existing apps:
             you can query and modify any previously-built app.
 
             KNOW YOUR ENVIRONMENT BEFORE YOU CONFIGURE IT. Call
             `list_platform_catalog` before naming any knowledge base, skill, or
             extension. It returns exactly what this install has. Ids that are not
-            in it are REJECTED — configuring a knowledge base or skill that does
+            in it are REJECTED. Configuring a knowledge base or skill that does
             not exist arms tools scoped to nothing and makes the app fail on its
             first turn. If the app needs something this machine does not have,
             that is fine and normal: leave the id unset and record the need in
             `requires` (e.g.
             `[{{"kind":"knowledge_base","id":"clinvar","reason":"variant annotations"}}]`).
             The user is shown the unmet requirement honestly. NEVER invent an id
-            to express a need — `requires` is what that is for. (In particular
+            to express a need; `requires` is what that is for. (In particular
             `br.kb` is the CLIENT API your app calls at runtime, never an id.)
 
             WORKFLOW-STYLE APPS (multi-step agentic loops, not just chat): every
-            user message runs Biorouter's full agent loop — the agent can call
+            user message runs Biorouter's full agent loop, so the agent can call
             many tools in sequence and reason over the results before replying, so
             an app can encode a real pipeline. Design one by: (a) giving it the
             extensions/skills/knowledge it needs, (b) writing a system_prompt that
@@ -1953,7 +1953,7 @@ impl AgentDrafterServer {
             progress/debug panel. Never leave long-running agent work as only a
             spinner.
 
-            VISUALIZATION CONTRACT — when an app claims to create visualizations,
+            VISUALIZATION CONTRACT. When an app claims to create visualizations,
             the final answer must contain at least one rendered visualization
             block in the visible result surface, not only a table, code snippet,
             or tool-call transcript. The SDK renders these fenced blocks:
@@ -1969,27 +1969,27 @@ impl AgentDrafterServer {
             in the UI-built run prompt. Tables are useful evidence, but they do
             not satisfy the visualization requirement by themselves.
 
-            AGENT-DRIVEN UI — the app's agent does not only *answer inside* the
+            AGENT-DRIVEN UI. The app's agent does not only *answer inside* the
             app, it can *change* the app. Every agentic app is granted `ui_*`
             tools (`capabilities.ui`, on by default) that push commands down its
             own WebSocket:
-            - `ui_panel` — mount/replace/remove a panel or dashboard (widget
+            - `ui_panel`: mount/replace/remove a panel or dashboard (widget
               nodes: card/row/col/text/badge/stat/divider/progress/table/chart/
               graph/input/select/checkbox/button/form).
-            - `ui_render` — render into a region the AUTHOR declared, a panel, or
+            - `ui_render`: render into a region the AUTHOR declared, a panel, or
               a CSS selector.
-            - `ui_chart` / `ui_graph` — draw a figure straight into the page.
-            - `ui_highlight` — outline/pulse/focus part of the app, with a note.
-            - `ui_theme` / `ui_layout` — restyle, or switch to a sidebar/dashboard.
-            - `ui_notify` — progress toasts. `ui_state` — a shared state bag the
+            - `ui_chart` / `ui_graph`: draw a figure straight into the page.
+            - `ui_highlight`: outline/pulse/focus part of the app, with a note.
+            - `ui_theme` / `ui_layout`: restyle, or switch to a sidebar/dashboard.
+            - `ui_notify`: progress toasts. `ui_state`: a shared state bag the
               app's own code can subscribe to via `br.ui.onState(...)`.
-            - `ui_ask` — render a form and BLOCK until the user submits; the tool
+            - `ui_ask`: render a form and BLOCK until the user submits; the tool
               result is their answers, so the agent branches on them mid-turn.
-            - `ui_describe` — list the regions/ids/panels the page actually has.
+            - `ui_describe`: list the regions/ids/panels the page actually has.
 
             To let the agent fill parts of YOUR markup, mark them:
               <section data-br-region="results"></section>
-            and it can target `@region:results`. Panels need no region — the SDK
+            and it can target `@region:results`. Panels need no region: the SDK
             always provides a dock. From the app side, `br.ui.onCommand(fn)` and
             `br.ui.onState(fn)` observe what the agent does.
 
@@ -2000,36 +2000,36 @@ impl AgentDrafterServer {
             a question in text and waiting for the next message. Set
             `capabilities.ui.enabled = false` only for deliberately text-only apps.
 
-            RUN GUARD — do NOT fire an agent turn (`br.run`/`br.prompt`) until the
+            RUN GUARD. Do NOT fire an agent turn (`br.run`/`br.prompt`) until the
             user has supplied the minimum input the task needs. Never call the
             agent on page boot with an empty form, and guard every control handler
             (`if (selected.length < 2) return;`, `if (!query.trim()) return;`).
             An agent turn on an empty/underspecified state wastes a round trip,
-            renders a confusing "nothing selected" result, and — because turns in
-            one app session run one at a time — a stuck empty turn blocks the real
+            renders a confusing "nothing selected" result, and (because turns in
+            one app session run one at a time) a stuck empty turn blocks the real
             turn queued behind it. Handle empty/partial states locally in the page
             (a "pick 2 models to compare" placeholder); only prompt the agent once
             there is real work. Also pass the user's current selection/state
-            explicitly in the run prompt — do not make the agent call `ui_describe`
+            explicitly in the run prompt, and do not make the agent call `ui_describe`
             to discover what the user chose (`ui_describe` is for verifying your
             own render, not for reading user input).
 
-            ITERATIVE LOOPS — for an app that works through a list one item at a
+            ITERATIVE LOOPS. For an app that works through a list one item at a
             time (triage a ranked issue list, quiz through sub-skills, resolve
             findings), the agent's system_prompt MUST track progress in `ui_state`
             and never re-offer a finished item. Each turn: (1) pick the next
             UNRESOLVED item (persist a `resolved`/`done` id set in `ui_state` and
             skip anything already in it); (2) act on it; (3) append a numbered
-            step to the visible log (`ui_render` a "Step N — item, choice, score
+            step to the visible log (`ui_render` a "Step N: item, choice, score
             before→after" line) so the user sees the state advance; (4) define and
             check a clear termination condition (e.g. "stop when no unresolved item
             is above threshold") and render a final summary when done. Without an
             explicit resolved-set the model re-asks the same top item forever and
-            the loop never advances — spell this out in the prompt.
+            the loop never advances, so spell this out in the prompt.
 
             BUILD HARNESS / guardrails: `build_app` (and `lint_app`) run a
             validation harness on whatever you generate and report findings. It
-            enforces three things — fix any ERRORs before `launch_app`/`export_app`:
+            enforces three things, and any ERRORs must be fixed before `launch_app`/`export_app`:
             1. Backend wiring: `src/main.ts` imports from "./sdk" and calls the
                agent (`br.run`/`br.prompt`/`br.ask`) or enables autoChat.
             2. Self-contained: no external `<script>`/`<link>`/CDN in index.html
@@ -2043,7 +2043,7 @@ impl AgentDrafterServer {
                `components.register` name must be declared in `manifest.surface`
                and vice-versa; emitted signal names must be declared;
                `data-br-bind*` bindings want a `state_schema`; component props may
-               not flow into innerHTML. The seeded starters already satisfy this —
+               not flow into innerHTML. The seeded starters already satisfy this, so
                keep declarations and registrations in lockstep when you extend them.
             Always `build_app` after editing `src/`, address the harness findings,
             and verify via `launch_app` before `export_app`.
@@ -2475,7 +2475,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "lint_app",
-        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), on-theme (Biorouter classes/tokens), and — for SDK v2 apps — do its custom components match the manifest's declared surface (registered ⇔ declared, string-literal names, no prop-fed HTML sinks) and its state bindings stay safe (declared state_schema, no on*/style bind-attr)? Fix ERRORs before launch/export."
+        description = "Run the build harness guardrails on an app and report findings: does it reach the backend via the App SDK, is it self-contained (no CDN/external assets), on-theme (Biorouter classes/tokens), and (for SDK v2 apps) do its custom components match the manifest's declared surface (registered ⇔ declared, string-literal names, no prop-fed HTML sinks) and its state bindings stay safe (declared state_schema, no on*/style bind-attr)? Fix ERRORs before launch/export."
     )]
     pub async fn lint_app(
         &self,
@@ -2590,7 +2590,7 @@ impl AgentDrafterServer {
         name = "declare_surface",
         description = "Declare (or update) an app's CONTRACT: its state schema, the actions the \
                        AGENT may call on the app, the signals the APP sends the agent, and any \
-                       custom components. This is the typed way to do it — do NOT rewrite \
+                       custom components. This is the typed way to do it, so do NOT rewrite \
                        manifest.json. Every action you declare must be registered in src/main.ts \
                        with `br.actions.register(...)`, and vice versa; lint enforces both \
                        directions. Pass merge=true to upsert by name, false (default) to replace."
@@ -2649,7 +2649,7 @@ impl AgentDrafterServer {
         name = "set_theme",
         description = "Set an app's theme pack (biorouter | clinical | lab-notebook | terminal | \
                        journal | midnight), with an optional accent colour and `--br-*` token \
-                       overrides. The pack is an enum — an unknown name is rejected rather than \
+                       overrides. The pack is an enum, so an unknown name is rejected rather than \
                        silently falling back to the default."
     )]
     pub async fn set_theme(
@@ -2674,7 +2674,7 @@ impl AgentDrafterServer {
 
     #[tool(
         name = "declare_profiles",
-        description = "Declare an app's WORKER AGENT PROFILES for multi-agent work (adversarial                        panels, collaborative pipelines). Each profile is a full alternate agent —                        its own model, system prompt, extensions and skills — that the main agent                        reaches with `consult(agent: \"<key>\")`. Keys must be stable identifiers                        (lowercase/digits/underscore); a display name like \"Prosecutor\" is                        rejected because `consult` resolves keys exactly. Workers do NOT get the                        app's UI tools unless you explicitly grant them — the main agent owns the                        page."
+        description = "Declare an app's WORKER AGENT PROFILES for multi-agent work (adversarial                        panels, collaborative pipelines). Each profile is a full alternate agent,                        with its own model, system prompt, extensions and skills, that the main agent                        reaches with `consult(agent: \"<key>\")`. Keys must be stable identifiers                        (lowercase/digits/underscore); a display name like \"Prosecutor\" is                        rejected because `consult` resolves keys exactly. Workers do NOT get the                        app's UI tools unless you explicitly grant them: the main agent owns the                        page."
     )]
     pub async fn declare_profiles(
         &self,
@@ -2729,7 +2729,7 @@ impl AgentDrafterServer {
         store.touch(&p.id).map_err(internal)?;
         Ok(CallToolResult::success(vec![Content::text(format!(
             "{} declares {} worker profile(s): {}. The main agent reaches them with \
-             consult(agent=\"<key>\") — use these exact keys.",
+             consult(agent=\"<key>\"); use these exact keys.",
             p.id,
             keys.len(),
             keys.join(", ")
@@ -2786,7 +2786,7 @@ impl AgentDrafterServer {
         let text = match run_smoke(&dir) {
             Ok(text) => text,
             Err(e) => format!(
-                "smoke check could not run: {e}\n\nThis is NOT a pass — the app was never \
+                "smoke check could not run: {e}\n\nThis is NOT a pass: the app was never \
                  executed. Install a browser (`npx playwright install chromium`) or set \
                  BIOROUTER_APP_SMOKE=off to skip deliberately."
             ),
@@ -2799,7 +2799,7 @@ impl AgentDrafterServer {
         description = "List what this Biorouter install ACTUALLY has: installed knowledge bases, \
                        installed skills, and available extensions. Call this BEFORE configure_app \
                        whenever an app needs a knowledge base, a skill, or an extension. Only ids \
-                       returned here may be configured — an id that does not exist is rejected, \
+                       returned here may be configured. An id that does not exist is rejected, \
                        because configuring one arms tools scoped to nothing and fails the app's \
                        first turn. If the app needs something this install does not have, leave \
                        the id unset and record it in `requires` instead; wanting an absent \
@@ -2856,7 +2856,7 @@ impl AgentDrafterServer {
                     .and_then(|a| a.model.as_ref())
                     .and_then(|s| s.model.clone())
                     .unwrap_or_else(|| "default".into());
-                format!("- {} [{:?}, model: {}] — {}", m.id, m.kind, model, m.title)
+                format!("- {} [{:?}, model: {}]: {}", m.id, m.kind, model, m.title)
             })
             .collect();
         Ok(CallToolResult::success(vec![Content::text(
@@ -2921,7 +2921,7 @@ impl AgentDrafterServer {
         name = "export_app",
         description = "Export an app as a standalone folder the user can just run: double-click \
                        `run.command` (macOS) or `bash run.sh`. The launcher installs the app into \
-                       the local Biorouter store, starts or reuses a `biorouterd`, and opens it — \
+                       the local Biorouter store, starts or reuses a `biorouterd`, and opens it, with \
                        no npm install and no build step (`dist/app.js` ships prebuilt). \
                        `npm start` additionally serves the folder and proxies the agent, for \
                        editing `src/`."
@@ -4711,7 +4711,7 @@ br.run("hello", "#missing");
             assert!(
                 !child_env.contains(CANARY),
                 "issue #62: the daemon's auth secret reached the app smoke child, which \
-                 executes agent-authored application code — so that code's host can call \
+                 executes agent-authored application code, so that code's host can call \
                  biorouterd as an authenticated client.\nchild env:\n{child_env}"
             );
             assert!(
@@ -4736,7 +4736,7 @@ br.run("hello", "#missing");
             ] {
                 assert!(
                     child_env.lines().any(|l| l.starts_with(expected)),
-                    "{expected} — stripping the daemon credential must not censor the \
+                    "{expected} is missing: stripping the daemon credential must not censor the \
                      environment the smoke harness needs to boot a browser:\n{child_env}"
                 );
             }
@@ -4980,7 +4980,7 @@ br.run("hello", "#missing");
                 let said = rendered(&out);
                 assert!(
                     !said.contains("omop-cohort-412"),
-                    "{} volunteered a private base id — add it to the metadata register \
+                    "{} volunteered a private base id; add it to the metadata register \
                      or scope it: {said}",
                     tool.name,
                 );
