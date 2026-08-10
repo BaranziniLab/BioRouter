@@ -244,7 +244,7 @@ pub struct DetectableProvidersResponse {
                                       'standard' or 'strict'"),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
                                       switch and may only be written from Settings > Privacy, \
-                                      with its typed confirmation — or (issue #56, DR-27) \
+                                      with its typed confirmation, or (issue #56, DR-27) \
                                       relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system \
                                       authentication that did not happen"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \
@@ -553,7 +553,7 @@ fn master_switch_refusal(key: &str) -> String {
         (status = 200, description = "Configuration value removed successfully", body = String),
         (status = 403, description = "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy \
                                       switch and may only be changed from Settings > Privacy, \
-                                      never removed — and (issue #56, DR-27) \
+                                      never removed, and (issue #56, DR-27) \
                                       `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"),
         (status = 404, description = "Configuration key not found"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): the key \

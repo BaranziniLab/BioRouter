@@ -1343,13 +1343,13 @@ async fn record_workflow_run(state: &Arc<AppState>, session_id: &str, request: &
     tag = "workspace",
     request_body = ChatRequest,
     responses(
-        (status = 200, description = "Streaming response initiated — either a NEW turn, or an \
+        (status = 200, description = "Streaming response initiated: either a NEW turn, or an \
                                       attachment to the turn this `turn_id` already named, \
                                       replayed from `from_seq` and then followed live",
          body = MessageEvent,
          content_type = "text/event-stream"),
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      the named chat is private (or absent — an unproven caller \
+                                      the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
                                       proof it came from the user (body = plain text)"),
         (status = 409, description = "A DIFFERENT turn is already in flight for this session, or \

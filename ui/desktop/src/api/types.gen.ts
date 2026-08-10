@@ -3032,7 +3032,7 @@ export type AgentAddExtensionErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user
      */
     403: unknown;
     /**
@@ -3051,7 +3051,7 @@ export type AgentAddExtensionErrors = {
 
 export type AgentAddExtensionResponses = {
     /**
-     * Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.
+     * Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached: the statement the user is shown before proceeding, warnings separated by a blank line, and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.
      */
     200: string;
 };
@@ -3137,7 +3137,7 @@ export type AgentCrossAffiliationGrantErrors = {
      */
     401: unknown;
     /**
-     * Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow — or (DR-27) this machine's mixing policy is 'strict' and the operating system did not confirm the user
+     * Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow, or (DR-27) this machine's mixing policy is 'strict' and the operating system did not confirm the user
      */
     403: unknown;
     /**
@@ -3485,7 +3485,7 @@ export type UpdateAgentProviderError = UpdateAgentProviderErrors[keyof UpdateAge
 
 export type UpdateAgentProviderResponses = {
     /**
-     * Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when the bind crosses no institutional boundary, which is the normal case.
+     * Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound: the statement the user is shown before proceeding, warnings separated by a blank line, and is EMPTY when the bind crosses no institutional boundary, which is the normal case.
      */
     200: string;
 };
@@ -3509,7 +3509,7 @@ export type UpdateWorkingDirErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user
      */
     403: unknown;
     /**
@@ -3975,7 +3975,7 @@ export type RemoveConfigData = {
 
 export type RemoveConfigErrors = {
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed — and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted
      */
     403: unknown;
     /**
@@ -4055,7 +4055,7 @@ export type UpsertConfigErrors = {
      */
     400: unknown;
     /**
-     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation — or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
+     * Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen
      */
     403: unknown;
     /**
@@ -4220,7 +4220,7 @@ export type SetActiveErrors = {
      */
     400: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
      */
     403: unknown;
 };
@@ -4924,7 +4924,7 @@ export type SetKbTierData = {
 
 export type SetKbTierErrors = {
     /**
-     * Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them — or this daemon holds no user-action key at all (body = plain text)
+     * Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them, or this daemon holds no user-action key at all (body = plain text)
      */
     403: unknown;
     /**
@@ -5242,7 +5242,7 @@ export type ReplyData = {
 
 export type ReplyErrors = {
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
      */
     403: unknown;
     /**
@@ -5261,7 +5261,7 @@ export type ReplyErrors = {
 
 export type ReplyResponses = {
     /**
-     * Streaming response initiated — either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live
+     * Streaming response initiated: either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live
      */
     200: MessageEvent;
 };
@@ -5863,7 +5863,7 @@ export type GetSessionErrors = {
      */
     401: unknown;
     /**
-     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
+     * Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)
      */
     403: unknown;
     /**

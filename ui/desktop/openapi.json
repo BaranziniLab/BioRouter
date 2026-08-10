@@ -124,7 +124,7 @@
         },
         "responses": {
           "200": {
-            "description": "Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.",
+            "description": "Extension added. The body is DR-26's cross-institutional warning for this chat once the extension is attached: the statement the user is shown before proceeding, warnings separated by a blank line, and is EMPTY when nothing in the chat crosses an institutional boundary, which is the normal case.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -137,7 +137,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
           },
           "409": {
             "description": "Refused by a privacy boundary (issue #56, DR-16): a private extension cannot be attached to a chat running on a public model"
@@ -267,7 +267,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow — or (DR-27) this machine's mixing policy is 'strict' and the operating system did not confirm the user"
+            "description": "Refused (issue #56, DR-26): only the user may accept a cross-institutional data flow, or (DR-27) this machine's mixing policy is 'strict' and the operating system did not confirm the user"
           },
           "424": {
             "description": "That chat is not loaded in this daemon, so the model it is bound to cannot be read"
@@ -688,7 +688,7 @@
         },
         "responses": {
           "200": {
-            "description": "Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound — the statement the user is shown before proceeding, warnings separated by a blank line — and is EMPTY when the bind crosses no institutional boundary, which is the normal case.",
+            "description": "Provider updated. The body is DR-26's cross-institutional warning for this chat on the model just bound: the statement the user is shown before proceeding, warnings separated by a blank line, and is EMPTY when the bind crosses no institutional boundary, which is the normal case.",
             "content": {
               "text/plain": {
                 "schema": {
@@ -749,7 +749,7 @@
             "description": "Unauthorized - invalid secret key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user"
           },
           "404": {
             "description": "Session not found"
@@ -1355,7 +1355,7 @@
             }
           },
           "403": {
-            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed — and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be changed from Settings > Privacy, never removed, and (issue #56, DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY` is set, never deleted"
           },
           "404": {
             "description": "Configuration key not found"
@@ -1449,7 +1449,7 @@
             "description": "Refused (issue #56, DR-27): `BIOROUTER_PRIVACY_MIXING_POLICY` is one of 'open', 'standard' or 'strict'"
           },
           "403": {
-            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation — or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen"
+            "description": "Refused: `BIOROUTER_PRIVACY_TIERS` is the master privacy switch and may only be written from Settings > Privacy, with its typed confirmation, or (issue #56, DR-27) relaxing `BIOROUTER_PRIVACY_MIXING_POLICY` needed a system authentication that did not happen"
           },
           "409": {
             "description": "Refused by a privacy boundary (issue #56, DR-16): the key decides what privacy capability new chats start at, so writing it requires proof the request came from the user. Also (DR-27) `BIOROUTER_PRIVACY_MIXING_POLICY`, which is user-only in every mode"
@@ -1662,7 +1662,7 @@
             "description": "Unknown kb id, a primary outside the resulting set, or conflicting primary-KB fields"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): `session_id` names a private chat (or an absent one, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
           }
         }
       }
@@ -2611,7 +2611,7 @@
             }
           },
           "403": {
-            "description": "Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them — or this daemon holds no user-action key at all (body = plain text)"
+            "description": "Refused by a privacy boundary: changing a knowledge base's privacy is the user's decision and the request carried no proof it came from them, or this daemon holds no user-action key at all (body = plain text)"
           },
           "404": {
             "description": "Not found"
@@ -3015,7 +3015,7 @@
         },
         "responses": {
           "200": {
-            "description": "Streaming response initiated — either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live",
+            "description": "Streaming response initiated: either a NEW turn, or an attachment to the turn this `turn_id` already named, replayed from `from_seq` and then followed live",
             "content": {
               "text/event-stream": {
                 "schema": {
@@ -3025,7 +3025,7 @@
             }
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
           },
           "409": {
             "description": "A DIFFERENT turn is already in flight for this session, or the supplied `conversation_so_far` is missing messages the server holds (nothing was written; re-read the session and retry)"
@@ -3761,7 +3761,7 @@
             "description": "Unauthorized - Invalid or missing API key"
           },
           "403": {
-            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent — an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
+            "description": "Refused by a privacy boundary (issue #56 Task 58 / #47): the named chat is private (or absent, and an unproven caller is told the same thing for both) and the request carried no proof it came from the user (body = plain text)"
           },
           "404": {
             "description": "Session not found"

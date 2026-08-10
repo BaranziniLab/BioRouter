@@ -622,7 +622,7 @@ pub async fn get_kb_tier(
         (status = 200, description = "The base's tier after the change", body = KbTierResponse),
         (status = 403, description = "Refused by a privacy boundary: changing a knowledge base's \
                                       privacy is the user's decision and the request carried no \
-                                      proof it came from them — or this daemon holds no \
+                                      proof it came from them, or this daemon holds no \
                                       user-action key at all (body = plain text)"),
         (status = 404, description = "Not found"),
         (status = 500, description = "Internal server error"),
@@ -1008,7 +1008,7 @@ pub async fn get_active(
         // (`routes::session_reach::gate_knowledge_active`), not by the handler
         // below — but it is what a client receives, so it belongs here.
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      `session_id` names a private chat (or an absent one — an \
+                                      `session_id` names a private chat (or an absent one, and an \
                                       unproven caller is told the same thing for both) and the \
                                       request carried no proof it came from the user \
                                       (body = plain text)"),

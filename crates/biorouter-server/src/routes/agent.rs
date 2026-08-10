@@ -851,9 +851,9 @@ async fn get_tools(
     request_body = UpdateProviderRequest,
     responses(
         (status = 200, description = "Provider updated. The body is DR-26's cross-institutional \
-                                      warning for this chat on the model just bound — the \
+                                      warning for this chat on the model just bound: the \
                                       statement the user is shown before proceeding, warnings \
-                                      separated by a blank line — and is EMPTY when the bind \
+                                      separated by a blank line, and is EMPTY when the bind \
                                       crosses no institutional boundary, which is the normal \
                                       case.",
                        body = String),
@@ -996,15 +996,15 @@ async fn update_agent_provider(
     request_body = AddExtensionRequest,
     responses(
         (status = 200, description = "Extension added. The body is DR-26's cross-institutional \
-                                      warning for this chat once the extension is attached — the \
+                                      warning for this chat once the extension is attached: the \
                                       statement the user is shown before proceeding, warnings \
-                                      separated by a blank line — and is EMPTY when nothing in \
+                                      separated by a blank line, and is EMPTY when nothing in \
                                       the chat crosses an institutional boundary, which is the \
                                       normal case.",
                        body = String),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      the named chat is private (or absent — an unproven caller \
+                                      the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
                                       proof it came from the user"),
         (status = 409, description = "Refused by a privacy boundary (issue #56, DR-16): a \
@@ -1377,7 +1377,7 @@ async fn strict_mode_authorization(
         (status = 400, description = "There is no cross-institutional mismatch to accept"),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused (issue #56, DR-26): only the user may accept a \
-                                      cross-institutional data flow — or (DR-27) this machine's \
+                                      cross-institutional data flow, or (DR-27) this machine's \
                                       mixing policy is 'strict' and the operating system did not \
                                       confirm the user"),
         (status = 424, description = "That chat is not loaded in this daemon, so the model it is \
@@ -1743,7 +1743,7 @@ pub(crate) async fn apply_working_dir_update(
         (status = 400, description = "Bad request - invalid directory path"),
         (status = 401, description = "Unauthorized - invalid secret key"),
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      the named chat is private (or absent — an unproven caller \
+                                      the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
                                       proof it came from the user"),
         (status = 404, description = "Session not found"),

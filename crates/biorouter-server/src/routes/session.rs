@@ -414,7 +414,7 @@ async fn list_sidebar_sessions(
         (status = 200, description = "Session history retrieved successfully", body = Session),
         (status = 401, description = "Unauthorized - Invalid or missing API key"),
         (status = 403, description = "Refused by a privacy boundary (issue #56 Task 58 / #47): \
-                                      the named chat is private (or absent — an unproven caller \
+                                      the named chat is private (or absent, and an unproven caller \
                                       is told the same thing for both) and the request carried no \
                                       proof it came from the user (body = plain text)"),
         (status = 404, description = "Session not found"),
