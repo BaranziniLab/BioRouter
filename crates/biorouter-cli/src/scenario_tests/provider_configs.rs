@@ -71,12 +71,6 @@ static PROVIDER_CONFIGS: LazyLock<Vec<ProviderConfig>> = LazyLock::new(|| {
             Some("Key is no longer valid"),
         ),
         ProviderConfig::simple_skip(
-            "claude-code",
-            "claude-sonnet-4-20250514",
-            Some("No keys available"),
-        ),
-        ProviderConfig::simple_skip("cursor-agent", "gpt-5", Some("No keys available")),
-        ProviderConfig::simple_skip(
             "databricks",
             "databricks-dbrx-instruct",
             Some("No keys available"),
@@ -86,7 +80,6 @@ static PROVIDER_CONFIGS: LazyLock<Vec<ProviderConfig>> = LazyLock::new(|| {
             "gemini-2.5-flash",
             Some("No keys available"),
         ),
-        ProviderConfig::simple_skip("gemini-cli", "gemini-2.5-flash", Some("No keys available")),
         ProviderConfig::simple_skip("litellm", "gpt-4o", Some("No keys available")),
         ProviderConfig::simple_skip("ollama", "qwen3", Some("Ollama not supported")),
         ProviderConfig::simple_skip(

@@ -24,10 +24,11 @@ pub fn configure_command_no_window(command: &mut Command) {
 /// can read or import *any* session, which defeats every control that lives in
 /// the agent loop.
 ///
-/// This matters most for the CLI-agent providers (`claude_code`, `codex`,
-/// `gemini_cli`, `cursor_agent`): the process being spawned is itself a coding
-/// agent with shell access, so it is the highest-privilege child the daemon
-/// creates. It also covers hook commands, which run on agent activity.
+/// Callers today are hook commands (which run on agent activity), the llama.cpp
+/// sidecar, the Azure auth helper and the retry probe. It used to matter most
+/// for the CLI-agent providers, which spawned another vendor's coding agent and
+/// were therefore the highest-privilege children the daemon created; those
+/// modules are gone, but the rule they motivated applies to every child here.
 ///
 /// Call this **last**, after every other `env`/`envs` call on the command: the
 /// strip and `env` write to the same map, so a later `env` would re-admit a

@@ -118,7 +118,6 @@ fn canonical_provider(provider: &str) -> &str {
     match provider {
         "azure_openai" | "versa_azure" => "azure",
         "aws_bedrock" | "versa_bedrock" => "bedrock",
-        "gemini_cli" => "google",
         "custom_deepseek" => "deepseek",
         "mistral" => "mistralai",
         "moonshot" => "moonshotai",
@@ -503,7 +502,7 @@ mod tests {
             Some("google/gemini-2.5-flash".to_string())
         );
         assert_eq!(
-            map_to_canonical_model("gemini_cli", "gemini-3.5-flash", r),
+            map_to_canonical_model("google", "gemini-3.5-flash", r),
             Some("google/gemini-3.5-flash".to_string())
         );
 

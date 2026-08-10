@@ -237,6 +237,16 @@ fn blocks_fallback_pricing(provider: &str) -> bool {
             | "ollama"
             | "llamacpp"
             | "github_copilot"
+            // The last four are providers Biorouter no longer has. They stay
+            // because this function is keyed on a provider-name *string*, and
+            // `session_manager::resolve_grain_pricing` feeds it `row.provider`
+            // straight out of stored usage rows — a row written while these
+            // were wired up still says `claude_code`. Drop the entry and
+            // `canonical_model_pricing` invents a price from the catalog for
+            // it, but these billed through the user's own CLI subscription,
+            // so any figure here is fabricated. Same reason as the guessed
+            // Claude tier below: a made-up rate makes a partial report look
+            // exact and can misstate a budget.
             | "codex"
             | "claude_code"
             | "gemini_cli"
@@ -762,5 +772,35 @@ mod tests {
     #[test]
     fn model_cost_with_cache_is_none_for_unpriced_pair() {
         assert!(model_cost_with_cache("ollama", "llama3", 10, 10, 5, 5).is_none());
+    }
+
+    /// A usage row written while the CLI-agent providers existed still carries
+    /// `claude_code` / `codex` / `gemini_cli` / `cursor_agent` in its
+    /// `provider` column, and `session_manager::resolve_grain_pricing` reads
+    /// that column straight back. Those providers billed through the user's
+    /// own CLI subscription, so every one of them must stay unpriced on every
+    /// entry point — including `estimate_cost_usd`, which reaches the canonical
+    /// catalog on its own rather than through `blocks_fallback_pricing`.
+    #[test]
+    fn a_stored_row_from_a_removed_cli_agent_provider_is_never_priced() {
+        for (provider, model) in [
+            ("claude_code", "claude-sonnet-4-20250514"),
+            ("codex", "gpt-5.5"),
+            ("gemini_cli", "gemini-2.5-flash"),
+            ("cursor_agent", "gpt-5"),
+        ] {
+            assert!(
+                provider_model_pricing(provider, model).is_none(),
+                "{provider}/{model} must not be priced"
+            );
+            assert!(
+                resolve_pricing_with_metadata(provider, model, None).is_none(),
+                "{provider}/{model} must not be priced on the async path"
+            );
+            assert!(
+                estimate_cost_usd(provider, model, 1_000_000, 1_000_000).is_none(),
+                "{provider}/{model} must not be given an estimated cost"
+            );
+        }
     }
 }

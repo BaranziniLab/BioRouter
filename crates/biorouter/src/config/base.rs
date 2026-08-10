@@ -8,7 +8,6 @@ use serde_json::Value;
 use serde_yaml::Mapping;
 use std::collections::HashMap;
 use std::env;
-use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -1149,14 +1148,6 @@ impl Config {
         }
     }
 }
-
-config_value!(CLAUDE_CODE_COMMAND, OsString, "claude");
-config_value!(GEMINI_CLI_COMMAND, OsString, "gemini");
-config_value!(CURSOR_AGENT_COMMAND, OsString, "cursor-agent");
-config_value!(CODEX_COMMAND, OsString, "codex");
-config_value!(CODEX_REASONING_EFFORT, String, "high");
-config_value!(CODEX_ENABLE_SKILLS, String, "true");
-config_value!(CODEX_SKIP_GIT_CHECK, String, "false");
 
 config_value!(BIOROUTER_SEARCH_PATHS, Vec<String>);
 config_value!(BIOROUTER_MODE, BioRouterMode);
