@@ -12,15 +12,12 @@ export const ProviderInfo = ({ provider }: ProviderInfoProps) => {
     <div className="p-3 bg-background-muted rounded-element">
       {provider === 'openai' && (
         <p className="text-xs text-text-muted">
-          Uses OpenAI's Whisper API. Requires an OpenAI API key
-          configured in the Models section.
+          Uses OpenAI's Whisper API. Requires an OpenAI API key configured in the Models section.
         </p>
       )}
       {VOICE_DICTATION_ELEVENLABS_ENABLED && provider === 'elevenlabs' && (
         <div>
-          <p className="text-xs text-text-muted">
-            Uses ElevenLabs speech-to-text API for high-quality transcription.
-          </p>
+          <p className="text-xs text-text-muted">Uses the ElevenLabs speech-to-text API.</p>
           <p className="text-xs text-text-muted mt-2">
             <strong>Features:</strong>
           </p>

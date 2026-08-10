@@ -36,7 +36,7 @@ export function ImportSessionModal({ isOpen, onClose, onImport }: ImportSessionM
   const processFile = useCallback(
     async (file: File) => {
       if (!file.name.endsWith('.json') && file.type !== 'application/json') {
-        setError('Please provide a JSON file.');
+        setError('Choose a JSON file.');
         return;
       }
       setError('');

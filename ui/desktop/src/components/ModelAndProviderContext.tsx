@@ -36,7 +36,7 @@ import { Button } from './ui/button';
 export const UNKNOWN_PROVIDER_TITLE = 'Provider name lookup';
 
 // errors
-export const UNKNOWN_PROVIDER_MSG = 'Unknown provider in config -- please inspect your config.yaml';
+export const UNKNOWN_PROVIDER_MSG = 'Unknown provider in config. Check your config.yaml.';
 
 // success
 const CHANGE_MODEL_TOAST_TITLE = 'Model changed';

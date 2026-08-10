@@ -62,7 +62,7 @@ export default function ImportWorkflowForm({
       const isYaml = /\.(ya?ml)$/i.test(filename);
       const isJson = /\.json$/i.test(filename);
       if (!isYaml && !isJson) {
-        setError('Please provide a YAML or JSON workflow file.');
+        setError('Choose a YAML or JSON workflow file.');
         return;
       }
       setError('');

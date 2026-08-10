@@ -220,7 +220,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
       <div className="biorouter-settings-section">
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Theme</h2>
-          <p className="text-xs text-text-muted">Customize the look and feel of Biorouter</p>
+          <p className="text-xs text-text-muted">Change how Biorouter looks</p>
         </div>
         <div className="flex flex-col gap-4">
           <div>
@@ -252,7 +252,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         <div className="biorouter-settings-section-header">
           <h2 className="text-caps text-text-muted mb-1">Help &amp; Feedback</h2>
           <p className="text-xs text-text-muted">
-            Help us improve Biorouter by reporting issues or requesting new features
+            Report a problem, or ask for something Biorouter does not do yet
           </p>
         </div>
         <div className="biorouter-settings-control-strip">
@@ -307,9 +307,7 @@ export default function AppSettingsSection({ scrollToSection }: AppSettingsSecti
         <div ref={updateSectionRef} className="biorouter-settings-section">
           <div className="biorouter-settings-section-header">
             <h2 className="text-caps text-text-muted mb-1">Updates</h2>
-            <p className="text-xs text-text-muted">
-              Check for and install updates to keep Biorouter running at its best
-            </p>
+            <p className="text-xs text-text-muted">Check for and install updates</p>
           </div>
           <div className="biorouter-settings-control-strip">
             <UpdateSection />

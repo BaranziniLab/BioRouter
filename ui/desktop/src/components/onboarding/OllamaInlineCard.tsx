@@ -72,13 +72,13 @@ export default function OllamaInlineCard({ onSuccess }: OllamaInlineCardProps) {
       setModelStatus('available');
       toastService.success({
         title: 'Model Downloaded!',
-        msg: `Successfully downloaded ${getPreferredModel()}`,
+        msg: `Downloaded ${getPreferredModel()}`,
       });
     } else {
       setModelStatus('not-available');
       toastService.error({
         title: 'Download failed',
-        msg: `Failed to download ${getPreferredModel()}. Please try again.`,
+        msg: `Failed to download ${getPreferredModel()}. Try again.`,
         traceback: '',
       });
     }

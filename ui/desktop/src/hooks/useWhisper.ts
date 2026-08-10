@@ -161,7 +161,7 @@ export const useWhisper = ({ onTranscription, onError, onSizeWarning }: UseWhisp
 
         const mimeType = audioBlob.type;
         if (!mimeType) {
-          throw new Error('Unable to determine audio format. Please try again.');
+          throw new Error('Unable to determine the audio format. Try again.');
         }
 
         let endpoint = '';
@@ -196,12 +196,12 @@ export const useWhisper = ({ onTranscription, onError, onSizeWarning }: UseWhisp
         if (!response.ok) {
           if (response.status === 404) {
             throw new Error(
-              `Audio transcription endpoint not found. Please implement ${endpoint} endpoint in the Biorouter backend.`
+              `Audio transcription endpoint not found: the Biorouter backend does not serve ${endpoint}.`
             );
           } else if (response.status === 401) {
-            throw new Error('Invalid API key. Please check your API key is correct.');
+            throw new Error('Invalid API key. Check that the key is correct.');
           } else if (response.status === 402) {
-            throw new Error('API quota exceeded. Please check your account limits.');
+            throw new Error('API quota exceeded. Check your account limits.');
           }
           const errorData = await safeJsonParse<{
             error: { message: string };
@@ -317,9 +317,7 @@ export const useWhisper = ({ onTranscription, onError, onSizeWarning }: UseWhisp
         // Check if the blob is empty
         if (audioBlob.size === 0) {
           onError?.(
-            new Error(
-              'No audio data was recorded. Please check your microphone permissions and try again.'
-            )
+            new Error('No audio was recorded. Check your microphone permissions and try again.')
           );
           return;
         }

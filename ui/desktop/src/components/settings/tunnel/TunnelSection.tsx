@@ -144,8 +144,8 @@ export default function TunnelSection() {
             <div className="flex items-start gap-2 p-2 bg-background-info/10 border border-border-info/40 rounded">
               <Info className="h-4 w-4 text-text-info flex-shrink-0 mt-0.5" />
               <div className="text-xs text-text-info">
-                <strong>Preview feature:</strong> Enable remote access to Biorouter from mobile
-                devices using secure tunneling.{' '}
+                <strong>Preview feature:</strong> Reach Biorouter from a mobile device over an
+                encrypted tunnel.{' '}
                 <a
                   href={IOS_APP_STORE_URL}
                   target="_blank"

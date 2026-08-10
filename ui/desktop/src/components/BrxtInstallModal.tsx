@@ -107,7 +107,7 @@ export function BrxtInstallModal({
       const file = e.dataTransfer.files[0];
       if (!file) return;
       if (!file.name.endsWith('.brxt')) {
-        setError('Please drop a .brxt file');
+        setError('Drop a .brxt file');
         return;
       }
       processFile(window.electron.getPathForFile(file));

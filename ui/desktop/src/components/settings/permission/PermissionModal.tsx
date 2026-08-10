@@ -166,7 +166,7 @@ export default function PermissionModal({
             <div className="flex min-h-40 flex-col items-center justify-center text-center">
               <p className="text-sm font-medium text-text-default">No configurable tools</p>
               <p className="mt-1 max-w-sm text-sm leading-5 text-text-muted">
-                This extension loaded successfully but does not currently expose any tools.
+                This extension loaded, but it exposes no tools.
               </p>
             </div>
           )}

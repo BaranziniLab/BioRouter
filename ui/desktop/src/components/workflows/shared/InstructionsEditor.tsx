@@ -38,7 +38,7 @@ export default function InstructionsEditor({
   const insertExample = () => {
     const example = `You are an AI assistant helping with {{task_type}}. 
 
-Please follow these steps:
+Follow these steps:
 1. Analyze the provided {{input_data}}
 2. Apply the specified {{methodology}} 
 3. Generate a comprehensive report

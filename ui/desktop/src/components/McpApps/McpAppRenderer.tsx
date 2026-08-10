@@ -119,7 +119,7 @@ export default function McpAppRenderer({
           await window.electron.openExternal(url);
           return {
             status: 'success',
-            message: 'Link opened successfully',
+            message: 'Link opened',
           } satisfies McpMethodResponse['ui/open-link'];
         }
 

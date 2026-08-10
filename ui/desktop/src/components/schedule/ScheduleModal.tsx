@@ -65,7 +65,7 @@ export const ScheduleModal: React.FC<ScheduleModalProps> = ({
         setWorkflowSourcePath(filePath);
         setInternalValidationError(null);
       } else {
-        setInternalValidationError('Invalid file type: Please select a YAML file (.yaml or .yml)');
+        setInternalValidationError('Invalid file type: choose a YAML file (.yaml or .yml)');
       }
     }
   };

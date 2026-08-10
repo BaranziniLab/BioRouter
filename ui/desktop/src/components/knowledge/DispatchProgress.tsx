@@ -57,7 +57,7 @@ function renderEventLine(ev: SubAgentEvent): { tone: string; text: string } {
     return {
       tone: ev.ok ? 'text-text-success' : 'text-text-danger',
       text: `${ev.ok ? 'Completed' : 'Issue'} · ${prettyToolName(ev.name)} · ${
-        ev.summary.trim() || (ev.ok ? 'Completed successfully.' : 'Returned an error.')
+        ev.summary.trim() || (ev.ok ? 'Completed.' : 'Returned an error.')
       }`,
     };
   }

@@ -49,7 +49,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
         title: 'Diagnostics saved',
         msg: result.filePath
           ? `The diagnostics bundle was saved to ${result.filePath}.`
-          : 'The diagnostics bundle was saved successfully.',
+          : 'The diagnostics bundle was saved.',
       });
       onClose();
     } catch (error) {
@@ -110,7 +110,7 @@ If applicable, add screenshots to help explain your problem.
 
 ---
 
-**Please provide the following information**
+**Provide the following information**
 - **OS & Arch:** ${info.os} ${info.os_version} ${info.architecture}
 - **Interface:** UI
 - **Version:** ${info.app_version}
