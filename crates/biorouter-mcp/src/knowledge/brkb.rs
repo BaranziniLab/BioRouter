@@ -74,6 +74,43 @@ pub fn export<W: Write + Seek>(
 /// it twice (read, then skip).
 const PROVENANCE_ENTRY: &str = ".brkb-provenance";
 
+/// The name a file at `rel` (relative to the KB root) gets inside the archive.
+///
+/// ⚠ Built by joining `rel`'s **components** with `/`, never from its display
+/// form, and that is a portability rule rather than a preference. A zip entry
+/// name is *defined* to use forward slashes (APPNOTE 4.4.17.1), and
+/// `Path::to_string_lossy` hands back the platform's separator: on Windows the
+/// walk produced `omop/knowledge\x.md`, so an archive written there carried
+/// entries that every other platform reads as one file whose name contains a
+/// backslash, not as a file inside `knowledge/`. It surfaced as
+/// `a_models_export_of_a_private_base_lands_inside_the_knowledge_root` failing
+/// on windows-latest the moment the os-error-33 fix let the export get far
+/// enough to be inspected, and the archives it had been writing were already
+/// wrong.
+///
+/// ⚠ Not observable from macOS or Linux against a real directory walk: there
+/// `to_string_lossy` and this agree for every path `read_dir` can produce. The
+/// unit test below reaches the difference from any platform by handing it a
+/// path whose display form and component list differ (`a//b`, `./a`).
+///
+/// Only `Normal` components are emitted, because an entry name is a sequence of
+/// plain names and nothing else. `Path::components` keeps a *leading* `.`
+/// rather than normalising it away, and `RootDir` or a Windows `Prefix` would
+/// be an absolute path. None of those can come out of `walk`, whose `rel` is a
+/// `strip_prefix` of a directory entry, so this is the shape of the output
+/// being stated rather than a case being handled: [`safe_join`] refuses the
+/// same set on the way back in.
+fn archive_name(prefix: &str, rel: &Path) -> String {
+    let mut out = String::from(prefix);
+    for component in rel.components() {
+        if let std::path::Component::Normal(name) = component {
+            out.push('/');
+            out.push_str(&name.to_string_lossy());
+        }
+    }
+    out
+}
+
 fn walk<W: Write + Seek>(
     base: &Path,
     dir: &Path,
@@ -104,7 +141,7 @@ fn walk<W: Write + Seek>(
         if crate::knowledge::paths::is_kb_write_lock(rel) {
             continue;
         }
-        let archive_path = format!("{prefix}/{}", rel.to_string_lossy());
+        let archive_path = archive_name(prefix, rel);
         if path.is_dir() {
             zip.add_directory(&archive_path, opts)?;
             walk(base, &path, prefix, zip, opts)?;
@@ -296,16 +333,47 @@ mod tests {
         let names = zip_names(&svc.export_brkb("orig").unwrap());
 
         assert!(
-            !names.iter().any(|n| n
-                .replace('\\', "/")
-                .ends_with(".biorouter-knowledge/write.lock")),
+            !names
+                .iter()
+                .any(|n| n.ends_with(".biorouter-knowledge/write.lock")),
             "the machine's transient write lock was shipped inside the archive: {names:?}"
         );
         assert!(
-            names.iter().any(|n| n
-                .replace('\\', "/")
-                .ends_with(".biorouter-knowledge/keep.json")),
+            names
+                .iter()
+                .any(|n| n.ends_with(".biorouter-knowledge/keep.json")),
             "the skip swallowed the whole internal directory: {names:?}"
+        );
+        // Entry names are the archive's own grammar, not the host's. Asserted
+        // here rather than only in `archive_name`'s unit test because this is
+        // the end-to-end path, and on windows-latest it is where a separator
+        // regression would actually bite.
+        assert!(
+            !names.iter().any(|n| n.contains('\\')),
+            "a zip entry name must use forward slashes on every platform: {names:?}"
+        );
+    }
+
+    /// The separator rule, reachable from any platform.
+    ///
+    /// A real directory walk cannot distinguish the correct implementation from
+    /// `to_string_lossy` on macOS or Linux, because there the two agree for
+    /// every path `read_dir` produces. These inputs separate them anywhere: a
+    /// doubled separator and a `.` prefix both survive the display form and are
+    /// both dropped by `components()`. So a regression to `to_string_lossy`, or
+    /// to a `replace('\\', "/")` patch over it, fails here on the developer's
+    /// own machine instead of waiting for a Windows runner.
+    #[test]
+    fn an_archive_name_is_joined_from_components_with_forward_slashes() {
+        assert_eq!(
+            archive_name("omop", Path::new("knowledge").join("x.md").as_path()),
+            "omop/knowledge/x.md"
+        );
+        assert_eq!(archive_name("omop", Path::new("a//b")), "omop/a/b");
+        assert_eq!(archive_name("omop", Path::new("./a")), "omop/a");
+        assert_eq!(
+            archive_name("omop", Path::new("single.md")),
+            "omop/single.md"
         );
     }
 

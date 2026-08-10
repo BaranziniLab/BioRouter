@@ -885,6 +885,28 @@ mod tests {
         d
     }
 
+    /// How long a test will wait for a spawned job to reach a terminal state,
+    /// or for its output to arrive.
+    ///
+    /// ⚠ Windows gets six times as long, and the reason is the **shell**, not
+    /// the machine. `spawn` runs the command through PowerShell there and
+    /// through `sh` on Unix, and a PowerShell cold start is tens of times more
+    /// expensive: measured on windows-latest, three of these tests
+    /// (`list_reports_command_status_and_unread_output`,
+    /// `nonzero_exit_code_is_surfaced`, `output_is_incremental`) went red at
+    /// 5 s inside a binary that runs a thousand tests across every core, and
+    /// they failed in the shape a too-short deadline produces rather than the
+    /// shape a bug produces: the status read `Running` (not a wrong exit code)
+    /// and the first output read was EMPTY (not the wrong text). They had all
+    /// passed on the same runner forty minutes earlier with no change to this
+    /// file, which is what makes it contention rather than behaviour.
+    ///
+    /// A longer bound costs nothing on a passing run because every wait here
+    /// polls and returns as soon as the condition holds. It is a hang detector,
+    /// so it should be set where only a hang can reach it — a bound tight
+    /// enough to be tripped by a busy runner is measuring the runner.
+    const JOB_WAIT_MS: u64 = if cfg!(windows) { 30_000 } else { 5_000 };
+
     async fn wait_terminal(jobs: &BackgroundJobs, id: &str, max_ms: u64) -> JobStatus {
         let job = jobs.job(id).await.unwrap();
         let deadline = Instant::now() + std::time::Duration::from_millis(max_ms);
@@ -921,7 +943,10 @@ mod tests {
         let jobs = new_jobs();
         let id = jobs.spawn("echo hello-bg", None, None).await.unwrap();
         assert!(jobs.list().await.contains(&id));
-        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Exited(0)
+        );
         let snap = jobs.snapshot(&id).await.unwrap();
         assert!(snap.contains("hello-bg"), "snapshot: {snap}");
     }
@@ -930,7 +955,10 @@ mod tests {
     async fn list_reports_command_status_and_unread_output() {
         let jobs = new_jobs();
         let id = jobs.spawn("echo listme", None, None).await.unwrap();
-        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Exited(0)
+        );
 
         let listing = jobs.list().await;
         assert!(listing.contains(&id), "listing: {listing}");
@@ -969,7 +997,10 @@ mod tests {
     async fn nonzero_exit_code_is_surfaced() {
         let jobs = new_jobs();
         let id = jobs.spawn("exit 3", None, None).await.unwrap();
-        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(3));
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Exited(3)
+        );
     }
 
     #[tokio::test]
@@ -981,11 +1012,14 @@ mod tests {
             "echo first; sleep 2; echo second"
         };
         let id = jobs.spawn(command, None, None).await.unwrap();
-        let first = collect_output_until(&jobs, &id, "first", 5000).await;
+        let first = collect_output_until(&jobs, &id, "first", JOB_WAIT_MS).await;
         assert!(first.contains("first"), "first read: {first}");
         assert!(!first.contains("second"), "second leaked early: {first}");
-        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Exited(0));
-        let second = collect_output_until(&jobs, &id, "second", 1000).await;
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Exited(0)
+        );
+        let second = collect_output_until(&jobs, &id, "second", JOB_WAIT_MS).await;
         assert!(second.contains("second"), "second read: {second}");
         assert!(!second.contains("first"), "first duplicated: {second}");
     }
@@ -1191,7 +1225,10 @@ mod tests {
         );
 
         jobs.kill(&id).await.unwrap();
-        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Killed);
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Killed
+        );
     }
 
     // ── pid-reuse guard (GAP-2) ─────────────────────────────────────────────
@@ -1395,7 +1432,10 @@ mod tests {
         assert!(recorded_id.started_epoch.abs_diff(now_epoch()) <= START_SKEW_SECS);
 
         jobs.kill(&id).await.unwrap();
-        assert_eq!(wait_terminal(&jobs, &id, 5000).await, JobStatus::Killed);
+        assert_eq!(
+            wait_terminal(&jobs, &id, JOB_WAIT_MS).await,
+            JobStatus::Killed
+        );
 
         // The supervisor removes the record once the job reaches a terminal state.
         let mut gone = false;
