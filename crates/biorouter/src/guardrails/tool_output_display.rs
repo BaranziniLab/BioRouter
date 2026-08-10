@@ -115,7 +115,14 @@ fn unwrap_pass(text: &str) -> Option<String> {
             break;
         };
         let mut body_start = after_prefix + gt_rel + 1;
-        if text[body_start..].starts_with('\n') {
+        // `get`, never `[..]`: every bound here is provably on a char boundary
+        // (all three delimiters are ASCII), but the framer's own
+        // `neutralize_frame_close` slices this way too, and a display helper
+        // must not be the thing that panics on a multibyte tool result.
+        if text
+            .get(body_start..)
+            .is_some_and(|rest| rest.starts_with('\n'))
+        {
             body_start += 1;
         }
 
@@ -131,19 +138,24 @@ fn unwrap_pass(text: &str) -> Option<String> {
         };
         let close_at = body_start + close_rel;
         let mut body_end = close_at;
-        if text[body_start..body_end].ends_with('\n') {
+        if text
+            .get(body_start..body_end)
+            .is_some_and(|body| body.ends_with('\n'))
+        {
             body_end -= 1;
         }
 
         let buf = out.get_or_insert_with(|| String::with_capacity(text.len()));
-        buf.push_str(&text[cursor..open_at]);
-        buf.push_str(&restore_close_token(&text[body_start..body_end]));
+        buf.push_str(text.get(cursor..open_at).unwrap_or_default());
+        buf.push_str(&restore_close_token(
+            text.get(body_start..body_end).unwrap_or_default(),
+        ));
         cursor = close_at + TOOL_OUTPUT_FRAME_CLOSE.len();
         search = cursor;
     }
 
     out.map(|mut buf| {
-        buf.push_str(&text[cursor..]);
+        buf.push_str(text.get(cursor..).unwrap_or_default());
         buf
     })
 }
