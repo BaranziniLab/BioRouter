@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   StripBandRegistry,
   bandScreenRects,
+  detachRefusal,
   clampToWorkArea,
   electronScreenGeometry,
   grabOffsetFromWire,
@@ -869,5 +870,31 @@ describe('TabDragBroker — the merge ack cannot leave a session in two windows 
     harness.broker.ackMerge(2, false, b.handle.webContentsId);
     await expect(first).resolves.toBe(true);
     await expect(second).resolves.toBe(false);
+  });
+});
+
+describe('detachRefusal — which releases may become a new window', () => {
+  it('refuses a tab with no session, so the tear-off leaves it where it is', () => {
+    // The defect: a fresh tab carries `sessionId: ''` until the user sends
+    // something, and `createChat` seeds the torn-off window from that id — so
+    // the new window opened on Home with no tab while the source window
+    // removed the tab anyway. Nothing of value was lost; a chat appeared to
+    // vanish, which is a defect on its own.
+    expect(detachRefusal({ isOnlyTab: false, tab: { sessionId: '' } })).toBe('no-session');
+  });
+
+  it('refuses a tab payload that never arrived', () => {
+    // A malformed or dropped payload must not mint an empty window either.
+    expect(detachRefusal({ isOnlyTab: false })).toBe('no-session');
+    expect(detachRefusal({ isOnlyTab: false, tab: {} })).toBe('no-session');
+  });
+
+  it("refuses a window's only tab (D5), and says so before it looks at the session", () => {
+    expect(detachRefusal({ isOnlyTab: true, tab: { sessionId: 's1' } })).toBe('only-tab');
+    expect(detachRefusal({ isOnlyTab: true, tab: { sessionId: '' } })).toBe('only-tab');
+  });
+
+  it('allows a real tab out of a window that has others', () => {
+    expect(detachRefusal({ isOnlyTab: false, tab: { sessionId: '20260809_134' } })).toBeNull();
   });
 });

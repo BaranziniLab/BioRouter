@@ -43,6 +43,7 @@ import {
 import { getSharedBackend, isSharedDaemonEnabled, resetSharedBackend } from './biorouterdSingleton';
 import {
   StripBandRegistry,
+  detachRefusal,
   electronScreenGeometry,
   grabOffsetFromWire,
   normalizeToDip,
@@ -5110,10 +5111,16 @@ async function appMain() {
       return { outcome: 'merge' };
     }
 
-    // D5 — tearing out a window's ONLY tab is a no-op. Note this does not
-    // apply to the merge branch above: moving a lone tab INTO another window is
-    // exactly the gesture, and it closes the source window afterwards (D6a).
-    if (req.isOnlyTab) return { outcome: 'noop' };
+    // Which releases may NOT become a new window — D5's lone tab, and a tab
+    // with no session behind it. The rule itself lives in `windowDrag.ts` with
+    // the reasoning and the tests; both answers are `noop`, which the renderer
+    // already reads as "keep the tab". Neither applies to the merge branch
+    // above: moving either tab INTO another window is exactly the gesture.
+    const refusal = detachRefusal(req);
+    if (refusal) {
+      log.info(`[tab-drag] tear-off refused (${refusal}); the tab stays where it is`);
+      return { outcome: 'noop' };
+    }
 
     const bounds = tornOffWindowBoundsForRawPoint(
       rawPoint,

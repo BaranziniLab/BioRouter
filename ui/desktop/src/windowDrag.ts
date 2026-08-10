@@ -517,6 +517,45 @@ export function tornOffWindowBoundsForRawPoint(
   );
 }
 
+/** Why a release may not become a new window, or `null` if it may. */
+export type DetachRefusal = 'only-tab' | 'no-session' | null;
+
+/**
+ * May this release tear the tab out into a NEW WINDOW?
+ *
+ * Both refusals apply to the DETACH branch alone — a merge of the same tab into
+ * an existing window is a real move in both cases — which is why the question
+ * is asked in main at all: only main knows which branch a drop took.
+ *
+ *   `only-tab`   — D5. Destroying a window to build an identical one costs a
+ *                  renderer boot and a per-session extension reload (~4.6s) for
+ *                  no change the user asked for.
+ *
+ *   `no-session` — a fresh tab carries `sessionId: ''` until the user sends
+ *                  something, and the torn-off window is SEEDED from that id.
+ *                  With an empty one `createChat` had nothing to resume, so the
+ *                  new window opened on Home with no tab while the source still
+ *                  removed the tab: the chat appeared to vanish. Nothing of
+ *                  value was lost — the tab was blank — but "looks like data
+ *                  loss" is a defect on its own.
+ *
+ *                  The alternative, minting a session so the gesture has
+ *                  something to carry, was rejected: a session is what sending
+ *                  a message creates, and a drag that abandons its blank tab
+ *                  would leave one behind in the store and in Chat history.
+ *
+ * Both answer `noop` at the call site, which is the word the renderer already
+ * understands as "the tab stays put" (ChatGroupsShell.commitCrossWindow).
+ */
+export function detachRefusal(request: {
+  isOnlyTab?: boolean;
+  tab?: { sessionId?: string };
+}): DetachRefusal {
+  if (request.isOnlyTab) return 'only-tab';
+  if (!request.tab?.sessionId) return 'no-session';
+  return null;
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // THE PREVIEW AND MERGE BROKER
 //
