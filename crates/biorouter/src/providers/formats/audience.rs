@@ -42,6 +42,19 @@
 //! not on another. They share this function now so the two columns cannot come
 //! back.
 //!
+//! ## Who calls this
+//!
+//! Every renderer that builds a request for a model: Bedrock, Databricks,
+//! Google and OpenAI, which keep a block list and handle each kind of block
+//! themselves; Anthropic, the OpenAI Responses API, Snowflake and the toolshim
+//! conversion, which flatten to one string via [`flattened_text`]. gcpvertexai
+//! inherits the Anthropic and Google paths, openrouter and xiaomi_mimo inherit
+//! OpenAI's, so none of the three has a filter of its own to keep in step.
+//!
+//! Toolshim is the one that cannot be deferred downstream. It rewrites a tool
+//! response into a plain text block, so by the time the provider formatter runs
+//! there is no annotation left to read.
+//!
 //! An absent `audience` is not an empty one. A tool that never set the field has
 //! expressed no preference, and every consumer in this repo treats that as
 //! visible to everyone, so it is sent.
@@ -63,10 +76,10 @@ pub fn is_for_model(content: &Content) -> bool {
 /// The text one content block contributes when a tool result is flattened into
 /// a single string, or `None` if it contributes nothing.
 ///
-/// Six renderers flatten rather than carry a block list: Anthropic, the OpenAI
-/// Responses API, Snowflake, the `claude` and `cursor-agent` CLI bridges, and
-/// the toolshim text conversion. All six used to read only [`RawContent::Text`],
-/// which silently discarded embedded text resources.
+/// Four renderers flatten rather than carry a block list: Anthropic, the OpenAI
+/// Responses API, Snowflake, and the toolshim text conversion. All four used to
+/// read only [`RawContent::Text`], which silently discarded embedded text
+/// resources.
 ///
 /// That mattered the moment [`is_for_model`] was applied to them, because
 /// `text_editor view` returns the file to the assistant as an embedded resource
@@ -98,9 +111,9 @@ pub fn flattened_text(content: &Content) -> Option<String> {
 /// order [`MODEL_VISIBLE`] and [`MODEL_HIDDEN`] describe.
 ///
 /// Each provider format module asserts against THIS fixture rather than
-/// hand-rolling its own, so the four call sites are held to one set of cases.
-/// Four private fixtures would be free to drift apart, which is the shape of
-/// the bug this module exists to close.
+/// hand-rolling its own, so every call site is held to one set of cases.
+/// Private per-module fixtures would be free to drift apart, which is the shape
+/// of the bug this module exists to close.
 #[cfg(test)]
 pub(crate) fn every_audience_case() -> Vec<Content> {
     vec![
@@ -139,8 +152,9 @@ pub(crate) const VIEW_FOR_USER: &str = "1: the numbered rendering only the user 
 /// Copied in structure from `text_editor.rs`'s `text_editor_view`, which is the
 /// producer that makes filtering and resource reading a single change rather
 /// than two. A flattening renderer that filters by audience but still ignores
-/// resources returns nothing at all here, which is why every one of the six
-/// sites asserts against this fixture as well as [`every_audience_case`].
+/// resources returns nothing at all here, which is why each of the four
+/// flattening sites asserts against this fixture as well as
+/// [`every_audience_case`].
 #[cfg(test)]
 pub(crate) fn text_editor_view_result() -> Vec<Content> {
     vec![
@@ -281,10 +295,7 @@ mod tests {
         assert!(is_for_model(&blocks[0]), "the resource is for the model");
         assert!(!is_for_model(&blocks[1]), "the rendering is for the user");
         assert_eq!(blocks[0].as_text(), None, "reading .as_text() loses it");
-        assert_eq!(
-            flattened_text(&blocks[0]),
-            Some(VIEW_FOR_MODEL.to_string())
-        );
+        assert_eq!(flattened_text(&blocks[0]), Some(VIEW_FOR_MODEL.to_string()));
         assert_eq!(flattened_text(&blocks[1]), Some(VIEW_FOR_USER.to_string()));
     }
 }

@@ -36,12 +36,12 @@ use super::ollama::OLLAMA_HOST;
 use crate::conversation::message::{Message, MessageContent};
 use crate::conversation::Conversation;
 use crate::model::ModelConfig;
+use crate::providers::formats::audience;
 use crate::providers::formats::openai::create_request;
 use anyhow::Result;
 use reqwest::Client;
-use rmcp::model::{object, CallToolRequestParams, RawContent, Tool};
+use rmcp::model::{object, CallToolRequestParams, Tool};
 use serde_json::{json, Value};
-use std::ops::Deref;
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -350,10 +350,13 @@ pub fn convert_tool_messages_to_text(messages: &[Message]) -> Conversation {
                                 let text_contents: Vec<String> = result
                                     .content
                                     .iter()
-                                    .filter_map(|c| match c.deref() {
-                                        RawContent::Text(t) => Some(t.text.clone()),
-                                        _ => None,
-                                    })
+                                    // Send only what the tool addressed to the
+                                    // model. This is the last place the audience
+                                    // survives: the block becomes plain text
+                                    // here, so the provider formatter that runs
+                                    // next has nothing left to filter on.
+                                    .filter(|c| audience::is_for_model(c))
+                                    .filter_map(audience::flattened_text)
                                     .collect();
                                 format!("Tool result:\n{}", text_contents.join("\n"))
                             }
@@ -444,4 +447,69 @@ pub async fn augment_message_with_tool_calls<T: ToolInterpreter>(
     }
 
     Ok(final_message)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::providers::formats::audience::{
+        every_audience_case, text_editor_view_result, MODEL_HIDDEN, MODEL_VISIBLE, VIEW_FOR_MODEL,
+        VIEW_FOR_USER,
+    };
+    use rmcp::model::{CallToolResult, Content};
+
+    /// The single text block a tool response collapses into under toolshim.
+    fn converted_text(content: Vec<Content>) -> String {
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Ok(CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let converted = convert_tool_messages_to_text(&[message]);
+        let messages = converted.messages();
+        assert_eq!(messages.len(), 1, "one message in, one message out");
+        match &messages[0].content[0] {
+            MessageContent::Text(text) => text.text.clone(),
+            other => panic!("the tool response should have become text, got {other:?}"),
+        }
+    }
+
+    /// Every audience case, through the real toolshim conversion.
+    ///
+    /// This is the last place the audience is readable on a toolshim turn. The
+    /// block leaves here as plain text, so the provider formatter downstream
+    /// has no annotation left to filter on and a block withheld from the model
+    /// has to be dropped right here or not at all.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let text = converted_text(every_audience_case());
+
+        assert_eq!(
+            text,
+            format!("Tool result:\n{}", MODEL_VISIBLE.join("\n")),
+            "the converted text must carry exactly the model-addressed blocks"
+        );
+        for withheld in MODEL_HIDDEN {
+            assert!(!text.contains(withheld), "{withheld} reached the model");
+        }
+    }
+
+    /// A `text_editor view` through the real toolshim conversion: the file is
+    /// an embedded resource, so reading only text blocks would hand the
+    /// interpreter an empty `Tool result:` for every file view.
+    #[test]
+    fn a_viewed_file_reaches_the_model_through_its_embedded_resource() {
+        let text = converted_text(text_editor_view_result());
+
+        assert_eq!(text, format!("Tool result:\n{VIEW_FOR_MODEL}"));
+        assert!(
+            !text.contains(VIEW_FOR_USER),
+            "the user's rendering reached the model"
+        );
+    }
 }

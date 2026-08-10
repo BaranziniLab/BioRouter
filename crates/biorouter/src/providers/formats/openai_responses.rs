@@ -339,17 +339,22 @@ fn add_function_call_outputs(input_items: &mut Vec<Value>, messages: &[Message])
                             .filter_map(audience::flattened_text)
                             .collect();
 
-                        if !text_content.is_empty() {
-                            tracing::debug!(
-                                "Sending function_call_output with call_id: {}",
-                                response.id
-                            );
-                            input_items.push(json!({
-                                "type": "function_call_output",
-                                "call_id": response.id,
-                                "output": text_content.join("\n")
-                            }));
-                        }
+                        // Emitted even when nothing survives the filter. The Err
+                        // arm below already knows why: a `function_call` with no
+                        // matching output is the "No tool output found" error,
+                        // and the Responses API takes an empty string happily.
+                        // A tool that addresses every block to the user alone,
+                        // or returns only an image, used to skip this push and
+                        // fail the whole request one turn later.
+                        tracing::debug!(
+                            "Sending function_call_output with call_id: {}",
+                            response.id
+                        );
+                        input_items.push(json!({
+                            "type": "function_call_output",
+                            "call_id": response.id,
+                            "output": text_content.join("\n")
+                        }));
                     }
                     Err(error_data) => {
                         // Handle error responses - must send them back to the API
@@ -806,6 +811,18 @@ mod tests {
             !sent.contains(crate::providers::formats::audience::VIEW_FOR_USER),
             "the user's rendering reached the model"
         );
+    }
+
+    /// A tool that addresses every block to the user still owes the API an
+    /// output for its call. Skipping the item is what raises "No tool output
+    /// found", which fails the whole next request rather than losing one block.
+    #[test]
+    fn a_fully_withheld_result_still_answers_its_function_call() {
+        let sent =
+            function_call_output(vec![rmcp::model::Content::text("for the user")
+                .with_audience(vec![rmcp::model::Role::User])]);
+
+        assert_eq!(sent, "", "the output is present and empty, not absent");
     }
 
     // BR-63: the Responses API takes the effort nested under `reasoning`, not as
