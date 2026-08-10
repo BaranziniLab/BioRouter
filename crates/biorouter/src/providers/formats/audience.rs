@@ -46,7 +46,7 @@
 //! expressed no preference, and every consumer in this repo treats that as
 //! visible to everyone, so it is sent.
 
-use rmcp::model::{Content, Role};
+use rmcp::model::{Content, RawContent, ResourceContents, Role};
 
 /// Whether a tool-result content block should be included in the request sent
 /// to the model.
@@ -58,6 +58,40 @@ pub fn is_for_model(content: &Content) -> bool {
     content
         .audience()
         .is_none_or(|audience| audience.contains(&Role::Assistant))
+}
+
+/// The text one content block contributes when a tool result is flattened into
+/// a single string, or `None` if it contributes nothing.
+///
+/// Six renderers flatten rather than carry a block list: Anthropic, the OpenAI
+/// Responses API, Snowflake, the `claude` and `cursor-agent` CLI bridges, and
+/// the toolshim text conversion. All six used to read only [`RawContent::Text`],
+/// which silently discarded embedded text resources.
+///
+/// That mattered the moment [`is_for_model`] was applied to them, because
+/// `text_editor view` returns the file to the assistant as an embedded resource
+/// and to the user as formatted text. Filtering alone would have left those
+/// renderers with an empty tool result for every file view, so the two changes
+/// belong together and in this order: drop what is not addressed to the model
+/// first, then read the text out of what is left. Reading resources without
+/// filtering first would do the opposite damage and push whole Auto Visualiser
+/// figures, which are `audience: ["user"]` HTML documents, into the request.
+///
+/// Bedrock, Databricks, Google and OpenAI already read text resources this way
+/// as part of their own richer per-block handling, so this restores agreement
+/// rather than inventing a rule.
+///
+/// This does NOT check the audience. Every caller filters with [`is_for_model`]
+/// on the line above, the way the other four formatters do.
+pub fn flattened_text(content: &Content) -> Option<String> {
+    match &content.raw {
+        RawContent::Text(text) => Some(text.text.clone()),
+        RawContent::Resource(embedded) => match &embedded.resource {
+            ResourceContents::TextResourceContents { text, .. } => Some(text.clone()),
+            ResourceContents::BlobResourceContents { .. } => None,
+        },
+        _ => None,
+    }
 }
 
 /// One tool result carrying every audience a tool can put on a block, in the
@@ -89,6 +123,34 @@ pub(crate) const MODEL_VISIBLE: [&str; 3] = [
 /// Blocks of [`every_audience_case`] that must never reach the model.
 #[cfg(test)]
 pub(crate) const MODEL_HIDDEN: [&str; 2] = ["bravo-user-only", "echo-empty-audience"];
+
+/// The body of the assistant-audience embedded resource in
+/// [`text_editor_view_result`].
+#[cfg(test)]
+pub(crate) const VIEW_FOR_MODEL: &str = "fn main() { the file body the assistant reads }";
+
+/// The body of the user-audience text block in [`text_editor_view_result`].
+#[cfg(test)]
+pub(crate) const VIEW_FOR_USER: &str = "1: the numbered rendering only the user reads";
+
+/// The shape `text_editor view` returns: the file to the assistant as an
+/// embedded text resource, a formatted rendering to the user as plain text.
+///
+/// Copied in structure from `text_editor.rs`'s `text_editor_view`, which is the
+/// producer that makes filtering and resource reading a single change rather
+/// than two. A flattening renderer that filters by audience but still ignores
+/// resources returns nothing at all here, which is why every one of the six
+/// sites asserts against this fixture as well as [`every_audience_case`].
+#[cfg(test)]
+pub(crate) fn text_editor_view_result() -> Vec<Content> {
+    vec![
+        Content::embedded_text("str:///notes.rs", VIEW_FOR_MODEL)
+            .with_audience(vec![Role::Assistant]),
+        Content::text(VIEW_FOR_USER)
+            .with_audience(vec![Role::User])
+            .with_priority(0.0),
+    ]
+}
 
 #[cfg(test)]
 mod tests {
@@ -181,5 +243,48 @@ mod tests {
         let ranked = Content::text("payload").with_priority(0.2);
         assert_eq!(ranked.audience(), None);
         assert!(is_for_model(&ranked));
+    }
+
+    /// What each kind of block contributes to a flattened tool result. A text
+    /// resource carries its text; a binary one carries nothing, because a
+    /// base64 blob spliced into a prompt is noise the model pays for.
+    #[test]
+    fn a_flattened_result_reads_text_and_text_resources_only() {
+        assert_eq!(
+            flattened_text(&Content::text("plain")),
+            Some("plain".to_string())
+        );
+        assert_eq!(
+            flattened_text(&Content::embedded_text("str:///f", "resource body")),
+            Some("resource body".to_string())
+        );
+        assert_eq!(
+            flattened_text(&Content::resource(
+                rmcp::model::ResourceContents::BlobResourceContents {
+                    uri: "str:///f".to_string(),
+                    mime_type: Some("application/octet-stream".to_string()),
+                    blob: "AAAA".to_string(),
+                    meta: None,
+                }
+            )),
+            None
+        );
+        assert_eq!(flattened_text(&Content::image("AAAA", "image/png")), None);
+    }
+
+    /// The `text_editor view` fixture is only interesting if its two halves
+    /// really do land on opposite sides of the filter, and if the half the
+    /// model needs is the one a text-only renderer would have dropped.
+    #[test]
+    fn the_view_fixture_puts_the_model_text_behind_a_resource() {
+        let blocks = text_editor_view_result();
+        assert!(is_for_model(&blocks[0]), "the resource is for the model");
+        assert!(!is_for_model(&blocks[1]), "the rendering is for the user");
+        assert_eq!(blocks[0].as_text(), None, "reading .as_text() loses it");
+        assert_eq!(
+            flattened_text(&blocks[0]),
+            Some(VIEW_FOR_MODEL.to_string())
+        );
+        assert_eq!(flattened_text(&blocks[1]), Some(VIEW_FOR_USER.to_string()));
     }
 }
