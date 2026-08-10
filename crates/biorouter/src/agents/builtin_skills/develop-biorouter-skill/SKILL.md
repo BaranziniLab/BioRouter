@@ -1,6 +1,6 @@
 ---
 name: develop-biorouter-skill
-description: "Guide for authoring a high-quality Biorouter skill — the SKILL.md format and frontmatter, how Biorouter discovers and loads skills, writing a description that triggers reliably, progressive disclosure with supporting files, composing with subagents/workflows/hooks, testing for consistency and robustness, and packaging a skill as a zip. Load this skill whenever the user wants to create, write, improve, test, or publish a Biorouter (or Claude) skill."
+description: "Guide for authoring a Biorouter skill: the SKILL.md format and frontmatter, how Biorouter discovers and loads skills, writing a description that triggers reliably, progressive disclosure with supporting files, composing with subagents/workflows/hooks, testing for consistency and robustness, and packaging a skill as a zip. Load this skill whenever the user wants to create, write, improve, test, or publish a Biorouter (or Claude) skill."
 user-invocable: true
 ---
 
@@ -14,12 +14,12 @@ re-explaining it every session. This guide teaches you to author, test, and
 package one well.
 
 > Skills encode **method and environment-specific knowledge** ("how *we* do X",
-> our endpoints/conventions/quirks), not facts or documents — those belong in a
+> our endpoints/conventions/quirks), not facts or documents. Those belong in a
 > Knowledge base. And not generic knowledge the model already has.
 
 ## How Biorouter loads skills (why structure matters)
 
-Biorouter uses **progressive disclosure** — load the cheap thing always, the
+Biorouter uses **progressive disclosure**: load the cheap thing always, the
 expensive thing on demand:
 
 1. **Metadata (always loaded).** At session start the agent sees only each
@@ -27,7 +27,7 @@ expensive thing on demand:
    description must do all the triggering work.
 2. **Body (loaded on trigger).** When a description matches the task, the agent
    calls the **`loadSkill`** tool to pull in the full `SKILL.md` body. Keep it
-   lean — it competes with the live conversation for context.
+   lean, because it competes with the live conversation for context.
 3. **Supporting files (loaded as needed).** Files next to `SKILL.md` are listed
    when the skill loads; the agent reads or executes them only when required, so
    they cost nothing until used.
@@ -41,8 +41,8 @@ supporting files.
 Biorouter auto-discovers skills at session start from several locations
 (portable across agent tools that share the convention):
 
-- `~/.config/biorouter/skills/<slug>/` — user-global (the default install dir)
-- `~/.claude/skills/<slug>/` and `~/.config/agents/skills/<slug>/` — shared
+- `~/.config/biorouter/skills/<slug>/`: user-global (the default install dir)
+- `~/.claude/skills/<slug>/` and `~/.config/agents/skills/<slug>/`: shared
 - Project-local: `.biorouter/skills/`, `.claude/skills/`, `.agents/skills/`
 - Bundled inside an installed extension: `extensions/<name>/skills/<slug>/`
 
@@ -79,11 +79,11 @@ as `user-invocable: true` are tolerated and ignored by the loader):
 
 **Body standards:**
 - Keep the body **under ~500 lines**. Past that, split detail into supporting
-  files in the same folder and link to them (one level deep — the agent may
+  files in the same folder and link to them (one level deep, because the agent may
   only preview deeply nested files and read them incompletely).
 - Write **imperative operating instructions for the agent**, not human-facing
   prose explaining concepts the model already knows. ("Run the linter, then
-  fix any errors" — not "Linters are tools that check code style.")
+  fix any errors", not "Linters are tools that check code style.")
 - Use **consistent terminology** (pick one word per concept and stick to it).
 - Avoid **time-sensitive phrasing** ("before August 2025…") and hardcoded
   values that will drift; they rot the skill. Verify against the live codebase
@@ -94,18 +94,18 @@ as `user-invocable: true` are tolerated and ignored by the loader):
 ## Writing a description that triggers reliably
 
 The `description` is the single matching surface across potentially many
-installed skills — it is the most important thing you write.
+installed skills, and it is the most important thing you write.
 
 - **Third person, what + when.** "Generates commit messages by analyzing git
   diffs. Use when the user asks for help writing a commit message or reviewing
   staged changes." Not "I can help you write commit messages."
-- **Include the words the user will actually say** — file types, formats,
+- **Include the words the user will actually say**: file types, formats,
   domain terms, task verbs.
 - **Counter under-triggering.** Models tend to under-load skills. Name the
   contexts explicitly ("…even when the user doesn't say 'dashboard' but asks to
   display metrics"). For a skill that loses to a tempting inline default, an
   imperative description ("Always load this skill before X; do not do X
-  directly") triggers far more reliably — but reserve forceful language for
+  directly") triggers far more reliably, but reserve forceful language for
   skills that need it, or overlapping "always" directives dilute each other.
 - Keep all the "when" guidance **in the description**, not scattered in the body.
 
@@ -124,7 +124,7 @@ Match how prescriptive the instructions are to how fragile the task is:
 ## Composing with Biorouter's other primitives
 
 A skill is *guidance loaded inline*. Have it delegate when another primitive
-fits better — and know when **not** to:
+fits better, and know when **not** to:
 
 - **Subagents.** When a step is high-volume, parallelizable, or produces
   throwaway intermediate output (broad search, log triage, multi-file audit),
@@ -155,34 +155,34 @@ my-skill/
 ```
 
 Prefer a pre-written script over asking the agent to regenerate the same code:
-more reliable, consistent, and the script's *source* never enters context —
+more reliable, consistent, and the script's *source* never enters context,
 only its output. Make execution intent explicit ("**Run** `validate.py`" vs
 "**See** `validate.py` for the algorithm"), have scripts handle their own
 errors, and justify any magic numbers.
 
 ## Testing a skill (robustness & consistency)
 
-There are **two separate failure modes** — test each:
+There are **two separate failure modes**, and you test each:
 
 **1. Does it trigger?** Start a *fresh* session and give a task that *should*
 load the skill **without naming it** (e.g. "plot this distribution" for a
 figure-style skill). Confirm the agent calls `loadSkill` and follows the
 instructions. Also try tasks that *should not* trigger it, to check for false
-positives. If it under-triggers, sharpen the `description` — that is the match
+positives. If it under-triggers, sharpen the `description`, which is the match
 surface, not the body. (The user can always force it: "use the figure-style
 skill".)
 
 **2. Does it execute every step?** A loaded skill can still silently skip
-internal steps — especially invisible verification. Make critical steps produce
+internal steps, especially invisible verification. Make critical steps produce
 **visible output** ("before delivering, output a checklist of each rule and
 whether you applied it") so you and the agent can confirm compliance.
 
 For robustness:
-- Run the trigger test **several times** — skills are probabilistic; judge a
+- Run the trigger test **several times**: skills are probabilistic; judge a
   *rate*, not a single pass. Tighten wording until it's reliable.
 - Test under realistic conditions, including with your usual hooks/project
   instructions present (unrelated context can suppress a weak description).
-- If you deploy across model tiers, sanity-check on the smaller one too — it may
+- If you deploy across model tiers, sanity-check on the smaller one too, since it may
   need more explicit guidance than the largest model.
 - Keep each skill **small and single-purpose.** Too many always-on or
   overlapping skills dilute each other; split a sprawling skill into a bundle.
@@ -201,7 +201,7 @@ my-bundle/
     helper.md
 ```
 
-## Packaging & installing (zip export — the Biorouter way)
+## Packaging & installing (zip export, the Biorouter way)
 
 Share a skill by zipping its folder. Accepted layouts:
 

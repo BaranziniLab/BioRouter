@@ -291,7 +291,7 @@ impl ChildVisibility {
             ChildVisibility::Headless => format!(
                 "Subagent {child_session_id} is running without a tab: no desktop window is \
                  attached to this backend. Do not tell the user you opened a tab or that they \
-                 can watch it — read the child with workspace_read_conversation and report what \
+                 can watch it. Read the child with workspace_read_conversation and report what \
                  it did yourself."
             ),
             ChildVisibility::TabUndelivered { reason } => format!(
@@ -733,7 +733,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             "extensions": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "OMIT this to give the subagent the same extensions you have, which is almost always right. Naming a subset restricts it to those. An empty array leaves it with NO tools at all — it can only think and write text, so use that only for a pure reasoning or writing task."
+                "description": "OMIT this to give the subagent the same extensions you have, which is almost always right. Naming a subset restricts it to those. An empty array leaves it with NO tools at all: it can only think and write text, so use that only for a pure reasoning or writing task."
             },
             "settings": {
                 "type": "object",
@@ -751,7 +751,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
             },
             "visible": {
                 "type": "boolean",
-                "description": "OMIT this field. A subagent works in its own tab that the user can watch and talk to, and that is the norm — the default is already true whenever the desktop app is open, and false when it is not, so there is nothing to decide. Pass false ONLY for a long mechanical job with nothing to watch (a bulk rename, a scripted sweep). Passing false hides the subagent's work from the user, who cannot then see what it did, correct it, or stop it; it is a deliberate exception, never the safe or tidy choice."
+                "description": "OMIT this field. A subagent works in its own tab that the user can watch and talk to, and that is the norm. The default is already true whenever the desktop app is open, and false when it is not, so there is nothing to decide. Pass false ONLY for a long mechanical job with nothing to watch (a bulk rename, a scripted sweep). Passing false hides the subagent's work from the user, who cannot then see what it did, correct it, or stop it; it is a deliberate exception, never the safe or tidy choice."
             },
             "placement": {
                 "type": "string",

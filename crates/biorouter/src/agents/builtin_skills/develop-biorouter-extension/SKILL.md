@@ -1,6 +1,6 @@
 ---
 name: develop-biorouter-extension
-description: "Guide for building a Biorouter extension (.brxt file) — covers the required ZIP structure, manifest.json schema, the Python MCP server (pyproject.toml + console-script entry point), cross-platform dependency pitfalls, and optional bundled skills. Load this skill whenever the user wants to build, package, or publish a Biorouter extension."
+description: "Guide for building a Biorouter extension (.brxt file). Covers the required ZIP structure, manifest.json schema, the Python MCP server (pyproject.toml + console-script entry point), cross-platform dependency pitfalls, and optional bundled skills. Load this skill whenever the user wants to build, package, or publish a Biorouter extension."
 user-invocable: true
 ---
 
@@ -74,7 +74,7 @@ config.
 ## Python Package (pyproject.toml + src/)
 
 The extension is a Python package that implements an MCP server. Use `uv` for
-dependency management — Biorouter runs `uv sync` on install.
+dependency management. Biorouter runs `uv sync` on install.
 
 **`entry_point` is a console-script command, not a module.** At runtime
 Biorouter starts the server with `uv run --directory <install-dir>
@@ -95,7 +95,7 @@ dependencies = [
 
 # The command Biorouter runs via `uv run <entry_point>`. The left-hand name
 # MUST match manifest.json's "entry_point"; the right-hand side is
-# "<module>:<callable>" — the function that starts your MCP server.
+# "<module>:<callable>", naming the function that starts your MCP server.
 [project.scripts]
 myextension = "myextension:main"
 
@@ -113,18 +113,18 @@ stdio loop (e.g. `mcp.run()` / `server.run()`).
 `uv sync` runs on the **end user's machine** at install time. Every dependency
 (direct *and* transitive) must therefore either ship a prebuilt wheel for the
 user's OS + CPU + Python, or be compilable there. When no wheel matches, uv
-falls back to building from source — which silently requires a C and/or Rust
+falls back to building from source, which silently requires a C and/or Rust
 toolchain the user may not have, turning "install an extension" into a compiler
 error. This is the single most common cause of install failures, and Biorouter
 surfaces uv's output plus a targeted hint (missing/broken Rust toolchain, no
 wheel for the platform, the `cryptography<49` Intel-Mac case) when it happens.
 
 **Real example:** `cryptography` ≥ 49 (2026-06-12) removed x86_64 (Intel) macOS
-wheels. Any extension that pulls it in — e.g. transitively via
-`fastmcp → fastmcp-slim[server] → joserfc → cryptography` — forces Intel-Mac
+wheels. Any extension that pulls it in, for example transitively via
+`fastmcp > fastmcp-slim[server] > joserfc > cryptography`, forces Intel-Mac
 users into a from-source Rust build that fails on most machines.
 
-**Mitigation — cap the dependency only where wheels are missing.** Use a uv
+**Mitigation: cap the dependency only where wheels are missing.** Use a uv
 constraint with an environment marker so other platforms keep the newest
 version. This works even for *transitive* deps (a constraint narrows a version
 that's already in the tree; it does not add a new dependency):
@@ -139,7 +139,7 @@ constraint-dependencies = [
 ]
 ```
 
-**Verify resolution per platform** before you publish — `uv pip compile`
+**Verify resolution per platform** before you publish. `uv pip compile`
 resolves for a target without installing:
 
 ```bash
@@ -153,7 +153,7 @@ Guidelines:
   support. Check a package's "Download files" page on PyPI for the wheel tags.
 - Commit a `uv.lock` for reproducible installs. After adding a constraint, run
   `uv lock` and `uv lock --check`. The lock is what `uv sync` consumes, so an
-  invalid lock breaks installs outright — always validate it.
+  invalid lock breaks installs outright. Always validate it.
 - Pure-Python packages (no compiled extension) are always safe. The risk is
   packages with native code: `cryptography`, `pymssql`, `pydantic-core`,
   anything built with maturin/setuptools-rust/cffi.
@@ -212,7 +212,7 @@ Exclude `.venv/`, `__pycache__/`, and any build artifacts.
 
 Biorouter installs by:
 1. Unzipping all contents to `~/.config/biorouter/extensions/<name>/`.
-2. Running `uv sync` (timeout: 10 minutes — generous so a legitimate
+2. Running `uv sync` (timeout: 10 minutes, generous so a legitimate
    from-source build of a dependency has time to finish) to build the virtual
    environment. If `uv sync` fails, Biorouter surfaces uv's output along with a
    hint for common causes (missing/broken Rust toolchain, no wheel for the

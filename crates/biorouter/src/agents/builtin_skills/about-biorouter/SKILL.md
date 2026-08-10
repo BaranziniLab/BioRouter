@@ -27,10 +27,10 @@ extensible tool for exploratory analysis, prototyping, and automation.
 
 Three layers:
 
-1. **Interface** — the desktop app (Electron + React) or the `biorouter` CLI.
-2. **Agent** — the reasoning loop holding session state, talking to the
+1. **Interface**: the desktop app (Electron + React) or the `biorouter` CLI.
+2. **Agent**: the reasoning loop holding session state, talking to the
    configured LLM provider, and dispatching tool calls.
-3. **Extensions** — pluggable MCP (Model Context Protocol) servers that provide
+3. **Extensions**: pluggable MCP (Model Context Protocol) servers that provide
    tools and context.
 
 The desktop app spawns a local REST/WebSocket server (`biorouterd`) and talks to
@@ -143,11 +143,11 @@ SageMaker, Snowflake, GitHub Copilot, LiteLLM, xAI, institution-hosted Versa
 API keys are stored via a pluggable secrets backend (`secrets_backend` in
 config.yaml or `BIOROUTER_SECRETS_BACKEND`):
 
-- `keyring` (default) — OS credential store (macOS Keychain, Windows
+- `keyring` (default): OS credential store (macOS Keychain, Windows
   Credential Manager, Linux Secret Service); read once per process.
-- `encrypted-file` — passphrase-encrypted `secrets.enc` (Argon2id +
+- `encrypted-file`: passphrase-encrypted `secrets.enc` (Argon2id +
   XChaCha20-Poly1305).
-- `file` — plaintext `secrets.yaml` (for headless/dev use).
+- `file`: plaintext `secrets.yaml` (for headless/dev use).
 
 Environment variables (e.g. `OPENAI_API_KEY`) override the backend entirely.
 

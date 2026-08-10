@@ -21,14 +21,14 @@ Wrap reasoning in `<analysis>` tags:
 - Do not exclude any information that might be important to continuing a session working with you
 
 ### Include the Following Sections:
-1. **User Intent** – All goals and requests  
-2. **Technical Concepts** – All discussed tools, methods  
-3. **Files + Code** – Viewed/edited files, full code, change justifications  
-4. **Errors + Fixes** – Bugs, resolutions, user-driven changes  
-5. **Problem Solving** – Issues solved or in progress  
-6. **User Messages** – All user messages including tool calls, but truncate long tool call arguments or results
-7. **Pending Tasks** – All unresolved user requests  
-8. **Current Work** – Active work at summary request time: filenames, code, alignment to latest instruction  
-9. **Next Step** – *Include only if* directly continues user instruction  
+1. **User Intent**: All goals and requests  
+2. **Technical Concepts**: All discussed tools, methods  
+3. **Files + Code**: Viewed/edited files, full code, change justifications  
+4. **Errors + Fixes**: Bugs, resolutions, user-driven changes  
+5. **Problem Solving**: Issues solved or in progress  
+6. **User Messages**: All user messages including tool calls, but truncate long tool call arguments or results
+7. **Pending Tasks**: All unresolved user requests  
+8. **Current Work**: Active work at summary request time: filenames, code, alignment to latest instruction  
+9. **Next Step**: *Include only if* directly continues user instruction  
 
 > No new ideas unless user confirmed
