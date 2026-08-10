@@ -1073,9 +1073,9 @@ mod tests {
                 enabled: false,
                 config: ExtensionConfig::Platform {
                     name: "todo".to_string(),
-                    description:
-                        "Enable a todo list for biorouter so it can keep track of what it is doing"
-                            .to_string(),
+                    description: "Keep a running checklist through a multi-step task, so \
+                                  Biorouter tracks what is done and what is left"
+                        .to_string(),
                     bundled: Some(true),
                     available_tools: vec![],
                 },

@@ -41,8 +41,8 @@ impl ProcessExit {
     }
 }
 
-pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>> = Lazy::new(
-    || {
+pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>> =
+    Lazy::new(|| {
         let mut map = HashMap::new();
 
         map.insert(
@@ -50,7 +50,8 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: todo_extension::EXTENSION_NAME,
                 description:
-                    "Enable a todo list for biorouter so it can keep track of what it is doing",
+                    "Keep a running checklist through a multi-step task, so Biorouter tracks \
+                     what is done and what is left",
                 default_enabled: true,
                 client_factory: |ctx| Box::new(todo_extension::TodoClient::new(ctx).unwrap()),
             },
@@ -61,7 +62,8 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: chatrecall_extension::EXTENSION_NAME,
                 description:
-                    "Search past conversations and load session summaries for contextual memory",
+                    "Search your earlier chats and load a summary of one, so work you already \
+                     did can be picked up here",
                 default_enabled: false,
                 client_factory: |ctx| {
                     Box::new(chatrecall_extension::ChatRecallClient::new(ctx).unwrap())
@@ -100,9 +102,12 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             PlatformExtensionDef {
                 name: extension_manager_extension::EXTENSION_NAME,
                 description:
-                    "Enable extension management tools for discovering, enabling, and disabling extensions",
+                    "Look up which extensions are available and turn one on or off, so a task \
+                     that needs a tool you have not loaded can still finish",
                 default_enabled: true,
-                client_factory: |ctx| Box::new(extension_manager_extension::ExtensionManagerClient::new(ctx).unwrap()),
+                client_factory: |ctx| {
+                    Box::new(extension_manager_extension::ExtensionManagerClient::new(ctx).unwrap())
+                },
             },
         );
 
@@ -110,7 +115,8 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
             skills_extension::EXTENSION_NAME,
             PlatformExtensionDef {
                 name: skills_extension::EXTENSION_NAME,
-                description: "Load and use skills from relevant directories",
+                description: "Search the skills installed on this machine and load the one that \
+                              matches the task in hand",
                 default_enabled: true,
                 client_factory: |ctx| Box::new(skills_extension::SkillsClient::new(ctx).unwrap()),
             },
@@ -129,8 +135,7 @@ pub static PLATFORM_EXTENSIONS: Lazy<HashMap<&'static str, PlatformExtensionDef>
         );
 
         map
-    },
-);
+    });
 
 #[derive(Clone)]
 pub struct PlatformExtensionContext {

@@ -149,16 +149,22 @@ export function getSubtitle(config: ExtensionConfig) {
       const extensionData = builtInExtensionsData.find(
         (ext) => normalizeExtensionName(ext.name) === normalizeExtensionName(config.name)
       );
+      // No literal fallback string. "Built-in extension" is not a description
+      // of anything: it repeats the badge already beside the title and tells
+      // the reader nothing about what the extension does. An entry with no
+      // description shows none, which is honest and lets the row collapse.
       return {
-        description: extensionData?.description || config.description || 'Built-in extension',
+        description: extensionData?.description || config.description || null,
         command: null,
       };
     }
     case 'sse':
     case 'streamable_http': {
-      const prefix = `${config.type.toUpperCase().replace('_', ' ')} extension`;
+      // No shouted transport prefix. `command` below already renders the URI on
+      // the following line, so "STREAMABLE HTTP extension:" duplicated the
+      // transport in capitals and pushed the real description to the right.
       return {
-        description: `${prefix}${config.description ? ': ' + config.description : ''}`,
+        description: config.description || null,
         command: config.uri || null,
       };
     }

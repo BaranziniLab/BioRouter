@@ -51,7 +51,7 @@ function KnowledgeViewInner() {
             <div className="page-transition">
               <h1 className="text-title">Knowledge</h1>
               <p className="mt-1 text-secondary text-text-muted">
-                Personal, LLM-maintained knowledge bases.
+                Personal knowledge bases Biorouter builds and maintains for you.
               </p>
             </div>
           </ReadableContent>

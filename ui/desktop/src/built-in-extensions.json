@@ -2,7 +2,7 @@
   {
     "id": "developer",
     "name": "Developer",
-    "description": "General development tools useful for software engineering.",
+    "description": "Read, write and run code, and run shell commands.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],
@@ -11,7 +11,7 @@
   {
     "id": "computercontroller",
     "name": "Computer Controller",
-    "description": "General computer control tools that don't require you to be a developer or engineer.",
+    "description": "Control desktop apps, scrape web pages, and work with local files.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],
@@ -20,7 +20,7 @@
   {
     "id": "autovisualiser",
     "name": "Auto Visualiser",
-    "description": "Automatically see your data with this UI generation extension.",
+    "description": "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],
@@ -29,7 +29,7 @@
   {
     "id": "memory",
     "name": "Memory",
-    "description": "Teach Biorouter your preferences as you go.",
+    "description": "Teach Biorouter your preferences so it remembers them as you go.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],
@@ -38,7 +38,7 @@
   {
     "id": "tutorial",
     "name": "Tutorial",
-    "description": "Access interactive tutorials and guides",
+    "description": "Access interactive tutorials and step-by-step guides.",
     "enabled": false,
     "type": "builtin",
     "env_keys": []
@@ -46,7 +46,7 @@
   {
     "id": "agent_drafter",
     "name": "Agent Drafter",
-    "description": "Build interactive artifacts (static pages, or apps with an embedded Biorouter agent) and export them as standalone projects.",
+    "description": "Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.",
     "enabled": true,
     "type": "builtin",
     "env_keys": [],

@@ -78,7 +78,7 @@ export default function ExtensionItem({
    */
   const pairingNotice =
     defaultProvider && extensionPairingRefused(extension.name, defaultProvider.tier)
-      ? `${extension.enabled ? 'Enabled · u' : 'U'}navailable in new chats (default model is public). Judged against your default provider, ${defaultProvider.name}`
+      ? `${extension.enabled ? 'Enabled, but u' : 'U'}navailable in new chats (default model is public). Judged against your default provider, ${defaultProvider.name}`
       : null;
 
   /**

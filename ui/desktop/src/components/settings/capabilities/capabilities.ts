@@ -22,19 +22,20 @@ export const CAPABILITIES: CapabilityMeta[] = [
   {
     key: 'developer',
     label: 'Developer',
-    description: 'General development tools for reading, writing, and running code.',
+    description: 'Read, write and run code, and run shell commands.',
     defaultEnabled: true,
   },
   {
     key: 'computercontroller',
     label: 'Computer Controller',
-    description: 'Control desktop apps and work with local documents and files.',
+    description: 'Control desktop apps, scrape web pages, and work with local files.',
     defaultEnabled: true,
   },
   {
     key: 'autovisualiser',
     label: 'Auto Visualiser',
-    description: 'Render charts, diagrams and maps inline.',
+    description:
+      'Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.',
     defaultEnabled: true,
   },
   {
@@ -70,13 +71,15 @@ export const CAPABILITIES: CapabilityMeta[] = [
   {
     key: 'knowledge',
     label: 'Knowledge',
-    description: 'Personal, LLM-maintained knowledge bases backed by markdown + git history.',
+    description:
+      'Personal knowledge bases Biorouter builds and maintains for you, stored as markdown with full history.',
     defaultEnabled: true,
   },
   {
     key: 'agent_drafter',
     label: 'Agent Drafter',
-    description: 'Build interactive artifacts and export them as standalone projects.',
+    description:
+      'Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.',
     defaultEnabled: true,
   },
   {

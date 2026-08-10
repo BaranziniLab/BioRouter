@@ -210,17 +210,17 @@ instructions: |-
 extensions:
 - type: platform
   name: skills
-  description: Load and use skills from relevant directories
+  description: Search the skills installed on this machine and load the one that matches the task in hand
   bundled: true
   available_tools: []
 - type: platform
   name: todo
-  description: Enable a todo list for biorouter so it can keep track of what it is doing
+  description: Keep a running checklist through a multi-step task, so Biorouter tracks what is done and what is left
   bundled: true
   available_tools: []
 - type: platform
   name: chatrecall
-  description: Search past conversations and load session summaries for contextual memory
+  description: Search your earlier chats and load a summary of one, so work you already did can be picked up here
   bundled: true
   available_tools: []
 knowledge_bases:

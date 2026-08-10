@@ -975,32 +975,32 @@ fn configure_builtin_extension() -> anyhow::Result<()> {
         (
             "autovisualiser",
             "Auto Visualiser",
-            "Interactive charts, diagrams, networks, maps & scientific plots",
+            "Interactive charts, diagrams, networks, maps and scientific plots, rendered inline.",
         ),
         (
             "computercontroller",
             "Computer Controller",
-            "controls for webscraping, file caching, and automations",
+            "Control desktop apps, scrape web pages, and work with local files.",
         ),
         (
             "developer",
             "Developer Tools",
-            "Code editing and shell access",
+            "Read, write and run code, and run shell commands.",
         ),
         (
             "memory",
             "Memory",
-            "Tools to save and retrieve durable memories",
+            "Teach Biorouter your preferences so it remembers them as you go.",
         ),
         (
             "tutorial",
             "Tutorial",
-            "Access interactive tutorials and guides",
+            "Access interactive tutorials and step-by-step guides.",
         ),
         (
             "agent_drafter",
             "Agent Drafter",
-            "Build interactive artifacts (static, or with an embedded Biorouter agent) and export them",
+            "Build interactive artifacts, static pages or apps with an embedded Biorouter agent, and export them as standalone projects.",
         ),
     ];
 
