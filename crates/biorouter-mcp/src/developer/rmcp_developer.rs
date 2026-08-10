@@ -3200,6 +3200,29 @@ mod tests {
     /// in `biorouter session` — where the process cwd *is* the session cwd —
     /// deleting the directory you started in panicked the whole process on the
     /// next tool call. The tool call must fail; the process must not.
+    ///
+    /// ⚠ **Unix only, because the precondition does not exist on Windows.**
+    /// That is a statement about Windows, not about this test being awkward
+    /// there. Two independent reasons, either one sufficient:
+    ///
+    /// 1. A Windows process holds an open handle to its own current directory,
+    ///    opened without `FILE_SHARE_DELETE`, so the `drop(tmp)` below cannot
+    ///    remove it: `TempDir::drop` swallows the sharing violation and the
+    ///    directory is still there when the assertions run. On windows-latest
+    ///    the call therefore *succeeded*, resolving to
+    ///    `…\Temp\.tmpXXXX\scratch.txt`, and the `expect_err` failed.
+    /// 2. Even if it could vanish, `std::env::current_dir()` on Windows is
+    ///    `GetCurrentDirectoryW`, which reads the path string out of the PEB
+    ///    and never touches the filesystem. It returns the stale path rather
+    ///    than an error, so the `Err` arm of `effective_cwd` that this test
+    ///    exists to reach is not reachable from a Windows kernel at all.
+    ///
+    /// So this is not lost Windows coverage of a behaviour that has one: the
+    /// behaviour is the Unix one. What Windows *does* have, a bound base that
+    /// no longer exists, is the first arm of `effective_cwd`, and
+    /// `get_info_reports_a_missing_working_directory` below covers it on every
+    /// platform.
+    #[cfg(unix)]
     #[test]
     #[serial]
     fn resolve_path_errors_instead_of_panicking_when_process_cwd_is_gone() {

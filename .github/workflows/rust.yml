@@ -120,8 +120,16 @@ jobs:
       # requests per run, red whenever that worker had a bad day. It is now
       # opt-in behind BIOROUTER_TEST_LAPSTONE_TUNNEL. Gate the test, not the
       # selector, if another one appears.
+      # ⚠ `--no-fail-fast` is load-bearing on this matrix, not a nicety. Without
+      # it cargo stops at the FIRST test binary that fails, and everything
+      # ordered after it never runs. On windows-latest that was `biorouter_mcp`,
+      # so `biorouter_sandbox`, `biorouter_server`, `biorouterd` and
+      # `biorouter_test` were unreported for a hundred consecutive runs: each
+      # batch of Windows fixes made the job fail one binary further along, which
+      # read as "a new rotating set of failures" and was really one hidden queue
+      # being drained one CI round-trip at a time. One run now names them all.
       - name: cargo test (workspace, lib + bins)
-        run: cargo test --workspace --lib --bins --locked
+        run: cargo test --workspace --lib --bins --locked --no-fail-fast
 
       # The cross-platform-sensitive suites BR-70 exists to prove, run on every
       # OS they apply to.

@@ -85,6 +85,25 @@ fn walk<W: Write + Seek>(
         let entry = entry?;
         let path = entry.path();
         let rel = path.strip_prefix(base)?;
+        // ⚠ The exporter is holding this file's lock **right now**, so reading
+        // it is reading through its own lock. `kb_export` takes the KB write
+        // lock and only then calls `export_brkb`, and the lock is
+        // `fs2::lock_exclusive`, i.e. `LockFileEx` on Windows: a `ReadFile`
+        // from the second handle this walk opens is refused with os error 33,
+        // "another process has locked a portion of the file", and every model
+        // export of every base failed there. Unix never noticed, because
+        // `flock` is advisory and does not govern `read(2)` at all, so this
+        // was a Windows-only *product* failure that three tests found and no
+        // amount of macOS running could.
+        //
+        // Skipping is right regardless of the lock. A `write.lock` is transient
+        // per-machine state whose contents are meaningless (`git::stage_all`
+        // already refuses to commit it and `.gitignore` already lists it), so
+        // an archive that carried it would be shipping one machine's lock file
+        // to another. It is excluded, not merely tolerated.
+        if crate::knowledge::paths::is_kb_write_lock(rel) {
+            continue;
+        }
         let archive_path = format!("{prefix}/{}", rel.to_string_lossy());
         if path.is_dir() {
             zip.add_directory(&archive_path, opts)?;
@@ -247,6 +266,85 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Imp
 mod tests {
     use super::*;
     use crate::knowledge::service::KnowledgeService;
+
+    fn zip_names(bytes: &[u8]) -> Vec<String> {
+        let mut a = ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+        (0..a.len())
+            .map(|i| a.by_index(i).unwrap().name().to_string())
+            .collect()
+    }
+
+    /// An archive is content; a lock is not. This is the platform-independent
+    /// half of the os-error-33 fix and the one with teeth off Windows: delete
+    /// the `is_kb_write_lock` skip in [`walk`] and the entry reappears here on
+    /// macOS and Linux, where reading a `flock`ed file is perfectly legal and
+    /// the export therefore still *succeeds*.
+    ///
+    /// The `.crossref-cache` neighbour is the mutation guard on the guard: a
+    /// skip written as "anything under `.biorouter-knowledge/`" would pass the
+    /// first assertion and quietly stop archiving the internal directory.
+    #[test]
+    fn the_transient_write_lock_is_never_packed_into_an_archive() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("orig", "Orig", None).unwrap();
+        let internal = dir.path().join("orig").join(".biorouter-knowledge");
+        std::fs::create_dir_all(&internal).unwrap();
+        std::fs::write(internal.join("write.lock"), b"transient").unwrap();
+        std::fs::write(internal.join("keep.json"), b"{}").unwrap();
+
+        let names = zip_names(&svc.export_brkb("orig").unwrap());
+
+        assert!(
+            !names.iter().any(|n| n
+                .replace('\\', "/")
+                .ends_with(".biorouter-knowledge/write.lock")),
+            "the machine's transient write lock was shipped inside the archive: {names:?}"
+        );
+        assert!(
+            names.iter().any(|n| n
+                .replace('\\', "/")
+                .ends_with(".biorouter-knowledge/keep.json")),
+            "the skip swallowed the whole internal directory: {names:?}"
+        );
+    }
+
+    /// The Windows half, stated as behaviour rather than as a platform.
+    ///
+    /// `kb_export` holds the KB write lock across `export_brkb`, so the walk
+    /// reads a file this process has locked exclusively. On Windows that is
+    /// `LockFileEx`, and the read is refused with os error 33, which is what
+    /// took three `knowledge::server` tests red on windows-latest. On Unix
+    /// `flock` does not govern reads, so this test cannot fail here; it is
+    /// carried because windows-latest is where it is a real assertion, and
+    /// because it pins the *scenario* (lock held, then export) that the comment
+    /// in [`walk`] describes.
+    #[test]
+    fn exporting_while_holding_the_write_lock_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("orig", "Orig", None).unwrap();
+        let lock_path = dir
+            .path()
+            .join("orig")
+            .join(crate::knowledge::paths::KB_WRITE_LOCK_REL);
+        std::fs::create_dir_all(lock_path.parent().unwrap()).unwrap();
+        let held = std::fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .unwrap();
+        fs2::FileExt::lock_exclusive(&held).unwrap();
+
+        let bytes = svc
+            .export_brkb("orig")
+            .expect("an export must not be blocked by the lock the exporter itself holds");
+
+        assert!(bytes.len() > 100, "the archive has content");
+        let _ = fs2::FileExt::unlock(&held);
+    }
 
     #[test]
     fn export_then_import_preserves_files() {

@@ -2126,11 +2126,29 @@ mod web_and_script_tests {
         assert!(!web_scrape_status_is_retryable(StatusCode::BAD_REQUEST));
     }
 
+    /// Collapse every run of whitespace to one space, so a phrase can be looked
+    /// for in prose that is hard-wrapped inside a source literal.
+    ///
+    /// ⚠ This is the fix for a real red build, not tidiness. The two
+    /// `automation_script` descriptions below are `#[cfg]` twins whose shared
+    /// sentences sit at different column offsets, so the same phrase wraps in
+    /// one and not the other: "terminates the template literal" is contiguous
+    /// in the unix variant and split by a newline plus twelve spaces in the
+    /// windows one, and a `contains` over the raw text passed on macOS and
+    /// Linux while failing on windows-latest for a full week. Re-flowing the
+    /// literal would have moved the trap to the next edit rather than removing
+    /// it: the assertion is about the words, and the line breaks in a `#[tool]`
+    /// description are free variables that any rewording disturbs.
+    fn unwrapped(text: &str) -> String {
+        text.split_whitespace().collect::<Vec<_>>().join(" ")
+    }
+
     /// The automation_script description must carry the CORRECTED String.raw
     /// caveats from #23 (String.raw does not neutralise ${...} interpolation
     /// or backticks), not the old unconditional "use String.raw" steer that
     /// produced the very parse failures #23 fixed. Applies to both platform
-    /// variants — the asserted phrases are shared.
+    /// variants, and the asserted phrases are shared, which is exactly why every
+    /// match here goes through [`unwrapped`].
     #[test]
     fn automation_script_description_carries_corrected_string_raw_caveats() {
         let server = ComputerControllerServer::new();
@@ -2140,7 +2158,7 @@ mod web_and_script_tests {
             .into_iter()
             .find(|t| t.name == "automation_script")
             .expect("automation_script is registered");
-        let description = tool.description.as_deref().unwrap_or_default();
+        let description = unwrapped(tool.description.as_deref().unwrap_or_default());
         assert!(
             !description.contains("so backslashes remain intact"),
             "the old unconditional String.raw steer must be gone: {description}"
@@ -2161,6 +2179,84 @@ mod web_and_script_tests {
             description.contains(r#"${"$"}{"#),
             "must teach the literal dollar-brace escape: {description}"
         );
+    }
+
+    /// The test above can only see the description that this platform
+    /// *compiled*, which is the whole reason the break was invisible for a
+    /// week: macOS and Linux build the `#[cfg(not(target_os = "windows"))]`
+    /// variant, so the windows one is unreachable from every runner except
+    /// windows-latest, and a phrase can go missing there with nothing to say
+    /// so. This reads both out of the source instead, so either variant losing
+    /// a caveat, or re-wrapping one past a `contains`, fails everywhere.
+    ///
+    /// A source scan is the right instrument and not a workaround: the property
+    /// is "both spellings of this description say the same things", and that is
+    /// a statement about the file, not about a running server.
+    #[test]
+    fn both_platform_descriptions_carry_the_same_string_raw_caveats() {
+        const SOURCE: &str = include_str!("mod.rs");
+        // The two `#[tool]` attributes, sliced out of the file. The needle is
+        // the attribute's own text, so this test's source cannot match itself
+        // (its copy of the needle is escaped).
+        let blocks: Vec<String> = SOURCE
+            .match_indices("name = \"automation_script\",")
+            .map(|(at, _)| {
+                let rest = &SOURCE[at..];
+                let end = rest
+                    .find("\n    )]")
+                    .expect("a #[tool(...)] attribute closes with `)]` at the impl indent");
+                unwrapped(&rest[..end])
+            })
+            .collect();
+        assert_eq!(
+            blocks.len(),
+            2,
+            "expected exactly one automation_script description per platform cfg"
+        );
+
+        for (i, block) in blocks.iter().enumerate() {
+            for phrase in [
+                "ONLY preserves backslashes",
+                "does NOT make ${...} literal",
+                "terminates the template literal",
+                // Source spelling, not runtime: the description is a Rust
+                // string literal, so the escape the model is taught as
+                // `${"$"}{` is written `${\"$\"}{` in the file this scan reads.
+                // Both cfg variants escape it identically, which is the
+                // property being pinned.
+                r#"${\"$\"}{"#,
+            ] {
+                assert!(
+                    block.contains(phrase),
+                    "automation_script description #{i} is missing {phrase:?}: {block}"
+                );
+            }
+            assert!(
+                !block.contains("so backslashes remain intact"),
+                "automation_script description #{i} still carries the old String.raw steer"
+            );
+        }
+    }
+
+    /// The guard on the guard: [`unwrapped`] must join across a line break
+    /// rather than merely trimming, or the assertion above quietly goes back to
+    /// being a raw `contains` that only one platform's line-wrapping satisfies.
+    ///
+    /// The middle case is the one with teeth: it is the exact shape the
+    /// windows description has, and a `trim()`-only or `replace('\n', "")`
+    /// implementation fails it (the first leaves the newline, the second leaves
+    /// the twelve-space indent behind).
+    #[test]
+    fn unwrapped_joins_a_phrase_that_a_source_literal_wrapped() {
+        assert_eq!(
+            unwrapped("terminates the template literal"),
+            "terminates the template literal"
+        );
+        assert_eq!(
+            unwrapped("terminates the\n            template literal early"),
+            "terminates the template literal early"
+        );
+        assert_eq!(unwrapped("\n   a\t\t b \n"), "a b");
     }
 
     #[cfg(not(target_os = "windows"))]

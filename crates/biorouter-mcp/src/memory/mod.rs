@@ -127,6 +127,38 @@ pub fn global_memory_dir() -> PathBuf {
 /// ceiling, so the bound never has to be reasoned about again.
 const MAX_CATEGORY_LEN: usize = 128;
 
+/// The documented "every category" argument on `retrieve_memories` and
+/// `remove_memory_category`.
+///
+/// Both tools dispatch it before a path is built, and [`validated_category`]
+/// refuses it as a name, so it is a sentinel on exactly the two calls that
+/// document it and an error on the two that do not.
+pub(crate) const ALL_CATEGORIES: &str = "*";
+
+/// Characters Windows refuses in a filename. `/` and `\` are handled a step
+/// earlier, as separators, and carry a better message.
+const WINDOWS_ILLEGAL_CHARS: &[char] = &['<', '>', ':', '"', '|', '?', '*'];
+
+/// The DOS device names, still reserved by Win32 today. `con.txt` is `CON`, so
+/// appending `.txt` does not make one of these openable; the stem is what is
+/// reserved, and the match is case-insensitive.
+const WINDOWS_RESERVED_STEMS: &[&str] = &[
+    "con", "prn", "aux", "nul", "com0", "com1", "com2", "com3", "com4", "com5", "com6", "com7",
+    "com8", "com9", "lpt0", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
+/// Would `<name>.txt` name a DOS device on Windows?
+///
+/// The comparison is against the part before the first dot, because Windows
+/// resolves `con.anything` to the console. `to_ascii_lowercase` rather than
+/// `to_lowercase`: the reserved set is ASCII, and a Unicode fold would let a
+/// name like `CO\u{04B0}` collapse onto it by accident.
+fn is_windows_reserved_stem(category: &str) -> bool {
+    let stem = category.split('.').next().unwrap_or(category);
+    let stem = stem.to_ascii_lowercase();
+    WINDOWS_RESERVED_STEMS.contains(&stem.as_str())
+}
+
 /// A memory category is a **name**, not a path (issue #73).
 ///
 /// `category` arrives as a model-supplied `String` on all four memory tools and
@@ -136,12 +168,48 @@ const MAX_CATEGORY_LEN: usize = 128;
 /// absolute, and the argument is `format!("{category}.txt")` — an absolute
 /// category replaced the store outright (`"/etc/hosts"` → `/etc/hosts.txt`).
 ///
-/// The rule is containment, deliberately not a charset allowlist: `*` (the
-/// documented "all" sentinel), dots, spaces and non-ASCII are ordinary names a
-/// model legitimately picks, and rejecting them would break the feature to fix
-/// the bug. Separators are refused on *every* platform, not only the one where
-/// they happen to separate, because a category is written to disk here and read
-/// back somewhere else.
+/// The rule is containment, deliberately not a charset allowlist: dots, spaces
+/// and non-ASCII are ordinary names a model legitimately picks, and rejecting
+/// them would break the feature to fix the bug. Separators are refused on
+/// *every* platform, not only the one where they happen to separate, because a
+/// category is written to disk here and read back somewhere else.
+///
+/// # A name has to be a filename on every platform we ship (Windows CI)
+///
+/// The clause above about separators is the general rule, and it has a second
+/// half that went unwritten until Windows found it. A category becomes
+/// `<name>.txt` on disk, and Windows refuses `< > : " | ? *` in a filename
+/// outright: `remember_memory(category = "Q3 \"results\"")` came back as a bare
+/// `Os { code: 123, kind: InvalidFilename }`, an internal error with nothing in
+/// it for the model to act on, and the store could never hold that category at
+/// all. So the grammar here is the *intersection* of what the supported
+/// platforms can hold, refused everywhere for the same reason separators are:
+/// the store travels (a synced config directory, `BIOROUTER_PATH_ROOT`, a user
+/// who changes machines), so a name macOS accepts and Windows cannot open is a
+/// store that stops working when it moves. Three shapes go with the characters:
+/// a trailing `.` or space (Windows silently strips them, so the name would
+/// come back as a *different* category), and the reserved device names (`con`,
+/// `nul`, `com1`…), which stay reserved with an extension appended.
+///
+/// ## `*` is the sentinel and therefore not a name
+///
+/// `*` used to be allowed here, and was called out above as an ordinary name.
+/// It is in the refused set now, and Windows is the occasion rather than the
+/// argument. `category="*"` is *documented* as "every category" on
+/// `retrieve_memories` and `remove_memory_category`, and both dispatch it
+/// before a path is ever built. A store that also held a category literally
+/// named `*` would make one string mean two things at once: `retrieve_memories`
+/// could never return that category by itself, and `remove_memory_category`
+/// would delete it while reporting that it had cleared everything. Refusing it
+/// at the one place a category becomes a filename keeps the sentinel a
+/// sentinel. The alternative on the table was sanitising `*` out of the
+/// filename, which is worse than either: it silently redirects the sentinel
+/// onto some real category's file.
+///
+/// ⚠ This function is also the *filter* `category_names` and `retrieve_all`
+/// apply to what is already on disk, so a Unix store that already holds
+/// `*.txt` (creatable before this rule, never creatable on Windows) stops being
+/// listed. The file is left alone rather than deleted; nothing else reads it.
 ///
 /// # A name is also a system-prompt line (issue #63 review, finding 5)
 ///
@@ -169,9 +237,11 @@ fn validated_category(category: &str) -> io::Result<&str> {
             format!(
                 "invalid memory category {shown:?}: {why}. A category is a plain name such as \
                  \"development\" or \"personal\", not a path: it cannot be empty, contain a path \
-                 separator, or point outside the memory store. It is also a label: no control \
-                 characters (a name is listed in the system prompt, one per line), and at most \
-                 {MAX_CATEGORY_LEN} bytes.",
+                 separator, or point outside the memory store. It has to be a filename on every \
+                 platform, so it also cannot contain any of < > : \" | ? *, end in a dot or a \
+                 space, or be a reserved device name (con, prn, aux, nul, com0-9, lpt0-9). It is \
+                 also a label: no control characters (a name is listed in the system prompt, one \
+                 per line), and at most {MAX_CATEGORY_LEN} bytes.",
                 // A rejected name is untrusted text on its way back to the model.
                 // `{:?}` escapes control characters; the truncation stops a
                 // pathological name from being the whole error.
@@ -193,6 +263,28 @@ fn validated_category(category: &str) -> io::Result<&str> {
     }
     if category.len() > MAX_CATEGORY_LEN {
         return reject("it is longer than a category name may be");
+    }
+    if category == ALL_CATEGORIES {
+        // Refused *before* the generic character rule below so the model is told
+        // the useful thing. `*` is also in `WINDOWS_ILLEGAL_CHARS`, and landing
+        // on "it contains a character no filename may hold" would send a model
+        // that meant "all of them" off inventing an escaped spelling.
+        return reject(
+            "\"*\" means every category on retrieve_memories and remove_memory_category, so it \
+             is not a category that can be created, read on its own, or deleted on its own",
+        );
+    }
+    if category.contains(WINDOWS_ILLEGAL_CHARS) {
+        return reject("it contains a character no filename may hold on Windows (< > : \" | ? *)");
+    }
+    if category.ends_with('.') || category.ends_with(' ') {
+        // Windows strips these when it creates the file, so the name would come
+        // back from a directory listing as a different category than the one
+        // written. Refused rather than trimmed: trimming merges two names.
+        return reject("it ends in a dot or a space, which Windows would silently strip");
+    }
+    if is_windows_reserved_stem(category) {
+        return reject("it is a reserved device name on Windows, with or without an extension");
     }
 
     // Belt and braces for anything the platform still parses as more than a
@@ -1593,7 +1685,7 @@ impl MemoryServer {
         // left the rest ungated. Every other shape now carries real consent, so
         // this refusal closes the floor rather than opening a hole: the whole
         // store stays reachable, one approved category at a time.
-        if params.category == "*" && params.is_global {
+        if params.category == ALL_CATEGORIES && params.is_global {
             return Err(ErrorData::new(
                 ErrorCode::INVALID_PARAMS,
                 "Reading the entire machine-wide memory store in one call is not allowed: it \
@@ -1612,7 +1704,7 @@ impl MemoryServer {
         // write a global memory at all, so the global filter is a no-op today —
         // it is applied anyway so that relaxing that refusal later cannot
         // silently reopen this channel on the store that crosses projects.
-        let retrieved = if params.category == "*" {
+        let retrieved = if params.category == ALL_CATEGORIES {
             self.retrieve_all(params.is_global, audience)
         } else {
             self.retrieve(&params.category, params.is_global, audience)
@@ -1638,7 +1730,7 @@ impl MemoryServer {
         let params = params.0;
         self.require_global_consent_path(params.is_global)?;
 
-        let message = if params.category == "*" {
+        let message = if params.category == ALL_CATEGORIES {
             self.clear_all_global_or_local_memories(params.is_global)
                 .map_err(|e| Self::tool_error(&e))?;
             format!(
@@ -2602,13 +2694,22 @@ mod tests {
     }
 
     /// `category="*"` is documented as "all" on `retrieve_memories` and
-    /// `remove_memory_category`, where it is dispatched *before* the path is
-    /// ever built. On `remember_memory` and `remove_specific_memory` it carries
-    /// no such meaning and reaches the filename as a plain name — which it is.
-    /// Validating the category must not cost either behaviour, so all four are
-    /// pinned here.
+    /// `remove_memory_category`, where it is dispatched *before* a path is ever
+    /// built, and it means nothing on `remember_memory` and
+    /// `remove_specific_memory`. All four are pinned here, and the two halves
+    /// are one property: the sentinel keeps working precisely *because* it
+    /// never becomes a filename.
+    ///
+    /// ⚠ The second half used to assert the opposite: that `*` was "a plain
+    /// name" the other two tools stored as `*.txt`. Windows disagreed: `*` is
+    /// illegal in a filename there, so `remember_memory("*")` returned a bare
+    /// `Os { code: 123, kind: InvalidFilename }`. Making it storable again is
+    /// not available on that platform, and making it storable on the others
+    /// would leave one string meaning both "every category" and "this one
+    /// category" on a store that travels between them. So `*` is refused as a
+    /// name everywhere, and the sentinel is the only thing it is.
     #[tokio::test]
-    async fn the_all_categories_sentinel_survives_category_validation() {
+    async fn the_all_categories_sentinel_is_never_also_a_category() {
         let temp = tempdir().unwrap();
         let server = server_at(temp.path());
 
@@ -2647,9 +2748,8 @@ mod tests {
             "the \"*\" sentinel stopped returning every category: {all}"
         );
 
-        // No sentinel meaning here: "*" is a legal single-segment filename and
-        // has always been stored as one.
-        server
+        // The two tools where "*" documents nothing refuse it, and say why.
+        let wrote = server
             .remember_memory(
                 Parameters(RememberMemoryParams {
                     category: "*".into(),
@@ -2660,7 +2760,16 @@ mod tests {
                 meta_for(false),
             )
             .await
-            .expect("\"*\" is a plain name on remember_memory, not a path");
+            .expect_err("remember_memory must not create a category named after the sentinel");
+        assert!(
+            wrote.message.contains("means every category"),
+            "the refusal must tell the model what \"*\" is for, got: {}",
+            wrote.message
+        );
+        assert!(
+            !temp.path().join("local").join("*.txt").exists(),
+            "the refused write still reached the disk"
+        );
         server
             .remove_specific_memory(Parameters(RemoveSpecificMemoryParams {
                 category: "*".into(),
@@ -2668,7 +2777,7 @@ mod tests {
                 is_global: false,
             }))
             .await
-            .expect("\"*\" is a plain name on remove_specific_memory, not a path");
+            .expect_err("remove_specific_memory has no all-categories meaning to fall back on");
 
         server
             .remove_memory_category(Parameters(RemoveMemoryCategoryParams {
@@ -2697,9 +2806,10 @@ mod tests {
 
     /// The funnel: all four tools reach the filesystem through
     /// `get_memory_file`, so that is the one place "a category is a name" has
-    /// to hold. Names stay names — including `*`, dots, spaces and non-ASCII,
-    /// so the rule is *containment*, not a charset allowlist that would break
-    /// ordinary categories a model picks.
+    /// to hold. Names stay names (dots, interior spaces and non-ASCII are all
+    /// ordinary), so the rule is *containment* plus "it has to be openable on
+    /// every platform", not a charset allowlist that would break the categories
+    /// a model actually picks.
     #[test]
     fn get_memory_file_takes_a_name_and_refuses_a_path() {
         let temp = tempdir().unwrap();
@@ -2709,11 +2819,13 @@ mod tests {
             "development",
             "personal",
             "a.txt.b",
-            "*",
             "über",
             "with space",
             ".hidden",
             "-dash",
+            // A stem that merely *starts* like a device name is ordinary.
+            "console",
+            "nullable",
         ] {
             let path = server
                 .get_memory_file(name, false)
@@ -2737,6 +2849,22 @@ mod tests {
             // machine that reads it back.
             "a\\b",
             "..\\evil",
+            // Same reasoning, one step further: a name Windows cannot open is
+            // a store that breaks when it moves. Each of these produced a raw
+            // `Os { code: 123, kind: InvalidFilename }` on windows-latest.
+            "*",
+            "quote\"marks",
+            "who?",
+            "a:b",
+            "less<than",
+            "more>than",
+            "pipe|d",
+            "trailing.",
+            "trailing ",
+            "con",
+            "NUL",
+            "com1",
+            "lpt9.txt",
         ] {
             let err = server
                 .get_memory_file(path_like, true)
@@ -3039,8 +3167,8 @@ mod tests {
     /// are refused because they change how the name *renders* rather than what
     /// it names, and the length is bounded because the name is a filename and a
     /// prompt line, not a document. Everything a model legitimately picks —
-    /// including the `*` sentinel, dots, spaces and non-ASCII — stays legal;
-    /// this is not a charset allowlist (see [`validated_category`]).
+    /// dots, interior spaces and non-ASCII all stay legal; this is not a
+    /// charset allowlist (see [`validated_category`]).
     #[test]
     fn a_category_name_is_a_label_not_a_document() {
         for (name, why) in [
@@ -3062,10 +3190,68 @@ mod tests {
              a system-prompt line nobody chose"
         );
 
-        for legal in ["development", "*", "day.one", "notes 2026", "临床", "a-b_c"] {
+        for legal in ["development", "day.one", "notes 2026", "临床", "a-b_c"] {
             assert!(
                 validated_category(legal).is_ok(),
                 "{legal:?} is an ordinary category name and must stay legal"
+            );
+        }
+    }
+
+    /// A category has to be a filename on every platform we ship, so the
+    /// Windows rules are enforced on all of them.
+    ///
+    /// ⚠ **These assertions do their work on macOS and Linux**, which is the
+    /// point of writing them here rather than leaving windows-latest to catch a
+    /// regression: on Windows the store simply refuses such a name with an
+    /// `InvalidFilename` from the kernel, so an implementation that dropped
+    /// this rule would still "work" there and fail only on the platforms that
+    /// happily create `Q3 "results".txt` and then cannot open the store
+    /// anywhere else.
+    ///
+    /// The legal list carries the near misses that a rule written with a
+    /// coarser brush would swallow: an interior space and an interior dot are
+    /// fine, and only the exact device stems are reserved.
+    #[test]
+    fn a_category_name_has_to_be_a_filename_on_every_platform() {
+        for (name, why) in [
+            ("*", "the all-categories sentinel"),
+            ("Q3 \"results\"", "a double quote"),
+            ("what?", "a question mark"),
+            ("12:30", "a colon"),
+            ("a<b", "a less-than"),
+            ("a>b", "a greater-than"),
+            ("a|b", "a pipe"),
+            ("trailing.", "a trailing dot Windows strips"),
+            ("trailing ", "a trailing space Windows strips"),
+            ("con", "the console device"),
+            ("CON", "the console device, upper case"),
+            ("Con.notes", "the console device with an extension"),
+            ("nul", "the null device"),
+            ("com1", "a serial port"),
+            ("lpt9", "a printer port"),
+        ] {
+            assert!(
+                validated_category(name).is_err(),
+                "{name:?} is {why} and cannot be a file on Windows, so it must be \
+                 refused on every platform: a memory store travels"
+            );
+        }
+
+        for legal in [
+            "development",
+            "notes 2026",
+            "day.one",
+            "console",
+            "nullable",
+            "com",
+            "com10",
+            "recon",
+            ". leading dot",
+        ] {
+            assert!(
+                validated_category(legal).is_ok(),
+                "{legal:?} is a legal filename everywhere and must stay a legal category"
             );
         }
     }
@@ -3074,14 +3260,22 @@ mod tests {
     /// the belt to its braces. The index line is a JSON string literal, so
     /// whatever a name turns out to contain it round-trips to exactly the string
     /// the model must pass back as `category` — and cannot be read as prose.
+    ///
+    /// ⚠ The fixture used to be `quote" and - dash`, and the embedded `"` was
+    /// the sharpest part of it. It had to go: a double quote is illegal in a
+    /// Windows filename, so `remember` returned `InvalidFilename` there and the
+    /// category is now refused on every platform (see
+    /// `a_category_name_has_to_be_a_filename_on_every_platform`). What is left
+    /// is a name that is legal everywhere and still not something to paste raw
+    /// into a prompt line, and the assertions below still fail a raw paste,
+    /// because `- dash - and 'quotes'` is not a JSON value, so the parse dies
+    /// before the round-trip is even reached.
     #[test]
     fn the_global_index_renders_names_as_data() {
         let temp = tempdir().unwrap();
         let server = server_at(temp.path());
 
-        // Legal (no separator, no control character) and still not something to
-        // paste raw into a prompt line.
-        let awkward = r#"quote" and - dash"#;
+        let awkward = "dash - and 'quotes'";
         server
             .remember(CallerCapability::Public, awkward, "note", &[], true)
             .unwrap();
@@ -3089,10 +3283,14 @@ mod tests {
         let instructions = server.compose_instructions("BASE PROTOCOL");
         let line = instructions
             .lines()
-            .find(|l| l.starts_with("- ") && l.contains("quote"))
+            .find(|l| l.starts_with("- ") && l.contains("dash"))
             .unwrap_or_else(|| panic!("the awkward category is missing:\n{instructions}"));
 
         let literal = line.strip_prefix("- ").unwrap();
+        assert_ne!(
+            literal, awkward,
+            "the index pasted the raw name into the prompt line instead of rendering it as data"
+        );
         let decoded: String = serde_json::from_str(literal)
             .unwrap_or_else(|e| panic!("index line {literal:?} is not a JSON string literal: {e}"));
         assert_eq!(

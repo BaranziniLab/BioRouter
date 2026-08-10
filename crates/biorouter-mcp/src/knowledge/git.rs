@@ -3,7 +3,10 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use std::path::Path;
 
-const WRITE_LOCK_PATH: &str = ".biorouter-knowledge/write.lock";
+/// One spelling of the lock's relative path, shared with `service::kb_lock_path`
+/// (which takes it) and `brkb::walk` (which keeps it out of an archive for the
+/// same reason this keeps it out of a commit).
+use crate::knowledge::paths::KB_WRITE_LOCK_REL as WRITE_LOCK_PATH;
 
 /// The one directory that holds curated knowledge. `raw/`, `log.md`, `index.md`
 /// and `schema.md` are all bookkeeping around it.

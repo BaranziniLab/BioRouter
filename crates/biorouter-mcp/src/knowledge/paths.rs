@@ -121,6 +121,28 @@ pub fn kb_internal_dir(root: &Path, id: &str) -> PathBuf {
     kb_root(root, id).join(".biorouter-knowledge")
 }
 
+/// The write lock's path **relative to a knowledge base's own root**.
+///
+/// Spelled once here because four unrelated places have to agree on it and
+/// three of them are not writes: `service::kb_lock_path` takes the lock,
+/// `service::GITIGNORE` keeps git from tracking it, `git::stage_all` keeps it
+/// out of a commit even if the ignore file is missing, and `brkb::walk` keeps
+/// it out of an archive. Every one of those is "the transient lock is not
+/// content", and a fourth spelling of the same string is how one of them
+/// silently stops holding.
+pub const KB_WRITE_LOCK_REL: &str = ".biorouter-knowledge/write.lock";
+
+/// Is `rel`, a path relative to a knowledge base's root, the write lock?
+///
+/// Compared as a [`Path`] rather than as a string on purpose: a caller that
+/// built `rel` by walking the directory has the platform's separator in it, and
+/// on Windows `.biorouter-knowledge\write.lock` must still match. `Path`'s
+/// equality is component-wise and treats both separators as separators there,
+/// so this holds on every platform; `==` over the raw strings would not.
+pub fn is_kb_write_lock(rel: &Path) -> bool {
+    rel == Path::new(KB_WRITE_LOCK_REL)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,5 +195,25 @@ mod tests {
             kb_internal_dir(root, "x"),
             Path::new("/tmp/kb/x/.biorouter-knowledge")
         );
+    }
+
+    #[test]
+    fn the_write_lock_is_recognised_however_the_caller_spelled_the_separator() {
+        assert!(is_kb_write_lock(Path::new(KB_WRITE_LOCK_REL)));
+        assert!(is_kb_write_lock(Path::new(
+            ".biorouter-knowledge/write.lock"
+        )));
+        // What a Windows directory walk hands back. `PathBuf::from(a).join(b)`
+        // is what `brkb::walk` effectively has, and there the separator is the
+        // platform's.
+        assert!(is_kb_write_lock(
+            &Path::new(".biorouter-knowledge").join("write.lock")
+        ));
+        // Neighbours in the same directory are content and must be packed.
+        assert!(!is_kb_write_lock(Path::new(
+            ".biorouter-knowledge/.crossref-cache"
+        )));
+        assert!(!is_kb_write_lock(Path::new("knowledge/write.lock")));
+        assert!(!is_kb_write_lock(Path::new("write.lock")));
     }
 }

@@ -429,7 +429,7 @@ impl KnowledgeService {
     }
 
     fn kb_lock_path(&self, kb_id: &str) -> PathBuf {
-        paths::kb_internal_dir(&self.root, kb_id).join("write.lock")
+        paths::kb_root(&self.root, kb_id).join(paths::KB_WRITE_LOCK_REL)
     }
 
     fn lock_root(&self) -> Result<FileLockGuard> {
@@ -2345,6 +2345,22 @@ mod tests {
         let g = svc.get_graph("k").unwrap();
         assert_eq!(g.nodes.len(), 0, "no knowledge pages yet");
         assert!(kb.join(".biorouter-knowledge/graph-cache.json").exists());
+    }
+
+    /// `GITIGNORE` is a file body, so it cannot be built from
+    /// [`paths::KB_WRITE_LOCK_REL`] at compile time, which leaves it the one
+    /// place the lock's path is still spelled by hand. This is the seam that
+    /// closes it: rename the lock and the const stops covering it, silently,
+    /// and the transient file starts appearing in every KB's git history.
+    #[test]
+    fn the_gitignore_still_names_the_write_lock_it_is_meant_to_hide() {
+        assert!(
+            GITIGNORE
+                .lines()
+                .any(|line| line == paths::KB_WRITE_LOCK_REL),
+            "GITIGNORE does not ignore {}: {GITIGNORE:?}",
+            paths::KB_WRITE_LOCK_REL
+        );
     }
 
     #[tokio::test]
