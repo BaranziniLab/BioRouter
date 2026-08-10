@@ -133,11 +133,24 @@ jobs:
 
       # The cross-platform-sensitive suites BR-70 exists to prove, run on every
       # OS they apply to.
+      #
+      # ⚠ `shell: bash` and the explicit `rc` are both here for windows-latest,
+      # and the first one is a correctness fix rather than a preference. A `run:`
+      # block on a Windows runner is `pwsh`, and pwsh does NOT abort a script on
+      # a native command's non-zero exit: GitHub takes `$LASTEXITCODE`, so only
+      # the THIRD line here decided whether this step passed and the first two
+      # could fail in silence. `bash` restores "any failure fails the step" on
+      # all three runners, and collecting `rc` rather than relying on `-e` means
+      # all three suites still report in one run instead of the step stopping at
+      # the first.
       - name: cargo test (sandbox + developer shell/background + security)
+        shell: bash
         run: |
-          cargo test -p biorouter-sandbox --locked
-          cargo test -p biorouter-mcp --lib developer:: --locked
-          cargo test -p biorouter --lib security:: --locked
+          rc=0
+          cargo test -p biorouter-sandbox --locked --no-fail-fast || rc=1
+          cargo test -p biorouter-mcp --lib developer:: --locked --no-fail-fast || rc=1
+          cargo test -p biorouter --lib security:: --locked --no-fail-fast || rc=1
+          exit $rc
 
       - name: clippy (host, informational until warnings are burned down)
         if: matrix.os == 'ubuntu-latest'
