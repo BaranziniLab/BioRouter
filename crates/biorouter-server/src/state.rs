@@ -202,6 +202,22 @@ fn prune_finished_turns(turns: &mut HashMap<String, ActiveTurn>) {
 /// for ordinary request/response traffic. `/reply` is deliberately NOT counted
 /// here: a turn stream is bounded by its turn rather than by a tab, and
 /// refusing one would break the thing the app exists to do.
+///
+/// Err low rather than high. The two mistakes are not comparable: set too high
+/// and the wedge above is still reachable and takes the whole app with it; set
+/// too low and a background tab does some extra polling.
+///
+/// ⚠ **Know what a refused observer really does next, because it is not what
+/// the desktop client's backoff appears to do.** That loop resets its retry
+/// delay to 1 s when the stream OPENS, not after one that lasted
+/// (`ui/desktop/src/hooks/chatStreamStore.tsx:1659`), so a stream answered 200
+/// and ended immediately is retried at about 1 Hz forever and never climbs
+/// toward the 15 s ceiling the code looks like it provides. So an over-budget
+/// tab degrades from streaming to polling the conversation roughly once a
+/// second. It stays correct and current, which is why this is a tolerable
+/// degraded mode rather than a second bug — but it is much more traffic than
+/// reading that loop suggests. Repairing the reset is the client-side
+/// follow-up; do not raise this budget to paper over it.
 pub const MAX_LIVE_OBSERVER_STREAMS: usize = 3;
 
 /// Permission to hold one session-observer stream open, released on drop.
