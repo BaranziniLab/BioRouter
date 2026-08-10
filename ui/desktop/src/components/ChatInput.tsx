@@ -36,6 +36,7 @@ import { getPredefinedModelsFromEnv } from './settings/models/predefinedModelsUt
 import { getNavigationShortcutText } from '../utils/keyboardShortcuts';
 import type { UserAttachment } from '../types/message';
 import { useStopAcknowledgement } from '../hooks/useStopAcknowledgement';
+import { toastWarning } from '../toasts';
 import { cn } from '../utils';
 import {
   appendComposerRef,
@@ -75,6 +76,23 @@ const MANUAL_COMPACT_TRIGGER = '/compact';
 // Client-side slash command: branch the conversation into a new chat. Handled
 // entirely in the renderer (never sent to the agent).
 const DIVERGE_TRIGGER = '/diverge';
+
+/**
+ * How many times a queued message may be offered to a submit that refuses it
+ * before the composer stops retrying and says so.
+ *
+ * A refusal on the drain is an ORDERING artefact, not a busy signal, so this is
+ * a bound rather than a poll. The store holds its `submitInFlight` latch until
+ * the finishing turn's promise chain unwinds, and the `isLoading` edge that
+ * starts the drain is produced INSIDE that chain, so the first offer of every
+ * turn can land while the latch is still set. Each remaining step of that
+ * unwind is a microtask, so one macrotask hop clears it; the two extra attempts
+ * are margin for a further scheduling hop (React's passive-effect flush, the
+ * store's rAF/timeout notify race). Anything still refusing after three is a
+ * real "cannot send right now" — no session, or another turn already started —
+ * which is reported and left QUEUED for the next drain rather than spun on.
+ */
+const QUEUE_DRAIN_ATTEMPTS = 3;
 /**
  * The composer's controls are grouped by ROW, and the rows are not boxes.
  *
@@ -220,7 +238,14 @@ interface ModelLimit {
 
 interface ChatInputProps {
   sessionId: string | null;
-  handleSubmit: (e: React.FormEvent) => void;
+  /**
+   * Send the composed message. Resolving FALSE means the submit was REFUSED
+   * silently and the composer still owns the text (see
+   * `ChatStreamController.handleSubmit`); the composer must then put the text
+   * back, or keep the message queued, instead of clearing it. A handler that
+   * resolves `undefined` predates the contract and counts as accepted.
+   */
+  handleSubmit: (e: React.FormEvent) => void | Promise<boolean | void>;
   chatState: ChatState;
   setChatState?: (state: ChatState) => void;
   onStop?: () => void;
@@ -548,6 +573,70 @@ export default function ChatInput({
     };
   }, [lastInterruption]); // Include lastInterruption in dependency array
 
+  // Timers for the bounded re-offer below. Tracked so unmounting cannot leave a
+  // submit firing out of a composer that is gone.
+  const queueRetryTimersRef = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  useEffect(() => {
+    const timers = queueRetryTimersRef.current;
+    return () => {
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
+    };
+  }, []);
+
+  /**
+   * Send a message that came out of the queue, and KEEP IT if the submit
+   * refuses it.
+   *
+   * Callers take the message out of the queue BEFORE calling: the accepted
+   * path's promise does not resolve until the whole turn is over, so holding
+   * the message until then would leave the "Next:" chip up for the length of
+   * the turn and hand the next drain edge the same message to send again.
+   * Refusal is therefore what this reacts to. It re-offers the message up to
+   * `QUEUE_DRAIN_ATTEMPTS` times, and the message stays OUT of the queue while
+   * it does, so no other control (Stop and send, steer, a second drain edge)
+   * can pick up the same message and send it twice. Only a message that is
+   * still refused at the bound goes back into the queue, at the head, with a
+   * toast: visible and re-sendable, never silently dropped.
+   */
+  const offerQueuedMessage = useCallback(
+    (message: QueuedMessage) => {
+      LocalMessageStorage.addMessage(message.content);
+      const offer = (attempt: number) => {
+        const submitted = handleSubmit(
+          new CustomEvent('submit', {
+            detail: { value: message.content, attachments: message.attachments ?? [] },
+          }) as unknown as React.FormEvent
+        );
+        void Promise.resolve(submitted).then((accepted) => {
+          // Only an explicit `false` is a refusal — a handler predating the
+          // contract resolves `undefined` and must not be read as one.
+          if (accepted !== false) return;
+          if (attempt < QUEUE_DRAIN_ATTEMPTS) {
+            // Next macrotask, which is all the in-flight submit's promise chain
+            // needs to unwind and release its latch. Deliberately not a poll:
+            // the attempt count is the whole retry budget.
+            const timer = setTimeout(() => {
+              queueRetryTimersRef.current.delete(timer);
+              offer(attempt + 1);
+            }, 0);
+            queueRetryTimersRef.current.add(timer);
+            return;
+          }
+          setQueuedMessages((prev) =>
+            prev.some((queued) => queued.id === message.id) ? prev : [message, ...prev]
+          );
+          toastWarning({
+            title: 'Message still queued',
+            msg: 'Biorouter could not send it while the chat was busy. It is still in the queue, ready to send.',
+          });
+        });
+      };
+      offer(1);
+    },
+    [handleSubmit]
+  );
+
   // Queue processing
   useEffect(() => {
     if (wasLoadingRef.current && !isLoading && queuedMessages.length > 0) {
@@ -557,14 +646,8 @@ export default function ChatInput({
 
       if (shouldProcessQueue) {
         const nextMessage = queuedMessages[0];
-        LocalMessageStorage.addMessage(nextMessage.content);
-        handleSubmit(
-          new CustomEvent('submit', {
-            detail: { value: nextMessage.content, attachments: nextMessage.attachments ?? [] },
-          }) as unknown as React.FormEvent
-        );
         setQueuedMessages((prev) => {
-          const newQueue = prev.slice(1);
+          const newQueue = prev.filter((queued) => queued.id !== nextMessage.id);
           // If queue becomes empty after processing, clear the paused state
           if (newQueue.length === 0) {
             queuePausedRef.current = false;
@@ -572,6 +655,7 @@ export default function ChatInput({
           }
           return newQueue;
         });
+        offerQueuedMessage(nextMessage);
 
         // Clear the interruption flag after processing the interruption message
         if (lastInterruption) {
@@ -583,7 +667,7 @@ export default function ChatInput({
       }
     }
     wasLoadingRef.current = isLoading;
-  }, [isLoading, queuedMessages, handleSubmit, lastInterruption]);
+  }, [isLoading, queuedMessages, offerQueuedMessage, lastInterruption]);
   const [mentionPopover, setMentionPopover] = useState<{
     isOpen: boolean;
     position: { x: number; y: number };
@@ -1475,26 +1559,22 @@ export default function ChatInput({
   // meantime) send the text now, or re-queue it if a turn is somehow running.
   const sendOrQueueText = useCallback(
     (content: string) => {
+      const message = {
+        id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
+        content,
+        attachments: [],
+        timestamp: Date.now(),
+      };
       if (isLoadingRef.current) {
-        setQueuedMessages((prev) => [
-          ...prev,
-          {
-            id: Date.now().toString() + Math.random().toString(36).substr(2, 9),
-            content,
-            attachments: [],
-            timestamp: Date.now(),
-          },
-        ]);
+        setQueuedMessages((prev) => [...prev, message]);
         return;
       }
-      LocalMessageStorage.addMessage(content);
-      handleSubmit(
-        new CustomEvent('submit', {
-          detail: { value: content, attachments: [] },
-        }) as unknown as React.FormEvent
-      );
+      // Via the queue-aware send, so that "never drop the user's words" also
+      // survives a submit that REFUSES the text: it lands back in the queue
+      // rather than nowhere.
+      offerQueuedMessage(message);
     },
-    [handleSubmit]
+    [offerQueuedMessage]
   );
 
   const steerText = useCallback(
@@ -1591,11 +1671,35 @@ export default function ChatInput({
           LocalMessageStorage.addMessage(nonImageFilePaths.join(' '));
         }
 
-        handleSubmit(
+        const submitted = handleSubmit(
           new CustomEvent('submit', {
             detail: { value: textToSend, attachments: imageAttachments },
           }) as unknown as React.FormEvent
         );
+
+        // The composer wipes itself a few lines below, synchronously, before the
+        // submit has said whether it took the message. When it did NOT — a
+        // re-entrant send, a controller with no session (the fresh tab that
+        // accepts text, clears it and creates nothing) — the text was gone with
+        // no error and no message. Put it back through the same channel a failed
+        // `createSession` uses. `displayValue`, not `textToSend`, because what
+        // goes back must be the box the user was looking at: reference chips
+        // included, appended dropped-file paths not.
+        const restoredText = displayValue.trim() ? displayValue : textToSend;
+        const restoredImages = pastedImages;
+        void Promise.resolve(submitted).then((accepted) => {
+          if (accepted !== false) return;
+          window.dispatchEvent(
+            new CustomEvent('restore-chat-input', {
+              detail: { sessionId: sessionId ?? null, value: restoredText },
+            })
+          );
+          // Attachments ride a different channel than the restore event, so they
+          // are handed straight back to the state they were cleared from.
+          if (restoredImages.length > 0) {
+            setPastedImages(restoredImages);
+          }
+        });
 
         // Auto-resume queue after sending a NON-interruption message (if it was paused due to interruption)
         if (
@@ -1833,14 +1937,11 @@ export default function ChatInput({
     const wasPaused = queuePausedRef.current;
     queuePausedRef.current = true;
 
-    // Remove the message from queue and send it immediately
+    // Remove the message from queue and send it immediately. A submit refused
+    // because the stop has not landed yet puts it back in the queue instead of
+    // discarding it.
     setQueuedMessages((prev) => prev.filter((msg) => msg.id !== messageId));
-    LocalMessageStorage.addMessage(messageToSend.content);
-    handleSubmit(
-      new CustomEvent('submit', {
-        detail: { value: messageToSend.content, attachments: messageToSend.attachments ?? [] },
-      }) as unknown as React.FormEvent
-    );
+    offerQueuedMessage(messageToSend);
 
     // Restore previous pause state after a brief delay to prevent race condition
     setTimeout(() => {
@@ -1853,14 +1954,9 @@ export default function ChatInput({
     setLastInterruption(null);
     if (!isLoading && queuedMessages.length > 0) {
       const nextMessage = queuedMessages[0];
-      LocalMessageStorage.addMessage(nextMessage.content);
-      handleSubmit(
-        new CustomEvent('submit', {
-          detail: { value: nextMessage.content, attachments: nextMessage.attachments ?? [] },
-        }) as unknown as React.FormEvent
-      );
+      offerQueuedMessage(nextMessage);
       setQueuedMessages((prev) => {
-        const newQueue = prev.slice(1);
+        const newQueue = prev.filter((msg) => msg.id !== nextMessage.id);
         // If queue becomes empty after processing, clear the paused state
         if (newQueue.length === 0) {
           queuePausedRef.current = false;

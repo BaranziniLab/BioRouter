@@ -17,7 +17,13 @@ interface UseChatStreamReturn {
   messages: Message[];
   chatState: ChatState;
   setChatState: (state: ChatState) => void;
-  handleSubmit: (userMessage: string, attachments?: UserAttachment[]) => Promise<void>;
+  /**
+   * Send a user message. Resolves FALSE when the submit was refused silently
+   * and the caller still owns the text (see `ChatStreamController.handleSubmit`
+   * for the full contract) — a caller holding the user's words must put them
+   * back rather than clear them.
+   */
+  handleSubmit: (userMessage: string, attachments?: UserAttachment[]) => Promise<boolean>;
   /**
    * Re-run the last turn after a retryable failure (backend blip, provider
    * error, dropped stream, transient cold-load failure). Never duplicates the

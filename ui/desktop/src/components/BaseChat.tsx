@@ -321,14 +321,24 @@ export function requestScrollToBottom(sessionId: string): void {
  * point: a user who scrolls up mid-stream must still NOT be yanked down by the
  * agent's tokens. Their own send is the one act that unambiguously means "show
  * me the live end of the conversation again".
+ *
+ * Returns the submit's own verdict (see `ChatStreamController.handleSubmit`):
+ * FALSE when the store refused the message silently and whoever typed it still
+ * owns it. Discarding that answer here is how a queued message used to vanish
+ * on the drain, so the value is forwarded rather than swallowed. A submit that
+ * predates the contract and resolves `undefined` counts as accepted.
  */
 export function submitAndReturnToBottom<A>(
-  deps: { sessionId: string; submit: (text: string, attachments?: A) => void },
+  deps: {
+    sessionId: string;
+    submit: (text: string, attachments?: A) => void | Promise<boolean | void>;
+  },
   textValue: string,
   attachments?: A
-): void {
-  deps.submit(textValue, attachments);
+): Promise<boolean> {
+  const submitted = deps.submit(textValue, attachments);
   requestScrollToBottom(deps.sessionId);
+  return Promise.resolve(submitted).then((accepted) => accepted !== false);
 }
 
 export function createScrollToBottomHandler(deps: {
@@ -1565,7 +1575,15 @@ function BaseChatContent({
     };
   }, [session?.provider_name, session?.model_config?.model_name, getProviders]);
 
-  const handleFormSubmit = async (e: React.FormEvent) => {
+  /**
+   * Resolves FALSE when the message was refused and the composer still owns the
+   * text (ChatInput puts it back). The pre-session branch returns TRUE on both
+   * of its outcomes: a created session has navigated with the message as its
+   * cargo, and a failed `createSession` has already restored the composer and
+   * toasted through `handleCreateSessionError`, so a second restore would be a
+   * duplicate rather than a rescue.
+   */
+  const handleFormSubmit = async (e: React.FormEvent): Promise<boolean> => {
     const customEvent = e as unknown as CustomEvent;
     const textValue = customEvent.detail?.value || '';
     const attachments = customEvent.detail?.attachments ?? [];
@@ -1600,13 +1618,13 @@ function BaseChatContent({
         setIsCreatingSession(false);
         handleCreateSessionError(err, { textValue, attachments, sessionId });
       }
-      return;
+      return true;
     }
 
     if (workflow && textValue.trim()) {
       setHasStartedUsingWorkflow(true);
     }
-    submitAndReturnToBottom({ sessionId, submit: handleSubmit }, textValue, attachments);
+    return submitAndReturnToBottom({ sessionId, submit: handleSubmit }, textValue, attachments);
   };
 
   const { sessionCosts, modelRows } = useCostTracking({ session });

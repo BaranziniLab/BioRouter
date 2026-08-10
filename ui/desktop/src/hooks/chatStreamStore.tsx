@@ -2055,26 +2055,53 @@ class ChatStreamController {
     await this.submitPreparedMessage(message, currentMessages, true);
   };
 
-  handleSubmit = async (userMessage: string, attachments: UserAttachment[] = []): Promise<void> => {
+  /**
+   * Send a user message, reporting whether the submit was ACCEPTED.
+   *
+   * `false` means one thing only: the submit was refused before anything
+   * happened, nothing was shown to the user, and **the caller still owns the
+   * message**. Every such return is silent by design — a re-entrant submit, a
+   * controller with no session, a turn already live — so a caller that drops
+   * the text on a `false` drops it with no trace, which is exactly the
+   * message-loss bug this return value exists to close. Callers that hold the
+   * user's words (the composer, the queue drain) must put them back.
+   *
+   * `true` means the submit took responsibility for the message: a turn was
+   * launched, or the attempt failed loudly enough that the user can see it and
+   * decide (see the preparation-failure branch below). It is NOT a claim that
+   * the turn succeeded — the promise resolves when the turn ENDS, whatever
+   * happened during it.
+   */
+  handleSubmit = async (
+    userMessage: string,
+    attachments: UserAttachment[] = []
+  ): Promise<boolean> => {
     // R3-01: bail synchronously on a re-entrant submit (double-click) so the
     // second call never reaches the async prep that appends a duplicate user
     // turn. Held across the whole submit; `canSubmitMessage`'s abortController
     // guard takes over the moment the turn is actually launched.
+    //
+    // ⚠ This latch is held until the turn's promise chain unwinds, and the
+    // `isLoading` edge a queue drain waits for is produced INSIDE that chain
+    // (`finishCurrentStream` flushes `ChatState.Idle` while this call is still
+    // awaiting). So the first drain attempt of every turn can legitimately land
+    // here. Returning `false` rather than nothing is what lets the drain keep
+    // the message and re-offer it instead of discarding it silently.
     if (this.submitInFlight) {
-      return;
+      return false;
     }
     this.submitInFlight = true;
     try {
       await this.loadSession();
 
       if (!this.canSubmitMessage()) {
-        return;
+        return false;
       }
 
       const hasExistingMessages = this.messagesRef.length > 0;
       const hasNewMessage = userMessage.trim().length > 0 || attachments.length > 0;
       if (!hasNewMessage && !hasExistingMessages) {
-        return;
+        return false;
       }
 
       this.lastInteractionTime = Date.now();
@@ -2096,7 +2123,12 @@ class ChatStreamController {
           await this.finishCurrentStream(
             clientTurnError(error, 'message_preparation_failed', 'inference')
           );
-          return;
+          // ACCEPTED, deliberately: this failure paints a turn error the user
+          // can see and retry from, so the caller must not also re-queue or
+          // repopulate the composer behind it. Re-offering would re-run the
+          // same failing preparation (attachment decode, file read) against the
+          // same inputs and fail identically.
+          return true;
         }
       } else {
         newMessage = this.messagesRef[this.messagesRef.length - 1];
@@ -2106,6 +2138,7 @@ class ChatStreamController {
         ? [...this.messagesRef, newMessage]
         : [...this.messagesRef];
       await this.submitPreparedMessage(newMessage, currentMessages, hasNewMessage);
+      return true;
     } finally {
       this.submitInFlight = false;
     }
