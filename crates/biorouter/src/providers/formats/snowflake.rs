@@ -2,6 +2,7 @@ use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::base::Usage;
 use crate::providers::errors::ProviderError;
+use crate::providers::formats::audience;
 use anyhow::{anyhow, Result};
 use rmcp::model::{object, CallToolRequestParams, Role, Tool};
 use rmcp::object;
@@ -39,7 +40,9 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                         let text = result
                             .content
                             .iter()
-                            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                            // Send only what the tool addressed to the model.
+                            .filter(|c| audience::is_for_model(c))
+                            .filter_map(audience::flattened_text)
                             .collect::<Vec<_>>()
                             .join("\n");
 
@@ -377,6 +380,66 @@ mod tests {
     use crate::conversation::message::Message;
     use rmcp::object;
     use serde_json::json;
+
+    /// The one Snowflake message produced for a lone tool response.
+    fn tool_result_line(content: Vec<rmcp::model::Content>) -> String {
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Ok(rmcp::model::CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let spec = format_messages(&[message]);
+        assert_eq!(spec.len(), 1, "one message for one tool response");
+        spec[0]["content"]
+            .as_str()
+            .expect("content is a string")
+            .to_string()
+    }
+
+    /// Every audience case, through the real Snowflake formatter. Snowflake
+    /// flattens a whole message into one string, so a withheld block would be
+    /// invisible in the transcript and still be paid for in tokens.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let sent = tool_result_line(crate::providers::formats::audience::every_audience_case());
+
+        assert_eq!(
+            sent,
+            format!(
+                "Tool result: {}",
+                crate::providers::formats::audience::MODEL_VISIBLE.join("\n")
+            ),
+            "the Snowflake message must carry exactly the model-addressed blocks"
+        );
+        for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
+            assert!(!sent.contains(withheld), "{withheld} reached the model");
+        }
+    }
+
+    /// A `text_editor view` through the real Snowflake formatter: the file
+    /// arrives as an embedded resource, so reading only text blocks would drop
+    /// the tool result entirely and Snowflake would send no message at all.
+    #[test]
+    fn a_viewed_file_reaches_the_model_through_its_embedded_resource() {
+        let sent = tool_result_line(crate::providers::formats::audience::text_editor_view_result());
+
+        assert_eq!(
+            sent,
+            format!(
+                "Tool result: {}",
+                crate::providers::formats::audience::VIEW_FOR_MODEL
+            )
+        );
+        assert!(
+            !sent.contains(crate::providers::formats::audience::VIEW_FOR_USER),
+            "the user's rendering reached the model"
+        );
+    }
 
     #[test]
     fn test_parse_text_response() -> Result<()> {

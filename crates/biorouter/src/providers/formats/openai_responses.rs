@@ -1,15 +1,15 @@
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
+use crate::providers::formats::audience;
 use crate::providers::formats::openai::model_reasoning_effort;
 use anyhow::{anyhow, Error};
 use async_stream::try_stream;
 use chrono;
 use futures::Stream;
-use rmcp::model::{object, CallToolRequestParams, RawContent, Role, Tool};
+use rmcp::model::{object, CallToolRequestParams, Role, Tool};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::ops::Deref;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResponsesApiResponse {
@@ -334,13 +334,9 @@ fn add_function_call_outputs(input_items: &mut Vec<Value>, messages: &[Message])
                         let text_content: Vec<String> = contents
                             .content
                             .iter()
-                            .filter_map(|c| {
-                                if let RawContent::Text(t) = c.deref() {
-                                    Some(t.text.clone())
-                                } else {
-                                    None
-                                }
-                            })
+                            // Send only what the tool addressed to the model.
+                            .filter(|c| audience::is_for_model(c))
+                            .filter_map(audience::flattened_text)
                             .collect();
 
                         if !text_content.is_empty() {
@@ -756,6 +752,61 @@ mod tests {
     use futures::StreamExt;
     use rmcp::object;
     use tokio::pin;
+
+    /// The single `function_call_output` produced for one tool response.
+    fn function_call_output(content: Vec<rmcp::model::Content>) -> String {
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Ok(rmcp::model::CallToolResult {
+                content,
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let mut items = Vec::new();
+        add_function_call_outputs(&mut items, &[message]);
+        assert_eq!(items.len(), 1, "one output per tool response");
+        items[0]["output"]
+            .as_str()
+            .expect("output is a string")
+            .to_string()
+    }
+
+    /// Every audience case, through the real Responses API formatter.
+    ///
+    /// `openai.rs` filtered and this path did not, so the same OpenAI account
+    /// sent the model different content depending on which API the model name
+    /// routed to. The two agree now.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let sent = function_call_output(crate::providers::formats::audience::every_audience_case());
+
+        assert_eq!(
+            sent,
+            crate::providers::formats::audience::MODEL_VISIBLE.join("\n"),
+            "the Responses output must carry exactly the model-addressed blocks"
+        );
+        for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
+            assert!(!sent.contains(withheld), "{withheld} reached the model");
+        }
+    }
+
+    /// A `text_editor view` through the real Responses API formatter: the file
+    /// arrives as an embedded resource, so reading only text blocks would send
+    /// the model an empty output for every file view.
+    #[test]
+    fn a_viewed_file_reaches_the_model_through_its_embedded_resource() {
+        let sent =
+            function_call_output(crate::providers::formats::audience::text_editor_view_result());
+
+        assert_eq!(sent, crate::providers::formats::audience::VIEW_FOR_MODEL);
+        assert!(
+            !sent.contains(crate::providers::formats::audience::VIEW_FOR_USER),
+            "the user's rendering reached the model"
+        );
+    }
 
     // BR-63: the Responses API takes the effort nested under `reasoning`, not as
     // the chat-completions top-level `reasoning_effort` key.

@@ -2,6 +2,7 @@ use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
 use crate::providers::base::{tool_call_batching_enabled, PendingToolCall, Usage};
 use crate::providers::errors::ProviderError;
+use crate::providers::formats::audience;
 use crate::providers::utils::{convert_image, ImageFormat};
 use anyhow::{anyhow, Result};
 use rmcp::model::{object, CallToolRequestParams, ErrorCode, ErrorData, JsonObject, Role, Tool};
@@ -78,7 +79,9 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                         let text = result
                             .content
                             .iter()
-                            .filter_map(|c| c.as_text().map(|t| t.text.clone()))
+                            // Send only what the tool addressed to the model.
+                            .filter(|c| audience::is_for_model(c))
+                            .filter_map(audience::flattened_text)
                             .collect::<Vec<_>>()
                             .join("\n");
 
@@ -2025,6 +2028,68 @@ data: [DONE]
             "Error: -32603: Tool failed"
         );
         assert_eq!(spec[1]["content"][0]["is_error"], true);
+    }
+
+    /// Every audience case, through the real Anthropic formatter.
+    ///
+    /// Anthropic is the flagship provider and was the largest of the six that
+    /// forwarded a tool's user-only blocks to the model. The joined
+    /// `tool_result` must carry the three blocks the tool addressed to the
+    /// model and neither of the two it did not.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Ok(rmcp::model::CallToolResult {
+                content: crate::providers::formats::audience::every_audience_case(),
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let spec = format_messages(&[message]);
+        let sent = spec[0]["content"][0]["content"]
+            .as_str()
+            .expect("tool_result content is a string");
+
+        assert_eq!(
+            sent,
+            crate::providers::formats::audience::MODEL_VISIBLE.join("\n"),
+            "the Anthropic tool_result must carry exactly the model-addressed blocks"
+        );
+        for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
+            assert!(!sent.contains(withheld), "{withheld} reached the model");
+        }
+    }
+
+    /// A `text_editor view` through the real Anthropic formatter.
+    ///
+    /// The file reaches the assistant as an embedded resource, so a formatter
+    /// that filters by audience while still reading only text blocks sends an
+    /// empty `tool_result` and the model cannot see the file it just asked for.
+    #[test]
+    fn a_viewed_file_reaches_the_model_through_its_embedded_resource() {
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Ok(rmcp::model::CallToolResult {
+                content: crate::providers::formats::audience::text_editor_view_result(),
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let spec = format_messages(&[message]);
+        let sent = spec[0]["content"][0]["content"]
+            .as_str()
+            .expect("tool_result content is a string");
+
+        assert_eq!(sent, crate::providers::formats::audience::VIEW_FOR_MODEL);
+        assert!(
+            !sent.contains(crate::providers::formats::audience::VIEW_FOR_USER),
+            "the user's rendering reached the model"
+        );
     }
 
     #[test]
