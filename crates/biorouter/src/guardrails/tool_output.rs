@@ -1010,10 +1010,15 @@ mod tests {
             "priority was dropped, so the CLI classic renderer skips this block outright"
         );
 
-        // The clause the regression tripped, in the CLI's own shape.
+        // The clause the regression tripped, in the CLI's own shape. Named
+        // rather than negated inline so it keeps that shape: written as one
+        // expression it reads `!(is_none() && !debug)`, which clippy rightly
+        // rewrites to `is_some() || debug` and which no longer matches the
+        // skip rule quoted above character for character.
         let debug = false;
+        let skipped_for_want_of_annotation = guarded.priority().is_none() && !debug;
         assert!(
-            !(guarded.priority().is_none() && !debug),
+            !skipped_for_want_of_annotation,
             "the CLI would skip this block for want of a priority annotation"
         );
 
