@@ -1475,7 +1475,7 @@ fn list_skills() -> Vec<String> {
     crate::session::completion::list_skill_reference_names()
 }
 
-/// ⚠ **User-installed skills only** (#77). The four that ship with Biorouter
+/// ⚠ **User-installed skills only** (#77). The five that ship with Biorouter
 /// are Contexts, managed in Settings -> Chat, and the GUI already excludes them
 /// from its chip. Counting them here made the two surfaces disagree about the
 /// same word — exactly the drift the capability exclusion below was written to
@@ -1483,11 +1483,20 @@ fn list_skills() -> Vec<String> {
 ///
 /// `is_builtin_skill_name` is the same predicate the seeder and the reset path
 /// use, rather than a second list that would drift from it.
-fn count_skills() -> usize {
-    list_skills()
+///
+/// Split from [`count_skills`] so the exclusion can be exercised on a list this
+/// test can name. Counting the real directory cannot check it: on a machine with
+/// no user skills the filtered and unfiltered counts are both what the seeder
+/// left, so a test of the whole function passes with the filter deleted.
+fn count_user_skills_in(names: &[String]) -> usize {
+    names
         .iter()
         .filter(|name| !biorouter::agents::skills_extension::is_builtin_skill_name(name))
         .count()
+}
+
+fn count_skills() -> usize {
+    count_user_skills_in(&list_skills())
 }
 
 /// The six foundational built-ins surfaced as their own "Capabilities" section
@@ -2264,5 +2273,39 @@ mod tests {
         // into.
         let item = extension_completion_item("my_tool-v2", "Ask the agent", false);
         assert_eq!(item.insert, "/ext:my_tool-v2 ");
+    }
+
+    /// ⚠ **The status line counts what the user installed, not what shipped**
+    /// (#77). The five Contexts are seeded into the same directory on every
+    /// start, so before this exclusion the terminal reported "5 skills" on a
+    /// machine with none and disagreed with the GUI chip about the same word —
+    /// the drift `CAPABILITY_KEYS` already fixes for extensions.
+    ///
+    /// Nothing asserted it. `count_skills` reads the real config directory, and
+    /// on the common machine (contexts seeded, no user skills) the filtered and
+    /// unfiltered counts are both what the seeder left, so deleting the filter
+    /// changes no number a test of that function could see.
+    #[test]
+    fn the_status_line_counts_only_user_installed_skills() {
+        let names: Vec<String> = biorouter::agents::skills_extension::context_skill_names()
+            .map(str::to_string)
+            .chain(["ggplot".to_string(), "single-cell".to_string()])
+            .collect();
+
+        assert_eq!(count_user_skills_in(&names), 2);
+        // Every shipped Context, and only those: a list of nothing else is zero.
+        let only_contexts: Vec<String> = biorouter::agents::skills_extension::context_skill_names()
+            .map(str::to_string)
+            .collect();
+        assert!(
+            only_contexts.len() >= 5,
+            "the Context list emptied out; this test would then pass on any input"
+        );
+        assert_eq!(count_user_skills_in(&only_contexts), 0);
+        // The trap: a user skill whose name merely resembles a Context's.
+        assert_eq!(
+            count_user_skills_in(&["about-biorouter-notes".to_string()]),
+            1
+        );
     }
 }

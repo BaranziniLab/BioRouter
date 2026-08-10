@@ -17,10 +17,13 @@
  * prompt. Enablement therefore lives in ordinary config keys, so a disabled
  * Context stops being *surfaced* without becoming *unloadable*.
  *
- * ⚠ The Rust side keeps its own list (`skills_extension.rs::is_builtin_skill_name`)
- * and the two are hand-synced with nothing asserting they agree. That was
- * already true of `skillUtils.BUILTIN_SKILL_NAMES`; this file does not make it
- * worse, but it does not fix it either. See #77.
+ * ⚠ The Rust side keeps its own list (`skills_extension.rs::is_builtin_skill_name`,
+ * i.e. `BUILTIN_SKILLS` plus `soul.rs`'s `SOUL_SKILL_DIR`) and so does
+ * `skillUtils.BUILTIN_SKILL_NAMES`. All three are hand-synced, but they are no
+ * longer unasserted: `contexts.test.ts` parses the Rust source and fails if
+ * either TypeScript copy disagrees with it (#77). Rust owns the truth — the
+ * seeder writes those files — so a mismatch is fixed by moving the TS list, not
+ * the assertion.
  */
 
 export interface ContextMeta {
