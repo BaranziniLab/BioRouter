@@ -1,5 +1,5 @@
 import React from 'react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 /**
@@ -91,7 +91,9 @@ import { toastWarning } from '../toasts';
 const QUEUED_TEXT = 'summarise the second table too';
 const DIRECT_TEXT = 'plot the residuals';
 
-type SubmitMock = ReturnType<typeof vi.fn>;
+/** The composer's own prop signature, so a mock cannot drift from it. */
+type SubmitFn = (e: React.FormEvent) => void | Promise<boolean | void>;
+type SubmitMock = Mock<SubmitFn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -113,11 +115,17 @@ beforeEach(() => {
 const composer = () => screen.getByTestId('chat-input') as HTMLTextAreaElement;
 const queued = () => screen.queryAllByTestId('queued-item').map((el) => el.textContent);
 const submittedTexts = (handleSubmit: SubmitMock) =>
-  handleSubmit.mock.calls.map((call) => (call[0] as CustomEvent).detail.value as string);
+  handleSubmit.mock.calls.map(
+    (call) => (call[0] as unknown as CustomEvent).detail.value as string
+  );
 
 /** How many offers actually landed a turn, as opposed to being refused. */
 async function acceptedCount(handleSubmit: SubmitMock): Promise<number> {
-  const verdicts = await Promise.all(handleSubmit.mock.results.map((r) => r.value));
+  const verdicts = await Promise.all(
+    handleSubmit.mock.results.map((result) =>
+      Promise.resolve(result.value as boolean | undefined)
+    )
+  );
   return verdicts.filter((verdict) => verdict !== false).length;
 }
 
@@ -163,7 +171,7 @@ async function settle() {
 
 describe('draining the message queue', () => {
   it('sends an accepted message exactly once and clears it from the queue', async () => {
-    const handleSubmit = vi.fn(async () => true);
+    const handleSubmit = vi.fn<SubmitFn>(async () => true);
     const { setChatState } = renderComposer(handleSubmit, ChatState.Streaming);
     await queueOneMessage();
 
@@ -182,7 +190,8 @@ describe('draining the message queue', () => {
   it('keeps a refused message and re-offers it, so it is sent exactly once', async () => {
     // The real shape of the bug: the first offer lands while the finishing
     // turn's submit latch is still held, the next one does not.
-    const handleSubmit = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+    let offers = 0;
+    const handleSubmit = vi.fn<SubmitFn>(async () => (offers++ === 0 ? false : true));
     const { setChatState } = renderComposer(handleSubmit, ChatState.Streaming);
     await queueOneMessage();
 
@@ -199,7 +208,7 @@ describe('draining the message queue', () => {
   });
 
   it('puts a message refused past the retry bound back in the queue and says so', async () => {
-    const handleSubmit = vi.fn(async () => false);
+    const handleSubmit = vi.fn<SubmitFn>(async () => false);
     const { setChatState } = renderComposer(handleSubmit, ChatState.Streaming);
     await queueOneMessage();
 
@@ -219,7 +228,7 @@ describe('draining the message queue', () => {
     // the queue, where a second drain edge or a Stop-and-send would pick up the
     // same message and send it a second time.
     let release: (accepted: boolean) => void = () => {};
-    const handleSubmit = vi.fn(
+    const handleSubmit = vi.fn<SubmitFn>(
       () =>
         new Promise<boolean>((resolve) => {
           release = resolve;
@@ -239,7 +248,7 @@ describe('draining the message queue', () => {
 
 describe('a direct send that is refused', () => {
   it('puts the text back in the composer', async () => {
-    const handleSubmit = vi.fn(async () => false);
+    const handleSubmit = vi.fn<SubmitFn>(async () => false);
     renderComposer(handleSubmit, ChatState.Idle);
 
     fireEvent.change(composer(), { target: { value: DIRECT_TEXT } });
@@ -254,7 +263,7 @@ describe('a direct send that is refused', () => {
   });
 
   it('control: an accepted send leaves the composer empty', async () => {
-    const handleSubmit = vi.fn(async () => true);
+    const handleSubmit = vi.fn<SubmitFn>(async () => true);
     renderComposer(handleSubmit, ChatState.Idle);
 
     fireEvent.change(composer(), { target: { value: DIRECT_TEXT } });
