@@ -362,6 +362,40 @@ fn render_tool_request(req: &ToolRequest, theme: Theme, debug: bool) {
     }
 }
 
+/// Default for `BIOROUTER_CLI_MIN_PRIORITY`, the floor a tool result's
+/// annotated priority must reach to be printed.
+///
+/// ⚠ 0.0, and it has to be, because higher means quieter and nothing in this
+/// repo emits much. The only production values are 0.2 (`text_editor`) and 0.0
+/// (`developer`, `analyze`), so any floor above 0.2 silences every tool result
+/// there is and the classic renderer prints nothing at all.
+///
+/// It read 0.5 from the initial commit until it was measured, which is exactly
+/// that: a renderer that showed no tool output in its default configuration.
+/// Both `docs/configuration/environment-variables.md` and
+/// `docs/configuration/config-file-reference.md` documented 0.0 the whole time,
+/// so the code was the side that disagreed with everything else.
+/// `the_documented_default_is_the_one_the_code_uses` keeps the three in step.
+const DEFAULT_CLI_MIN_PRIORITY: f32 = 0.0;
+
+/// Whether a tool-result content item is printed.
+///
+/// Pulled out of [`render_tool_response`] so the rule can be tested. The
+/// renderer writes through `bat` to the real stdout and returns nothing, so
+/// while the decision lived inline there was no way to assert it, which is how
+/// a floor that hid every tool result went unnoticed.
+///
+/// Two clauses, and they answer different questions. An annotated priority
+/// below the floor is the user asking for less. A MISSING priority is not a
+/// quiet result, it is an unannotated one, and those stay hidden outside debug
+/// because that is where raw protocol chatter arrives.
+fn content_clears_priority_gate(priority: Option<f32>, min_priority: f32, debug: bool) -> bool {
+    match priority {
+        Some(priority) => priority >= min_priority,
+        None => debug,
+    }
+}
+
 fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
     let config = Config::global();
 
@@ -384,13 +418,9 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
                 let min_priority = config
                     .get_param::<f32>("BIOROUTER_CLI_MIN_PRIORITY")
                     .ok()
-                    .unwrap_or(0.5);
+                    .unwrap_or(DEFAULT_CLI_MIN_PRIORITY);
 
-                if content
-                    .priority()
-                    .is_some_and(|priority| priority < min_priority)
-                    || (content.priority().is_none() && !debug)
-                {
+                if !content_clears_priority_gate(content.priority(), min_priority, debug) {
                     continue;
                 }
 
@@ -1687,6 +1717,78 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    /// The default floor shows the tool output that tools actually produce.
+    ///
+    /// ⚠ The first assertion is the bug: the floor was 0.5, and the only
+    /// priorities emitted anywhere in this repo are 0.2 (`text_editor`) and 0.0
+    /// (`developer`, `analyze`). Every one of them is below 0.5, so the gate
+    /// rejected all of them and the classic renderer printed nothing in its
+    /// default configuration. Restore 0.5 and this fails.
+    ///
+    /// The rest pin what must NOT change while fixing that: a raised floor
+    /// still filters, and an unannotated result is still hidden outside debug.
+    /// Turning the second clause into "show anything without a priority" would
+    /// spill raw protocol chatter into the transcript, and a floor of 0.0 makes
+    /// that mistake easy to reach for.
+    #[test]
+    fn the_default_priority_floor_shows_real_tool_output() {
+        for emitted in [0.0_f32, 0.2] {
+            assert!(
+                content_clears_priority_gate(Some(emitted), DEFAULT_CLI_MIN_PRIORITY, false),
+                "priority {emitted} is a value tools really emit and must be shown by default"
+            );
+        }
+
+        assert!(
+            !content_clears_priority_gate(Some(0.2), 0.5, false),
+            "a floor the user raised must still filter"
+        );
+
+        assert!(
+            !content_clears_priority_gate(None, DEFAULT_CLI_MIN_PRIORITY, false),
+            "an unannotated result stays hidden outside debug, floor or no floor"
+        );
+        assert!(
+            content_clears_priority_gate(None, DEFAULT_CLI_MIN_PRIORITY, true),
+            "and visible in debug"
+        );
+    }
+
+    /// The code default and the two documented defaults are one number.
+    ///
+    /// They disagreed for the entire life of the file, and nothing noticed
+    /// because a default is only wrong in its effects. Read the value out of
+    /// both tables rather than restating it here, so this fails whichever side
+    /// moves.
+    #[test]
+    fn the_documented_default_is_the_one_the_code_uses() {
+        for (doc, text) in [
+            (
+                "docs/configuration/environment-variables.md",
+                include_str!("../../../../docs/configuration/environment-variables.md"),
+            ),
+            (
+                "docs/configuration/config-file-reference.md",
+                include_str!("../../../../docs/configuration/config-file-reference.md"),
+            ),
+        ] {
+            let row = text
+                .lines()
+                .find(|l| l.contains("BIOROUTER_CLI_MIN_PRIORITY"))
+                .unwrap_or_else(|| panic!("{doc} no longer documents BIOROUTER_CLI_MIN_PRIORITY"));
+            let documented = row
+                .split('|')
+                .map(str::trim)
+                .filter_map(|cell| cell.parse::<f32>().ok())
+                .next()
+                .unwrap_or_else(|| panic!("{doc}: no numeric default in its row: {row}"));
+            assert_eq!(
+                documented, DEFAULT_CLI_MIN_PRIORITY,
+                "{doc} documents {documented} but the code uses {DEFAULT_CLI_MIN_PRIORITY}"
+            );
+        }
+    }
 
     /// The classic renderer prints the tool's output, not the guardrail's
     /// envelope around it.
