@@ -668,9 +668,11 @@ Make sure your last message provides a comprehensive summary of:
 - Any important findings or recommendations
 - Anything you had to guess, and anything you could not resolve at all
 
-If the task was ambiguous and you stopped rather than guess, say that in your opening line, name the candidates you
-found, and ask the one question your parent needs to answer. If you had to guess to finish something you could not
-undo, say that in the opening line too. Do not leave either of those for the end.
+If the task was ambiguous and you stopped rather than guess, your opening line must begin with the word `BLOCKED:`
+and then ask the one question your parent needs to answer; name the candidates you found on the lines after it. That
+first word is what tells your parent the run is blocked rather than finished, so without it your question is filed as
+a report of completed work. If you had to guess to finish something you could not undo, say that in the opening line
+too. Do not leave either of those for the end.
 
 Be concise but complete.
 "#;
@@ -719,7 +721,7 @@ pub fn create_subagent_tool(sub_workflows: &[SubWorkflow]) -> Tool {
         "properties": {
             "instructions": {
                 "type": "string",
-                "description": "Instructions for the subagent. Required for ad-hoc tasks. For predefined tasks, adds additional context. The subagent CANNOT see this conversation, so resolve every referent before you delegate: write out the absolute paths, names and values you mean instead of \"it\", \"the other one\", \"that file\" or \"the same as before\". You can resolve them in one cheap step because you have the history and the user; the subagent has neither. A subagent that cannot tell what the task points at is told to stop and ask rather than guess, so an unresolved referent costs a whole round trip, and one that merely LOOKS resolvable may be resolved wrongly and written to disk."
+                "description": "Instructions for the subagent. Required for ad-hoc tasks. For predefined tasks, adds additional context. The subagent CANNOT see this conversation, so resolve every referent before you delegate: write out the absolute paths, names and values you mean instead of \"it\", \"the other one\", \"that file\" or \"the same as before\". You can resolve them in one cheap step because you have the history and the user; the subagent has neither. A subagent that cannot tell what the task points at is told to stop and ask rather than guess: it comes back with status `blocked`, having changed nothing, so an unresolved referent costs a whole round trip, and one that merely LOOKS resolvable may be resolved wrongly and written to disk."
             },
             "subworkflow": {
                 "type": "string",
@@ -803,6 +805,14 @@ pub(crate) fn build_tool_description(sub_workflows: &[SubWorkflow]) -> String {
          name the actual files, paths and values rather than \"it\" or \"the other one\". \
          Resolving a referent costs you one step and costs the subagent a round trip \
          (it is told to stop and ask rather than guess) or a wrong write to disk.\n\n\
+         A subagent that still cannot tell what its task points at returns status \
+         `blocked`: it stopped before acting, changed NOTHING, and its message opens \
+         with the one question it needs answered. Blocked is not a failure and not a \
+         completed task. Answer the question from this conversation or with a tool if \
+         you can, then call this tool again with the answer written out in full; if you \
+         cannot answer it either, put the question to the user and wait. Do NOT pick a \
+         candidate, do NOT delegate again with a guess, and do NOT do the work yourself \
+         instead: the subagent stopped for a reason you share.\n\n\
          For parallel execution, make multiple `subagent` tool calls in the same message.",
     );
 
@@ -3111,6 +3121,82 @@ mod tests {
                 .contains("**independence**: make decisions and execute tools within your scope"),
             "the unscoped independence bullet is back, and it contradicts the rule above"
         );
+
+        // And the child must be told to MARK the question, not merely to ask
+        // it. Its only return channel is a text message; without the marker the
+        // envelope files a returned question as `completed`, which is the
+        // status the parent acted on when it rewrote both files itself.
+        assert!(
+            prompt.contains("begin your final message with the word `blocked:`"),
+            "the child must be told the exact opening token the envelope parses: {prompt}"
+        );
+        assert!(
+            prompt.contains("blocked rather than finished"),
+            "the child needs to know what the marker buys, or it reads as ceremony: {prompt}"
+        );
+    }
+
+    /// The PARENT end of the blocked status. A model reads a JSON-Schema
+    /// `description` as instructions, and the top-level tool description more
+    /// heavily than a per-field one, so this is where the parent learns that a
+    /// blocked run is neither done nor failed.
+    ///
+    /// Measured without it: the child stopped and asked (correctly, three runs
+    /// out of three), the parent read the run as finished-with-no-edit, and
+    /// made the ambiguous edits itself. The status alone does not fix that:
+    /// the parent has to be told what to DO with it.
+    #[test]
+    fn the_tool_description_says_what_a_blocked_subagent_means() {
+        let tool = create_subagent_tool(&[]);
+        let desc = flatten_prose(tool.description.as_ref().expect("tool has a description"));
+
+        assert!(
+            desc.contains("returns status `blocked`"),
+            "the description must name the status the parent will see: {desc}"
+        );
+        assert!(
+            desc.contains("changed nothing"),
+            "the parent must know no edit happened, or it cannot tell this from a no-op run: \
+             {desc}"
+        );
+        assert!(
+            desc.contains("blocked is not a failure and not a completed task"),
+            "left unsaid, a model files it under one of the two it already knows: {desc}"
+        );
+        // The two responses, cheap one first.
+        assert!(
+            desc.contains("call this tool again with the answer written out in full"),
+            "the parent can often settle the question itself; that path must be named: {desc}"
+        );
+        assert!(
+            desc.contains("put the question to the user and wait"),
+            "the question has to reach the user when the parent cannot settle it: {desc}"
+        );
+        // And the three things it actually did instead.
+        assert!(
+            desc.contains("do not pick a candidate"),
+            "the measured failure was picking: {desc}"
+        );
+        assert!(
+            desc.contains("do not delegate again with a guess"),
+            "re-delegating with a guess costs another round trip and still guesses: {desc}"
+        );
+        assert!(
+            desc.contains("do not do the work yourself instead"),
+            "the parent overriding the child IS the regression this guards: {desc}"
+        );
+
+        // The per-field description agrees, so a model that reads only the
+        // field it is filling in gets the same story.
+        let instructions = flatten_prose(
+            tool.input_schema["properties"]["instructions"]["description"]
+                .as_str()
+                .expect("instructions has a description"),
+        );
+        assert!(
+            instructions.contains("status `blocked`"),
+            "the instructions field must name the same status: {instructions}"
+        );
     }
 
     /// The RETURN channel. A rule telling the child to come back is worth
@@ -3136,6 +3222,18 @@ mod tests {
         assert!(
             summary.contains("ask the one question"),
             "the child must be told to ask, not merely to note the ambiguity: {summary}"
+        );
+        // The channel only carries a *status* if the child marks it. This block
+        // and `prompts/subagent_system.md` are the two places the child reads,
+        // and they have to name the same token the envelope parses.
+        assert!(
+            summary.contains("must begin with the word `blocked:`"),
+            "the summary contract must name the marker that makes the question a status: \
+             {summary}"
+        );
+        assert!(
+            summary.contains(&crate::agents::subagent_result::BLOCKED_MARKER.to_lowercase()),
+            "the token here must be the one the parser looks for: {summary}"
         );
 
         // And it actually reaches the child: `default_summary` is true, and the

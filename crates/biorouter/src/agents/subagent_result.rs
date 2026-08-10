@@ -19,6 +19,17 @@ use crate::conversation::Conversation;
 pub enum SubagentStatus {
     /// Ended with a final text summary (or a response-schema output).
     Completed,
+    /// Stopped before an irreversible action because a word in its task pointed
+    /// at something it could not identify, and returned the question instead of
+    /// guessing. Nothing was changed.
+    ///
+    /// This exists because stopping to ask is neither a success nor a failure,
+    /// and the parent has to be able to tell it from both. With only
+    /// `Completed | Incomplete | Error` a child that did exactly the right
+    /// thing reported `completed`, the parent read a finished delegation with
+    /// no edit behind it, and did the ambiguous work itself, rewriting every
+    /// candidate file. That is a rational response to a status that lies.
+    Blocked,
     /// Ran but produced no final text (ended on a tool call / empty message).
     /// The summary is salvaged from earlier work so the parent still gets
     /// something meaningful instead of "No text content in last message".
@@ -31,11 +42,90 @@ impl SubagentStatus {
     pub fn as_str(self) -> &'static str {
         match self {
             SubagentStatus::Completed => "completed",
+            SubagentStatus::Blocked => "blocked",
             SubagentStatus::Incomplete => "incomplete",
             SubagentStatus::Error => "error",
         }
     }
 }
+
+/// The word a child opens its final message with when it stopped to ask.
+///
+/// A subagent's only return channel is its last text message, so the status has
+/// to be read back out of it. The contract is stated in two places the child
+/// actually reads (`prompts/subagent_system.md` and the `SUMMARY_INSTRUCTIONS`
+/// block appended to every ad-hoc spawn) and parsed by [`blocked_question`].
+pub const BLOCKED_MARKER: &str = "BLOCKED";
+
+/// Leading/trailing ornament a model wraps an opening marker in: `**BLOCKED:**`,
+/// `## BLOCKED`, `> BLOCKED`. Stripped rather than missed, because a missed
+/// marker restores the exact defect this status exists to fix.
+fn strip_ornament(s: &str) -> &str {
+    s.trim_matches(|c: char| c.is_whitespace() || matches!(c, '#' | '*' | '_' | '`' | '>'))
+}
+
+/// The child's question when its closing statement opens with the blocked
+/// marker, `None` otherwise.
+///
+/// Deliberately anchored to the FIRST non-empty line: a summary that merely
+/// mentions being blocked somewhere in its prose ("the deploy is blocked on CI")
+/// is a report of finished work, not a question, and must not be re-classified.
+fn blocked_question(closing: &str) -> Option<String> {
+    let mut lines = closing.lines().skip_while(|line| line.trim().is_empty());
+    let first = strip_ornament(lines.next()?);
+    if first.len() < BLOCKED_MARKER.len() {
+        return None;
+    }
+    let (word, rest) = first.split_at(BLOCKED_MARKER.len());
+    if !word.eq_ignore_ascii_case(BLOCKED_MARKER) {
+        return None;
+    }
+    // `BLOCKED: q` · `**BLOCKED**: q` · `BLOCKED - q` · `BLOCKED` alone with the
+    // question on the next line. Anything else is a word that merely starts with
+    // "blocked" ("blockedTests failed"), which is not the marker.
+    let rest = strip_ornament(rest);
+    let mut after_marker = rest.chars();
+    let tail = match after_marker.next() {
+        None => "",
+        // Stripped a second time: `**BLOCKED:** q` puts the closing emphasis
+        // AFTER the separator, so one pass leaves "** q" as the question.
+        // `Chars::as_str` gives the remainder without a byte index, which is
+        // the difference between this and a slice that clippy will not accept
+        // (the em-dash separator is multi-byte).
+        Some(':' | '-' | '\u{2013}' | '\u{2014}') => strip_ornament(after_marker.as_str()),
+        Some(_) => return None,
+    };
+    let question = if tail.is_empty() {
+        lines
+            .map(strip_ornament)
+            .find(|line| !line.is_empty())
+            .unwrap_or("")
+    } else {
+        tail
+    };
+    Some(question.to_string())
+}
+
+/// Opens the tool result the parent's model reads. It goes ABOVE the child's
+/// summary because the parent reads that summary as an account of finished
+/// work, so a question below four sections of completed steps reads as done.
+const BLOCKED_HEADER: &str =
+    "The subagent STOPPED and changed nothing. It could not tell what its task referred to, \
+     so it returned a question instead of guessing.";
+
+/// Closes it. Both halves are needed: the header stops the parent reading the
+/// run as finished, and this says what to do instead of the thing it did before
+/// (resolve the ambiguity itself and edit every candidate).
+const BLOCKED_DIRECTIVE: &str = "\
+What to do now, in order:
+1. Try to answer the question from this conversation, or settle it with a tool. If that works, \
+delegate the task again with the answer written out in full, and say nothing to the user.
+2. If neither settles it, put the question to the user in your reply and wait for their answer.
+
+Do NOT pick the most likely candidate, do NOT delegate again with a guess, and do NOT do the work \
+yourself to find out which one was meant. The subagent stopped for a reason you share: nothing \
+available to either of you says which one is right. Guessing here overwrites work that was not \
+yours, and no summary afterwards would show that a guess happened.";
 
 /// Token usage for the subagent's own session (lifetime totals across its turns).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -55,6 +145,12 @@ pub struct SubagentResult {
     /// Present only when `status == Error`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Present only when `status == Blocked`: the one question the child needs
+    /// answered before it can act. The `summary` still carries the candidates it
+    /// found and the work it had already done; this is the part a caller can
+    /// hand straight to the user.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub question: Option<String>,
     /// Best-effort list of files the child created/modified, derived from its
     /// file-writing tool calls.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -76,6 +172,7 @@ impl SubagentResult {
             status: SubagentStatus::Error,
             summary: format!("Subagent failed: {message}"),
             error: Some(message),
+            question: None,
             artifacts: Vec::new(),
             tokens: None,
             human_intervened: false,
@@ -114,6 +211,7 @@ impl SubagentResult {
             status: SubagentStatus::Error,
             summary,
             error: Some(message),
+            question: None,
             artifacts,
             tokens: None,
             human_intervened: false,
@@ -133,19 +231,19 @@ impl SubagentResult {
     ) -> Self {
         let artifacts = collect_artifacts(conversation);
 
-        // A response schema is an explicit, structured final output — trust it.
-        if let Some(output) = final_output {
-            return Self {
-                status: SubagentStatus::Completed,
-                summary: output,
-                error: None,
-                artifacts,
-                tokens: None,
-                human_intervened: false,
-            };
-        }
+        // The blocked marker lives in the child's CLOSING statement, never in
+        // the middle of a transcript, so it is read from that statement
+        // directly rather than from `summary`, which under `summary: false` is
+        // the whole run and opens with the child's first words.
+        let closing = final_output
+            .clone()
+            .or_else(|| last_message_text(conversation));
+        let question = closing.as_deref().and_then(blocked_question);
 
-        let (status, summary) = if return_last_only {
+        // A response schema is an explicit, structured final output — trust it.
+        let (status, summary) = if let Some(output) = final_output {
+            (SubagentStatus::Completed, output)
+        } else if return_last_only {
             if let Some(text) = last_message_text(conversation) {
                 (SubagentStatus::Completed, text)
             } else if let Some(text) = last_nonempty_text(conversation) {
@@ -170,10 +268,24 @@ impl SubagentResult {
             }
         };
 
+        // The child's own report is what tells us it stopped, so the promotion
+        // happens here rather than in the branches above: only a run that would
+        // otherwise have been filed as finished can be blocked. An `Incomplete`
+        // or aborted run already tells the parent not to trust it.
+        let status = match (status, &question) {
+            (SubagentStatus::Completed, Some(_)) => SubagentStatus::Blocked,
+            (status, _) => status,
+        };
+        let question = match status {
+            SubagentStatus::Blocked => question,
+            _ => None,
+        };
+
         Self {
             status,
             summary,
             error: None,
+            question,
             artifacts,
             tokens: None,
             human_intervened: false,
@@ -183,7 +295,23 @@ impl SubagentResult {
     /// Render the text the parent LLM sees: the summary plus a compact footer
     /// carrying status / artifacts / tokens.
     pub fn to_agent_text(&self) -> String {
-        let mut out = self.summary.clone();
+        // The parent model reads TEXT, not `structured_content`, so a status it
+        // has to act differently on has to be spelled out here or it does not
+        // exist. Exhaustive on purpose: a new status decides at this line
+        // whether it needs framing instead of falling silently into the plain
+        // path, which is how `Blocked` came to be indistinguishable from
+        // `Completed` in the first place.
+        let framing = match self.status {
+            SubagentStatus::Blocked => Some((BLOCKED_HEADER, BLOCKED_DIRECTIVE)),
+            SubagentStatus::Completed | SubagentStatus::Incomplete | SubagentStatus::Error => None,
+        };
+
+        let mut out = String::new();
+        if let Some((header, _)) = framing {
+            out.push_str(header);
+            out.push_str("\n\n");
+        }
+        out.push_str(&self.summary);
         // BR-71 §4.5: said only when it happened. A "human_intervened: false"
         // line would read to the parent model as an assertion that someone
         // checked, when in fact nothing was observed either way.
@@ -202,6 +330,12 @@ impl SubagentResult {
             }
             out.push_str(&footer);
         }
+        if let Some((_, directive)) = framing {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(directive);
+        }
         out
     }
 
@@ -219,7 +353,13 @@ impl SubagentResult {
             parts.push(format!("{} tokens", tokens.total));
         }
         // Nothing beyond a bare "completed" status is worth a footer line.
-        if parts.len() == 1 && self.status == SubagentStatus::Completed {
+        // Every other status has to announce itself even with nothing else to
+        // report, because it changes what the parent should do next.
+        let silent_when_bare = match self.status {
+            SubagentStatus::Completed => true,
+            SubagentStatus::Blocked | SubagentStatus::Incomplete | SubagentStatus::Error => false,
+        };
+        if parts.len() == 1 && silent_when_bare {
             return String::new();
         }
         format!("[{}]", parts.join(" · "))
@@ -228,7 +368,16 @@ impl SubagentResult {
     /// Convert into the tool result returned to the parent agent: a text block
     /// for the model plus the full structured envelope for programmatic use.
     pub fn into_call_tool_result(self) -> CallToolResult {
-        let is_error = self.status == SubagentStatus::Error;
+        // `Blocked` is deliberately NOT an error. The child did the right
+        // thing, and a tool result flagged `is_error` invites the parent to
+        // retry the same spawn, the one response that cannot help, since the
+        // second run is blocked on the same unanswered question.
+        let is_error = match self.status {
+            SubagentStatus::Error => true,
+            SubagentStatus::Completed | SubagentStatus::Blocked | SubagentStatus::Incomplete => {
+                false
+            }
+        };
         let text = self.to_agent_text();
         let structured = serde_json::to_value(&self).ok();
         CallToolResult {
@@ -541,6 +690,221 @@ mod tests {
             "the child's spawn context must not ride back to the parent's model: {}",
             r.summary
         );
+    }
+
+    /// Flatten prose before asserting on it, so re-flowing a paragraph cannot
+    /// break a test and train someone to loosen the assertion.
+    fn flatten_prose(s: &str) -> String {
+        s.to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    /// **The core of the fix.** A child that stopped to ask must not be filed as
+    /// `Completed`.
+    ///
+    /// Measured before this variant existed: given "fix it and make sure it's
+    /// consistent with the other one", the child stopped, named both candidates
+    /// and asked which was meant, which was exactly right, and the envelope
+    /// reported `completed`. The parent read a finished delegation with no edit
+    /// behind it and rewrote both files itself, three runs out of three.
+    #[test]
+    fn a_child_that_stopped_to_ask_is_not_reported_as_completed() {
+        let c = conv(vec![
+            Message::user().with_text("fix it and make sure it's consistent with the other one"),
+            Message::assistant().with_text(
+                "BLOCKED: which file did you mean by \"it\"?\n\n\
+                 I found two candidates and changed neither: `a/config.rs` and `b/config.rs`.",
+            ),
+        ]);
+        let r = SubagentResult::from_conversation(&c, None, true);
+
+        assert_eq!(
+            r.status,
+            SubagentStatus::Blocked,
+            "a returned question is neither a completed task nor an error: {r:?}"
+        );
+        assert_ne!(r.status, SubagentStatus::Completed);
+        assert_eq!(
+            r.question.as_deref(),
+            Some("which file did you mean by \"it\"?"),
+            "the question is lifted out so a caller can hand it straight to the user"
+        );
+        // The candidates and the work done survive in the summary.
+        assert!(r.summary.contains("a/config.rs") && r.summary.contains("b/config.rs"));
+
+        let call = r.into_call_tool_result();
+        let structured = call.structured_content.expect("structured envelope");
+        assert_eq!(structured["status"], "blocked");
+        // Stopping to ask is not a failure. `is_error: true` here would invite
+        // the parent to retry the identical spawn, which is blocked on the same
+        // unanswered question.
+        assert_eq!(call.is_error, Some(false));
+    }
+
+    /// The parent model reads TEXT, never `structured_content`, so the whole
+    /// fix is worth nothing unless the rendered result says both what happened
+    /// and what to do about it.
+    #[test]
+    fn a_blocked_result_tells_the_parent_to_ask_rather_than_act() {
+        let c =
+            conv(vec![Message::assistant().with_text(
+                "BLOCKED: which of the two config files did you mean?",
+            )]);
+        let result = SubagentResult::from_conversation(&c, None, true);
+        let text = flatten_prose(&result.to_agent_text());
+
+        // What happened, stated ABOVE the child's own report: a parent reads
+        // that report as an account of finished work.
+        assert!(
+            text.starts_with("the subagent stopped and changed nothing"),
+            "the outcome must lead, not trail: {text}"
+        );
+        // The child's question survives into the text.
+        assert!(text.contains("which of the two config files did you mean?"));
+        // The status is legible on its own.
+        assert!(text.contains("[subagent blocked]"), "{text}");
+        // What to do: settle it if you can, otherwise ask the user.
+        assert!(
+            text.contains("put the question to the user"),
+            "the parent must be told where an unanswerable question goes: {text}"
+        );
+        assert!(
+            text.contains("delegate the task again with the answer written out in full"),
+            "the cheap path (parent can settle it) must be named first: {text}"
+        );
+        // And the three things it actually did instead, each named.
+        assert!(
+            text.contains("do not pick the most likely candidate"),
+            "{text}"
+        );
+        assert!(
+            text.contains("do not delegate again with a guess"),
+            "{text}"
+        );
+        assert!(
+            text.contains("do not do the work yourself to find out which one was meant"),
+            "this is the measured failure: the parent overrode the child and edited both files: \
+             {text}"
+        );
+    }
+
+    /// The marker is a signal a language model emits, so it arrives dressed up.
+    /// Missing it restores the defect in full, so the parser strips ornament
+    /// rather than insisting on one spelling.
+    #[test]
+    fn the_blocked_marker_survives_the_decoration_a_model_adds() {
+        for opening in [
+            "BLOCKED: which one?",
+            "**BLOCKED:** which one?",
+            "**BLOCKED**: which one?",
+            "## BLOCKED: which one?",
+            "> BLOCKED - which one?",
+            "`BLOCKED`: which one?",
+            "blocked: which one?",
+            "BLOCKED \u{2014} which one?",
+            "BLOCKED\n\nwhich one?",
+        ] {
+            let c = conv(vec![Message::assistant().with_text(opening)]);
+            let r = SubagentResult::from_conversation(&c, None, true);
+            assert_eq!(
+                r.status,
+                SubagentStatus::Blocked,
+                "opening {opening:?} must be recognised as a returned question"
+            );
+            assert_eq!(r.question.as_deref(), Some("which one?"), "{opening:?}");
+        }
+    }
+
+    /// The other direction, and the reason the marker is anchored to the first
+    /// line: an ordinary report that happens to use the word must stay
+    /// `Completed`, or a finished delegation turns into a question to the user.
+    #[test]
+    fn prose_that_merely_mentions_being_blocked_is_still_completed() {
+        for summary in [
+            "Done. The deploy is blocked on CI approval, which is expected.",
+            "I fixed `a/config.rs`.\n\nBLOCKED: is this a note you wanted?",
+            "blockedTests failed, so I skipped them.",
+        ] {
+            let c = conv(vec![Message::assistant().with_text(summary)]);
+            let r = SubagentResult::from_conversation(&c, None, true);
+            assert_eq!(
+                r.status,
+                SubagentStatus::Completed,
+                "{summary:?} is a report of work, not a returned question"
+            );
+            assert_eq!(r.question, None);
+        }
+    }
+
+    /// `summary: false` hands the parent the whole transcript, which OPENS with
+    /// the child's first words, so the marker cannot be read off `summary` and
+    /// is read off the closing message instead. Without this the blocked status
+    /// silently vanishes on one of the two summary modes.
+    #[test]
+    fn blocked_is_detected_in_whole_transcript_mode_too() {
+        let c = conv(vec![
+            Message::assistant().with_text("Looking for the file now."),
+            Message::assistant().with_text("BLOCKED: which config file did you mean?"),
+        ]);
+        let r = SubagentResult::from_conversation(&c, None, false);
+        assert_eq!(r.status, SubagentStatus::Blocked);
+        assert_eq!(
+            r.question.as_deref(),
+            Some("which config file did you mean?")
+        );
+        assert!(r.summary.contains("Looking for the file now."));
+    }
+
+    /// A run that never produced a usable result stays an error, and one that
+    /// died mid-turn stays an error, whatever prose it left behind. `Blocked`
+    /// only ever promotes a run that would otherwise have been called finished.
+    #[test]
+    fn blocked_never_masks_a_failure() {
+        let aborted = SubagentResult::from_aborted_turn(
+            &conv(vec![Message::assistant().with_text("BLOCKED: which one?")]),
+            "provider_error",
+            "the model hung up",
+        );
+        assert_eq!(aborted.status, SubagentStatus::Error);
+        assert_eq!(aborted.question, None);
+
+        assert_eq!(
+            SubagentResult::from_error("boom").status,
+            SubagentStatus::Error
+        );
+
+        // …and a child that ended on a tool call is still Incomplete: the
+        // parent already knows not to trust that one.
+        let c = conv(vec![
+            Message::assistant().with_text("BLOCKED: which one?"),
+            Message::assistant()
+                .with_tool_request("t1", Ok(tool_call("shell", json!({"command": "ls"})))),
+        ]);
+        let r = SubagentResult::from_conversation(&c, None, true);
+        assert_eq!(r.status, SubagentStatus::Incomplete);
+        assert_eq!(r.question, None);
+    }
+
+    /// `as_str` is the name the parent reads in a handle listing; the serde
+    /// rename is the name a programmatic consumer reads. A variant whose two
+    /// names disagree is a variant one of the two audiences cannot match on.
+    #[test]
+    fn every_status_renders_the_same_name_on_both_channels() {
+        for status in [
+            SubagentStatus::Completed,
+            SubagentStatus::Blocked,
+            SubagentStatus::Incomplete,
+            SubagentStatus::Error,
+        ] {
+            let serialized = serde_json::to_value(status).expect("status serializes");
+            assert_eq!(
+                serialized.as_str(),
+                Some(status.as_str()),
+                "{status:?} renders differently on the two channels"
+            );
+        }
     }
 
     #[test]

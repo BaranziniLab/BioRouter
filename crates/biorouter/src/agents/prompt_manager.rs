@@ -643,6 +643,82 @@ mod tests {
         );
     }
 
+    /// The parent half of the ambiguous-delegation fix.
+    ///
+    /// The child was taught to stop and ask (`prompts/subagent_system.md`) and
+    /// did, three runs out of three. The parent was taught nothing:
+    /// `system.md` had no match for "ambiguity", "clarify" or "ask" in this
+    /// sense, so it read the returned question as a finished delegation with
+    /// no edit behind it and made the ambiguous edits itself, which is worse
+    /// than before the child was taught anything: a full round trip AND both
+    /// files rewritten.
+    ///
+    /// Flattened, so re-flowing the paragraph cannot break the test.
+    #[test]
+    fn test_system_prompt_tells_the_parent_what_to_do_with_an_unresolvable_reference() {
+        let manager = PromptManager::with_timestamp(DateTime::<Utc>::from_timestamp(0, 0).unwrap());
+        let p = manager
+            .builder()
+            .build()
+            .to_lowercase()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+
+        assert!(
+            p.contains("# ambiguity and delegation"),
+            "the parent needs a section it can find: {p}"
+        );
+        // Scoped to the referent case. Completely Autonomous mode not asking
+        // permission is the mode working; re-adding confirmation prompts for
+        // ordinary work would be fixing the wrong thing.
+        assert!(
+            p.contains(
+                "autonomy means not asking permission for work you understand. it does not \
+                        mean guessing what the work is"
+            ),
+            "the rule must separate 'may i act' from 'what am i acting on': {p}"
+        );
+        assert!(
+            p.contains("ask the user which one and wait"),
+            "an unresolvable referent is resolved by asking, and the parent is who asks: {p}"
+        );
+        // The three wrong resolutions, each named. "Act on every candidate" is
+        // the measured one: both files were rewritten.
+        assert!(
+            p.contains("don't pick the most likely candidate"),
+            "missing the don't-guess rule: {p}"
+        );
+        assert!(
+            p.contains("don't act on every candidate to cover both"),
+            "rewriting BOTH candidates is the exact measured failure: {p}"
+        );
+        // What a blocked subagent means and what to do with it.
+        assert!(
+            p.contains("comes back with status `blocked`"),
+            "the parent must be able to recognise the status: {p}"
+        );
+        assert!(
+            p.contains("that is the delegation working, not failing"),
+            "unsaid, a model treats a no-edit run as a failed one and redoes the work: {p}"
+        );
+        assert!(
+            p.contains("delegate the task again with the answer written out in full"),
+            "the cheap path, when the parent CAN settle it, must be named: {p}"
+        );
+        assert!(
+            p.contains("put the subagent's question to the user in your reply and wait"),
+            "the question must reach the user when neither party can settle it: {p}"
+        );
+        assert!(
+            p.contains(
+                "never settle it by guessing, by delegating again with a guess, or by \
+                        doing the work yourself instead"
+            ),
+            "doing the work itself is what the parent actually did: {p}"
+        );
+    }
+
     /// The pillar-awareness paragraph (about-biorouter + Soul) must render only
     /// when extensions are present, since it points at the skills/knowledge
     /// tools. With no extensions it must NOT appear (those tools aren't there).
