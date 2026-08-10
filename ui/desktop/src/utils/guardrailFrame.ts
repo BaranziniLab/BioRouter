@@ -54,14 +54,24 @@
  *    framer wrote, so a non-greedy body match cannot run past the true close.
  *    A greedy one would, and would swallow every intervening result when a
  *    string carries several frames.
- * 2. The opening tag must be matched **case-sensitively**, exactly as emitted.
- *    The framer neutralizes the close token but not the open, so a body can
- *    legitimately contain `<TOOL-OUTPUT untrusted="true" …>`. A
- *    case-insensitive open would pair that forged tag with the real close and
- *    silently delete everything between them from the display. This is the
- *    same case-fold asymmetry the framer's own test got wrong first time
+ * 2. The opening tag is matched **case-sensitively**, exactly as emitted. The
+ *    framer neutralizes the close token but not the open, so a body can
+ *    legitimately contain `<TOOL-OUTPUT untrusted="true" …>` — text the tool
+ *    wrote, which the reader is entitled to see. A case-insensitive match
+ *    treats that text as a delimiter and deletes it, so the panel stops being
+ *    a faithful rendering of what the tool actually said. This is the same
+ *    case-fold asymmetry the framer's own test got wrong first time
  *    (`a_close_token_is_neutralized_whatever_its_case_or_trailing_junk`), read
  *    from the other side.
+ *
+ *    ⚠ Stated precisely because the loose version of this claim survived its
+ *    own mutation check: case-insensitivity here is a **fidelity** bug, not a
+ *    hiding one. It cannot make a forged tag capture a real frame's close,
+ *    because matching is leftmost-first and a real opening tag always precedes
+ *    a forged one inside its own body. What it loses is the tag itself, and
+ *    with it the reader's only sign that the tool tried to forge a frame.
+ *    Nothing between the tags is ever lost; that is guaranteed separately, by
+ *    the invariant below.
  *
  * ## Invariant: tags are removed, body text never is
  *
