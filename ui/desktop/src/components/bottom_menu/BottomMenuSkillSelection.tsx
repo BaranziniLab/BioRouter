@@ -250,7 +250,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         <div className="p-2">
           <Input
             type="text"
-            placeholder="search skills..."
+            placeholder="Search skills..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             className="h-8"
@@ -271,7 +271,7 @@ export const BottomMenuSkillSelection = ({ sessionId }: BottomMenuSkillSelection
         <div className="max-h-[400px] overflow-y-auto">
           {sortedEntries.length === 0 ? (
             <div className="px-3 py-4 text-center text-secondary text-text-muted">
-              {searchQuery ? 'no skills found' : 'no skills available'}
+              {searchQuery ? 'No skills found' : 'No skills available'}
             </div>
           ) : (
             sortedEntries.map((entry) => {

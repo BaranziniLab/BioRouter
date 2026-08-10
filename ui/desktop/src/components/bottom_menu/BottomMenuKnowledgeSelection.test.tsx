@@ -105,7 +105,7 @@ describe('BottomMenuKnowledgeSelection', () => {
     // row sizes in the first place.
     expect(menu).toHaveClass('w-64');
     expect(menu).not.toHaveClass('font-sans');
-    expect(screen.getByPlaceholderText('search knowledge bases...')).toHaveClass('h-8');
+    expect(screen.getByPlaceholderText('Search knowledge bases...')).toHaveClass('h-8');
     expect(screen.queryByText('Chat knowledge discovery')).not.toBeInTheDocument();
 
     const soul = screen.getByRole('menuitemcheckbox', { name: /Soul/ });
@@ -117,7 +117,7 @@ describe('BottomMenuKnowledgeSelection', () => {
     expect(screen.getByText('Soul')).toHaveClass('font-medium');
     expect(screen.getByText('Soul')).not.toHaveClass('text-sm');
 
-    fireEvent.change(screen.getByPlaceholderText('search knowledge bases...'), {
+    fireEvent.change(screen.getByPlaceholderText('Search knowledge bases...'), {
       target: { value: 'brain' },
     });
     expect(screen.queryByText('Soul')).not.toBeInTheDocument();
@@ -143,7 +143,7 @@ describe('BottomMenuKnowledgeSelection', () => {
       ctrlKey: false,
     });
     await screen.findByRole('menu');
-    fireEvent.change(screen.getByPlaceholderText('search knowledge bases...'), {
+    fireEvent.change(screen.getByPlaceholderText('Search knowledge bases...'), {
       target: { value: 'brain' },
     });
 
@@ -171,7 +171,7 @@ describe('BottomMenuKnowledgeSelection', () => {
       ctrlKey: false,
     });
     await screen.findByRole('menu');
-    fireEvent.change(screen.getByPlaceholderText('search knowledge bases...'), {
+    fireEvent.change(screen.getByPlaceholderText('Search knowledge bases...'), {
       target: { value: 'brain' },
     });
 

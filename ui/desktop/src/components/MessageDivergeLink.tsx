@@ -49,7 +49,10 @@ export default function MessageDivergeLink({
       aria-label="Branch this chat into a new window"
       title="Branch this chat into a new window (keeps full history)"
     >
-      {busy ? 'Diverging…' : 'Diverge'}
+      {/* "Diverge" is the internal name for this operation (#83 category 5).
+          The accessible name above already says "Branch", so leaving the
+          visible word as Diverge announced two names for one control. */}
+      {busy ? 'Branching…' : 'Branch'}
     </MessageMetaAction>
   );
 }

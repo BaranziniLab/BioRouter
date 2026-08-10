@@ -97,7 +97,7 @@ export function BottomMenuKnowledgeSelection() {
         <div className="p-2">
           <Input
             type="text"
-            placeholder="search knowledge bases..."
+            placeholder="Search knowledge bases..."
             value={searchQuery}
             onChange={(event) => setSearchQuery(event.target.value)}
             className="h-8"
@@ -118,7 +118,7 @@ export function BottomMenuKnowledgeSelection() {
         <div className="max-h-[400px] overflow-y-auto">
           {filteredBases.length === 0 ? (
             <div className="px-3 py-4 text-center text-secondary text-text-muted">
-              {searchQuery ? 'no knowledge bases found' : 'no knowledge bases available'}
+              {searchQuery ? 'No knowledge bases found' : 'No knowledge bases available'}
             </div>
           ) : (
             filteredBases.map((base) => {
@@ -131,9 +131,16 @@ export function BottomMenuKnowledgeSelection() {
                   onCheckedChange={() => toggleKbHidden(base.id)}
                   onSelect={(event) => event.preventDefault()}
                   className="flex cursor-pointer items-center justify-between px-2 py-2 transition-colors duration-[var(--motion-fast)] hover:bg-background-medium"
+                  // One verb pair per popup (#82 category 5). The trigger's
+                  // label, the bulk button and this row all have to say
+                  // VISIBILITY, or the switch reads as the enable/disable
+                  // toggle the other two popups use for a different thing.
+                  aria-label={`${base.name}, ${hidden ? 'hidden from' : 'visible to'} this chat`}
                 >
                   <div className="flex min-w-0 items-center gap-1.5 pr-2">
-                    <div className="truncate font-medium text-text-default">
+                    {/* Siblings pass a `title` so a truncated name is still
+                        readable; this row had none. */}
+                    <div className="truncate font-medium text-text-default" title={base.name}>
                       {base.name}
                     </div>
                     {isBuiltinKnowledgeBase(base.id) && (

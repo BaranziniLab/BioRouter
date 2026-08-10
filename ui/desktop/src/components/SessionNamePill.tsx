@@ -142,7 +142,7 @@ export const SessionNamePill: React.FC<Props> = ({
               <DropdownMenuItem onSelect={startEditing}>Rename</DropdownMenuItem>
               {onDiverge && (
                 <DropdownMenuItem disabled={!canDiverge || diverging} onSelect={handleDiverge}>
-                  {diverging ? 'Diverging...' : 'Diverge'}
+                  {diverging ? 'Branching…' : 'Branch'}
                 </DropdownMenuItem>
               )}
             </DropdownMenuContent>

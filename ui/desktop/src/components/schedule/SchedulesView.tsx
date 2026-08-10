@@ -189,7 +189,7 @@ const ScheduleCard: React.FC<{
                 variant="ghost"
                 shape="round"
                 title="Stop the running job"
-                aria-label={`Kill ${scheduleDisplayName(job.id)}`}
+                aria-label={`Stop ${scheduleDisplayName(job.id)}`}
               >
                 <Square className="w-4 h-4" />
               </Button>
