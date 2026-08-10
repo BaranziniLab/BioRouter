@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   DEFAULT_GHOST_SPEC,
   DEFAULT_GHOST_STYLE,
@@ -38,8 +40,10 @@ import type { Rect } from './windowDrag';
  *   1. that the ghost window does not steal focus. This is the one that ends the
  *      gesture if it is wrong — the source window holds the pointer capture, and
  *      raising or focusing anything drops it. The recipe (`focusable: false`,
- *      `setIgnoreMouseEvents(true)`, `showInactive()`) lives in `main.ts` and is
- *      asserted by reading it, not by running it.
+ *      `setIgnoreMouseEvents(true)`, `showInactive()`) lives in `main.ts`, so it
+ *      is asserted by READING that file — see the last describe block. Reading
+ *      is not running: it cannot prove macOS honours the flags. It can prove
+ *      nobody deleted them, which is the failure that actually happens.
  *   2. that the window paints outside the source window's frame.
  *   3. that per-monitor DPI lands it on the right display. The DIP conversion is
  *      the identity on macOS, so even a manual check on this machine cannot see
@@ -574,5 +578,147 @@ describe('DragGhostWindowController', () => {
     // The Alma Mater teal, carried straight through — a hardcoded accent would
     // paint every theme family in Parchment coral.
     expect(ghostWindowHtml(fake.created[0].spec, { transparent: true })).toContain('#16a0ac');
+  });
+});
+
+/**
+ * ⚠ **The half of this feature that lives in `main.ts`, where no test runs.**
+ *
+ * Everything above talks to a fake host. The real host is `main.ts`: the
+ * `BrowserWindow` recipe and the four places the controller is driven from. That
+ * file imports Electron at the top, so it cannot be imported here at all, and
+ * `ui/desktop` has no main-process test of any kind. The result was that the
+ * three flags issue #75 calls **mandatory** — `focusable: false`,
+ * `setIgnoreMouseEvents(true)`, and no `vibrancy` — had nothing asserting them:
+ * deleting any one of them left the whole suite green and broke the gesture on
+ * the desktop, where the only symptom is "the drag stops working sometimes".
+ *
+ * So these read the shipped source, the way `workspaceChannelCsp.test.ts` and
+ * `styles/measures.test.ts` do for facts only the source can settle.
+ *
+ * **What this is not.** It cannot show that macOS honours `focusable: false`,
+ * that the window paints over another app, or that the pointer capture survives.
+ * Those need real OS input and are listed at the top of this file as uncovered.
+ * The failure this catches is the ordinary one: a later edit tidying an option
+ * away, or a `showInactive()` "simplified" to `show()`.
+ */
+describe('the main-process half, read from main.ts', () => {
+  const source = readFileSync(join(__dirname, 'main.ts'), 'utf8');
+
+  /** The text between `marker` and the first line that closes it at `end`. */
+  const block = (marker: string, end: string) => {
+    const start = source.indexOf(marker);
+    expect(start, `${marker} missing from main.ts`).toBeGreaterThan(-1);
+    const stop = source.indexOf(end, start);
+    expect(stop, `${marker} is never closed by ${JSON.stringify(end)}`).toBeGreaterThan(start);
+    return source.slice(start, stop);
+  };
+
+  /**
+   * ⚠ **Comments out, before any assertion about what the CODE does.** Both
+   * halves of this file explain themselves at length, and every explanation
+   * names the thing it is explaining: the recipe's comment says "NO PRELOAD",
+   * the commit handler's says "returning early would leave it there for good".
+   * A guard reading the raw slice therefore passes on `preload` and finds a
+   * `return` 340 characters before the real one — both measured, both on
+   * correct code. That is now the fourth guard in this repo to match its own
+   * prose, so the stripping is the default here rather than a patch.
+   */
+  const code = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+
+  const recipe = () => block('async function createDragGhostWindow(', '\n}');
+
+  /**
+   * ⚠ Each of these is one line in `main.ts` and each is load-bearing on its
+   * own. `focusable: false` and `setIgnoreMouseEvents(true)` keep the window out
+   * of the focus chain and out of the event stream; the source window holds the
+   * pointer capture that IS the drag, so either one missing hands the gesture to
+   * a window that has nothing to do with it.
+   */
+  it('builds a window that cannot take the focus the drag depends on', () => {
+    const r = recipe();
+    expect(r).toMatch(/focusable:\s*false/);
+    expect(r).toMatch(/ghost\.setIgnoreMouseEvents\(true\)/);
+    // `show: false` at construction, then `showInactive()`. A bare `show()`
+    // ACTIVATES the window, which is the same focus theft by another route —
+    // so the string must not appear as a call on the ghost at all.
+    expect(r).toMatch(/show:\s*false/);
+    expect(r).toMatch(/ghost\.showInactive\(\)/);
+    expect(r).not.toMatch(/ghost\.show\(\)/);
+    expect(r).toMatch(/acceptFirstMouse:\s*false/);
+  });
+
+  /**
+   * ⚠ The recipe is the launcher's, and the launcher HAS `vibrancy`. Copying
+   * that line across is the plausible mistake, which is why this asserts its
+   * absence here while the file keeps it elsewhere.
+   */
+  it('omits the launcher options that the design flags as hazards', () => {
+    expect(recipe()).not.toContain('vibrancy');
+    // The larger window carries transparent slack for the outline and the CSS
+    // shadow, so a NATIVE shadow would trace that rectangle instead of the chip.
+    expect(recipe()).toMatch(/hasShadow:\s*false/);
+    // `vibrancy` still exists in the file — otherwise the assertion above would
+    // pass against a main.ts that had lost the launcher entirely.
+    expect(source).toContain('vibrancy');
+  });
+
+  /** Transparency is not portable; the design gates it and so must the code. */
+  it('gates transparency on darwin and gives the other platforms a ground', () => {
+    const r = recipe();
+    expect(r).toMatch(/const transparent = process\.platform === 'darwin'/);
+    expect(r).toMatch(/backgroundColor: transparent \? '#00000000' : spec\.style\.background/);
+  });
+
+  /** A chip with nothing to say gets none of the app's IPC doors. */
+  it('gives the ghost page no preload and no node', () => {
+    expect(code(recipe())).not.toContain('preload');
+    expect(recipe()).toMatch(/nodeIntegration:\s*false/);
+    expect(recipe()).toMatch(/sandbox:\s*true/);
+    // `preload` still reaches other windows in this file, so the assertion
+    // above is measuring the recipe and not a spelling that left main.ts.
+    expect(code(source)).toContain('preload');
+  });
+
+  /**
+   * Issue #75's "no new IPC": the screen point already reaches main on every
+   * move. It must arrive through `screenPointFromWire` (the `{screenX,screenY}`
+   * vs `{x,y}` mismatch that silently killed the feature once) and be converted
+   * by `normalizeToDip` before it becomes a window position.
+   */
+  it('positions the ghost from the existing move handler, after normalizeToDip', () => {
+    const move = block("ipcMain.on('tab-drag:move'", '\n  });');
+    expect(move).toContain('screenPointFromWire');
+    expect(move).toMatch(/dragGhostWindows\.follow\(source\.id, normalizeToDip\(/);
+    // `detach` only: a `merge` already paints a caret saying where the tab lands.
+    expect(move).toMatch(/dragGhostWindows\.release\(`phase \$\{phase\.kind\}`\)/);
+  });
+
+  /**
+   * ⚠ Every exit, not just the tidy one. A ghost is click-through and
+   * always-on-top, so one left behind sits over every other app with no gesture
+   * behind it and no way for the user to dismiss it.
+   */
+  it('releases the ghost on each of the three ways a drag can end', () => {
+    expect(block("ipcMain.on('tab-drag:end'", '\n  });')).toContain('dragGhostWindows.release(');
+    // Including the source dying: crash, reload and close all route here.
+    expect(block('function forgetWindowFromTabDrag(', '\n}')).toContain(
+      'dragGhostWindows.releaseIfSource(windowId, reason)'
+    );
+  });
+
+  /**
+   * ⚠ **First statement, ahead of every early return.** The button is up, so the
+   * ghost represents nothing whatever the handler goes on to decide. Below the
+   * first `return` it would hang over the desktop for the whole 2 s merge-ack
+   * window, and for good on a `noop`.
+   */
+  it('releases on commit before the handler can return', () => {
+    const commit = code(block("ipcMain.handle('tab-drag:commit'", '\n  });'));
+    const released = commit.indexOf('dragGhostWindows.release(');
+    const firstReturn = commit.search(/\breturn\b/);
+    expect(released, 'commit never releases the ghost').toBeGreaterThan(-1);
+    expect(firstReturn, 'commit has no early return left to guard').toBeGreaterThan(-1);
+    expect(released).toBeLessThan(firstReturn);
   });
 });
