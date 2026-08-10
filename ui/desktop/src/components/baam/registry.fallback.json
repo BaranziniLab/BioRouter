@@ -2515,7 +2515,7 @@
       "name": "CLIP-seq",
       "category": "Biomedical",
       "type": "5 skills · auto-applied",
-      "description": "Protein–RNA interaction mapping from iCLIP/eCLIP/PAR-CLIP data.",
+      "description": "Protein-RNA interaction mapping from iCLIP/eCLIP/PAR-CLIP data.",
       "tags": [
         "PureCLIP",
         "eCLIP"
@@ -2770,7 +2770,7 @@
       "name": "Gene Regulatory Networks",
       "category": "Biomedical",
       "type": "5 skills · auto-applied",
-      "description": "TF–target network inference from expression and chromatin data.",
+      "description": "TF-target network inference from expression and chromatin data.",
       "tags": [
         "SCENIC",
         "GRNBoost2"
