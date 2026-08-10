@@ -1,6 +1,7 @@
 use crate::model::ModelConfig;
 use crate::providers::base::{tool_call_batching_enabled, Usage};
 use crate::providers::errors::ProviderError;
+use crate::providers::formats::audience;
 use crate::providers::utils::{is_valid_function_name, sanitize_function_name};
 use anyhow::Result;
 use rmcp::model::{
@@ -109,15 +110,11 @@ pub fn format_messages(messages: &[Message]) -> Vec<Value> {
                     MessageContent::ToolResponse(response) => {
                         match &response.tool_result {
                             Ok(result) => {
-                                // Send only contents with no audience or with Assistant in the audience
+                                // Send only what the tool addressed to the model.
                                 let abridged: Vec<_> = result
                                     .content
                                     .iter()
-                                    .filter(|content| {
-                                        content.audience().is_none_or(|audience| {
-                                            audience.contains(&Role::Assistant)
-                                        })
-                                    })
+                                    .filter(|content| audience::is_for_model(content))
                                     .map(|content| content.raw.clone())
                                     .collect();
 
@@ -777,6 +774,32 @@ mod tests {
                 }),
             )],
         )
+    }
+
+    /// Every audience case, through the real Google formatter.
+    ///
+    /// Same fixture and same expectation as the OpenAI, Databricks and Bedrock
+    /// tests; Google joins its blocks with a newline rather than a space.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let message = set_up_tool_response_message(
+            "call-1",
+            crate::providers::formats::audience::every_audience_case(),
+        );
+
+        let payload = format_messages(&[message]);
+        let sent = payload[0]["parts"][0]["functionResponse"]["response"]["content"]["text"]
+            .as_str()
+            .expect("function response text is a string");
+
+        assert_eq!(
+            sent,
+            crate::providers::formats::audience::MODEL_VISIBLE.join("\n"),
+            "the Google function response must carry exactly the model-addressed blocks"
+        );
+        for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
+            assert!(!sent.contains(withheld), "{withheld} reached the model");
+        }
     }
 
     #[test]

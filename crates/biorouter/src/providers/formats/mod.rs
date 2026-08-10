@@ -1,4 +1,5 @@
 pub mod anthropic;
+pub mod audience;
 #[cfg(feature = "aws-providers")]
 pub mod bedrock;
 pub mod databricks;

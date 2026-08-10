@@ -22,6 +22,7 @@ use serde_json::Value;
 
 use super::super::base::{tool_call_batching_enabled, Usage};
 use super::super::errors::ProviderError;
+use super::audience;
 use crate::conversation::message::{Message, MessageContent};
 use crate::providers::utils::RequestLog;
 
@@ -98,11 +99,8 @@ pub fn to_bedrock_message_content(content: &MessageContent) -> Result<bedrock::C
                     result
                         .content
                         .iter()
-                        // Filter out content items that have User in their audience
-                        .filter(|c| {
-                            c.audience()
-                                .is_none_or(|audience| !audience.contains(&Role::User))
-                        })
+                        // Send only what the tool addressed to the model.
+                        .filter(|c| audience::is_for_model(c))
                         .map(|c| to_bedrock_tool_result_content_block(&tool_res.id, c.clone()))
                         .collect::<Result<_>>()?,
                 ),
@@ -2372,6 +2370,49 @@ mod tests {
         assert_eq!(converted.cache_read_input_tokens, None);
         assert_eq!(converted.cache_creation_input_tokens, None);
         assert_eq!(converted.billed_total(), Some(15));
+    }
+
+    /// Every audience case, through the real Bedrock formatter.
+    ///
+    /// This is the regression. Bedrock used to ask whether the USER was absent
+    /// from the audience, so it dropped `delta-both-audiences` (content the
+    /// tool marked useful to both) and forwarded `echo-empty-audience` (content
+    /// the tool addressed to nobody). Both are the opposite of what the other
+    /// three formatters did with the same tool result.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let response = MessageContent::tool_response(
+            "call-1",
+            Ok(rmcp::model::CallToolResult {
+                content: crate::providers::formats::audience::every_audience_case(),
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let block = to_bedrock_message_content(&response).expect("tool result converts");
+        let bedrock::ContentBlock::ToolResult(result) = block else {
+            panic!("a tool response converts to a ToolResult block");
+        };
+
+        let sent: Vec<String> = result
+            .content()
+            .iter()
+            .map(|c| c.as_text().expect("fixture blocks are text").clone())
+            .collect();
+
+        assert_eq!(
+            sent,
+            crate::providers::formats::audience::MODEL_VISIBLE,
+            "the Bedrock tool result must carry exactly the model-addressed blocks"
+        );
+        for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
+            assert!(
+                !sent.iter().any(|text| text == withheld),
+                "{withheld} reached the model"
+            );
+        }
     }
 
     #[test]

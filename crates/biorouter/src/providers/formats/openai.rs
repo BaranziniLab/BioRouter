@@ -1,6 +1,7 @@
 use crate::conversation::message::{Message, MessageContent, ProviderMetadata};
 use crate::model::ModelConfig;
 use crate::providers::base::{ProviderUsage, Usage};
+use crate::providers::formats::audience;
 use crate::providers::utils::{
     convert_image, detect_image_path, is_valid_function_name, load_image_file, safely_parse_json,
     sanitize_function_name, ImageFormat,
@@ -160,15 +161,11 @@ pub fn format_messages(messages: &[Message], image_format: &ImageFormat) -> Vec<
                 MessageContent::ToolResponse(response) => {
                     match &response.tool_result {
                         Ok(result) => {
-                            // Send only contents with no audience or with Assistant in the audience
+                            // Send only what the tool addressed to the model.
                             let abridged: Vec<_> = result
                                 .content
                                 .iter()
-                                .filter(|content| {
-                                    content
-                                        .audience()
-                                        .is_none_or(|audience| audience.contains(&Role::Assistant))
-                                })
+                                .filter(|content| audience::is_for_model(content))
                                 .cloned()
                                 .collect();
 
@@ -1684,6 +1681,39 @@ data: [DONE]
         assert_eq!(spec[1]["tool_call_id"], spec[0]["tool_calls"][0]["id"]);
 
         Ok(())
+    }
+
+    /// Every audience case, through the real OpenAI formatter.
+    ///
+    /// The joined tool message must carry the three blocks the tool addressed
+    /// to the model and neither of the two it did not. `delta-both-audiences`
+    /// is the one that separates this filter from "the user is not in the
+    /// audience", which Bedrock used to carry and which drops it.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Ok(CallToolResult {
+                content: crate::providers::formats::audience::every_audience_case(),
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let spec = format_messages(&[message], &ImageFormat::OpenAi);
+        let sent = spec[0]["content"]
+            .as_str()
+            .expect("tool content is a string");
+
+        assert_eq!(
+            sent,
+            crate::providers::formats::audience::MODEL_VISIBLE.join(" "),
+            "the OpenAI tool message must carry exactly the model-addressed blocks"
+        );
+        for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
+            assert!(!sent.contains(withheld), "{withheld} reached the model");
+        }
     }
 
     #[test]

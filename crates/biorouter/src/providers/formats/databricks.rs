@@ -1,5 +1,6 @@
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
+use crate::providers::formats::audience;
 use crate::providers::formats::google as gemini_schema;
 use crate::providers::utils::{
     convert_image, detect_image_path, is_valid_function_name, load_image_file, safely_parse_json,
@@ -48,7 +49,8 @@ fn format_tool_response(
             let abridged: Vec<_> = call_result
                 .content
                 .iter()
-                .filter(|c| c.audience().is_none_or(|a| a.contains(&Role::Assistant)))
+                // Send only what the tool addressed to the model.
+                .filter(|c| audience::is_for_model(c))
                 .map(|c| c.raw.clone())
                 .collect();
 
@@ -820,6 +822,35 @@ mod tests {
         assert_eq!(spec[1]["tool_call_id"], spec[0]["tool_calls"][0]["id"]);
 
         Ok(())
+    }
+
+    /// Every audience case, through the real Databricks formatter.
+    ///
+    /// Same fixture and same expectation as the OpenAI, Google and Bedrock
+    /// tests, because the four now share one predicate.
+    #[test]
+    fn tool_result_blocks_reach_the_model_by_audience() {
+        let message = Message::user().with_tool_response(
+            "call-1",
+            Ok(CallToolResult {
+                content: crate::providers::formats::audience::every_audience_case(),
+                structured_content: None,
+                is_error: Some(false),
+                meta: None,
+            }),
+        );
+
+        let spec = format_messages(&[message], &ImageFormat::OpenAi);
+        let sent = spec[0].content.as_str().expect("tool content is a string");
+
+        assert_eq!(
+            sent,
+            crate::providers::formats::audience::MODEL_VISIBLE.join(" "),
+            "the Databricks tool message must carry exactly the model-addressed blocks"
+        );
+        for withheld in crate::providers::formats::audience::MODEL_HIDDEN {
+            assert!(!sent.contains(withheld), "{withheld} reached the model");
+        }
     }
 
     #[test]
