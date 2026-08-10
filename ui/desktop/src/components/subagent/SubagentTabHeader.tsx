@@ -9,6 +9,7 @@
  */
 import { useState } from 'react';
 import { Button } from '../ui/button';
+import { unwrapGuardrailFrame } from '../../utils/guardrailFrame';
 
 export function SubagentTabHeader({
   sessionId,
@@ -117,7 +118,34 @@ export function SubagentTabHeader({
           id={spawnContextId}
           className="max-h-64 overflow-auto whitespace-pre-wrap break-words border-b border-border-subtle bg-background-code p-2 text-supporting"
         >
-          {spawnContext}
+          {/*
+           * ⚠ The last human-facing surface that showed the guardrail's frame
+           * raw.
+           *
+           * `### Task instructions` is free text the PARENT agent wrote, and a
+           * parent that quotes what a tool handed it carries
+           * `<tool-output untrusted="true" tool="…">` … `</tool-output>` into
+           * this record verbatim. Every other panel already unwraps (BaseChat,
+           * ToolCallWithResponse); this one printed the delimiter at the reader.
+           *
+           * Three things this call is careful about:
+           *
+           * 1. DISPLAY ONLY. `spawnContext` is read off a stored message and
+           *    rendered; nothing downstream of here reaches a model. The
+           *    `[BIOROUTER GUARDRAIL]` line above a frame is a real warning and
+           *    survives, structurally — the helper only rewrites between a
+           *    complete opening tag and its matching close.
+           * 2. Here and not in `useSubagentSession`, so `extractKnowledgeBases`
+           *    keeps parsing the daemon's exact bytes. That parser refuses to
+           *    guess when it sees two `### Knowledge bases` headings, which is a
+           *    security posture reasoned about against the stored record; it
+           *    should not be handed a string some display helper reshaped.
+           * 3. `### Rendered system prompt` names the opening tag on its own,
+           *    with no close (`subagent_system.md` documents the tag to the
+           *    model). A lone tag is left verbatim by design, so the reader
+           *    still sees the prompt exactly as the child received it.
+           */}
+          {unwrapGuardrailFrame(spawnContext)}
         </pre>
       )}
     </>
