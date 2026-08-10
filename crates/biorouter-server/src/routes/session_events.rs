@@ -204,6 +204,12 @@ pub async fn observe_session_events(
     let mut token_state = get_token_state(state.session_manager(), &session_id).await;
     let (tx, rx_out) = mpsc::channel::<String>(64);
 
+    // Claimed HERE, in the handler, rather than inside the task below: the slot
+    // has to be taken before this response is handed back, or a burst of tabs
+    // re-attaching together would each be spawned, each find the count still
+    // under budget, and all be admitted.
+    let slot = state.try_admit_observer_stream();
+
     let manager_session_id = session_id.clone();
     let state_for_task = state.clone();
     tokio::spawn(async move {
@@ -225,6 +231,29 @@ pub async fn observe_session_events(
         if !send(&tx, &snapshot).await {
             return;
         }
+
+        // Over budget: answer with the snapshot and END, instead of parking a
+        // connection the client cannot spare (see `MAX_LIVE_OBSERVER_STREAMS`).
+        // Returning here drops `tx`, which completes the response body — the
+        // client sees a stream that finished, which is already its reconnect
+        // trigger, and it comes back on its own backoff.
+        //
+        // The snapshot is deliberately sent FIRST, before this check. A refused
+        // observer is not a failed one: it has been handed the entire stored
+        // conversation, which is all a tab nobody is looking at actually needs.
+        // Refusing before the snapshot would leave the tab blank and turn a
+        // capacity limit into missing content.
+        let Some(slot) = slot else {
+            tracing::debug!(
+                session_id = %manager_session_id,
+                "observer over budget; answered with the snapshot and closed",
+            );
+            return;
+        };
+        // Held for exactly as long as this stream follows the tail, and released
+        // by `Drop` on every way out of this task — including the client hanging
+        // up mid-`send` and the bus closing underneath it.
+        let _slot = slot;
 
         let mut heartbeat = tokio::time::interval(Duration::from_millis(500));
         loop {
@@ -448,6 +477,162 @@ mod tests {
             }
         }
         collected
+    }
+
+    /// Read a response body to its END, or give up.
+    ///
+    /// `Some(text)` means the body COMPLETED inside `budget`; `None` means it
+    /// was still open when the budget ran out. That distinction is the whole
+    /// assertion in the two budget tests below, and it cannot be made with
+    /// `collect_prefix` above — that one stops on a marker, so it returns
+    /// happily for a stream that is still holding its connection, which is
+    /// exactly the failure being tested for.
+    async fn drain_to_end(body: axum::body::Body, budget: Duration) -> Option<String> {
+        use futures::StreamExt;
+        let read = async {
+            let mut stream = body.into_data_stream();
+            let mut collected = Vec::new();
+            while let Some(Ok(chunk)) = stream.next().await {
+                collected.extend_from_slice(&chunk);
+            }
+            String::from_utf8_lossy(&collected).into_owned()
+        };
+        tokio::time::timeout(budget, read).await.ok()
+    }
+
+    async fn observer_session(state: &Arc<crate::state::AppState>) -> String {
+        let temp = tempfile::TempDir::new().unwrap();
+        state
+            .session_manager()
+            .create_session(
+                temp.path().to_path_buf(),
+                "budget".to_string(),
+                biorouter::session::session_manager::SessionType::User,
+            )
+            .await
+            .unwrap()
+            .id
+    }
+
+    async fn open_observer(app: &axum::Router, session_id: &str) -> axum::response::Response {
+        use tower::ServiceExt;
+        let response = app
+            .clone()
+            .oneshot(
+                axum::http::Request::get(format!("/sessions/{session_id}/events"))
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        response
+    }
+
+    /// The wedge this budget exists for: an observer never ends on its own, so
+    /// enough of them park the client's whole per-host connection budget and
+    /// the renderer can no longer send **anything** to the daemon — including
+    /// the `POST /reply` the user is waiting on. Measured on the real app:
+    /// six live observers, 348 bytes/s of heartbeat out and 0 in, a `GET
+    /// /status` from inside the renderer unanswered after 8 s while the same
+    /// call from a shell returned in 0.9 ms.
+    ///
+    /// So past the budget the answer is the snapshot and then a **finished
+    /// body**. Both halves are asserted, and they fail for different reasons:
+    /// without the budget the extra body never completes (the wedge itself),
+    /// and refusing before the snapshot leaves the tab blank.
+    #[tokio::test]
+    async fn an_observer_past_the_budget_is_answered_and_closed_not_parked() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let session_id = observer_session(&state).await;
+        let app = routes(state.clone());
+
+        // Fill the budget and HOLD the bodies, the way open tabs do.
+        let mut held = Vec::new();
+        for _ in 0..crate::state::MAX_LIVE_OBSERVER_STREAMS {
+            held.push(open_observer(&app, &session_id).await.into_body());
+        }
+        assert_eq!(
+            state.live_observer_streams(),
+            crate::state::MAX_LIVE_OBSERVER_STREAMS
+        );
+
+        let extra = open_observer(&app, &session_id).await;
+        let text = drain_to_end(extra.into_body(), Duration::from_secs(5))
+            .await
+            .expect(
+                "an over-budget observer must END its body; still open means it is \
+                 holding one of the client's few connections for a tail it was not \
+                 admitted to follow",
+            );
+        assert!(
+            text.contains("\"type\":\"UpdateConversation\""),
+            "a refused observer is still owed the stored conversation, else the tab \
+             renders empty: {text}"
+        );
+        assert_eq!(
+            state.live_observer_streams(),
+            crate::state::MAX_LIVE_OBSERVER_STREAMS,
+            "a refused observer must not consume a slot"
+        );
+
+        // The control: an ADMITTED observer does the opposite — it keeps the
+        // connection and follows the tail. Without this, a budget of zero (or a
+        // slot that is never handed out) would pass every assertion above.
+        let admitted = held.pop().expect("one held stream");
+        assert!(
+            drain_to_end(admitted, Duration::from_secs(2))
+                .await
+                .is_none(),
+            "an admitted observer must keep following the tail, not end"
+        );
+    }
+
+    /// The slot comes back when the stream does, so a long-lived daemon does not
+    /// ratchet its way down to refusing everything.
+    ///
+    /// This is the half a counter that only ever increments still passes the
+    /// test above for: closing a tab has to make room for the next one, and the
+    /// release has to happen on the path a real client takes — hanging up — not
+    /// on a tidy shutdown the code controls.
+    #[tokio::test]
+    async fn closing_an_observer_returns_its_slot_to_the_budget() {
+        let state = crate::state::AppState::new().await.unwrap();
+        let session_id = observer_session(&state).await;
+        let app = routes(state.clone());
+
+        let mut held = Vec::new();
+        for _ in 0..crate::state::MAX_LIVE_OBSERVER_STREAMS {
+            held.push(open_observer(&app, &session_id).await.into_body());
+        }
+
+        // Hang up on one, the way a closed tab does.
+        drop(held.pop());
+
+        // The task learns of it on its next heartbeat send, so poll rather than
+        // sleeping a guessed interval.
+        let mut released = false;
+        for _ in 0..40 {
+            if state.live_observer_streams() < crate::state::MAX_LIVE_OBSERVER_STREAMS {
+                released = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            released,
+            "a hung-up observer never gave its slot back; the budget only shrinks"
+        );
+
+        // And the freed slot is genuinely usable: the next observer is admitted
+        // and follows the tail instead of being answered and closed.
+        let fresh = open_observer(&app, &session_id).await;
+        assert!(
+            drain_to_end(fresh.into_body(), Duration::from_secs(2))
+                .await
+                .is_none(),
+            "the observer taking the freed slot must be admitted, not refused"
+        );
     }
 
     /// A watch on a session that does not exist is refused, not an empty stream

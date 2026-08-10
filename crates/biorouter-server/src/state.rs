@@ -5,7 +5,7 @@ use biorouter::session::SessionManager;
 use biorouter_mcp::knowledge::service::KnowledgeService;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
@@ -173,6 +173,53 @@ fn prune_finished_turns(turns: &mut HashMap<String, ActiveTurn>) {
     });
 }
 
+/// How many session-observer streams (`GET /sessions/{id}/events`) this daemon
+/// will follow the live tail for at the same time.
+///
+/// ⚠ **This is a limit on the CLIENT's connection budget, not on the server's
+/// resources.** An observer stream costs the daemon almost nothing — a bus
+/// subscription and a 500 ms heartbeat — so the obvious reading, "three is
+/// plenty of capacity", is the wrong frame entirely. The cost is on the other
+/// end of the socket. An observer never finishes on its own; it ends only when
+/// the client hangs up. Every one of them therefore *parks a TCP connection for
+/// as long as the tab exists*, and a browser will not open more than a handful
+/// per host (six in Chromium, shared by every window of the app, because they
+/// are one origin behind one network process). Once the daemon is holding that
+/// many, the renderer cannot dispatch **any** further request to it: not
+/// `/config/read`, not `/agent/tools`, and not `POST /reply`. The turn the user
+/// just asked for is never sent, so the composer spins forever while the daemon
+/// sits idle, healthy, and answering `curl` in under a millisecond — which is
+/// exactly what makes the failure so hard to read from either side alone.
+///
+/// Measured on the wedge this constant was introduced for: six live observers,
+/// 348 bytes/s of pure heartbeat out and 0 bytes in, a fresh `GET /status`
+/// issued from inside the renderer still unanswered after 8 s while the same
+/// request from a shell returned in 0.9 ms, and the whole app recovering the
+/// instant enough tabs were closed to drop the observer count. The turns
+/// themselves had all completed server-side minutes earlier.
+///
+/// Three leaves at least half of a six-connection budget free for `/reply` and
+/// for ordinary request/response traffic. `/reply` is deliberately NOT counted
+/// here: a turn stream is bounded by its turn rather than by a tab, and
+/// refusing one would break the thing the app exists to do.
+pub const MAX_LIVE_OBSERVER_STREAMS: usize = 3;
+
+/// Permission to hold one session-observer stream open, released on drop.
+///
+/// RAII rather than a paired increment/decrement because the release has to
+/// survive paths that do not run to the bottom of the observer task: the client
+/// hanging up mid-send, the bus closing, a panic unwinding the task. A missed
+/// decrement is not a leak that shows up as memory — it permanently shrinks the
+/// client's usable connection budget, which is the same wedge one slot smaller.
+#[derive(Debug)]
+pub struct ObserverSlot(Arc<AtomicUsize>);
+
+impl Drop for ObserverSlot {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub(crate) agent_manager: Arc<AgentManager>,
@@ -186,6 +233,9 @@ pub struct AppState {
     /// running turn's cancellation token so cancel is addressable by session id
     /// rather than only by dropping the SSE socket (BR-62).
     active_turns: Arc<StdMutex<HashMap<String, ActiveTurn>>>,
+    /// Session-observer SSE responses this daemon is holding open right now.
+    /// See [`MAX_LIVE_OBSERVER_STREAMS`] for why the count is bounded at all.
+    observer_streams: Arc<AtomicUsize>,
     pub tunnel_manager: Arc<TunnelManager>,
     pub extension_loading_tasks: ExtensionLoadingTasks,
     // Used by knowledge route handlers (Task 5+).
@@ -203,6 +253,7 @@ impl AppState {
             workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
             active_turns: Arc::new(StdMutex::new(HashMap::new())),
+            observer_streams: Arc::new(AtomicUsize::new(0)),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
@@ -234,10 +285,41 @@ impl AppState {
             workflow_file_hash_map: Arc::new(Mutex::new(HashMap::new())),
             workflow_session_tracker: Arc::new(Mutex::new(HashSet::new())),
             active_turns: Arc::new(StdMutex::new(HashMap::new())),
+            observer_streams: Arc::new(AtomicUsize::new(0)),
             tunnel_manager,
             extension_loading_tasks: Arc::new(Mutex::new(HashMap::new())),
             knowledge_service,
         }))
+    }
+
+    /// Claim one of the [`MAX_LIVE_OBSERVER_STREAMS`] slots for following a
+    /// session's live tail, or `None` when the daemon is already holding that
+    /// many open.
+    ///
+    /// The check and the increment are one `fetch_update`, not a load followed
+    /// by a store: several tabs re-attach in the same instant after a reload,
+    /// and a read-then-write would let all of them see the same under-budget
+    /// count and admit every one of them — which is the state being bounded.
+    ///
+    /// Refusal is not an error, and callers must not report it as one. The
+    /// observer's first frame is the whole stored conversation, so a caller
+    /// that is turned away has already been told everything the session
+    /// currently says; all it loses is the live tail, and its own reconnect
+    /// backoff will ask again.
+    pub fn try_admit_observer_stream(&self) -> Option<ObserverSlot> {
+        let counter = Arc::clone(&self.observer_streams);
+        counter
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |live| {
+                (live < MAX_LIVE_OBSERVER_STREAMS).then_some(live + 1)
+            })
+            .ok()
+            .map(|_| ObserverSlot(counter))
+    }
+
+    /// Session-observer streams currently held open. Test-facing.
+    #[cfg(test)]
+    pub(crate) fn live_observer_streams(&self) -> usize {
+        self.observer_streams.load(Ordering::Acquire)
     }
 
     /// Begin an interactive turn for `session_id`. Returns a `TurnGuard` that
