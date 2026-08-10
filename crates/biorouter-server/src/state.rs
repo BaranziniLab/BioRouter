@@ -454,9 +454,31 @@ impl AppState {
         tasks.insert(session_id, Arc::new(Mutex::new(Some(task))));
     }
 
+    /// How long a turn will wait for a session's extensions before going ahead
+    /// without them.
+    ///
+    /// Generous, because spawning stdio MCP servers is genuinely slow and the
+    /// normal wait is ~300 ms. It is a deadlock bound, not a performance tuning
+    /// knob: what it rules out is one wedged extension parking every turn in the
+    /// session forever. `cdwagent` and `medcp` fail to load on a machine without
+    /// UCSF credentials, so this is the ordinary case, not the exotic one.
+    const EXTENSION_LOAD_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
     pub async fn take_extension_loading_task(
         &self,
         session_id: &str,
+    ) -> Option<Vec<ExtensionLoadResult>> {
+        self.take_extension_loading_task_bounded(session_id, Self::EXTENSION_LOAD_WAIT)
+            .await
+    }
+
+    /// The same wait with an explicit bound, so a test can prove the bound
+    /// EXISTS without sitting through the production one. A 30 second unit test
+    /// is a test somebody eventually deletes.
+    async fn take_extension_loading_task_bounded(
+        &self,
+        session_id: &str,
+        wait: std::time::Duration,
     ) -> Option<Vec<ExtensionLoadResult>> {
         let task_holder = {
             let tasks = self.extension_loading_tasks.lock().await;
@@ -466,10 +488,39 @@ impl AppState {
         if let Some(holder) = task_holder {
             let task = holder.lock().await.take();
             if let Some(handle) = task {
-                match handle.await {
-                    Ok(results) => return Some(results),
-                    Err(e) => {
+                // ⚠ BOUNDED. An unbounded `handle.await` here turns a slow
+                // extension into a HUNG PRODUCT, and that is not hypothetical:
+                // it wedged a live app for hours. `/reply` runs this while
+                // holding the session's turn guard, so one extension that never
+                // finishes loading parks the turn task forever and every later
+                // turn then blocks on the lock. Symptom set, all of which point
+                // away from the cause: no outbound network, ~0% CPU, every
+                // tokio worker in `kevent`, `/active_work` empty, HTTP reads
+                // still 200 in 2 ms, and NO turn frame in `sample` (a parked
+                // task has no thread stack). The GUI shows "Thinking" forever
+                // over a daemon that holds no turn at all.
+                //
+                // Timing out is the pre-D2 behaviour and it is safe: the point
+                // of the wait was only to stop a turn racing ahead of a load
+                // that is about to finish in ~300 ms. Waiting an unbounded time
+                // for one that never will buys nothing and costs everything.
+                //
+                // Dropping the handle DETACHES the task, it does not abort it,
+                // so a genuinely slow extension still finishes loading in the
+                // background and the next turn sees it.
+                match tokio::time::timeout(wait, handle).await {
+                    Ok(Ok(results)) => return Some(results),
+                    Ok(Err(e)) => {
                         tracing::warn!("Background extension loading task failed: {}", e);
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            session_id,
+                            timeout_secs = wait.as_secs(),
+                            "extensions still loading after the wait; continuing \
+                             with whatever has loaded so far. A turn may see a \
+                             partial toolset."
+                        );
                     }
                 }
             }
@@ -609,6 +660,56 @@ mod tests {
         assert!(
             loaded.load(std::sync::atomic::Ordering::SeqCst),
             "returned before the session's extensions had finished loading"
+        );
+    }
+
+    /// A load that never finishes must NOT park the turn forever.
+    ///
+    /// ⚠ This is the guard for a real outage: an unbounded `handle.await`
+    /// wedged a live daemon for hours. `/reply` waits while holding the
+    /// session's turn guard, so one extension that never settles parks the turn
+    /// task and every later turn blocks behind the lock. It presents as a
+    /// daemon with no network, no CPU and no turn at all, under a GUI that says
+    /// "Thinking" indefinitely.
+    ///
+    /// The test drives a handle that never completes, so it hangs forever if
+    /// the timeout is removed rather than failing an assertion. That is the
+    /// point: nothing weaker distinguishes "bounded" from "fast enough today".
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_wedged_extension_load_does_not_park_the_turn_forever() {
+        let state = AppState::new().await.unwrap();
+        state
+            .set_extension_loading_task(
+                "s-wedged".to_string(),
+                // Never completes, and is never aborted: exactly a stdio MCP
+                // server that spawned and then went silent.
+                tokio::spawn(std::future::pending()),
+            )
+            .await;
+
+        // A short bound, then an outer limit well above it: the inner one is
+        // what must fire. Remove the `timeout` in the production path and the
+        // outer one trips instead, failing this.
+        let waited = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            state.take_extension_loading_task_bounded(
+                "s-wedged",
+                std::time::Duration::from_millis(150),
+            ),
+        )
+        .await;
+
+        assert!(
+            waited.is_ok(),
+            "a wedged extension load parked the turn: the wait is unbounded"
+        );
+
+        // And the production path really does pass a bound, not `Duration::MAX`.
+        // Without this, the test above passes against a wait that is
+        // technically finite and effectively forever.
+        assert!(
+            AppState::EXTENSION_LOAD_WAIT <= std::time::Duration::from_secs(60),
+            "the production wait is too long to be a deadlock bound"
         );
     }
 
