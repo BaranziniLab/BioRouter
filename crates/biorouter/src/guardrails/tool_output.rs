@@ -715,10 +715,16 @@ mod tests {
             !tool_text.contains('\n'),
             "the serializer must have escaped every real newline: {tool_text}"
         );
-        let at = tool_text
-            .find("IGNORE")
+        // `split_once` rather than `find` plus `tool_text[..at]`: the text
+        // ahead of the phrase is the whole of what this needs, and asking for
+        // it directly leaves no byte index that could land inside a character.
+        // That index is the panic `clippy::string_slice` warns about, and the
+        // fixture is attacker-shaped text by design, so it should be absent by
+        // construction rather than by an argument about where `find` returns.
+        let (ahead, _) = tool_text
+            .split_once("IGNORE")
             .expect("the phrase is in the fixture");
-        let before = tool_text[..at]
+        let before = ahead
             .chars()
             .next_back()
             .expect("the phrase is not at the start");
@@ -784,10 +790,15 @@ mod tests {
                 "Result: {}",
                 serde_json::to_string(payload).expect("a &str always serializes")
             );
-            let at = tool_text
-                .find("IGNORE")
+            // `split_once`, for the reason given in
+            // `a_trigger_phrase_after_an_escaped_newline_is_still_flagged`:
+            // the text ahead of the phrase is what is wanted, and it carries no
+            // byte index that could land inside a character
+            // (`clippy::string_slice`).
+            let (ahead, _) = tool_text
+                .split_once("IGNORE")
                 .expect("the phrase is in the fixture");
-            let before = tool_text[..at]
+            let before = ahead
                 .chars()
                 .next_back()
                 .expect("the phrase is not at the start");

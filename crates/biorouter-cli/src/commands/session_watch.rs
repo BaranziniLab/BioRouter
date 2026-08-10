@@ -1711,12 +1711,39 @@ mod tests {
         assert!(shown.contains("second result"), "{shown}");
     }
 
-    /// A message with no frame in it is rendered byte for byte, so nothing that
-    /// merely resembles a tag is eaten and sessions recorded before the framer
-    /// existed are unaffected.
+    /// Per text block, not on the joined string.
+    ///
+    /// `render_frame` joins the blocks with a space before printing, so
+    /// unwrapping the join would pair an opening tag in one block with a close
+    /// in the NEXT and swallow the seam between them. Neither block here is a
+    /// frame: `guard_tool_result` writes one complete frame per text block, so
+    /// a tag split across two of them is text a tool wrote, and it is shown.
+    #[test]
+    fn a_tag_split_across_two_blocks_is_not_read_as_one_frame() {
+        let shown = live(&text_message(&[
+            "<tool-output untrusted=\"true\" tool=\"a\">head",
+            "tail</tool-output>",
+        ]));
+        assert!(
+            shown.contains("<tool-output untrusted=\"true\" tool=\"a\">"),
+            "{shown}"
+        );
+        assert!(shown.contains("</tool-output>"), "{shown}");
+        assert!(shown.contains("head"), "{shown}");
+        assert!(shown.contains("tail"), "{shown}");
+    }
+
+    /// A message with no complete frame in it is rendered byte for byte, so
+    /// sessions recorded before the framer existed are unaffected.
+    ///
+    /// The bare closing tag is the load-bearing part of the fixture. A naive
+    /// `replace(open, "").replace(close, "")` would delete it, and that is a
+    /// plausible way to write this fix without reaching for the shared helper:
+    /// people do discuss the guardrail in chat, and this repo's own prompts and
+    /// docs name both tags.
     #[test]
     fn attach_leaves_an_unframed_message_exactly_as_it_was() {
-        let plain = "diff --git a/x b/x\n-  if a < b { … }\n+  if a <= b { … }";
+        let plain = "the frame ends at </tool-output>, so:\n-  if a < b { … }\n+  if a <= b { … }";
         let shown = live(&text_message(&[plain]));
         assert!(shown.ends_with(plain), "{shown}");
     }
