@@ -229,6 +229,40 @@ describe('broadcast window events are scoped to their own chat', () => {
 
       expect(scrollA).toHaveBeenCalledWith();
     });
+
+    /**
+     * The submit's verdict has to survive this helper. It is the one seam
+     * between the store, which knows it refused the message, and the composer,
+     * which is holding the user's only copy of it: swallowing the answer here
+     * is what let a queued message be dequeued after a submit that sent
+     * nothing.
+     */
+    it('forwards a REFUSED submit, so the composer learns it still owns the text', async () => {
+      const submit = vi.fn(async () => false);
+
+      await expect(
+        submitAndReturnToBottom({ sessionId: SESSION_A, submit }, 'refused')
+      ).resolves.toBe(false);
+    });
+
+    it('reports an accepted submit as accepted', async () => {
+      const submit = vi.fn(async () => true);
+
+      await expect(
+        submitAndReturnToBottom({ sessionId: SESSION_A, submit }, 'accepted')
+      ).resolves.toBe(true);
+    });
+
+    it('treats a submit that answers nothing as accepted', async () => {
+      // Callers predating the contract (Hub's create-and-navigate) resolve
+      // undefined. Reading that as a refusal would restore text into a composer
+      // whose message is on its way.
+      const submit = vi.fn();
+
+      await expect(
+        submitAndReturnToBottom({ sessionId: SESSION_A, submit }, 'legacy')
+      ).resolves.toBe(true);
+    });
   });
 
   describe('back-compat: an un-scoped broadcast still reaches everyone', () => {
