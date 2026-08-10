@@ -59,7 +59,7 @@
 
 use once_cell::sync::Lazy;
 use regex::Regex;
-use rmcp::model::{CallToolResult, Content};
+use rmcp::model::{CallToolResult, RawContent};
 
 use super::pii::{PiiDetector, PiiMatch};
 use crate::mcp_utils::ToolResult;
@@ -381,14 +381,45 @@ pub fn apply_from(
 /// no call site is ever tempted to skip the frame for want of a name.
 ///
 /// Every text block of a **successful** result is framed as untrusted data.
-/// Non-text content (images, resources) passes through untouched: it is not
-/// prose the model can read as instructions, and a base64 blob has nowhere to
-/// put a frame.
+/// Non-text content (images, resources, audio, resource links) passes through
+/// untouched: it is not prose the model can read as instructions, and a base64
+/// blob has nowhere to put a frame.
 ///
 /// The transport-error branch (`Err`) is also untouched. That text is not tool
 /// output but Biorouter's own or the MCP transport's failure message, and
 /// [`crate::agents::tool_errors::annotate_tool_result`] already owns it,
 /// prefixing its typed header immediately after this runs.
+///
+/// ## The rewrite touches `text` and nothing else
+///
+/// A framed block is edited **in place**. Only [`RawTextContent::text`] is
+/// replaced; every other property of the block belongs to the tool that
+/// produced it and is left exactly as it was. That means the block's
+/// [`Annotations`](rmcp::model::Annotations) (`audience`, `priority`,
+/// `lastModified`) and its protocol-level `_meta`.
+///
+/// This is not a style preference, it is the fix for a shipped regression.
+/// Rebuilding the block as `Content::text(new_text)` looks equivalent and is
+/// not: that constructor is `no_annotation()`, so it returns a block with
+/// `annotations: None` and `meta: None`. Both consumers of those fields broke,
+/// in opposite directions:
+///
+/// * A tool that marked a block `audience: ["assistant"]` meant it for the
+///   model alone. With the annotation gone the desktop UI's audience filter has
+///   nothing to filter on and renders that text to the user. This one is a
+///   content leak, which is why [`framing_preserves_an_assistant_only_audience`]
+///   is the sharpest test in this file.
+/// * The CLI's classic renderer skips a block whose `priority()` is `None`
+///   unless `--debug` is set. With the annotation gone that is every block, so
+///   the CLI showed no tool output at all.
+///
+/// The drop predates the unconditional frame but was close to unreachable
+/// before it: a clean scan used to return `Pass` and leave the block alone, so
+/// only the rare flagged block lost its annotations. Framing by provenance
+/// means every text block takes this path, which turned a latent bug into a
+/// universal one.
+///
+/// [`RawTextContent::text`]: rmcp::model::RawTextContent::text
 ///
 /// This runs after [`super::super::agents::large_response_handler`] has already
 /// offloaded over-budget blobs (BR-6: aggregate token limit) to a preview plus
@@ -407,17 +438,24 @@ pub fn guard_tool_result(
     match output {
         Ok(mut result) => {
             let mut summaries: Vec<String> = Vec::new();
-            let mut new_content = Vec::with_capacity(result.content.len());
-            for content in std::mem::take(&mut result.content) {
-                match content.as_text().map(|t| apply_from(tool, &t.text, mode)) {
-                    Some(ToolOutputVerdict::Framed { text, summary }) => {
-                        summaries.extend(summary);
-                        new_content.push(Content::text(text));
-                    }
-                    _ => new_content.push(content),
+            for content in result.content.iter_mut() {
+                // Non-text blocks are not merely re-pushed, they are never
+                // moved: images, audio, embedded resources and resource links
+                // leave this loop bit-for-bit as they arrived.
+                let RawContent::Text(raw) = &mut content.raw else {
+                    continue;
+                };
+                // Assign into `raw.text` rather than rebuilding the block, so
+                // `content.annotations` and `raw.meta` survive the frame. See
+                // the "touches `text` and nothing else" section above for the
+                // two regressions that rebuilding caused.
+                if let ToolOutputVerdict::Framed { text, summary } =
+                    apply_from(tool, &raw.text, mode)
+                {
+                    summaries.extend(summary);
+                    raw.text = text;
                 }
             }
-            result.content = new_content;
             let summary = (!summaries.is_empty()).then(|| summaries.join("; "));
             (Ok(result), summary)
         }
@@ -427,6 +465,8 @@ pub fn guard_tool_result(
 
 #[cfg(test)]
 mod tests {
+    use rmcp::model::{AnnotateAble, Content, Meta, RawAudioContent, Role};
+
     use super::*;
 
     #[test]
@@ -864,6 +904,289 @@ mod tests {
         assert!(
             funnel.contains("guardrails::tool_output::guard_tool_result("),
             "the call site moved out of integrate_tool_result"
+        );
+    }
+
+    // ── the frame rewrites `text`, and nothing else ──
+    //
+    // `Content::text(..)` is `no_annotation()`. Rebuilding a framed block with
+    // it returned `annotations: None` and `meta: None`, discarding whatever the
+    // tool had set. The tests below pin each field that must survive. They are
+    // written against `guard_tool_result` rather than `apply_from`, because
+    // `apply_from` only ever sees a `&str` and cannot lose a field: the choke
+    // point is the only place the loss was possible.
+
+    /// Convenience: the sole text block of a guarded result.
+    fn guard_one(block: Content) -> Content {
+        let (out, _) = guard_tool_result(
+            Ok(CallToolResult::success(vec![block])),
+            Some("developer__text_editor"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        out.expect("ok result").content.into_iter().next().expect(
+            "the guardrail must never drop a block; it rewrites text and passes everything else",
+        )
+    }
+
+    /// **The leak.** This is the most important test in the file.
+    ///
+    /// A block tagged `audience: ["assistant"]` is the tool telling every
+    /// user-facing surface not to show it. The desktop keeps a block when
+    /// `!annotations?.audience || annotations.audience.includes('user')`
+    /// (`ToolCallWithResponse.tsx` and `BaseChat.tsx`), so an *absent* audience
+    /// is not neutral: it means visible. Erasing the annotation therefore does
+    /// not merely lose a hint, it promotes assistant-only text into the user's
+    /// transcript.
+    ///
+    /// That is not hypothetical. `developer__shell` uses an assistant-only
+    /// block for its internal "private note: output was N lines, remainder in
+    /// /var/folders/…/T/.tmpX, do not show tmp file to user" text, so the drop
+    /// published both the note and an absolute temp path. The same reasoning is
+    /// already written out at `agents/tool_errors.rs`, whose `annotated_content`
+    /// copies `item.annotations` onto every block it rebuilds for exactly this
+    /// reason. That defense was intact and still useless: the guardrail runs
+    /// first (`agent.rs`, `integrate_tool_result`), so by the time
+    /// `annotate_tool_result` carefully carried the annotations forward, they
+    /// were already `None`.
+    #[test]
+    fn framing_preserves_an_assistant_only_audience() {
+        let block = Content::text("private note: do not show the tmp file to the user")
+            .with_audience(vec![Role::Assistant]);
+        let guarded = guard_one(block);
+
+        assert_eq!(
+            guarded.audience(),
+            Some(&vec![Role::Assistant]),
+            "an assistant-only block lost its audience and is now user-visible"
+        );
+
+        // The frame really was applied, so this is not passing because the
+        // block took some untouched path.
+        let text = &guarded.as_text().expect("still a text block").text;
+        assert!(
+            text.starts_with(TOOL_OUTPUT_FRAME_OPEN),
+            "not framed: {text}"
+        );
+
+        // And the check the desktop actually performs, spelled out. Asserting
+        // the audience alone would still pass if the field survived in a shape
+        // the filter reads differently.
+        let visible_to_user = guarded
+            .audience()
+            .is_none_or(|audience| audience.contains(&Role::User));
+        assert!(
+            !visible_to_user,
+            "the desktop audience filter would render this block to the user"
+        );
+    }
+
+    /// The CLI classic renderer skips a block when
+    /// `priority().is_none() && !debug` (`biorouter-cli`,
+    /// `session/output.rs::render_tool_response`). With annotations dropped
+    /// that predicate was true for every block of every tool result, so the
+    /// non-debug CLI printed no tool output at all.
+    #[test]
+    fn framing_preserves_priority() {
+        let guarded = guard_one(Content::text("Modified /tmp/a.rs").with_priority(0.6));
+        assert_eq!(
+            guarded.priority(),
+            Some(0.6),
+            "priority was dropped, so the CLI classic renderer will skip this block"
+        );
+
+        // The gate itself, in the CLI's own shape, at the boundary that feeds
+        // it. `min_priority` is the code default from `output.rs`.
+        let debug = false;
+        let min_priority = 0.5_f32;
+        let skipped = guarded
+            .priority()
+            .is_some_and(|priority| priority < min_priority)
+            || (guarded.priority().is_none() && !debug);
+        assert!(
+            !skipped,
+            "the CLI classic renderer would drop this block in non-debug mode"
+        );
+    }
+
+    /// The inverse, and the reason the fix is "carry what was there" rather
+    /// than "supply a default". A tool that annotated nothing gets a block back
+    /// with nothing on it. Inventing an annotation here would make the CLI gate
+    /// pass by changing what tools mean, and would hand every untagged block an
+    /// audience it never asked for.
+    #[test]
+    fn framing_leaves_an_unannotated_block_unannotated() {
+        let guarded = guard_one(Content::text("plain output, no annotations"));
+        assert!(
+            guarded.annotations.is_none(),
+            "the guardrail invented an annotation the tool never set: {:?}",
+            guarded.annotations
+        );
+        let text = &guarded.as_text().expect("still a text block").text;
+        assert!(
+            text.starts_with(TOOL_OUTPUT_FRAME_OPEN),
+            "and it must still be framed: {text}"
+        );
+    }
+
+    /// `audience` and `priority` are the two fields with known consumers, but
+    /// the rebuild dropped the whole `Annotations` record and the block's
+    /// protocol-level `_meta` besides. Nothing in this repo reads `_meta` on a
+    /// content block today, which is exactly why it would have rotted
+    /// unnoticed: it is a spec field belonging to whoever set it.
+    #[test]
+    fn framing_preserves_every_other_field_of_the_block() {
+        let mut block = Content::text("body")
+            .with_audience(vec![Role::User])
+            .with_priority(0.9)
+            .with_timestamp_now();
+        let mut meta = Meta::new();
+        meta.insert(
+            "io.biorouter/trace".to_string(),
+            serde_json::json!("abc123"),
+        );
+        let RawContent::Text(raw) = &mut block.raw else {
+            unreachable!("built as text")
+        };
+        raw.meta = Some(meta);
+        let timestamp = block.timestamp().expect("set above");
+
+        let guarded = guard_one(block);
+
+        assert_eq!(guarded.audience(), Some(&vec![Role::User]), "audience");
+        assert_eq!(guarded.priority(), Some(0.9), "priority");
+        assert_eq!(guarded.timestamp(), Some(timestamp), "lastModified");
+        let raw = guarded.as_text().expect("still a text block");
+        assert_eq!(
+            raw.meta.as_ref().and_then(|m| m.get("io.biorouter/trace")),
+            Some(&serde_json::json!("abc123")),
+            "the block's protocol `_meta` was dropped"
+        );
+        assert!(raw.text.starts_with(TOOL_OUTPUT_FRAME_OPEN), "framed");
+    }
+
+    /// The realistic shape, from `biorouter-mcp`'s `text_editor`: one summary
+    /// for the model, one message for the user, distinguished only by audience.
+    /// Flattening both to "no annotations" showed the user the model's summary
+    /// *and* sent the user's message to the model, doubling the content in both
+    /// directions rather than leaking in one.
+    #[test]
+    fn framing_keeps_a_user_block_and_an_assistant_block_distinguishable() {
+        let result = CallToolResult::success(vec![
+            Content::text("edited 3 files").with_audience(vec![Role::Assistant]),
+            Content::text("### Edits\n- a.rs")
+                .with_audience(vec![Role::User])
+                .with_priority(0.2),
+        ]);
+        let (out, _) = guard_tool_result(
+            Ok(result),
+            Some("developer__text_editor"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        let content = out.expect("ok result").content;
+        assert_eq!(content.len(), 2, "no block may be added or dropped");
+        assert_eq!(content[0].audience(), Some(&vec![Role::Assistant]));
+        assert_eq!(content[1].audience(), Some(&vec![Role::User]));
+        assert_eq!(content[1].priority(), Some(0.2));
+        for (idx, block) in content.iter().enumerate() {
+            let text = &block.as_text().expect("text").text;
+            assert!(
+                text.starts_with(TOOL_OUTPUT_FRAME_OPEN),
+                "block {idx}: {text}"
+            );
+        }
+    }
+
+    /// Non-text blocks are not prose and have nowhere to put a frame, so they
+    /// must come back byte-identical, annotations and all. The loop `continue`s
+    /// past them without moving them; this pins that it stays that way.
+    #[test]
+    fn framing_leaves_non_text_blocks_completely_alone() {
+        let blocks = vec![
+            Content::image("aGVsbG8=", "image/png").with_audience(vec![Role::User]),
+            Content::embedded_text("ui://figure/1", "<html>chart</html>").with_priority(0.4),
+            RawContent::Audio(RawAudioContent {
+                data: "YXVkaW8=".to_string(),
+                mime_type: "audio/wav".to_string(),
+            })
+            .with_audience(vec![Role::Assistant]),
+            Content::resource_link(rmcp::model::RawResource {
+                uri: "file:///tmp/a.txt".to_string(),
+                name: "a.txt".to_string(),
+                title: None,
+                description: None,
+                mime_type: Some("text/plain".to_string()),
+                size: None,
+                icons: None,
+                meta: None,
+            }),
+        ];
+        let (out, summary) = guard_tool_result(
+            Ok(CallToolResult::success(blocks.clone())),
+            Some("developer__shell"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        let content = out.expect("ok result").content;
+        assert_eq!(
+            content, blocks,
+            "a non-text block was modified by the text framer"
+        );
+        assert!(summary.is_none(), "nothing to scan: {summary:?}");
+    }
+
+    /// `Off` is a pass-through for the whole struct, not just the text, and the
+    /// error branch never reaches the loop at all. Both are asserted on a block
+    /// that carries annotations, since that is the field the loop can lose.
+    #[test]
+    fn off_mode_and_the_error_branch_preserve_annotations_too() {
+        let block = Content::text("hello").with_audience(vec![Role::Assistant]);
+        let (out, _) = guard_tool_result(
+            Ok(CallToolResult::success(vec![block.clone()])),
+            Some("developer__shell"),
+            ToolOutputGuardrailMode::Off,
+        );
+        assert_eq!(out.expect("ok").content, vec![block]);
+
+        let err = rmcp::model::ErrorData::new(
+            rmcp::model::ErrorCode::INTERNAL_ERROR,
+            "boom".to_string(),
+            None,
+        );
+        let (out, summary): (ToolResult<CallToolResult>, _) = guard_tool_result(
+            Err(err.clone()),
+            Some("developer__shell"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        assert!(summary.is_none());
+        assert_eq!(
+            out.expect_err("still an error").message,
+            err.message,
+            "the transport-error branch must be untouched"
+        );
+    }
+
+    /// The other fields of `CallToolResult` ride alongside `content` and are
+    /// just as easy to lose to a rebuild, so the guard mutates the struct in
+    /// place instead of constructing a fresh one.
+    #[test]
+    fn framing_preserves_the_results_own_fields() {
+        let mut result = CallToolResult::success(vec![Content::text("body")]);
+        result.structured_content = Some(serde_json::json!({"rows": 3}));
+        result.is_error = Some(false);
+        let mut meta = Meta::new();
+        meta.insert("io.biorouter/call".to_string(), serde_json::json!(7));
+        result.meta = Some(meta);
+
+        let (out, _) = guard_tool_result(
+            Ok(result),
+            Some("datasql__query"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        let out = out.expect("ok result");
+        assert_eq!(out.structured_content, Some(serde_json::json!({"rows": 3})));
+        assert_eq!(out.is_error, Some(false));
+        assert_eq!(
+            out.meta.as_ref().and_then(|m| m.get("io.biorouter/call")),
+            Some(&serde_json::json!(7))
         );
     }
 
