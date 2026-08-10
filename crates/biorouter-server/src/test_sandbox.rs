@@ -66,10 +66,23 @@ mod tests {
     /// The point of the whole module: the session database a test opens must not
     /// be the developer's. `Paths::data_dir()` is what
     /// `SessionManager::instance()` resolves `sessions.db` under.
+    ///
+    /// ⚠ The home directory is read under **both** names, and the fallback is
+    /// not defensive padding. `HOME` is a POSIX variable; Windows calls it
+    /// `USERPROFILE` and does not define `HOME` outside a Git Bash session, so
+    /// `var("HOME").expect("HOME")` panicked this test on any runner that
+    /// happened not to have one. It is the only unguarded `HOME` read left in
+    /// the tree: `security::session_store` and `security::global_memory` both
+    /// already spell it `HOME` or `USERPROFILE`, and this now matches them.
+    /// Falling back to an empty string keeps the assertion meaningful when
+    /// neither is set, because `starts_with("")` is true for every path, so a
+    /// missing home makes the check STRICTER rather than vacuous.
     #[test]
     fn the_session_database_is_not_the_developers() {
         let data_dir = Paths::data_dir();
-        let home = std::env::var("HOME").expect("HOME");
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_default();
         assert!(
             !data_dir.starts_with(&home) || data_dir.starts_with(std::env::temp_dir()),
             "tests resolved the real data dir {}",
