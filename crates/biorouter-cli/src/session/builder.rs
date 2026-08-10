@@ -1255,7 +1255,7 @@ mod tests {
         let result = remove_dir_all_retrying(Path::new("irrelevant"), |_| {
             calls.set(calls.get() + 1);
             if calls.get() < 3 {
-                Err(Error::new(ErrorKind::Other, "still in use"))
+                Err(Error::other("still in use"))
             } else {
                 Ok(())
             }

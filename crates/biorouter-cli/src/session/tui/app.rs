@@ -422,11 +422,7 @@ impl App {
                                 continue;
                             }
                             if let Some(text) = c.as_text() {
-                                let preview = if debug {
-                                    text.text.clone()
-                                } else {
-                                    truncate_lines(&text.text, 12)
-                                };
+                                let preview = tool_output_preview(&text.text, debug);
                                 for l in preview.lines() {
                                     self.push_line(Line::from(Span::styled(l.to_string(), DIM)));
                                 }
@@ -1104,6 +1100,32 @@ fn compact_value(v: &serde_json::Value) -> String {
     }
 }
 
+/// What a tool result should look like in the transcript pane.
+///
+/// Every successful tool result arrives wrapped in the guardrail's
+/// `<tool-output untrusted="true" tool="…">` frame. That frame is addressed to
+/// the model, and showing it here spends the pane on machinery instead of the
+/// answer.
+///
+/// ⚠ Display only. The frame is the prompt-injection control and must stay
+/// intact on every path to a model; this is the last step before pixels.
+///
+/// Unwrapping happens BEFORE the truncate so the line budget is spent on real
+/// output rather than on an opening tag, and `debug` only means "do not
+/// truncate" here, not "show me the wire format", so it unwraps too.
+///
+/// A `[BIOROUTER GUARDRAIL]` warning sits ABOVE the opening tag and therefore
+/// survives untouched, which is the intent: the frame is routine provenance,
+/// the warning is a real finding the user needs.
+fn tool_output_preview(text: &str, debug: bool) -> String {
+    let shown = biorouter::guardrails::tool_output_display::unframe_tool_output(text);
+    if debug {
+        shown.into_owned()
+    } else {
+        truncate_lines(&shown, 12)
+    }
+}
+
 fn truncate_lines(s: &str, max_lines: usize) -> String {
     let lines: Vec<&str> = s.lines().collect();
     if lines.len() <= max_lines {
@@ -1114,5 +1136,74 @@ fn truncate_lines(s: &str, max_lines: usize) -> String {
             lines[..max_lines].join("\n"),
             lines.len() - max_lines
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tool_output_preview;
+
+    /// The transcript pane shows what the tool said, not the envelope the
+    /// guardrail wrapped it in for the model.
+    ///
+    /// Each assertion rules out a specific wrong version. Returning the text
+    /// untouched is the bug being fixed. Unwrapping only when `debug` is off
+    /// would leave the untruncated view leaking. Treating the
+    /// `[BIOROUTER GUARDRAIL]` line as part of the envelope would throw away a
+    /// real finding, and it is the one line here the user most needs.
+    #[test]
+    fn the_pane_shows_the_tool_output_not_the_guardrail_envelope() {
+        let framed = "<tool-output untrusted=\"true\" tool=\"shell\">\ntotal 4\n</tool-output>";
+
+        let shown = tool_output_preview(framed, false);
+        assert!(
+            !shown.contains("tool-output"),
+            "the frame must not reach the pane: {shown}"
+        );
+        assert!(
+            shown.contains("total 4"),
+            "the real output must survive: {shown}"
+        );
+
+        let debugged = tool_output_preview(framed, true);
+        assert!(
+            !debugged.contains("tool-output"),
+            "debug means do not truncate, not show the wire format: {debugged}"
+        );
+
+        let warned = format!("[BIOROUTER GUARDRAIL] looks like an injection attempt\n{framed}");
+        let shown = tool_output_preview(&warned, false);
+        assert!(
+            shown.contains("[BIOROUTER GUARDRAIL]"),
+            "the warning is a finding for the user and must be kept: {shown}"
+        );
+        assert!(
+            !shown.contains("tool-output"),
+            "but the frame still goes: {shown}"
+        );
+    }
+
+    /// Unframing happens before the truncate, so the 12-line budget is spent on
+    /// output rather than on an opening tag.
+    ///
+    /// Truncating first would keep 11 real lines instead of 12 and, on a result
+    /// of exactly 12, would report "1 more line" for a line that is only the
+    /// closing tag.
+    #[test]
+    fn the_line_budget_is_spent_on_output_not_on_the_frame() {
+        let body: Vec<String> = (1..=12).map(|i| format!("line {i}")).collect();
+        let framed = format!(
+            "<tool-output untrusted=\"true\" tool=\"shell\">\n{}\n</tool-output>",
+            body.join("\n")
+        );
+        let shown = tool_output_preview(&framed, false);
+        assert!(
+            shown.contains("line 12"),
+            "all twelve real lines must fit in a twelve-line budget: {shown}"
+        );
+        assert!(
+            !shown.contains("more line"),
+            "nothing was actually truncated, so no truncation notice: {shown}"
+        );
     }
 }

@@ -397,7 +397,26 @@ fn render_tool_response(resp: &ToolResponse, theme: Theme, debug: bool) {
                 if debug {
                     println!("{:#?}", content);
                 } else if let Some(text) = content.as_text() {
-                    print_markdown_source(&text.text, theme);
+                    // Every successful tool result reaches here wrapped in the
+                    // guardrail's `<tool-output untrusted="true" …>` frame. That
+                    // frame is addressed to the model, and printing it at a
+                    // terminal shows the user machinery instead of their answer.
+                    //
+                    // ⚠ Display only. The frame is the prompt-injection control,
+                    // so it must still be intact everywhere the content heads for
+                    // a model. The `{:#?}` branch above is a structural dump for
+                    // debugging and is deliberately left raw.
+                    //
+                    // A `[BIOROUTER GUARDRAIL]` warning sits ABOVE the opening
+                    // tag and survives this, which is the point: the frame is
+                    // provenance and routine, the warning is a real finding the
+                    // user should see.
+                    print_markdown_source(
+                        &biorouter::guardrails::tool_output_display::unframe_tool_output(
+                            &text.text,
+                        ),
+                        theme,
+                    );
                 }
             }
             for note in app_launch_notes(result) {
@@ -1668,6 +1687,41 @@ mod tests {
     use super::*;
     use base64::Engine as _;
     use rmcp::model::{CallToolResult, Content, Meta, RawResource, ResourceContents};
+
+    /// The classic renderer prints the tool's output, not the guardrail's
+    /// envelope around it.
+    ///
+    /// ⚠ A source check, because this path cannot be observed from a test:
+    /// `render_tool_response` writes through `print_markdown_source`, which
+    /// hands the text to `bat` and out to the real stdout. There is no seam to
+    /// capture and no value returned, so the alternative to reading the source
+    /// is asserting nothing at all.
+    ///
+    /// What it pins is the realistic regression: the display branch going back
+    /// to printing `text.text` straight. It deliberately does NOT require the
+    /// `{:#?}` debug branch to unwrap, which is a structural dump for
+    /// diagnosis and is meant to show the wire format.
+    #[test]
+    fn the_classic_renderer_unframes_tool_output_before_printing_it() {
+        let src = include_str!("output.rs");
+        let (_, body) = src
+            .split_once("fn render_tool_response(")
+            .expect("render_tool_response is gone");
+        let (body, _) = body
+            .split_once("\n}\n")
+            .expect("could not find the end of render_tool_response");
+
+        assert!(
+            body.contains("unframe_tool_output"),
+            "render_tool_response no longer strips the guardrail frame, so every tool result \
+             prints its `<tool-output untrusted=...>` envelope at the terminal"
+        );
+        assert!(
+            !body.contains("print_markdown_source(&text.text"),
+            "the display branch is printing the framed text directly again; it must pass \
+             through unframe_tool_output first"
+        );
+    }
 
     fn embedded_html(uri: &str, mime_type: &str, html: &str) -> Content {
         Content::resource(ResourceContents::BlobResourceContents {
