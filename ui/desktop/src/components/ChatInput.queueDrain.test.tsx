@@ -13,9 +13,9 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
  * These tests drive the REAL composer and vary one thing: what the submit
  * answers. What they can and cannot show:
  *
- *  - They CAN show ownership of the message across a refusal — how many times
+ *  - They CAN show ownership of the message across a refusal (how many times
  *    it is offered, whether it comes back to the queue, whether the composer
- *    gets its text back — because that is state this component owns.
+ *    gets its text back), because that is state this component owns.
  *  - They CANNOT show the ordering that produces the refusal in the real app
  *    (React's effect scheduling against the store's promise chain). The store
  *    test above covers that half, in the store, with no fake ordering.
@@ -258,7 +258,7 @@ describe('a direct send that is refused', () => {
     // The composer clears itself synchronously on submit, so this is a restore,
     // not a "never cleared".
     await waitFor(() => expect(composer().value).toBe(DIRECT_TEXT));
-    // One send attempt only — restoring the text must not also re-send it.
+    // One send attempt only: restoring the text must not also re-send it.
     expect(handleSubmit).toHaveBeenCalledTimes(1);
   });
 

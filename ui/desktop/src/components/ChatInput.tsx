@@ -89,7 +89,7 @@ const DIVERGE_TRIGGER = '/diverge';
  * unwind is a microtask, so one macrotask hop clears it; the two extra attempts
  * are margin for a further scheduling hop (React's passive-effect flush, the
  * store's rAF/timeout notify race). Anything still refusing after three is a
- * real "cannot send right now" — no session, or another turn already started —
+ * real "cannot send right now" (no session, or another turn already started),
  * which is reported and left QUEUED for the next drain rather than spun on.
  */
 const QUEUE_DRAIN_ATTEMPTS = 3;
@@ -609,7 +609,7 @@ export default function ChatInput({
           }) as unknown as React.FormEvent
         );
         void Promise.resolve(submitted).then((accepted) => {
-          // Only an explicit `false` is a refusal — a handler predating the
+          // Only an explicit `false` is a refusal: a handler predating the
           // contract resolves `undefined` and must not be read as one.
           if (accepted !== false) return;
           if (attempt < QUEUE_DRAIN_ATTEMPTS) {
@@ -1678,11 +1678,11 @@ export default function ChatInput({
         );
 
         // The composer wipes itself a few lines below, synchronously, before the
-        // submit has said whether it took the message. When it did NOT — a
-        // re-entrant send, a controller with no session (the fresh tab that
-        // accepts text, clears it and creates nothing) — the text was gone with
-        // no error and no message. Put it back through the same channel a failed
-        // `createSession` uses. `displayValue`, not `textToSend`, because what
+        // submit has said whether it took the message. When it did NOT (a
+        // re-entrant send, or a controller with no session, which is the fresh
+        // tab that accepts text, clears it and creates nothing), the text was
+        // gone with no error and no message. Put it back through the same
+        // channel a failed `createSession` uses. `displayValue`, not `textToSend`, because what
         // goes back must be the box the user was looking at: reference chips
         // included, appended dropped-file paths not.
         const restoredText = displayValue.trim() ? displayValue : textToSend;

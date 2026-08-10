@@ -20,7 +20,7 @@ interface UseChatStreamReturn {
   /**
    * Send a user message. Resolves FALSE when the submit was refused silently
    * and the caller still owns the text (see `ChatStreamController.handleSubmit`
-   * for the full contract) — a caller holding the user's words must put them
+   * for the full contract). A caller holding the user's words must put them
    * back rather than clear them.
    */
   handleSubmit: (userMessage: string, attachments?: UserAttachment[]) => Promise<boolean>;

@@ -1,5 +1,5 @@
 /**
- * The submit's VERDICT — the return value a caller holding the user's words
+ * The submit's VERDICT: the return value a caller holding the user's words
  * must obey.
  *
  * `handleSubmit` holds `submitInFlight` across the whole turn and releases it in
@@ -102,7 +102,7 @@ describe('handleSubmit reports whether it took the message', () => {
 
     // Stand in for ChatInput's drain effect: it runs off the Idle notification,
     // which the store flushes SYNCHRONOUSLY from inside the first submit's own
-    // promise chain. Nothing here fakes that ordering — subscribing is what the
+    // promise chain. Nothing here fakes that ordering: subscribing is what the
     // composer does, and this is when it hears.
     let drained: Promise<boolean> | null = null;
     const unsubscribe = controller.subscribe(() => {

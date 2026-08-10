@@ -2060,8 +2060,8 @@ class ChatStreamController {
    *
    * `false` means one thing only: the submit was refused before anything
    * happened, nothing was shown to the user, and **the caller still owns the
-   * message**. Every such return is silent by design — a re-entrant submit, a
-   * controller with no session, a turn already live — so a caller that drops
+   * message**. Every such return is silent by design (a re-entrant submit, a
+   * controller with no session, a turn already live), so a caller that drops
    * the text on a `false` drops it with no trace, which is exactly the
    * message-loss bug this return value exists to close. Callers that hold the
    * user's words (the composer, the queue drain) must put them back.
@@ -2069,7 +2069,7 @@ class ChatStreamController {
    * `true` means the submit took responsibility for the message: a turn was
    * launched, or the attempt failed loudly enough that the user can see it and
    * decide (see the preparation-failure branch below). It is NOT a claim that
-   * the turn succeeded — the promise resolves when the turn ENDS, whatever
+   * the turn succeeded: the promise resolves when the turn ENDS, whatever
    * happened during it.
    */
   handleSubmit = async (
