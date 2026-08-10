@@ -687,7 +687,7 @@ export function handleCreateSessionError(
  *
  * Unlike the composer's own submit, there is no local copy of this text to put
  * back: the message arrived as route/tab cargo and the composer never held it.
- * So the restore is a give-back, not a repair, and it is paired with a toast —
+ * So the restore is a give-back, not a repair, and it is paired with a toast:
  * text appearing in an empty composer with no turn in the transcript is legible
  * only once the user knows the send did not happen.
  *
@@ -740,20 +740,20 @@ export function returnInitialMessageToComposer(ctx: {
  *
  * WHY THE CARGO IS SPENT ON A TIMER rather than on the verdict. `submit` now
  * answers whether it took the message (`ChatStreamController.handleSubmit`), and
- * a refused message must NOT be marked spent — the cargo is then the only
- * durable copy of a message that was never sent. But the two answers are not
+ * a refused message must NOT be marked spent, because the cargo is then the
+ * only durable copy of a message that was never sent. But the two answers are not
  * symmetric in time: a refusal is decided before the submit does any network
  * work, so it settles inside the microtask queue, while an acceptance does not
  * resolve until the whole TURN is over. Waiting for `true` would leave the cargo
  * live for the length of the turn, and a tab remount during it re-sends the
- * message — the 2026-07-18 duplicate-submission bug, which is worse than the
- * loss this closes. So: spend the cargo on the next MACROTASK unless a refusal
+ * message. That is the 2026-07-18 duplicate-submission bug, which is worse
+ * than the loss this closes. So: spend the cargo on the next MACROTASK unless a refusal
  * has already arrived. Nothing can remount a React tree inside a microtask
  * checkpoint (a commit needs a task, and React's scheduler posts one), so that
  * deadline does not widen the remount window at all.
  *
  * A refusal that somehow arrives LATE (after the deadline) still hands the text
- * to the composer. The cargo is gone by then, so the composer is the only copy —
+ * to the composer. The cargo is gone by then, so the composer is the only copy,
  * which is the copy the user can act on.
  */
 export function runInitialMessageAutoSubmit(args: {
@@ -1613,7 +1613,7 @@ function BaseChatContent({
         }),
       onConsumed: onInitialMessageConsumed,
       // The composer never held this text, so a refusal has nothing to repair
-      // from — give the message back through the composer instead of dropping it.
+      // from. Give the message back through the composer instead of dropping it.
       onRefused: (message, attachments) =>
         returnInitialMessageToComposer({ sessionId, message, attachments }),
     });

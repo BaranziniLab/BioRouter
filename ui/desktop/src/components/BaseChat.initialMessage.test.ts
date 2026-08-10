@@ -28,7 +28,7 @@ import { returnInitialMessageToComposer, runInitialMessageAutoSubmit } from './B
  * only after the submit. Fire it on the `!hasSession` bail and the legitimate
  * FIRST submission is silently dropped instead.
  *
- * SECOND GATE, same helper — message loss on a REFUSED mount-time submit. The
+ * SECOND GATE, same helper: message loss on a REFUSED mount-time submit. The
  * submit now reports whether it took the message, and the mount used to discard
  * that answer: a refusal cleared the router state and marked the cargo spent
  * anyway, destroying the first message of a brand-new chat. It is now handed to
@@ -265,7 +265,7 @@ describe('runInitialMessageAutoSubmit', () => {
       // Neither half of "spent" may fire: the cargo is the durable copy.
       expect(h.onConsumed).not.toHaveBeenCalled();
       expect(h.clearRouterState).not.toHaveBeenCalled();
-      // The mount has still spent its ONE attempt — the effect must not loop.
+      // The mount has still spent its ONE attempt, so the effect must not loop.
       expect(submitted).toBe(true);
     });
 
@@ -292,7 +292,7 @@ describe('runInitialMessageAutoSubmit', () => {
     /**
      * A refusal is decided before the submit does any network work, so it beats
      * the deadline in practice. If one ever does not, the cargo is already spent
-     * and the composer becomes the only copy — so the give-back is unconditional
+     * and the composer becomes the only copy, so the give-back is unconditional
      * rather than an else-branch of the deadline.
      */
     it('still hands the message back when the refusal arrives after the deadline', async () => {
@@ -339,8 +339,8 @@ describe('runInitialMessageAutoSubmit', () => {
     /**
      * THE ONE THAT MATTERS MOST. `handleSubmit` does not resolve `true` until the
      * TURN ends, which is minutes on a real task. If the cargo waited for that,
-     * every tab close during the turn would re-send the message — the 2026-07-18
-     * bug. An accepted submit must spend the cargo while the turn is still
+     * every tab close during the turn would re-send the message, which is the
+     * 2026-07-18 bug. An accepted submit must spend the cargo while the turn is still
      * running.
      */
     it('spends the cargo while an accepted turn is still running', async () => {
@@ -412,7 +412,7 @@ describe('runInitialMessageAutoSubmit', () => {
 
     /**
      * The mirror image: a refusal keeps the cargo, so the next mount is the
-     * retry. That is the whole point of not consuming it — and it is exactly ONE
+     * retry. That is the whole point of not consuming it, and it is exactly ONE
      * send, because the first attempt sent nothing.
      */
     it('a remount after a refusal retries the message', async () => {
@@ -504,7 +504,7 @@ describe('returnInitialMessageToComposer', () => {
 /**
  * The two halves above are each sound and prove nothing on their own: the helper
  * only gives the message back if the effect asks it to, and `BaseChatContent`
- * cannot be mounted here (react-router plus a dozen contexts — the reason the
+ * cannot be mounted here (react-router plus a dozen contexts, the reason the
  * decision was lifted out of the effect in the first place). So the wiring is
  * asserted AT THE SOURCE, the same way styles/composerFocus.test.ts pins a rule
  * jsdom cannot evaluate. Reading the file is the idiom BaseChat.privacy.test.tsx
