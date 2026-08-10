@@ -980,31 +980,54 @@ mod tests {
         );
     }
 
-    /// The CLI classic renderer skips a block when
-    /// `priority().is_none() && !debug` (`biorouter-cli`,
-    /// `session/output.rs::render_tool_response`). With annotations dropped
-    /// that predicate was true for every block of every tool result, so the
-    /// non-debug CLI printed no tool output at all.
+    /// The CLI classic renderer (`biorouter-cli`,
+    /// `session/output.rs::render_tool_response`) skips a block when
+    ///
+    /// ```text
+    /// priority().is_some_and(|p| p < min_priority) || (priority().is_none() && !debug)
+    /// ```
+    ///
+    /// The second clause is the one this fix is about. With annotations dropped
+    /// it was true for every block of every tool result, so a non-debug CLI
+    /// printed no tool output whatsoever.
+    ///
+    /// The first clause is a separate, pre-existing filter and is deliberately
+    /// **not** something the guardrail should try to satisfy. Note what it does
+    /// to a real value: `text_editor` tags its user-facing block `0.2` and
+    /// `developer` tags several `0.0`, while `output.rs` defaults
+    /// `BIOROUTER_CLI_MIN_PRIORITY` to `0.5` (the two config docs both say
+    /// `0.0`). Restoring the annotation is therefore necessary for the CLI to
+    /// render tool output and, under the code default rather than the
+    /// documented one, not sufficient. That discrepancy predates the frame and
+    /// belongs to the CLI.
     #[test]
     fn framing_preserves_priority() {
-        let guarded = guard_one(Content::text("Modified /tmp/a.rs").with_priority(0.6));
+        // The realistic value, verbatim from `text_editor`'s user block.
+        let guarded = guard_one(Content::text("### Edits\n- a.rs").with_priority(0.2));
         assert_eq!(
             guarded.priority(),
-            Some(0.6),
-            "priority was dropped, so the CLI classic renderer will skip this block"
+            Some(0.2),
+            "priority was dropped, so the CLI classic renderer skips this block outright"
         );
 
-        // The gate itself, in the CLI's own shape, at the boundary that feeds
-        // it. `min_priority` is the code default from `output.rs`.
+        // The clause the regression tripped, in the CLI's own shape.
         let debug = false;
-        let min_priority = 0.5_f32;
-        let skipped = guarded
-            .priority()
-            .is_some_and(|priority| priority < min_priority)
-            || (guarded.priority().is_none() && !debug);
         assert!(
-            !skipped,
-            "the CLI classic renderer would drop this block in non-debug mode"
+            !(guarded.priority().is_none() && !debug),
+            "the CLI would skip this block for want of a priority annotation"
+        );
+
+        // And the clause that is not ours: stated so the boundary is honest
+        // about what restoring the annotation does and does not buy.
+        assert!(
+            guarded.priority().is_some_and(|p| p < 0.5),
+            "documenting that the code's default min_priority still filters this \
+             block; if this ever fails the CLI default changed and the note above \
+             needs rereading"
+        );
+        assert!(
+            !guarded.priority().is_some_and(|p| p < 0.0),
+            "under the documented default the block renders"
         );
     }
 
@@ -1187,6 +1210,66 @@ mod tests {
         assert_eq!(
             out.meta.as_ref().and_then(|m| m.get("io.biorouter/call")),
             Some(&serde_json::json!(7))
+        );
+    }
+
+    /// The two halves of `integrate_tool_result`, in the order the agent runs
+    /// them.
+    ///
+    /// `agents/tool_errors.rs::annotated_content` copies `item.annotations`
+    /// onto every block it rebuilds, and its comment spells out the same leak
+    /// this module now guards. That care was real and it was wasted: the
+    /// guardrail runs first (`agent.rs`, `integrate_tool_result`), so the
+    /// annotations `annotate_tool_result` faithfully carried forward had
+    /// already been erased upstream. Its own unit test passed throughout,
+    /// because it tests that function alone.
+    ///
+    /// Composing them here is what would have caught the regression, so it is
+    /// pinned rather than left to the two isolated tests.
+    #[test]
+    fn annotations_survive_the_guardrail_and_the_error_annotator_together() {
+        let result = CallToolResult::error(vec![
+            Content::text("private note: remainder in /var/folders/x/T/.tmpQ")
+                .with_audience(vec![Role::Assistant]),
+            Content::text("command failed").with_audience(vec![Role::User]),
+        ]);
+
+        let (guarded, _) = guard_tool_result(
+            Ok(result),
+            Some("developer__shell"),
+            ToolOutputGuardrailMode::Annotate,
+        );
+        let (annotated, _) = crate::agents::tool_errors::annotate_tool_result(
+            guarded,
+            crate::agents::tool_errors::ToolErrorTaxonomyConfig {
+                enabled: true,
+                annotate: true,
+            },
+        );
+
+        let content = annotated.expect("still ok").content;
+        let assistant_only: Vec<_> = content
+            .iter()
+            .filter(|block| {
+                // The desktop's predicate, verbatim in intent:
+                // `!annotations?.audience || audience.includes('user')`.
+                !block
+                    .audience()
+                    .is_none_or(|audience| audience.contains(&Role::User))
+            })
+            .collect();
+        assert_eq!(
+            assistant_only.len(),
+            1,
+            "the private note must still be hidden from the user after both stages"
+        );
+        assert!(
+            assistant_only[0]
+                .as_text()
+                .expect("text")
+                .text
+                .contains(".tmpQ"),
+            "and it must be the note, not some other block"
         );
     }
 
