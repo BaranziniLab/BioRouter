@@ -1,5 +1,17 @@
-// Regression gate for #74: the floating titlebar controls (sidebar toggle +
-// New Window) must never fall inside an Electron draggable region.
+// Regression gate for two rules about Electron draggable regions in the top
+// band, both of which jsdom is structurally incapable of checking.
+//
+//   #74 — the floating titlebar controls (sidebar toggle + New Window) must
+//         never fall inside a draggable region.
+//   the tab strip — NO point inside the strip's scroll box may resolve to
+//         `drag`, at any tab count. The strip used to be `drag` with a
+//         `no-drag` per tab, which made the region set a function of the tab
+//         list; Blink only re-collects those rects on a paint lifecycle and
+//         ships them to the browser process over IPC, so for the width of that
+//         gap a just-created tab still sat in the strip's stale `drag` rect and
+//         a press on it moved the WINDOW instead of reaching the renderer. The
+//         strip now carries one static `no-drag` rect across its whole box, and
+//         the band keeps a fixed drag gutter at its right end instead.
 //
 // WHY THIS EXISTS AND A UNIT TEST DOES NOT REPLACE IT. jsdom has no layout and
 // no concept of `-webkit-app-region`, so a synthetic click on the toggle
@@ -120,12 +132,42 @@ const report = await page.evaluate(() => {
     });
   }
 
+  // The strip band. Sampled as a GRID rather than at the tabs' centres on
+  // purpose: the failure this catches is a `drag` rect covering part of the
+  // scroll box, and the part it covered was the empty area a new tab was about
+  // to occupy — a point no tab is at yet.
+  const strips = [];
+  for (const strip of document.querySelectorAll('[data-tab-strip-group]')) {
+    const r = strip.getBoundingClientRect();
+    if (!r.width || !r.height) continue;
+    const dragPoints = [];
+    let samples = 0;
+    for (let px = Math.ceil(r.x) + 2; px < r.right - 2; px += 8) {
+      for (const py of [r.y + 4, r.y + r.height / 2, r.bottom - 4]) {
+        samples += 1;
+        const winner = decide(px, Math.round(py));
+        if (winner && winner.mode === 'drag') {
+          dragPoints.push({ x: px, y: Math.round(py), by: `#${winner.i} ${winner.label}` });
+        }
+      }
+    }
+    strips.push({
+      group: strip.getAttribute('data-tab-strip-group'),
+      rect: [Math.round(r.x), Math.round(r.y), Math.round(r.right), Math.round(r.bottom)],
+      tabs: document.querySelectorAll('[data-tab-id]').length,
+      samples,
+      dragPoints: dragPoints.slice(0, 8),
+      dragCount: dragPoints.length,
+    });
+  }
+
   return {
     route: location.hash,
     sidebar: document.querySelector('[data-slot="sidebar"]')?.getAttribute('data-state') ?? null,
     windowOrigin: [window.screenX, window.screenY],
     regions,
     checked,
+    strips,
   };
 });
 
@@ -150,6 +192,14 @@ if (asJson) {
         `${c.buried ? 'BURIED IN A DRAG REGION' : 'reachable'}  <- ${c.decidedBy}`
     );
   }
+  console.log('');
+  for (const s of report.strips) {
+    console.log(
+      `  tab strip ${String(s.group).padEnd(10)} x ${s.rect[0]}–${s.rect[2]}  ${s.tabs} tab(s)  ` +
+        `${s.dragCount ? `${s.dragCount}/${s.samples} SAMPLES IN A DRAG REGION` : `${s.samples}/${s.samples} samples no-drag`}`
+    );
+    for (const p of s.dragPoints) console.log(`      drag at ${p.x},${p.y} <- ${p.by}`);
+  }
 }
 
 if (!report.checked.length) {
@@ -167,4 +217,16 @@ if (buried.length) {
   console.error(`\nFAIL (#74): ${buried.map((c) => c.name).join(', ')} inside a drag region.`);
   process.exit(1);
 }
-console.log('\nOK: every titlebar control resolves to no-drag.');
+const draggyStrips = report.strips.filter((s) => s.dragCount);
+if (draggyStrips.length) {
+  console.error(
+    '\nFAIL (tab strip): part of the strip resolves to `drag`, so a press there is routed to the ' +
+      'OS as a titlebar grab. Whatever declares that rect makes the region set depend on the tab ' +
+      'list, which is the race the strip’s single static no-drag rect exists to close.'
+  );
+  process.exit(1);
+}
+if (!report.strips.length) {
+  console.log('\nNOTE: no tab strip on this route — the strip half of this gate did not run.');
+}
+console.log('\nOK: every titlebar control and every tab-strip sample resolves to no-drag.');

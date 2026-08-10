@@ -69,11 +69,16 @@ describe('ChatTabStrip — the .br-tab contract', () => {
     }
   });
 
-  it('every tab declares WebkitAppRegion no-drag (it sits inside a drag header)', () => {
-    // R1: the strip lives inside BaseChat's 44px WebkitAppRegion:'drag' header.
-    // Without no-drag on the tab, macOS moves the window instead of letting the
-    // click through, and the whole strip becomes inert.
-    const { container } = renderStrip({
+  it('no tab declares an app region of its own — the strip owns the one no-drag rect', () => {
+    // ⚠ THIS ASSERTION IS THE REVERSE OF WHAT IT USED TO BE, and the reversal
+    // is the fix. R1 put `no-drag` on every tab because the strip around them
+    // was `drag`; that made the region set a function of the tab list, and a
+    // region set that changes is one the browser process learns about a paint
+    // lifecycle late — so a just-created tab still sat in the strip's stale
+    // `drag` rect and the OS moved the window instead of delivering the press.
+    // The strip is `no-drag` across its whole box now, identical for every tab
+    // count. See ChatTabStrip.appRegion.test.tsx for the invariant in full.
+    const { container, getByTestId } = renderStrip({
       tabs: [tab(), tab({ tabId: 'tab-2', sessionId: 's2' })],
     });
     for (const id of ['tab-1', 'tab-2']) {
@@ -82,8 +87,12 @@ describe('ChatTabStrip — the .br-tab contract', () => {
       const style = tabNode(container, id).style as CSSStyleDeclaration & {
         WebkitAppRegion?: string;
       };
-      expect(style.WebkitAppRegion).toBe('no-drag');
+      expect(style.WebkitAppRegion).toBeFalsy();
     }
+    const strip = getByTestId('chat-tab-strip').style as CSSStyleDeclaration & {
+      WebkitAppRegion?: string;
+    };
+    expect(strip.WebkitAppRegion).toBe('no-drag');
   });
 });
 

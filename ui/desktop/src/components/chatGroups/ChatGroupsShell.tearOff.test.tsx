@@ -357,11 +357,12 @@ describe('ChatGroupsShell — committing a drag that left the window', () => {
   });
 
   it('flags a single-tab window, so main can refuse the tear-off and allow the merge', async () => {
-    // ⚠ In the real app this press never reaches React: with one tab,
-    // `-webkit-app-region: drag` claims it and the OS moves the WINDOW (measured
-    // both ways in Phase 0). This is the backstop for a platform without app
-    // regions — and the flag main needs, because a tear-off of the last tab is a
-    // no-op while a MERGE of it is the gesture and closes this window.
+    // This press DOES reach React now. It used not to: with one tab,
+    // `-webkit-app-region: drag` on the strip claimed it and the OS moved the
+    // WINDOW (measured both ways in Phase 0). The strip is `no-drag` across its
+    // whole box since the tab-creation race was closed, so the flag below is
+    // what main refuses on — a tear-off of the last tab is a no-op while a
+    // MERGE of it is the gesture and closes this window.
     state = stateWith(['solo']);
     const { container } = render(<ChatGroupsShell onChatChange={() => {}} />);
     dragTabOutAndRelease(container, 'solo');

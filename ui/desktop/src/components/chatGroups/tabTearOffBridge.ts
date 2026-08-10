@@ -106,13 +106,18 @@ export function resolveMergeInsertion(
  * way it is not in a browser — a renderer boots and the extensions reload per
  * session (~4.6s).
  *
- * ⚠ In practice this rarely fires, and the reason matters. With one tab the
- * press never reaches React at all: `-webkit-app-region: drag` on the strip
- * claims it and the OS moves the WINDOW, which was measured both ways in Phase
- * 0. So D5 is enforced a level below the renderer and this is the backstop —
- * for a platform without app regions, or for a future strip that declares
- * `no-drag`. Do NOT "fix" a single tab refusing to drag by adding `no-drag` to
- * the strip; that behaviour is the feature.
+ * ⚠ THIS IS NOW THE PRIMARY PATH, not a backstop, and the change is worth
+ * knowing about. It used to rarely fire: with one tab the press never reached
+ * React at all, because `-webkit-app-region: drag` on the strip claimed it and
+ * the OS moved the WINDOW (measured both ways in Phase 0), so D5 was really
+ * enforced a level below the renderer. The strip declares `no-drag` across its
+ * whole box now — it had to, or a just-created tab kept landing in a stale
+ * `drag` rect and the same OS grab ate presses on tabs that were plainly there
+ * (see the note on the scroll box in ChatTabStrip.tsx). So the press arrives,
+ * the ghost appears, and `isOnlyTab` is what main refuses the tear-off on.
+ *
+ * The gesture that stops being impossible as a result is the one D6a wants:
+ * dragging a lone tab INTO another window now merges and closes this one.
  *
  * Counts across ALL leaves, not just the active group: a window split into two
  * panes with one tab each still has two tabs, and tearing either one out leaves

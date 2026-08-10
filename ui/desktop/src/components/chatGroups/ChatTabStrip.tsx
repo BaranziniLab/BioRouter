@@ -42,6 +42,19 @@ function tabKindSource(
   };
 }
 
+/**
+ * The window-drag handle kept at the RIGHT end of the tab band, in px.
+ *
+ * The scroll box is `no-drag` across its whole width (see the note on it), so
+ * without this the ~700px the tabs live in would stop moving the window
+ * altogether. It is applied as PADDING on the wrap, and that is the only place
+ * it can be STATIC: padding lives inside the wrap's `drag` border box, and the
+ * wrap's box is a function of the header, never of how many tabs there are.
+ *
+ * One band height, so the handle reads as a square at the end of the row.
+ */
+export const TAB_BAND_DRAG_GUTTER = 44;
+
 function prefersReducedMotion(): boolean {
   return (
     typeof window.matchMedia === 'function' &&
@@ -335,7 +348,18 @@ export function ChatTabStrip({
       // rect from the fold by writing `-webkit-app-region: none` — measured,
       // an explicitly specified `none` computes to `no-drag` in Blink (it
       // subtracts a rect); only an ABSENT declaration is truly absent.
-      style={{ marginLeft: leftReserve, WebkitAppRegion: 'drag' } as CSSProperties}
+      //
+      // paddingRight IS the window-drag handle, and unlike the reserve it is
+      // deliberately INSIDE this drag box: the scroll box below is `no-drag`
+      // edge to edge, so this gutter is the only part of the band left that can
+      // move the window. See TAB_BAND_DRAG_GUTTER.
+      style={
+        {
+          marginLeft: leftReserve,
+          paddingRight: TAB_BAND_DRAG_GUTTER,
+          WebkitAppRegion: 'drag',
+        } as CSSProperties
+      }
     >
       <div
         role="tablist"
@@ -349,21 +373,49 @@ export function ChatTabStrip({
         data-tab-strip-group={groupId}
         data-group-active={groupActive ? 'true' : 'false'}
         className="br-tabstrip br-tabstrip--inline h-full min-w-0 flex-1"
-        // The strip lives INSIDE the wrap's WebkitAppRegion:'drag' rect. R1 was
-        // measured with real OS input through CDP: a pointer drag on a no-drag
-        // child inside a drag region DOES reach the DOM and the window does not
-        // move. So the strip may live here — but every tab must still declare
-        // no-drag itself, or the OS eats the gesture before React sees it.
+        // ONE no-drag rect for the whole strip, and it is STATIC. This element
+        // is the last app-region declaration over the tabs, so it is the one
+        // that decides every point inside the scroll box, and its box is a
+        // function of the header — never of the tab list.
         //
-        // This one keeps `drag` safely: it begins at the wrap's CONTENT edge,
-        // which the wrap's margin has already pushed past the titlebar controls
-        // (#74), so it never reaches them the way the wrap itself did.
+        // ⚠ IT USED TO BE `drag`, WITH THE no-drag ON EACH TAB, AND THAT IS A
+        // RACE. Blink recollects app-region rects during a paint lifecycle and
+        // ships them to the browser process over IPC; until that lands, macOS
+        // routes with the PREVIOUS set. Per-tab rects mean the set changes
+        // every time a tab is opened, closed, torn off or merged in — so for
+        // the width of that gap a brand-new tab still sits inside the strip's
+        // stale `drag` rect and a press on it never reaches the renderer at
+        // all: the OS reads it as a titlebar grab and the WINDOW moves. It is
+        // not theory. Measured against the running app with CGEventPost input
+        // by sweeping the cursor across the second tab's x-range (Electron's
+        // DragRegionView swallows every event over a `drag` rect, so an arrival
+        // IS the region read-out): settled with one tab, 0/11 sample points in
+        // that range arrived; settled with two, 11/11; and with the renderer
+        // busy for 2.5s starting the task after the tab was created — which is
+        // what mounting a chat does — 1/11, for the whole 2.5s, while the DOM
+        // had the tab there the entire time.
+        //
+        // A timer would only pick a number and hope. The fix is that there is
+        // nothing left to recompute: this rect is identical for zero tabs and
+        // for twenty, so no tab-list change can ever make the OS's copy wrong.
+        //
+        // Two consequences, both wanted:
+        //   * the scroll box no longer moves the window. The band keeps a
+        //     static handle at its right end instead (TAB_BAND_DRAG_GUTTER).
+        //   * a window with ONE tab now delivers the press instead of moving
+        //     the window, which is what tabTearOffBridge's countWindowTabs
+        //     backstop was written for. Tearing that tab out is still refused
+        //     (D5, in main), and merging it into another window — which the OS
+        //     used to make unreachable — now works (D6a).
+        //
+        // Nothing inside this box may declare `drag`: it would fold LATER and
+        // re-cover the tabs, which is #74 in miniature.
         //
         // paddingLeft: 0 cancels `.br-tabstrip`'s `padding: 0 8px` on the left
         // only, so the reserve on the wrap is the whole left inset and the first
         // tab still lands exactly on it (172px, or 16px unreserved) rather than
         // 8px further right. The right half of the shorthand is untouched.
-        style={{ paddingLeft: 0, WebkitAppRegion: 'drag' } as CSSProperties}
+        style={{ paddingLeft: 0, WebkitAppRegion: 'no-drag' } as CSSProperties}
       >
         {tabs.map((tab, index) => {
           const isActive = tab.tabId === activeTabId;
@@ -383,8 +435,11 @@ export function ChatTabStrip({
                   ? 'true'
                   : undefined
               }
+              // ⚠ NO app-region declaration here, deliberately. A per-tab
+              // `no-drag` is a rect that appears and moves with the tab list,
+              // and that is exactly the race the strip's own no-drag closes —
+              // see the note on the scroll box. It is already covered.
               className={cn('br-tab group')}
-              style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
             >
               <button
                 ref={isActive ? activeTabRef : undefined}
@@ -472,11 +527,9 @@ export function ChatTabStrip({
             </div>
           );
         })}
-        {endSlot ? (
-          <div className="flex-none" style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}>
-            {endSlot}
-          </div>
-        ) : null}
+        {/* No app-region here either: this sits inside the scroll box, whose
+            no-drag already covers it, and its x moves with the tab list. */}
+        {endSlot ? <div className="flex-none">{endSlot}</div> : null}
       </div>
 
       {showOverflowMenu && (
@@ -487,6 +540,14 @@ export function ChatTabStrip({
               aria-label="Show all chats"
               data-testid="chat-tab-overflow-trigger"
               className="br-tabstrip__overflow"
+              // This one DOES need its own no-drag: it sits outside the scroll
+              // box, inside the wrap's drag rect. Its position is static (last
+              // flex item before the gutter, so it hangs off the wrap's content
+              // edge) but its EXISTENCE follows the tab count, so the frame in
+              // which it first appears is still routed by the previous region
+              // set and one click on it can be eaten. That is a single button
+              // arriving at an overflow threshold and it self-heals on the next
+              // paint — not the same animal as a tab press moving the window.
               style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
             >
               <ChevronDown className="h-4 w-4" />
