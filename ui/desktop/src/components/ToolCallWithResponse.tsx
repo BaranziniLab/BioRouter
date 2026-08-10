@@ -868,6 +868,15 @@ function ToolCallView({
   // failure, including the two sites that compose the same refusal without
   // consulting a grant.
   //
+  // ⚠ **The tool-output guardrail does not touch this text, and the marker
+  // parse below never needed repairing.** Recorded because the commit that
+  // added the frame-stripping claimed otherwise. `cross_affiliation_refusal`
+  // returns an `ErrorData`, so the refusal arrives on `toolResult.status ===
+  // 'error'`, and `guard_tool_result` frames only the `Ok` branch. It reaches
+  // `displayError` unframed, exactly as before. What IS framed is an MCP
+  // result carrying `isError: true`, a different path through the same
+  // function — that one is unwrapped, and it is not where this marker lives.
+  //
   // ⚠ **Gated on the session as well as on the text, so ONE expression decides
   // both the card and the disclosure below.** A grant is keyed on a chat, and
   // the saved-transcript surface (`sessions/SessionViewComponents.tsx`) passes
