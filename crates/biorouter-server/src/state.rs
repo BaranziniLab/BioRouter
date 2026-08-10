@@ -623,10 +623,7 @@ mod tests {
 
         let _ = state.get_agent_for_route("s-once".to_string()).await;
         assert!(
-            state
-                .take_extension_loading_task("s-once")
-                .await
-                .is_none(),
+            state.take_extension_loading_task("s-once").await.is_none(),
             "the loading handle outlived the turn that awaited it"
         );
     }
