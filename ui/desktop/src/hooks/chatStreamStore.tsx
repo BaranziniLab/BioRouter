@@ -170,6 +170,35 @@ export function isReplayFrame(event: MessageEvent): boolean {
  */
 export const REPLAY_MAX_HOLD_MS = 500;
 
+/**
+ * How long an observer stream has to last before the reconnect backoff counts
+ * it as a real connection and resets to its floor.
+ *
+ * The backoff used to reset when the stream OPENED, which reads as harmless and
+ * is not: a stream can be answered 200 and end immediately, and that is exactly
+ * what the daemon does to an observer over its budget (it sends the whole
+ * stored conversation, then closes rather than parking a connection the client
+ * cannot spare, `MAX_LIVE_OBSERVER_STREAMS` in biorouter-server). Resetting on
+ * open made every such stream a fresh start, so the loop retried at about 1 Hz
+ * forever and never climbed toward its 15 s ceiling: an over-budget tab
+ * degraded from streaming into polling the conversation once a second. With the
+ * reset moved to the END of a stream that lasted, the same tab walks 1, 2, 4, 8,
+ * 15 s and stays there.
+ *
+ * THE THRESHOLD IS SIX HEARTBEATS, not a round number. A stream that is really
+ * following the tail is held open behind the daemon's 500 ms heartbeat, so
+ * three seconds of life is direct evidence that at least six of them arrived.
+ * A refused observer's stream is one snapshot write and a close over loopback,
+ * orders of magnitude below it.
+ *
+ * Err HIGH, because the two mistakes are not comparable. Read a refusal as
+ * healthy and the 1 Hz poll is back. Read a healthy stream as a refusal and the
+ * next reconnect waits 2 s instead of 1 s, and the first stream that does last
+ * puts the floor back. So a flaky network costs a user one doubling per short
+ * stream and nothing after that.
+ */
+const HEALTHY_OBSERVER_STREAM_MS = 3000;
+
 const SESSION_LIST_CACHE_TTL_MS = 5000;
 let sessionListInflight: Promise<{ id: string; name?: string | null }[]> | null = null;
 let sessionListInflightAt = 0;
@@ -1630,6 +1659,11 @@ class ChatStreamController {
         // afterwards would hand this subscription the OTHER turn's socket.
         const socket = new AbortController();
         this.abortController = socket;
+        // When the response came back, so the block after the try can ask how
+        // long the stream LASTED. Null until then: a stream that never opened
+        // cannot have lasted, and a slow `userActionHeaders` read must not be
+        // counted as time on the wire.
+        let openedAt: number | null = null;
         try {
           const { stream } = await observeSessionEvents({
             // `GET /sessions/{id}/events` is on the gated list too (it is the
@@ -1656,7 +1690,7 @@ class ChatStreamController {
             // transport error. `/reply` passes the same value for the same reason.
             sseMaxRetryAttempts: 1,
           });
-          retryMs = 1000;
+          openedAt = Date.now();
           // `'observer'`: a stream that ends without a `Finish` is this loop's
           // reconnect trigger, not a dead turn — see the branch it gates.
           await this.streamFromResponse(stream, this.messagesRef, streamId, 'observer');
@@ -1667,6 +1701,14 @@ class ChatStreamController {
           // Kept for the client-side throws that DO land here (a malformed URL).
           if (error instanceof Error && error.name === 'AbortError') return;
           // fall through to retry
+        }
+        // The stream has ENDED. Only now is it known whether it was a real
+        // connection or a snapshot-and-close, so only now can the backoff floor
+        // be earned. Placed after the catch on purpose: a stream that followed
+        // the tail for a while and then threw is still a connection that
+        // dropped, and should come back at the floor like any other.
+        if (openedAt !== null && Date.now() - openedAt >= HEALTHY_OBSERVER_STREAM_MS) {
+          retryMs = 1000;
         }
         if (this.observerIsStale(streamId, generation)) return;
         await new Promise((resolve) => setTimeout(resolve, retryMs));

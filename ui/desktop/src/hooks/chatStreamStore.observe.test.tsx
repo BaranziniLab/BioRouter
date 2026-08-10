@@ -530,3 +530,108 @@ describe('ChatStreamController.observeSession — who owns the socket', () => {
     }
   });
 });
+
+/**
+ * THE RECONNECT BACKOFF, and what it counts as a connection.
+ *
+ * `GET /sessions/{id}/events` streams never end on their own, so every open
+ * observer parks a TCP connection, and Chromium allows six per host across all
+ * app windows. Six observers wedged two windows for 465 s against a completely
+ * idle daemon: nothing else could be dispatched, `POST /reply` included. The
+ * daemon now bounds itself at `MAX_LIVE_OBSERVER_STREAMS` and answers an
+ * over-budget observer with the full stored conversation and then CLOSES, which
+ * is a stream answered 200 that ends at once.
+ *
+ * That is what makes the reset point load-bearing. Reset on OPEN and every one
+ * of those closes is a fresh start, so the loop retries at roughly 1 Hz forever
+ * and the 15 s ceiling below it is unreachable: an over-budget tab silently
+ * becomes a once-a-second poller. These tests pin the reset to the END of a
+ * stream that lasted, and pin the other half too, because "never reset" would
+ * also pass the first one and would punish a user on a flaky network.
+ */
+describe('ChatStreamController.observeSession: the reconnect backoff', () => {
+  afterEach(() => vi.clearAllMocks());
+
+  /** The daemon's over-budget answer: the stored conversation, then the end. */
+  async function* snapshotThenClose() {
+    yield { type: 'UpdateConversation', conversation: [], token_state: tokenState } as MessageEvent;
+  }
+
+  it('does not earn the floor from a stream that ends the moment it opens', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      mocks.observeSessionEvents.mockImplementation(async () => ({
+        stream: snapshotThenClose(),
+      }));
+
+      const controller = registry.getController('obs-backoff-refused');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(1);
+
+      // 1 s: the floor, which every first reconnect is entitled to.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+
+      // THE ASSERTION THAT MATTERS. A second later is where the 1 Hz poll shows
+      // itself: the backoff must have doubled instead of being reset by the
+      // stream that just opened and closed.
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(3);
+
+      // And it keeps doubling, so the tab really is walking toward the ceiling
+      // rather than sitting on a slower fixed interval.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(4);
+
+      controller.stopObserving();
+      await vi.advanceTimersByTimeAsync(16000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('resets to the floor as soon as a stream has actually lasted', async () => {
+    vi.useFakeTimers();
+    try {
+      const registry = new ChatStreamRegistry();
+      const lasting = createControlledStream();
+      mocks.observeSessionEvents
+        .mockResolvedValueOnce({ stream: snapshotThenClose() })
+        .mockResolvedValueOnce({ stream: snapshotThenClose() })
+        .mockResolvedValueOnce({ stream: lasting.stream })
+        .mockImplementation(async () => ({ stream: snapshotThenClose() }));
+
+      const controller = registry.getController('obs-backoff-healthy');
+      void controller.observeSession();
+      await vi.advanceTimersByTimeAsync(0); // connect 1, ends at once
+      await vi.advanceTimersByTimeAsync(1000); // connect 2, ends at once
+      await vi.advanceTimersByTimeAsync(2000); // connect 3, the real one
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(3);
+
+      // Following the tail. The backoff has climbed to 4 s by now, so what
+      // happens after this stream drops is the whole question.
+      await vi.advanceTimersByTimeAsync(5000);
+      lasting.close();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(3);
+
+      // Back at the floor, not at the 4 s it had climbed to. A transient drop on
+      // a flaky network must not push the user onto a long backoff.
+      await vi.advanceTimersByTimeAsync(998);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(3);
+      await vi.advanceTimersByTimeAsync(2);
+      expect(mocks.observeSessionEvents).toHaveBeenCalledTimes(4);
+
+      controller.stopObserving();
+      await vi.advanceTimersByTimeAsync(16000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
