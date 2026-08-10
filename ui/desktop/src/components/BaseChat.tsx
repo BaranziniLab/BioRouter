@@ -71,6 +71,7 @@ import { toastError } from '../toasts';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
+import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 import ArtifactViewer from './artifacts/ArtifactViewer';
 import InAppTerminalDock from './InAppTerminalDock';
 import { ChatTurnError, hasVisibleTurnErrorMessage } from './conversation/ChatTurnError';
@@ -408,10 +409,19 @@ function getToolResultContent(toolResult: Record<string, unknown>): Content[] {
       ? wrapped.value
       : (toolResult as unknown as CallToolResponse | undefined);
   if (!response || !Array.isArray(response.content)) return [];
-  return response.content.filter((item) => {
-    const annotations = (item as { annotations?: { audience?: string[] } }).annotations;
-    return !annotations?.audience || annotations.audience.includes('user');
-  });
+  return (
+    response.content
+      .filter((item) => {
+        const annotations = (item as { annotations?: { audience?: string[] } }).annotations;
+        return !annotations?.audience || annotations.audience.includes('user');
+      })
+      // The artifact collector below reads resources and tool arguments rather
+      // than text blocks, so nothing here shows the frame today. It is stripped
+      // anyway so the rule holds for both copies of this extractor without a
+      // reader having to work out which one renders text: no framed string
+      // leaves a `getToolResultContent`.
+      .map(unwrapGuardrailFrameInContent)
+  );
 }
 
 function artifactKey(artifact: ArtifactSource) {

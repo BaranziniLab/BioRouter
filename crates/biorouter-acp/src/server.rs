@@ -665,6 +665,15 @@ fn outcome_to_confirmation(outcome: &RequestPermissionOutcome) -> PermissionConf
     }
 }
 
+/// Build the tool-call content an ACP client (Zed and friends) draws in its
+/// UI.
+///
+/// This end of the wire is a **human display**, so the guardrail's
+/// `<tool-output untrusted="true" …>` frame comes off the text here, the same
+/// way the desktop panel takes it off. It is an internal delimiter addressed to
+/// the model, and the model in this session already read the framed copy on its
+/// own path. A `[BIOROUTER GUARDRAIL]` warning line above a frame is left in
+/// place, because that one is addressed to the person.
 fn build_tool_call_content(tool_result: &ToolResult<CallToolResult>) -> Vec<ToolCallContent> {
     match tool_result {
         Ok(result) => result
@@ -672,7 +681,10 @@ fn build_tool_call_content(tool_result: &ToolResult<CallToolResult>) -> Vec<Tool
             .iter()
             .filter_map(|content| match &content.raw {
                 RawContent::Text(val) => Some(ToolCallContent::Content(Content::new(
-                    ContentBlock::Text(TextContent::new(val.text.clone())),
+                    ContentBlock::Text(TextContent::new(
+                        biorouter::guardrails::tool_output_display::unframe_tool_output(&val.text)
+                            .into_owned(),
+                    )),
                 ))),
                 RawContent::Image(val) => Some(ToolCallContent::Content(Content::new(
                     ContentBlock::Image(ImageContent::new(val.data.clone(), val.mime_type.clone())),

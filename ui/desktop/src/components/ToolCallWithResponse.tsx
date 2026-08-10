@@ -28,6 +28,7 @@ import type { ArtifactSource } from './artifacts/artifactTypes';
 import { NotificationContent, NotificationSurface } from './alerts/NotificationSurface';
 import { crossAffiliationOffer } from '../utils/crossAffiliation';
 import { CrossAffiliationAcceptCard } from './privacy/CrossAffiliationAcceptCard';
+import { unwrapGuardrailFrameInContent } from '../utils/guardrailFrame';
 
 /**
  * The tool card's own status vocabulary. `interrupted` extends the shared
@@ -175,11 +176,23 @@ function getToolResultContent(toolResult: unknown): Content[] {
     return [];
   }
 
-  return value.content.filter((item): item is Content => {
-    if (!recordOf(item)) return false;
-    const annotations = (item as { annotations?: { audience?: string[] } }).annotations;
-    return !annotations?.audience || annotations.audience.includes('user');
-  });
+  return (
+    value.content
+      .filter((item): item is Content => {
+        if (!recordOf(item)) return false;
+        const annotations = (item as { annotations?: { audience?: string[] } }).annotations;
+        return !annotations?.audience || annotations.audience.includes('user');
+      })
+      // Every surface that shows a person tool text reads it through here — the
+      // markdown view, the resource JSON dump, the error banner, and the saved
+      // and shared transcript replays that reuse this component. So the
+      // untrusted-data frame the backend wraps around every result comes off
+      // here, once, rather than at four call sites that would drift. Only the
+      // frame: a `[BIOROUTER GUARDRAIL]` warning above it is the user's to read
+      // and is left in place. Nothing on the model's path passes through this
+      // function.
+      .map(unwrapGuardrailFrameInContent)
+  );
 }
 
 function displayError(error: unknown): string {
@@ -269,7 +282,13 @@ function McpAppWrapper({
     if (!toolResponse) return undefined;
     const resultWithMeta = toolResponse.toolResult as ToolResultWithMeta;
     if (resultWithMeta?.status === 'success' && resultWithMeta.value) {
-      return resultWithMeta.value;
+      const value = resultWithMeta.value;
+      // An MCP app draws this result for the user, so it is a display surface
+      // like the panel below and the frame comes off the same way. The app
+      // also parses it, and the frame would break any exact-match it does.
+      if (!Array.isArray(value.content)) return value;
+      const content = value.content.map(unwrapGuardrailFrameInContent);
+      return content.every((item, i) => item === value.content[i]) ? value : { ...value, content };
     }
     return undefined;
   }, [toolResponse]);

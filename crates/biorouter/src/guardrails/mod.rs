@@ -14,6 +14,11 @@ pub mod run_state;
 /// untrusted data before it re-enters the model context. This is the first
 /// implementation of a [`GuardrailStage::ToolOutput`] on the CLI/GUI loop.
 pub mod tool_output;
+/// The inverse of [`tool_output`]'s frame, for the surfaces where a **human**
+/// reads tool text or where it becomes durable content. Display only: nothing
+/// in it may run on the path to a model. Kept out of [`tool_output`] so that
+/// making a view prettier is never a reason to edit the control.
+pub mod tool_output_display;
 
 /// Where in a turn's lifecycle a guardrail runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
