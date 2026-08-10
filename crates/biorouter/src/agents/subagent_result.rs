@@ -272,13 +272,22 @@ impl SubagentResult {
         // happens here rather than in the branches above: only a run that would
         // otherwise have been filed as finished can be blocked. An `Incomplete`
         // or aborted run already tells the parent not to trust it.
-        let status = match (status, &question) {
-            (SubagentStatus::Completed, Some(_)) => SubagentStatus::Blocked,
-            (status, _) => status,
+        //
+        // Written out per variant rather than as `(status, _) => status`, so a
+        // status added later has to state whether a returned question can
+        // promote it instead of inheriting a pass-through nobody chose.
+        let status = match status {
+            SubagentStatus::Completed if question.is_some() => SubagentStatus::Blocked,
+            SubagentStatus::Completed => SubagentStatus::Completed,
+            SubagentStatus::Blocked => SubagentStatus::Blocked,
+            SubagentStatus::Incomplete => SubagentStatus::Incomplete,
+            SubagentStatus::Error => SubagentStatus::Error,
         };
+        // The question rides only on the status that means "answer me". Same
+        // reason for spelling out the other three.
         let question = match status {
             SubagentStatus::Blocked => question,
-            _ => None,
+            SubagentStatus::Completed | SubagentStatus::Incomplete | SubagentStatus::Error => None,
         };
 
         Self {
