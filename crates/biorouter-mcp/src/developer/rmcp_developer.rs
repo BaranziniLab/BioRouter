@@ -3964,6 +3964,205 @@ mod tests {
         assert!(!text.text.contains("7: Line 7"));
     }
 
+    /// The line separator `text_editor write` leaves on disk. `write` runs its
+    /// input through `normalize_line_endings`, which is CRLF on Windows, and
+    /// the model's copy is byte-exact, so an assertion hardcoding `\n` would
+    /// pass on macOS and fail on the Windows leg of the matrix.
+    const WRITTEN_NL: &str = if cfg!(windows) { "\r\n" } else { "\n" };
+
+    /// The text of the assistant-audience block of a `view` result.
+    ///
+    /// `view` returns two renderings of the same file, and every other test
+    /// here reaches for the `Role::User` one. This is the other: the embedded
+    /// resource, which is the only part of the result the model reads.
+    fn view_result_model_text(result: &CallToolResult) -> String {
+        let content = result
+            .content
+            .iter()
+            .find(|c| {
+                c.audience()
+                    .is_some_and(|roles| roles.contains(&Role::Assistant))
+            })
+            .expect("view returns an assistant-audience block");
+
+        match &content.raw {
+            rmcp::model::RawContent::Resource(embedded) => match &embedded.resource {
+                rmcp::model::ResourceContents::TextResourceContents { text, .. } => text.clone(),
+                other => panic!("the assistant block is not a TEXT resource: {other:?}"),
+            },
+            other => panic!("the assistant block is not an embedded resource: {other:?}"),
+        }
+    }
+
+    /// **The model gets the range it asked for.**
+    ///
+    /// `view` builds two copies of the file and only the user's honoured
+    /// `view_range`; the model's embedded resource carried the whole file
+    /// however narrow the request. Every existing test here reads the user's
+    /// copy, so nothing noticed.
+    ///
+    /// It became expensive rather than merely untidy when the flattening
+    /// providers (Anthropic, the OpenAI Responses API, Snowflake, toolshim)
+    /// started reading embedded resources instead of falling back to the user's
+    /// range-limited text: a ten-line request against a 400KB file — the cap
+    /// `text_editor_view` enforces — now bills the whole 400KB.
+    ///
+    /// Worse, it defeated `recommend_read_range`. A file over `LINE_READ_LIMIT`
+    /// lines refuses to open without a `view_range`, for the express purpose of
+    /// keeping it out of the model's context; the model complied and received
+    /// the file anyway.
+    #[tokio::test]
+    #[serial]
+    async fn test_text_editor_view_range_limits_the_model_copy_not_just_the_users() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("test.txt");
+        let file_path_str = file_path.to_str().unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
+
+        let server = create_test_server();
+
+        let content =
+            "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\nLine 6\nLine 7\nLine 8\nLine 9\nLine 10";
+        server
+            .text_editor(Parameters(TextEditorParams {
+                path: file_path_str.to_string(),
+                command: "write".to_string(),
+                view_range: None,
+                file_text: Some(content.to_string()),
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            }))
+            .await
+            .unwrap();
+
+        let view_result = server
+            .text_editor(Parameters(TextEditorParams {
+                path: file_path_str.to_string(),
+                command: "view".to_string(),
+                view_range: Some(vec![3, 6]),
+                file_text: None,
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            }))
+            .await
+            .unwrap();
+
+        let for_model = view_result_model_text(&view_result);
+
+        // Exact, not `contains`. A `contains` check for lines 3-6 passes
+        // against the whole file, which is the implementation being ruled out.
+        assert_eq!(
+            for_model,
+            format!("Line 3{nl}Line 4{nl}Line 5{nl}Line 6{nl}", nl = WRITTEN_NL),
+            "the model's copy is not exactly lines 3-6"
+        );
+
+        // Named separately so a failure says which way it went wrong.
+        assert!(
+            !for_model.contains("Line 7"),
+            "the model was sent lines past the end of the range it asked for"
+        );
+        assert!(
+            !for_model.contains("Line 2"),
+            "the model was sent lines before the start of the range it asked for"
+        );
+
+        // The user's copy is unchanged by this, and still carries the line
+        // numbers and the header the model's copy deliberately does not.
+        let for_user = view_result
+            .content
+            .iter()
+            .find(|c| {
+                c.audience()
+                    .is_some_and(|roles| roles.contains(&Role::User))
+            })
+            .unwrap()
+            .as_text()
+            .unwrap();
+        assert!(for_user.text.contains("3: Line 3"));
+        assert!(for_user.text.contains("(lines 3-6)"));
+        assert!(!for_user.text.contains("7: Line 7"));
+    }
+
+    /// The other branch, end to end: with no `view_range` the model still gets
+    /// the file whole and byte for byte.
+    ///
+    /// `model_file_view` returns the original allocation here rather than
+    /// rebuilding it, so this is the assertion that the shortcut is the same
+    /// answer and not merely a faster one. It also pins the URI: it names the
+    /// file with no range marker, because the CLI's markdown export reads a
+    /// file's syntax highlighting off the text after the URI's last `.`.
+    #[tokio::test]
+    #[serial]
+    async fn test_text_editor_view_without_a_range_still_sends_the_whole_file() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let file_path = temp_dir.path().join("whole.txt");
+        let file_path_str = file_path.to_str().unwrap();
+        let _cwd = CwdGuard::enter(temp_dir.path());
+
+        let server = create_test_server();
+
+        server
+            .text_editor(Parameters(TextEditorParams {
+                path: file_path_str.to_string(),
+                command: "write".to_string(),
+                view_range: None,
+                file_text: Some("alpha\nbravo\ncharlie".to_string()),
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            }))
+            .await
+            .unwrap();
+
+        let view_result = server
+            .text_editor(Parameters(TextEditorParams {
+                path: file_path_str.to_string(),
+                command: "view".to_string(),
+                view_range: None,
+                file_text: None,
+                old_str: None,
+                new_str: None,
+                insert_line: None,
+                diff: None,
+            }))
+            .await
+            .unwrap();
+
+        let on_disk = std::fs::read_to_string(&file_path).unwrap();
+        assert_eq!(
+            view_result_model_text(&view_result),
+            on_disk,
+            "a whole-file view no longer matches the bytes on disk"
+        );
+
+        let uri = match &view_result
+            .content
+            .iter()
+            .find(|c| {
+                c.audience()
+                    .is_some_and(|roles| roles.contains(&Role::Assistant))
+            })
+            .unwrap()
+            .raw
+        {
+            rmcp::model::RawContent::Resource(embedded) => match &embedded.resource {
+                rmcp::model::ResourceContents::TextResourceContents { uri, .. } => uri.clone(),
+                other => panic!("not a text resource: {other:?}"),
+            },
+            other => panic!("not a resource: {other:?}"),
+        };
+        assert!(
+            uri.ends_with("whole.txt"),
+            "the resource URI gained a suffix, which unhighlights every exported file view: {uri}"
+        );
+    }
+
     #[tokio::test]
     #[serial]
     async fn test_text_editor_view_range_to_end() {

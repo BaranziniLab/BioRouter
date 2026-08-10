@@ -522,6 +522,49 @@ pub fn format_file_content(
     }
 }
 
+/// The file text the **model** receives from a `view`: exactly the bytes of
+/// lines `start_idx..end_idx`, and nothing outside them.
+///
+/// The user's copy is [`format_file_content`], which has honoured `view_range`
+/// all along. This one had not: it shipped the whole file however narrow the
+/// request, so `view_range` cost the model nothing and saved it nothing. That
+/// also defeated [`recommend_read_range`], whose entire job is to stop a file
+/// over [`LINE_READ_LIMIT`] lines from landing in the request: it forces the
+/// model to name a range and the model then received the file anyway.
+///
+/// **Byte-exact, not re-joined.** `str::lines()` drops the `\r` of a `\r\n` pair
+/// and the file's final newline, so rebuilding the slice from it would hand the
+/// model LF text for a CRLF file and invite a `str_replace` whose `old_str`
+/// cannot match. `split_inclusive('\n')` keeps each line's own terminator, and
+/// it partitions the string, so concatenating a run of its pieces returns the
+/// original bytes of those lines.
+///
+/// The whole-file case returns `content` itself. That is an allocation saved,
+/// not a second rule: [`calculate_view_range`] answers `(0, total_lines)` when
+/// no range was asked for, and `split_inclusive('\n')` yields exactly
+/// `total_lines` pieces, so the slice would rebuild an identical string.
+/// `the_two_paths_agree_on_a_whole_file` pins the two together.
+///
+/// The model is not told which lines these are, and does not need to be: the
+/// `view_range` it asked for sits in the same request, one message above the
+/// result.
+pub fn model_file_view(
+    content: String,
+    start_idx: usize,
+    end_idx: usize,
+    total_lines: usize,
+) -> String {
+    if start_idx == 0 && end_idx == total_lines {
+        return content;
+    }
+
+    content
+        .split_inclusive('\n')
+        .skip(start_idx)
+        .take(end_idx.saturating_sub(start_idx))
+        .collect()
+}
+
 pub fn recommend_read_range(path: &Path, total_lines: usize) -> Result<Vec<Content>, ErrorData> {
     Err(ErrorData::new(ErrorCode::INTERNAL_ERROR, format!(
         "File '{}' is {} lines long, recommended to read in with view_range (or searching) to get bite size content. If you do wish to read all the file, please pass in view_range with [1, {}] to read it all at once",
@@ -702,11 +745,17 @@ pub async fn text_editor_view(
 
     let (start_idx, end_idx) = calculate_view_range(view_range, total_lines)?;
     let formatted = format_file_content(path, &lines, start_idx, end_idx, view_range);
+    drop(lines);
+    let for_model = model_file_view(content, start_idx, end_idx, total_lines);
 
-    // The LLM gets just a quick update as we expect the file to view in the status
-    // but we send a low priority message for the human
+    // Two renderings of the same range: the raw bytes for the model, the
+    // numbered and fenced version for the user. `uri` names the file either
+    // way, with no marker for a partial read — the CLI's markdown export reads
+    // the syntax highlighting off the text after the URI's last `.`
+    // (`session/export.rs`), so a `#L3-L6` suffix would turn `rs` into
+    // `rs#L3-L6` and silently unhighlight every exported file view.
     Ok(vec![
-        Content::embedded_text(uri, content).with_audience(vec![Role::Assistant]),
+        Content::embedded_text(uri, for_model).with_audience(vec![Role::Assistant]),
         Content::text(formatted)
             .with_audience(vec![Role::User])
             .with_priority(0.0),
@@ -1073,4 +1122,128 @@ pub fn save_file_history(path: &Path, file_history: &FileHistory) -> Result<(), 
             None,
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Contents whose line structure is easy to get wrong, each with the
+    /// number of lines `str::lines()` reports.
+    fn tricky_contents() -> Vec<(&'static str, &'static str, usize)> {
+        vec![
+            ("empty", "", 0),
+            ("one line, no terminator", "alpha", 1),
+            ("one line, terminated", "alpha\n", 1),
+            ("trailing blank line", "alpha\n\n", 2),
+            ("leading blank line", "\nalpha\n", 2),
+            ("crlf", "alpha\r\nbravo\r\n", 2),
+            ("mixed endings", "alpha\r\nbravo\ncharlie", 3),
+            ("no final newline", "alpha\nbravo", 2),
+            ("only newlines", "\n\n\n", 3),
+        ]
+    }
+
+    /// The whole-file fast path returns `content` untouched instead of
+    /// rebuilding it. That is only sound if the slice path would have produced
+    /// the identical string, which rests on two properties of
+    /// `split_inclusive('\n')`: it yields one piece per `lines()` line, and its
+    /// pieces concatenate back to the original.
+    ///
+    /// Both are asserted here rather than assumed, because a disagreement would
+    /// not show up as a panic. It would silently hand the model a file with a
+    /// line missing off one end, on the one code path that carries whole files.
+    #[test]
+    fn the_two_paths_agree_on_a_whole_file() {
+        for (name, content, total_lines) in tricky_contents() {
+            assert_eq!(
+                content.split_inclusive('\n').count(),
+                total_lines,
+                "{name}: split_inclusive disagrees with lines() on how many lines there are"
+            );
+            assert_eq!(
+                content.split_inclusive('\n').collect::<String>(),
+                content,
+                "{name}: the pieces do not concatenate back to the original"
+            );
+
+            // The fast path, taken when `calculate_view_range` answered
+            // `(0, total_lines)`.
+            assert_eq!(
+                model_file_view(content.to_string(), 0, total_lines, total_lines),
+                content,
+                "{name}: the whole-file path changed the file"
+            );
+
+            // The slice path over that same whole range. `total_lines + 1` is
+            // what forces it: there is no other way to reach the slice for a
+            // range that covers everything, and the point of the test is that
+            // reaching it changes nothing.
+            assert_eq!(
+                model_file_view(content.to_string(), 0, total_lines, total_lines + 1),
+                content,
+                "{name}: slicing the whole range did not reproduce the file"
+            );
+        }
+    }
+
+    /// A range gets the bytes of those lines, with their own terminators, and
+    /// nothing else.
+    #[test]
+    fn a_range_is_exactly_the_bytes_of_those_lines() {
+        let content = "Line 1\nLine 2\nLine 3\nLine 4\nLine 5\n";
+
+        assert_eq!(
+            model_file_view(content.to_string(), 2, 4, 5),
+            "Line 3\nLine 4\n",
+            "lines 3-4 should arrive with their terminators and no neighbours"
+        );
+        assert_eq!(
+            model_file_view(content.to_string(), 0, 1, 5),
+            "Line 1\n",
+            "the first line alone"
+        );
+        assert_eq!(
+            model_file_view(content.to_string(), 4, 5, 5),
+            "Line 5\n",
+            "the last line alone"
+        );
+    }
+
+    /// `str::lines()` strips the `\r` of a `\r\n` pair, so a slice rebuilt with
+    /// `lines().join("\n")` would hand the model LF text for a CRLF file. The
+    /// model's next move after a view is usually `str_replace`, whose `old_str`
+    /// has to match the file byte for byte, so that rewrite would produce an
+    /// edit that cannot apply and a failure with no visible cause.
+    #[test]
+    fn a_range_of_a_crlf_file_keeps_its_carriage_returns() {
+        let content = "alpha\r\nbravo\r\ncharlie\r\n";
+
+        let sliced = model_file_view(content.to_string(), 1, 2, 3);
+        assert_eq!(sliced, "bravo\r\n");
+        assert!(
+            sliced.contains('\r'),
+            "the carriage return was dropped, so this no longer matches the file on disk"
+        );
+
+        // What the discarded implementation would have produced.
+        let rejoined = content.lines().collect::<Vec<_>>()[1..2].join("\n");
+        assert_ne!(
+            sliced, rejoined,
+            "if these agree the test has stopped distinguishing the two implementations"
+        );
+    }
+
+    /// A file shorter than the range it is asked for, and a range that is
+    /// empty. `calculate_view_range` clamps `end_idx` to `total_lines` before
+    /// this runs, but the arithmetic must not panic if it ever stops.
+    #[test]
+    fn an_over_long_or_empty_range_does_not_panic() {
+        let content = "alpha\nbravo\n";
+
+        assert_eq!(model_file_view(content.to_string(), 1, 99, 2), "bravo\n");
+        assert_eq!(model_file_view(content.to_string(), 5, 9, 2), "");
+        assert_eq!(model_file_view(content.to_string(), 3, 1, 2), "");
+        assert_eq!(model_file_view(String::new(), 0, 4, 0), "");
+    }
 }
