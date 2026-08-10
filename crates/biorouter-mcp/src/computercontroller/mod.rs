@@ -2195,17 +2195,25 @@ mod web_and_script_tests {
     #[test]
     fn both_platform_descriptions_carry_the_same_string_raw_caveats() {
         const SOURCE: &str = include_str!("mod.rs");
-        // The two `#[tool]` attributes, sliced out of the file. The needle is
-        // the attribute's own text, so this test's source cannot match itself
-        // (its copy of the needle is escaped).
+        // The body of each `#[tool]` attribute, taken WITHOUT a byte index:
+        // `split` on the needle drops it and hands back the tails (the first
+        // chunk is everything before the first match, hence `skip(1)`), and
+        // `split_once` on the attribute's closing `)]` keeps the part in front
+        // of it. Cutting on substrings rather than on offsets is what makes the
+        // char-boundary question unaskable — the same move `guardrails::
+        // tool_output` made, and the reason the `string_slice` restriction lint
+        // is on.
+        //
+        // The needle is the attribute's own text, so this test's source cannot
+        // match itself: its copy of the needle is escaped.
         let blocks: Vec<String> = SOURCE
-            .match_indices("name = \"automation_script\",")
-            .map(|(at, _)| {
-                let rest = &SOURCE[at..];
-                let end = rest
-                    .find("\n    )]")
+            .split("name = \"automation_script\",")
+            .skip(1)
+            .map(|tail| {
+                let (block, _) = tail
+                    .split_once("\n    )]")
                     .expect("a #[tool(...)] attribute closes with `)]` at the impl indent");
-                unwrapped(&rest[..end])
+                unwrapped(block)
             })
             .collect();
         assert_eq!(
