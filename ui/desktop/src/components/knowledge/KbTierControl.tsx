@@ -60,9 +60,7 @@ function blastRadius(kb: KbTierControlKb): string {
     parts.push(`${kb.pageCount} ${kb.pageCount === 1 ? 'page' : 'pages'}`);
   }
   if (kb.rawSourceCount !== undefined) {
-    parts.push(
-      `${kb.rawSourceCount} ${kb.rawSourceCount === 1 ? 'raw source' : 'raw sources'}`
-    );
+    parts.push(`${kb.rawSourceCount} ${kb.rawSourceCount === 1 ? 'raw source' : 'raw sources'}`);
   }
   if (parts.length === 0) {
     return 'every page and raw source in this knowledge base';
@@ -90,7 +88,7 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
         data-testid="kb-tier-chip"
         title={
           isPrivate
-            ? 'Only a private model can read or write this knowledge base.'
+            ? 'Private. Biorouter only lets a private model read or write this knowledge base.'
             : 'Any model, including public ones, can read this knowledge base.'
         }
       >
@@ -156,9 +154,7 @@ export function KbTierControl({ kb, onSetTier, busy = false }: KbTierControlProp
  */
 export function KbTierPanel({ kb }: { kb: { id: string; name: string; tier: KbTier } }) {
   const { refresh } = useKnowledge();
-  const [radius, setRadius] = useState<{ pageCount: number; rawSourceCount: number } | null>(
-    null
-  );
+  const [radius, setRadius] = useState<{ pageCount: number; rawSourceCount: number } | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -204,7 +200,7 @@ export function KbTierPanel({ kb }: { kb: { id: string; name: string; tier: KbTi
             msg:
               tier === 'public'
                 ? 'Public models can now read it. The change is recorded.'
-                : 'Only private models can read or write it now.',
+                : 'Biorouter now only lets a private model read or write it.',
           });
           await refresh();
         } catch (error) {

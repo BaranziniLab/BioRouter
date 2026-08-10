@@ -282,9 +282,9 @@ pub struct ConversationIngestResult {
 /// three as content, and a session title in this product is LLM-generated from
 /// the conversation itself.
 pub const REFUSED_ALL_PRIVATE: &str = "\
-Those chats are private: they were created under a model hosted inside the institution, so only a \
-private model may read them. This session is running on a public model. Ask the user to switch this \
-chat to a private model and try again.";
+Those chats are private: they were created under a private model, so only a private model may read \
+them. This session is running on a public model. Ask the user to switch this chat to a private \
+model, one their institution hosts or one that runs on this machine, and try again.";
 
 /// Issue #56 DR-26 / Task 50 Step 3. Every selected chat crossed an
 /// institutional boundary this model's agreements do not cover.

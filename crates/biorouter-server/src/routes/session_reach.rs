@@ -198,9 +198,9 @@ pub const SESSION_OUT_OF_REACH: &str =
      deliberately the same so that nothing about the chat is disclosed. Nothing was read and \
      nothing was changed. Do not retry as you are; the same call will be refused again, and no \
      setting, hook or permission mode changes it. A private chat is reachable from a session \
-     running a model hosted inside the institution, or from the desktop app when the person at \
-     the keyboard acts. If this task genuinely needs that chat, stop and ask the user to open it \
-     for you.";
+     running a private model, one the institution hosts or one that runs on this machine, or \
+     from the desktop app when the person at the keyboard acts. If this task genuinely needs \
+     that chat, stop and ask the user to open it for you.";
 
 /// …and when this daemon was handed no user-action key at all.
 ///

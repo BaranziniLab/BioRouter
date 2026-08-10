@@ -440,7 +440,7 @@ pub fn turn_refusal(session: &Session) -> String {
         "This chat is private, so only a private model may run in it: one your institution \
          hosts, or one that runs on this machine. The model this chat is set to \
          (`{provider}`) is public, so \
-         {TURN_REFUSAL_MARKER}. Switch this chat to a private model (Settings → Models, or the \
+         {TURN_REFUSAL_MARKER}. Switch this chat to a private model (Settings > Models, or the \
          model chip in the composer) and send it again. Nothing about the chat has been changed.",
         provider = session.provider_name.as_deref().unwrap_or("no model"),
     )
@@ -457,7 +457,7 @@ pub fn turn_refusal(session: &Session) -> String {
 pub const fn chatrecall_load_refusal() -> &'static str {
     "This chat history is private: it was created under a private model, so only a private \
      model may read it. This session is running on a public model. Ask the user \
-     to switch this chat to a private model (Settings → Models, or the model chip in the \
+     to switch this chat to a private model (Settings > Models, or the model chip in the \
      composer) and try again. Do not retry with a different session id or through another tool; \
      the boundary is the same everywhere."
 }

@@ -192,8 +192,13 @@ pub fn terminal_refusal(
     private_models: &[PrivateModel],
 ) -> String {
     format!(
-        "This chat is private, so only a model hosted inside the institution may run in it, and \
-         {}. Nothing has been sent and the chat is unchanged.\n{}",
+        // Same gloss fix as refusal.rs and `tier_row` above: a local model is
+        // private too, and the earlier pass corrected `tier_row` while leaving
+        // this one, which is the longer of the two and the one that then prints
+        // the repair block listing what is actually available.
+        "This chat is private, so only a private model may run in it (one your institution hosts, \
+         or one that runs on this machine), and {}. Nothing has been sent and the chat is \
+         unchanged.\n{}",
         source.because(provider),
         repair_block(session_id, private_models)
     )

@@ -70,7 +70,8 @@ pub fn workflow_provider_refusal(
     }
     Some(format!(
         "This workflow pins `{provider}`, which is a public model, and this is a private session: \
-         a chat classified private may only run on a model hosted inside the institution. The \
+         a chat classified private may only run on a private model, one your institution hosts \
+         or one that runs on this machine. The \
          workflow was not started, nothing has been sent, and the chat is unchanged. Run it in a \
          new chat, or re-run this one with `--provider <a private model>` to override the pin."
     ))
