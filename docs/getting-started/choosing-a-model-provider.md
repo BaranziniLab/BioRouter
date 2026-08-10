@@ -28,7 +28,7 @@ Cards are grouped into three sections, in this order, with providers sorted by p
 | 2 | Institutional Models | `versa_azure`, `versa_bedrock` |
 | 3 | Commercial Models | `azure_openai`, `aws_bedrock`, `anthropic`, `openai`, `google`, `zai`, `xiaomi_mimo`, then all others alphabetically |
 
-`claude-code`, `codex`, and `cursor-agent` are hidden from the panel.
+The panel hides nothing: every provider Biorouter has is shown in one of the three sections.
 
 You can also add fully custom providers (e.g. any OpenAI-compatible endpoint) via the "Add Custom Provider" card.
 

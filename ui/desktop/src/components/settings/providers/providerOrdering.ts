@@ -1,7 +1,5 @@
 import type { ProviderDetails } from '../../../api';
 
-const HIDDEN_PROVIDERS = new Set(['claude-code', 'codex', 'cursor-agent']);
-
 const PRIORITY_ORDER: Record<string, number> = {
   versa_azure: 0,
   versa_bedrock: 1,
@@ -93,15 +91,22 @@ function classifyProvider(provider: ProviderDetails): ProviderGroupKey {
   return provider.metadata.runs_locally ? 'local' : 'institutional';
 }
 
+/**
+ * Every provider the daemon serves is shown. There used to be a hide-list here
+ * for `claude-code`, `codex` and `cursor-agent` — soft-disabled shims that drove
+ * another vendor's installed CLI as a subprocess. Those modules were removed, so
+ * the daemon no longer serves them and there is nothing left to hide. A new
+ * entry in this grid is a decision made where the provider is registered, not a
+ * name recognised here.
+ */
 export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedProviderGroup[] {
-  const visible = providers.filter((provider) => !HIDDEN_PROVIDERS.has(provider.name));
   const grouped: Record<ProviderGroupKey, ProviderDetails[]> = {
     institutional: [],
     local: [],
     commercial: [],
   };
 
-  for (const provider of visible) {
+  for (const provider of providers) {
     grouped[classifyProvider(provider)].push(provider);
   }
 

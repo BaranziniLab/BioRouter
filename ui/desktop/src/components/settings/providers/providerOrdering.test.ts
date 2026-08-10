@@ -80,13 +80,22 @@ describe('getOrderedProviderGroups', () => {
     expect(groups[2]?.providers.map((item) => item.name)).toEqual(['ollama']);
   });
 
-  it('filters hidden providers from all groups', () => {
+  it('hides nothing: every provider the daemon serves reaches a group', () => {
+    // This replaced a hide-list test for `codex` / `cursor-agent` / `claude-code`.
+    // Those provider modules are gone, so the daemon cannot serve them and the
+    // filter had nothing left to do. What must not come back is a renderer-side
+    // list of names: a provider absent from this grid should be absent because
+    // the daemon did not send it.
     const groups = getOrderedProviderGroups([
-      provider('codex'),
-      provider('cursor-agent'),
       provider('openai'),
+      provider('ollama', PRIVATE_LOCAL),
+      provider('versa_azure', PRIVATE_REMOTE),
     ]);
 
-    expect(groups[2]?.providers.map((item) => item.name)).toEqual(['openai']);
+    expect(groups.flatMap((group) => group.providers.map((item) => item.name)).sort()).toEqual([
+      'ollama',
+      'openai',
+      'versa_azure',
+    ]);
   });
 });
