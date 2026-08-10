@@ -1,4 +1,6 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 
 // Capture the toast without rendering it (BaseChat.createSessionError.test.ts idiom).
 const mockToastWarning = vi.fn();
@@ -496,5 +498,30 @@ describe('returnInitialMessageToComposer', () => {
     expect(restore!.detail).toMatchObject({ sessionId: null, value: 'keep me' });
 
     dispatch.mockRestore();
+  });
+});
+
+/**
+ * The two halves above are each sound and prove nothing on their own: the helper
+ * only gives the message back if the effect asks it to, and `BaseChatContent`
+ * cannot be mounted here (react-router plus a dozen contexts — the reason the
+ * decision was lifted out of the effect in the first place). So the wiring is
+ * asserted AT THE SOURCE, the same way styles/composerFocus.test.ts pins a rule
+ * jsdom cannot evaluate. Reading the file is the idiom BaseChat.privacy.test.tsx
+ * already uses; vitest runs with `ui/desktop` as its root.
+ */
+describe('the effect wires the refusal to the composer', () => {
+  it('passes onRefused, and it restores the message', () => {
+    const source = readFileSync(path.join(process.cwd(), 'src/components/BaseChat.tsx'), 'utf8');
+    const start = source.indexOf('runInitialMessageAutoSubmit({');
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf('\n  }, [', start);
+    expect(end).toBeGreaterThan(start);
+
+    const effectCall = source.slice(start, end);
+    expect(effectCall).toMatch(/onRefused:[\s\S]*returnInitialMessageToComposer\(/);
+    // Addressed to this chat's composer, so a split view cannot restore into a
+    // sibling (ChatInput's listener matches on sessionId).
+    expect(effectCall).toMatch(/returnInitialMessageToComposer\(\{\s*sessionId,/);
   });
 });
