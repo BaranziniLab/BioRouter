@@ -1865,7 +1865,7 @@ function BaseChatContent({
 
   const handleWorkflowCreated = (workflow: Workflow) => {
     toastSuccess({
-      title: 'Workflow created successfully!',
+      title: 'Workflow created',
       msg: `"${workflow.title}" has been saved and is ready to use.`,
     });
   };

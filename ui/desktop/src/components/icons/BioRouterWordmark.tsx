@@ -82,6 +82,10 @@ export function BioRouterWordmark({
   className,
   style,
   dark: darkProp,
+  // The accessible name mirrors the rendered wordmark on purpose: the tspans
+  // below draw `Bio` and `Router` in two inks, so a sighted user reads
+  // "BioRouter". Lowercasing this alone would give one control two names, and
+  // recasing the glyphs is a brand call. Left as-is by BR-TEXT-2 (#83).
   title = 'BioRouter',
   ...rest
 }: BioRouterWordmarkProps) {

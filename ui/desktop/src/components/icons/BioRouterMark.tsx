@@ -71,6 +71,9 @@ export function BioRouterMark({
   style,
   dark: darkProp,
   plate = false,
+  // The accessible name mirrors the wordmark this monogram stands in for, whose
+  // glyphs read "BioRouter". Lowercasing this alone would give one control two
+  // names, and recasing the glyphs is a brand call. Left as-is by BR-TEXT-2 (#83).
   title = 'BioRouter',
   ...rest
 }: BioRouterMarkProps) {
