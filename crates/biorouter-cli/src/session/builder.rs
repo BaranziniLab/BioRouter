@@ -15,6 +15,7 @@ use biorouter::workflow::Workflow;
 use console::style;
 use rustyline::EditMode;
 use std::collections::BTreeSet;
+use std::path::Path;
 use std::process;
 use std::sync::Arc;
 use tokio::task::JoinSet;
@@ -460,13 +461,63 @@ async fn close_ephemeral_store_with_manager(
     close_ephemeral_store(ephemeral_store_dir);
 }
 
-/// Best-effort removal of the private `--no-session` store directory. Split
-/// out so the cleanup itself is unit-testable (`process::exit` is not).
-/// Prefer [`close_ephemeral_store_with_manager`], which also closes the
-/// SQLite pool first.
-fn close_ephemeral_store(ephemeral_store_dir: Option<tempfile::TempDir>) {
+/// How long to keep re-trying a store removal the OS is still refusing, and
+/// how long to pause between attempts. Small, because the handles are already
+/// closing; the wait exists to let the OS notice, not to outlast real work.
+const STORE_REMOVAL_ATTEMPTS: u32 = 40;
+const STORE_REMOVAL_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// Remove a directory, re-trying while the OS says something still has it open.
+///
+/// ⚠ Closing the SQLite pool is NOT enough on Windows, which is the whole
+/// reason this exists. Measured on windows-latest: with
+/// `SessionManager::close()` awaited AND a following query already refused
+/// because the pool is closed, removing the store still fails with os error
+/// 32, "The process cannot access the file because it is being used by another
+/// process", and an immediate second attempt fails identically. sqlx runs each
+/// SQLite connection on its own background thread, and `Pool::close()` waits
+/// for the pool's bookkeeping rather than for that thread to reach
+/// `sqlite3_close`, so the db, `-wal` and `-shm` handles outlive the await by a
+/// little. Unix never notices, because unlinking an open file is allowed there.
+///
+/// Waiting is therefore the fix and not a workaround: the handles are on their
+/// way out and nothing else can be asked. The pause is bounded, and entered
+/// only after an attempt has already failed, so the ordinary path pays nothing.
+///
+/// `remove` is injected so the retry can be tested on any platform. A test that
+/// could only fail on Windows would not be a test.
+fn remove_dir_all_retrying<F>(path: &Path, mut remove: F) -> std::io::Result<()>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+{
+    let mut last = remove(path);
+    for _ in 1..STORE_REMOVAL_ATTEMPTS {
+        match last {
+            Ok(()) => return Ok(()),
+            Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(_) => {}
+        }
+        std::thread::sleep(STORE_REMOVAL_PAUSE);
+        last = remove(path);
+    }
+    last
+}
+
+/// Removal of the private `--no-session` store directory. Split out so the
+/// cleanup itself is unit-testable (`process::exit` is not). Prefer
+/// [`close_ephemeral_store_with_manager`], which also closes the SQLite pool
+/// first.
+///
+/// The `TempDir` is consumed either way: `close()` forgets itself whether or
+/// not it succeeded, so the retry below owns the path alone and cannot race a
+/// second removal from `Drop`.
+pub(super) fn close_ephemeral_store(ephemeral_store_dir: Option<tempfile::TempDir>) {
     if let Some(dir) = ephemeral_store_dir {
-        if let Err(e) = dir.close() {
+        let path = dir.path().to_path_buf();
+        if dir.close().is_ok() {
+            return;
+        }
+        if let Err(e) = remove_dir_all_retrying(&path, |p| std::fs::remove_dir_all(p)) {
             tracing::warn!(
                 "failed to remove the --no-session session store on exit: {}",
                 e
@@ -1150,23 +1201,26 @@ mod tests {
         );
     }
 
-    /// #31: once the pool is closed, dropping the `TempDir` removes the private
-    /// store — the best-effort end-of-run contract.
+    /// #31: when a run ends, the private store is gone.
     ///
-    /// This mirrors `CliSession::close_ephemeral_store`, the real end-of-run
-    /// path: it closes the SQLite pool and only then lets the held directory
-    /// go. The pool close is the whole precondition — dropping the
-    /// `Arc<SessionManager>` does not close an sqlx pool, and `TempDir`'s
-    /// `Drop` swallows the failure, so with the db + WAL/-shm files still open
-    /// the store silently survives on platforms that refuse to unlink open
-    /// files (Windows). That is what used to fail here.
+    /// ⚠ This deliberately does NOT assert on `TempDir`'s own `Drop`, and the
+    /// reason is measured rather than assumed. `Drop` makes exactly one
+    /// `remove_dir_all` attempt and discards the error, and on windows-latest
+    /// that attempt loses: with the pool closed and a following query already
+    /// refused, the removal still failed with os error 32, "The process cannot
+    /// access the file because it is being used by another process", and so
+    /// did an immediate retry. sqlx reaches `sqlite3_close` on a
+    /// per-connection background thread, so the handles outlive
+    /// `Pool::close().await`.
     ///
-    /// Asserting the pool really is closed is what gives the ordering teeth on
-    /// Unix, where the deletion succeeds either way: without it, deleting the
-    /// `close().await` below still passes on macOS and Linux while quietly
-    /// re-breaking Windows.
+    /// A single best-effort attempt is therefore not a contract any test can
+    /// hold on Windows, and production does not depend on one:
+    /// `CliSession::close_ephemeral_store` is what ends a real run, and it
+    /// closes the pool and then removes the directory through
+    /// [`close_ephemeral_store`], which waits the handles out. That is the
+    /// path exercised here.
     #[tokio::test]
-    async fn dropping_the_ephemeral_store_removes_it() {
+    async fn a_finished_run_leaves_no_private_store_behind() {
         let (dir, manager) = ephemeral_session_store().expect("ephemeral store");
         let path = dir.path().to_path_buf();
         manager
@@ -1175,22 +1229,72 @@ mod tests {
             .expect("create session");
         assert!(path.exists());
 
-        manager.close().await;
-        assert!(
-            manager
-                .create_session(path.clone(), "again".to_string(), SessionType::Hidden)
-                .await
-                .is_err(),
-            "the pool must be closed before the directory is dropped, or the drop \
-             cannot remove the store where open files cannot be unlinked"
-        );
+        // Exactly what `CliSession::close_ephemeral_store` does at end of run.
+        close_ephemeral_store_with_manager(&manager, Some(dir)).await;
 
-        drop(dir);
         assert!(
             !path.exists(),
-            "the private store must be cleaned up on drop{}",
+            "a finished run must not leave the biorouter-no-session-* store behind{}",
             why_the_store_survived(&path)
         );
+    }
+
+    /// The retry is the fix for the Windows handle lag, so it needs a test that
+    /// can fail somewhere other than Windows.
+    ///
+    /// Injecting the removal is what buys that: the OS behaviour being modelled
+    /// is "refuses for a while, then succeeds", and a closure reproduces it on
+    /// any platform. A test that could only go red on the one runner nobody can
+    /// reproduce locally would leave this permanently unverified.
+    #[test]
+    fn a_removal_the_os_is_still_refusing_is_retried_until_it_takes() {
+        use std::cell::Cell;
+        use std::io::{Error, ErrorKind};
+
+        let calls = Cell::new(0);
+        let result = remove_dir_all_retrying(Path::new("irrelevant"), |_| {
+            calls.set(calls.get() + 1);
+            if calls.get() < 3 {
+                Err(Error::new(ErrorKind::Other, "still in use"))
+            } else {
+                Ok(())
+            }
+        });
+        assert!(
+            result.is_ok(),
+            "a removal that eventually succeeds must succeed"
+        );
+        assert_eq!(
+            calls.get(),
+            3,
+            "it must keep trying past the first refusal, and stop as soon as one takes"
+        );
+
+        // It also has to give up rather than hang on a directory that is never
+        // going to be removable.
+        let calls = Cell::new(0);
+        let result = remove_dir_all_retrying(Path::new("irrelevant"), |_| {
+            calls.set(calls.get() + 1);
+            Err(Error::new(ErrorKind::PermissionDenied, "never"))
+        });
+        assert!(
+            result.is_err(),
+            "a permanent failure must be reported, not swallowed"
+        );
+        assert_eq!(
+            calls.get(),
+            STORE_REMOVAL_ATTEMPTS,
+            "the retry budget is bounded"
+        );
+
+        // An already-absent directory is the goal state, not a failure.
+        let calls = Cell::new(0);
+        let result = remove_dir_all_retrying(Path::new("irrelevant"), |_| {
+            calls.set(calls.get() + 1);
+            Err(Error::new(ErrorKind::NotFound, "gone"))
+        });
+        assert!(result.is_ok(), "already gone is success");
+        assert_eq!(calls.get(), 1, "and needs no retries");
     }
 
     /// Diagnostics for a store directory that outlived the thing meant to

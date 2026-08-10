@@ -342,12 +342,12 @@ impl CliSession {
                 .await
                 .ok();
             self.agent.config.session_manager.close().await;
-            if let Err(e) = dir.close() {
-                tracing::warn!(
-                    "failed to remove the --no-session session store on exit: {}",
-                    e
-                );
-            }
+            // ⚠ Through the shared helper, which RETRIES. Closing the pool is
+            // not enough on Windows: sqlx reaches `sqlite3_close` on a
+            // per-connection background thread, so the db/-wal/-shm handles
+            // outlive the await and a single removal loses to os error 32.
+            // A bare `dir.close()` here leaked the store on every Windows run.
+            builder::close_ephemeral_store(Some(dir));
         }
     }
 
