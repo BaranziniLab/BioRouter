@@ -67,7 +67,7 @@ import { SessionNamePill } from './SessionNamePill';
 import { useBoundAffiliation } from './privacy/useBoundAffiliation';
 import { getSessionTitlePadding } from './Layout/TitlebarControls';
 import { announceSessionName, renameSession } from '../utils/sessionNameSync';
-import { toastError } from '../toasts';
+import { toastError, toastWarning } from '../toasts';
 import { errorMessage, isConnectionError } from '../utils/conversionUtils';
 import { Greeting } from './common/Greeting';
 import { navigateWithViewTransition } from '../utils/navigationUtils';
@@ -682,12 +682,53 @@ export function handleCreateSessionError(
 }
 
 /**
+ * A mount-time auto-submit that was REFUSED. Hands the message to the composer,
+ * which is where the user would look for it and one keystroke from re-sending.
+ *
+ * Unlike the composer's own submit, there is no local copy of this text to put
+ * back: the message arrived as route/tab cargo and the composer never held it.
+ * So the restore is a give-back, not a repair, and it is paired with a toast —
+ * text appearing in an empty composer with no turn in the transcript is legible
+ * only once the user knows the send did not happen.
+ *
+ * `restore-chat-input` is the same channel `handleCreateSessionError` uses. It
+ * is a window event with no buffering, so it only works if the composer is
+ * already listening: it is, because ChatInput is a descendant of the component
+ * whose effect calls this, React runs child effects before parent effects, and
+ * every render that reaches the composer at all renders exactly one of them
+ * (the `sessionLoadError` early return, the one branch with no composer, is
+ * also the one where `session` is undefined and nothing is ever submitted).
+ * Exported so it can be unit-tested without Electron.
+ */
+export function returnInitialMessageToComposer(ctx: {
+  sessionId?: string | null;
+  message: string;
+  attachments?: UserAttachment[];
+}): void {
+  window.dispatchEvent(
+    new CustomEvent('restore-chat-input', {
+      detail: {
+        sessionId: ctx.sessionId ?? null,
+        value: ctx.message,
+        attachments: ctx.attachments ?? [],
+      },
+    })
+  );
+  toastWarning({
+    title: 'Message not sent',
+    msg: 'Biorouter could not send it while this chat was busy. It is back in the composer, ready to send.',
+  });
+}
+
+/**
  * The mount-time auto-submit decision, lifted out of its effect so it can be
  * unit-tested. `BaseChatContent` is a ~2100-line component needing react-router
  * plus a dozen contexts, so mounting it to observe this is impractical (see the
  * note in BaseChat.sessionScope.test.ts); the effect below is now a thin call.
  *
- * Returns the new value for `hasAutoSubmittedRef`.
+ * Returns the new value for `hasAutoSubmittedRef`. A refusal still returns
+ * `true`: this mount has spent its one attempt, and re-running the effect on
+ * its next dependency change would be an unbounded retry loop.
  *
  * ORDERING IS LOAD-BEARING. `onConsumed` fires only on the branch that actually
  * submits, and only AFTER `submit` — never on the `!session` bail. The cargo
@@ -696,6 +737,24 @@ export function handleCreateSessionError(
  * and a mount that bails on an unresolved session would throw away a legitimate
  * FIRST submission; any later (or never, which is what shipped) and every
  * remount of the tab re-sends it as a real agent turn.
+ *
+ * WHY THE CARGO IS SPENT ON A TIMER rather than on the verdict. `submit` now
+ * answers whether it took the message (`ChatStreamController.handleSubmit`), and
+ * a refused message must NOT be marked spent — the cargo is then the only
+ * durable copy of a message that was never sent. But the two answers are not
+ * symmetric in time: a refusal is decided before the submit does any network
+ * work, so it settles inside the microtask queue, while an acceptance does not
+ * resolve until the whole TURN is over. Waiting for `true` would leave the cargo
+ * live for the length of the turn, and a tab remount during it re-sends the
+ * message — the 2026-07-18 duplicate-submission bug, which is worse than the
+ * loss this closes. So: spend the cargo on the next MACROTASK unless a refusal
+ * has already arrived. Nothing can remount a React tree inside a microtask
+ * checkpoint (a commit needs a task, and React's scheduler posts one), so that
+ * deadline does not widen the remount window at all.
+ *
+ * A refusal that somehow arrives LATE (after the deadline) still hands the text
+ * to the composer. The cargo is gone by then, so the composer is the only copy —
+ * which is the copy the user can act on.
  */
 export function runInitialMessageAutoSubmit(args: {
   hasSession: boolean;
@@ -703,21 +762,42 @@ export function runInitialMessageAutoSubmit(args: {
   initialMessage?: string;
   initialAttachments?: UserAttachment[];
   shouldStartAgent: boolean;
-  submit: (text: string, attachments?: UserAttachment[]) => void;
+  submit: (text: string, attachments?: UserAttachment[]) => void | Promise<boolean | void>;
   clearRouterState: () => void;
   onConsumed?: () => void;
+  /** The submit refused the message and the caller still owns it. */
+  onRefused?: (message: string, attachments?: UserAttachment[]) => void;
 }): boolean {
   if (!args.hasSession || args.hasAutoSubmitted) {
     return args.hasAutoSubmitted;
   }
 
   if (args.initialMessage) {
-    args.submit(args.initialMessage, args.initialAttachments);
-    // Clear initialMessage + attachments from navigation state to prevent
-    // re-sending on refresh. Only covers the router; not the tab record.
-    args.clearRouterState();
-    // Tell the owner the cargo is spent.
-    args.onConsumed?.();
+    const message = args.initialMessage;
+    const attachments = args.initialAttachments;
+    const verdict = args.submit(message, attachments);
+
+    let refused = false;
+    let spent = false;
+    const spendCargo = () => {
+      if (refused || spent) return;
+      spent = true;
+      // Clear initialMessage + attachments from navigation state to prevent
+      // re-sending on refresh. Only covers the router; not the tab record.
+      args.clearRouterState();
+      // Tell the owner the cargo is spent.
+      args.onConsumed?.();
+    };
+
+    void Promise.resolve(verdict).then((accepted) => {
+      // Only an explicit `false` is a refusal: a submit predating the contract
+      // resolves `undefined` and must not be read as one.
+      if (accepted !== false) return;
+      refused = true;
+      args.onRefused?.(message, attachments);
+    });
+
+    setTimeout(spendCargo, 0);
     return true;
   }
 
@@ -1532,9 +1612,14 @@ function BaseChatContent({
           state: { ...location.state, initialMessage: undefined, initialAttachments: undefined },
         }),
       onConsumed: onInitialMessageConsumed,
+      // The composer never held this text, so a refusal has nothing to repair
+      // from — give the message back through the composer instead of dropping it.
+      onRefused: (message, attachments) =>
+        returnInitialMessageToComposer({ sessionId, message, attachments }),
     });
   }, [
     session,
+    sessionId,
     initialMessage,
     initialAttachments,
     searchParams,

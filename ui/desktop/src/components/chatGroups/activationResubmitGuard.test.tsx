@@ -94,7 +94,9 @@ function FakeBaseChat({
       initialMessage,
       initialAttachments: undefined,
       shouldStartAgent: false,
-      submit: (t: string) => submitLog.push(t),
+      submit: (t: string) => {
+        submitLog.push(t);
+      },
       clearRouterState: () =>
         navigate(location.pathname + location.search, {
           replace: true,
