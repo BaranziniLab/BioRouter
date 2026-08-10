@@ -106,7 +106,7 @@ export default function TurnActivityIndicator({
 
       {showNudge && (
         <div className="pl-7 pt-0.5 text-xs text-text-muted/70">
-          Still working — you can stop the turn from the composer.
+          Still working. You can stop the turn from the composer.
         </div>
       )}
     </div>

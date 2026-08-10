@@ -319,7 +319,7 @@ export function FirstRunPrivacyNotice({
                   <ul data-testid="notice-by-provider" className="mt-1 space-y-0.5">
                     {resolved.privateByProvider.map(({ provider, count }) => (
                       <li key={provider} data-provider={provider}>
-                        {providerLabel(provider)} — {count}
+                        {providerLabel(provider)}: {count}
                       </li>
                     ))}
                   </ul>
@@ -337,7 +337,7 @@ export function FirstRunPrivacyNotice({
 
           <p data-testid="notice-last-model-caveat">
             Chats from before this version are marked by the model they were last using. If an older
-            chat contains work you want kept private, switch it to a private model — it will be
+            chat contains work you want kept private, switch it to a private model. It will be
             marked private from its next turn on.
           </p>
 

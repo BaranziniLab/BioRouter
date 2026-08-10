@@ -130,7 +130,7 @@ institution. Biorouter states the scope before you press, in these words:
 ```text
 Approving records your acceptance for this chat, this extension and this model's institution only.
 It is not remembered for other chats, for other extensions, or if you switch this chat to a model
-covered by a different institution's agreements — each of those is a different data flow and would
+covered by a different institution's agreements. Each of those is a different data flow and would
 be asked again.
 ```
 

@@ -198,7 +198,7 @@ describe('FirstRunPrivacyNotice', () => {
     render(<FirstRunPrivacyNotice open onDismiss={vi.fn()} />);
 
     const list = await screen.findByTestId('notice-by-provider');
-    expect(within(list).getByText(/Versa \(Azure\) — 2/)).toBeTruthy();
+    expect(within(list).getByText(/Versa \(Azure\): 2/)).toBeTruthy();
   });
 
   it('says the tier came from the last model used, and how to repair it', () => {

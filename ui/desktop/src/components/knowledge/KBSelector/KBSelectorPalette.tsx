@@ -125,7 +125,7 @@ export function KBSelectorPalette({ onClose }: Props) {
   async function submitDraft() {
     const trimmed = draft.trim();
     if (!trimmed) {
-      setError('Please enter a name.');
+      setError('Enter a name.');
       return;
     }
 
@@ -133,7 +133,7 @@ export function KBSelectorPalette({ onClose }: Props) {
       if (draftMode?.kind === 'create') {
         const id = makeUniqueId(trimmed);
         if (!id) {
-          setError('Please choose a name with letters or numbers.');
+          setError('Choose a name with letters or numbers.');
           return;
         }
         setBusyId('__create');
@@ -210,7 +210,7 @@ export function KBSelectorPalette({ onClose }: Props) {
           <DialogHeader className="px-6 pt-6 pb-0">
             <DialogTitle>Knowledge Bases</DialogTitle>
             <DialogDescription>
-              Choose which knowledge bases this chat uses, and which one of them is the primary —
+              Choose which knowledge bases this chat uses, and which one of them is the primary:
               the base a knowledge write lands in when none is named.
             </DialogDescription>
           </DialogHeader>
