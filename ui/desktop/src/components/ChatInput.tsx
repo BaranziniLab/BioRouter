@@ -1682,9 +1682,9 @@ export default function ChatInput({
         // re-entrant send, or a controller with no session, which is the fresh
         // tab that accepts text, clears it and creates nothing), the text was
         // gone with no error and no message. Put it back through the same
-        // channel a failed `createSession` uses. `displayValue`, not `textToSend`, because what
-        // goes back must be the box the user was looking at: reference chips
-        // included, appended dropped-file paths not.
+        // channel a failed `createSession` uses. What goes back is
+        // `displayValue`, not `textToSend`: it must be the box the user was
+        // looking at, reference chips included, appended dropped-file paths not.
         const restoredText = displayValue.trim() ? displayValue : textToSend;
         const restoredImages = pastedImages;
         void Promise.resolve(submitted).then((accepted) => {
