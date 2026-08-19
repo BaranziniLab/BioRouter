@@ -140,7 +140,7 @@ test.describe('Enhanced Context Management E2E Tests', () => {
       // Verify compaction loading state
       const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
       await expect(loadingBioRouter).toBeVisible();
-      await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
+      await expect(loadingBioRouter).toContainText('biorouter is compacting the chat...');
       
       // Wait for compaction to complete
       await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
@@ -401,7 +401,7 @@ test.describe('Enhanced Context Management E2E Tests', () => {
       // Verify loading state persists during timeout
       const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
       await expect(loadingBioRouter).toBeVisible();
-      await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
+      await expect(loadingBioRouter).toContainText('biorouter is compacting the chat...');
       
       // Wait for timeout to complete
       await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 35000 });
@@ -433,7 +433,7 @@ test.describe('Enhanced Context Management E2E Tests', () => {
       // Verify loading message
       const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
       await expect(loadingBioRouter).toBeVisible();
-      await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
+      await expect(loadingBioRouter).toContainText('biorouter is compacting the chat...');
       
       // Wait for compaction to complete
       await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
@@ -458,7 +458,7 @@ test.describe('Enhanced Context Management E2E Tests', () => {
       // Verify loading biorouter appears with correct message
       const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
       await expect(loadingBioRouter).toBeVisible();
-      await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
+      await expect(loadingBioRouter).toContainText('biorouter is compacting the chat...');
       
       // Verify no other loading indicators are shown
       const regularLoadingMessages = page.locator('[data-testid="loading-biorouter"]:not(:has-text("compacting"))');
