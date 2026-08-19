@@ -1,4 +1,4 @@
-import { client } from '../../api/client.gen';
+import { codingAgentsStatus } from '../../api';
 
 /**
  * `GET /coding_agents/status` — is each vendor CLI installed, and is the user
@@ -6,21 +6,17 @@ import { client } from '../../api/client.gen';
  *
  * ## Why this module exists at all
  *
- * The route ships in `crates/biorouter-server/src/routes/coding_agents.rs` and is
- * already in `ui/desktop/openapi.json`, but the TypeScript client has not been
- * regenerated yet, so `src/api/sdk.gen.ts` has no function for it.
+ * It wraps the generated `codingAgentsStatus` rather than calling it at each use
+ * site, so the two provider-keyed maps below sit next to the shape they describe.
  *
- * TODO(client-regen): after `just generate-openapi && npm run generate-api`, the
- * generated function is **`codingAgentsStatus`** (from the `coding_agents_status`
- * operationId, the same snake→camel mapping that turns `llamacpp_status` into
- * `llamacppStatus`). Swap the `client.get` call below for
- * `import { codingAgentsStatus } from '../../api'` and delete the local types in
- * favour of the generated `AgentAvailability` / `AuthState` / `CodingAgentKind`.
- * The call is written in the generated SDK's own shape — `client.get<Responses,
- * unknown, true>` against a `{ 200: Body }` map — so the swap is mechanical and
- * the resolved `data` type does not change.
+ * The local wire types mirror the generated `AgentAvailability` / `AuthState` /
+ * `CodingAgentKind` and exist only so the card can switch exhaustively on the
+ * five-arm auth union: the generator flattens a serde-tagged enum into a single
+ * object type with every field optional, which type-checks but lets a missed arm
+ * pass silently. If a future generator version emits a discriminated union, delete
+ * these and import the generated ones.
  *
- * It is deliberately NOT a raw `fetch`: the generated `client` already carries the
+ * It is deliberately NOT a raw `fetch`: the generated client already carries the
  * ephemeral `baseUrl` and the per-launch `X-Secret-Key` that `renderer.tsx` set on
  * it. A hand-rolled fetch would have to re-derive both, which is a second source
  * of truth for the daemon's address.
@@ -66,11 +62,6 @@ export interface CodingAgentStatusResponse {
   agents: CodingAgentAvailability[];
 }
 
-/** The generated SDK's response-map shape, so the swap above is type-identical. */
-type CodingAgentsStatusResponses = {
-  200: CodingAgentStatusResponse;
-};
-
 /**
  * Probe both CLIs.
  *
@@ -79,11 +70,8 @@ type CodingAgentsStatusResponses = {
  * never polls.
  */
 export async function fetchCodingAgentStatus(): Promise<CodingAgentStatusResponse> {
-  const { data } = await client.get<CodingAgentsStatusResponses, unknown, true>({
-    url: '/coding_agents/status',
-    throwOnError: true,
-  });
-  return data;
+  const { data } = await codingAgentsStatus({ throwOnError: true });
+  return data as CodingAgentStatusResponse;
 }
 
 /**

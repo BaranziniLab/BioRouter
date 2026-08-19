@@ -371,6 +371,35 @@ mod tests {
         assert!(active_bridge_url().is_none(), "the scope must not leak");
     }
 
+    /// The bridge fails CLOSED. With no permission inspector configured there is no
+    /// decision to read, and the only safe reading of "nothing decided" is refusal —
+    /// the alternative is a bridged child agent executing a tool that no inspector
+    /// ever looked at.
+    ///
+    /// Worth pinning separately from the happy path because the failure is silent:
+    /// an `unwrap_or_default()` here, or an `if denied { .. }` with no final
+    /// `else` refusal, would turn a misconfigured stack into an open door and every
+    /// other test in this file would still pass.
+    #[tokio::test]
+    async fn a_grant_with_no_permission_inspector_refuses_rather_than_allows() {
+        let grant = dummy_grant();
+        let call = CallToolRequestParams {
+            name: "developer__shell".to_string().into(),
+            arguments: None,
+            meta: None,
+            task: None,
+        };
+
+        let refusal = grant
+            .call(call)
+            .await
+            .expect_err("an uninspected tool call must not be executed");
+        assert!(
+            refusal.contains("no permission decision"),
+            "the refusal should name the missing decision, got: {refusal}"
+        );
+    }
+
     fn dummy_grant() -> BridgeGrant {
         BridgeGrant::new(
             Session::default(),
