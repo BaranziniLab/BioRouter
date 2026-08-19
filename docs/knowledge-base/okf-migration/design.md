@@ -79,8 +79,9 @@ raw_source: [raw/pmid-32504360/original.pdf]     # anchors the chain to immutabl
 ---
 ```
 
-**Reserved files** — `index.md` and `log.md` carry no `type` and are not concepts. `schema.md` is a
-BioRouter/BioOKF producer extension (OKF is silent on it, which makes it legal).
+**Reserved files** — `index.md` and `log.md` carry no `type` and are not concepts. **`schema.md`
+carries `type: Schema`** — see DR-23; the earlier claim that "OKF is silent on it, which makes it
+legal" was wrong.
 
 ## 3. Decision records
 
@@ -480,3 +481,55 @@ with a stated reason.
 - **A renderer swap** — DR-9 already defers it, gated on measured graph sizes.
 
 Deferred items keep their decision records so the reasoning is not lost.
+
+
+## 5. Decision records from the spec-fidelity review
+
+### DR-23 — `schema.md` is a typed concept document, not an untyped third reserved file
+
+An earlier draft asserted that `schema.md` is legal untyped because "OKF is silent on it". **OKF is
+not silent.** §3.1 reserves exactly two filenames and then states: *"All other `.md` files are
+concept documents."* Conformance rules 1 and 2 (§11) require every non-reserved `.md` to carry a
+parseable frontmatter block with a non-empty `type`. An untyped `schema.md` is therefore a
+**conformance failure**, not an extension.
+
+BioOKF itself has this problem — its §3 reserves a third file, `SCHEMA.md`, as *"not concept
+documents and carry no `type`"*, which is a genuine deviation from its parent spec and the reason
+"every conformant BioOKF bundle is also a conformant OKF bundle" holds against v0.1 but **not**
+against v0.2.
+
+**Decision:** BioRouter is stricter than BioOKF here, because being stricter costs nothing. Our
+`schema.md` gets frontmatter `type: Schema` plus a `title` and `description`. It is then a perfectly
+ordinary concept document, the bundle passes OKF §11 rules 1 and 2 with no carve-out, and the graph
+deriver simply skips it as a scaffold page exactly as it skips `index.md` and `log.md` today.
+
+**Corollary:** `biookf_version` does not go in the root `index.md`. OKF §8 permits `okf_version` and
+nothing else in the one place it allows index frontmatter, so `biookf_version` lives in
+`manifest.yaml` beside `format`.
+
+### DR-24 — BioOKF provenance has *two* mechanisms, and DR-4 carried only one
+
+SPEC §8.1 is explicit that provenance is carried by **exactly two** things, both naming source nodes
+by `identifier`: the required per-edge `primary_source`, *and* the `reported_in` edge — the explicit,
+traversable link from a concept to its source node. v0.5 dropped the node-level `provided_by`
+precisely because a `reported_in` edge already says it.
+
+DR-4 described only `primary_source`. **Decision:** BioOKF-mode ingest emits both — a `reported_in`
+edge from each concept page to the source node it came from, and `primary_source` on every edge. A
+`reported_in` edge carries its own `primary_source`, and by convention that is the edge's **own
+object** (a source attests its own contents). That self-reference is the intended terminating base
+case, **not** a lint error, and the lint must special-case it or it will flag every source in the
+base.
+
+### DR-25 — One relationship, one edge: the deriver deduplicates across grammars
+
+BioOKF §4 is unambiguous: *"Only `edges:` entries are part of the graph."* A page may legally restate
+an edge in prose and may use advisory links for navigation. So a page that has both an `edges:` entry
+and a markdown link to the same target asserts **one** relationship, not two — but DR-2 reads all
+three grammars and nothing in Stage 2 deduplicates them.
+
+**Decision:** the deriver reduces to a set keyed on `(from, to, predicate)`. A typed `edges:` entry
+**wins** over an untyped link to the same target — the untyped one is absorbed rather than emitted as
+a second, predicate-less edge beside it. In OKF mode, where there are no predicates, links to the
+same target collapse to one edge. Without this a BioOKF page renders every relationship twice: once
+typed, once grey.
