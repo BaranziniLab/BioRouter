@@ -2342,7 +2342,10 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
 
     if status.installed {
         println!(
-            "{} is already detected ({}). Starting a session anyway so you can              describe what is going wrong.",
+            concat!(
+                "{} is already detected ({}). Starting a session anyway so you can ",
+                "describe what is going wrong."
+            ),
             status.display_name,
             status.version.as_deref().unwrap_or("version unknown")
         );
@@ -2355,9 +2358,10 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
     });
 
     if !Config::global().exists() {
-        anyhow::bail!(
-            "Biorouter is not configured yet, so there is no model to debug with.              Run `biorouter configure` first."
-        );
+        anyhow::bail!(concat!(
+            "Biorouter is not configured yet, so there is no model to debug with. ",
+            "Run `biorouter configure` first."
+        ));
     }
 
     let session_id = get_or_create_session_id(None, false, false, None, None).await?;

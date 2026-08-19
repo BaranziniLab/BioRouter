@@ -17,6 +17,24 @@ import { launchDependencyDebugSession } from '../utils/launchDependencyDebug';
 
 type InstallState = 'idle' | 'running' | 'done' | 'error' | 'installed';
 
+/**
+ * Whether a dependency can be installed by the "Install all" button.
+ *
+ * Excludes rows whose "install command" is really a note to the user. On macOS
+ * and unknown Linux distros the fallback is `# Install <dep> via your system
+ * package manager` — a shell COMMENT, so running it exits 0 and the tool is then
+ * reported as "the installer finished successfully but is still not detectable",
+ * which reads as a broken installer rather than as no installer.
+ */
+export function isBatchInstallable(dep: {
+  info: DependencyInfo;
+  installState: InstallState;
+}): boolean {
+  if (dep.info.installed || dep.installState === 'done') return false;
+  const cmd = dep.info.installCmd.trim();
+  return cmd.length > 0 && !cmd.startsWith('#');
+}
+
 interface DepState {
   info: DependencyInfo;
   installState: InstallState;
@@ -272,6 +290,15 @@ export default function DependencySetupModal() {
 
   /** Resolves when the install reaches a terminal state, not when it starts. */
   const handleInstall = async (depName: string): Promise<void> => {
+    // Guard on the LIVE waiter map, not on `deps`.
+    //
+    // `handleInstallAll` calls this closure repeatedly across the whole batch, so
+    // its `deps` is frozen at the render where the button was clicked and still
+    // reads "idle" for a dependency the user has since started by hand from its
+    // own row. That let two package managers run at once and fight over one lock,
+    // and orphaned the first install's waiter. The ref is the only view of what is
+    // actually in flight right now.
+    if (installWaiters.current[depName]) return;
     if (deps.some((dep) => dep.info.name === depName && dep.installState === 'running')) return;
 
     const finished = new Promise<void>((resolve) => {
@@ -333,7 +360,9 @@ export default function DependencySetupModal() {
   // One click for the whole list. Each install streams its own output and fails
   // independently, so a dependency that needs a hand does not stop the others.
   const handleInstallAll = async () => {
-    const pending = deps.filter((d) => !d.info.installed && d.installState !== 'done');
+    // Same predicate as `installableCount`, so the button's number and what the
+    // batch actually attempts can never disagree.
+    const pending = deps.filter(isBatchInstallable);
     for (const dep of pending) {
       await handleInstall(dep.info.name);
     }
@@ -351,11 +380,7 @@ export default function DependencySetupModal() {
       ? 'Updating…'
       : 'Installing…';
   const isBusy = cliState === 'running' || deps.some((dep) => dep.installState === 'running');
-  // Only deps that actually carry an automated installer — a row whose install
-  // command is a "use your package manager" placeholder cannot be batch-installed.
-  const installableCount = deps.filter(
-    (d) => !d.info.installed && d.installState !== 'done' && d.info.installCmd.trim().length > 0
-  ).length;
+  const installableCount = deps.filter(isBatchInstallable).length;
   if (!visible || (deps.length === 0 && !cli)) return null;
 
   const allDone =
@@ -453,6 +478,7 @@ export default function DependencySetupModal() {
                   variant="default"
                   size="sm"
                   className="h-7 text-xs"
+                  disabled={isBusy}
                   onClick={handleInstallCli}
                 >
                   {cliButtonLabel}
@@ -533,6 +559,11 @@ export default function DependencySetupModal() {
                       variant="default"
                       size="sm"
                       className="h-7 text-xs"
+                      // Disabled while ANY install is running. A live row button
+                      // during a batch let the user start a second installer for a
+                      // dependency the batch had not reached yet, so two package
+                      // managers contended for one lock.
+                      disabled={isBusy}
                       onClick={() => handleInstall(info.name)}
                     >
                       Install

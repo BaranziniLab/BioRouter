@@ -3,6 +3,9 @@ import { compareVersions } from 'compare-versions';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
+import { createWriteStream } from 'fs';
+import { Readable, Transform } from 'stream';
+import { pipeline } from 'stream/promises';
 import log from './logger';
 import { safeJsonParse } from './conversionUtils';
 
@@ -229,32 +232,29 @@ export class GitHubUpdater {
 
       await fs.mkdir(downloadsDir, { recursive: true });
       log.info(`GitHubUpdater: Streaming to ${partPath}...`);
-      const fileHandle = await fs.open(partPath, 'w');
-      const writeStream = fileHandle.createWriteStream();
 
-      const reader = response.body.getReader();
       let downloadedSize = 0;
       let lastProgressTime = Date.now();
 
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
+      // `pipeline` rather than a hand-rolled read/write loop.
+      //
+      // The hand-rolled version had two bugs that only appear on a failing disk,
+      // and both were nasty. It attached `once('error', reject)` inside the
+      // backpressure branch, so (a) with no prior backpressure there was NO error
+      // listener at all and a failed write became an unhandled 'error' — which
+      // reaches the main process's `uncaughtException` handler and replaces every
+      // open window with the fatal error screen, losing whatever chat the user was
+      // in; and (b) after any backpressure the listener from that round was never
+      // removed, so a later write error resolved an already-settled promise, the
+      // loop kept writing to a destroyed stream, and the download hung forever
+      // with the progress bar frozen. `pipeline` propagates the error to one
+      // place and destroys both ends.
+      const counter = new Transform({
+        transform(chunk: Buffer, _enc, callback) {
+          downloadedSize += chunk.length;
 
-          // Respect backpressure: if the disk is slower than the socket, wait for
-          // the drain rather than letting Node buffer the difference in memory.
-          if (!writeStream.write(value)) {
-            await new Promise<void>((resolve, reject) => {
-              writeStream.once('drain', resolve);
-              writeStream.once('error', reject);
-            });
-          }
-          downloadedSize += value.length;
-
-          // Report progress - only when percentage changes by at least 1%
           if (totalSize > 0 && onProgress) {
             const percent = Math.round((downloadedSize / totalSize) * 100);
-
             // Only report if percent changed (throttles from hundreds/sec to ~100 total)
             if (percent !== lastReportedPercent) {
               onProgress(percent);
@@ -279,13 +279,25 @@ export class GitHubUpdater {
               `GitHubUpdater: Download appears slow - no significant progress in 30 seconds (${downloadedSize}/${totalSize} bytes)`
             );
             lastProgressTime = now;
-          } else if (value.length > 0) {
+          } else if (chunk.length > 0) {
             lastProgressTime = now;
           }
-        }
-      } finally {
-        await new Promise<void>((resolve) => writeStream.end(resolve));
-        await fileHandle.close().catch(() => {});
+
+          callback(null, chunk);
+        },
+      });
+
+      try {
+        await pipeline(
+          Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]),
+          counter,
+          createWriteStream(partPath)
+        );
+      } catch (streamError) {
+        // Never leave a half-written `.part` behind for a failure of any kind —
+        // a truncated transfer, a disconnect, or a full disk.
+        await fs.rm(partPath, { force: true }).catch(() => {});
+        throw streamError;
       }
 
       const downloadDuration = Date.now() - downloadStartTime;

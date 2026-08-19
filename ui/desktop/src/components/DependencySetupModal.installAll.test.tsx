@@ -21,7 +21,7 @@ vi.mock('./ModalShell', () => ({
   ),
 }));
 
-import DependencySetupModal from './DependencySetupModal';
+import DependencySetupModal, { isBatchInstallable } from './DependencySetupModal';
 
 const installDependency = vi.fn();
 let emit: (e: DependencyEvent) => void = () => {};
@@ -114,5 +114,57 @@ describe('Install all', () => {
     // The row's own Install button is the whole batch; a second control saying
     // "Install all (1)" beside it is noise.
     expect(screen.queryByRole('button', { name: /install all/i })).toBeNull();
+  });
+});
+
+describe('isBatchInstallable', () => {
+  const row = (info: Partial<DependencyInfo>, installState: 'idle' | 'done' = 'idle') => ({
+    info: { ...dep('x'), ...info },
+    installState,
+  });
+
+  it('includes a dependency with a real install command', () => {
+    expect(isBatchInstallable(row({ installCmd: 'brew install uv' }))).toBe(true);
+  });
+
+  it('excludes one that is already installed or done', () => {
+    expect(isBatchInstallable(row({ installed: true, installCmd: 'brew install uv' }))).toBe(false);
+    expect(isBatchInstallable(row({ installCmd: 'brew install uv' }, 'done'))).toBe(false);
+  });
+
+  it('excludes an empty command', () => {
+    expect(isBatchInstallable(row({ installCmd: '   ' }))).toBe(false);
+  });
+
+  it('excludes a shell COMMENT posing as an install command', () => {
+    // The macOS / unknown-distro fallback. Running it exits 0, and the tool is
+    // then reported as "installer finished but still not detectable" — which
+    // reads as a broken installer rather than as no installer at all.
+    expect(
+      isBatchInstallable(row({ installCmd: '# Install rust via your system package manager' }))
+    ).toBe(false);
+  });
+});
+
+describe('concurrent install guard', () => {
+  it('does not start a second installer for a dependency already in flight', async () => {
+    render(<DependencySetupModal />);
+    emit({ type: 'check-results', deps: [dep('git'), dep('npm')] });
+
+    // The user starts `npm` by hand from its own row...
+    await userEvent.click((await screen.findAllByRole('button', { name: /^install$/i }))[1]);
+    await waitFor(() => expect(installDependency).toHaveBeenCalledWith('npm'));
+    const callsAfterManual = installDependency.mock.calls.length;
+
+    // ...and the batch then reaches it. Its `deps` snapshot still says 'idle', so
+    // only the live waiter map can stop a second `apt-get` starting.
+    await userEvent.click(await screen.findByRole('button', { name: /install all/i }));
+    await waitFor(() => expect(installDependency).toHaveBeenCalledWith('git'));
+    emit({ type: 'install-done', dep: 'git', installed: true, version: '1' });
+
+    await new Promise((r) => setTimeout(r, 30));
+    const npmCalls = installDependency.mock.calls.filter((c) => c[0] === 'npm').length;
+    expect(npmCalls).toBe(1);
+    expect(installDependency.mock.calls.length).toBe(callsAfterManual + 1); // git only
   });
 });

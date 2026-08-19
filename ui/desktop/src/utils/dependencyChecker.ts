@@ -446,9 +446,21 @@ function getLinuxDistro(): LinuxDistro {
 let _cache: { at: number; deps: DependencyInfo[] } | null = null;
 let _inFlight: Promise<DependencyInfo[]> | null = null;
 
+/**
+ * Bumped whenever a caller invalidates. A probe carries the generation it started
+ * in and only writes the cache if that is still current — otherwise a probe that
+ * a `force` explicitly superseded would land afterwards and reinstate the very
+ * snapshot the force was asking to discard, stamped with a fresh timestamp, for
+ * another full TTL.
+ */
+let _generation = 0;
+
 /** Drop the memoised result so the next check re-probes (after an install). */
 export function invalidateDependencyCache(): void {
   _cache = null;
+  // Also disown any probe already running: it was started against the old state.
+  _generation += 1;
+  _inFlight = null;
 }
 
 /**
@@ -459,8 +471,7 @@ export function invalidateDependencyCache(): void {
  */
 export function checkAllDependencies(opts?: { force?: boolean }): Promise<DependencyInfo[]> {
   if (opts?.force) {
-    _cache = null;
-    _inFlight = null;
+    invalidateDependencyCache();
   } else {
     if (_cache && Date.now() - _cache.at < DEPENDENCY_CACHE_TTL_MS) {
       return Promise.resolve(_cache.deps);
@@ -468,15 +479,21 @@ export function checkAllDependencies(opts?: { force?: boolean }): Promise<Depend
     if (_inFlight) return _inFlight;
   }
 
-  _inFlight = (async () => {
+  const generation = _generation;
+  const probe = (async () => {
     const deps = (await checkViaBundledCli()) ?? (await checkNativeDependencies());
-    _cache = { at: Date.now(), deps };
+    if (generation === _generation) _cache = { at: Date.now(), deps };
     return deps;
   })().finally(() => {
-    _inFlight = null;
+    // Only clear the slot if it still holds THIS probe. Clearing unconditionally
+    // let a superseded probe's completion deregister the newer one, so the next
+    // caller started a third `biorouter doctor` instead of joining the running
+    // one — defeating the sharing this block exists to provide.
+    if (_inFlight === probe) _inFlight = null;
   });
 
-  return _inFlight;
+  _inFlight = probe;
+  return probe;
 }
 
 async function checkViaBundledCli(): Promise<DependencyInfo[] | null> {
