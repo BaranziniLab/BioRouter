@@ -12,8 +12,8 @@ vi.mock('../KnowledgeContext', () => ({
   useKnowledge: () => state,
 }));
 
-vi.mock('./KBSelectorPalette', () => ({
-  KBSelectorPalette: () => null,
+vi.mock('./KBSelectorMenu', () => ({
+  KBSelectorMenu: () => null,
 }));
 
 function base(id: string) {
@@ -29,7 +29,7 @@ describe('KBSelectorTrigger', () => {
   it('names the primary and counts the rest of the set', () => {
     state.primaryKb = base('alpha');
     state.visibleBases = [base('alpha'), base('beta'), base('gamma')];
-    render(<KBSelectorTrigger />);
+    render(<KBSelectorTrigger onManage={() => {}} onCreate={() => {}} />);
     expect(screen.getByText('alpha')).toBeInTheDocument();
     expect(screen.getByText('+2')).toBeInTheDocument();
   });
@@ -38,7 +38,7 @@ describe('KBSelectorTrigger', () => {
   // "other". Subtracting one unconditionally would undercount them.
   it('counts every visible base when there is no primary', () => {
     state.visibleBases = [base('alpha'), base('beta')];
-    render(<KBSelectorTrigger />);
+    render(<KBSelectorTrigger onManage={() => {}} onCreate={() => {}} />);
     expect(screen.getByText('No primary knowledge base')).toBeInTheDocument();
     expect(screen.getByText('+2')).toBeInTheDocument();
   });
@@ -46,7 +46,7 @@ describe('KBSelectorTrigger', () => {
   it('shows no count when the primary is the only base in the chat', () => {
     state.primaryKb = base('alpha');
     state.visibleBases = [base('alpha')];
-    render(<KBSelectorTrigger />);
+    render(<KBSelectorTrigger onManage={() => {}} onCreate={() => {}} />);
     expect(screen.queryByText(/^\+\d+$/)).not.toBeInTheDocument();
   });
 });

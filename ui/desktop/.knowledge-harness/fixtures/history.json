@@ -1,0 +1,49 @@
+[
+  {
+    "commit_sha": "9f2c1ab4d5e6f70819a2b3c4d5e6f7a8b9c0d1e2",
+    "kind": "ingest",
+    "summary": "Ingested Bjornevik 2022 — EBV seroconversion cohort",
+    "timestamp": "2026-08-17T16:04:11Z",
+    "delta": "+3 pages, +5 links"
+  },
+  {
+    "commit_sha": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d",
+    "kind": "link",
+    "summary": "Linked Epstein Barr virus to the relapsing remitting course",
+    "timestamp": "2026-08-17T15:58:02Z",
+    "delta": "+2 links"
+  },
+  {
+    "commit_sha": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e",
+    "kind": "flag",
+    "summary": "Flagged conflicting prevalence figures across two sources",
+    "timestamp": "2026-08-16T11:20:44Z",
+    "delta": "+1 page"
+  },
+  {
+    "commit_sha": "3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+    "kind": "lint",
+    "summary": "Merged two near-duplicate demyelination notes",
+    "timestamp": "2026-08-15T09:41:07Z",
+    "delta": "-1 page, ~4 edits"
+  },
+  {
+    "commit_sha": "4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f70",
+    "kind": "query",
+    "summary": "Answered: which DMTs have the strongest relapse-rate evidence",
+    "timestamp": "2026-08-14T13:02:19Z"
+  },
+  {
+    "commit_sha": "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+    "kind": "restore",
+    "summary": "Restored the tree to 2026-08-12",
+    "timestamp": "2026-08-13T18:30:55Z",
+    "delta": "~12 edits"
+  },
+  {
+    "commit_sha": "6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192",
+    "kind": "manual",
+    "summary": "Hand-edited the hub page's opening paragraph",
+    "timestamp": "2026-08-12T10:15:00Z"
+  }
+]

@@ -11,13 +11,14 @@ use biorouter::model::ModelConfig;
 use biorouter_mcp::knowledge::{
     convert,
     macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
+    merge::{MergeAuthority, MergeReport, UserKbMerge},
     paths,
     service::{KnowledgeService, PrimaryUpdate, ReadPageError},
     source_paths, store,
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
     tier,
     tier_user::UserKbTierChange,
-    types::{Credibility, Graph, HistoryEntry, KbTier, Manifest, ModelRef},
+    types::{Credibility, Graph, HistoryEntry, KbFormat, KbTier, Manifest, ModelRef},
 };
 // Issue #56 DR-16/DR-18. `src/routes/` is compiled into the `biorouterd` binary
 // as well as the lib and cannot name `crate::auth`, so this is the shared
@@ -60,6 +61,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/{id}/query", post(query_kb))
         .route("/bases/{id}/lint", post(lint))
         .route("/bases/{id}/export", get(export_brkb))
+        .route("/bases/{id}/merge", post(merge_bases))
         .route("/bases/{id}/sources/{sid}/reclassify", post(reclassify))
         .route(
             "/bases/{id}/sources/{sid}/credibility",
@@ -189,6 +191,50 @@ pub struct CreateBaseBody {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    /// Which profile the new base is written in: `okf` (the default) or
+    /// `biookf`. It decides the scaffolded tree and the `schema.md` the
+    /// sub-agent is taught from, and it cannot be changed afterwards — DR-22
+    /// defers format migration and DR-26 says so in as many words.
+    ///
+    /// ⚠ **A `String` parsed by hand, not a `KbFormat`, for the reason
+    /// `kb_create_base`'s parameter is** (Stage 4). `KbFormat`'s own
+    /// `Deserialize` is deliberately lenient because DR-12 traces what a
+    /// `manifest.yaml` that fails to load costs the user — so an unknown
+    /// profile *on disk* reads as plain OKF rather than destroying their
+    /// pointers. That is the right reading of a file already written and the
+    /// wrong reading of a request: a caller that asks for `bio-okf` and
+    /// silently receives a plain-OKF base has been handed the opposite of what
+    /// it asked for, and cannot convert. DR-7's rule — producers are held to a
+    /// higher bar than consumers — applied to the HTTP surface.
+    ///
+    /// `schema(value_type)` keeps the published contract, and therefore the
+    /// generated TypeScript, an enum of exactly the two words, so the strict
+    /// parse below is the backstop and not the first line of defence.
+    #[serde(default)]
+    #[schema(value_type = Option<KbFormat>)]
+    pub format: Option<String>,
+}
+
+impl CreateBaseBody {
+    /// The requested profile, or a 400 naming the two that exist.
+    fn format(&self) -> Result<KbFormat, (StatusCode, String)> {
+        let raw = self.format.as_deref().map(str::trim).unwrap_or_default();
+        if raw.is_empty() {
+            return Ok(KbFormat::default());
+        }
+        KbFormat::parse(raw).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "unknown knowledge base format {raw:?}: use \"{}\" for general-purpose \
+                     knowledge or \"{}\" for biomedical knowledge under the BioOKF controlled \
+                     vocabulary",
+                    KbFormat::Okf.as_str(),
+                    KbFormat::Biookf.as_str(),
+                ),
+            )
+        })
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -383,14 +429,22 @@ pub async fn list_bases(
 #[utoipa::path(
     post, path = "/knowledge/bases",
     request_body = CreateBaseBody,
-    responses((status = 200, description = "Created knowledge base", body = Manifest))
+    responses(
+        (status = 200, description = "Created knowledge base", body = Manifest),
+        (status = 400, description = "Duplicate id, invalid id, or unknown format"),
+    )
 )]
 pub async fn create_base(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<CreateBaseBody>,
 ) -> Result<Json<Manifest>, (StatusCode, String)> {
+    // Refused before anything is created: `create_base_in` writes the manifest,
+    // the scaffolded tree and `schema.md` in one transaction precisely because
+    // those are three statements about one base, and a request this route
+    // cannot read must not reach it half-answered.
+    let format = body.format()?;
     let m = svc
-        .create_base(&body.id, &body.name, body.color.as_deref())
+        .create_base_in(&body.id, &body.name, body.color.as_deref(), format)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(m))
 }
@@ -1172,6 +1226,50 @@ async fn build_completer(
     Ok((Box::new(completer), tier, affiliation))
 }
 
+/// The caller's identity for a lint that will **not** write (issue #56).
+///
+/// The tier comes from [`build_completer`] — the same one funnel the autofix
+/// path and the two sibling macro routes use — so it is read off a *constructed
+/// instance*, never re-derived from `model.provider`. That name-keyed lookup is
+/// precisely what [`ProviderCompleter::paired`] exists to close: `ollama`'s
+/// registry entry is Private unconditionally while its instance reads the
+/// resolved base URL, and `providers::create` intercepts `BIOROUTER_LEAD_MODEL`
+/// before the registry is consulted at all. The completer that comes back is
+/// dropped: a scan has nothing to say to a model.
+///
+/// ⚠ **This read-only lint used to answer with a hardcoded `Public`**, on the
+/// reasoning that a scan constructs no provider and so has no instance to read
+/// a tier from. The premise was a choice, not a fact — `LintBody::model` is
+/// required, so a lint always names a model and the tier was there to be had —
+/// and the conclusion broke the feature: a Public capability can never reach a
+/// private base, so [`assert_macro_target_reachable`] refused **every**
+/// read-only lint of a private base, and refused it with a message telling the
+/// user to switch this chat to a private model, the one remedy that could not
+/// work while the model was not being read. That is the failure
+/// `a_private_model_may_ingest_its_own_private_conversation_over_http` is
+/// written to catch on the sibling gate: "refuse the public caller" is
+/// satisfied by "refuse everyone".
+///
+/// ⚠ **The one thing this does differently is that it does not fail.** `autofix`
+/// keeps `build_completer`'s 400, because a fix with no model cannot run at all.
+/// A scan can, and always could — a read-only lint against an unconfigured or
+/// unknown provider streams its report today, which is a real capability and
+/// not an accident of the literal. So a provider that will not construct
+/// resolves to Public with no affiliation: the restrictive reading on both axes,
+/// so an identity that cannot be read can only ever refuse, never admit. Same
+/// fail-safe direction, for the same reason, as `routes::apps::row_capability`.
+async fn read_only_caller_identity(
+    model: &ModelRef,
+) -> (
+    biorouter::privacy::ProviderTier,
+    Option<biorouter::privacy::affiliation::ModelAffiliation>,
+) {
+    match build_completer(model).await {
+        Ok((_completer, tier, affiliation)) => (tier, affiliation),
+        Err(_) => (biorouter::privacy::ProviderTier::Public, None),
+    }
+}
+
 /// Issue #56, Task 10C. Refuse a macro run whose model may not reach the target
 /// base, **before** the SSE stream opens.
 ///
@@ -1677,12 +1775,30 @@ pub async fn query_kb(
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
 }
 
+/// Lint a knowledge base and stream the result.
+///
+/// The stream's terminal `event: done` frame carries a `LintResult`: the
+/// autofix commit, if any, wrapped around a `LintReport` — the four hygiene
+/// lists this route has always returned, plus `diagnostics`, the typed findings.
+/// Each of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`
+/// for the format layers), a severity, the subject it is about and a message;
+/// a consumer matches on `rule` and never on `message`, which is prose.
+///
+/// Both schemas are published under `components.schemas` rather than as this
+/// response's body, because the body is an event stream and typing it as JSON
+/// would be a false statement the generated client believes.
+///
+/// A **legacy** base (below the OKF generation) is given the hygiene rules and
+/// no format layer, so its report carries `kb.*` diagnostics only — DR-26: this
+/// build has promised never to rewrite those pages, and reporting that decision
+/// as one conformance error per page would bury the findings that are real.
 #[utoipa::path(
     post, path = "/knowledge/bases/{id}/lint",
     request_body = LintBody,
     params(("id" = String, Path, description = "Knowledge base ID")),
     responses(
-        (status = 200, description = "SSE stream of sub-agent events (text/event-stream)"),
+        (status = 200, description = "SSE stream of sub-agent events (text/event-stream); \
+                                      the terminal `event: done` frame's data is a LintResult"),
         (status = 400, description = "Invalid model"),
     )
 )]
@@ -1692,12 +1808,10 @@ pub async fn lint(
     Json(body): Json<LintBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let autofix = body.autofix.unwrap_or(false);
-    // Only build a completer when autofix is requested (it requires an LLM).
-    //
-    // Issue #56: a lint with no autofix constructs no provider, so there is no
-    // instance to read a tier from and nothing a model can write. It reports
-    // Public and the ratchet is a no-op — the same reasoning as the test-mode
-    // branch of `build_completer`, and it is not a caller-supplied literal.
+    // Only build a *completer* when autofix is requested (it requires an LLM).
+    // The caller's CAPABILITY is read on both paths, off the provider
+    // `body.model` names — see `read_only_caller_identity` for why a scan asks
+    // the same question a fix does, and why it may not answer with a literal.
     let (completer, caller_capability, caller_affiliation): (
         Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>>,
         biorouter::privacy::ProviderTier,
@@ -1706,10 +1820,8 @@ pub async fn lint(
         let (c, tier, affiliation) = build_completer(&body.model).await?;
         (Some(c), tier, affiliation)
     } else {
-        // A read-only lint builds no provider, so there is no institution to
-        // read. `None` pairs with the Public tier beside it — the restrictive
-        // reading on both axes.
-        (None, biorouter::privacy::ProviderTier::Public, None)
+        let (tier, affiliation) = read_only_caller_identity(&body.model).await;
+        (None, tier, affiliation)
     };
     assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 
@@ -1969,6 +2081,108 @@ pub async fn import_brkb(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "id": new_id })))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// POST /bases/:id/merge — the user's own KB-to-KB merge
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Refused for the same reason `TIER_NEEDS_USER` is, worded for this control.
+///
+/// A merge can raise a base's tier and can add an owning institution to it, both
+/// permanently — and it writes another base's content into this one. That is not
+/// a decision the tool channel gets to make on the user's behalf through an
+/// unproven HTTP call.
+const MERGE_NEEDS_USER: &str =
+    "Merging one knowledge base into another is a choice only the person at the keyboard can \
+     make, and this request carried no proof it came from them. Nothing was changed. Do not \
+     retry; the same call will be refused again. A model that wants this must use the kb_merge \
+     tool, which is gated on the privacy of both bases.";
+
+const MERGE_NEEDS_A_DAEMON_KEY: &str =
+    "This Biorouter backend was started without a user-action key, so it cannot tell a request \
+     made by you from one made by a model, and merging two knowledge bases is yours to decide. \
+     Nothing was changed. The desktop app supplies that key; a backend started by `just \
+     run-server`, by running `biorouterd agent` by hand, or as a headless server deployment does \
+     not, and cannot offer this control.";
+
+#[derive(Deserialize, ToSchema)]
+pub struct MergeBody {
+    /// The knowledge base to merge FROM. It is only read and is left unchanged.
+    pub source_kb_id: String,
+    /// Report what would happen and write nothing. Defaults to **true**, so a
+    /// client that forgets the field gets the preview rather than the merge.
+    /// This is the least reversible operation in the subsystem and
+    /// `POST /restore` restores a whole tree, not one page.
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// ⚠ **No caller barrier here, and it is the same position `GET /export` takes.**
+/// This route is the USER's own path: they can already read both bases through
+/// `GET /bases/{id}/page` and download either as a `.brkb`, and DR-14 governs
+/// what a MODEL can reach. Passing a public-model identity instead would refuse
+/// the user every merge involving a private base of their own — the feature's
+/// main case — and passing a private one would be inventing a model that is not
+/// there.
+///
+/// What still runs, and is the part that matters, is the classification fold:
+/// the destination takes `max` over the tier axis and the union over owning
+/// institutions. That is what keeps the model side honest after a merge the user
+/// performed.
+///
+/// The proof-of-user is therefore load-bearing rather than ceremonial — it is
+/// the whole of what separates this branch from the tool channel.
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/merge",
+    request_body = MergeBody,
+    params(("id" = String, Path, description = "Destination knowledge base ID — canonical; never modified")),
+    responses(
+        (status = 200, description = "What the merge did, or (dry run) would do", body = MergeReport),
+        (status = 400, description = "Bad request"),
+        (status = 403, description = "Refused: merging is the user's decision and the request \
+                                      carried no proof it came from them, or this daemon holds \
+                                      no user-action key at all (body = plain text)"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn merge_bases(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: HeaderMap,
+    Json(body): Json<MergeBody>,
+) -> Result<Json<MergeReport>, (StatusCode, String)> {
+    // FIRST, before either base is looked up. An unproven caller learns nothing
+    // about which ids exist.
+    match user_action_proof(&headers) {
+        UserActionProof::Proven => {}
+        UserActionProof::Unproven => {
+            return Err((StatusCode::FORBIDDEN, MERGE_NEEDS_USER.to_string()))
+        }
+        UserActionProof::NoKeyInstalled => {
+            return Err((StatusCode::FORBIDDEN, MERGE_NEEDS_A_DAEMON_KEY.to_string()))
+        }
+    }
+
+    // The single construction site of the merge proof-of-user, pinned by
+    // `knowledge::merge::tests::the_merge_proof_of_user_is_constructed_in_exactly_one_place`.
+    let proof = UserKbMerge::from_user_action();
+    let report = svc
+        .merge_bases(
+            &id,
+            &body.source_kb_id,
+            &MergeAuthority::User(&proof),
+            body.dry_run,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(report))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

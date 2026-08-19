@@ -1,0 +1,126 @@
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { KBManagerDialog } from './KBManagerDialog';
+
+/**
+ * The list-and-search half of the old `KBSelectorPalette.test.tsx`, ported when
+ * §4.2 split that file. The DR-12 primary-repair cases went the other way, onto
+ * `KBSelectorMenu.test.tsx`.
+ */
+
+const mocks = vi.hoisted(() => ({
+  setPrimaryKbId: vi.fn(),
+  toggleKbHidden: vi.fn(),
+  refresh: vi.fn().mockResolvedValue(undefined),
+  onOpenChange: vi.fn(),
+}));
+
+const state = vi.hoisted(() => ({
+  primaryKbId: 'alpha' as string | null,
+}));
+
+vi.mock('../KnowledgeContext', () => ({
+  useKnowledge: () => ({
+    bases: [
+      { id: 'alpha', name: 'Alpha', color: '#cf6d47', tier: 'private' },
+      { id: 'beta', name: 'Beta', color: '#b85a32', tier: 'public' },
+    ],
+    loading: false,
+    primaryKbId: state.primaryKbId,
+    hiddenKbIds: ['beta'],
+    refresh: mocks.refresh,
+    setPrimaryKbId: mocks.setPrimaryKbId,
+    toggleKbHidden: mocks.toggleKbHidden,
+  }),
+}));
+
+vi.mock('../hooks/useKnowledgeBases', () => ({
+  useKnowledgeBases: () => ({
+    create: vi.fn(),
+    exportArchive: vi.fn(),
+    importArchive: vi.fn(),
+    remove: vi.fn(),
+    rename: vi.fn(),
+  }),
+}));
+
+beforeAll(() => {
+  // The dialog pulls in Radix primitives that observe their trigger.
+  vi.stubGlobal(
+    'ResizeObserver',
+    class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+  );
+});
+
+afterAll(() => vi.unstubAllGlobals());
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  state.primaryKbId = 'alpha';
+});
+
+function open() {
+  return render(<KBManagerDialog open onOpenChange={mocks.onOpenChange} />);
+}
+
+describe('KBManagerDialog', () => {
+  // Two states per row, never three. Under the merged model membership and the
+  // primary are the only two things a base can be, and the row body is the
+  // "make primary" affordance.
+  it('offers exactly one membership switch per row', () => {
+    open();
+    expect(screen.getByLabelText('Include Alpha in this chat')).toBeInTheDocument();
+    expect(screen.getByLabelText('Include Beta in this chat')).toBeInTheDocument();
+    expect(screen.getAllByRole('switch')).toHaveLength(2);
+  });
+
+  // Picking a primary used to close the palette, which made the selector feel
+  // like a radio group over a single-active model. The MANAGER is a place you
+  // stay — the picker (§4.1) is the surface that closes.
+  it('makes a base primary without closing the dialog', async () => {
+    open();
+    await userEvent.click(screen.getByText('Beta'));
+    expect(mocks.setPrimaryKbId).toHaveBeenCalledWith('beta');
+    expect(mocks.onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it('marks the primary', () => {
+    open();
+    expect(screen.getByText('Primary')).toBeInTheDocument();
+  });
+
+  // Issue #56 DR-18. The manager is a switch too, so the tier has to be legible
+  // BEFORE the user switches — a badge only on the base you already chose tells
+  // you what you did, not what you are about to do.
+  it('the tier is visible before the user switches to a base', () => {
+    open();
+    const priv = screen.getByRole('option', { name: /Alpha/ });
+    const pub = screen.getByRole('option', { name: /Beta/ });
+    expect(within(priv).getByText(/Private/)).toBeInTheDocument();
+    // Public is the ordinary state and carries no badge, so the private one
+    // reads as a marking rather than as a label everything wears.
+    expect(within(pub).queryByText(/Private/)).toBeNull();
+  });
+
+  // §4.12 #9. The hand-rolled centred sentence this replaced is one of the
+  // seven that made the section read thinner than its siblings.
+  it('answers a search that matches nothing with the EmptyState primitive', async () => {
+    open();
+    await userEvent.type(screen.getByTestId('knowledge-kb-search'), 'nothing-matches-this');
+    expect(screen.getByText('No knowledge bases match')).toBeInTheDocument();
+    expect(screen.queryByRole('option')).toBeNull();
+  });
+
+  // ROWS-3: a destructive control never sits visible in a hover cluster. Delete
+  // lives behind the row's one `⋯` overflow.
+  it('keeps delete behind the row overflow', () => {
+    open();
+    expect(screen.queryByLabelText('Delete Alpha')).toBeNull();
+    expect(screen.getByLabelText('More actions for Alpha')).toBeInTheDocument();
+  });
+});

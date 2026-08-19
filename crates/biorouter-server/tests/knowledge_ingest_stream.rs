@@ -77,6 +77,22 @@ async fn ingest_stream(app: &axum::Router, kb: &str) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+/// The terminal `event: done` frame's data, parsed.
+///
+/// Split by the same two markers the error-frame reader below uses — the frame
+/// name, then the blank line that ends an SSE frame — so a `done` payload that
+/// grew a field is read whole rather than to the first newline.
+fn done_payload(body: &str) -> serde_json::Value {
+    let payload = body
+        .split("event: done\ndata: ")
+        .nth(1)
+        .expect("done frame payload")
+        .split("\n\n")
+        .next()
+        .expect("done frame terminator");
+    serde_json::from_str(payload).expect("the done frame must be valid JSON")
+}
+
 /// Both phases live in one test function on purpose: they need different values
 /// of the same process-wide environment variable, and `#[tokio::test]` bodies in
 /// a single binary run concurrently.
@@ -105,6 +121,31 @@ async fn the_ingest_stream_reports_a_failed_digest_as_an_error_not_as_done() {
             .map(|mut d| d.next().is_some())
             .unwrap_or(false),
         "phase 1 must actually leave a source page behind, else it proves nothing"
+    );
+
+    // …and the done frame carries the macro's tail VERIFICATION, which is the
+    // only place the user learns what the digest actually left behind. A run
+    // that wrote non-conformant pages still ends in `done` — findings describe
+    // the base, they do not fail the run (DR-7) — so without this field a
+    // fifteen-bad-page digest and a clean one produce the same stream.
+    let done = done_payload(&body);
+    let verification = &done["verification"];
+    assert!(
+        verification.is_object(),
+        "the done frame must carry a verification; frame was:\n{done}"
+    );
+    assert!(
+        verification["ok"].is_boolean(),
+        "verification must state ok/not-ok, got: {verification}"
+    );
+    assert!(
+        verification["diagnostics"]["total"].is_number(),
+        "verification must carry the PRE-CAP total, got: {verification}"
+    );
+    assert_eq!(
+        verification["scan_error"],
+        serde_json::Value::Null,
+        "the scan ran, so it must not be reporting its own failure: {verification}"
     );
 
     // ── Phase 2: the reported failure — the provider hands back nothing ───────

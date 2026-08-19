@@ -274,6 +274,12 @@ export const STRUCTURAL_TOKENS = [
   'heat-cell',
   'heat-gap',
   'heat-labels',
+  // The knowledge workspace's geometry (ui-spec §6.2). Structural for the same
+  // reason `--row-height` is: it is the same measurement under every family, and
+  // nothing else stops a fourth family declaring a rail width of its own.
+  'measure-graph',
+  'knowledge-rail-sources',
+  'knowledge-rail-detail',
 ];
 
 /** Validate one mode of a theme definition. Returns an array of problems. */

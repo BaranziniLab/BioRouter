@@ -38,6 +38,29 @@ const SheetOverlay = React.forwardRef<
 ));
 SheetOverlay.displayName = SheetPrimitive.Overlay.displayName;
 
+/**
+ * A drawer, and the one rule its callers keep getting wrong.
+ *
+ * ⚠ **Every `SheetContent` must settle its description, one way or the other.**
+ * Radix writes an `aria-describedby` onto this element unconditionally, pointing
+ * at the id a `SheetDescription` would claim; if no description renders, the
+ * attribute is left dangling at nothing and Radix logs *"Missing `Description`
+ * or `aria-describedby={undefined}` for {DialogContent}"* on every open. So a
+ * call site does one of exactly two things:
+ *
+ * - **It has a description** — render `SheetDescription` (see `ui/sidebar.tsx`).
+ *   Radix links it automatically; pass nothing here.
+ * - **It genuinely has none** — pass `aria-describedby={undefined}`, Radix's own
+ *   opt-out. Both Knowledge drawers do: their headers are a bare title, and a
+ *   description written only for the accessibility tree would say something the
+ *   screen shows nowhere.
+ *
+ * The choice cannot be defaulted here. Forcing the opt-out would silently unlink
+ * `ui/sidebar.tsx`'s real description — a worse bug than the warning, and a
+ * silent one — so it stays at the call site, where the answer is known.
+ * `ModalShell` encodes the same policy for centred modals, which is why every
+ * modal that renders through it (`KBManagerDialog` among them) is already clean.
+ */
 function SheetContent({
   className,
   children,

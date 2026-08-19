@@ -1,0 +1,48 @@
+{
+  "fixes_applied": 0,
+  "commit_sha": null,
+  "report": {
+    "contradictions": [],
+    "orphans": ["knowledge/optic-nerve.md"],
+    "missing_concept_pages": ["Neuromyelitis optica"],
+    "stale_sources": [],
+    "diagnostics": {
+      "total": 7,
+      "items": [
+        {
+          "rule": "okf.type.unknown",
+          "severity": "error",
+          "subject": "Ocrelizumab",
+          "message": "type \"Moleculee\" is not in the OKF vocabulary; the closest term is \"Molecule\"",
+          "path": "knowledge/ocrelizumab.md"
+        },
+        {
+          "rule": "okf.identifier.missing",
+          "severity": "error",
+          "subject": "knowledge/il6-promoter-region.md",
+          "message": "the page states no identifier, so nothing can link to it",
+          "path": "knowledge/il6-promoter-region.md"
+        },
+        {
+          "rule": "biookf.predicate.unknown",
+          "severity": "warning",
+          "subject": "Tocilizumab -blocks-> JAK-STAT signalling",
+          "message": "predicate \"blocks\" is not in the BioOKF §6 vocabulary; did you mean \"inhibits\"?"
+        },
+        {
+          "rule": "biookf.provenance.missing",
+          "severity": "warning",
+          "subject": "Epstein-Barr virus -contributes_to-> Multiple sclerosis",
+          "message": "the edge states no primary_source, so the claim carries no authority"
+        },
+        {
+          "rule": "kb.orphan",
+          "severity": "info",
+          "subject": "Optic nerve",
+          "message": "no other page links to this one",
+          "path": "knowledge/optic-nerve.md"
+        }
+      ]
+    }
+  }
+}

@@ -96,16 +96,283 @@ impl KbTier {
     }
 }
 
+/// Which of the two OKF profiles a base's **producer** follows (DR-6).
+///
+/// Both profiles write the same on-disk shape — BioOKF only adds constraints,
+/// so a BioOKF bundle is always a valid OKF bundle. The value therefore selects
+/// how strictly a *write* is checked and which vocabulary the sub-agent is
+/// taught; it never selects how a page is *read*, which is the property that
+/// lets one reader, one graph deriver and one renderer serve both.
+///
+/// ⚠ **On its own this does not answer "is this base OKF?".** It carries
+/// `#[serde(default)]` like every other manifest field (DR-12), so every
+/// `manifest.yaml` written before Stage 3 — every base on disk — reads back as
+/// `Okf` while its pages are `title`/`kind` frontmatter and `[[wiki links]]`.
+/// The **generation number** is what separates them: ask [`Manifest::profile`],
+/// which folds [`CURRENT_SCHEMA_VERSION`] in, and never this field alone.
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+// ⚠ **The doc comment above is shipped to the model unless this overrides it.**
+// schemars renders a type's `///` block into its schema `description`, and this
+// enum is referenced by `kb_create_base`'s input schema — so every paragraph
+// above would be re-read by the model on every tool listing, on every turn, at
+// the cost of the whole DR-6/DR-12 argument in tokens and to no effect: the
+// model cannot act on any of it. The one sentence it *can* act on is here, and
+// the rest of the guidance lives in the tool description where it belongs.
+// Pinned by `the_format_argument_reaches_the_model_as_a_closed_vocabulary_with_
+// the_choice_explained`.
+#[schemars(description = "Which knowledge-base format a base is written in: \
+                          `okf` (open vocabulary, general purpose) or `biookf` \
+                          (OKF plus the BioOKF biomedical profile).")]
+pub enum KbFormat {
+    /// OKF v0.2, open vocabulary. The default for a new base.
+    #[default]
+    Okf,
+    /// OKF v0.2 plus the BioOKF v0.5 profile: 28 node types, 35 predicates, and
+    /// a required per-edge provenance triplet.
+    Biookf,
+}
+
+impl KbFormat {
+    /// The wire/on-disk spelling, which is also what `manifest.yaml` carries.
+    /// Spelled once here so a message and the serializer cannot disagree.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Okf => "okf",
+            Self::Biookf => "biookf",
+        }
+    }
+
+    /// The inverse of [`Self::as_str`]. `None` for anything else — see the
+    /// hand-written [`Deserialize`] impl for what a caller reading a
+    /// `manifest.yaml` must then do with it.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "okf" => Some(Self::Okf),
+            "biookf" => Some(Self::Biookf),
+            _ => None,
+        }
+    }
+
+    pub const fn is_biookf(self) -> bool {
+        matches!(self, Self::Biookf)
+    }
+}
+
+/// Hand-written, and **lenient**, where [`crate::knowledge::biookf::NodeType`]'s
+/// is hand-written and strict. The two are reading different things.
+///
+/// `NodeType` deserializes values *this build wrote* (a graph cache, a typed API
+/// payload), so a word it does not know is a bug and failing is right. This
+/// reads `manifest.yaml`, and DR-12 traces exactly what a failing manifest load
+/// costs: `list_bases` drops the base, its id leaves the installed universe,
+/// `repair_decision` reads the stored primary as uninstalled, and the next
+/// selection edit **persists** the cleared `.active-kb`. The user loses their
+/// pointers to a base that is sitting on disk intact, and downgrading does not
+/// bring them back. A one-word typo must not cost that.
+///
+/// So an unrecognised profile resolves to [`KbFormat::Okf`] — not as a shrug,
+/// but because it is the correct reading: every profile is OKF *plus*
+/// constraints, so reading an unknown one as plain OKF loses constraints, never
+/// content. That is OKF §11's own tolerance model applied to a value instead of
+/// a key, and it is what a downgraded build must do with a profile name a later
+/// build invented.
+///
+/// The cost is honest and worth stating: a base whose `format` is misspelled
+/// `biokf` is checked as plain OKF, silently as far as the file is concerned.
+/// The `tracing::warn!` is what makes it not silent.
+impl<'de> Deserialize<'de> for KbFormat {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        Ok(Self::parse(&raw).unwrap_or_else(|| {
+            tracing::warn!(
+                "knowledge: manifest.yaml declares an unknown format `{raw}`; reading the base \
+                 as plain OKF, which is every profile's common base"
+            );
+            Self::Okf
+        }))
+    }
+}
+
+/// The schema generation this build writes for a **new** base: the OKF
+/// generation.
+///
+/// - **1** — before Plan 5 Task 2: no cross-reference rules section, so the
+///   sub-agent was never told the graph is derived purely from `[[link]]`
+///   patterns, and the bases of that era have nodes and no edges.
+/// - **2** — with the cross-reference rules. Every base on disk carries this
+///   content (see [`Self`]'s sibling [`AUTOMATIC_SCHEMA_CEILING`]).
+/// - **3** — an OKF/BioOKF bundle: typed frontmatter, markdown-link edges, a
+///   `type: Schema` `schema.md`, and the §8/§9 shapes for `index.md`/`log.md`.
+///
+/// ⚠ **3, and the number is not cosmetic** (DR-6). Stage 1.5's S-g wired
+/// `schema_version` for the first time and had to give the *existing* content a
+/// generation number, which took 2. Numbering OKF 2 would declare every base on
+/// disk already-OKF, and every format check would then skip the bases that
+/// actually need one — silently, because a skipped migration reports nothing.
+///
+/// Bump this together with the ladder in `service::migrated_schema`, never on
+/// its own: the number is what decides that a base is behind, and the ladder is
+/// what catches it up.
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+
+/// The highest generation an **automatic** `schema.md` migration may carry an
+/// existing base to.
+///
+/// Deliberately one below [`CURRENT_SCHEMA_VERSION`], and the gap is the whole
+/// of requirement F. The 2 → 3 step is not a schema edit, it is a **format
+/// migration**: it would have to rewrite the base's pages out of `title`/`kind`
+/// frontmatter and `[[wiki]]` links into typed OKF frontmatter. DR-17 is
+/// explicit that such a migration is a fifth privacy write choke point that
+/// bypasses all four that exist — an eager one has no caller identity at all —
+/// and DR-22 defers it outright. So the ladder stops here, a legacy base keeps
+/// working untouched at generation 2, and nothing automatic ever stamps a base
+/// as OKF that is not.
+pub const AUTOMATIC_SCHEMA_CEILING: u32 = 2;
+
+/// The gap above, asserted at **compile time** rather than in a test.
+///
+/// A ceiling that reached [`CURRENT_SCHEMA_VERSION`] would make the automatic
+/// ladder into the format migration DR-17 refuses and DR-22 defers, and that is
+/// too quiet a way to get there — bumping one number and not the other is a
+/// one-character edit whose consequence is a privacy write choke point being
+/// bypassed. This fails the build instead.
+const _: () = assert!(
+    AUTOMATIC_SCHEMA_CEILING < CURRENT_SCHEMA_VERSION,
+    "an automatic schema migration must never be able to reach the OKF generation"
+);
+
+/// The schema generation a `manifest.yaml` that does not say belongs to.
+///
+/// 1, not 0: every manifest written before this default existed carries an
+/// explicit `schema_version: 1`, so a manifest that is *missing* the key is a
+/// hand-edited or externally produced one, and the right reading of it is "the
+/// oldest generation we know", not "a generation that never existed".
+fn default_schema_version() -> u32 {
+    1
+}
+
+/// The creation date a `manifest.yaml` that does not say gets.
+///
+/// The epoch rather than `Utc::now()`, because a default is a statement about a
+/// base that already exists: stamping it with the moment it was *read* would
+/// invent a fact and make the base sort as the newest one in the list every
+/// time it is loaded. The epoch reads as "unknown, and long ago", which is true.
+fn default_created_at() -> DateTime<Utc> {
+    DateTime::UNIX_EPOCH
+}
+
+// One knowledge base's `manifest.yaml`.
+//
+// A plain comment rather than a doc comment on purpose: utoipa publishes a
+// struct's doc comment as its OpenAPI `description`, and none of what follows
+// is addressed to an API consumer.
+//
+// ⚠ **Every field carries `#[serde(default)]`, and every field added later
+// must too** (DR-12). `manifest::load` is a bare deserialize, so a single
+// non-defaulted field fails the load for every `manifest.yaml` already on
+// disk — and the cascade from there is silent and ends in *persisted* data
+// loss, not in an error message: `list_bases` drops a base whose manifest will
+// not parse, `installed_kb_ids_unlocked` is built from `list_bases` so the id
+// leaves the installed universe, `repair_decision` sees a stored primary that
+// is not installed and clears it, and `apply_selection_unlocked` writes the
+// cleared pointer to disk. The user's `.active-kb` and every per-session
+// pointer are gone, downgrading does not bring them back, and the trigger is
+// the first thing a confused user does when their bases vanish: toggle
+// something.
+//
+// The `#[schema(required)]` beside each default is not redundant. utoipa reads
+// `serde(default)` and drops the field from the OpenAPI `required` list, which
+// would loosen the published API contract — and the generated TypeScript type —
+// as a side effect of a *robustness* change on the read side. The server always
+// serializes all of these, so they really are required in a response; the
+// default exists for what we read, not for what we send.
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Manifest {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub name: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub color: String,
+    #[serde(default = "default_created_at")]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_schema_version")]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<ModelRef>,
+
+    // ── OKF profile (Stage 3, DR-6) ─────────────────────────────────────────
+    /// Which profile the producer follows. Read it through
+    /// [`Manifest::profile`], never on its own — see [`KbFormat`].
+    ///
+    /// ⚠ **Re-saving a legacy manifest writes `format: okf` into it, and that is
+    /// left alone on purpose.** The schema ladder stamps a base forward on the
+    /// first macro call, so a v1 file on disk really does gain the key. It is
+    /// inert: `format` is not the profile, [`Manifest::profile`] is, and it
+    /// answers `None` for anything below `CURRENT_SCHEMA_VERSION` however the
+    /// field reads. `re_saving_a_legacy_manifest_writes_an_inert_format_key`
+    /// pins both halves.
+    ///
+    /// The obvious fix does not exist. `skip_serializing_if` is handed the field
+    /// and nothing else, so it cannot see `schema_version` and cannot express
+    /// "omit below the OKF generation". The only skip it *can* express is "omit
+    /// when it equals the default", which deletes the declaration from every
+    /// genuine OKF base — exactly the file DR-6 wants it stated in — and makes
+    /// the `schema(required)` above a false statement about the response.
+    /// Turning the field `Option` would push a `None` case into every reader to
+    /// buy the same nothing.
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
+    pub format: KbFormat,
+    /// The OKF revision this bundle declares, mirroring the bundle-root
+    /// `index.md` frontmatter (OKF §8/§12). `None` on a base written before the
+    /// OKF generation, which is the honest answer: it declares no revision.
+    ///
+    /// Unlike the six fields above these two take no `#[schema(required)]`.
+    /// That pairing exists there because the server always serializes those, so
+    /// the `serde(default)` describes only the read side; here the `None`
+    /// describes genuinely absent data, and `required` would be a false
+    /// statement about the response that the generated TypeScript would then
+    /// believe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub okf_version: Option<String>,
+    /// The BioOKF revision, when [`Self::format`] is `biookf`.
+    ///
+    /// It lives **here and not in `index.md`** (DR-23's corollary): OKF §8
+    /// permits `okf_version` in a bundle-root index file and nothing else, so a
+    /// `biookf_version` there is a conformance failure — which is exactly the
+    /// deviation BioOKF's own spec makes and BioRouter does not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub biookf_version: Option<String>,
+}
+
+impl Manifest {
+    /// The profile this base's pages are **actually** written in, or `None` for
+    /// a base written before the OKF generation.
+    ///
+    /// This is the accessor every reader wants, and reading [`Self::format`]
+    /// directly is the DR-6 trap: `format` defaults to `Okf` on the millions of
+    /// bytes of `manifest.yaml` that predate it, so a check written against the
+    /// field alone treats every legacy base as already-migrated. A legacy base
+    /// gets `None` here and "is read through its own generation's path,
+    /// unchanged, until the user migrates it".
+    pub fn profile(&self) -> Option<KbFormat> {
+        (self.schema_version >= CURRENT_SCHEMA_VERSION).then_some(self.format)
+    }
+
+    /// True for a base below the OKF generation: `title`/`kind` frontmatter and
+    /// `[[wiki]]` links, still fully readable and never rewritten by this build.
+    pub fn is_legacy_format(&self) -> bool {
+        self.profile().is_none()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -126,6 +393,41 @@ pub enum PageKind {
     Flag,
 }
 
+/// `skip_serializing_if` for a `bool` whose interesting value is `true`.
+///
+/// Not cosmetic: a graph runs to thousands of nodes and edges, is written to
+/// disk as `graph-cache.json` and is shipped whole over HTTP on every Knowledge
+/// view mount. `"stale": false` on every node and `"negated": false` on every
+/// edge is pure weight, and — the reason it matters more than size — it would
+/// also make a *legacy* base's cache stop matching the one this build wrote
+/// before Stage 2, for fields that base has no data for.
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+// A node in the derived knowledge graph.
+//
+// A plain comment rather than a doc comment: utoipa publishes a struct's doc
+// comment as its OpenAPI `description`, and the paragraphs below are addressed
+// to whoever next edits the deriver.
+//
+// ⚠ **Every field added by the OKF work is `Option` or a defaulted collection,
+// and every field added later must be too.** The five pre-OKF fields are the
+// ones a base on disk has always had; everything after them describes a *typed*
+// page, and the overwhelming majority of pages on disk today are untyped. A
+// non-defaulted field here would fail to deserialize every `graph-cache.json`
+// that exists — which `graph::read_cache` correctly treats as "re-derive", so
+// the damage is a silent full re-walk of every base rather than an error, which
+// is the kind of regression nothing reports.
+//
+// Unlike [`Manifest`], these do **not** take a paired `#[schema(required)]`.
+// That pairing exists there because the server always serializes those fields,
+// so the `serde(default)` describes only what is *read* and dropping them from
+// the OpenAPI `required` list would loosen the published contract for no
+// reason. Here the defaults describe genuinely absent data — a legacy page has
+// no `type`, no `identifier` and no `stale_after` — so `required` would be a
+// false statement about the response, and the generated TypeScript would be
+// wrong in the direction that breaks at runtime rather than at compile time.
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GraphNode {
@@ -137,16 +439,194 @@ pub struct GraphNode {
     /// True if this is a source node whose `raw/<id>/meta.yaml` marks it retracted.
     #[serde(default)]
     pub retracted: bool,
+    /// The page's logical path, or the empty string for an `external` node,
+    /// which has no page to open.
     pub path: String,
+
+    // ── OKF typed layer (Stage 2) ───────────────────────────────────────────
+    /// The concept document's own `type` (OKF §4.1), exactly as written.
+    ///
+    /// A raw `String` and not an enum, in both profiles. OKF leaves `type` open,
+    /// and DR-7 forbids rejecting a page over an unrecognised value — an enum
+    /// here would be a rejection mechanism wearing a different hat, silently
+    /// replacing the producer's word with a fallback on the way past. `None` for
+    /// every page in a legacy base, which carries `kind` and no `type`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_type: Option<String>,
+    /// BioOKF §7.1 `subtype`: agent-coined, never validated against anything.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtype: Option<String>,
+    /// The display identity — `identifier`, or `title` as SPEC §14's deprecated
+    /// alias for it. Distinct from `label`, which stays whatever the page list
+    /// has always shown, so a renderer can change what it shows without the
+    /// deriver changing what an edge resolves against.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identifier: Option<String>,
+    /// OKF §5.4 `draft | stable | deprecated`, or whatever else the producer
+    /// wrote. Emitted only when the page states one: §5.4 says an absent
+    /// `status` *reads* as `stable`, and writing `stable` onto every legacy node
+    /// would turn a consumer's assumption into the producer's assertion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// OKF §5.5: `stale_after` has passed. Computed here, at derivation time,
+    /// rather than in the renderer — a renderer that compares dates would give a
+    /// different answer per client clock and per cache age.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub stale: bool,
+    /// A node an edge points at that has no page in this bundle yet.
+    ///
+    /// OKF §11 makes a broken link something a consumer MUST tolerate, so this
+    /// is not an error state — it is the curation queue, surfaced. See
+    /// `graph::derive` for why a dangling *legacy* `[[…]]` link does not produce
+    /// one of these.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub external: bool,
+    /// Incident edge count — every edge with this node at either end, after
+    /// [`crate::knowledge::graph`] has deduplicated them.
+    ///
+    /// UI spec §2.1, adopted by DR-27. It drives hub sizing (§5.6 floors its
+    /// `deg(n)` at this value) and the descending-degree keyboard order (§5.12),
+    /// and the renderer cannot derive it cheaply: it would have to walk the
+    /// whole edge list on every frame of a force layout, for a number that is
+    /// constant for the life of the graph.
+    ///
+    /// `Option` because the spec draws it optional and a consumer must be able
+    /// to tell "the producer did not supply this" from "this node has no edges"
+    /// — the deriver always fills it, and fills it with `Some(0)` for an
+    /// isolated node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degree: Option<u32>,
 }
 
+/// One reading of one BioOKF §7.3 quantitative slot: a number when the producer
+/// wrote one, and the text they wrote otherwise.
+///
+/// UI spec §2.1 types the map as `Record<string, string | number>`, and both
+/// arms are load-bearing. `p_value: 3.0e-6` is a number and a renderer that
+/// received it as a string could not right-align or format it; `p_value: <0.001`
+/// and `effect_size: 2.5 nM` are *also* things a model writes, and coercing
+/// those to `None` deletes a statistic with nothing left to report it.
+///
+/// The variant is chosen by the value alone, never by the key — see
+/// [`crate::knowledge::graph`]'s `QUANTITATIVE_KEYS` for why the key decides
+/// only which map an attribute lands in.
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum QuantitativeValue {
+    /// Ordered before [`Self::Text`] so a JSON number deserializes as one;
+    /// serde's untagged reader takes the first arm that matches, and a JSON
+    /// string never matches `f64`.
+    Number(f64),
+    Text(String),
+}
+
+impl QuantitativeValue {
+    /// The written value as a number when it is one, and as text when it is not.
+    ///
+    /// Non-finite is deliberately *text*. `"NaN"`, `"inf"` and `"infinity"` all
+    /// parse as `f64` and none of them can be serialized to JSON — a page
+    /// carrying `p_value: NaN` would otherwise fail the graph cache write, which
+    /// is a whole-base failure caused by one attribute on one edge.
+    pub fn parse(written: &str) -> Self {
+        match written.parse::<f64>() {
+            Ok(n) if n.is_finite() => Self::Number(n),
+            _ => Self::Text(written.to_string()),
+        }
+    }
+}
+
+// An edge in the derived knowledge graph. See [`GraphNode`] for why every field
+// past the first two is defaulted and why none of them takes `#[schema(required)]`.
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct GraphEdge {
     pub from: String,
     pub to: String,
+    /// The deprecated alias of [`Self::predicate`], carrying the identical
+    /// value. Kept for one release because it is the only relation field the
+    /// generated TypeScript client has ever had; new readers use `predicate`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relation: Option<String>,
+
+    // ── BioOKF typed layer (Stage 2) ────────────────────────────────────────
+    /// The BioOKF §6 predicate. `None` for an untyped link, which is what makes
+    /// "this edge has no type" answerable rather than inferred from an empty
+    /// string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub predicate: Option<String>,
+    /// SPEC §6.F polarity, emitted rather than left for the renderer to infer
+    /// from a `not_` prefix — the prefix is one of two spellings (the other is
+    /// the legacy `negated: true` attribute) and a renderer that knows only the
+    /// first draws a negative claim as a positive one.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub negated: bool,
+    /// This edge was derived from provenance rather than authored as a
+    /// relationship (UI spec §2.1, adopted by DR-27).
+    ///
+    /// §5.7 draws it as the faint dotted line with **no taper** and §4.8 replaces
+    /// its provenance triplet with the "author an explicit `reported_in` edge to
+    /// make it first-class" note, so it is a rendering channel a consumer cannot
+    /// reconstruct: an implicit provenance link and an authored `reported_in`
+    /// edge are the same `(from, to, predicate)` triple and differ only in who
+    /// wrote them.
+    ///
+    /// ⚠ **Nothing in this build sets it.** The deriver emits only edges a page
+    /// states, and DR-24 puts the `reported_in` emission in BioOKF-mode *ingest*
+    /// — so today this is always `false` and therefore never serialized. It is
+    /// declared now because Stage 6 freezes the generated TypeScript client and
+    /// a channel absent from that contract cannot be added by the producer
+    /// alone.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub synthesized: bool,
+    /// The BioOKF §8.1 provenance triplet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub knowledge_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_type: Option<String>,
+    /// The source node this claim came from: a node id when the identifier
+    /// resolves to a page in this bundle, and otherwise the identifier exactly
+    /// as written, so an unresolved one is visible instead of vanishing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub publications: Vec<String>,
+
+    // ── The two open maps ───────────────────────────────────────────────────
+    //
+    // ⚠ **These are two different things and merging them is lossy in a way no
+    // renderer can undo** (DR-27). `quantitative` is BioOKF §7.3, *how much* —
+    // effect sizes, p-values, sensitivities. `qualifiers` is §7.2's context,
+    // *whose and when* — `species_context`, `sex`, `age_group`, `timepoint`. A
+    // p-value filed as context is a category error: the value survives, but the
+    // statement "this number measures the claim" does not, and a consumer
+    // reading the merged map back cannot tell which key was which.
+    //
+    // Both are open maps rather than a field per slot, because §7.3 alone names
+    // around twenty and the six flat fields this replaced silently dropped
+    // fourteen of them. An open map costs no change here and none in the
+    // renderer when the vocabulary grows — §4.8 renders every key in both maps
+    // uniformly, with exactly one privileged merge (`ci_lower` + `ci_upper` into
+    // a single `95% CI` row).
+    /// BioOKF §7.3: the quantitative bundle, keyed by the slot the producer
+    /// wrote. `effect_size`, `p_value`, `ci_lower`, `ci_upper`, `sample_size`,
+    /// `effect_metric`, `adjusted_p_value`, `standard_error`, `sensitivity`,
+    /// `specificity`, `auc`, `frequency`, `clinical_phase`, `response_direction`,
+    /// `unit`, … — see `graph::QUANTITATIVE_KEYS` for the set this build routes
+    /// here and for why an unrecognised key does not land here by default.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub quantitative: std::collections::BTreeMap<String, QuantitativeValue>,
+    /// BioOKF §7.2 context, plus every attribute this build does not recognise —
+    /// `direction`, `aspect`, `species_context`, `sex`, `timepoint`, and
+    /// anything BioOKF adds after this build shipped — as text, in key order.
+    ///
+    /// It is the residue map as well as the context map, and that asymmetry is
+    /// deliberate: an attribute nobody has classified is *context* until someone
+    /// says otherwise. The alternative loses data outright — the attribute
+    /// exists on disk, and a deriver that models only what it recognises drops
+    /// the rest on the floor where nothing can report it.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub qualifiers: std::collections::BTreeMap<String, String>,
 }
 
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
@@ -241,9 +721,99 @@ mod tests {
             created_at: chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap(),
             schema_version: 1,
             default_model: None,
+            format: KbFormat::Okf,
+            okf_version: None,
+            biookf_version: None,
         };
         let s = serde_yaml::to_string(&m).unwrap();
         let back: Manifest = serde_yaml::from_str(&s).unwrap();
         assert_eq!(m, back);
+    }
+
+    #[test]
+    fn the_format_enum_writes_the_two_words_dr_6_names() {
+        // `format: okf | biookf` is the on-disk grammar DR-6 specifies, and a
+        // `rename_all` that drifted would be invisible until someone opened a
+        // `manifest.yaml`.
+        assert_eq!(serde_yaml::to_string(&KbFormat::Okf).unwrap().trim(), "okf");
+        assert_eq!(
+            serde_yaml::to_string(&KbFormat::Biookf).unwrap().trim(),
+            "biookf"
+        );
+        // …and `as_str` is the same spelling, so a message and the serializer
+        // cannot disagree.
+        for f in [KbFormat::Okf, KbFormat::Biookf] {
+            assert_eq!(
+                serde_yaml::to_string(&f).unwrap().trim(),
+                f.as_str(),
+                "as_str drifted from the serializer for {f:?}"
+            );
+            assert_eq!(KbFormat::parse(f.as_str()), Some(f));
+            assert_eq!(
+                serde_yaml::from_str::<KbFormat>(f.as_str()).unwrap(),
+                f,
+                "the hand-written reader must still read what the writer wrote"
+            );
+        }
+    }
+
+    /// The lenient half of the hand-written reader, in both formats it is read
+    /// from. See its doc comment for why leniency is the correct reading and
+    /// not a shrug.
+    #[test]
+    fn an_unknown_profile_reads_as_plain_okf_in_both_yaml_and_json() {
+        assert_eq!(KbFormat::parse("biokf"), None);
+        assert_eq!(
+            serde_yaml::from_str::<KbFormat>("okf-lite-2027").unwrap(),
+            KbFormat::Okf
+        );
+        assert_eq!(
+            serde_json::from_str::<KbFormat>("\"whatever\"").unwrap(),
+            KbFormat::Okf
+        );
+        // Case is not folded: `Biookf` is a different word, and guessing at
+        // capitalisation would be a second, undocumented rule.
+        assert_eq!(
+            serde_yaml::from_str::<KbFormat>("BioOKF").unwrap(),
+            KbFormat::Okf
+        );
+    }
+
+    /// DR-6's trap, as a property of the type: `format` alone says `Okf` for
+    /// every base on disk, and only [`Manifest::profile`] says otherwise.
+    #[test]
+    fn a_legacy_generation_has_no_profile_however_the_format_field_reads() {
+        let legacy = Manifest {
+            id: "old".into(),
+            name: "Old".into(),
+            color: "#5a6394".into(),
+            created_at: chrono::DateTime::UNIX_EPOCH,
+            schema_version: AUTOMATIC_SCHEMA_CEILING,
+            default_model: None,
+            format: KbFormat::Okf,
+            okf_version: None,
+            biookf_version: None,
+        };
+        assert_eq!(legacy.format, KbFormat::Okf, "the field defaults to Okf");
+        assert_eq!(legacy.profile(), None, "and it means nothing at gen 2");
+        assert!(legacy.is_legacy_format());
+
+        let current = Manifest {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            format: KbFormat::Biookf,
+            ..legacy.clone()
+        };
+        assert_eq!(current.profile(), Some(KbFormat::Biookf));
+        assert!(!current.is_legacy_format());
+    }
+
+    /// The two numbers are the whole of requirement F, so they are pinned
+    /// rather than left to be re-derived by a reader in a hurry.
+    #[test]
+    fn the_okf_generation_is_three_and_the_automatic_ladder_stops_below_it() {
+        assert_eq!(CURRENT_SCHEMA_VERSION, 3, "DR-6: not 2, which is taken");
+        assert_eq!(AUTOMATIC_SCHEMA_CEILING, 2);
+        // The ordering between them is asserted at compile time beside the
+        // constants themselves — a test can be skipped, a `const` block cannot.
     }
 }

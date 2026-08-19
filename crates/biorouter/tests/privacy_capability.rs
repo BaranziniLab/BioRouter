@@ -229,12 +229,19 @@ const EXPECTED: &[Site] = &[
     Site {
         needle: "crate::privacy_toggle::privacy_tiers_enabled()",
         file: "crates/biorouter-mcp/src/knowledge/tier.rs",
-        count: 3,
-        what: "DR-26 bypassing path 3, the knowledge-base gates: the affiliation \
-               ratchet (`add_owners_unlocked`), the barrier (`assert_reachable`) \
-               and the tier ratchet (`raise_unlocked`). Every knowledge-base \
-               LISTING inherits the toggle from the barrier here rather than \
-               reading it; see audit finding 17",
+        count: 2,
+        what: "DR-26 bypassing path 3, the knowledge-base gates: the barrier \
+               (`assert_reachable`) and `ratchets_are_live`, the ONE spelling \
+               both classification ratchets read. It was 3, one read per \
+               ratchet, until the KB-to-KB merge added a third KIND of reader — \
+               a dry run, which must report what the two ratchets WOULD do \
+               without doing it. Three reads of a process-global another thread \
+               can flip is the two-reads race with an extra leg, and a preview \
+               that disagrees with the write it previews is the specific \
+               failure; the barrier's read stays separate because it answers a \
+               different question. Every knowledge-base LISTING still inherits \
+               the toggle from the barrier rather than reading it; see audit \
+               finding 17",
     },
 ];
 

@@ -2,38 +2,198 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { FileCode2, X } from '../../icons/app-icons';
 import type { GraphNode } from '../../../api/types.gen';
+import type { GraphMode } from '../../../styles/graphPalette';
 import MarkdownContent from '../../MarkdownContent';
+import { Badge } from '../../ui/badge';
+import type { BadgeTone } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { usePagePreview } from '../hooks/usePagePreview';
-import { nodeFill } from './credColors';
+import { GraphShapeGlyph } from './GraphShapeGlyph';
+import { CredibilityRing, TIER_LABEL } from './CredibilityRing';
+import { credibilityKey, fillFor, shapeFor } from './nodeMark';
+import { frontmatterRows, splitFrontmatter, xrefHref } from './frontmatter';
+import type { FrontmatterRow } from './frontmatter';
 import { prettyLabel } from './labelText';
 
 interface Props {
   kbId: string;
   node: GraphNode;
+  /**
+   * The resolved light/dark mode, passed in rather than read here so the
+   * inspector and the canvas it describes resolve the palette from the same
+   * value on the same commit — the facet strip and the legend take it the same
+   * way, from `KnowledgeGraphPanel`.
+   */
+  mode: GraphMode;
   previewSha?: string | null;
   onClose: () => void;
 }
 
-function splitFrontmatter(content: string): { frontmatter: string | null; body: string } {
-  if (!content.startsWith('---\n')) {
-    return { frontmatter: null, body: content };
-  }
-
-  const end = content.indexOf('\n---\n', 4);
-  if (end === -1) {
-    return { frontmatter: null, body: content };
-  }
-
-  return {
-    frontmatter: content.slice(4, end).trim(),
-    body: content.slice(end + 5).trimStart(),
-  };
+/**
+ * The node's display identity (ui-spec §4.8 item 1).
+ *
+ * `identifier` first, `label` second — the same order `buildGraphModel` uses for
+ * the canvas label. The two used to disagree: the inspector's title showed the
+ * slug (`metformin`) while the frontmatter block one line below it showed the
+ * `identifier` (`Metformin`), so the panel contradicted itself inside 40px.
+ */
+export function nodeTitle(node: GraphNode): string {
+  return prettyLabel(node.identifier || node.label, node.kind);
 }
 
-export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
+/**
+ * One identity fact — a `tone` when it is a badge, `null` when it is plain ink.
+ *
+ * ⚠ **The badges and the text summary are derived from THIS, not from each
+ * other and not from the node twice.** Two renderings of one fact set, written
+ * separately, is the shape of the bug this whole pass exists to close; it does
+ * not stop being that shape because both renderings happen to live in one file.
+ */
+export interface NodeFact {
+  key: string;
+  text: string;
+  tone: BadgeTone | null;
+  strike?: boolean;
+}
+
+/**
+ * §4.8 item 1's sub-line, as data.
+ *
+ * ⚠ **It reads `node_type`, and only falls back to `kind` when there is none.**
+ * The deriver writes `kind: 'hub'` onto every typed page, so a subtitle written
+ * against `kind` said "hub" for every node in an OKF base — beside a canvas that
+ * was correctly drawing the same node as a `Drug`. An untyped page is labelled
+ * `Untyped` and then by its legacy `kind`, because DR-28 makes absence a real
+ * state that has to be *shown*, not filled in.
+ *
+ * ⚠ **`stable` deliberately emits nothing.** §4.8 gives `draft` a warning tone
+ * and `deprecated` a struck neutral one, and gives the ordinary case no badge at
+ * all: a panel that decorates the normal state spends the reader's attention on
+ * the 90% of pages that need none, and leaves the two that matter competing with
+ * it. Any *other* status still renders, as a neutral badge — there is no
+ * allowlist, so a vocabulary addition shows up without a code change.
+ */
+export function nodeFacts(node: GraphNode, previewSha?: string | null): NodeFact[] {
+  const facts: NodeFact[] = [];
+
+  if (node.node_type) {
+    facts.push({ key: 'type', text: node.node_type, tone: 'neutral' });
+  } else {
+    // DR-28: a legacy page genuinely has no type. Name the absence and then the
+    // only identity such a page has, rather than inventing a type for it.
+    facts.push({ key: 'type', text: 'Untyped', tone: 'neutral' });
+    facts.push({ key: 'kind', text: node.kind, tone: null });
+  }
+
+  if (node.subtype) facts.push({ key: 'subtype', text: node.subtype, tone: null });
+
+  if (node.status && node.status !== 'stable') {
+    facts.push({
+      key: 'status',
+      text: node.status,
+      tone: node.status === 'draft' ? 'warning' : 'neutral',
+      strike: node.status === 'deprecated',
+    });
+  }
+
+  if (node.stale) facts.push({ key: 'stale', text: 'Stale', tone: 'warning' });
+  if (previewSha) facts.push({ key: 'sha', text: previewSha.slice(0, 7), tone: null });
+
+  return facts;
+}
+
+/** The same facts as one line of text — the panel's accessible summary. */
+export function nodeSubtitle(node: GraphNode, previewSha?: string | null): string {
+  return nodeFacts(node, previewSha)
+    .map((f) => f.text)
+    .join(' · ');
+}
+
+/** An `xref` token that resolved to a real identifier, opened in the OS browser. */
+function ExternalToken({ text, href }: { text: string; href: string }) {
+  return (
+    <a
+      href={href}
+      title={href}
+      onClick={(event) => {
+        // The renderer must never navigate itself to an external origin.
+        event.preventDefault();
+        void window.electron?.openExternal(href);
+      }}
+      className="font-mono text-code text-text-accent underline underline-offset-2"
+    >
+      {text}
+    </a>
+  );
+}
+
+/** One frontmatter key and its value, in whichever of the three shapes it takes. */
+function FrontmatterRowView({ row }: { row: FrontmatterRow }) {
+  return (
+    <div className="br-inspector-row">
+      <span className="text-caps text-text-muted">{row.label}</span>
+      <div className="min-w-0 text-body text-text-default">
+        {row.value.kind === 'text' && <span className="break-words">{row.value.text}</span>}
+
+        {row.value.kind === 'chips' && (
+          <span className="flex flex-wrap gap-1">
+            {row.value.items.map((item, i) =>
+              item.href ? (
+                <Badge key={`${item.text}-${i}`} variant="chip">
+                  <ExternalToken text={item.text} href={item.href} />
+                </Badge>
+              ) : (
+                <Badge key={`${item.text}-${i}`} variant="chip">
+                  {item.text}
+                </Badge>
+              )
+            )}
+          </span>
+        )}
+
+        {row.value.kind === 'entries' && (
+          <div className="flex flex-col gap-2">
+            {row.value.entries.map((entry, i) => (
+              <div key={i} className="flex flex-col gap-0.5">
+                {entry.map((field) => (
+                  <div key={field.label} className="flex gap-2">
+                    <span className="flex-none text-supporting text-text-muted">{field.label}</span>
+                    <span className="min-w-0 break-words text-supporting">
+                      {xrefOrText(field.text)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A `sources[]` field value, linked when it happens to be a resolvable token.
+ *
+ * Through the SAME resolver the chips use, so a `resource: DOI:10.x` inside a
+ * source entry links exactly as that identical token does in an `xref` array.
+ * One resolver, every position.
+ */
+function xrefOrText(text: string) {
+  const href = xrefHref(text);
+  return href ? <ExternalToken text={text} href={href} /> : text;
+}
+
+export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
   const { content, loading, error } = usePagePreview(kbId, node.path, previewSha);
   const parsed = useMemo(() => splitFrontmatter(content ?? ''), [content]);
+  const rows = useMemo(
+    () => (parsed.frontmatter ? frontmatterRows(parsed.frontmatter) : null),
+    [parsed.frontmatter]
+  );
+  const facts = nodeFacts(node, previewSha);
+  const ringKey = credibilityKey(node);
+  const showsProvenance = node.credibility_tier != null || node.retracted === true;
   const panelRef = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
 
@@ -61,22 +221,39 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
     <div
       ref={panelRef}
       role="dialog"
-      aria-label={`Preview ${prettyLabel(node.label, node.kind)}`}
-      className="absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
+      aria-label={`Preview ${nodeTitle(node)}`}
+      data-testid="knowledge-node-preview"
+      className="absolute top-12 right-4 z-[var(--z-dropdown)] flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
     >
-      <div className="flex items-center justify-between border-b border-border-subtle bg-background-muted px-4 py-3">
-        <div className="flex items-center gap-2 min-w-0">
-          <span
-            aria-hidden
-            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-            style={{ background: nodeFill(node) }}
+      <div className="flex items-start justify-between gap-2 border-b border-border-subtle bg-background-muted px-4 py-3">
+        <div className="flex min-w-0 items-start gap-2">
+          {/* The SAME mark the canvas paints, from the same function — fill by
+              `node_type` through `GRAPH_PALETTE`, silhouette by family. A swatch
+              that disagrees with the mark it describes is worse than none. */}
+          <GraphShapeGlyph
+            shape={shapeFor(node, mode)}
+            fill={fillFor(node, mode)}
+            size={14}
+            className="br-swatch-ring mt-0.5 flex-shrink-0"
           />
-          <div className="flex flex-col min-w-0">
-            <div className="text-label truncate">{prettyLabel(node.label, node.kind)}</div>
-            <div className="text-supporting text-text-muted truncate">
-              {node.kind}
-              {node.credibility_tier ? ` · ${node.credibility_tier.replace('_', ' ')}` : ''}
-              {previewSha ? ` · ${previewSha.slice(0, 7)}` : ''}
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="truncate text-label">{nodeTitle(node)}</div>
+            <div className="flex flex-wrap items-center gap-1">
+              {facts.map((fact) =>
+                fact.tone ? (
+                  <Badge
+                    key={fact.key}
+                    tone={fact.tone}
+                    className={fact.strike ? 'line-through' : undefined}
+                  >
+                    {fact.text}
+                  </Badge>
+                ) : (
+                  <span key={fact.key} className="text-supporting text-text-muted">
+                    {fact.text}
+                  </span>
+                )
+              )}
             </div>
           </div>
         </div>
@@ -90,32 +267,67 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
           <X className="h-4 w-4" />
         </Button>
       </div>
+
       <div className="flex-1 overflow-y-auto px-4 py-3 text-body text-text-default">
-        {loading && <span className="text-text-muted">Loading…</span>}
-        {error && <span className="text-text-danger">{error}</span>}
-        {!loading && !error && content && (
-          <div className="space-y-4">
-            {parsed.frontmatter && (
-              <div className="overflow-hidden rounded-element bg-background-muted">
-                <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
-                  <FileCode2 className="h-3 w-3" />
-                  Overview
-                </div>
-                <pre className="overflow-x-auto px-3 py-2.5 font-mono text-code text-text-muted whitespace-pre-wrap">
-                  {parsed.frontmatter}
-                </pre>
-              </div>
-            )}
-            {parsed.body ? (
-              <MarkdownContent content={parsed.body} className="text-body" />
-            ) : (
-              <span className="text-text-muted">No body content.</span>
-            )}
-          </div>
-        )}
-        {!loading && !error && !content && <span className="text-text-muted">No content.</span>}
+        <div className="space-y-4">
+          {/* §4.8 item 3. Identity and provenance come off the graph node, which
+              is already in memory, so they paint immediately and do not wait on
+              the page fetch below. */}
+          {showsProvenance && (
+            <section aria-label="Provenance" className="flex flex-wrap items-center gap-2">
+              {ringKey && <CredibilityRing tier={ringKey} mode={mode} />}
+              {node.credibility_tier && (
+                // ⚠ `tone="neutral"` — app ink on an app surface. The tier hue
+                // stays in the ring and NEVER behind these words: the seven ring
+                // colours are solved for a 1.6px arc against the graph ground,
+                // and as a text background they are neither legible nor a
+                // passing pair.
+                <Badge tone="neutral">{TIER_LABEL[node.credibility_tier]}</Badge>
+              )}
+              {node.retracted && <Badge tone="danger">Retracted</Badge>}
+            </section>
+          )}
+
+          {loading && <span className="text-text-muted">Loading page…</span>}
+          {error && <span className="text-text-danger">{error}</span>}
+
+          {!loading && !error && content && (
+            <>
+              {parsed.frontmatter &&
+                // §4.8 item 2. Parsed rows when the block is a YAML mapping; the
+                // raw text when it is not, because frontmatter that fails to
+                // parse is still frontmatter the user may need to SEE to fix.
+                (rows ? (
+                  <div className="overflow-hidden rounded-element bg-background-muted px-3 py-1">
+                    {rows.map((row) => (
+                      <FrontmatterRowView key={row.key} row={row} />
+                    ))}
+                  </div>
+                ) : (
+                  <div className="overflow-hidden rounded-element bg-background-muted">
+                    <div className="flex items-center gap-2 px-3 py-1.5 text-caps text-text-muted">
+                      <FileCode2 className="h-3 w-3" />
+                      Unparsed frontmatter
+                    </div>
+                    <pre className="overflow-x-auto px-3 py-2.5 font-mono text-code whitespace-pre-wrap text-text-muted">
+                      {parsed.frontmatter}
+                    </pre>
+                  </div>
+                ))}
+
+              {parsed.body ? (
+                <MarkdownContent content={parsed.body} className="text-body" />
+              ) : (
+                <span className="text-text-muted">No body content.</span>
+              )}
+            </>
+          )}
+
+          {!loading && !error && !content && <span className="text-text-muted">No content.</span>}
+        </div>
       </div>
-      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 text-supporting text-text-muted break-all">
+
+      <div className="border-t border-border-subtle bg-background-muted px-4 py-2 font-mono text-supporting break-all text-text-muted">
         {node.path}
       </div>
     </div>

@@ -217,15 +217,36 @@ impl GitRepo {
             .inner
             .find_branch("main", git2::BranchType::Local)
             .or_else(|_| self.inner.find_branch("master", git2::BranchType::Local))?;
-        let main_knowledge = knowledge_tree_id(&main.get().peel_to_commit()?)?;
-        let txn_knowledge = knowledge_tree_id(
+        let main_knowledge =
+            knowledge_tree_id(&main.get().peel_to_commit()?)?.map(|oid| oid.to_string());
+        Ok(main_knowledge != self.txn_knowledge_tree_id(txn)?)
+    }
+
+    /// The `knowledge/` subtree oid at the tip of a transaction branch, as an
+    /// opaque marker a caller can hold and compare later.
+    ///
+    /// [`Self::txn_wrote_knowledge_pages`] answers "did anything change since
+    /// **main**", which is the right question only while main is the last thing
+    /// that wrote knowledge. It stops being the right question the moment a
+    /// caller seeds the transaction itself — BioOKF ingest materialises the
+    /// source node before the sub-agent starts (DR-24) — because the seed alone
+    /// then satisfies the check and issue #71's guarantee, that a commit sha
+    /// means work happened, quietly stops holding. A caller that seeds takes
+    /// this marker afterwards and compares against it instead.
+    ///
+    /// `Option<String>` and not `String`: a bundle with no `knowledge/`
+    /// directory yet is a real state (an empty base), and "absent" has to
+    /// compare unequal to "present and empty" rather than being papered over
+    /// with a sentinel.
+    pub fn txn_knowledge_tree_id(&self, txn: &Txn) -> Result<Option<String>> {
+        Ok(knowledge_tree_id(
             &self
                 .inner
                 .find_branch(&txn.branch, git2::BranchType::Local)?
                 .get()
                 .peel_to_commit()?,
-        )?;
-        Ok(main_knowledge != txn_knowledge)
+        )?
+        .map(|oid| oid.to_string()))
     }
 
     pub fn commit_txn(

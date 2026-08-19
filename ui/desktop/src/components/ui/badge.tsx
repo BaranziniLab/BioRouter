@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Slot } from '@radix-ui/react-slot';
 import { cn } from '../../utils';
 
 /**
@@ -44,17 +45,40 @@ export interface BadgeProps extends React.ComponentProps<'span'> {
   variant?: BadgeVariant;
   /** Uppercase micro-label styling, for tags like “KB”, “Focused”. */
   uppercase?: boolean;
+  /**
+   * Render the chip's own child element instead of a `<span>` — so a TOGGLE
+   * chip IS the button rather than a `<span>` wrapped in one.
+   *
+   * ⚠ This is not a convenience. The global focus rule (design system D-15)
+   * paints `background-color: var(--background-focus)` on the focused
+   * `<button>`, and `tone="neutral"` is `bg-background-medium` — an OPAQUE fill.
+   * A `<button><Badge/></button>` therefore covers its own focus surface
+   * completely and a keyboard user gets no focus indication at all. With
+   * `asChild` the fill and the focus surface are the same box, so the focus
+   * treatment reads. It also keeps toggle chips out of the raw-`<button>`
+   * backlog (DR-24). P4: if a surface needs a variant, the variant lives in the
+   * primitive.
+   *
+   * The pressed state is `tint-selected tint-interactive`, never
+   * `tone="accent"`: the tints are translucent and the focus fill reads through
+   * them, while an opaque accent tone reintroduces the problem this prop exists
+   * to solve.
+   */
+  asChild?: boolean;
 }
 
 export function Badge({
   tone = 'neutral',
   variant = 'badge',
   uppercase = false,
+  asChild = false,
   className,
   ...props
 }: BadgeProps) {
+  const Comp = asChild ? Slot : 'span';
+
   return (
-    <span
+    <Comp
       className={cn(
         'inline-flex flex-shrink-0 items-center gap-1 rounded-inner text-chip',
         variantClass[variant],

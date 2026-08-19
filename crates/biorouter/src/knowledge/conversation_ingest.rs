@@ -735,7 +735,9 @@ mod tests {
                         name: "kb_write_page".into(),
                         args: serde_json::json!({
                             "path": "knowledge/sources/chat.md",
-                            "content": "---\ntitle: Chat\nkind: source\n---\n\nA digest.",
+                            "content": biorouter_mcp::knowledge::page_fixtures::valid_page(
+                                "source", "Chat", "A digest.",
+                            ),
                             "commit_message": "add chat digest"
                         }),
                     }],

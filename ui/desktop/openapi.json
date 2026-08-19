@@ -1734,6 +1734,9 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Duplicate id, invalid id, or unknown format"
           }
         }
       }
@@ -2050,6 +2053,8 @@
         "tags": [
           "super::routes::knowledge"
         ],
+        "summary": "Lint a knowledge base and stream the result.",
+        "description": "The stream's terminal `event: done` frame carries a `LintResult`: the\nautofix commit, if any, wrapped around a `LintReport` — the four hygiene\nlists this route has always returned, plus `diagnostics`, the typed findings.\nEach of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`\nfor the format layers), a severity, the subject it is about and a message;\na consumer matches on `rule` and never on `message`, which is prose.\n\nBoth schemas are published under `components.schemas` rather than as this\nresponse's body, because the body is an event stream and typing it as JSON\nwould be a false statement the generated client believes.\n\nA **legacy** base (below the OKF generation) is given the hygiene rules and\nno format layer, so its report carries `kb.*` diagnostics only — DR-26: this\nbuild has promised never to rewrite those pages, and reporting that decision\nas one conformance error per page would bury the findings that are real.",
         "operationId": "lint",
         "parameters": [
           {
@@ -2074,7 +2079,7 @@
         },
         "responses": {
           "200": {
-            "description": "SSE stream of sub-agent events (text/event-stream)"
+            "description": "SSE stream of sub-agent events (text/event-stream); the terminal `event: done` frame's data is a LintResult"
           },
           "400": {
             "description": "Invalid model"
@@ -2112,6 +2117,61 @@
           },
           "404": {
             "description": "Not found"
+          }
+        }
+      }
+    },
+    "/knowledge/bases/{id}/merge": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "summary": "⚠ **No caller barrier here, and it is the same position `GET /export` takes.**",
+        "description": "This route is the USER's own path: they can already read both bases through\n`GET /bases/{id}/page` and download either as a `.brkb`, and DR-14 governs\nwhat a MODEL can reach. Passing a public-model identity instead would refuse\nthe user every merge involving a private base of their own — the feature's\nmain case — and passing a private one would be inventing a model that is not\nthere.\n\nWhat still runs, and is the part that matters, is the classification fold:\nthe destination takes `max` over the tier axis and the union over owning\ninstitutions. That is what keeps the model side honest after a merge the user\nperformed.\n\nThe proof-of-user is therefore load-bearing rather than ceremonial — it is\nthe whole of what separates this branch from the tool channel.",
+        "operationId": "merge_bases",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Destination knowledge base ID — canonical; never modified",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the merge did, or (dry run) would do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "403": {
+            "description": "Refused: merging is the user's decision and the request carried no proof it came from them, or this daemon holds no user-action key at all (body = plain text)"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "500": {
+            "description": "Internal error"
           }
         }
       }
@@ -5560,6 +5620,31 @@
           }
         }
       },
+      "CarriedPage": {
+        "type": "object",
+        "required": [
+          "source_path",
+          "destination_path"
+        ],
+        "properties": {
+          "destination_path": {
+            "type": "string"
+          },
+          "identifier": {
+            "type": "string",
+            "description": "The page's identifier as the source wrote it, when it has one.",
+            "nullable": true
+          },
+          "renamed_identifier": {
+            "type": "string",
+            "description": "Set only when the identifier collided with the destination's and was\nrenamed.",
+            "nullable": true
+          },
+          "source_path": {
+            "type": "string"
+          }
+        }
+      },
       "ChangeKind": {
         "type": "string",
         "enum": [
@@ -5836,6 +5921,14 @@
         "properties": {
           "color": {
             "type": "string",
+            "nullable": true
+          },
+          "format": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/KbFormat"
+              }
+            ],
             "nullable": true
           },
           "id": {
@@ -6258,6 +6351,55 @@
             "items": {
               "$ref": "#/components/schemas/DetectableProvider"
             }
+          }
+        }
+      },
+      "Diagnostic": {
+        "type": "object",
+        "description": "One finding, addressed to whoever has to fix it.",
+        "required": [
+          "rule",
+          "severity",
+          "subject",
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string",
+            "description": "Bundle-relative path of the page, when there is one. Absent for a\nbase-wide finding and for a draft that has not been given a path yet.",
+            "nullable": true
+          },
+          "rule": {
+            "type": "string",
+            "description": "Stable across releases. Callers, tests and the UI match on this and\nnever on `message`, which is prose and will be reworded. Prefixed by the\nlayer that raised it: `okf.`, `biookf.`, or `kb.` for the deterministic\nhygiene scan that predates both."
+          },
+          "severity": {
+            "$ref": "#/components/schemas/Severity"
+          },
+          "subject": {
+            "type": "string",
+            "description": "What the finding is *about*: a page's `identifier`, a bundle-relative\npath, or an edge rendered as `<subject> -<predicate>-> <object>`.\nNever empty — a diagnostic whose subject a caller has to reconstruct\nfrom the message is one nobody acts on."
+          }
+        }
+      },
+      "Diagnostics": {
+        "type": "object",
+        "description": "A capped list plus the count before the cap.\n\nThe pair, not the `Vec` alone: a truncated list that reports its own length\nas the answer is how \"3 errors\" gets rendered for a base with four hundred.",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Diagnostic"
+            },
+            "description": "At most [`MAX_DIAGNOSTICS`], most severe first."
+          },
+          "total": {
+            "type": "integer",
+            "description": "How many were raised, which is `items.len()` unless the cap bit.",
+            "minimum": 0
           }
         }
       },
@@ -6883,12 +7025,60 @@
           "to"
         ],
         "properties": {
+          "agent_type": {
+            "type": "string",
+            "nullable": true
+          },
           "from": {
             "type": "string"
           },
+          "knowledge_level": {
+            "type": "string",
+            "description": "The BioOKF §8.1 provenance triplet.",
+            "nullable": true
+          },
+          "negated": {
+            "type": "boolean",
+            "description": "SPEC §6.F polarity, emitted rather than left for the renderer to infer\nfrom a `not_` prefix — the prefix is one of two spellings (the other is\nthe legacy `negated: true` attribute) and a renderer that knows only the\nfirst draws a negative claim as a positive one."
+          },
+          "predicate": {
+            "type": "string",
+            "description": "The BioOKF §6 predicate. `None` for an untyped link, which is what makes\n\"this edge has no type\" answerable rather than inferred from an empty\nstring.",
+            "nullable": true
+          },
+          "primary_source": {
+            "type": "string",
+            "description": "The source node this claim came from: a node id when the identifier\nresolves to a page in this bundle, and otherwise the identifier exactly\nas written, so an unresolved one is visible instead of vanishing.",
+            "nullable": true
+          },
+          "publications": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "qualifiers": {
+            "type": "object",
+            "description": "BioOKF §7.2 context, plus every attribute this build does not recognise —\n`direction`, `aspect`, `species_context`, `sex`, `timepoint`, and\nanything BioOKF adds after this build shipped — as text, in key order.\n\nIt is the residue map as well as the context map, and that asymmetry is\ndeliberate: an attribute nobody has classified is *context* until someone\nsays otherwise. The alternative loses data outright — the attribute\nexists on disk, and a deriver that models only what it recognises drops\nthe rest on the floor where nothing can report it.",
+            "additionalProperties": {
+              "type": "string"
+            }
+          },
+          "quantitative": {
+            "type": "object",
+            "description": "BioOKF §7.3: the quantitative bundle, keyed by the slot the producer\nwrote. `effect_size`, `p_value`, `ci_lower`, `ci_upper`, `sample_size`,\n`effect_metric`, `adjusted_p_value`, `standard_error`, `sensitivity`,\n`specificity`, `auc`, `frequency`, `clinical_phase`, `response_direction`,\n`unit`, … — see `graph::QUANTITATIVE_KEYS` for the set this build routes\nhere and for why an unrecognised key does not land here by default.",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/QuantitativeValue"
+            }
+          },
           "relation": {
             "type": "string",
+            "description": "The deprecated alias of [`Self::predicate`], carrying the identical\nvalue. Kept for one release because it is the only relation field the\ngenerated TypeScript client has ever had; new readers use `predicate`.",
             "nullable": true
+          },
+          "synthesized": {
+            "type": "boolean",
+            "description": "This edge was derived from provenance rather than authored as a\nrelationship (UI spec §2.1, adopted by DR-27).\n\n§5.7 draws it as the faint dotted line with **no taper** and §4.8 replaces\nits provenance triplet with the \"author an explicit `reported_in` edge to\nmake it first-class\" note, so it is a rendering channel a consumer cannot\nreconstruct: an implicit provenance link and an authored `reported_in`\nedge are the same `(from, to, predicate)` triple and differ only in who\nwrote them.\n\n⚠ **Nothing in this build sets it.** The deriver emits only edges a page\nstates, and DR-24 puts the `reported_in` emission in BioOKF-mode *ingest*\n— so today this is always `false` and therefore never serialized. It is\ndeclared now because Stage 6 freezes the generated TypeScript client and\na channel absent from that contract cannot be added by the producer\nalone."
           },
           "to": {
             "type": "string"
@@ -6912,8 +7102,24 @@
             ],
             "nullable": true
           },
+          "degree": {
+            "type": "integer",
+            "format": "int32",
+            "description": "Incident edge count — every edge with this node at either end, after\n[`crate::knowledge::graph`] has deduplicated them.\n\nUI spec §2.1, adopted by DR-27. It drives hub sizing (§5.6 floors its\n`deg(n)` at this value) and the descending-degree keyboard order (§5.12),\nand the renderer cannot derive it cheaply: it would have to walk the\nwhole edge list on every frame of a force layout, for a number that is\nconstant for the life of the graph.\n\n`Option` because the spec draws it optional and a consumer must be able\nto tell \"the producer did not supply this\" from \"this node has no edges\"\n— the deriver always fills it, and fills it with `Some(0)` for an\nisolated node.",
+            "nullable": true,
+            "minimum": 0
+          },
+          "external": {
+            "type": "boolean",
+            "description": "A node an edge points at that has no page in this bundle yet.\n\nOKF §11 makes a broken link something a consumer MUST tolerate, so this\nis not an error state — it is the curation queue, surfaced. See\n`graph::derive` for why a dangling *legacy* `[[…]]` link does not produce\none of these."
+          },
           "id": {
             "type": "string"
+          },
+          "identifier": {
+            "type": "string",
+            "description": "The display identity — `identifier`, or `title` as SPEC §14's deprecated\nalias for it. Distinct from `label`, which stays whatever the page list\nhas always shown, so a renderer can change what it shows without the\nderiver changing what an edge resolves against.",
+            "nullable": true
           },
           "kind": {
             "$ref": "#/components/schemas/PageKind"
@@ -6921,12 +7127,32 @@
           "label": {
             "type": "string"
           },
+          "node_type": {
+            "type": "string",
+            "description": "The concept document's own `type` (OKF §4.1), exactly as written.\n\nA raw `String` and not an enum, in both profiles. OKF leaves `type` open,\nand DR-7 forbids rejecting a page over an unrecognised value — an enum\nhere would be a rejection mechanism wearing a different hat, silently\nreplacing the producer's word with a fallback on the way past. `None` for\nevery page in a legacy base, which carries `kind` and no `type`.",
+            "nullable": true
+          },
           "path": {
-            "type": "string"
+            "type": "string",
+            "description": "The page's logical path, or the empty string for an `external` node,\nwhich has no page to open."
           },
           "retracted": {
             "type": "boolean",
             "description": "True if this is a source node whose `raw/<id>/meta.yaml` marks it retracted."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "OKF §5.5: `stale_after` has passed. Computed here, at derivation time,\nrather than in the renderer — a renderer that compares dates would give a\ndifferent answer per client clock and per cache age."
+          },
+          "status": {
+            "type": "string",
+            "description": "OKF §5.4 `draft | stable | deprecated`, or whatever else the producer\nwrote. Emitted only when the page states one: §5.4 says an absent\n`status` *reads* as `stable`, and writing `stable` onto every legacy node\nwould turn a consumer's assumption into the producer's assertion.",
+            "nullable": true
+          },
+          "subtype": {
+            "type": "string",
+            "description": "BioOKF §7.1 `subtype`: agent-coined, never validated against anything.",
+            "nullable": true
           }
         }
       },
@@ -7118,6 +7344,14 @@
         "type": "object",
         "additionalProperties": true
       },
+      "KbFormat": {
+        "type": "string",
+        "description": "Which of the two OKF profiles a base's **producer** follows (DR-6).\n\nBoth profiles write the same on-disk shape — BioOKF only adds constraints,\nso a BioOKF bundle is always a valid OKF bundle. The value therefore selects\nhow strictly a *write* is checked and which vocabulary the sub-agent is\ntaught; it never selects how a page is *read*, which is the property that\nlets one reader, one graph deriver and one renderer serve both.\n\n⚠ **On its own this does not answer \"is this base OKF?\".** It carries\n`#[serde(default)]` like every other manifest field (DR-12), so every\n`manifest.yaml` written before Stage 3 — every base on disk — reads back as\n`Okf` while its pages are `title`/`kind` frontmatter and `[[wiki links]]`.\nThe **generation number** is what separates them: ask [`Manifest::profile`],\nwhich folds [`CURRENT_SCHEMA_VERSION`] in, and never this field alone.",
+        "enum": [
+          "okf",
+          "biookf"
+        ]
+      },
       "KbListEntry": {
         "allOf": [
           {
@@ -7204,6 +7438,71 @@
           },
           "model": {
             "$ref": "#/components/schemas/ModelRef"
+          }
+        }
+      },
+      "LintReport": {
+        "type": "object",
+        "description": "The payload of the lint stream's terminal `event: done` frame, and — since\nStage 6 — a published schema.\n\nIt is `ToSchema` rather than merely `Serialize` because\n`POST /knowledge/bases/{id}/lint` answers over SSE, so the shape a client\nhas to parse cannot be inferred from the response body's own type. Declaring\nit puts the four lists **and** the typed [`Diagnostics`] into\n`components.schemas`, and therefore into the generated TypeScript, where the\nrenderer reads the frame. A hand-written interface in `ui/` would be the\nsame contract with nothing keeping it in step.",
+        "required": [
+          "orphans",
+          "contradictions",
+          "stale_sources",
+          "missing_concept_pages"
+        ],
+        "properties": {
+          "contradictions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pages with `contradiction: true` in frontmatter."
+          },
+          "diagnostics": {
+            "$ref": "#/components/schemas/Diagnostics"
+          },
+          "missing_concept_pages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Link targets written in source pages that name no page under\n`knowledge/` — again over all four grammars, so a typed base's `edges:`\ncitations are read."
+          },
+          "orphans": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Pages nothing else in the bundle links to, in any of the four grammars\n(`graph::bundle_links`) — not the legacy bracket form alone, which is\nwhat made this list every page of a typed base."
+          },
+          "stale_sources": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Sources whose `ingested_at` is >90 days ago AND have no inbound links."
+          }
+        }
+      },
+      "LintResult": {
+        "type": "object",
+        "description": "What the lint stream's terminal `event: done` frame actually carries.\n\nThe [`LintReport`] is nested rather than flattened because a lint answers two\nquestions — what is wrong, and what was changed about it — and an autofix\nthat rewrote pages has a `commit_sha` the report itself cannot express.\nPublished as a schema for the reason its `report` field is; see\n[`LintReport`].",
+        "required": [
+          "report",
+          "fixes_applied"
+        ],
+        "properties": {
+          "commit_sha": {
+            "type": "string",
+            "description": "The autofix commit, or `None` for a read-only lint — which is every lint\nthat ran without `autofix`, and therefore without a provider at all.",
+            "nullable": true
+          },
+          "fixes_applied": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "report": {
+            "$ref": "#/components/schemas/LintReport"
           }
         }
       },
@@ -7556,9 +7855,15 @@
           "name",
           "color",
           "created_at",
-          "schema_version"
+          "schema_version",
+          "format"
         ],
         "properties": {
+          "biookf_version": {
+            "type": "string",
+            "description": "The BioOKF revision, when [`Self::format`] is `biookf`.\n\nIt lives **here and not in `index.md`** (DR-23's corollary): OKF §8\npermits `okf_version` in a bundle-root index file and nothing else, so a\n`biookf_version` there is a conformance failure — which is exactly the\ndeviation BioOKF's own spec makes and BioRouter does not.",
+            "nullable": true
+          },
           "color": {
             "type": "string"
           },
@@ -7574,11 +7879,19 @@
             ],
             "nullable": true
           },
+          "format": {
+            "$ref": "#/components/schemas/KbFormat"
+          },
           "id": {
             "type": "string"
           },
           "name": {
             "type": "string"
+          },
+          "okf_version": {
+            "type": "string",
+            "description": "The OKF revision this bundle declares, mirroring the bundle-root\n`index.md` frontmatter (OKF §8/§12). `None` on a base written before the\nOKF generation, which is the honest answer: it declares no revision.\n\nUnlike the six fields above these two take no `#[schema(required)]`.\nThat pairing exists there because the server always serializes those, so\nthe `serde(default)` describes only the read side; here the `None`\ndescribes genuinely absent data, and `required` would be a false\nstatement about the response that the generated TypeScript would then\nbelieve.",
+            "nullable": true
           },
           "schema_version": {
             "type": "integer",
@@ -7848,6 +8161,125 @@
           },
           "scope": {
             "$ref": "#/components/schemas/MemoryScope"
+          }
+        }
+      },
+      "MergeBody": {
+        "type": "object",
+        "required": [
+          "source_kb_id"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report what would happen and write nothing. Defaults to **true**, so a\nclient that forgets the field gets the preview rather than the merge.\nThis is the least reversible operation in the subsystem and\n`POST /restore` restores a whole tree, not one page."
+          },
+          "source_kb_id": {
+            "type": "string",
+            "description": "The knowledge base to merge FROM. It is only read and is left unchanged."
+          }
+        }
+      },
+      "MergeReport": {
+        "type": "object",
+        "description": "What the merge did, or — for a dry run — what it *would* do.\n\nThe dry run and the merge produce this from the **same** [`plan`] call, so\nthe preview cannot describe a different operation from the one that runs.",
+        "required": [
+          "destination_kb_id",
+          "source_kb_id",
+          "dry_run",
+          "raw_copied",
+          "raw_deduped",
+          "pages_carried",
+          "identifiers_renamed",
+          "paths_renamed",
+          "references_rewritten",
+          "destination_pages_before",
+          "canonical_violations",
+          "destination_tier",
+          "owners_added"
+        ],
+        "properties": {
+          "canonical_violations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Empty when the destination stayed canonical. A non-empty list aborts the\ntransaction, so it is only ever populated on a failure path or a dry run."
+          },
+          "commit_sha": {
+            "type": "string",
+            "description": "The squash commit on the destination's `main`, or `None` for a dry run.",
+            "nullable": true
+          },
+          "destination_kb_id": {
+            "type": "string"
+          },
+          "destination_pages_before": {
+            "type": "integer",
+            "description": "The destination's page count before the merge — the size of the set\n[`verify_snapshot`] checked.",
+            "minimum": 0
+          },
+          "destination_tier": {
+            "type": "string",
+            "description": "The destination's tier after the merge, as the word the store holds."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "True when nothing was written."
+          },
+          "identifiers_renamed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rename"
+            },
+            "description": "Identifier collisions. The **incoming** side was renamed; the\ndestination's identifier is untouched."
+          },
+          "owners_added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Institutions added to the destination by the fold (DR-26)."
+          },
+          "pages_carried": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CarriedPage"
+            }
+          },
+          "paths_renamed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rename"
+            },
+            "description": "Page-path collisions, as logical paths."
+          },
+          "raw_copied": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rename"
+            },
+            "description": "Raw sources copied into the destination, `from` → `to` (equal when there\nwas no collision)."
+          },
+          "raw_deduped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RawDedup"
+            },
+            "description": "Raw sources already present in the destination, matched on the sha256 in\n`raw/<id>/meta.yaml`. Not copied; every reference to them is repointed at\nthe destination's copy."
+          },
+          "references_rewritten": {
+            "type": "integer",
+            "description": "How many references were repointed — edge `object`, edge\n`primary_source`, `raw_source` paths and body links.",
+            "minimum": 0
+          },
+          "references_seen": {
+            "type": "integer",
+            "description": "How many references the rewriter **looked at**, of the same four kinds.\n\nThe denominator, and it is here because its absence hid a corruption. A\npreview that says only \"1 identifier renamed, 3 references rewritten\"\nreads as complete, and read exactly that way while plain `[[Name]]`\nlinks went through a map that could not rename them — silently\nretargeted at the destination's own page of that name. `seen -\nrewritten` is what the merge saw and deliberately left alone, so a\nreader can ask why a number is large before approving the least\nreversible operation in the subsystem.",
+            "minimum": 0
+          },
+          "source_kb_id": {
+            "type": "string"
           }
         }
       },
@@ -8983,6 +9415,19 @@
           }
         }
       },
+      "QuantitativeValue": {
+        "oneOf": [
+          {
+            "type": "number",
+            "format": "double",
+            "description": "Ordered before [`Self::Text`] so a JSON number deserializes as one;\nserde's untagged reader takes the first arm that matches, and a JSON\nstring never matches `f64`."
+          },
+          {
+            "type": "string"
+          }
+        ],
+        "description": "One reading of one BioOKF §7.3 quantitative slot: a number when the producer\nwrote one, and the text they wrote otherwise.\n\nUI spec §2.1 types the map as `Record<string, string | number>`, and both\narms are load-bearing. `p_value: 3.0e-6` is a number and a renderer that\nreceived it as a string could not right-align or format it; `p_value: <0.001`\nand `effect_size: 2.5 nM` are *also* things a model writes, and coercing\nthose to `None` deletes a statistic with nothing left to report it.\n\nThe variant is chosen by the value alone, never by the key — see\n[`crate::knowledge::graph`]'s `QUANTITATIVE_KEYS` for why the key decides\nonly which map an attribute lands in."
+      },
       "QueryBody": {
         "type": "object",
         "required": [
@@ -9014,6 +9459,27 @@
           },
           "mimeType": {
             "type": "string"
+          }
+        }
+      },
+      "RawDedup": {
+        "type": "object",
+        "required": [
+          "source_id",
+          "matched",
+          "sha256"
+        ],
+        "properties": {
+          "matched": {
+            "type": "string",
+            "description": "The destination raw-source id it was found to be byte-identical to."
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string",
+            "description": "The raw-source id in the source base."
           }
         }
       },
@@ -9215,6 +9681,21 @@
             "type": "string"
           },
           "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Rename": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
             "type": "string"
           }
         }
@@ -10191,6 +10672,15 @@
             "type": "boolean"
           }
         }
+      },
+      "Severity": {
+        "type": "string",
+        "description": "Three severities, no fatal one — see the module header.\n\nA distinct type from [`okf::Severity`] rather than a re-export, because this\none crosses the wire: it is `Deserialize` and `rename_all = \"lowercase\"`, and\npinning that spelling here means a rename upstream cannot silently change a\nJSON payload the UI reads.",
+        "enum": [
+          "error",
+          "warning",
+          "info"
+        ]
       },
       "SidebarSessionListResponse": {
         "type": "object",

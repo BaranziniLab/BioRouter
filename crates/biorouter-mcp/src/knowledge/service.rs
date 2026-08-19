@@ -1,8 +1,8 @@
 use crate::knowledge::{
-    convert, credibility,
+    biookf, convert, credibility,
     git::GitRepo,
-    manifest, paths, raw, registry,
-    types::{Manifest, ModelRef, RegistryEntry, SourceMeta},
+    manifest, okf, paths, raw, registry,
+    types::{KbFormat, Manifest, ModelRef, RegistryEntry, SourceMeta},
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -15,16 +15,41 @@ use std::{
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-const DEFAULT_SCHEMA: &str = include_str!("schema_default.md");
-const DEFAULT_INDEX: &str = "# Index\n\n_no pages yet_\n";
+/// The `schema.md` a new base is scaffolded with, one per profile (DR-6).
+///
+/// Both carry `type: Schema` frontmatter (DR-23). OKF §3.1 reserves exactly
+/// `index.md` and `log.md` and then says "All other `.md` files are concept
+/// documents", so an untyped `schema.md` is a **conformance failure**, not an
+/// extension — BioOKF's own spec reserves a third file and is wrong to.
+const SCHEMA_OKF: &str = include_str!("schema_okf.md");
+const SCHEMA_BIOOKF: &str = include_str!("schema_biookf.md");
+
+/// Placeholders the BioOKF schema template carries, filled from
+/// [`crate::knowledge::biookf::vocabulary`] at write time rather than typed into
+/// the markdown.
+///
+/// The vocabulary is declared once, by a macro over a single table, precisely so
+/// the enum and its accessors cannot drift; a hand-written copy of the 28 types
+/// in a prompt file would be the one place that could, and it would drift
+/// silently because nothing reads a prompt for correctness.
+const PLACEHOLDER_NODE_TYPES: &str = "{{NODE_TYPES}}";
+const PLACEHOLDER_PREDICATES: &str = "{{PREDICATES}}";
+const PLACEHOLDER_KNOWLEDGE_LEVELS: &str = "{{KNOWLEDGE_LEVELS}}";
+const PLACEHOLDER_AGENT_TYPES: &str = "{{AGENT_TYPES}}";
+
 const DEFAULT_LOG: &str = "# Log\n\n";
 const GITIGNORE: &str =
     "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/\n.biorouter-knowledge/write.lock\n";
 
-/// Cross-reference rules block appended to legacy `schema.md` files that
-/// pre-date the Plan 5 Task 2 schema hardening. Kept in sync with the
-/// equivalent block in `schema_default.md`. The unique substring
-/// `"Cross-reference rules"` is used as the migration fingerprint.
+/// The generation this build writes, and the ceiling an automatic migration may
+/// reach. Both live on [`crate::knowledge::types`] beside [`Manifest`] itself,
+/// because [`Manifest::profile`] — the accessor every reader should use — has to
+/// fold the first one in, and a second declaration of a number is one more than
+/// can be kept in step.
+pub use crate::knowledge::types::{AUTOMATIC_SCHEMA_CEILING, CURRENT_SCHEMA_VERSION};
+
+/// Cross-reference rules block appended to `schema.md` files still at
+/// generation 1. Kept in sync with the equivalent block in `schema_default.md`.
 const SCHEMA_CROSSREF_RULES: &str = r#"
 ### Cross-reference rules (the graph depends on these)
 
@@ -48,6 +73,164 @@ When you write or update any knowledge page:
 The lint workflow (`kb_lint`) reports pages with no inbound links as orphans;
 fix them by adding inbound `[[links]]` from related pages.
 "#;
+
+/// Every `schema.md` step from generation `from` up to
+/// [`AUTOMATIC_SCHEMA_CEILING`], applied in order.
+///
+/// A ladder rather than one branch, because a base can be arbitrarily far
+/// behind: a user who has not opened a knowledge base since before a migration
+/// landed must get every step, in order, on the next macro that touches it.
+/// Each step keeps its own idempotence guard so that a base whose *stamp* is
+/// behind but whose *content* is not comes out unchanged — which is the state
+/// every base on disk is in for step 1 → 2 (see
+/// [`KnowledgeService::migrate_schema_if_needed`]).
+///
+/// ⚠ **There is deliberately no 2 → 3 step, and there must not be one here.**
+/// Generation 3 is the OKF format, and reaching it is not a schema edit: it
+/// rewrites the base's *pages* out of `title`/`kind` frontmatter and `[[wiki]]`
+/// links into typed OKF frontmatter. DR-17 traces three concrete privacy
+/// bypasses that a migration on this path would open — this ladder runs from
+/// the three macros with no caller identity of its own, so a rewrite here would
+/// touch every page of a private base with nothing having called
+/// `tier::assert_reachable` — and DR-22 defers the migration outright. A base
+/// below generation 3 keeps working untouched, through its own generation's
+/// path, which is exactly what DR-6 promises.
+fn migrated_schema(current: &str, from: u32) -> String {
+    let mut schema = current.to_string();
+    if from < 2 {
+        schema = with_crossref_rules(schema);
+    }
+    schema
+}
+
+/// Step 1 → 2: teach the sub-agent that the graph is derived purely from
+/// `[[link]]` patterns. Without it a base gains nodes and no edges.
+fn with_crossref_rules(mut schema: String) -> String {
+    if schema.contains("Cross-reference rules") {
+        return schema;
+    }
+    // A blank line between whatever the user had and the new section, even if
+    // their file did not end with a newline.
+    if !schema.ends_with('\n') {
+        schema.push('\n');
+    }
+    schema.push_str(SCHEMA_CROSSREF_RULES);
+    schema
+}
+
+/// The `knowledge/` subdirectories a new base is scaffolded with.
+///
+/// Under OKF the layout is **producer-defined** — §3.1 reserves two filenames
+/// and says nothing about directories — so this is a starting convention, not a
+/// contract, and the convention both profiles teach is one directory per
+/// lowercased `type`.
+///
+/// The two lists differ because the two vocabularies do. OKF's is open, so three
+/// generic type names are all that can honestly be pre-created; a fourth would
+/// be a guess about a base nobody has written yet. BioOKF's is closed, and yet
+/// pre-creating all 28 would be a table of contents for a bundle that does not
+/// exist — so it gets the four SPEC §8.1 **source** types, which are the only
+/// directories the profile genuinely requires: every edge must cite a
+/// `primary_source`, and that citation has to resolve to a real page of one of
+/// these four types. Entity directories appear as their types are used.
+///
+/// ⚠ **Everything here is under `knowledge/`, and that is load-bearing** (issue
+/// #71). `GitRepo::txn_wrote_knowledge_pages` compares only the `knowledge/`
+/// subtree oid, because `log.md`, `raw/` and `index.md` each move the whole tree
+/// on their own — an ingest that wrote nothing but a log line would otherwise
+/// look like a digest. Scaffolding authored content anywhere else silently
+/// breaks that guard.
+fn scaffold_dirs(format: KbFormat) -> Vec<String> {
+    match format {
+        KbFormat::Okf => ["concept", "source", "note"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+        KbFormat::Biookf => biookf::NodeType::SOURCE_TYPES
+            .iter()
+            .map(|t| t.as_str().to_lowercase())
+            .collect(),
+    }
+}
+
+/// The `schema.md` for `format`, with the BioOKF template's vocabulary
+/// placeholders filled in from the vocabulary module.
+fn schema_for(format: KbFormat) -> String {
+    match format {
+        KbFormat::Okf => SCHEMA_OKF.to_string(),
+        KbFormat::Biookf => SCHEMA_BIOOKF
+            .replace(PLACEHOLDER_NODE_TYPES, &node_type_cheatsheet())
+            .replace(PLACEHOLDER_PREDICATES, &predicate_cheatsheet())
+            .replace(
+                PLACEHOLDER_KNOWLEDGE_LEVELS,
+                &join(biookf::KNOWLEDGE_LEVELS),
+            )
+            .replace(PLACEHOLDER_AGENT_TYPES, &join(biookf::AGENT_TYPES)),
+    }
+}
+
+fn join(words: &[&str]) -> String {
+    words.join(", ")
+}
+
+/// The 28 types, grouped by SPEC §5's own two families so the 20/8 split is
+/// visible rather than implied by a comma count.
+fn node_type_cheatsheet() -> String {
+    biookf::Family::ALL
+        .iter()
+        .map(|family| {
+            let members: Vec<&str> = family.members().iter().map(|t| t.as_str()).collect();
+            format!(
+                "- **{}** ({}): {}",
+                family.as_str(),
+                members.len(),
+                members.join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The 24 positive predicates, plus the negatable subset named rather than
+/// listed twice — `not_<X>` is derived from `<X>`, and printing both lists is
+/// how the two would come to disagree.
+fn predicate_cheatsheet() -> String {
+    let positives: Vec<&str> = biookf::PositivePredicate::ALL
+        .iter()
+        .map(|p| p.as_str())
+        .collect();
+    let negatables: Vec<String> = biookf::PositivePredicate::negatables()
+        .iter()
+        .map(|p| format!("{}{}", biookf::NEGATION_PREFIX, p.as_str()))
+        .collect();
+    format!(
+        "- **Positive** ({}): {}\n- **Negated** ({}): {}",
+        positives.len(),
+        positives.join(", "),
+        negatables.len(),
+        negatables.join(", ")
+    )
+}
+
+/// The bundle-root `index.md` a new base is scaffolded with (OKF §8).
+///
+/// `okf_version` in the frontmatter, and nothing else: §8 permits exactly that
+/// one key in exactly this one file, which is why `okf::check_index` takes an
+/// `is_bundle_root` flag. `biookf_version` is deliberately absent even for a
+/// BioOKF base — it lives in `manifest.yaml` (DR-23's corollary), and BioOKF's
+/// own spec permitting it here is one of its two known divergences from OKF
+/// v0.2.
+///
+/// Built through `serde_yaml` rather than `format!` so the revision is emitted
+/// **quoted**. Unquoted, YAML resolves `0.2` to a float and a later `0.10` would
+/// silently become `0.1` — a revision that sorts *below* `0.2`.
+fn index_scaffold() -> String {
+    let mut frontmatter = serde_yaml::Mapping::new();
+    frontmatter.insert("okf_version".into(), okf::OKF_VERSION.into());
+    let yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(frontmatter))
+        .expect("a one-key string mapping always serializes");
+    format!("---\n{yaml}---\n\n# Pages\n\n_No pages yet._\n")
+}
 
 #[derive(Clone)]
 pub struct KnowledgeService {
@@ -442,7 +625,7 @@ impl KnowledgeService {
     ///
     /// For callers OUTSIDE this module. Inside it — `create_base`,
     /// `import_brkb`, `delete_base` — the lock is already held, so those call
-    /// `tier::*_unlocked` directly (through [`Self::stamp_new_base_unlocked`],
+    /// `tier::*_unlocked` directly (through [`Self::stamp_base_unlocked`],
     /// which is this function's unlocked twin). Calling this from there
     /// deadlocks.
     ///
@@ -467,8 +650,8 @@ impl KnowledgeService {
         crate::knowledge::tier::raise_affiliation_unlocked(&self.root, kb_id, caller)
     }
 
-    /// Stamp a brand-new base on **both** of issue #56's axes, inside a root
-    /// lock the caller already holds.
+    /// Stamp a base on **both** of issue #56's axes from an explicit owner set,
+    /// inside a root lock the caller already holds.
     ///
     /// ⚠ **The pairing is this function, not a convention.** `create_base_as`
     /// and `import_brkb` are the two tools whose subject id is minted by the
@@ -480,7 +663,17 @@ impl KnowledgeService {
     /// laundered by `kb_export` + `kb_import`, both endpoints Private, no gate
     /// crossed. One function that does both is what stops that from being
     /// re-introduced by someone reading only one of the call sites.
-    fn stamp_new_base_unlocked(
+    ///
+    /// ⚠ **It was named `stamp_new_base_unlocked` and it is not only for new
+    /// bases.** [`Self::absorb_classification`] is the third caller: a merge
+    /// destination already exists, and what it needs is exactly this — a raise
+    /// on the tier axis and a UNION on the owner axis, from an owner set the
+    /// call supplies rather than derives from one caller.
+    /// [`Self::raise_tier_and_affiliation`] cannot serve it, because the owners
+    /// being folded in are the **source base's** and there is no single caller
+    /// to derive them from — the same reason `tier::add_owners_unlocked` exists
+    /// beside `tier::raise_affiliation_unlocked`.
+    fn stamp_base_unlocked(
         &self,
         kb_id: &str,
         caller_is_private: bool,
@@ -551,10 +744,25 @@ impl KnowledgeService {
     /// PUBLIC and unclaimed. Model-facing callers use [`Self::create_base_as`]
     /// instead.
     pub fn create_base(&self, id: &str, name: &str, color: Option<&str>) -> Result<Manifest> {
+        self.create_base_in(id, name, color, KbFormat::default())
+    }
+
+    /// [`Self::create_base`] with an explicit profile. Same user-facing,
+    /// born-PUBLIC path; the profile is the one thing about a base that cannot
+    /// be changed afterwards without a format migration, so it has to be
+    /// choosable at the only moment it is free.
+    pub fn create_base_in(
+        &self,
+        id: &str,
+        name: &str,
+        color: Option<&str>,
+        format: KbFormat,
+    ) -> Result<Manifest> {
         self.create_base_as(
             id,
             name,
             color,
+            format,
             false,
             &crate::knowledge::affiliation::CallerAffiliation::Unstated,
         )
@@ -576,11 +784,24 @@ impl KnowledgeService {
     /// not at the first ingest (DR-18(b)), and a base born in a UCSF chat that
     /// recorded no owner would read as unclaimed — reachable from every other
     /// institution's model — until something happened to write into it.
+    ///
+    /// `format` picks the profile (DR-6) and therefore the scaffolded tree and
+    /// the `schema.md` written into it. It rides in the same transaction for a
+    /// duller reason than the tier does: the manifest, the directories and the
+    /// schema are three statements about one base and a half-written base whose
+    /// manifest says `biookf` over an OKF tree would teach the sub-agent the
+    /// wrong format for the rest of its life.
+    ///
+    /// ⚠ **Do not add a second transaction here, and do not call
+    /// [`Self::lock_root`] from anything this calls.** The lock is *not*
+    /// re-entrant — that is why the `_unlocked` twins exist — so a helper that
+    /// takes it deadlocks the creation of every base.
     pub fn create_base_as(
         &self,
         id: &str,
         name: &str,
         color: Option<&str>,
+        format: KbFormat,
         caller_is_private: bool,
         caller_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
     ) -> Result<Manifest> {
@@ -590,10 +811,16 @@ impl KnowledgeService {
         if kb_root.exists() {
             anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
         }
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("entities"))?;
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("concepts"))?;
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("sources"))?;
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("notes"))?;
+        // The four hardcoded directories this replaced (`entities`, `concepts`,
+        // `sources`, `notes`) were the pre-OKF taxonomy, encoded in a `kind:`
+        // frontmatter key. Under OKF the axis is `type` and the layout is the
+        // producer's — see `scaffold_dirs`, including why every one of these is
+        // still under `knowledge/`.
+        let knowledge_dir = paths::kb_knowledge_dir(&self.root, id);
+        std::fs::create_dir_all(&knowledge_dir)?;
+        for dir in scaffold_dirs(format) {
+            std::fs::create_dir_all(knowledge_dir.join(dir))?;
+        }
         std::fs::create_dir_all(paths::kb_raw_dir(&self.root, id))?;
         std::fs::create_dir_all(paths::kb_internal_dir(&self.root, id))?;
 
@@ -602,13 +829,28 @@ impl KnowledgeService {
             name: name.to_string(),
             color: color.unwrap_or("#5a6394").to_string(),
             created_at: Utc::now(),
-            schema_version: 1,
+            // The generation of the `schema.md` written below, not a constant 1.
+            // A manifest that under-reports what its own base carries makes the
+            // migration ladder run on a base that is already current, which is
+            // only harmless for as long as every step happens to be idempotent.
+            schema_version: CURRENT_SCHEMA_VERSION,
             default_model: None,
+            format,
+            // Written for BOTH profiles, because a BioOKF bundle is an OKF
+            // bundle — the profile only adds constraints. It mirrors what
+            // `index_scaffold` puts in the bundle-root `index.md`, which is the
+            // one place OKF permits it.
+            okf_version: Some(okf::OKF_VERSION.to_string()),
+            // …and this one is here rather than in `index.md` (DR-23's
+            // corollary): OKF §8 permits `okf_version` there and nothing else.
+            biookf_version: format
+                .is_biookf()
+                .then(|| biookf::BIOOKF_VERSION.to_string()),
         };
         manifest::save(&kb_root, &m)?;
 
-        std::fs::write(kb_root.join("schema.md"), DEFAULT_SCHEMA)?;
-        std::fs::write(kb_root.join("index.md"), DEFAULT_INDEX)?;
+        std::fs::write(kb_root.join("schema.md"), schema_for(format))?;
+        std::fs::write(kb_root.join("index.md"), index_scaffold())?;
         std::fs::write(kb_root.join("log.md"), DEFAULT_LOG)?;
         std::fs::write(kb_root.join(".gitignore"), GITIGNORE)?;
 
@@ -637,7 +879,7 @@ impl KnowledgeService {
         // so the `_unlocked` twin is the one that must be called — and in the
         // SAME transaction as the directory, so there is no window in which a
         // private session's new base reads PUBLIC.
-        self.stamp_new_base_unlocked(
+        self.stamp_base_unlocked(
             id,
             caller_is_private,
             crate::knowledge::affiliation::contributed_owners(caller_affiliation),
@@ -733,7 +975,7 @@ impl KnowledgeService {
         //
         // The floor is a disjunction, never the marker alone: a hostile archive
         // claiming "public" must not lower a private importer's base.
-        self.stamp_new_base_unlocked(
+        self.stamp_base_unlocked(
             &new_id,
             provenance_private.unwrap_or(false) || importer_is_private,
             owners,
@@ -741,12 +983,240 @@ impl KnowledgeService {
         Ok(new_id)
     }
 
+    /// Merge `source_kb_id` **into** `destination_kb_id`. The deterministic half
+    /// — see [`crate::knowledge::merge`] for what that means and what it
+    /// deliberately leaves to a later macro.
+    ///
+    /// `dry_run` reports what would move, be renamed and be deduped, and writes
+    /// nothing. A merge is the least reversible operation in this subsystem and
+    /// `kb_restore_state` restores a whole tree, so a preview is not a
+    /// convenience.
+    ///
+    /// # Why this is a privacy write choke point (DR-17)
+    ///
+    /// A merge is a content-touching write, and it is the one write in the tree
+    /// whose content comes from **another base**. It joins the four existing
+    /// choke points rather than inheriting one:
+    ///
+    /// * The **barrier** runs first, over BOTH ids
+    ///   ([`crate::knowledge::merge::MergeAuthority::assert_may_merge`]). You
+    ///   cannot merge a base you cannot read into a base you cannot write — and
+    ///   the report itself quotes page paths and identifiers back to the caller,
+    ///   so a model barred from reading the source must be barred from previewing
+    ///   it too.
+    /// * The **fold** runs second, before a byte is written: the destination
+    ///   takes `max` over the tier axis and the UNION over owner institutions,
+    ///   which is exactly the rule
+    ///   [`Self::import_brkb`] already applies to an incoming archive. Merging
+    ///   base A into base B is the same transfer with the archive step removed,
+    ///   so it takes the same rule rather than a second one.
+    ///
+    /// A merge can therefore **raise** either axis and can never lower one: the
+    /// fold goes through the monotone ratchet, and the source base is only read,
+    /// so there is nothing of its own to lower.
+    ///
+    /// ⚠ **The fold precedes the write, and the residual is the accepted
+    /// direction.** A merge that fails after the fold leaves the destination
+    /// raised with no content added — visible to the user, and reversible with
+    /// the tier control. The other order would leave a base holding a private
+    /// source's content at PUBLIC if the process died mid-commit, which is
+    /// silent. It is the same ordering, for the same reason, as the ratchet in
+    /// `KnowledgeServer::call_tool`.
+    pub async fn merge_bases(
+        &self,
+        destination_kb_id: &str,
+        source_kb_id: &str,
+        authority: &crate::knowledge::merge::MergeAuthority<'_>,
+        dry_run: bool,
+    ) -> Result<crate::knowledge::merge::MergeReport> {
+        paths::validate_kb_id(destination_kb_id)?;
+        paths::validate_kb_id(source_kb_id)?;
+        anyhow::ensure!(
+            destination_kb_id != source_kb_id,
+            "cannot merge '{destination_kb_id}' into itself"
+        );
+        let dst_root = paths::kb_root(&self.root, destination_kb_id);
+        let src_root = paths::kb_root(&self.root, source_kb_id);
+        anyhow::ensure!(dst_root.exists(), "kb '{destination_kb_id}' not found");
+        anyhow::ensure!(src_root.exists(), "kb '{source_kb_id}' not found");
+
+        // FIRST, and over both ids.
+        authority.assert_may_merge(&self.root, destination_kb_id, source_kb_id)?;
+
+        // Both locks, in id order. A merge is the only operation that holds two
+        // KB locks at once, so it is the only one that can deadlock against a
+        // concurrent merge in the other direction; a total order on the ids is
+        // what stops that.
+        let (first, second) = if destination_kb_id < source_kb_id {
+            (destination_kb_id, source_kb_id)
+        } else {
+            (source_kb_id, destination_kb_id)
+        };
+        let _first = self.lock_kb(first).await?;
+        let _second = self.lock_kb(second).await?;
+
+        let plan = crate::knowledge::merge::plan(&dst_root, &src_root, source_kb_id)?;
+        if dry_run {
+            let (tier, owners) =
+                self.projected_classification(destination_kb_id, source_kb_id, authority)?;
+            return Ok(crate::knowledge::merge::report(
+                &plan,
+                destination_kb_id,
+                true,
+                &tier,
+                owners,
+                None,
+            ));
+        }
+
+        let (tier, owners_added) =
+            self.absorb_classification(destination_kb_id, source_kb_id, authority)?;
+        let sha = crate::knowledge::merge::apply(&dst_root, &src_root, &plan)?;
+        self.rebuild_graph_cache(destination_kb_id)?;
+        Ok(crate::knowledge::merge::report(
+            &plan,
+            destination_kb_id,
+            false,
+            &tier,
+            owners_added,
+            Some(sha),
+        ))
+    }
+
+    /// Fold the source base's classification into the destination's: `max` on
+    /// the tier axis, UNION on the owner axis. Returns the destination's tier
+    /// word afterwards and the owners the fold added.
+    ///
+    /// ⚠ It routes through [`Self::stamp_base_unlocked`] rather than calling
+    /// `tier::raise_unlocked` itself, and DR-20 says why: the two ratchets must
+    /// be reached from the same line of the same function, or a future edit
+    /// raises one axis and not the other.
+    fn absorb_classification(
+        &self,
+        destination_kb_id: &str,
+        source_kb_id: &str,
+        authority: &crate::knowledge::merge::MergeAuthority<'_>,
+    ) -> Result<(String, Vec<String>)> {
+        let _lock = self.lock_root()?;
+        let source_owners = self.owners_or_bail(source_kb_id)?;
+        let before = self.owners_or_bail(destination_kb_id)?;
+        // The caller's own institution rides along with the source's. The MCP
+        // seam already records it for `kb_merge` (it is in `KB_RATCHETING_TOOLS`),
+        // so this is idempotent there; it is what covers every other caller.
+        let mut owners = source_owners;
+        owners.extend(crate::knowledge::affiliation::contributed_owners(
+            &authority.caller_affiliation(),
+        ));
+        self.stamp_base_unlocked(
+            destination_kb_id,
+            crate::knowledge::tier::is_private(&self.root, source_kb_id)
+                || authority.caller_is_private(),
+            owners,
+        )?;
+        // Read back rather than predicted. `add_owners_unlocked` is a no-op with
+        // the master toggle off (DR-15), so a report built from what was *asked
+        // for* would tell the user their base gained owners it did not.
+        let after = self.owners_or_bail(destination_kb_id)?;
+        Ok((
+            self.tier_word(destination_kb_id),
+            after.difference(&before).cloned().collect(),
+        ))
+    }
+
+    /// What [`Self::absorb_classification`] *would* land on, without writing —
+    /// the dry run's answer to "what will this do to my base's privacy?", which
+    /// is the question a preview of a merge most needs to answer.
+    /// ⚠ It re-derives the ratchet's arithmetic rather than sharing it, which is
+    /// the one duplication in this feature and is bounded on purpose: the
+    /// alternative is applying the fold and rolling it back, and a ratchet with a
+    /// rollback path is a ratchet with a lowering path. What keeps the two in
+    /// step is a test that runs a dry run and the real merge over the same pair
+    /// and asserts they agree.
+    ///
+    /// DR-15's master toggle is read here for the same reason
+    /// `tier::raise_unlocked` reads it: with the feature off nothing ratchets, so
+    /// a preview promising a raise that will not happen would be worse than no
+    /// preview.
+    fn projected_classification(
+        &self,
+        destination_kb_id: &str,
+        source_kb_id: &str,
+        authority: &crate::knowledge::merge::MergeAuthority<'_>,
+    ) -> Result<(String, Vec<String>)> {
+        let mut incoming = self.owners_or_bail(source_kb_id)?;
+        incoming.extend(crate::knowledge::affiliation::contributed_owners(
+            &authority.caller_affiliation(),
+        ));
+        let before = self.owners_or_bail(destination_kb_id)?;
+        // Through `tier`'s own spelling, never a second read of the atomic — see
+        // `tier::ratchets_are_live`, which exists for this caller.
+        let enabled = crate::knowledge::tier::ratchets_are_live();
+        let raises = enabled
+            && (crate::knowledge::tier::is_private(&self.root, source_kb_id)
+                || authority.caller_is_private());
+        let private = crate::knowledge::tier::is_private(&self.root, destination_kb_id) || raises;
+        let word = if private {
+            crate::knowledge::tier::PRIVATE
+        } else {
+            crate::knowledge::tier::PUBLIC
+        };
+        let added = if enabled {
+            incoming.difference(&before).cloned().collect()
+        } else {
+            Vec::new()
+        };
+        Ok((word.to_string(), added))
+    }
+
+    /// A base's owner set, refusing when the store cannot say.
+    ///
+    /// `Unknown` — an unreadable classification store — is the one case with
+    /// nothing honest to do: a merge would fold an owner set nobody can read
+    /// into another base and the result would claim to belong to whoever the
+    /// destination already named. `export_brkb` refuses the same case for the
+    /// same reason, and the same machine cannot write any knowledge base either.
+    fn owners_or_bail(&self, kb_id: &str) -> Result<std::collections::BTreeSet<String>> {
+        match crate::knowledge::tier::affiliation(&self.root, kb_id).owners() {
+            Some(owners) => Ok(owners.clone()),
+            None => anyhow::bail!(
+                "cannot merge with '{kb_id}': the knowledge-base classification store is \
+                 unreadable, so whose content it holds cannot be established and the merge \
+                 would silently drop an institution's claim. Repair or remove {}",
+                crate::knowledge::paths::kb_tiers_path(&self.root).display()
+            ),
+        }
+    }
+
+    fn tier_word(&self, kb_id: &str) -> String {
+        if crate::knowledge::tier::is_private(&self.root, kb_id) {
+            crate::knowledge::tier::PRIVATE.to_string()
+        } else {
+            crate::knowledge::tier::PUBLIC.to_string()
+        }
+    }
+
     pub fn list_bases(&self) -> Result<Vec<Manifest>> {
         let entries = registry::load(&self.root)?;
         let mut out = Vec::new();
         for e in entries {
-            if let Ok(m) = manifest::load(&e.path) {
-                out.push(m);
+            match manifest::load(&e.path) {
+                Ok(m) => out.push(m),
+                // Still not fatal — one broken base must not take the whole
+                // list with it — but no longer *silent*. A dropped base does
+                // not report as broken, it vanishes, and DR-12 traces what
+                // happens next: the id leaves the installed universe that
+                // `installed_kb_ids_unlocked` derives from this list,
+                // `repair_decision` reads the stored primary as pointing at
+                // something uninstalled, and the next selection edit PERSISTS
+                // the cleared `.active-kb`. The user loses their pointers to a
+                // base that is still sitting on disk, intact.
+                //
+                // So the log line has to carry the path: it is the only thing
+                // that tells a user with N bases which one to go and look at.
+                Err(err) => tracing::warn!(
+                    "knowledge: skipping a base whose manifest could not be read at {}: {err:#}",
+                    e.path.display()
+                ),
             }
         }
         Ok(out)
@@ -1264,61 +1734,115 @@ impl KnowledgeService {
         Ok(())
     }
 
-    /// One-shot, idempotent upgrade for KBs created before the schema gained
-    /// explicit cross-reference rules (Plan 5 Task 2). If `schema.md` does
-    /// not already mention `"Cross-reference rules"`, the rules block is
-    /// appended in place and committed. User customisations elsewhere in
-    /// the file are preserved.
+    /// Bring a base's `schema.md` up to [`AUTOMATIC_SCHEMA_CEILING`], if it is
+    /// behind. User customisations elsewhere in the file are preserved.
     ///
-    /// Returns `Ok(true)` if the schema was rewritten, `Ok(false)` if it was
-    /// already up-to-date or the KB has no `schema.md`.
+    /// ## The ceiling is not [`CURRENT_SCHEMA_VERSION`], and the gap is the point
+    ///
+    /// This runs from all three macros, on whatever base they were pointed at,
+    /// with no caller identity of its own. That is fine for a *schema* edit and
+    /// disqualifying for a *format* one: generation 3 is OKF, reaching it means
+    /// rewriting the base's pages, and DR-17 names three concrete privacy
+    /// bypasses that a migration on this path opens — starting with rewriting
+    /// every page of a private base with nothing having called
+    /// `tier::assert_reachable`. DR-22 defers the migration outright. So a base
+    /// at generation 2 is **already current** as far as this function is
+    /// concerned and comes back `Ok(false)` forever.
+    ///
+    /// Returns `Ok(true)` when `schema.md` was actually rewritten (and
+    /// committed), `Ok(false)` when there was nothing to write — the base was
+    /// already current, it has no `schema.md`, or its stamp was behind but its
+    /// content was not.
+    ///
+    /// ## The decision is the version, not a substring
+    ///
+    /// This used to fingerprint on the literal text `"Cross-reference rules"`
+    /// and return early if it was present. That worked exactly once. Every base
+    /// created since that block joined `schema_default.md` contains the string,
+    /// so the function reported "already migrated" for the entire installed
+    /// base — and a *new* schema could therefore never be installed, however
+    /// different it was, because the fingerprint of the old migration was still
+    /// there. A content fingerprint answers "did migration N run?"; what the
+    /// caller needs to know is "which generation is this base at?", and only a
+    /// recorded version answers that.
+    ///
+    /// So `Manifest.schema_version` — declared long ago, always 1, and read by
+    /// nothing until now — is the gate, and the manifest is stamped forward
+    /// afterwards whether or not the content changed. That last part matters:
+    /// bases on disk today are stamped 1 while already carrying generation-2
+    /// content, because `create_base` wrote the current schema and hardcoded
+    /// the stamp. They must end up stamped 2 *without* gaining a second copy of
+    /// the rules block, which is why the step below keeps a content guard of its
+    /// own — as an idempotence check inside a step, never as the decision.
     pub fn migrate_schema_if_needed(&self, kb_id: &str) -> Result<bool> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
+        let mut manifest = manifest::load(&kb_root).context("read manifest.yaml")?;
+        if manifest.schema_version >= AUTOMATIC_SCHEMA_CEILING {
+            return Ok(false);
+        }
         let schema_path = kb_root.join("schema.md");
         if !schema_path.exists() {
+            // Nothing to migrate and nothing to claim: leaving the stamp behind
+            // means a base that later gains a `schema.md` still gets the ladder.
             return Ok(false);
         }
+        let from = manifest.schema_version;
         let current = std::fs::read_to_string(&schema_path).context("read schema.md")?;
-        if current.contains("Cross-reference rules") {
-            return Ok(false);
+        let next = migrated_schema(&current, from);
+        let rewritten = next != current;
+        if rewritten {
+            std::fs::write(&schema_path, next).context("write schema.md")?;
         }
-        // Ensure a blank line separates whatever the user had from the new
-        // section, even if their file did not end with a newline.
-        let mut next = current;
-        if !next.ends_with('\n') {
-            next.push('\n');
-        }
-        next.push_str(SCHEMA_CROSSREF_RULES);
-        std::fs::write(&schema_path, next).context("write schema.md")?;
 
-        let repo = GitRepo::open(&kb_root)?;
-        repo.commit_all(
-            crate::knowledge::types::ChangeKind::Manual,
-            "migrate schema: add cross-reference rules",
-            None,
-        )
-        .context("commit schema migration")?;
-        Ok(true)
+        // Stamped before the commit, so the manifest change rides in the same
+        // commit as the schema change rather than surfacing later as a stray
+        // diff inside an unrelated ingest.
+        //
+        // To the CEILING, never to `CURRENT_SCHEMA_VERSION`: stamping a base 3
+        // would declare it OKF on the strength of a `[[wiki]]`-linked schema,
+        // and `Manifest::profile` would hand every later reader that answer with
+        // nothing left on disk to contradict it.
+        manifest.schema_version = AUTOMATIC_SCHEMA_CEILING;
+        manifest::save(&kb_root, &manifest).context("stamp schema_version")?;
+
+        if rewritten {
+            let repo = GitRepo::open(&kb_root)?;
+            repo.commit_all(
+                crate::knowledge::types::ChangeKind::Manual,
+                &format!("migrate schema: v{from} → v{AUTOMATIC_SCHEMA_CEILING}"),
+                None,
+            )
+            .context("commit schema migration")?;
+        }
+        Ok(rewritten)
     }
 
     pub fn get_graph(&self, kb_id: &str) -> anyhow::Result<crate::knowledge::types::Graph> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         if let Some(g) = crate::knowledge::graph::read_cache(&kb_root)? {
-            // Self-heal caches written by an older deriver: if the cache still
-            // contains the scaffold `index`/`log` hub nodes (which the current
-            // deriver excludes), re-derive once and rewrite the cache so existing
-            // KBs pick up the fix without needing a fresh ingest.
-            let has_scaffold = g.nodes.iter().any(|n| n.id == "index" || n.id == "log");
-            if !has_scaffold {
-                return Ok(g);
-            }
-            let fresh = crate::knowledge::graph::derive(&kb_root)?;
-            let _ = crate::knowledge::graph::write_cache(&kb_root, &fresh);
-            return Ok(fresh);
+            return Ok(g);
         }
-        crate::knowledge::graph::derive(&kb_root)
+        // No usable cache. `read_cache` folds four cases into that one answer —
+        // absent, unreadable, malformed, or written to a shape this build does
+        // not read — because the repair for all four is the same, and it is
+        // here: derive fresh and rewrite the cache so the next reader is served
+        // from disk. Nothing on this path used to rewrite it, which is how a
+        // single bad cache became a permanent 404 on the graph route (DR-13).
+        //
+        // This subsumes and retires the scaffold self-heal that used to sit
+        // here — a hardcoded `n.id == "index" || n.id == "log"` predicate that
+        // detected exactly one historical shape change (the deriver learning to
+        // exclude the index/log hub pages) and could not detect any other. The
+        // envelope's `version` detects every shape change, including that one,
+        // because a cache written by the older deriver does not carry a version
+        // key at all.
+        let fresh = crate::knowledge::graph::derive(&kb_root)?;
+        if let Err(e) = crate::knowledge::graph::write_cache(&kb_root, &fresh) {
+            tracing::warn!("knowledge: could not rewrite the graph cache for '{kb_id}': {e:#}");
+        }
+        Ok(fresh)
     }
 
     /// Read the raw markdown body of a page (knowledge/*.md, raw/*/source.md,
@@ -2086,12 +2610,20 @@ mod tests {
     /// could import the archive and read it, both endpoints Private, no gate
     /// crossed.
     ///
+    /// ⚠ **The count stayed at 2 when the merge landed, and that is the shape a
+    /// new choke point should have.** `merge_bases` is a fifth privacy write
+    /// choke point (DR-17) and folds the SOURCE base's classification into the
+    /// destination — a raise on the tier axis, a union on the owner axis — yet
+    /// it adds no site here, because `absorb_classification` routes through
+    /// `stamp_base_unlocked`. That is DR-20's instruction applied rather than
+    /// its number bumped.
+    ///
     /// ⚠ **A tripwire over one spelling, not a proof** — the same shape as
     /// `tier_user::tests::exactly_one_writer_outside_the_ratchet_saves_the_tier_store`.
     /// What it reliably catches is the realistic case: a third ratchet path
     /// added here that stamps the tier and forgets the third axis. The two
     /// permitted sites are [`KnowledgeService::raise_tier_and_affiliation`] (for
-    /// a base that already exists) and [`KnowledgeService::stamp_new_base_unlocked`]
+    /// a base that already exists) and [`KnowledgeService::stamp_base_unlocked`]
     /// (for one this call is minting); each does both raises itself, so there is
     /// no third function that could do one.
     #[test]
@@ -2111,7 +2643,7 @@ mod tests {
             2,
             "the tier ratchet is called {} times in service.rs, not 2. Every \
              production raise must be paired with the affiliation raise in the \
-             same function: use `stamp_new_base_unlocked` for a base this call \
+             same function: use `stamp_base_unlocked` for a base this call \
              is minting, or `raise_tier_and_affiliation` for one that already \
              exists. Sites found: {sites:#?}",
             sites.len()
@@ -2126,7 +2658,7 @@ mod tests {
             "the affiliation ratchet is reached from somewhere new. It must be \
              reached from exactly the two functions the tier ratchet is, and \
              from the same line of each: `raise_tier_and_affiliation` and \
-             `stamp_new_base_unlocked`."
+             `stamp_base_unlocked`."
         );
     }
 
@@ -2140,10 +2672,12 @@ mod tests {
         assert!(kb.join("index.md").exists());
         assert!(kb.join("log.md").exists());
         assert!(kb.join(".gitignore").exists());
-        assert!(kb.join("knowledge/entities").exists());
-        assert!(kb.join("knowledge/concepts").exists());
-        assert!(kb.join("knowledge/sources").exists());
-        assert!(kb.join("knowledge/notes").exists());
+        for dir in scaffold_dirs(KbFormat::Okf) {
+            assert!(
+                kb.join("knowledge").join(&dir).exists(),
+                "scaffold directory knowledge/{dir} was not created"
+            );
+        }
         assert!(kb.join("raw").exists());
         assert!(kb.join(".biorouter-knowledge").exists());
         assert!(kb.join(".git").exists());
@@ -2159,6 +2693,228 @@ mod tests {
         let bases = svc.list_bases().unwrap();
         assert_eq!(bases.len(), 1);
         assert_eq!(bases[0].name, "MS Patient Analysis");
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage 3: the scaffold, per profile (DR-6, DR-23, requirement E)
+    // -----------------------------------------------------------------------
+
+    /// Both profiles, one assertion set: whatever `create_base_in` scaffolds has
+    /// to be an OKF-conformant bundle by the project's own checker — the one
+    /// that has been able to answer this since Stage 0 and was never asked.
+    #[test]
+    fn what_create_base_scaffolds_is_conformant_by_the_projects_own_checker() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            svc.create_base_in("k", "K", None, format).unwrap();
+            let kb = svc.root().join("k");
+
+            // §11 rules 1 and 2 for `schema.md` — DR-23: it is a concept
+            // document, not a third reserved file, so it needs a `type`.
+            let schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+            let page = okf::Page::parse(&schema)
+                .unwrap_or_else(|e| panic!("{format:?} schema.md does not parse: {e}"));
+            assert_eq!(page.doc.r#type, "Schema", "{format:?}");
+            assert!(page.doc.primary_key().is_some(), "{format:?} has no title");
+            assert!(page.doc.description.is_some(), "{format:?}");
+            let diagnostics = okf::check(&page);
+            assert!(diagnostics.is_empty(), "{format:?}: {diagnostics:?}");
+
+            // §8 for the bundle-root index, §9 for the log.
+            let index = std::fs::read_to_string(kb.join("index.md")).unwrap();
+            assert!(
+                okf::check_index(&index, true).is_empty(),
+                "{format:?}: {:?}",
+                okf::check_index(&index, true)
+            );
+            let log = std::fs::read_to_string(kb.join("log.md")).unwrap();
+            assert!(okf::check_log(&log).is_empty(), "{format:?}");
+        }
+    }
+
+    /// OKF §8 permits exactly one frontmatter key in exactly one file, and
+    /// DR-23's corollary is that `biookf_version` is not it. The BioOKF profile
+    /// declares its own revision in `manifest.yaml` instead — which is the one
+    /// place BioRouter is deliberately stricter than BioOKF's own spec.
+    #[test]
+    fn the_root_index_declares_okf_version_and_never_biookf_version() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            let m = svc.create_base_in("k", "K", None, format).unwrap();
+            let index = std::fs::read_to_string(svc.root().join("k").join("index.md")).unwrap();
+            let split = okf::frontmatter::split(&index).unwrap();
+            let keys: Vec<String> = split
+                .frontmatter
+                .keys()
+                .map(|k| k.as_str().unwrap_or("?").to_string())
+                .collect();
+            assert_eq!(keys, vec!["okf_version".to_string()], "{format:?}");
+            assert_eq!(
+                split
+                    .frontmatter
+                    .get("okf_version")
+                    .and_then(|v| v.as_str()),
+                Some(okf::OKF_VERSION),
+                "{format:?}: the revision must be a STRING; unquoted, YAML reads \
+                 0.2 as a float and a later 0.10 becomes 0.1"
+            );
+
+            // …and the manifest carries the pair.
+            assert_eq!(
+                m.okf_version.as_deref(),
+                Some(okf::OKF_VERSION),
+                "{format:?}"
+            );
+            assert_eq!(
+                m.biookf_version.as_deref(),
+                format.is_biookf().then_some(biookf::BIOOKF_VERSION),
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_base_records_its_profile_and_reads_back_as_that_profile() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            let m = svc.create_base_in("k", "K", None, format).unwrap();
+            assert_eq!(m.format, format);
+            let on_disk = manifest::load(&svc.root().join("k")).unwrap();
+            assert_eq!(
+                on_disk, m,
+                "the stamp on disk must match the one handed back"
+            );
+            assert_eq!(
+                on_disk.profile(),
+                Some(format),
+                "a base created at the OKF generation must report its profile"
+            );
+        }
+    }
+
+    /// The two schemas are different documents, and the BioOKF one is generated
+    /// from the vocabulary rather than typed out — so a spec bump moves the
+    /// prompt instead of leaving a stale copy of the 28 types in a markdown
+    /// file that nothing reads for correctness.
+    #[test]
+    fn the_biookf_schema_carries_the_vocabulary_the_module_declares() {
+        let schema = schema_for(KbFormat::Biookf);
+        assert!(
+            !schema.contains("{{"),
+            "an unfilled placeholder shipped into the prompt: {:?}",
+            schema
+                .lines()
+                .filter(|l| l.contains("{{"))
+                .collect::<Vec<_>>()
+        );
+        for t in biookf::NodeType::ALL {
+            assert!(
+                schema.contains(t.as_str()),
+                "missing node type {}",
+                t.as_str()
+            );
+        }
+        for p in biookf::PositivePredicate::ALL {
+            assert!(
+                schema.contains(p.as_str()),
+                "missing predicate {}",
+                p.as_str()
+            );
+        }
+        for level in biookf::KNOWLEDGE_LEVELS {
+            assert!(schema.contains(level), "missing knowledge level {level}");
+        }
+        for agent in biookf::AGENT_TYPES {
+            assert!(schema.contains(agent), "missing agent type {agent}");
+        }
+        // The negatives are derived from `negatable()`, not listed twice.
+        let negated = format!("{}treats", biookf::NEGATION_PREFIX);
+        assert!(schema.contains(&negated), "missing {negated}");
+
+        // The OKF schema must NOT carry it: its vocabulary is open, and handing
+        // the model 28 types would quietly turn it into the other profile.
+        let okf_schema = schema_for(KbFormat::Okf);
+        assert!(!okf_schema.contains("BiologicalPathway"), "{okf_schema}");
+        assert!(!okf_schema.contains("knowledge_level"), "{okf_schema}");
+    }
+
+    /// Issue #71, stated as a property of the scaffold rather than left to be
+    /// noticed later. `txn_wrote_knowledge_pages` compares ONLY the `knowledge/`
+    /// subtree oid, because `log.md`, `raw/` and `index.md` each move the whole
+    /// tree on their own — an ingest that wrote nothing but a log line would
+    /// otherwise report as a digest. A profile that scaffolded authored content
+    /// outside `knowledge/` would break that guard silently.
+    #[test]
+    fn every_scaffolded_directory_lives_under_knowledge() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            svc.create_base_in("k", "K", None, format).unwrap();
+            let kb = svc.root().join("k");
+            for dir in scaffold_dirs(format) {
+                assert!(
+                    kb.join("knowledge").join(&dir).is_dir(),
+                    "{format:?}: knowledge/{dir} missing"
+                );
+                assert!(
+                    !dir.starts_with('/') && !dir.contains(".."),
+                    "{format:?}: {dir} escapes knowledge/"
+                );
+            }
+            // Nothing authored at the bundle root beyond the three reserved-ish
+            // files, the manifest and the ignore file.
+            let mut top: Vec<String> = std::fs::read_dir(&kb)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.starts_with('.'))
+                .collect();
+            top.sort();
+            assert_eq!(
+                top,
+                vec![
+                    "index.md".to_string(),
+                    "knowledge".to_string(),
+                    "log.md".to_string(),
+                    "manifest.yaml".to_string(),
+                    "raw".to_string(),
+                    "schema.md".to_string(),
+                ],
+                "{format:?}"
+            );
+        }
+    }
+
+    /// The BioOKF directories are derived from SPEC §8.1's source types rather
+    /// than typed out, because those four are the only directories the profile
+    /// genuinely requires: every edge must cite a `primary_source`, and that
+    /// citation has to resolve to a real page of one of them.
+    #[test]
+    fn the_biookf_scaffold_is_the_four_source_types_lowercased() {
+        let dirs = scaffold_dirs(KbFormat::Biookf);
+        let expected: Vec<String> = biookf::NodeType::SOURCE_TYPES
+            .iter()
+            .map(|t| t.as_str().to_lowercase())
+            .collect();
+        assert_eq!(dirs, expected);
+        assert_eq!(dirs.len(), 4, "SPEC §8.1 names four, not eight");
+        assert!(!dirs.contains(&"population".to_string()));
+    }
+
+    /// A user-facing create is still born PUBLIC and unclaimed whichever
+    /// profile it is in — the profile argument must not have wandered into the
+    /// tier or affiliation position.
+    #[test]
+    fn choosing_a_profile_does_not_change_how_the_base_is_classified() {
+        let (_dir, svc) = svc();
+        svc.create_base_in("pub-kb", "P", None, KbFormat::Biookf)
+            .unwrap();
+        assert!(!crate::knowledge::tier::is_private(svc.root(), "pub-kb"));
+        assert_eq!(
+            crate::knowledge::tier::affiliation(svc.root(), "pub-kb")
+                .owners()
+                .map(|o| o.len()),
+            Some(0),
+            "a user-facing create claims no institution"
+        );
     }
 
     #[test]
@@ -3454,13 +4210,144 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // list_bases: a base that cannot be read must not vanish (DR-12)
+    // -----------------------------------------------------------------------
+
+    /// Collects formatted tracing output so a test can assert the *level* a
+    /// message was emitted at, not merely that something was written. The
+    /// subscriber is installed per-thread by `with_default`, so this is safe
+    /// under `cargo test`'s parallel threads.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogs;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, f);
+        let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).to_string();
+        (value, text)
+    }
+
+    /// DR-12's (b). A base whose `manifest.yaml` will not parse used to be
+    /// dropped by `if let Ok(m) = …`, and a base that vanishes with no
+    /// explanation is worse than an error: the id then leaves the installed
+    /// universe, the stored primary reads as pointing at something uninstalled,
+    /// and the next selection edit persists the cleared pointer. The user's
+    /// `.active-kb` is destroyed for a base still sitting intact on disk.
+    ///
+    /// It must still not be fatal — one broken base cannot take the listing
+    /// down — so what is asserted is the pair: the healthy base is still
+    /// listed, and the broken one is named at WARN with its path, because the
+    /// path is the only thing that tells a user with a dozen bases which
+    /// directory to go and look at.
+    #[test]
+    fn an_unreadable_manifest_is_named_at_warn_rather_than_silently_dropped() {
+        let (dir, svc) = svc();
+        svc.create_base("healthy", "Healthy", None).unwrap();
+        svc.create_base("broken", "Broken", None).unwrap();
+        let broken_manifest = dir.path().join("broken").join("manifest.yaml");
+        std::fs::write(&broken_manifest, "id: [this is not a manifest\n").unwrap();
+
+        let (bases, logs) = capture(|| svc.list_bases().expect("one bad base is not fatal"));
+
+        let ids: Vec<&str> = bases.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["healthy"], "the healthy base must still list");
+        assert!(
+            logs.contains("WARN"),
+            "the drop must be reported at WARN, got: {logs}"
+        );
+        assert!(
+            logs.contains("broken"),
+            "the report must name the base whose manifest failed, got: {logs}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // migrate_schema_if_needed tests
     // -----------------------------------------------------------------------
 
-    /// Legacy schema fingerprint: minimal pre-Plan-5-Task-2 schema (no
-    /// "Cross-reference rules" section).
+    /// A generation-1 `schema.md`: the minimal pre-Plan-5-Task-2 file, with no
+    /// "Cross-reference rules" section.
     const LEGACY_SCHEMA: &str =
         "# Knowledge Base: Maintenance Schema\n\n## Layout\n\n- wiki/sources/...\n";
+
+    /// Put a freshly created base back to schema generation 1 — **both** halves.
+    ///
+    /// The stamp is not decoration here: since the migration stopped
+    /// fingerprinting on a substring and started reading
+    /// `Manifest.schema_version`, a base with legacy bytes and a current stamp
+    /// is not a legacy base, it is a base someone hand-edited. Seeding only the
+    /// bytes would test a state the ladder deliberately does not act on.
+    fn seed_generation_1(svc: &KnowledgeService, kb_id: &str) {
+        let kb = svc.root().join(kb_id);
+        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 1;
+        manifest::save(&kb, &m).unwrap();
+        GitRepo::open(&kb)
+            .unwrap()
+            .commit_all(ChangeKind::Manual, "seed legacy schema", None)
+            .unwrap();
+    }
+
+    /// The generation-2 `schema.md`: the file every base on disk carries. Kept
+    /// here rather than in production, because no code path writes it any more
+    /// — a new base is scaffolded at generation 3 — and a `const` reachable only
+    /// from tests is dead code in a real build.
+    const GENERATION_2_SCHEMA: &str = include_str!("schema_default.md");
+
+    /// Put a freshly created base into the state every base on disk is in:
+    /// generation-2 *content*, stamped 1 because `create_base` used to hardcode
+    /// the number. It is no longer enough to seed only the stamp — a base
+    /// created today carries the OKF schema, which the 1 -> 2 step would
+    /// genuinely rewrite.
+    fn seed_generation_2_content_stamped_1(svc: &KnowledgeService, kb_id: &str) {
+        let kb = svc.root().join(kb_id);
+        std::fs::write(kb.join("schema.md"), GENERATION_2_SCHEMA).unwrap();
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 1;
+        manifest::save(&kb, &m).unwrap();
+        GitRepo::open(&kb)
+            .unwrap()
+            .commit_all(ChangeKind::Manual, "seed generation-2 schema", None)
+            .unwrap();
+    }
+
+    /// The claim `SCHEMA_CROSSREF_RULES`'s own comment makes ("kept in sync with
+    /// the equivalent block in `schema_default.md`"), turned into a check. The
+    /// two texts are not byte-identical and never were, so what is asserted is
+    /// the property the ladder actually depends on: the generation-2 file is
+    /// already at generation 2, so the 1 -> 2 step is a no-op over it.
+    #[test]
+    fn the_generation_2_schema_is_already_at_generation_2() {
+        assert_eq!(
+            with_crossref_rules(GENERATION_2_SCHEMA.to_string()),
+            GENERATION_2_SCHEMA,
+            "the ladder would append a second copy of the rules block to every \
+             base on disk"
+        );
+    }
 
     #[test]
     fn migrate_schema_appends_cross_reference_rules_when_missing() {
@@ -3468,12 +4355,10 @@ mod tests {
         svc.create_base("k", "K", None).unwrap();
         let kb = svc.root().join("k");
 
-        // Overwrite with the legacy schema and commit so we have a clean
+        // Put the base back to generation 1 and commit, so we have a clean
         // baseline to migrate from.
-        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
+        seed_generation_1(&svc, "k");
         let repo = GitRepo::open(&kb).unwrap();
-        repo.commit_all(ChangeKind::Manual, "seed legacy schema", None)
-            .unwrap();
         let before = repo.log(10).unwrap().len();
 
         let migrated = svc.migrate_schema_if_needed("k").unwrap();
@@ -3489,37 +4374,144 @@ mod tests {
         assert!(repo.log(1).unwrap()[0].summary.contains("migrate schema"));
     }
 
+    /// The state EVERY base on disk is in right now, and the one the old
+    /// substring fingerprint handled by accident: stamped generation 1 (because
+    /// `create_base` hardcoded the number) while already carrying generation-2
+    /// content (because it wrote the current `schema_default.md`).
+    ///
+    /// The version says migrate; the content says there is nothing to do. Both
+    /// must be honoured — the stamp moves forward so the base stops re-entering
+    /// the ladder, and the rules block must NOT be appended a second time.
     #[test]
-    fn migrate_schema_is_noop_when_already_present() {
+    fn a_base_stamped_behind_but_already_current_is_stamped_forward_without_a_rewrite() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
         let kb = svc.root().join("k");
-
-        // create_base already writes the current DEFAULT_SCHEMA, which
-        // contains the cross-reference rules section.
+        seed_generation_2_content_stamped_1(&svc, "k");
         let original = std::fs::read_to_string(kb.join("schema.md")).unwrap();
-        assert!(original.contains("Cross-reference rules"));
+        let repo = GitRepo::open(&kb).unwrap();
+        let before = repo.log(10).unwrap().len();
+
+        assert!(
+            !svc.migrate_schema_if_needed("k").unwrap(),
+            "nothing was rewritten, so nothing is reported as rewritten"
+        );
+
+        let after_schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+        assert_eq!(after_schema, original, "the rules block was appended twice");
+        assert_eq!(
+            after_schema.matches("Cross-reference rules").count(),
+            original.matches("Cross-reference rules").count()
+        );
+        assert_eq!(
+            manifest::load(&kb).unwrap().schema_version,
+            AUTOMATIC_SCHEMA_CEILING,
+            "the stamp must move even when the content did not, or the base \
+             re-enters the ladder on every macro call forever"
+        );
+        assert_eq!(
+            manifest::load(&kb).unwrap().profile(),
+            None,
+            "…and it must stop at the ceiling: stamping this base 3 would \
+             declare a `[[wiki]]`-linked, `kind:`-typed base OKF"
+        );
+        assert_eq!(
+            repo.log(10).unwrap().len(),
+            before,
+            "a stamp-only migration must not put an entry in the user's change log"
+        );
+    }
+
+    /// The bug this whole change is about: with the old substring fingerprint,
+    /// a base carrying the *previous* migration's text reported "already
+    /// migrated" and no later schema could ever be installed over it. Keyed off
+    /// the version, a base behind the current generation migrates however
+    /// familiar its contents look.
+    #[test]
+    fn a_base_behind_the_current_generation_migrates_even_carrying_the_old_marker() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        // Generation-1 stamp, and content that already contains the string the
+        // old fingerprint looked for — plus a marker of the user's own, to
+        // prove customisations survive.
+        std::fs::write(
+            kb.join("schema.md"),
+            "# Mine\n\n### Cross-reference rules\n\nold text\n",
+        )
+        .unwrap();
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 0; // behind every step in the ladder
+        manifest::save(&kb, &m).unwrap();
+
+        // Generation 0 → 2 runs the 1 → 2 step, whose own content guard sees
+        // the marker and leaves the file alone; the stamp still moves.
+        assert!(!svc.migrate_schema_if_needed("k").unwrap());
+        assert_eq!(
+            manifest::load(&kb).unwrap().schema_version,
+            AUTOMATIC_SCHEMA_CEILING
+        );
+        assert!(std::fs::read_to_string(kb.join("schema.md"))
+            .unwrap()
+            .contains("old text"));
+    }
+
+    #[test]
+    fn a_new_base_is_stamped_with_the_generation_it_was_written_at() {
+        // Otherwise the first macro call on a brand-new base runs the ladder
+        // over a base that is already current — harmless only for as long as
+        // every step happens to be idempotent.
+        let (_dir, svc) = svc();
+        let m = svc.create_base("k", "K", None).unwrap();
+        assert_eq!(m.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            manifest::load(&svc.root().join("k"))
+                .unwrap()
+                .schema_version,
+            CURRENT_SCHEMA_VERSION,
+            "the stamp on disk must match the one handed back"
+        );
+    }
+
+    /// A base created today is at generation 3, which is *ahead* of the ladder,
+    /// not merely level with it. The ladder must leave it alone — and in
+    /// particular must not append the `[[wiki]]`-link rules block to an OKF
+    /// schema, which is what a ceiling of `CURRENT_SCHEMA_VERSION` would do to
+    /// the first base someone hand-edited the stamp on.
+    #[test]
+    fn migrate_schema_leaves_a_base_that_is_ahead_of_the_ladder_alone() {
+        let (_dir, svc) = svc();
+        let m = svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        assert_eq!(m.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(m.schema_version > AUTOMATIC_SCHEMA_CEILING);
+
+        let original = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+        assert!(
+            !original.contains("Cross-reference rules"),
+            "an OKF schema must not carry the legacy wiki-link rules"
+        );
         let repo = GitRepo::open(&kb).unwrap();
         let before = repo.log(10).unwrap().len();
 
         let migrated = svc.migrate_schema_if_needed("k").unwrap();
-        assert!(!migrated, "already-migrated KB should be a no-op");
+        assert!(!migrated, "a base ahead of the ladder is a no-op");
 
         let after_schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
         assert_eq!(after_schema, original, "schema bytes unchanged");
-        let after = repo.log(10).unwrap().len();
-        assert_eq!(after, before, "no new commit");
+        assert_eq!(repo.log(10).unwrap().len(), before, "no new commit");
+        assert_eq!(
+            manifest::load(&kb).unwrap().schema_version,
+            CURRENT_SCHEMA_VERSION,
+            "and the stamp was not walked BACK to the ceiling"
+        );
     }
 
     #[test]
     fn migrate_schema_is_idempotent_across_calls() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
-        let kb = svc.root().join("k");
-        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
-        let repo = GitRepo::open(&kb).unwrap();
-        repo.commit_all(ChangeKind::Manual, "seed legacy schema", None)
-            .unwrap();
+        seed_generation_1(&svc, "k");
 
         // First call migrates.
         assert!(svc.migrate_schema_if_needed("k").unwrap());

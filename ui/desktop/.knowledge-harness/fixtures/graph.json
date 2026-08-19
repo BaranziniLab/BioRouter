@@ -1,0 +1,152 @@
+{
+  "nodes": [
+    {
+      "id": "hub-multiple-sclerosis",
+      "kind": "hub",
+      "label": "Multiple sclerosis",
+      "path": "knowledge/hub-multiple-sclerosis.md"
+    },
+    {
+      "id": "concept-demyelination",
+      "kind": "concept",
+      "label": "Demyelination",
+      "path": "knowledge/concept-demyelination.md"
+    },
+    {
+      "id": "concept-relapsing-remitting-course",
+      "kind": "concept",
+      "label": "Relapsing remitting course",
+      "path": "knowledge/concept-relapsing-remitting-course.md"
+    },
+    {
+      "id": "entity-hla-drb1-1501",
+      "kind": "entity",
+      "label": "HLA-DRB1*15:01",
+      "path": "knowledge/entity-hla-drb1-1501.md"
+    },
+    {
+      "id": "entity-epstein-barr-virus",
+      "kind": "entity",
+      "label": "Epstein Barr virus",
+      "path": "knowledge/entity-epstein-barr-virus.md"
+    },
+    {
+      "id": "entity-ocrelizumab",
+      "kind": "entity",
+      "label": "Ocrelizumab",
+      "path": "knowledge/entity-ocrelizumab.md"
+    },
+    {
+      "id": "entity-natalizumab",
+      "kind": "entity",
+      "label": "Natalizumab",
+      "path": "knowledge/entity-natalizumab.md"
+    },
+    {
+      "id": "note-vitamin-d-latitude-gradient",
+      "kind": "note",
+      "label": "Vitamin D latitude gradient",
+      "path": "knowledge/note-vitamin-d-latitude-gradient.md"
+    },
+    {
+      "id": "source-bjornevik-2022",
+      "kind": "source",
+      "label": "Longitudinal analysis reveals high prevalence of Epstein-Barr virus associated with multiple sclerosis",
+      "path": "knowledge/source-bjornevik-2022.md",
+      "credibility_tier": "peer_reviewed"
+    },
+    {
+      "id": "source-hauser-2017",
+      "kind": "source",
+      "label": "Ocrelizumab versus interferon beta-1a in relapsing multiple sclerosis",
+      "path": "knowledge/source-hauser-2017.md",
+      "credibility_tier": "peer_reviewed"
+    },
+    {
+      "id": "source-imsgc-2019",
+      "kind": "source",
+      "label": "Multiple sclerosis genomic map implicates peripheral immune cells",
+      "path": "knowledge/source-imsgc-2019.md",
+      "credibility_tier": "peer_reviewed"
+    },
+    {
+      "id": "source-preprint-microbiome-2026",
+      "kind": "source",
+      "label": "Gut microbiome shifts precede relapse (preprint)",
+      "path": "knowledge/source-preprint-microbiome-2026.md",
+      "credibility_tier": "preprint"
+    },
+    {
+      "id": "source-society-guidance",
+      "kind": "source",
+      "label": "National MS Society clinical guidance",
+      "path": "knowledge/source-society-guidance.md",
+      "credibility_tier": "gray_lit"
+    },
+    {
+      "id": "source-blog-retracted",
+      "kind": "source",
+      "label": "Retracted: dietary reversal of MS lesions",
+      "path": "knowledge/source-blog-retracted.md",
+      "credibility_tier": "web",
+      "retracted": true
+    },
+    {
+      "id": "flag-conflicting-prevalence",
+      "kind": "flag",
+      "label": "Conflicting prevalence figures",
+      "path": "knowledge/flag-conflicting-prevalence.md"
+    }
+  ],
+  "edges": [
+    { "from": "hub-multiple-sclerosis", "to": "concept-demyelination", "relation": "covers" },
+    {
+      "from": "hub-multiple-sclerosis",
+      "to": "concept-relapsing-remitting-course",
+      "relation": "covers"
+    },
+    { "from": "hub-multiple-sclerosis", "to": "entity-hla-drb1-1501", "relation": "covers" },
+    { "from": "hub-multiple-sclerosis", "to": "entity-epstein-barr-virus", "relation": "covers" },
+    { "from": "hub-multiple-sclerosis", "to": "entity-ocrelizumab", "relation": "covers" },
+    { "from": "hub-multiple-sclerosis", "to": "entity-natalizumab", "relation": "covers" },
+    {
+      "from": "concept-demyelination",
+      "to": "concept-relapsing-remitting-course",
+      "relation": "relates-to"
+    },
+    {
+      "from": "entity-epstein-barr-virus",
+      "to": "source-bjornevik-2022",
+      "relation": "cited-by"
+    },
+    { "from": "entity-ocrelizumab", "to": "source-hauser-2017", "relation": "cited-by" },
+    { "from": "entity-hla-drb1-1501", "to": "source-imsgc-2019", "relation": "cited-by" },
+    {
+      "from": "concept-relapsing-remitting-course",
+      "to": "source-preprint-microbiome-2026",
+      "relation": "cited-by"
+    },
+    {
+      "from": "concept-relapsing-remitting-course",
+      "to": "source-society-guidance",
+      "relation": "cited-by"
+    },
+    {
+      "from": "note-vitamin-d-latitude-gradient",
+      "to": "hub-multiple-sclerosis",
+      "relation": "supports"
+    },
+    {
+      "from": "note-vitamin-d-latitude-gradient",
+      "to": "source-society-guidance",
+      "relation": "cited-by"
+    },
+    {
+      "from": "flag-conflicting-prevalence",
+      "to": "source-society-guidance",
+      "relation": "flags"
+    },
+    { "from": "flag-conflicting-prevalence", "to": "source-blog-retracted", "relation": "flags" },
+    { "from": "entity-natalizumab", "to": "concept-demyelination", "relation": "relates-to" }
+  ]
+}

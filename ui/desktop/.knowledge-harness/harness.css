@@ -1,0 +1,6 @@
+/* Tailwind v4 auto-detects sources from the Vite root, which here is this
+   harness directory. Point it at the real component tree so the Knowledge
+   surfaces' utility classes are actually generated — including any class
+   written for the first time by the change under test. */
+@import '../src/styles/main.css';
+@source '../src';

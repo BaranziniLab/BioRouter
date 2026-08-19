@@ -37,17 +37,20 @@ const buttonVariants = cva(
       // §3.1's "solid fills brighten rather than take an overlay"; `link` has no
       // box to tint at all.
       variant: {
-        default: 'bg-background-accent text-text-on-accent hover:bg-background-accent-hover',
+        default:
+          'bg-background-accent text-text-on-accent hover:bg-background-accent-hover biorouter-focus-surface-accent',
         // Not a solid red block (§3.1). A translucent danger wash with the deep
         // danger ink on top reads as consequence without shouting, and — because
         // the fill is now translucent rather than opaque — the tint composites
         // correctly. This also retires `hover:opacity-90`, which faded the whole
         // button and let a modal scrim ghost straight through it.
-        destructive: 'bg-background-danger/22 text-text-danger tint-interactive',
+        destructive:
+          'bg-background-danger/22 text-text-danger tint-interactive biorouter-focus-surface',
         outline:
-          'bg-transparent border border-border-emphasized text-text-default tint-interactive',
-        secondary: 'bg-background-medium text-text-default tint-interactive',
-        ghost: 'bg-transparent text-text-default tint-interactive',
+          'bg-transparent border border-border-emphasized text-text-default tint-interactive biorouter-focus-surface',
+        secondary:
+          'bg-background-medium text-text-default tint-interactive biorouter-focus-surface',
+        ghost: 'bg-transparent text-text-default tint-interactive biorouter-focus-surface',
         link: 'text-text-accent underline-offset-4 hover:underline',
       },
       // The control ladder (§2.3): sm 28 / md 32 / lg 36, with `default` = md,

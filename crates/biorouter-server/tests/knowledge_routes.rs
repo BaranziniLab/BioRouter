@@ -9,7 +9,7 @@ mod test_sandbox;
 /// need to construct a full `AppState`.  Each test gets a fresh tempdir-backed
 /// `KnowledgeService` via `build_test_router()`.
 use axum::{body::Body, http::Request, Router};
-use biorouter_mcp::knowledge::service::KnowledgeService;
+use biorouter_mcp::knowledge::{page_fixtures::valid_page, service::KnowledgeService};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -418,7 +418,7 @@ async fn write_then_read_page_roundtrip() {
 
     // Write a page.
     let write_body = serde_json::to_vec(&serde_json::json!({
-        "content": "# Hello\n\nWorld",
+        "content": valid_page("note", "Hello", "# Hello\n\nWorld"),
         "commit_message": "add hello page"
     }))
     .unwrap();
@@ -547,7 +547,7 @@ async fn history_write_restore_roundtrip() {
 
     // 3. Write a page.
     let write_body = serde_json::to_vec(&serde_json::json!({
-        "content": "# Temp Page",
+        "content": valid_page("note", "Temp Page", "# Temp Page"),
         "commit_message": "add temp page"
     }))
     .unwrap();
@@ -1452,7 +1452,7 @@ async fn read_page_returns_markdown_body() {
     std::fs::create_dir_all(&knowledge_dir).unwrap();
     std::fs::write(
         knowledge_dir.join("hello.md"),
-        "---\ntitle: Hello\nkind: note\n---\n\nbody text\n",
+        valid_page("note", "Hello", "body text"),
     )
     .unwrap();
 
@@ -2506,6 +2506,133 @@ mod privacy_ratchet {
             "the Knowledge view was locked out of the user's own notes"
         );
     }
+
+    // ── The read-only lint, BOTH directions ─────────────────────────────────
+    //
+    // `POST /bases/{id}/lint` with `autofix: false` is the DEFAULT lint and the
+    // read-only one, and it used to report a hardcoded `ProviderTier::Public`
+    // whatever model the caller named. A Public capability can never reach a
+    // private base, so the refusal was unconditional — and the refusal text
+    // asks the user to switch this chat to a private model, which was the one
+    // remedy that could not possibly work while the model was not being read.
+    //
+    // The two rows below differ in ONE thing, `OLLAMA_HOST`, exactly as the
+    // ratchet matrix above does: same route, same base, same provider name,
+    // same body. So the pair is also the proof that the refusal's remedy is
+    // now followable — switching to a private model is precisely the difference
+    // between the 409 row and the 200 row.
+
+    /// Seed a private base with one orphan page, so a lint has a real finding.
+    async fn private_base_with_an_orphan(app: &Router, root: &std::path::Path) {
+        create_kb(app.clone(), "omop", "OMOP").await;
+        let notes = root.join("omop").join("knowledge").join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(
+            notes.join("lonely.md"),
+            "---\ntitle: Lonely\n---\nSENTINEL-BODY, linked by nothing\n",
+        )
+        .unwrap();
+        biorouter_mcp::knowledge::tier::raise_unlocked(root, "omop", true).unwrap();
+    }
+
+    fn read_only_lint(m: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "autofix": false, "model": m })
+    }
+
+    /// ⚠ **The row the literal could not pass.** Its sibling below is satisfied
+    /// by "refuse everyone", which is what the route did; only this one
+    /// distinguishes a barrier from an outage. Same shape, and the same reason,
+    /// as `routes::knowledge::tests::
+    /// a_private_model_may_ingest_its_own_private_conversation_over_http`.
+    ///
+    /// Driven end to end rather than against `assert_macro_target_reachable`,
+    /// because one capability feeds TWO gates: the pre-check that chooses the
+    /// status code, and CP2 inside `lint_macro::lint`, which chooses whether the
+    /// stream carries a report or an error. A test that stopped at the 200 would
+    /// pass on a fix that merely moved the refusal into the stream.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_private_model_may_run_a_read_only_lint_on_its_own_private_base() {
+        // Private the way the matrix above spells it: a LOOPBACK `OLLAMA_HOST`,
+        // so the capability follows the constructed instance and not the
+        // provider name — port 1, which nothing can listen on without root.
+        let _env = lock_env_for("http://127.0.0.1:1");
+        let (_d, root, app) = build_test_router_with_root();
+        private_base_with_an_orphan(&app, &root).await;
+
+        let (status, body) = post_json_raw(
+            &app,
+            "/bases/omop/lint",
+            read_only_lint(model("ollama", "qwen3.5:4b")),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "a private model was refused a read-only lint of its own private base: {body}"
+        );
+
+        // The stream carried a REPORT, not an error frame: CP2 admitted it too.
+        let payload = body
+            .split("event: done\ndata: ")
+            .nth(1)
+            .unwrap_or_else(|| {
+                panic!("no terminal done frame — the barrier moved into the stream:\n{body}")
+            })
+            .split("\n\n")
+            .next()
+            .unwrap();
+        let result: serde_json::Value =
+            serde_json::from_str(payload).expect("the done frame must be valid JSON");
+        assert_eq!(
+            result["report"]["orphans"],
+            serde_json::json!(["knowledge/notes/lonely.md"]),
+            "the lint ran but found nothing, so it did not really read the base: {result}"
+        );
+        assert!(
+            result["commit_sha"].is_null() && result["fixes_applied"] == 0,
+            "a read-only lint must still write nothing: {result}"
+        );
+    }
+
+    /// The barrier itself, unchanged: a public model may not read a private base
+    /// even to lint it, because a lint's scan reads every page.
+    ///
+    /// And the refusal is worth asserting, not just the status: it must name the
+    /// real reason and a remedy the caller can act on — the same remedy the row
+    /// above then follows to a 200. The text is `assert_reachable`'s own, never
+    /// a second spelling of it, so these substrings are checked here and owned
+    /// there.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_public_model_still_cannot_run_a_read_only_lint_on_a_private_base() {
+        let _env = lock_env_for("http://ollama.invalid:11434");
+        let (_d, root, app) = build_test_router_with_root();
+        private_base_with_an_orphan(&app, &root).await;
+
+        let (status, body) = post_json_raw(
+            &app,
+            "/bases/omop/lint",
+            read_only_lint(model("ollama", "qwen3.5:4b")),
+        )
+        .await;
+        assert_eq!(
+            status, 409,
+            "a public model read a private base through a read-only lint: {body}"
+        );
+        assert!(
+            body.contains("only a private model may read or write it"),
+            "the refusal did not name the real reason: {body}"
+        );
+        assert!(
+            body.contains("switch this chat to a private model"),
+            "the refusal did not name a remedy the caller can act on: {body}"
+        );
+        // A refusal that leaked the base's contents would defeat itself.
+        assert!(
+            !body.contains("SENTINEL-BODY") && !body.contains("lonely.md"),
+            "the refusal named what it refused: {body}"
+        );
+    }
 }
 
 /// Issue #56 DR-18 — `POST /knowledge/bases/{id}/tier`, the user's own
@@ -2522,11 +2649,11 @@ mod tier_route {
     use biorouter_mcp::knowledge::tier;
 
     /// The server secret this binary's "daemon" was launched with.
-    const TEST_SECRET: &str = "task-29a-kb-tier-route-secret";
+    pub(super) const TEST_SECRET: &str = "task-29a-kb-tier-route-secret";
     /// The raw user-action key the launcher would have minted.
-    const TEST_USER_ACTION_KEY: &str = "task-29a-kb-tier-user-action-key";
+    pub(super) const TEST_USER_ACTION_KEY: &str = "task-29a-kb-tier-user-action-key";
 
-    fn install_test_user_action_key() {
+    pub(super) fn install_test_user_action_key() {
         let digest: [u8; 32] =
             <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
         biorouter_server::auth::install_user_action_digest(Some(digest));
@@ -2537,7 +2664,7 @@ mod tier_route {
     /// what makes the 401 arm mean anything: `router()` alone is unauthenticated,
     /// so a test against it would assert that a route nobody guards lets everyone
     /// through.
-    fn guarded_router() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+    pub(super) fn guarded_router() -> (tempfile::TempDir, std::path::PathBuf, Router) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let svc = Arc::new(biorouter_mcp::knowledge::service::KnowledgeService::new(
@@ -2772,5 +2899,549 @@ mod tier_route {
         )
         .await;
         assert_eq!(status, 404);
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Stage 6 — the OKF surface on HTTP
+//
+// Every assertion in this module reads the JSON a client actually receives,
+// never a Rust value. That is the whole of the stage: Stage 2 grew `GraphNode`
+// and `GraphEdge` and its own tests proved the **deriver** fills them, which is
+// a different claim from "they reach the renderer". A `skip_serializing_if`
+// that fires too eagerly, a schema the OpenAPI registration missed, or a route
+// serving a cache written by an older shape would each leave those tests green
+// and the client blind.
+// ──────────────────────────────────────────────────────────────────────────────
+mod okf_surface {
+    use super::*;
+
+    async fn post_bases(app: &Router, body: serde_json::Value) -> (u16, serde_json::Value) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+        (
+            status,
+            serde_json::from_str(&text).unwrap_or(serde_json::Value::String(text)),
+        )
+    }
+
+    async fn get_json(app: &Router, uri: &str) -> (u16, serde_json::Value) {
+        let res = app
+            .clone()
+            .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    /// The default is OKF and it is stated, not left to be inferred.
+    ///
+    /// `format` is `#[serde(default)]` on the manifest, so a response that
+    /// omitted the key would still deserialize to `okf` in every Rust reader and
+    /// be invisible here — the assertion is on the JSON, where a missing key is
+    /// `null` and fails.
+    #[tokio::test]
+    async fn a_base_created_over_http_without_a_format_is_okf() {
+        let (_d, app) = build_test_router();
+        let (status, manifest) =
+            post_bases(&app, serde_json::json!({"id": "gen", "name": "Gen"})).await;
+        assert_eq!(status, 200, "{manifest}");
+        assert_eq!(manifest["format"], "okf", "{manifest}");
+        assert!(
+            manifest["okf_version"].is_string(),
+            "an OKF bundle declares its revision: {manifest}"
+        );
+        assert!(
+            manifest["biookf_version"].is_null(),
+            "a plain-OKF base must not claim a BioOKF revision: {manifest}"
+        );
+    }
+
+    /// The profile asked for is the profile created — in the manifest, in the
+    /// listing, and in the `schema.md` the sub-agent is taught from. The last of
+    /// the three is the one that matters most and the one a route test is
+    /// otherwise tempted to skip: the format's whole effect is on writes, and a
+    /// manifest that says `biookf` over an OKF schema would teach the wrong
+    /// vocabulary for the life of the base (Stage 3).
+    #[tokio::test]
+    async fn creating_a_base_over_http_in_biookf_scaffolds_the_biookf_bundle() {
+        let (_d, root, app) = build_test_router_with_root();
+        let (status, manifest) = post_bases(
+            &app,
+            serde_json::json!({"id": "lit", "name": "Literature", "format": "biookf"}),
+        )
+        .await;
+        assert_eq!(status, 200, "{manifest}");
+        assert_eq!(manifest["format"], "biookf", "{manifest}");
+        assert!(
+            manifest["biookf_version"].is_string(),
+            "a BioOKF bundle declares its profile revision: {manifest}"
+        );
+        assert!(
+            manifest["okf_version"].is_string(),
+            "…and still declares the OKF revision it profiles: {manifest}"
+        );
+
+        let (status, bases) = get_json(&app, "/bases").await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            bases[0]["format"], "biookf",
+            "the listing carries it too: {bases}"
+        );
+
+        let schema = std::fs::read_to_string(root.join("lit").join("schema.md")).unwrap();
+        assert!(
+            schema.contains("BioOKF"),
+            "a biookf base must be scaffolded with the BioOKF schema, got:\n{schema}"
+        );
+    }
+
+    /// A request is not a file (DR-7 / DR-12).
+    ///
+    /// `KbFormat`'s `Deserialize` is lenient on purpose, so a typed parameter
+    /// would have answered 200 here and created a plain-OKF base under a name
+    /// the caller never asked for — discovered pages later, with no conversion
+    /// available (DR-22/DR-26). The second half of the test is the load-bearing
+    /// one: the refusal happens before anything is created.
+    #[tokio::test]
+    async fn a_misspelt_format_is_refused_with_400_and_creates_nothing() {
+        let (_d, root, app) = build_test_router_with_root();
+        let (status, body) = post_bases(
+            &app,
+            serde_json::json!({"id": "lit", "name": "Literature", "format": "bio-okf"}),
+        )
+        .await;
+        assert_eq!(status, 400, "a misspelt format created a base: {body}");
+        let message = body.as_str().unwrap_or_default();
+        for word in ["bio-okf", "okf", "biookf"] {
+            assert!(
+                message.contains(word),
+                "the refusal must name what was asked for and what exists, got: {message}"
+            );
+        }
+
+        assert!(
+            !root.join("lit").exists(),
+            "a refused create must not leave a half-scaffolded base on disk"
+        );
+        let (status, _) = get_json(&app, "/bases/lit").await;
+        assert_eq!(status, 404, "and the base must not be readable");
+    }
+
+    /// The typed graph, on the wire.
+    ///
+    /// One BioOKF page carrying a frontmatter `edges:` entry with the full §8.1
+    /// provenance triplet, a §7.3 statistic, a §7.2 qualifier, an unmodelled
+    /// attribute and a dangling object — so a single request exercises every
+    /// channel Stage 2 opened, including the two open maps and the `external`
+    /// placeholder.
+    #[tokio::test]
+    async fn the_graph_route_serves_every_typed_field_stage_2_added() {
+        let (_d, root, app) = build_test_router_with_root();
+        create_kb(app.clone(), "tox", "Tox").await;
+        let kb = root.join("tox");
+        let dir = kb.join("knowledge").join("chemical-substance");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("tocilizumab.md"),
+            "---\n\
+             type: ChemicalSubstance\n\
+             identifier: Tocilizumab\n\
+             subtype: monoclonal antibody\n\
+             status: draft\n\
+             edges:\n\
+             \x20 - predicate: not_treats\n\
+             \x20   object: Neutropenia\n\
+             \x20   knowledge_level: statistical_association\n\
+             \x20   agent_type: manual_agent\n\
+             \x20   primary_source: PMID:12345678\n\
+             \x20   publications: [PMID:12345678, PMID:87654321]\n\
+             \x20   p_value: 3.0e-6\n\
+             \x20   species_context: human\n\
+             ---\n\
+             Tocilizumab does not treat neutropenia.\n",
+        )
+        .unwrap();
+        // `create_base` wrote a cache for the empty base and the page-write route
+        // does not invalidate it, so the route would otherwise answer from the
+        // snapshot taken before this page existed. Clearing it puts the request
+        // on `get_graph`'s re-derive path — the same path DR-13 makes every
+        // pre-Stage-2 cache take.
+        std::fs::remove_file(kb.join(".biorouter-knowledge").join("graph-cache.json")).unwrap();
+
+        let (status, graph) = get_json(&app, "/bases/tox/graph").await;
+        assert_eq!(status, 200, "{graph}");
+
+        let nodes = graph["nodes"].as_array().unwrap();
+        let node = nodes
+            .iter()
+            .find(|n| n["identifier"] == "Tocilizumab")
+            .unwrap_or_else(|| panic!("no typed node on the wire: {graph}"));
+        assert_eq!(node["node_type"], "ChemicalSubstance", "{node}");
+        assert_eq!(node["subtype"], "monoclonal antibody", "{node}");
+        assert_eq!(node["status"], "draft", "{node}");
+        assert_eq!(node["degree"], 1, "{node}");
+
+        // The dangling object is recorded, not dropped: OKF §11 makes a broken
+        // cross-link something a consumer MUST tolerate, and the placeholder is
+        // the curation queue made visible.
+        let external = nodes
+            .iter()
+            .find(|n| n["external"] == true)
+            .unwrap_or_else(|| panic!("the unresolved object did not reach the wire: {graph}"));
+        assert_eq!(external["label"], "Neutropenia", "{external}");
+
+        let edges = graph["edges"].as_array().unwrap();
+        assert_eq!(edges.len(), 1, "{graph}");
+        let edge = &edges[0];
+        assert_eq!(edge["predicate"], "not_treats", "{edge}");
+        assert_eq!(
+            edge["relation"], "not_treats",
+            "the deprecated alias still carries the identical value: {edge}"
+        );
+        assert_eq!(edge["negated"], true, "{edge}");
+        assert_eq!(edge["knowledge_level"], "statistical_association", "{edge}");
+        assert_eq!(edge["agent_type"], "manual_agent", "{edge}");
+        assert_eq!(edge["primary_source"], "PMID:12345678", "{edge}");
+        assert_eq!(
+            edge["publications"],
+            serde_json::json!(["PMID:12345678", "PMID:87654321"]),
+            "{edge}"
+        );
+        // DR-27's two open maps, and that they stay two. A p-value filed as
+        // context is a category error no renderer can undo.
+        assert_eq!(
+            edge["quantitative"]["p_value"],
+            serde_json::json!(3.0e-6),
+            "a numeric statistic must arrive as a JSON number: {edge}"
+        );
+        assert!(
+            edge["qualifiers"]["p_value"].is_null(),
+            "a §7.3 statistic must not also land in the context map: {edge}"
+        );
+        assert_eq!(edge["qualifiers"]["species_context"], "human", "{edge}");
+    }
+
+    /// A legacy page is untouched by all of it, in the same response shape.
+    ///
+    /// The typed fields are `Option` (DR-28) and `skip_serializing_if`, so a
+    /// legacy node arrives without them rather than with invented values — a
+    /// `status: "stable"` stamped on a page that states none would turn a
+    /// consumer's §5.4 assumption into the producer's assertion.
+    #[tokio::test]
+    async fn an_untyped_page_arrives_with_no_typed_fields_rather_than_invented_ones() {
+        let (_d, root, app) = build_test_router_with_root();
+        create_kb(app.clone(), "old", "Old").await;
+        let kb = root.join("old");
+        let dir = kb.join("knowledge").join("notes");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("hrv.md"),
+            "---\ntitle: HRV\nkind: note\n---\nbody\n",
+        )
+        .unwrap();
+        std::fs::remove_file(kb.join(".biorouter-knowledge").join("graph-cache.json")).unwrap();
+
+        let (status, graph) = get_json(&app, "/bases/old/graph").await;
+        assert_eq!(status, 200, "{graph}");
+        let node = &graph["nodes"][0];
+        for absent in ["node_type", "subtype", "status", "external", "stale"] {
+            assert!(
+                node[absent].is_null(),
+                "a legacy page must not gain `{absent}`: {node}"
+            );
+        }
+        assert_eq!(
+            node["degree"], 0,
+            "…but degree is counted, and zero is an answer: {node}"
+        );
+    }
+
+    /// The lint stream's terminal frame carries the typed diagnostics, not only
+    /// the four bags of strings it has always carried.
+    ///
+    /// `autofix: false` builds no provider at all, so this drives the real route
+    /// end to end with no model and no test-mode env var — which is also why it
+    /// can live beside the un-mocked provider tests in this binary.
+    #[tokio::test]
+    async fn the_lint_stream_terminal_frame_carries_typed_diagnostics() {
+        let (_d, root, app) = build_test_router_with_root();
+        create_kb(app.clone(), "lint6", "Lint6").await;
+        let dir = root.join("lint6").join("knowledge").join("notes");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Linked by nothing, so the hygiene scan raises `kb.orphan` for it.
+        std::fs::write(
+            dir.join("lonely.md"),
+            "---\ntitle: Lonely\n---\nnobody links here\n",
+        )
+        .unwrap();
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases/lint6/lint")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({
+                            "model": {"provider": "nonexistent_provider_xyz", "model": "x"},
+                            "autofix": false
+                        }))
+                        .unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200, "a read-only lint needs no provider");
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let stream = String::from_utf8(bytes.to_vec()).unwrap();
+
+        let payload = stream
+            .split("event: done\ndata: ")
+            .nth(1)
+            .unwrap_or_else(|| panic!("no terminal done frame; stream was:\n{stream}"))
+            .split("\n\n")
+            .next()
+            .unwrap();
+        let result: serde_json::Value =
+            serde_json::from_str(payload).expect("the done frame must be valid JSON");
+        // A `LintResult` wrapping a `LintReport`, and the wrapper is asserted
+        // rather than reached through: it is the shape the published schema
+        // claims, so a flattening would be a silent contract break.
+        assert!(
+            result["commit_sha"].is_null() && result["fixes_applied"] == 0,
+            "a read-only lint changed nothing and must say so: {result}"
+        );
+        let report = &result["report"];
+
+        assert_eq!(
+            report["orphans"],
+            serde_json::json!(["knowledge/notes/lonely.md"]),
+            "the four lists are still there — the typed layer adds, it does not replace: {report}"
+        );
+        let items = report["diagnostics"]["items"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the terminal frame carries no typed diagnostics: {report}"));
+        let orphan = items
+            .iter()
+            .find(|d| d["rule"] == "kb.orphan")
+            .unwrap_or_else(|| panic!("no kb.orphan diagnostic: {report}"));
+        // The four fields the UI matches on. `rule` is the stable one; `message`
+        // is prose and will be reworded, which is why nothing keys off it.
+        assert_eq!(orphan["severity"], "warning", "{orphan}");
+        assert_eq!(orphan["subject"], "knowledge/notes/lonely.md", "{orphan}");
+        assert!(
+            orphan["message"].as_str().is_some_and(|m| !m.is_empty()),
+            "{orphan}"
+        );
+
+        // …and the format layer reaches the same list under its own prefix. The
+        // page states no `type`, which OKF §4.1 makes the one always-required
+        // key — so this is the distinction the prefixes exist to draw, on the
+        // wire: "your base is untidy" (`kb.`) beside "this file is not
+        // conformant" (`okf.`).
+        let conformance = items
+            .iter()
+            .find(|d| d["rule"] == "okf.type.missing")
+            .unwrap_or_else(|| panic!("the OKF layer did not reach the frame: {report}"));
+        assert_eq!(conformance["severity"], "error", "{conformance}");
+        assert_eq!(
+            conformance["path"], "knowledge/notes/lonely.md",
+            "{conformance}"
+        );
+        assert_eq!(
+            report["diagnostics"]["total"],
+            serde_json::json!(items.len()),
+            "an uncapped report's total is its length: {report}"
+        );
+    }
+}
+
+/// `POST /knowledge/bases/{id}/merge` — the user's own KB-to-KB merge.
+///
+/// ⚠ It borrows `tier_route`'s key and router builder rather than minting its
+/// own, and that is forced rather than tidy: the installed user-action digest is
+/// a process-global `OnceLock`, so a second `install_user_action_digest` in this
+/// binary is a no-op by construction and merge tests keyed on their own secret
+/// would every one of them 403 for a reason that has nothing to do with merging.
+mod merge_route {
+    use super::tier_route::{
+        guarded_router, install_test_user_action_key, TEST_SECRET, TEST_USER_ACTION_KEY,
+    };
+    use super::*;
+    use biorouter_mcp::knowledge::tier;
+
+    async fn create(app: &Router, id: &str) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({ "id": id, "name": id })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    async fn post_merge(
+        app: &Router,
+        kb_id: &str,
+        body: serde_json::Value,
+        secret: Option<&str>,
+        user_action: Option<&str>,
+    ) -> (u16, String) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(format!("/bases/{kb_id}/merge"))
+            .header("content-type", "application/json");
+        if let Some(key) = secret {
+            builder = builder.header("X-Secret-Key", key);
+        }
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The proof-of-user is the whole of what separates this route from the tool
+    /// channel: it skips the caller barrier because the user can already read
+    /// both bases, so a caller holding only the secret key — which §9.3 A1 puts
+    /// inside any developer-enabled agent shell — must not reach it.
+    #[tokio::test]
+    async fn the_merge_route_needs_more_than_the_secret_key() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        create(&app, "dst").await;
+        create(&app, "src").await;
+        std::fs::write(
+            root.join("src/knowledge/only-here.md"),
+            valid_page("note", "Only Here", "b"),
+        )
+        .unwrap();
+
+        let body = serde_json::json!({ "source_kb_id": "src", "dry_run": false });
+        let (status, _) = post_merge(&app, "dst", body.clone(), None, None).await;
+        assert_eq!(status, 401);
+
+        let (status, refusal) =
+            post_merge(&app, "dst", body.clone(), Some(TEST_SECRET), None).await;
+        assert_eq!(status, 403, "a secret-key-only caller merged two bases");
+        assert!(
+            refusal.contains("Do not retry"),
+            "the refusal must foreclose the retry: {refusal}"
+        );
+        assert!(
+            !root.join("dst/knowledge/only-here.md").exists(),
+            "the refused call merged anyway"
+        );
+
+        let (status, out) = post_merge(
+            &app,
+            "dst",
+            body,
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {out}");
+        assert!(root.join("dst/knowledge/only-here.md").exists(), "{out}");
+    }
+
+    /// The body's `dry_run` defaults to **true**. A client that forgets the field
+    /// gets the preview, never the merge — this is the least reversible
+    /// operation in the subsystem and `POST /restore` restores a whole tree.
+    ///
+    /// The same call also proves the fold reaches the HTTP surface: a private
+    /// source raises the public destination, and the *preview* does not.
+    #[tokio::test]
+    async fn an_omitted_dry_run_previews_and_a_stated_false_merges() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        create(&app, "pubdst").await;
+        create(&app, "privsrc").await;
+        std::fs::write(
+            root.join("privsrc/knowledge/secret-note.md"),
+            valid_page("note", "Secret Note", "b"),
+        )
+        .unwrap();
+        tier::raise_unlocked(&root, "privsrc", /* caller_is_private */ true).unwrap();
+        assert!(!tier::is_private(&root, "pubdst"));
+
+        let (status, preview) = post_merge(
+            &app,
+            "pubdst",
+            serde_json::json!({ "source_kb_id": "privsrc" }),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {preview}");
+        let preview: serde_json::Value = serde_json::from_str(&preview).unwrap();
+        assert_eq!(preview["dry_run"], serde_json::json!(true));
+        assert_eq!(preview["destination_tier"], serde_json::json!("private"));
+        assert_eq!(preview["pages_carried"].as_array().unwrap().len(), 1);
+        assert!(
+            !root.join("pubdst/knowledge/secret-note.md").exists(),
+            "the default-on preview wrote to the destination"
+        );
+        assert!(
+            !tier::is_private(&root, "pubdst"),
+            "the preview ratcheted the destination's tier"
+        );
+
+        let (status, out) = post_merge(
+            &app,
+            "pubdst",
+            serde_json::json!({ "source_kb_id": "privsrc", "dry_run": false }),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {out}");
+        assert!(root.join("pubdst/knowledge/secret-note.md").exists());
+        assert!(
+            tier::is_private(&root, "pubdst"),
+            "a public base absorbed a private base's pages and stayed public"
+        );
     }
 }

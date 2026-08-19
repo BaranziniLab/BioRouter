@@ -28,12 +28,17 @@
  *   code ground (CODE_BG) = `--background-code`
  *   splash.bg             = `--background-muted`
  *   surface.*             = the five semantic tokens in SURFACE_TOKENS
+ *   GRAPH_PALETTE.ground  = `--background-muted`, and with it all 35 solved
+ *                           knowledge-graph hexes, which are contrast ratios
+ *                           against that ground and nothing else
  */
 import { readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { readdir } from 'node:fs/promises';
-import { buildScopes, resolveRaw, contrast } from './lib/theme-tokens.mjs';
+import { buildScopes, resolveRaw, resolveHex, contrast } from './lib/theme-tokens.mjs';
+import { buildGraphPalette } from './lib/graph-palette.mjs';
+import * as graphSpec from '../themes/graph.mjs';
 import {
   SEMANTIC_TOKENS,
   RAW_TOKENS,
@@ -203,6 +208,98 @@ ${parts.join('\n')}
   },`;
 }
 
+/* ── the knowledge-graph palette (ui-spec.md §5.1, §6.1) ──
+   Emitted at MODULE scope, not inside GENERATED_THEMES[family], because one
+   light/dark pair serves all three families. That is a measured fact about the
+   stylesheet, not an assumption, and the assertion below is what makes it one:
+   nothing else in the repo enforces the shared neutral set — check-contrast.mjs
+   audits each family independently, so a diverged `--background-muted` would
+   pass every existing assertion while silently invalidating 35 solved hexes.
+
+   The ground is RESOLVED here rather than authored anywhere. A canvas ground is
+   exactly the category listed at the top of this file as "derived, never
+   authored", and a single light value for a dual-mode quantity is the precise
+   shape of DR-61, where the boot mark measured 1.02:1 on every dark splash. */
+const GRAPH_GROUND = (() => {
+  const seen = { light: new Map(), dark: new Map() };
+  for (const id of themes.map((t) => t.id)) {
+    for (const mode of ['light', 'dark']) {
+      const scope = nextScopes[`${id}:${mode}`];
+      if (!scope) throw new Error(`no resolved scope for ${id}:${mode}`);
+      const hex = resolveHex('--background-muted', scope);
+      if (!hex) {
+        throw new Error(
+          `--background-muted does not resolve to a hex in ${id}:${mode}; the graph ` +
+            `palette is solved as contrast ratios against it and cannot be emitted`
+        );
+      }
+      const bucket = seen[mode];
+      bucket.set(hex, [...(bucket.get(hex) ?? []), id]);
+    }
+  }
+  for (const mode of ['light', 'dark']) {
+    if (seen[mode].size === 1) continue;
+    const detail = [...seen[mode]].map(([hex, ids]) => `    ${hex}  ${ids.join(', ')}`).join('\n');
+    console.error(
+      `graph palette is emitted once because the three families share --background-muted;\n` +
+        `they no longer do — move GRAPH_PALETTE per-family or re-derive it.\n\n` +
+        `  ${mode} --background-muted resolves to ${seen[mode].size} distinct values:\n${detail}`
+    );
+    process.exit(1);
+  }
+  return { light: [...seen.light.keys()][0], dark: [...seen.dark.keys()][0] };
+})();
+
+const GRAPH = {
+  light: buildGraphPalette(graphSpec, GRAPH_GROUND.light, 'light'),
+  dark: buildGraphPalette(graphSpec, GRAPH_GROUND.dark, 'dark'),
+};
+
+const union = (values) => values.map((v) => `'${v}'`).join(' | ');
+const strMap = (o, indent) => obj(o, indent);
+const arcMap = (o, indent) =>
+  Object.entries(o)
+    .map(
+      ([k, v]) =>
+        `${' '.repeat(indent)}${/^[a-z]\w*$/i.test(k) ? k : `'${k}'`}: ${
+          typeof v === 'number' ? v : `'${v}'`
+        },`
+    )
+    .join('\n');
+const familyMap = (o, indent) =>
+  Object.entries(o)
+    .map(
+      ([name, f]) =>
+        `${' '.repeat(indent)}'${name}': { shape: '${f.shape}', members: [${f.members
+          .map((m) => `'${m}'`)
+          .join(', ')}] },`
+    )
+    .join('\n');
+
+const graphModeTs = (mode) => {
+  const p = GRAPH[mode];
+  return `  ${mode}: {
+    types: {
+${strMap(p.types, 6)}
+    },
+    families: {
+${familyMap(p.families, 6)}
+    },
+    shapeOf: {
+${strMap(p.shapeOf, 6)}
+    },
+    credibility: {
+${strMap(p.credibility, 6)}
+    },
+    ringArcs: {
+${arcMap(p.ringArcs, 6)}
+    },
+    fallbackChroma: ${p.fallbackChroma},
+    fallbackRungs: [${p.fallbackRungs.join(', ')}],
+    ground: '${p.ground}',
+  },`;
+};
+
 const tsModule = `/**
  * GENERATED — do not edit. Run \`npm run themes\` after changing a theme
  * definition in themes/*.theme.mjs.
@@ -280,6 +377,91 @@ export type ThemeFamilyId = keyof typeof GENERATED_THEMES;
 
 /** Every family id, in definition order. The one list. */
 export const THEME_FAMILY_IDS = Object.keys(GENERATED_THEMES) as ThemeFamilyId[];
+
+/* ── the knowledge-graph palette ── */
+
+/**
+ * The seven family silhouettes. SHAPE CARRIES FAMILY; lightness carries the
+ * member within a family — the redundant non-colour channel WCAG 1.4.1 asks
+ * for, and the reason this palette can be honest that cross-family colour
+ * distance under dichromacy bottoms out at ΔE00 0.00. Seven, because seven is
+ * about the discriminable limit for a silhouette at 10px; 28 would need shape
+ * to do the whole job and could not.
+ */
+export type NodeShape = ${union(graphSpec.NODE_SHAPES)};
+
+/**
+ * The credibility ring's keys: the six \`CredibilityTier\` values plus
+ * \`retracted\`, which is a FLAG rather than a tier — a retracted source takes
+ * the retracted colour and the continuous ring whatever its tier says, because
+ * retraction is the more important fact.
+ *
+ * Declared here rather than imported from \`api/types.gen\` so this generated
+ * module stays free of the API client's generation order;
+ * \`graphPalette.test.ts\` asserts at COMPILE TIME that the two agree.
+ */
+export type GraphCredibilityKey = ${union(graphSpec.CREDIBILITY.map((c) => c.tier))};
+
+export type GraphPalette = {
+  /** The 28 curated fills, keyed by OKF type name. */
+  types: Record<string, string>;
+  /** Family name -> its silhouette and its members, in ladder order. */
+  families: Record<string, { shape: NodeShape; members: string[] }>;
+  /** Type name -> silhouette, precomputed so the node painter does no lookup walk. */
+  shapeOf: Record<string, NodeShape>;
+  /** The seven ring hues. */
+  credibility: Record<GraphCredibilityKey, string>;
+  /**
+   * The ring TREATMENT, which is the actual encoding: an arc count, a dashed
+   * ring, or a continuous one. Hue rides along as the fast channel for
+   * trichromats and carries nothing alone — a 1.6px stroke subtends ~2-3
+   * arcmin, well inside the regime where the visual system reads luminance
+   * only. \`web\` and \`personal\` share the dashed treatment because on the
+   * canvas they ARE one category: not academic.
+   */
+  ringArcs: Record<GraphCredibilityKey, number | 'dashed' | 'solid'>;
+  /** DR-11: the fixed chroma every hashed fallback colour takes. */
+  fallbackChroma: number;
+  /** DR-11: the four rungs a hashed fallback selects between. */
+  fallbackRungs: [number, number, number, number];
+  /**
+   * The surface every ratio above was solved against — the resolved
+   * \`--background-muted\`, which is what the graph pane paints.
+   *
+   * RESOLVED, never authored, and per-mode. Consumers that need a canvas
+   * fallback take it from here rather than restating a hex: a single light
+   * value for a dual-mode quantity is how the boot mark once came to measure
+   * 1.02:1 on every dark splash.
+   */
+  ground: string;
+};
+
+/**
+ * The knowledge-graph node palette — 28 curated type fills, 7 credibility ring
+ * hues, the shape map, and the DR-11 fallback parameters.
+ *
+ * ONE PAIR SERVES ALL THREE FAMILIES. That is not a simplification: the
+ * generator resolves \`--background-muted\` in all six (family × mode) scopes
+ * and refuses to emit unless the three light values are identical and the three
+ * dark values are identical. If a family ever diverges, this constant moves
+ * per-family — the generator will say so rather than letting the palette go
+ * quietly wrong.
+ *
+ * These are NOT theme tokens and no CSS consumes them. A 2D canvas is the same
+ * category of consumer as xterm and react-syntax-highlighter: it cannot read a
+ * custom property, so the value has to arrive as a string. Adding them to
+ * SEMANTIC_TOKENS would force every family to author 28 values it does not
+ * need, and this design deliberately adds ZERO theme tokens.
+ *
+ * Every hex is a solved contrast ratio against \`ground\`, so the ladder
+ * INVERTS between modes by construction: in light a higher rung is a darker
+ * colour, in dark a lighter one. Same rung index, same relative position within
+ * the family, opposite direction — which is what keeps a family readable in
+ * both modes without a second authored table.
+ */
+export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
+${['light', 'dark'].map(graphModeTs).join('\n')}
+};
 `;
 
 /* ── emit the index.html regions ── */

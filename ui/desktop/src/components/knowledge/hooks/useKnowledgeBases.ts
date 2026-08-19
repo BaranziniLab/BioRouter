@@ -1,17 +1,34 @@
 import { useCallback } from 'react';
 import { createBase as apiCreate, deleteBase as apiDelete } from '../../../api';
 import { useKnowledge } from '../KnowledgeContext';
-import type { Manifest } from '../../../api/types.gen';
+import type { KbFormat, Manifest } from '../../../api/types.gen';
 import { knowledgeFetch } from './knowledgeRequest';
 
 export function useKnowledgeBases() {
   const { refresh, setPrimaryKbId, primaryKbId } = useKnowledge();
 
+  /**
+   * Create a base.
+   *
+   * `format` is passed through only when the caller states one, so a caller
+   * that has no opinion still gets the daemon's default rather than the
+   * renderer asserting one on its behalf — `CreateBaseBody.format` is
+   * `Option<KbFormat>` on the wire for exactly that reason.
+   */
   const create = useCallback(
-    async (id: string, name: string, color?: string): Promise<Manifest | undefined> => {
+    async (
+      id: string,
+      name: string,
+      options?: { color?: string; format?: KbFormat }
+    ): Promise<Manifest | undefined> => {
       const res = await apiCreate({
         throwOnError: true,
-        body: { id, name, ...(color ? { color } : {}) },
+        body: {
+          id,
+          name,
+          ...(options?.color ? { color: options.color } : {}),
+          ...(options?.format ? { format: options.format } : {}),
+        },
       });
       await refresh();
       return res.data;
