@@ -974,7 +974,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "agent-client-protocol-schema",
  "ahash",
@@ -1068,7 +1068,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-acp"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "anyhow",
  "assert-json-diff",
@@ -1094,7 +1094,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-authprompt"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "block2",
  "objc2",
@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-bench"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1125,7 +1125,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-cli"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "anstream",
  "anyhow",
@@ -1185,7 +1185,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-headless"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -1206,7 +1206,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-mcp"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "aes-gcm",
  "ammonia",
@@ -1296,7 +1296,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-sandbox"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1313,7 +1313,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-server"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1364,7 +1364,7 @@ dependencies = [
 
 [[package]]
 name = "biorouter-test"
-version = "1.89.0"
+version = "1.89.1"
 dependencies = [
  "clap",
  "serde_json",
