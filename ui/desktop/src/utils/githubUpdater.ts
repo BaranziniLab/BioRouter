@@ -207,19 +207,49 @@ export class GitHubUpdater {
       let lastReportedPercent = -1; // Track last reported percentage to throttle updates
       let lastLoggedPercent = -1; // Track for logging at 10% intervals
 
-      // Read the response stream
-      log.info('GitHubUpdater: Starting to read response stream...');
+      // Stream straight to disk.
+      //
+      // This used to accumulate every chunk in `chunks[]` and then
+      // `Buffer.concat(chunks.map(Buffer.from))`. For a ~200 MB installer that is
+      // the chunks, plus a full copy of them, plus the concatenated result — ~600 MB
+      // of main-process RSS — and the concat itself is a large synchronous memcpy on
+      // the main thread. That is the CPU-and-memory spike people notice shortly after
+      // launch (#88). Writing through a stream is O(1) memory and never blocks.
+      //
+      // Written to a `.part` file and renamed on completion, so an interrupted
+      // download can never be mistaken for a finished installer.
+      const downloadsDir = path.join(os.homedir(), 'Downloads');
+      // Preserve the real asset extension (.dmg/.zip/.deb/.rpm) from the URL so
+      // the file the user double-clicks is the actual installer.
+      const urlName = downloadUrl.split('/').pop() || '';
+      const ext = urlName.match(/\.(dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
+      const fileName = `Biorouter-${latestVersion}.${ext}`;
+      const downloadPath = path.join(downloadsDir, fileName);
+      const partPath = `${downloadPath}.part`;
+
+      await fs.mkdir(downloadsDir, { recursive: true });
+      log.info(`GitHubUpdater: Streaming to ${partPath}...`);
+      const fileHandle = await fs.open(partPath, 'w');
+      const writeStream = fileHandle.createWriteStream();
+
       const reader = response.body.getReader();
-      const chunks: Uint8Array[] = [];
       let downloadedSize = 0;
       let lastProgressTime = Date.now();
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
 
-        chunks.push(value);
-        downloadedSize += value.length;
+          // Respect backpressure: if the disk is slower than the socket, wait for
+          // the drain rather than letting Node buffer the difference in memory.
+          if (!writeStream.write(value)) {
+            await new Promise<void>((resolve, reject) => {
+              writeStream.once('drain', resolve);
+              writeStream.once('error', reject);
+            });
+          }
+          downloadedSize += value.length;
 
         // Report progress - only when percentage changes by at least 1%
         if (totalSize > 0 && onProgress) {
@@ -242,16 +272,20 @@ export class GitHubUpdater {
           }
         }
 
-        // Warn if no progress for 30 seconds
-        const now = Date.now();
-        if (now - lastProgressTime > 30000) {
-          log.warn(
-            `GitHubUpdater: Download appears slow - no significant progress in 30 seconds (${downloadedSize}/${totalSize} bytes)`
-          );
-          lastProgressTime = now;
-        } else if (value.length > 0) {
-          lastProgressTime = now;
+          // Warn if no progress for 30 seconds
+          const now = Date.now();
+          if (now - lastProgressTime > 30000) {
+            log.warn(
+              `GitHubUpdater: Download appears slow - no significant progress in 30 seconds (${downloadedSize}/${totalSize} bytes)`
+            );
+            lastProgressTime = now;
+          } else if (value.length > 0) {
+            lastProgressTime = now;
+          }
         }
+      } finally {
+        await new Promise<void>((resolve) => writeStream.end(resolve));
+        await fileHandle.close().catch(() => {});
       }
 
       const downloadDuration = Date.now() - downloadStartTime;
@@ -260,22 +294,15 @@ export class GitHubUpdater {
         `GitHubUpdater: Download stream complete - ${downloadedSize} bytes in ${downloadDuration}ms (avg ${avgSpeed.toFixed(0)} KB/s)`
       );
 
-      // Combine chunks into a single buffer
-      log.info('GitHubUpdater: Combining chunks into buffer...');
-      const buffer = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
-      log.info(`GitHubUpdater: Buffer created - ${buffer.length} bytes`);
+      // A truncated transfer would otherwise land in Downloads looking complete.
+      if (totalSize > 0 && downloadedSize !== totalSize) {
+        await fs.rm(partPath, { force: true });
+        throw new Error(
+          `Download truncated: got ${downloadedSize} of ${totalSize} bytes. Check your connection and try again.`
+        );
+      }
 
-      // Save to Downloads directory
-      const downloadsDir = path.join(os.homedir(), 'Downloads');
-      // Preserve the real asset extension (.dmg/.zip/.deb/.rpm) from the URL so
-      // the file the user double-clicks is the actual installer.
-      const urlName = downloadUrl.split('/').pop() || '';
-      const ext = urlName.match(/\.(dmg|zip|deb|rpm)$/i)?.[1] || 'zip';
-      const fileName = `Biorouter-${latestVersion}.${ext}`;
-      const downloadPath = path.join(downloadsDir, fileName);
-
-      log.info(`GitHubUpdater: Writing file to ${downloadPath}...`);
-      await fs.writeFile(downloadPath, buffer);
+      await fs.rename(partPath, downloadPath);
 
       const totalDuration = Date.now() - downloadStartTime;
       log.info(`=== GitHubUpdater: DOWNLOAD COMPLETE in ${totalDuration}ms ===`);

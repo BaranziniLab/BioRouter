@@ -280,10 +280,29 @@ export function registerUpdateIpcHandlers() {
 }
 
 // Configure auto-updater
+// Guards against a second `setupAutoUpdater()` installing a duplicate 3-hour
+// interval and a duplicate set of `autoUpdater.on(...)` listeners — which would
+// double every progress tick and fire two notifications per downloaded update.
+// Mirrors `ipcUpdateHandlersRegistered` above.
+let autoUpdaterConfigured = false;
+let cancelScheduledChecks: (() => void) | null = null;
+
+/** Stop the periodic update timer (app shutdown, tests). */
+export function stopScheduledUpdateChecks(): void {
+  cancelScheduledChecks?.();
+  cancelScheduledChecks = null;
+}
+
 export function setupAutoUpdater(tray?: Tray) {
   if (tray) {
     trayRef = tray;
   }
+
+  if (autoUpdaterConfigured) {
+    log.info('Auto-updater already configured; skipping duplicate setup.');
+    return;
+  }
+  autoUpdaterConfigured = true;
 
   log.info('Setting up auto-updater...');
   log.info(`Current app version: ${app.getVersion()}`);
@@ -458,10 +477,16 @@ export function setupAutoUpdater(tray?: Tray) {
             updateTrayIcon(true);
             sendStatusToWindow('update-available', { version: result.latestVersion });
 
-            await githubAutoDownload(
-              result.downloadUrl!,
-              result.latestVersion!,
-              `during ${reason} check`
+            // Deliberately NOT downloaded here. This is the fallback path, reached
+            // because the normal updater errored — including on a transient DNS
+            // failure — and it writes a several-hundred-megabyte installer into the
+            // user's Downloads folder. Doing that unprompted, seconds after launch,
+            // on a background timer the user never asked for, is the wrong default
+            // (#88). The update is announced; the download happens when the user
+            // acts on it, via the `download-update` IPC.
+            log.info(
+              `GitHub fallback found ${result.latestVersion} during the ${reason} check; ` +
+                'waiting for the user before downloading.'
             );
           } else {
             clearUpdateAvailabilityUnlessDownloaded();
@@ -480,7 +505,8 @@ export function setupAutoUpdater(tray?: Tray) {
     }
   };
 
-  scheduleUpdateChecks(runAutomaticUpdateCheck);
+  // Keep the canceller: without it the 3-hour interval can never be cleared.
+  cancelScheduledChecks = scheduleUpdateChecks(runAutomaticUpdateCheck);
 
   // Handle update events
   autoUpdater.on('checking-for-update', () => {
@@ -541,9 +567,11 @@ export function setupAutoUpdater(tray?: Tray) {
           updateTrayIcon(true);
           sendStatusToWindow('update-available', { version: result.latestVersion });
 
-          // Auto-download for GitHub fallback (matching autoDownload behavior)
-          log.info('Auto-downloading update via GitHub fallback after error...');
-          await githubAutoDownload(result.downloadUrl!, result.latestVersion!, 'after error');
+          // Announced, not downloaded — see the note on the background check path.
+          log.info(
+            `GitHub fallback found ${result.latestVersion} after an updater error; ` +
+              'waiting for the user before downloading.'
+          );
         } else {
           clearUpdateAvailabilityUnlessDownloaded();
           sendStatusToWindow('update-not-available', {
@@ -745,12 +773,28 @@ async function githubAutoDownload(
   }
 }
 
-function updateTrayIcon(hasUpdate: boolean) {
+// What the tray currently shows, so an unchanged state costs nothing.
+let lastAppliedTrayState: boolean | null = null;
+
+export function resetTrayStateForTests(): void {
+  lastAppliedTrayState = null;
+}
+
+function updateTrayIcon(hasUpdate: boolean, opts?: { force?: boolean }) {
   if (!trayRef) return;
 
   if (process.env.BIOROUTER_VERSION) {
     hasUpdate = false;
   }
+
+  // Every update check called through here, including the "already up to date"
+  // case that fires on launch and then every three hours forever. Each call
+  // re-read a PNG off disk, re-decoded it, and rebuilt a ten-item native Menu
+  // from scratch to arrive at exactly the state already on screen.
+  if (!opts?.force && lastAppliedTrayState === hasUpdate) {
+    return;
+  }
+  lastAppliedTrayState = hasUpdate;
 
   const isDev = !app.isPackaged;
   let iconPath: string;

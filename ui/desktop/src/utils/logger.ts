@@ -10,4 +10,16 @@ log.transports.file.resolvePathFn = () => {
 log.transports.file.level = app?.isPackaged ? 'info' : 'debug';
 log.transports.console.level = app?.isPackaged ? false : 'debug';
 
+// electron-log's file transport defaults to `sync: true`, i.e. one blocking
+// `fs.writeFileSync` per line on whichever thread logged it. In the main process
+// that is the thread running the window, and the noisy paths are exactly the ones
+// that run at startup — a single update check emits ~180 lines (#88). Buffered
+// async writes keep the event loop free.
+log.transports.file.sync = false;
+
+// A log line is never worth blocking on, but it is also never worth crashing on:
+// a full disk or a read-only userData dir would otherwise surface as an
+// unhandled rejection from a fire-and-forget write.
+log.errorHandler?.startCatching?.({ showDialog: false });
+
 export default log;
