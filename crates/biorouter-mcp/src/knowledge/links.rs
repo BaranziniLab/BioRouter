@@ -108,6 +108,30 @@ pub fn identity_key(name: &str) -> String {
     slug(&name.to_lowercase())
 }
 
+/// Was this target written as a **path** (`knowledge/molecule/il-6.md`,
+/// `il-6.md`) rather than as a **name** (`IL-6`)?
+///
+/// The two `[[…]]` heads look identical to a regex and are not the same
+/// grammar: a bare name is the `identifier`/`title` rung of DR-3's ladder and
+/// reduces through [`identity_key`], while the Obsidian path form is the
+/// basename rung and reduces through [`link_key`]. The rule is exactly the
+/// syntax that separates the two reductions — a `/` that `link_key` splits on,
+/// or the `.md` it strips — so it lives here beside them and not beside each
+/// consumer that needs to choose.
+///
+/// ⚠ **It orders the two rungs; it must never be used to skip one.** The
+/// shapes overlap: an `identifier` may legitimately contain a slash
+/// (`CD4/CD8 ratio`), so `[[CD4/CD8 ratio]]` reads as path-shaped here while
+/// naming a concept, and a consumer that took this answer as final would leave
+/// that link pointing at whatever the old name now resolves to. Try the rung
+/// this favours first, then the other one — which is what `graph::NodeIndex`
+/// already does for resolution and what [`crate::knowledge::merge`] does for
+/// rewriting.
+pub fn written_as_path(target: &str) -> bool {
+    let target = target.trim();
+    target.contains('/') || target.ends_with(".md")
+}
+
 fn slug(s: &str) -> String {
     s.chars()
         .map(|c| {
@@ -213,6 +237,28 @@ mod tests {
         // an orphan while the graph drew an edge to it.
         let links = wiki_links("[[knowledge/entities/wanjun-gu.md|Wanjun Gu]]");
         assert_eq!(link_key(&links[0].target), "wanjun-gu");
+    }
+
+    #[test]
+    fn a_path_shaped_target_is_told_from_a_name_by_the_syntax_link_key_strips() {
+        for path in [
+            "knowledge/concepts/zone-2 base",
+            "knowledge/concepts/zone-2 base.md",
+            "zone-2-base.md",
+            // The overlap the predicate cannot resolve on its own, and the
+            // reason its doc forbids using it to skip a rung: this is an
+            // `identifier`, and it reads as path-shaped.
+            "CD4/CD8 ratio",
+        ] {
+            assert!(written_as_path(path), "for {path}");
+        }
+        for name in ["Zone-2 base", "IL-6", "COVID-19", "mg dL"] {
+            assert!(!written_as_path(name), "for {name}");
+            // The whole claim: on a name the two reductions agree, so ordering
+            // the rungs costs nothing; on a path they do not, which is what
+            // makes choosing between them necessary at all.
+            assert_eq!(identity_key(name), link_key(name), "for {name}");
+        }
     }
 
     #[test]

@@ -117,6 +117,20 @@ and will not be found by anyone navigating it.
 - `biookf.source.unanchored` — a source node with no `raw_source`. Point it at the bytes
   under `raw/`, which is what makes the provenance chain end somewhere real.
 
+**Evidence quality** — read off the credibility verdict the classifier wrote into
+`raw/<id>/meta.yaml` at ingest. A source the classifier never saw is never flagged, so
+silence here means "no signal", not "checked and fine".
+
+- `biookf.source.retracted` — a claim rests on a source marked RETRACTED. Do not delete
+  the source page: it is a real thing that was really published. Re-source every claim
+  citing it from the current literature, or withdraw those claims and say in prose that
+  the finding was retracted.
+- `biookf.source.not_scholarly` — a `knowledge_assertion` (the strongest knowledge
+  level: "this is established") rests on a web page or a personal communication. Two
+  honest fixes: cite the primary literature, or lower the edge's `knowledge_level` to
+  what the source actually supports. Deleting the warning by raising the tier is not one
+  of them.
+
 ## Working through a report
 
 1. **Errors first, then warnings, then infos.** The report is already ordered that way.
@@ -132,7 +146,13 @@ and will not be found by anyone navigating it.
 
 ## Autofix
 
-`kb_lint` can run a sub-agent to fix what it found. It commits only if pages actually
-changed, so a clean base produces no empty commit. Prefer it for the mechanical repairs
-(missing links, missing pages, alias updates); do the judgement calls — contradictions,
-re-typing, which source wins — yourself.
+**The `kb_lint` tool never edits anything.** It reports; you fix, with `kb_write_page`.
+
+There *is* an autofix — a sub-agent that repairs the mechanical findings (missing links,
+missing pages, alias updates) and commits only if pages actually changed — but it lives
+on the two surfaces that name a provider: `biorouter kb lint --fix` in the terminal, and
+the "Check for problems" panel in the Knowledge view. It is not reachable as a tool,
+because a tool that sometimes writes could not be classified as reading or writing, and
+that classification is what keeps a private base out of a public chat. Suggest the CLI
+command to the user if the report is long and mechanical; do the judgement calls —
+contradictions, re-typing, which source wins — yourself either way.

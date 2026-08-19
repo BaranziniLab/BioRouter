@@ -2101,6 +2101,61 @@
         }
       }
     },
+    "/knowledge/bases/{id}/merge": {
+      "post": {
+        "tags": [
+          "super::routes::knowledge"
+        ],
+        "summary": "⚠ **No caller barrier here, and it is the same position `GET /export` takes.**",
+        "description": "This route is the USER's own path: they can already read both bases through\n`GET /bases/{id}/page` and download either as a `.brkb`, and DR-14 governs\nwhat a MODEL can reach. Passing a public-model identity instead would refuse\nthe user every merge involving a private base of their own — the feature's\nmain case — and passing a private one would be inventing a model that is not\nthere.\n\nWhat still runs, and is the part that matters, is the classification fold:\nthe destination takes `max` over the tier axis and the union over owning\ninstitutions. That is what keeps the model side honest after a merge the user\nperformed.\n\nThe proof-of-user is therefore load-bearing rather than ceremonial — it is\nthe whole of what separates this branch from the tool channel.",
+        "operationId": "merge_bases",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Destination knowledge base ID — canonical; never modified",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MergeBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "What the merge did, or (dry run) would do",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MergeReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad request"
+          },
+          "403": {
+            "description": "Refused: merging is the user's decision and the request carried no proof it came from them, or this daemon holds no user-action key at all (body = plain text)"
+          },
+          "404": {
+            "description": "Not found"
+          },
+          "500": {
+            "description": "Internal error"
+          }
+        }
+      }
+    },
     "/knowledge/bases/{id}/page": {
       "get": {
         "tags": [
@@ -5409,6 +5464,31 @@
           }
         }
       },
+      "CarriedPage": {
+        "type": "object",
+        "required": [
+          "source_path",
+          "destination_path"
+        ],
+        "properties": {
+          "destination_path": {
+            "type": "string"
+          },
+          "identifier": {
+            "type": "string",
+            "description": "The page's identifier as the source wrote it, when it has one.",
+            "nullable": true
+          },
+          "renamed_identifier": {
+            "type": "string",
+            "description": "Set only when the identifier collided with the destination's and was\nrenamed.",
+            "nullable": true
+          },
+          "source_path": {
+            "type": "string"
+          }
+        }
+      },
       "ChangeKind": {
         "type": "string",
         "enum": [
@@ -7208,14 +7288,14 @@
             "items": {
               "type": "string"
             },
-            "description": "`[[Target]]` references in source pages that have no corresponding page\nunder `knowledge/`."
+            "description": "Link targets written in source pages that name no page under\n`knowledge/` — again over all four grammars, so a typed base's `edges:`\ncitations are read."
           },
           "orphans": {
             "type": "array",
             "items": {
               "type": "string"
             },
-            "description": "Pages with no inbound `[[wiki-link]]` references from any other page."
+            "description": "Pages nothing else in the bundle links to, in any of the four grammars\n(`graph::bundle_links`) — not the legacy bracket form alone, which is\nwhat made this list every page of a typed base."
           },
           "stale_sources": {
             "type": "array",
@@ -7903,6 +7983,125 @@
           },
           "scope": {
             "$ref": "#/components/schemas/MemoryScope"
+          }
+        }
+      },
+      "MergeBody": {
+        "type": "object",
+        "required": [
+          "source_kb_id"
+        ],
+        "properties": {
+          "dry_run": {
+            "type": "boolean",
+            "description": "Report what would happen and write nothing. Defaults to **true**, so a\nclient that forgets the field gets the preview rather than the merge.\nThis is the least reversible operation in the subsystem and\n`POST /restore` restores a whole tree, not one page."
+          },
+          "source_kb_id": {
+            "type": "string",
+            "description": "The knowledge base to merge FROM. It is only read and is left unchanged."
+          }
+        }
+      },
+      "MergeReport": {
+        "type": "object",
+        "description": "What the merge did, or — for a dry run — what it *would* do.\n\nThe dry run and the merge produce this from the **same** [`plan`] call, so\nthe preview cannot describe a different operation from the one that runs.",
+        "required": [
+          "destination_kb_id",
+          "source_kb_id",
+          "dry_run",
+          "raw_copied",
+          "raw_deduped",
+          "pages_carried",
+          "identifiers_renamed",
+          "paths_renamed",
+          "references_rewritten",
+          "destination_pages_before",
+          "canonical_violations",
+          "destination_tier",
+          "owners_added"
+        ],
+        "properties": {
+          "canonical_violations": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Empty when the destination stayed canonical. A non-empty list aborts the\ntransaction, so it is only ever populated on a failure path or a dry run."
+          },
+          "commit_sha": {
+            "type": "string",
+            "description": "The squash commit on the destination's `main`, or `None` for a dry run.",
+            "nullable": true
+          },
+          "destination_kb_id": {
+            "type": "string"
+          },
+          "destination_pages_before": {
+            "type": "integer",
+            "description": "The destination's page count before the merge — the size of the set\n[`verify_snapshot`] checked.",
+            "minimum": 0
+          },
+          "destination_tier": {
+            "type": "string",
+            "description": "The destination's tier after the merge, as the word the store holds."
+          },
+          "dry_run": {
+            "type": "boolean",
+            "description": "True when nothing was written."
+          },
+          "identifiers_renamed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rename"
+            },
+            "description": "Identifier collisions. The **incoming** side was renamed; the\ndestination's identifier is untouched."
+          },
+          "owners_added": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Institutions added to the destination by the fold (DR-26)."
+          },
+          "pages_carried": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CarriedPage"
+            }
+          },
+          "paths_renamed": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rename"
+            },
+            "description": "Page-path collisions, as logical paths."
+          },
+          "raw_copied": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Rename"
+            },
+            "description": "Raw sources copied into the destination, `from` → `to` (equal when there\nwas no collision)."
+          },
+          "raw_deduped": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RawDedup"
+            },
+            "description": "Raw sources already present in the destination, matched on the sha256 in\n`raw/<id>/meta.yaml`. Not copied; every reference to them is repointed at\nthe destination's copy."
+          },
+          "references_rewritten": {
+            "type": "integer",
+            "description": "How many references were repointed — edge `object`, edge\n`primary_source`, `raw_source` paths and body links.",
+            "minimum": 0
+          },
+          "references_seen": {
+            "type": "integer",
+            "description": "How many references the rewriter **looked at**, of the same four kinds.\n\nThe denominator, and it is here because its absence hid a corruption. A\npreview that says only \"1 identifier renamed, 3 references rewritten\"\nreads as complete, and read exactly that way while plain `[[Name]]`\nlinks went through a map that could not rename them — silently\nretargeted at the destination's own page of that name. `seen -\nrewritten` is what the merge saw and deliberately left alone, so a\nreader can ask why a number is large before approving the least\nreversible operation in the subsystem.",
+            "minimum": 0
+          },
+          "source_kb_id": {
+            "type": "string"
           }
         }
       },
@@ -9085,6 +9284,27 @@
           }
         }
       },
+      "RawDedup": {
+        "type": "object",
+        "required": [
+          "source_id",
+          "matched",
+          "sha256"
+        ],
+        "properties": {
+          "matched": {
+            "type": "string",
+            "description": "The destination raw-source id it was found to be byte-identical to."
+          },
+          "sha256": {
+            "type": "string"
+          },
+          "source_id": {
+            "type": "string",
+            "description": "The raw-source id in the source base."
+          }
+        }
+      },
       "RawEmbeddedResource": {
         "type": "object",
         "required": [
@@ -9283,6 +9503,21 @@
             "type": "string"
           },
           "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "Rename": {
+        "type": "object",
+        "required": [
+          "from",
+          "to"
+        ],
+        "properties": {
+          "from": {
+            "type": "string"
+          },
+          "to": {
             "type": "string"
           }
         }

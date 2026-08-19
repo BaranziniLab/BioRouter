@@ -50,12 +50,23 @@ impl CallerIdentity {
             affiliation: KnowledgeServer::caller_affiliation(context),
         }
     }
+
+    /// The same pair, as the crate-wide carrier the barrier takes directly.
+    ///
+    /// A conversion and not a second sampling: `caller::KbCaller` is this type's
+    /// public twin — one value, both axes — and anything outside this file that
+    /// needs to ask the barrier takes that one. Building it here, from the
+    /// `CallerIdentity` already read off this request, is what keeps the merge's
+    /// two ids gated by the same instant's identity as CP1 used.
+    fn kb_caller(&self) -> crate::knowledge::caller::KbCaller {
+        crate::knowledge::caller::KbCaller::new(self.private, self.affiliation.clone())
+    }
 }
 
 /// Tools whose `kb_id` argument names a base the caller must be allowed to
 /// reach. One list, one rule.
 ///
-/// It is an opt-in allowlist, so on its own a twenty-first `kb_*` tool would
+/// It is an opt-in allowlist, so on its own a twenty-second `kb_*` tool would
 /// default to *ungated* and nothing here would say so. What makes the list
 /// complete is a test, not this comment:
 /// `every_tool_the_router_exposes_is_classified_by_the_probe_table` requires
@@ -79,6 +90,10 @@ const KB_ID_GATED_TOOLS: &[&str] = &[
     // "does this `object` resolve?", and an unresolved-vs-resolved answer over
     // a private base's names is that base's contents one bit at a time.
     "kb_validate_page",
+    // Reads every page of the base to build its report, and the report itself
+    // quotes page paths, identifiers and edges back to the caller. There is no
+    // reading of a base more thorough than this one.
+    "kb_lint",
     "kb_get_graph",
     "kb_list_history",
     "kb_search",
@@ -91,6 +106,14 @@ const KB_ID_GATED_TOOLS: &[&str] = &[
     "kb_begin_txn",
     "kb_commit_txn",
     "kb_abort_txn",
+    // Both merge tools name the DESTINATION in `kb_id`, so this entry gates the
+    // base being written. The SOURCE takes its own `assert_reachable` inside
+    // `KnowledgeService::merge_bases`, because this seam resolves one id and a
+    // merge names two — and a preview that reported the source's page paths and
+    // identifiers to a caller barred from reading it would be the leak, with the
+    // refusal on the write half merely the tell.
+    "kb_merge_preview",
+    "kb_merge",
 ];
 
 /// The subset that resolves an omitted `kb_id` to the session's primary (see
@@ -99,6 +122,7 @@ const KB_ID_GATED_TOOLS: &[&str] = &[
 const KB_PRIMARY_RESOLVING_TOOLS: &[&str] = &[
     "kb_list_pages",
     "kb_read_page",
+    "kb_lint",
     "kb_get_graph",
     "kb_list_history",
 ];
@@ -113,7 +137,30 @@ const KB_PRIMARY_RESOLVING_TOOLS: &[&str] = &[
 /// — a tier raise is permanent, so that is a one-way loss of reach bought for
 /// nothing. Gated: yes. Ratcheting: no. The pair is asserted by
 /// `every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not`.
-const KB_RATCHETING_TOOLS: &[&str] = &["kb_write_page", "kb_add_raw_source", "kb_append_log"];
+///
+/// ⚠ **`kb_lint` is absent for the same reason, and it cost the autofix.** DR-8
+/// says every tool that WRITES joins this list, and a lint has two halves: the
+/// scan writes nothing, the autofix rewrites pages. This table is a set of tool
+/// NAMES — there is nowhere in it to say "ratchets when an argument is set", and
+/// a row that ratcheted sometimes would be a row a reader has to open the tool
+/// to understand. So the tool exposes the read-only scan **only**: gated, not
+/// ratcheting, and honest under one word. The autofix stays on the two surfaces
+/// that name a provider and therefore have a tier to ratchet with —
+/// `biorouter kb lint --fix` and `POST /knowledge/bases/{id}/lint`, both of
+/// which go through `macros::lint::lint`, which ratchets at its own entry.
+///
+/// ⚠ **`kb_merge` is here and `kb_merge_preview` is not**, and the split is
+/// DR-8's corollary rather than a judgement about merges: a tool whose ratchet
+/// decision depends on an argument is narrowed until the decision is a constant.
+/// One `kb_merge` with a `dry_run` flag would be a row that ratchets half the
+/// time, so a preview would permanently privatise a public base because a
+/// private chat *looked at what a merge would do*. Two tools, two constants.
+const KB_RATCHETING_TOOLS: &[&str] = &[
+    "kb_write_page",
+    "kb_add_raw_source",
+    "kb_append_log",
+    "kb_merge",
+];
 
 #[derive(Clone)]
 pub struct KnowledgeServer {
@@ -210,6 +257,21 @@ pub struct ImportArchiveParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct KbIdParams {
     pub kb_id: String,
+}
+
+/// `kb_id` is the **destination** on purpose, and it is not a naming preference.
+///
+/// `gated_kb_id` reads the argument called `kb_id` and nothing else, so spelling
+/// the destination that way is what puts the merge behind CP1's barrier and
+/// CP1's ratchet with no change to the seam. The source takes the *second*
+/// barrier, inside `merge_bases`, because one seam cannot gate two ids.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct MergeParams {
+    /// The knowledge base to merge INTO. It is canonical: its identifiers,
+    /// paths and raw sources win on every collision and are never modified.
+    pub kb_id: String,
+    /// The knowledge base to merge FROM. It is only read, and is left unchanged.
+    pub source_kb_id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -831,6 +893,84 @@ impl KnowledgeServer {
     }
 
     #[tool(
+        name = "kb_lint",
+        description = "Check a WHOLE knowledge base and report what is wrong with it. Nothing is \
+                       written and nothing is rejected. Omit kb_id to use this session's primary \
+                       knowledge base.\n\
+                       \n\
+                       This is `kb_validate_page` at the scale of the base, and it is the only \
+                       way to see the findings a single page cannot have: housekeeping (`kb.*` — \
+                       orphan pages, declared contradictions, stale sources, links to pages that \
+                       do not exist), OKF v0.2 conformance (`okf.*`), and in a BioOKF base the \
+                       profile's vocabulary and provenance rules (`biookf.*`), including sources \
+                       that are RETRACTED or too weak for the claims resting on them.\n\
+                       \n\
+                       Run it after writing a batch of pages — it is how you check your own work \
+                       — and before exporting or sharing a base.\n\
+                       \n\
+                       You get back `ok`, counts by severity, and `diagnostics`: `items`, each \
+                       with a stable rule id / severity / subject / message, and `total`. **Read \
+                       `total`, not `items.len()`** — the list is capped, so a base with hundreds \
+                       of findings hands back the most severe ones and tells you how many there \
+                       were. Fix a batch and run it again.\n\
+                       \n\
+                       Fixing is yours to do with kb_write_page; this tool never edits anything. \
+                       A base created before this format shipped is checked for housekeeping only \
+                       — that is the correct answer for it, not a failure."
+    )]
+    pub async fn kb_lint(
+        &self,
+        p: Parameters<KbIdOptParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let kb_id = self.kb_id_or_primary(p.0.kb_id, Some(&context))?;
+        let kb_root = crate::knowledge::paths::kb_root(self.service.root(), &kb_id);
+        // `macros::lint::scan`, NOT `macros::lint::lint`. Three reasons, and each
+        // one on its own decides it:
+        //
+        // 1. `lint()` RATCHETS at its entry, because its autofix arm writes
+        //    pages. Reaching it from here would raise a public base to PRIVATE
+        //    because a private chat *looked* at it — permanently, for a call that
+        //    committed nothing. See `KB_RATCHETING_TOOLS`, where the same
+        //    argument keeps `kb_validate_page` off the list.
+        // 2. `lint()`'s autofix arm needs a `Completer`, which an MCP tool has
+        //    no way to build: the model calling it IS the provider.
+        // 3. `scan` is the deterministic half — pure, synchronous, no LLM — and
+        //    it is what produces the diagnostics either way. There is no second
+        //    scan to keep in step with this one.
+        //
+        // The autofix path stays where a caller can be held to it: `biorouter kb
+        // lint --fix` and `POST /knowledge/bases/{id}/lint`, both of which name a
+        // provider and therefore have a tier to ratchet with.
+        let report = crate::knowledge::macros::lint::scan(&kb_root).map_err(into_err)?;
+        // `Manifest::profile`, never `Manifest::format` — the field reads `Okf`
+        // on every base written before Stage 3, so reporting it would tell the
+        // caller a legacy base is OKF and leave the empty `okf.*` list looking
+        // like a bug rather than DR-26's decision.
+        let profile = self.service.get_base(&kb_id).ok().and_then(|m| m.profile());
+        let diagnostics = &report.diagnostics;
+        ok_json(&serde_json::json!({
+            "kb_id": kb_id,
+            "format": profile.map(|f| f.as_str()),
+            // DR-7: a producer's verdict about writing, not a statement that
+            // anything will stop being read. Nothing here rejects a page.
+            "ok": diagnostics.errors() == 0,
+            "errors": diagnostics.errors(),
+            "warnings": diagnostics.count(crate::knowledge::validate::Severity::Warning),
+            "info": diagnostics.count(crate::knowledge::validate::Severity::Info),
+            // `items` is capped and `total` is the count BEFORE the cap. Both,
+            // never just the first: a truncated list reporting its own length is
+            // how "3 errors" gets rendered for a base with four hundred.
+            "diagnostics": diagnostics,
+            "truncated": diagnostics.truncated(),
+            // The four hygiene lists `LintReport` also carries are deliberately
+            // NOT repeated here: each entry already appears in `items` as a
+            // `kb.*` diagnostic, and sending both would double the payload of
+            // every call to say the same thing twice.
+        }))
+    }
+
+    #[tool(
         name = "kb_write_page",
         description = "Create or overwrite a knowledge page and commit. The path must be under \
                        knowledge/ (e.g. knowledge/<topic>.md) or be index.md/schema.md/log.md; \
@@ -1349,6 +1489,64 @@ impl KnowledgeServer {
             .map_err(into_err)?;
         ok_json(&serde_json::json!({ "imported_kb_id": new_id }))
     }
+
+    #[tool(
+        name = "kb_merge_preview",
+        description = "Preview merging one knowledge base into another WITHOUT writing anything. Reports what would be carried over, what would be renamed because its identifier or path collides, which raw sources are already present (matched by content hash) and would be deduped, and what the destination's privacy tier and owning institutions would become. Call this before kb_merge: a merge is the least reversible operation here, and restoring afterwards restores the whole base, not one page."
+    )]
+    pub async fn kb_merge_preview(
+        &self,
+        p: Parameters<MergeParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.merge(p.0, true, &context).await
+    }
+
+    #[tool(
+        name = "kb_merge",
+        description = "Merge one knowledge base into another. The destination is canonical: its identifiers, paths and raw sources always win, and an incoming page whose identifier already exists is RENAMED rather than combined with it — every reference to it is repointed so nothing dangles. Raw sources already present are deduped by content hash. The source base is only read and is left unchanged. The whole merge is one transaction: on any failure the destination is untouched. Run kb_merge_preview first."
+    )]
+    pub async fn kb_merge(
+        &self,
+        p: Parameters<MergeParams>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.merge(p.0, false, &context).await
+    }
+
+    /// Both merge tools, which differ only in whether they write.
+    ///
+    /// ⚠ **Two tools and not one `dry_run` argument**, and DR-8's corollary is
+    /// the reason: `KB_RATCHETING_TOOLS` is a set of tool NAMES, so "ratchets
+    /// when `dry_run` is false" is unsayable in it, and a row that is true half
+    /// the time is a row a reader has to open the tool to understand. A preview
+    /// writes nothing and must not raise a base's tier permanently because a
+    /// private chat *looked*; the merge writes content and must. Narrowing each
+    /// tool until its ratchet decision is a constant is what DR-8 asks for, and
+    /// it is exactly why `kb_lint` exposes only its read-only half.
+    async fn merge(
+        &self,
+        p: MergeParams,
+        dry_run: bool,
+        context: &RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        // The SOURCE barrier lives in `merge_bases` alongside the destination's,
+        // so the CLI and the HTTP surface take it too. CP1 has already cleared
+        // `kb_id` by the time this runs; asking again there is free and asking
+        // for `source_kb_id` is the half CP1 structurally cannot do.
+        let caller = CallerIdentity::from_context(Some(context));
+        let report = self
+            .service
+            .merge_bases(
+                &p.kb_id,
+                &p.source_kb_id,
+                &crate::knowledge::merge::MergeAuthority::Model(&caller.kb_caller()),
+                dry_run,
+            )
+            .await
+            .map_err(into_err)?;
+        ok_json(&report)
+    }
 }
 
 impl ServerHandler for KnowledgeServer {
@@ -1382,7 +1580,7 @@ impl ServerHandler for KnowledgeServer {
         })
     }
 
-    /// Issue #56, design §9.3 B4 as ruled. ONE seam for all twenty `kb_*`
+    /// Issue #56, design §9.3 B4 as ruled. ONE seam for all twenty-one `kb_*`
     /// tools, including the EIGHT that take no `RequestContext` and therefore
     /// cannot learn the caller's capability inside their own body — among them
     /// `kb_write_page`, `kb_add_raw_source` and `kb_append_log`, i.e. every
@@ -1407,7 +1605,7 @@ impl ServerHandler for KnowledgeServer {
             // this is a hand-written `call_tool`: `kb_search`'s explicit-`kb_id`
             // branch joined `kb_root(root, &kb_id)` and searched it, and six
             // more read paths did the same. ONE line, above the router and above
-            // the raise, covers all fifteen — including the ones that resolve
+            // the raise, covers all sixteen — including the ones that resolve
             // an ABSENT id to the session's primary, because `gated_kb_id`
             // resolves it exactly as the tool will.
             self.assert_kb_reachable(&kb_id, &caller)?;
@@ -2316,11 +2514,12 @@ mod tests {
         }
     }
 
-    /// All twenty `kb_*` tools. The exclusion list as data, reviewable in one
+    /// All twenty-one `kb_*` tools. The exclusion list as data, reviewable in
+    /// one
     /// place:
     ///   ratchets "default":      kb_write_page, kb_add_raw_source, kb_append_log
     ///   ratchets its OWN new id: kb_create_base, kb_import
-    ///   does not ratchet:        the other fifteen
+    ///   does not ratchet:        the other sixteen
     const KB_TOOL_PROBES: &[ToolProbe] = &[
         ToolProbe {
             name: "kb_list_bases",
@@ -2357,6 +2556,24 @@ mod tests {
                     "content": valid_page("note", "P", "body"),
                 })
             },
+            ratchets: false,
+            refused_naming_a_private_base: true,
+        },
+        ToolProbe {
+            // Names a base and writes nothing, so: gated, not ratcheting —
+            // `kb_validate_page`'s decision one scale up, and for the same
+            // reason (a permanent tier raise bought by a caller who only
+            // looked).
+            //
+            // ⚠ The decision that is NOT visible from this row is what the tool
+            // leaves out. `macros::lint::lint` also has an AUTOFIX arm that
+            // rewrites pages, and that arm must ratchet — but `ratchets` here is
+            // one bool per tool NAME, so "ratchets when autofix=true" is
+            // unsayable in this table. Rather than write a row that is true half
+            // the time, the tool exposes `macros::lint::scan` alone and autofix
+            // is not reachable from MCP at all. See `KB_RATCHETING_TOOLS`.
+            name: "kb_lint",
+            args: |kb| serde_json::json!({ "kb_id": kb }),
             ratchets: false,
             refused_naming_a_private_base: true,
         },
@@ -2464,11 +2681,27 @@ mod tests {
             ratchets: false,
             refused_naming_a_private_base: true,
         },
+        ToolProbe {
+            name: "kb_merge_preview",
+            // The source id names a base that does not exist, so the call fails
+            // in the tool body — which is exactly what makes this a clean probe
+            // of the SEAM: whatever CP1 decided about `kb_id` has already
+            // happened by then.
+            args: |kb| serde_json::json!({ "kb_id": kb, "source_kb_id": "elsewhere" }),
+            ratchets: false,
+            refused_naming_a_private_base: true,
+        },
+        ToolProbe {
+            name: "kb_merge",
+            args: |kb| serde_json::json!({ "kb_id": kb, "source_kb_id": "elsewhere" }),
+            ratchets: true,
+            refused_naming_a_private_base: true,
+        },
     ];
 
     #[tokio::test]
     async fn every_tool_that_writes_content_ratchets_and_the_plumbing_ones_do_not() {
-        // Parameterised over the eighteen `default`-addressing tools, driven
+        // Parameterised over the nineteen `default`-addressing tools, driven
         // through `call_tool` BY NAME — which is the point of CP1: eight of them
         // take no `RequestContext`, so a test that calls the `#[tool]` fn
         // directly cannot express "as a private caller" for them at all. A test
@@ -2476,7 +2709,7 @@ mod tests {
         // kb_add_raw_source — the tool the GUI ingest panel and the `ingest`
         // macro actually call — so the whole ingest path would launder.
         //
-        // `kb_create_base` and `kb_import` are the other two of the twenty;
+        // `kb_create_base` and `kb_import` are the other two of the twenty-one;
         // they ratchet their OWN new id and have their own tests below.
         for probe in KB_TOOL_PROBES {
             let (srv, _tmp, root) = migrated_server_with_bases(&["default"]);
@@ -2688,7 +2921,7 @@ mod tests {
         assert!(description.contains("Nothing is written"), "{description}");
     }
 
-    /// The claim on `KB_ID_GATED_TOOLS` — that a twenty-first `kb_*` tool is
+    /// The claim on `KB_ID_GATED_TOOLS` — that a twenty-second `kb_*` tool is
     /// classified the day it is written — is only true if something ties the
     /// lists to the router. Both `KB_ID_GATED_TOOLS` and `KB_RATCHETING_TOOLS`
     /// are opt-in allowlists, so a new tool defaults to ungated and unratcheted
@@ -2956,6 +3189,93 @@ mod tests {
         assert_eq!(out["format"], serde_json::Value::Null, "{out}");
         assert_eq!(out["ok"], true);
         assert_eq!(out["diagnostics"]["total"], 0);
+    }
+
+    /// `kb_lint` exists as a tool at all, and answers about the base rather than
+    /// about a draft the caller already holds.
+    ///
+    /// It did not, and two shipped skills were written around calling it —
+    /// `knowledge-lint` names it five times, `knowledge-ingest-biookf` tells the
+    /// agent to "run kb_lint over the base and fix every …". Lint was reachable
+    /// only from HTTP and the CLI, so an agent that had just written a dozen
+    /// pages could not check its own work, and following Biorouter's own skill
+    /// produced "unknown tool".
+    #[tokio::test]
+    async fn kb_lint_reports_the_whole_bases_findings() {
+        let (srv, _tmp, root) = migrated_server_with_bases(&[]);
+        call_tool_as(
+            &srv,
+            "kb_create_base",
+            serde_json::json!({ "id": "lit", "name": "Lit", "format": "biookf" }),
+            Public,
+        )
+        .await
+        .unwrap();
+        call_tool_as(
+            &srv,
+            "kb_write_page",
+            serde_json::json!({
+                "kb_id": "lit",
+                "path": "knowledge/molecule/aspirin.md",
+                // `Molecules` is not one of the 28 — a whole-base finding a
+                // caller only sees by asking about the base.
+                "content": "---\ntype: Molecules\nidentifier: Aspirin\n---\n\n# Aspirin\n",
+                "commit_message": "m",
+            }),
+            Public,
+        )
+        .await
+        .unwrap();
+
+        let out = json_of(
+            &call_tool_as(&srv, "kb_lint", serde_json::json!({"kb_id": "lit"}), Public).await,
+        );
+        assert_eq!(out["format"], "biookf", "{out}");
+        assert_eq!(out["ok"], false, "{out}");
+        assert!(out["errors"].as_u64().unwrap() >= 1, "{out}");
+        // The pre-cap total travels beside the capped list, so a caller can tell
+        // "that is everything" from "that is the first two hundred".
+        assert_eq!(out["truncated"], false, "{out}");
+        assert!(out["diagnostics"]["total"].as_u64().unwrap() >= 1, "{out}");
+        let rules: Vec<&str> = out["diagnostics"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["rule"].as_str().unwrap())
+            .collect();
+        assert!(
+            rules.contains(&crate::knowledge::biookf::lint::RULE_TYPE_INVALID),
+            "{rules:?}"
+        );
+
+        // …and it wrote nothing doing it: a lint is a question, not a dry run.
+        let before = crate::knowledge::store::list_pages(&root.join("lit"), None).unwrap();
+        call_tool_as(&srv, "kb_lint", serde_json::json!({"kb_id": "lit"}), Public)
+            .await
+            .unwrap();
+        assert_eq!(
+            before,
+            crate::knowledge::store::list_pages(&root.join("lit"), None).unwrap()
+        );
+    }
+
+    /// A KB-less `kb_lint` lints the session's primary, like every other
+    /// single-base read. `KB_PRIMARY_RESOLVING_TOOLS` is what makes the barrier
+    /// resolve the same id the tool will, so "just drop the kb_id" is not the
+    /// bypass.
+    #[tokio::test]
+    async fn kb_lint_with_no_kb_id_lints_the_primary() {
+        let (srv, _tmp, _root) = migrated_server_with_bases(&["alpha", "beta"]);
+        call_tool_as(
+            &srv,
+            "kb_set_active",
+            serde_json::json!({ "kb_id": "beta" }),
+            Public,
+        )
+        .await
+        .unwrap();
+        let out = json_of(&call_tool_as(&srv, "kb_lint", serde_json::json!({}), Public).await);
+        assert_eq!(out["kb_id"], "beta", "{out}");
     }
 
     #[tokio::test]
@@ -3403,7 +3723,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_tool_that_names_a_base_reaches_a_private_one_under_a_public_model() {
-        // Parameterised over the eighteen base-addressing tools, BY NAME through
+        // Parameterised over the nineteen base-addressing tools, BY NAME through
         // `call_tool` — the shape CP1 makes possible and a per-tool design could
         // not express for the eight that take no `RequestContext`. `kb_export` is
         // the one to watch: it writes the entire base to an attacker-named path
@@ -3836,7 +4156,7 @@ mod tests {
     fn every_kb_tool_is_gated_or_exempt_for_a_pinned_reason() {
         // The partition: the router's own tool list must equal the gated list
         // plus the exemptions, nothing unaccounted for in either direction, so a
-        // TWENTIETH tool is a test failure rather than a silent hole.
+        // TWENTY-SECOND tool is a test failure rather than a silent hole.
         let mut known: Vec<&str> = KB_ID_GATED_TOOLS
             .iter()
             .copied()
@@ -3872,7 +4192,7 @@ mod tests {
         // caught `kb_get_active` before it shipped. `KB_ID_GATED_TOOLS` decides
         // who takes the CONTENT barrier and says nothing about METADATA; listing
         // the non-gated tools and stopping is not a completeness test, it is a
-        // permission slip. This is universal over the exempt set, so a twenty-first
+        // permission slip. This is universal over the exempt set, so a twenty-second
         // exempt tool is covered the day it is written.
         //
         // ⚠ Every probe's arguments name ONLY the public base. That is the

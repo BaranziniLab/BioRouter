@@ -14,6 +14,7 @@ use crate::knowledge::{
         procedures::{ingest_procedure, system_prompt},
     },
     types::{ChangeKind, KbFormat, SourceMeta},
+    validate::{Diagnostics, Severity},
 };
 use anyhow::{Context, Result};
 
@@ -53,6 +54,85 @@ pub struct IngestResult {
     pub commit_sha: String,
     pub steps: usize,
     pub events: Vec<SubAgentEvent>,
+    /// What the committed pages actually look like — see [`Verification`].
+    ///
+    /// `serde(default)` so an `IngestResult` written before this field existed
+    /// still deserializes; its default is "the check did not run", not "clean".
+    #[serde(default)]
+    pub verification: Verification,
+}
+
+/// The tail check: what the run left behind, measured after it committed.
+///
+/// **The gap this closes.** The ingest macro is the highest-volume writer in the
+/// system and the one loop Biorouter fully controls, and until now a run could
+/// write fifteen non-conformant pages, commit them and report success. The
+/// deterministic scan that would have said so already existed
+/// (`macros::lint::scan`) and nobody called it at the one moment it is most
+/// useful.
+///
+/// **It reports; it does not block** (DR-7). A base with warnings — an orphan
+/// page, an edge whose target does not exist yet — is a normal base mid-curation,
+/// and an ingest that failed on one would be an ingest nobody runs twice. The
+/// result travels in the macro's return value and therefore in the SSE stream's
+/// terminal `done` frame, where the user sees it.
+///
+/// ⚠ **In-process and typed, deliberately — not a hook and not a subprocess.**
+/// BioOKF's equivalent is a shell stop-hook (`app/hooks/stop-verify.sh`) that
+/// runs `bokf verify … --json` and, on the line
+/// `res=$(… ) || { rm -f "$counter"; exit 0; }`, treats a **non-zero exit** as
+/// "allow the stop". A non-zero exit is exactly what a dirty bundle produces, so
+/// the gate fails open on the one outcome it exists to catch, and it does that
+/// because a subprocess can only speak in exit codes and "the checker broke" and
+/// "the bundle is dirty" share one. A typed value returned from the same process
+/// has no code to conflate: `ok: false` means dirty, and a check that could not
+/// run says so in [`Self::scan_error`] rather than resolving to clean.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct Verification {
+    /// True only when the scan RAN and found no errors. A scan that could not
+    /// run is `false` with a [`Self::scan_error`], never a quiet `true` —
+    /// "unverified" and "verified clean" are different answers and only one of
+    /// them lets the user stop looking.
+    pub ok: bool,
+    pub errors: usize,
+    pub warnings: usize,
+    pub info: usize,
+    /// The findings themselves: `items`, capped and most severe first, plus
+    /// `total`, the count before the cap.
+    pub diagnostics: Diagnostics,
+    /// Why there is nothing to report, when the scan itself failed. Absent on
+    /// every normal run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scan_error: Option<String>,
+}
+
+/// Re-scan the base the run just committed.
+///
+/// After the commit rather than before it: the question is what the ingest
+/// *left behind*, and a scan of the transaction branch would describe a tree the
+/// user never sees. It is the same `scan` the `lint` macro and the `kb_lint`
+/// tool call, so there is no second implementation to drift.
+fn verify(kb_root: &std::path::Path) -> Verification {
+    match super::lint::scan(kb_root) {
+        Ok(report) => {
+            let d = report.diagnostics;
+            Verification {
+                ok: d.errors() == 0,
+                errors: d.errors(),
+                warnings: d.count(Severity::Warning),
+                info: d.count(Severity::Info),
+                diagnostics: d,
+                scan_error: None,
+            }
+        }
+        // The ingest itself succeeded and is committed; a scan that could not
+        // read the tree back is worth saying out loud and is not worth undoing
+        // real work over.
+        Err(e) => Verification {
+            scan_error: Some(format!("{e:#}")),
+            ..Verification::default()
+        },
+    }
 }
 
 pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestResult> {
@@ -139,6 +219,37 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
         .run(&user, &dispatch, cancel_ref, args.event_sink.as_ref())
         .await;
 
+    let run = IngestRun {
+        kb_id: &args.kb_id,
+        kb_root: &kb_root,
+        source_id: &raw.source_id,
+        baseline_knowledge,
+    };
+    settle_ingest(svc, &repo, &txn, run, agent_result)
+}
+
+/// What the settle arm needs to know about the run it is closing, so
+/// [`settle_ingest`] takes one value instead of five loose arguments.
+struct IngestRun<'a> {
+    kb_id: &'a str,
+    kb_root: &'a std::path::Path,
+    source_id: &'a str,
+    /// The `knowledge/` tree as the sub-agent FOUND it — see [`ingest_setup`].
+    baseline_knowledge: Option<String>,
+}
+
+/// The transaction's three endings — commit, abort-and-fail on a run that wrote
+/// nothing, abort-and-fail on an aborted run — split out of [`ingest`] so that
+/// function stays under `clippy::too_many_lines`, and mirroring
+/// [`super::lint::settle_autofix`], which does the same job for the lint macro.
+/// The only new behaviour is the tail [`verify`].
+fn settle_ingest(
+    svc: &KnowledgeService,
+    repo: &GitRepo,
+    txn: &Txn,
+    run: IngestRun<'_>,
+    agent_result: Result<SubAgentResult>,
+) -> Result<IngestResult> {
     match agent_result {
         Ok(r)
             if matches!(
@@ -162,33 +273,39 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             // A failure to *answer* the question aborts too: leaving HEAD parked
             // on the txn branch is how the next write to this KB lands somewhere
             // nobody is looking.
-            let wrote_knowledge = match repo.txn_knowledge_tree_id(&txn) {
-                Ok(after) => after != baseline_knowledge,
+            let wrote_knowledge = match repo.txn_knowledge_tree_id(txn) {
+                Ok(after) => after != run.baseline_knowledge,
                 Err(e) => {
-                    let _ = repo.abort_txn(&txn);
+                    let _ = repo.abort_txn(txn);
                     return Err(e.context("checking whether the ingest wrote anything"));
                 }
             };
             if !wrote_knowledge {
-                let _ = repo.abort_txn(&txn);
-                anyhow::bail!(no_pages_written_error(&raw.source_id, &r));
+                let _ = repo.abort_txn(txn);
+                anyhow::bail!(no_pages_written_error(run.source_id, &r));
             }
             let sha = repo.commit_txn(
-                &txn,
+                txn,
                 ChangeKind::Ingest,
-                &format!("ingest {}", raw.source_id),
+                &format!("ingest {}", run.source_id),
                 Some(&format!("+1 source · {} steps", r.steps_used)),
             )?;
-            svc.rebuild_graph_cache(&args.kb_id)?;
+            svc.rebuild_graph_cache(run.kb_id)?;
             Ok(IngestResult {
-                source_id: raw.source_id,
+                source_id: run.source_id.to_string(),
                 commit_sha: sha,
                 steps: r.steps_used,
                 events: r.events,
+                // The tail check. Last, and not a `?`: the pages are committed
+                // and the graph is rebuilt, so this describes the run rather
+                // than gating it (DR-7). A base with warnings is a normal base
+                // mid-curation, and an ingest that failed on one is an ingest
+                // nobody runs twice.
+                verification: verify(run.kb_root),
             })
         }
         Ok(r) => {
-            let _ = repo.abort_txn(&txn);
+            let _ = repo.abort_txn(txn);
             anyhow::bail!(
                 "ingest sub-agent aborted: reason={:?}, final={}",
                 r.reason,
@@ -196,7 +313,7 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
             )
         }
         Err(e) => {
-            let _ = repo.abort_txn(&txn);
+            let _ = repo.abort_txn(txn);
             Err(e)
         }
     }
@@ -685,6 +802,126 @@ mod tests {
             event_sink: None,
             cancel: None,
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // The tail verification pass
+    // -------------------------------------------------------------------------
+
+    /// A run that wrote non-conformant pages says so, and **still succeeds**.
+    ///
+    /// Both halves matter. Before this the macro reported success and nothing
+    /// else, so fifteen bad pages could be committed and announced as a clean
+    /// digest — and a check that FAILED the run on findings would be worse,
+    /// because DR-7 makes conformance findings a description and a base
+    /// mid-curation legitimately carries them.
+    #[tokio::test]
+    async fn a_run_that_wrote_non_conformant_pages_reports_them_and_still_succeeds() {
+        let (_dir, svc) = biookf_svc();
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_write_page",
+                serde_json::json!({
+                    // `Molecules` is not one of the 28, and the page cites
+                    // nothing: exactly the shape a hurried run leaves behind.
+                    "path": "knowledge/molecule/tocilizumab.md",
+                    "content": "---\ntype: Molecules\nidentifier: Tocilizumab\n---\n\n# Tocilizumab\n",
+                    "commit_message": "add molecule",
+                }),
+            ),
+            text_reply("done"),
+        ]);
+        let result = ingest(&svc, biookf_args(completer))
+            .await
+            .expect("findings describe the run; they do not fail it");
+
+        assert!(!result.commit_sha.is_empty(), "the pages are committed");
+        assert!(!result.verification.ok, "{:#?}", result.verification);
+        assert!(
+            result.verification.errors >= 1,
+            "{:#?}",
+            result.verification
+        );
+        assert_eq!(result.verification.scan_error, None);
+        assert!(
+            result
+                .verification
+                .diagnostics
+                .has(crate::knowledge::biookf::lint::RULE_TYPE_INVALID),
+            "{:#?}",
+            result.verification.diagnostics.items
+        );
+        // The pre-cap total travels with the capped list, so a caller can tell
+        // "that is everything" from "that is the first two hundred".
+        assert!(result.verification.diagnostics.total >= 1);
+    }
+
+    /// The other half: a conformant run verifies clean, so the assertion above
+    /// is not satisfied by a check that reports errors unconditionally.
+    #[tokio::test]
+    async fn a_conformant_run_verifies_clean() {
+        let (_dir, svc) = fresh_svc();
+        let completer = MockCompleter::new(vec![
+            tool_call_reply(
+                "kb_write_page",
+                serde_json::json!({
+                    "path": "knowledge/sources/stub.md",
+                    "content": "---\ntype: Note\nidentifier: HRV note\n---\n\nStub.\n",
+                    "commit_message": "add source"
+                }),
+            ),
+            text_reply("done"),
+        ]);
+        let result = ingest(
+            &svc,
+            IngestArgs {
+                kb_id: "k".into(),
+                caller_is_private: false,
+                caller_affiliation: Default::default(),
+                source: SourceInput::Text {
+                    text: "Note about HRV.".into(),
+                    title: Some("HRV note".into()),
+                },
+                completer: Box::new(completer),
+                focus: None,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.verification.ok,
+            "{:#?}",
+            result.verification.diagnostics.items
+        );
+        assert_eq!(result.verification.errors, 0);
+        // …while still carrying the orphan warning, which is the "report, do not
+        // block" rule stated from the other side: a warning is information, and
+        // `ok` is about errors alone.
+        assert!(
+            result
+                .verification
+                .diagnostics
+                .has(super::super::lint::RULE_ORPHAN),
+            "{:#?}",
+            result.verification.diagnostics.items
+        );
+        assert!(result.verification.warnings >= 1);
+    }
+
+    /// "Unverified" is not "verified clean". `Verification::default()` is what a
+    /// pre-existing `IngestResult` deserializes into and what a failed scan
+    /// leaves behind, and neither may read as a pass.
+    #[test]
+    fn an_unverified_result_never_reads_as_clean() {
+        assert!(!Verification::default().ok);
+        let stored: IngestResult = serde_json::from_value(serde_json::json!({
+            "source_id": "s", "commit_sha": "abc", "steps": 1, "events": []
+        }))
+        .expect("a result written before the field existed still loads");
+        assert!(!stored.verification.ok);
     }
 
     /// The conformance floor. Every edge a BioOKF ingest writes must cite a

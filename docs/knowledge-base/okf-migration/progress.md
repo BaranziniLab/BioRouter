@@ -31,9 +31,9 @@ Measured in this worktree, never estimated. Re-measure rather than trusting thes
 
 | Suite | Baseline | Now |
 | --- | --- | --- |
-| `cargo test -p biorouter-mcp --lib knowledge::` | 283 | **587** |
-| `cargo test -p biorouter-mcp` (whole crate) | — | **1425** |
-| `cargo test -p biorouter-server --test knowledge_routes` | 46 | **55** |
+| `cargo test -p biorouter-mcp --lib knowledge::` | 283 | **631** |
+| `cargo test -p biorouter-mcp` (whole crate) | — | **1471** |
+| `cargo test -p biorouter-server --test knowledge_routes` | 46 | **57** |
 | Desktop `npm run test:run` | 2698 | **2841** in 289 files |
 | Contrast assertions in `lint:check` | 330 | **332** |
 
@@ -61,6 +61,26 @@ on every spawned process via `ps eww`, and `lsof` showing zero open files under 
 A legacy base renders 10 pages / 57 links with `node_type: null` throughout, its legacy `kind`
 vocabulary intact, the legend suppressed, and **0 lint diagnostics** — a legacy base is not scolded
 for not being OKF, matching DR-26.
+
+## KB-to-KB merge (post-Stage-8)
+
+The one capability with a user-visible dead end: `.brkb` import always mints a fresh id, so a
+collaborator's archive lands beside your base with no path to one graph. The **deterministic** half
+of a merge now closes it — DR-29, DR-30 and DR-31 in [`design.md`](design.md).
+
+| What | Where |
+| --- | --- |
+| The mechanics: raw dedup by content hash, rename on collision, reference rewriting, the pre/post canonical check, one transaction | `crates/biorouter-mcp/src/knowledge/merge.rs` |
+| Barrier over both ids + the `max`/union classification fold | `KnowledgeService::merge_bases` / `absorb_classification` |
+| Model surface | `kb_merge_preview` (gated, does not ratchet) and `kb_merge` (gated, ratchets) |
+| User surface | `POST /knowledge/bases/{id}/merge`, behind the user-action proof; `dry_run` defaults to **true** |
+| Tests | `cargo test -p biorouter-mcp --lib knowledge::merge` (21), `--test privacy_toggle_merge` (2), `-p biorouter-server --test knowledge_routes` merge rows (2). Re-measure rather than trusting these. |
+
+**Not built, deliberately:** the judgement half — semantic candidate matching, true-match collapse,
+prose and subtype harmonisation. An identifier present in both bases is renamed on the incoming side
+and every reference to it repointed, never collapsed, because a wrong collapse destroys a curated
+page silently and a wrong rename leaves two pages and a record. That half is a macro and belongs on
+this foundation. There is also **no UI**; the surfaces above are the whole of it.
 
 ## What is deliberately not in this release
 

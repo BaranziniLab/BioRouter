@@ -18,6 +18,11 @@ pub mod links;
 pub mod log;
 pub mod macros;
 pub mod manifest;
+// KB-to-KB merge (the deterministic half): raw dedup by content hash, rename on
+// collision, reference rewriting, and a pre/post canonical check on the
+// destination. The judgement half — semantic candidate matching, true-match
+// collapse, prose harmonization — is a later macro and deliberately absent.
+pub mod merge;
 // OKF v0.2 as a format module (Stage 0 of the OKF migration). Additive: nothing
 // in the modules above reads it yet — Stage 2 (`graph`) and Stage 3 (`store`,
 // `manifest`, `service`) are what wire it in.

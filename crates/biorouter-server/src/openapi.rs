@@ -489,6 +489,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::lint,
         super::routes::knowledge::export_brkb,
         super::routes::knowledge::import_brkb,
+        super::routes::knowledge::merge_bases,
         super::routes::knowledge::reclassify,
         super::routes::knowledge::override_credibility,
         super::routes::knowledge::check_model,
@@ -792,6 +793,11 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::IngestBody,
         super::routes::knowledge::QueryBody,
         super::routes::knowledge::LintBody,
+        super::routes::knowledge::MergeBody,
+        biorouter_mcp::knowledge::merge::MergeReport,
+        biorouter_mcp::knowledge::merge::Rename,
+        biorouter_mcp::knowledge::merge::RawDedup,
+        biorouter_mcp::knowledge::merge::CarriedPage,
         // The lint stream's terminal `event: done` payload (`LintResult`) and
         // the typed findings inside it. Registered as components without being
         // any path's response body, because the response IS an event stream —

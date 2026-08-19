@@ -34,12 +34,17 @@
 //! (`edge.not_negatable`, `edge.contradiction`, `identifier.duplicate`, …), so a
 //! finding crosswalks to the reference implementation's without a table.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::path::Path;
 
 use super::aliases::{self, AliasKind, AliasNote};
 use super::domain_range::{self, Side};
-use super::vocabulary::{NodeType, Predicate, PredicateError, AGENT_TYPES, KNOWLEDGE_LEVELS};
+use super::vocabulary::{
+    NodeType, PositivePredicate, Predicate, PredicateError, AGENT_TYPES, KNOWLEDGE_LEVELS,
+};
 use crate::knowledge::okf::{ConceptDoc, Edge};
+use crate::knowledge::raw;
+use crate::knowledge::types::{Credibility, CredibilityTier};
 
 pub use crate::knowledge::okf::Severity;
 
@@ -65,6 +70,10 @@ pub const RULE_EDGE_PRIMARY_SOURCE_UNRESOLVED: &str = "biookf.edge.primary_sourc
 pub const RULE_EDGE_PRIMARY_SOURCE_NOT_SOURCE: &str = "biookf.edge.primary_source_not_source";
 // §8.1 / §10.
 pub const RULE_SOURCE_UNANCHORED: &str = "biookf.source.unanchored";
+// §10 provenance quality. See [`check_credibility`] — these two are the only
+// rules in this module that read anything outside the pages they are given.
+pub const RULE_SOURCE_RETRACTED: &str = "biookf.source.retracted";
+pub const RULE_SOURCE_NOT_SCHOLARLY: &str = "biookf.source.not_scholarly";
 // §6 domain/range.
 pub const RULE_EDGE_DOMAIN: &str = "biookf.edge.domain";
 pub const RULE_EDGE_RANGE: &str = "biookf.edge.range";
@@ -99,6 +108,8 @@ pub const ALL_RULES: &[&str] = &[
     RULE_EDGE_PRIMARY_SOURCE_UNRESOLVED,
     RULE_EDGE_PRIMARY_SOURCE_NOT_SOURCE,
     RULE_SOURCE_UNANCHORED,
+    RULE_SOURCE_RETRACTED,
+    RULE_SOURCE_NOT_SCHOLARLY,
     RULE_EDGE_DOMAIN,
     RULE_EDGE_RANGE,
     RULE_EDGE_CONTRADICTION,
@@ -598,6 +609,261 @@ fn check_contradictions(ctx: &mut Ctx<'_>, doc: &ConceptDoc) {
     }
 }
 
+// ── §10 provenance quality: the credibility verdict, finally read ───────────
+
+/// §10's two provenance-quality rules, over a whole bundle.
+///
+/// **The bug this closes.** `raw/<id>/meta.yaml` has always carried a full
+/// [`Credibility`] record — tier, confidence, publisher, venue, doi,
+/// `retracted`, `classifier_version` — written by the classifier at ingest and
+/// then read by nothing. So a BioOKF base could cite a **retracted** paper as
+/// the `primary_source` of a clinical claim and every check in this build
+/// reported it clean. The signal was computed and thrown away.
+///
+/// A separate entry point from [`check_page`] because it is the only rule family
+/// here that reads bytes **outside the pages it is given**: a source node's
+/// verdict lives in `raw/`, not in its frontmatter, so this needs the bundle
+/// root and `check_page`'s pure `(doc, index)` signature cannot express it.
+///
+/// **Both findings are warnings** (DR-7): nothing rejects a page, and a
+/// retraction is a fact about the evidence, not a defect in the file.
+///
+/// ⚠ **A source that was never classified is never flagged**, and that guard is
+/// load-bearing — it is BioOKF's own (`bokf-core/src/lint.rs`:
+/// `if meta.credibility.classifier_version == 0 { continue }`). Every base built
+/// before the classifier existed carries `classifier_version: 0` with a default
+/// tier, so a pass that read those verdicts as real would light up an entire
+/// base at once — the same "report a decision as several hundred defects"
+/// failure DR-26 rules out for the legacy format layer.
+pub fn check_credibility<'a, I>(kb_root: &Path, pages: I) -> Vec<Finding>
+where
+    I: IntoIterator<Item = (&'a str, &'a ConceptDoc)>,
+{
+    let pages: Vec<(&str, &ConceptDoc)> = pages.into_iter().collect();
+    let sources = source_pages(&pages);
+    let mut cache: HashMap<String, Option<Credibility>> = HashMap::new();
+    // One finding per (rule, source), not one per citing edge: a retracted
+    // paper behind forty claims is ONE thing to fix, and forty copies of the
+    // same sentence is how a report stops being read. The first citation
+    // reached becomes the example in the message, so the finding still points
+    // at a concrete claim.
+    let mut reported: HashSet<(&'static str, &str)> = HashSet::new();
+    let mut out = Vec::new();
+    for (_, doc) in &pages {
+        for edge in &doc.edges {
+            for citation in edge_citations(edge) {
+                let Some((path, source_doc)) = sources.get(citation.name) else {
+                    // Unresolved is `primary_source_unresolved`'s finding, not
+                    // ours; saying it twice double-counts one problem.
+                    continue;
+                };
+                let Some(credibility) =
+                    credibility_of(kb_root, citation.name, source_doc, &mut cache)
+                else {
+                    continue;
+                };
+                out.extend(judge_source(
+                    &citation,
+                    edge,
+                    (path, &credibility),
+                    &mut reported,
+                ));
+            }
+        }
+    }
+    out
+}
+
+/// Every page that carries an `identifier`, by that identifier.
+///
+/// Not [`BundleIndex`], which keeps a node's *type* and path but not the
+/// `raw_source` list this needs to find a verdict on disk.
+fn source_pages<'a>(
+    pages: &[(&'a str, &'a ConceptDoc)],
+) -> HashMap<&'a str, (&'a str, &'a ConceptDoc)> {
+    pages
+        .iter()
+        .filter_map(|(path, doc)| doc.primary_key().map(|key| (key, (*path, *doc))))
+        .collect()
+}
+
+/// How an edge named a source, which decides which rules apply to it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CitationRole {
+    /// `primary_source: X` — the origin of the claim this edge asserts.
+    PrimarySource,
+    /// `reported_in -> X` — §6's provenance predicate, whose object is a source
+    /// node. A retraction matters here for the same reason it does above: the
+    /// page is asserting that this is where the finding was published.
+    ReportedIn,
+}
+
+struct Citation<'a> {
+    name: &'a str,
+    role: CitationRole,
+}
+
+impl CitationRole {
+    fn as_written(self) -> &'static str {
+        match self {
+            Self::PrimarySource => "`primary_source`",
+            Self::ReportedIn => "the object of a `reported_in` edge",
+        }
+    }
+}
+
+/// The sources one edge names: its `primary_source`, plus its `object` when the
+/// predicate is `reported_in`.
+///
+/// `not_provided` is skipped — §8.1 reserves it as the escape for a genuinely
+/// unknown origin, and `primary_source_not_provided` already reports it.
+fn edge_citations(edge: &Edge) -> Vec<Citation<'_>> {
+    let mut out = Vec::new();
+    if let Some(name) = edge
+        .primary_source
+        .as_deref()
+        .filter(|s| !s.is_empty() && *s != aliases::NOT_PROVIDED)
+    {
+        out.push(Citation {
+            name,
+            role: CitationRole::PrimarySource,
+        });
+    }
+    let reported_in = aliases::resolve_predicate(&edge.predicate, edge.negated)
+        .is_ok_and(|r| r.predicate == Predicate::positive(PositivePredicate::ReportedIn));
+    if reported_in && !edge.object.is_empty() {
+        out.push(Citation {
+            name: &edge.object,
+            role: CitationRole::ReportedIn,
+        });
+    }
+    out
+}
+
+/// The two verdicts, for one citation of one source.
+fn judge_source<'a>(
+    citation: &Citation<'a>,
+    edge: &Edge,
+    (path, credibility): (&str, &Credibility),
+    reported: &mut HashSet<(&'static str, &'a str)>,
+) -> Vec<Finding> {
+    let claim = format!("{} -> {}", edge.predicate, edge.object);
+    let mut out = Vec::new();
+    let finding = |rule: &'static str, message: String| Finding {
+        rule,
+        severity: Severity::Warning,
+        subject: citation.name.to_string(),
+        path: Some(path.to_string()),
+        message,
+    };
+    if credibility.retracted && reported.insert((RULE_SOURCE_RETRACTED, citation.name)) {
+        out.push(finding(
+            RULE_SOURCE_RETRACTED,
+            format!(
+                "§10: `{}` is marked RETRACTED in its `raw/…/meta.yaml`, and is cited as {} \
+                 (for example on `{claim}`). Re-source every claim resting on it or withdraw \
+                 them; nothing here removes the page",
+                citation.name,
+                citation.role.as_written()
+            ),
+        ));
+    }
+    // Narrower than the retraction rule on purpose. `knowledge_assertion` is
+    // §7.2's strongest `knowledge_level` — "this is established" — so a web page
+    // or a personal communication behind one is a mismatch between how sure the
+    // claim sounds and what it rests on. The same source behind an `observation`
+    // or a `prediction` is honest and is left alone.
+    let asserted = citation.role == CitationRole::PrimarySource
+        && edge.knowledge_level.as_deref() == Some(KNOWLEDGE_ASSERTION);
+    if asserted
+        && is_low_credibility(credibility.tier)
+        && reported.insert((RULE_SOURCE_NOT_SCHOLARLY, citation.name))
+    {
+        out.push(finding(
+            RULE_SOURCE_NOT_SCHOLARLY,
+            format!(
+                "§10: `{}` classifies as `{}`, and backs the `knowledge_assertion`-level \
+                 claim `{claim}`. Either cite the primary literature or lower the edge's \
+                 `knowledge_level` to what the source actually supports",
+                citation.name,
+                tier_word(credibility.tier)
+            ),
+        ));
+    }
+    out
+}
+
+/// §7.2's strongest knowledge level, spelled once. Present in
+/// [`KNOWLEDGE_LEVELS`], which is the list the enum check uses; this names the
+/// one member the credibility rule cares about.
+const KNOWLEDGE_ASSERTION: &str = "knowledge_assertion";
+
+/// Which tiers read as "not a recognised scholarly source".
+///
+/// The set is BioOKF's (`web` / `unknown`), mapped onto this build's ladder:
+/// `Web` is the same tier, and `Personal` is what a personal communication
+/// classifies as, which is weaker still. `Preprint`, `Book` and `GrayLit` are
+/// deliberately **not** here — §10 calls a preprint archive and a recognised
+/// database legitimate provenance, and flagging them would put a warning on
+/// most of a young biomedical base.
+fn is_low_credibility(tier: CredibilityTier) -> bool {
+    matches!(tier, CredibilityTier::Web | CredibilityTier::Personal)
+}
+
+fn tier_word(tier: CredibilityTier) -> &'static str {
+    match tier {
+        CredibilityTier::PeerReviewed => "peer_reviewed",
+        CredibilityTier::Preprint => "preprint",
+        CredibilityTier::Book => "book",
+        CredibilityTier::GrayLit => "gray_lit",
+        CredibilityTier::Web => "web",
+        CredibilityTier::Personal => "personal",
+    }
+}
+
+/// The classifier's verdict on a source node, or `None` when there is no signal
+/// to read.
+///
+/// `None` covers three different situations that all mean the same thing here:
+/// the node anchors to an external CURIE rather than to ingested bytes, its
+/// `meta.yaml` is missing or unreadable, or it was ingested before the
+/// classifier existed (`classifier_version: 0` — see [`check_credibility`]).
+/// Memoized per identifier because a source cited by forty edges would
+/// otherwise be forty `meta.yaml` reads.
+fn credibility_of(
+    kb_root: &Path,
+    identifier: &str,
+    doc: &ConceptDoc,
+    cache: &mut HashMap<String, Option<Credibility>>,
+) -> Option<Credibility> {
+    if let Some(hit) = cache.get(identifier) {
+        return hit.clone();
+    }
+    let found = raw_source(doc)
+        .iter()
+        .filter_map(|entry| raw_source_id(entry))
+        .find_map(|id| raw::read_meta(kb_root, id).ok())
+        .map(|meta| meta.credibility)
+        .filter(|c| c.classifier_version > 0);
+    cache.insert(identifier.to_string(), found.clone());
+    found
+}
+
+/// The `raw/<id>` directory a `raw_source` entry names, as an id
+/// [`raw::read_meta`] can join.
+///
+/// ⚠ **Confined by construction, because the input is model-written
+/// frontmatter.** A `raw_source: ../../../../.ssh/id_rsa` must not become a path
+/// join, so only the single segment after a literal leading `raw/` is accepted,
+/// and only when it is a plain directory name. BioOKF reaches the same place
+/// through an explicit `confine_to_bundle`; taking one segment means there is
+/// nothing to confine.
+fn raw_source_id(entry: &str) -> Option<&str> {
+    let id = entry.strip_prefix("raw/")?.split('/').next()?;
+    let plain = !id.is_empty() && id != "." && id != ".." && !id.contains('\\');
+    plain.then_some(id)
+}
+
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 /// A bare CURIE, or a string with no letters in it at all.
@@ -1093,5 +1359,262 @@ mod tests {
                 "`{rule}` is missing the profile prefix"
             );
         }
+    }
+}
+
+/// §10's provenance-quality rules, which are the only ones in this module that
+/// read the filesystem — so they get their own module with a `raw/` fixture
+/// rather than sharing the pure-`ConceptDoc` helpers above.
+#[cfg(test)]
+mod credibility_tests {
+    use super::*;
+    use crate::knowledge::okf::Page;
+    use crate::knowledge::types::SourceMeta;
+    use chrono::Utc;
+
+    fn doc(frontmatter: &str) -> ConceptDoc {
+        Page::parse(&format!("---\n{frontmatter}---\n\n# body\n"))
+            .expect("fixture parses")
+            .doc
+    }
+
+    /// Write `raw/<id>/meta.yaml` with a verdict, exactly as the classifier
+    /// does at ingest.
+    fn classify(kb_root: &Path, id: &str, tier: CredibilityTier, retracted: bool, version: u32) {
+        let meta = SourceMeta {
+            id: id.to_string(),
+            title: id.to_string(),
+            url: None,
+            ingested_at: Utc::now(),
+            sha256: "0".into(),
+            mime: "text/markdown".into(),
+            original_filename: None,
+            credibility: Credibility {
+                tier,
+                confidence: 0.9,
+                publisher: None,
+                venue: None,
+                doi: None,
+                retracted,
+                reasoning: "fixture".into(),
+                classifier_version: version,
+            },
+        };
+        let dir = kb_root.join("raw").join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta.yaml"), serde_yaml::to_string(&meta).unwrap()).unwrap();
+    }
+
+    /// A claim citing one ingested source, plus that source's own node.
+    fn bundle(knowledge_level: &str) -> Vec<(String, ConceptDoc)> {
+        vec![
+            (
+                "knowledge/publication/p.md".to_string(),
+                doc("type: Publication\nidentifier: The paper\nraw_source: [raw/the-paper/source.md]\n"),
+            ),
+            (
+                "knowledge/disease/covid.md".to_string(),
+                doc("type: Disease\nidentifier: COVID-19\n"),
+            ),
+            (
+                "knowledge/molecule/x.md".to_string(),
+                doc(&format!(
+                    "type: Molecule\nidentifier: Compound X\nedges:\n  - predicate: treats\n    \
+                     object: COVID-19\n    knowledge_level: {knowledge_level}\n    \
+                     agent_type: manual_agent\n    primary_source: The paper\n"
+                )),
+            ),
+        ]
+    }
+
+    fn run(kb_root: &Path, pages: &[(String, ConceptDoc)]) -> Vec<&'static str> {
+        check_credibility(kb_root, pages.iter().map(|(p, d)| (p.as_str(), d)))
+            .iter()
+            .map(|f| f.rule)
+            .collect()
+    }
+
+    #[test]
+    fn a_retracted_source_behind_a_claim_is_a_warning() {
+        let tmp = tempfile::tempdir().unwrap();
+        classify(
+            tmp.path(),
+            "the-paper",
+            CredibilityTier::PeerReviewed,
+            true,
+            1,
+        );
+        let pages = bundle("knowledge_assertion");
+        let findings = check_credibility(tmp.path(), pages.iter().map(|(p, d)| (p.as_str(), d)));
+        assert_eq!(
+            findings.iter().map(|f| f.rule).collect::<Vec<_>>(),
+            [RULE_SOURCE_RETRACTED]
+        );
+        // Peer-reviewed AND retracted: the retraction fires, the tier rule does
+        // not. They are independent signals and a base full of good journals
+        // must not go quiet just because the tier is high.
+        assert_eq!(findings[0].severity, Severity::Warning);
+        assert_eq!(findings[0].subject, "The paper");
+        assert_eq!(
+            findings[0].path.as_deref(),
+            Some("knowledge/publication/p.md"),
+            "the finding must point at the source page, which is the one place to fix it"
+        );
+        assert!(
+            findings[0].message.contains("treats -> COVID-19"),
+            "the message must name a claim resting on it: {}",
+            findings[0].message
+        );
+    }
+
+    /// THE guard, copied from BioOKF: an unclassified source has no signal, and
+    /// reading its default verdict as real would light up every base built
+    /// before the classifier existed.
+    #[test]
+    fn a_source_the_classifier_never_saw_is_never_flagged() {
+        let tmp = tempfile::tempdir().unwrap();
+        classify(tmp.path(), "the-paper", CredibilityTier::Web, true, 0);
+        // Retracted AND web-tier — both rules would fire on any version above 0.
+        assert!(run(tmp.path(), &bundle("knowledge_assertion")).is_empty());
+
+        classify(tmp.path(), "the-paper", CredibilityTier::Web, true, 1);
+        assert_eq!(
+            run(tmp.path(), &bundle("knowledge_assertion")).len(),
+            2,
+            "…and version 1 is what makes the same fixture report"
+        );
+    }
+
+    /// The tier rule is scoped to the strongest `knowledge_level`, so a web page
+    /// behind an honest `observation` is left alone.
+    #[test]
+    fn a_low_credibility_source_is_flagged_only_under_a_knowledge_assertion() {
+        let tmp = tempfile::tempdir().unwrap();
+        classify(tmp.path(), "the-paper", CredibilityTier::Web, false, 1);
+        assert_eq!(
+            run(tmp.path(), &bundle("knowledge_assertion")),
+            [RULE_SOURCE_NOT_SCHOLARLY]
+        );
+        for honest in ["observation", "prediction", "statistical_association"] {
+            assert!(
+                run(tmp.path(), &bundle(honest)).is_empty(),
+                "`{honest}` claims what the source supports and must not be flagged"
+            );
+        }
+    }
+
+    /// A preprint archive and a recognised database are legitimate provenance
+    /// (§10), so the tier rule stops at `web`/`personal`.
+    #[test]
+    fn a_preprint_or_a_database_is_not_low_credibility() {
+        let tmp = tempfile::tempdir().unwrap();
+        for ok in [
+            CredibilityTier::PeerReviewed,
+            CredibilityTier::Preprint,
+            CredibilityTier::Book,
+            CredibilityTier::GrayLit,
+        ] {
+            classify(tmp.path(), "the-paper", ok, false, 1);
+            assert!(
+                run(tmp.path(), &bundle("knowledge_assertion")).is_empty(),
+                "{ok:?} should not read as unscholarly"
+            );
+        }
+        for low in [CredibilityTier::Web, CredibilityTier::Personal] {
+            classify(tmp.path(), "the-paper", low, false, 1);
+            assert_eq!(
+                run(tmp.path(), &bundle("knowledge_assertion")),
+                [RULE_SOURCE_NOT_SCHOLARLY],
+                "{low:?} should read as unscholarly"
+            );
+        }
+    }
+
+    /// `reported_in` names a source as its object rather than in
+    /// `primary_source`, and a retraction matters there too.
+    #[test]
+    fn a_retraction_is_seen_through_a_reported_in_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        classify(
+            tmp.path(),
+            "the-paper",
+            CredibilityTier::PeerReviewed,
+            true,
+            1,
+        );
+        let pages = vec![
+            (
+                "knowledge/publication/p.md".to_string(),
+                doc("type: Publication\nidentifier: The paper\nraw_source: [raw/the-paper/source.md]\n"),
+            ),
+            (
+                "knowledge/molecule/x.md".to_string(),
+                doc(
+                    "type: Molecule\nidentifier: Compound X\nedges:\n  - predicate: reported_in\n    \
+                     object: The paper\n    knowledge_level: knowledge_assertion\n    \
+                     agent_type: manual_agent\n    primary_source: not_provided\n",
+                ),
+            ),
+        ];
+        assert_eq!(run(tmp.path(), &pages), [RULE_SOURCE_RETRACTED]);
+    }
+
+    /// One finding per source, not one per edge: a retracted paper behind forty
+    /// claims is one thing to fix.
+    #[test]
+    fn a_source_cited_many_times_is_reported_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        classify(
+            tmp.path(),
+            "the-paper",
+            CredibilityTier::PeerReviewed,
+            true,
+            1,
+        );
+        let mut pages = bundle("knowledge_assertion");
+        for n in 0..5 {
+            pages.push((
+                format!("knowledge/molecule/x{n}.md"),
+                doc(&format!(
+                    "type: Molecule\nidentifier: Compound {n}\nedges:\n  - predicate: treats\n    \
+                     object: COVID-19\n    knowledge_level: knowledge_assertion\n    \
+                     agent_type: manual_agent\n    primary_source: The paper\n"
+                )),
+            ));
+        }
+        assert_eq!(run(tmp.path(), &pages), [RULE_SOURCE_RETRACTED]);
+    }
+
+    /// A source with no ingested bytes (an external CURIE reference) has no
+    /// verdict, and a `raw_source` that tries to climb out of the bundle gets
+    /// none either.
+    #[test]
+    fn an_unreadable_or_escaping_raw_source_reports_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        classify(
+            tmp.path(),
+            "the-paper",
+            CredibilityTier::PeerReviewed,
+            true,
+            1,
+        );
+        for anchor in [
+            "xref: [infores:drugbank]",
+            "raw_source: [raw/does-not-exist/source.md]",
+            "raw_source: [../../../elsewhere/meta.yaml]",
+        ] {
+            let mut pages = bundle("knowledge_assertion");
+            pages[0].1 = doc(&format!(
+                "type: Publication\nidentifier: The paper\n{anchor}\n"
+            ));
+            assert!(
+                run(tmp.path(), &pages).is_empty(),
+                "`{anchor}` must yield no verdict to read"
+            );
+        }
+        assert_eq!(raw_source_id("raw/ok/source.md"), Some("ok"));
+        assert_eq!(raw_source_id("raw/ok"), Some("ok"));
+        assert_eq!(raw_source_id("../raw/ok/source.md"), None);
+        assert_eq!(raw_source_id("raw/../../etc/passwd"), None);
     }
 }

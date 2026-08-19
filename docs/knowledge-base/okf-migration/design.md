@@ -224,6 +224,22 @@ anywhere on the path.
 **Why:** a new OKF write tool missing from either surface lets a private model write content into a
 base that stays PUBLIC. That is a privacy hole, not a bookkeeping miss.
 
+**Corollary — a tool that writes *sometimes* is not classifiable, so it is split.** `kb_lint` names a
+base, so it joins `KB_ID_GATED_TOOLS`. It does **not** join `KB_RATCHETING_TOOLS`, and the reason is
+the shape of the table rather than a judgement about lint: both lists hold tool NAMES, and
+`macros::lint::lint` has two halves — a scan that writes nothing and an autofix that rewrites pages.
+"Ratchets when `autofix=true`" is unsayable in a list of names, and a row that is true half the time
+is a row a reader has to open the tool to understand. So the MCP tool exposes `macros::lint::scan`
+**only** — gated, not ratcheting, exactly `kb_validate_page`'s classification and for the same reason
+(a permanent tier raise bought by a caller who merely looked). The autofix stays on the two surfaces
+that name a provider and therefore have a tier to ratchet with: `biorouter kb lint --fix` and
+`POST /knowledge/bases/{id}/lint`, both of which go through `macros::lint::lint`, which ratchets at
+its own entry.
+
+Read the general rule off that: when a candidate tool's ratchet decision depends on an argument,
+narrow the tool until the decision is a constant, rather than widening the table until it can express
+the ambiguity.
+
 ### DR-9 — Port the BioOKF *aesthetic*; do not port a GPU library, because there is not one
 
 The brief asked to borrow BioOKF Studio's "ultra-fast graph rendering libraries". There are none:
@@ -440,7 +456,7 @@ Six tests pin privacy choke points by reading their own source and counting occu
 Moving code fails them even when behaviour is unchanged.
 
 **Decision:** when one fails, the fix is to route the new call through the existing funnel
-(`stamp_new_base_unlocked` / `raise_tier_and_affiliation`) — which is what the failure messages
+(`stamp_base_unlocked` / `raise_tier_and_affiliation`) — which is what the failure messages
 themselves say. Bumping the count requires an explicit note in the commit body saying why the new
 site is safe.
 
@@ -593,3 +609,92 @@ with `schema(required)` because the server always serializes those fields, so th
 only the read side. Here the defaults describe genuinely absent data, so `required` would be a false
 statement about the response and the generated TypeScript would be wrong at **runtime** rather than
 at compile time.
+
+## 7. Decisions forced by KB-to-KB merge
+
+### DR-29 — A merge ships its deterministic half only, and the split is where the risk is
+
+`.brkb` import always mints a **fresh** id (`brkb::import`'s collision loop is written to, so an
+import can never re-tier an existing base). The consequence is a user-visible dead end: a
+collaborator sends an archive, you import it, and you now own two bases describing one domain with
+no path to one graph.
+
+BioOKF's `biookf-merge` skill has two halves. The **mechanical** half — dedup a raw source by
+content hash, rename on collision, rewrite every reference to what was renamed, carry over what does
+not collide — is deterministic and testable. The **judgement** half — deciding that the incoming
+`IL-6` and the destination's `IL6` are the same concept, collapsing them, harmonising prose and
+subtype names — is an LLM loop.
+
+**Decision:** ship the mechanical half as `crates/biorouter-mcp/src/knowledge/merge.rs`. An
+identifier that exists in both bases is **not collapsed**; the incoming one is renamed and every
+reference to it (edge `object`, edge `primary_source`, `raw_source` paths, and every body link in
+all three grammars) is repointed. The judgement half is a macro, and belongs on the foundation this
+one lays.
+
+**Why that direction:** a wrong collapse destroys a curated page and the user has no way to know it
+happened. A wrong rename leaves two pages and a rename record — visible, and reversible by hand.
+
+**Two tools, not one with a `dry_run` flag** (DR-8's corollary, applied): `KB_RATCHETING_TOOLS` is a
+set of tool NAMES, so "ratchets when `dry_run` is false" is unsayable in it. `kb_merge_preview` is
+gated and does not ratchet; `kb_merge` is gated and does. A single tool would permanently privatise
+a public base because a private chat *looked at what a merge would do*.
+
+### DR-30 — A merge is the fifth privacy write choke point, and it takes `import_brkb`'s rule
+
+DR-17 named four write choke points and warned that a fifth would bypass all of them. A merge is one:
+it is a content-touching write whose content comes from **another base**.
+
+**Decision — two controls, in this order.**
+
+1. **The barrier, over BOTH ids.** You cannot merge a base you cannot read into a base you cannot
+   write. The preview takes it too: the report quotes the source's page paths and identifiers
+   straight back to the caller, so a model barred from reading the source must be barred from
+   previewing it. The destination is gated by `KB_ID_GATED_TOOLS` at the `call_tool` seam (it is the
+   argument spelled `kb_id`); the source takes its own `assert_reachable` inside `merge_bases`,
+   because one seam resolves one id.
+2. **The fold, before a byte is written.** The destination takes `max` over the tier axis and the
+   **union** over owning institutions — *exactly* the rule `service::import_brkb` applies to an
+   incoming archive, reused rather than re-derived, because merging base A into base B is that
+   transfer with the archive step removed. A merge can raise either axis and can never lower one.
+
+The fold precedes the write for the same reason the `call_tool` ratchet does: a merge that fails
+after it leaves the destination raised with no content added, which the user can see and undo with
+the tier control, where the other order can leave a private source's content in a base that reads
+PUBLIC.
+
+**It adds no new ratchet call site.** `absorb_classification` routes through
+`stamp_base_unlocked` — DR-20's instruction applied rather than its number bumped — so
+`the_tier_ratchet_has_no_production_call_site_that_skips_the_affiliation` still reads 2. What *did*
+move is the master-switch read: `tier::ratchets_are_live` is now the one spelling both ratchets use,
+because the dry run is a third **reader** of that decision and a preview that disagrees with the
+write it previews is the specific failure a preview exists to prevent.
+
+**The HTTP route carries no caller barrier**, and that is `GET /bases/{id}/export`'s position, not a
+new one: it is the user's own path, they can already read both bases from the Knowledge view, and
+DR-14 governs what a *model* can reach. What separates that branch from the tool channel is a
+proof-of-user — `merge::UserKbMerge`, a ZST with a private field, minted in exactly one place and
+deliberately a **separate type** from `tier_user::UserKbTierChange` so one proof is not spendable on
+the other subject.
+
+### DR-31 — The merge copies; it does not move, and it is one transaction
+
+`bokf-core::merge_raw` relocates the secondary's `raw/` with `fs::rename`.
+
+**Decision:** copy. The whole merge is one `git::Txn` on the **destination's** repository, and the
+source has its own repository that is not in that transaction — so a move could not be rolled back
+and the atomicity promise would be a lie. A BioRouter source base is also a first-class object with
+a registry entry, a tier entry, session pointers and a history; emptying its `raw/` would leave every
+one of *its* pages' `raw_source` dangling, and deleting a base is a separate user-initiated action.
+
+**Atomicity is `abort_txn` plus an explicit undo list, and both are needed.** A page written and not
+yet committed on the transaction branch is *untracked*, and a copied `raw/<id>/original.pdf` is
+*gitignored* (`raw/*/original.*`) — neither is reachable by any checkout, however forceful. Deleting
+the undo list is measurable: `a_failure_mid_merge_leaves_the_destination_byte_identical` goes red
+with both the copied source and two written pages left behind.
+
+**"The destination stayed canonical" is checked twice, and the two are different questions.**
+`plan_violations` asks *would this plan write over the destination* — the only one a **dry run** can
+answer, since a post-merge comparison there is vacuously green. `verify_snapshot` asks *did the write
+do what the plan said*, and runs before the squash commit so a violation aborts. The snapshot carries
+three sets rather than the reference's one: identifiers, page paths (a legacy or plain-OKF page may
+declare no identifier at all) and raw ids (where a merge does most of its moving).

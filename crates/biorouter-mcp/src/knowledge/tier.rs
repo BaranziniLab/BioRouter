@@ -417,7 +417,7 @@ pub fn affiliation(root: &Path, kb_id: &str) -> KbAffiliation {
 ///    minted BY the call and which that parameterisation is therefore
 ///    structurally blind to — `every_tool_the_router_exposes_is_classified_by_the_probe_table`
 ///    chains both past the table by name. They are paired **structurally**
-///    instead, by `KnowledgeService::stamp_new_base_unlocked`: one function that
+///    instead, by `KnowledgeService::stamp_base_unlocked`: one function that
 ///    does both, so there is no second call site to forget.
 ///
 /// [`CallerAffiliation::Local`] and [`CallerAffiliation::Unstated`] add nothing,
@@ -448,6 +448,26 @@ pub fn raise_affiliation_unlocked(
     )
 }
 
+/// Whether the two classification ratchets run at all (DR-15 / AR-7's master
+/// switch).
+///
+/// ⚠ **One spelling, three readers, and the third is why it exists.**
+/// [`raise_unlocked`] and [`add_owners_unlocked`] are the two writes; the
+/// KB-to-KB merge's **dry run** is a reader of the same decision — it has to
+/// report what those two would do without doing it
+/// (`KnowledgeService::projected_classification`). A preview that read the
+/// atomic itself would be a third read of a process-global that another thread
+/// can flip between them, and a preview that disagrees with the write it
+/// previews is exactly the failure a preview exists to prevent.
+///
+/// It is deliberately **not** the read in [`assert_reachable`]. That one answers
+/// "may this caller reach this base", which is a different question with a
+/// different failure direction; folding the two would let one edit silently
+/// change both the barrier and the ratchet.
+pub fn ratchets_are_live() -> bool {
+    crate::privacy_toggle::privacy_tiers_enabled()
+}
+
 /// The same ratchet, given the owners directly rather than a caller to derive
 /// one from — for `import_brkb`, where the institutions being added are the
 /// ones the **archive** carried and there is no single caller to name.
@@ -459,7 +479,7 @@ pub fn raise_affiliation_unlocked(
 pub fn add_owners_unlocked(root: &Path, kb_id: &str, owners: BTreeSet<String>) -> Result<()> {
     // DR-15 / AR-7: with the master toggle off, nothing ratchets — see
     // [`raise_affiliation_unlocked`]'s closing paragraph.
-    if !crate::privacy_toggle::privacy_tiers_enabled() {
+    if !ratchets_are_live() {
         return Ok(());
     }
     if owners.is_empty() {
@@ -608,7 +628,7 @@ static EMPTY_OWNERS: std::sync::LazyLock<BTreeSet<String>> =
 /// the caller to public is the whole of the change, so the monotonicity argument
 /// above is untouched: an existing private entry is still never lowered.
 pub fn raise_unlocked(root: &Path, kb_id: &str, caller_is_private: bool) -> Result<()> {
-    let caller_is_private = caller_is_private && crate::privacy_toggle::privacy_tiers_enabled();
+    let caller_is_private = caller_is_private && ratchets_are_live();
     let mut store = load_for_write(root)?;
     match store.bases.get(kb_id) {
         // Anything that is not the exact word `public` already reads private

@@ -21,6 +21,7 @@ use biorouter::knowledge::macros::{
 };
 use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
 use biorouter::knowledge::subagent::loop_::{Completer, SubAgentBounds};
+use biorouter::knowledge::validate::{Diagnostic, Diagnostics, Severity};
 use biorouter::knowledge::ProviderCompleter;
 use biorouter::model::ModelConfig;
 use biorouter::privacy::ProviderTier;
@@ -553,10 +554,52 @@ pub async fn handle_ingest(
                 style("commit:").dim(),
                 style(short_sha(&res.commit_sha)).dim()
             );
+            print_verification(&kb_id, &res.verification);
             Ok(())
         }
         Err(e) => Err(anyhow!("Ingest failed: {}", e)),
     }
+}
+
+/// What the digest left behind, in one line.
+///
+/// The gap this fills is the same one the macro's tail check fills: a run that
+/// printed `✓ ingested into <kb>` and nothing else could have committed fifteen
+/// non-conformant pages, and the user had no reason to look. It never fails the
+/// command — DR-7 makes these findings a description of the base, not a verdict
+/// on the run — so it points at `knowledge lint`, which is where the findings
+/// themselves live.
+fn print_verification(kb_id: &str, v: &ingest_macro::Verification) {
+    let label = style("verify:").dim();
+    if let Some(err) = &v.scan_error {
+        // Not silence, and not `clean`: the check did not run, which is a third
+        // answer and the only one that should send the user to look themselves.
+        println!(
+            "    {label} {}",
+            style(format!("could not check the base: {err}")).yellow()
+        );
+        return;
+    }
+    if v.diagnostics.total == 0 {
+        println!("    {label} {}", style("clean").green());
+        return;
+    }
+    let summary = format!("{} error(s), {} warning(s)", v.errors, v.warnings);
+    println!(
+        "    {label} {}",
+        if v.ok {
+            style(summary).yellow()
+        } else {
+            style(summary).red()
+        }
+    );
+    println!(
+        "      {}",
+        style(format!(
+            "run `biorouter knowledge lint --kb {kb_id}` to see them"
+        ))
+        .dim()
+    );
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -688,6 +731,7 @@ pub async fn handle_ingest_conversation(
                 style("commit:").dim(),
                 style(short_sha(&res.ingested.commit_sha)).dim()
             );
+            print_verification(&kb_id, &res.ingested.verification);
             // Issue #56, Gate G. A COUNT and nothing else — a session's id,
             // title and working directory are all content (§11.4).
             if res.refused > 0 {
@@ -755,46 +799,170 @@ pub async fn handle_lint(
 
     spinner.stop("");
 
-    let r = &result.report;
     section(&format!("Lint report: {}", kb_id));
+    print_diagnostics(&result.report.diagnostics);
 
-    let group = |label: &str, items: &[String]| {
-        let count = items.len();
-        let colored = if count == 0 {
-            style(format!("{} {}", count, label)).green().to_string()
-        } else {
-            style(format!("{} {}", count, label)).yellow().to_string()
-        };
-        println!("    {}", colored);
-        for item in items {
-            println!("      {} {}", style("·").dim(), style(item).dim());
-        }
-    };
-
-    group("orphan page(s)", &r.orphans);
-    group("contradiction(s)", &r.contradictions);
-    group("stale source(s)", &r.stale_sources);
-    group("missing concept page(s)", &r.missing_concept_pages);
-
-    if fix {
+    // ⚠ `result.report` is the scan the run STARTED from, so after an autofix it
+    // describes a base that no longer exists — and an exit code taken from it
+    // would fail a run whose whole job was to make those findings go away.
+    // Re-scan instead: it is deterministic, needs no model, and is the same
+    // function the report came from, so the verdict describes the base as it now
+    // stands.
+    let verdict = if fix {
         println!(
             "  {} {} fix(es) applied",
             style("✓").green(),
             result.fixes_applied
         );
-    } else if r.orphans.is_empty()
-        && r.contradictions.is_empty()
-        && r.stale_sources.is_empty()
-        && r.missing_concept_pages.is_empty()
-    {
-        println!("  {} clean", style("✓").green());
+        let kb_root = biorouter::knowledge::paths::kb_root(svc.root(), &kb_id);
+        let after = lint_macro::scan(&kb_root)
+            .map_err(|e| anyhow!("Re-scan after autofix failed: {}", e))?;
+        println!("  {} after autofix:", style("·").dim());
+        print_diagnostics(&after.diagnostics);
+        after.diagnostics
     } else {
+        result.report.diagnostics.clone()
+    };
+
+    // Non-zero on errors, so `biorouter knowledge lint` is usable as a gate in a
+    // script or in CI. Warnings never fail: DR-7 makes them SHOULDs, and a
+    // command that failed on every orphan page would be turned off within a day.
+    if let Some(errors) = error_verdict(&verdict) {
+        bail!(
+            "{kb_id}: {errors}. Nothing was rejected and every page is still \
+             readable — but a base with errors is not ready to export or share."
+        );
+    }
+    if !fix && !verdict.is_empty() {
         println!(
             "  {}",
             style("re-run with --fix to let the sub-agent repair these").dim()
         );
     }
     Ok(())
+}
+
+/// How the failure names the errors it is failing on, or `None` when there are
+/// none — the exit code and this sentence come from one place so they cannot
+/// disagree about whether the run failed.
+///
+/// ⚠ **It has to say which population it counted.** The headline above reports
+/// the PRE-CAP total and this line counted the CAPPED list, so a 130-page base
+/// printed `780 finding(s)` and then `Error: 200 conformance error(s)` — two
+/// numbers, two populations, and nothing on screen saying so. A reader
+/// reasonably concludes 580 findings are warnings. The exit code was never
+/// wrong; the arithmetic the user did from it was.
+///
+/// The exactness rule is a property of [`Diagnostics::new`], not a guess:
+/// errors sort **first** and the cap cuts from the end, so the kept list holds
+/// *every* error — unless the kept list is nothing but errors, which is the one
+/// case where a capped report genuinely cannot know the total, and the only one
+/// that says "at least".
+fn error_verdict(d: &Diagnostics) -> Option<String> {
+    let errors = d.count(Severity::Error);
+    if errors == 0 {
+        return None;
+    }
+    let exact = !d.truncated() || errors < d.items.len();
+    let count = if exact {
+        format!("{errors}")
+    } else {
+        format!("at least {errors}")
+    };
+    Some(format!(
+        "{count} of the {} finding(s) above are conformance error(s)",
+        d.total
+    ))
+}
+
+/// The typed diagnostics, grouped by severity, each with its stable rule id.
+///
+/// **The bug this replaced was a confident false negative.** This printer knew
+/// only the four legacy hygiene lists — orphans, contradictions, stale sources,
+/// missing concept pages — and ignored `report.diagnostics` entirely. So a
+/// BioOKF base carrying eleven `biookf.*` ERRORS printed
+/// `0 orphan page(s) … 0 missing concept page(s)` and then `✓ clean`. That is
+/// worse than printing nothing: a user who ran the check and was told the base
+/// was fine has no reason to look again.
+///
+/// The four lists are not lost. Each entry re-appears here as a `kb.*`
+/// diagnostic carrying the same subject (`macros::lint::scan_diagnostics`), so
+/// this shows a superset of what it replaced.
+fn print_diagnostics(d: &Diagnostics) {
+    if d.total == 0 {
+        println!("  {} clean", style("✓").green());
+        return;
+    }
+    println!(
+        "  {}",
+        style(format!(
+            "{} finding(s)",
+            // The PRE-CAP total, always. A truncated list reporting its own
+            // length is how "3 errors" gets printed for a base with four
+            // hundred.
+            d.total
+        ))
+        .yellow()
+        .bold()
+    );
+    if d.truncated() {
+        println!(
+            "    {}",
+            style(format!(
+                "first {} shown; fix a batch and re-run to see the rest",
+                d.items.len()
+            ))
+            .dim()
+        );
+    }
+    for severity in [Severity::Error, Severity::Warning, Severity::Info] {
+        print_severity_group(d, severity);
+    }
+}
+
+/// One severity's findings, or nothing at all when it has none.
+///
+/// Split out of [`print_diagnostics`] so that function stays short; it carries
+/// no decision of its own.
+fn print_severity_group(d: &Diagnostics, severity: Severity) {
+    let items: Vec<&Diagnostic> = d
+        .items
+        .iter()
+        .filter(|item| item.severity == severity)
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+    let (word, colour) = match severity {
+        Severity::Error => ("error(s)", Color::Red),
+        Severity::Warning => ("warning(s)", Color::Yellow),
+        Severity::Info => ("info", Color::Cyan),
+    };
+    println!(
+        "    {}",
+        style(format!("{} {}", items.len(), word)).fg(colour)
+    );
+    for item in items {
+        // The rule id first and undimmed: it is the stable handle a reader
+        // greps for, matches on, and looks up in the knowledge-lint skill —
+        // the message is prose and will be reworded.
+        println!(
+            "      {} {} {}",
+            style("·").dim(),
+            style(&item.rule).fg(colour),
+            item.subject
+        );
+        println!("        {}", style(&item.message).dim());
+        // Only when it adds something: `kb.*` findings use the page path as
+        // their subject, so printing it again would be one line of noise per
+        // finding.
+        match &item.path {
+            Some(path) if *path != item.subject => {
+                println!("        {}", style(path).dim())
+            }
+            _ => {}
+        }
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -865,8 +1033,50 @@ pub async fn handle_query(
 
 #[cfg(test)]
 mod tests {
-    use super::{active_command, create_command, hide_command, render_list, unhide_command};
+    use super::{
+        active_command, create_command, error_verdict, hide_command, render_list, unhide_command,
+    };
     use biorouter::knowledge::service::{KnowledgeService, PrimaryUpdate};
+    use biorouter::knowledge::validate::{Diagnostic, Diagnostics, Severity, MAX_DIAGNOSTICS};
+
+    fn raised(errors: usize, warnings: usize) -> Diagnostics {
+        let mut all: Vec<Diagnostic> = (0..errors)
+            .map(|i| Diagnostic::scan("x.err", Severity::Error, format!("p{i}.md"), "e"))
+            .collect();
+        all.extend(
+            (0..warnings)
+                .map(|i| Diagnostic::scan("x.warn", Severity::Warning, format!("q{i}.md"), "w")),
+        );
+        Diagnostics::new(all)
+    }
+
+    /// The failure line and the headline above it must be about the same
+    /// population — the bug was two counts over two populations with nothing
+    /// saying so, so every row here pins the denominator as well as the number.
+    #[test]
+    fn the_lint_failure_counts_errors_over_the_same_findings_the_headline_did() {
+        assert_eq!(error_verdict(&raised(0, 5)), None, "warnings must not fail");
+        assert_eq!(
+            error_verdict(&raised(3, 40)).unwrap(),
+            "3 of the 43 finding(s) above are conformance error(s)"
+        );
+        // Truncated, but every error survived the cut — errors sort first, so
+        // the number is exact and must not be hedged.
+        let mut d = raised(3, 400);
+        assert!(d.truncated());
+        assert_eq!(
+            error_verdict(&d).unwrap(),
+            "3 of the 403 finding(s) above are conformance error(s)"
+        );
+        // The case that printed `780 finding(s)` and then `200 conformance
+        // error(s)`: the kept list is nothing but errors, so 200 is a floor.
+        d = raised(600, 180);
+        assert_eq!(d.count(Severity::Error), MAX_DIAGNOSTICS);
+        assert_eq!(
+            error_verdict(&d).unwrap(),
+            "at least 200 of the 780 finding(s) above are conformance error(s)"
+        );
+    }
 
     fn svc() -> (tempfile::TempDir, KnowledgeService) {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -1345,6 +1555,63 @@ mod tests {
                     want_private,
                     "OLLAMA_HOST={host}: the handler did not read the constructed instance"
                 );
+            }
+        }
+
+        /// A base carrying conformance ERRORS makes the command exit NON-ZERO, so
+        /// `biorouter knowledge lint` can gate a script or a CI job.
+        ///
+        /// **The printer this replaced was a confident false negative.** It knew
+        /// only the four legacy hygiene lists — orphans, contradictions, stale
+        /// sources, missing concept pages — and ignored `report.diagnostics`
+        /// entirely, so a base whose every page fails OKF §11 rule 1 printed
+        /// `0 orphan page(s) … ✓ clean` and exited 0. A user who ran the check
+        /// and was told the base was fine has no reason to look again.
+        ///
+        /// The clean leg is what makes the dirty one mean something: an
+        /// implementation that failed unconditionally would satisfy the dirty
+        /// assertion alone.
+        #[tokio::test]
+        #[serial]
+        async fn errors_fail_the_lint_command_and_a_clean_base_still_passes() {
+            for (page, expect_ok) in [
+                // Conformant: OKF §4.1's one always-required key is present.
+                ("---\ntype: Note\nidentifier: A\n---\n\nbody\n", true),
+                // `okf.type.missing` — an ERROR, and invisible to the four
+                // hygiene lists, which is the whole bug.
+                ("---\nidentifier: A\n---\n\nbody\n", false),
+            ] {
+                let tmp = tempfile::TempDir::new().unwrap();
+                let mut env = base_env("http://127.0.0.1:1");
+                env.push((
+                    "BIOROUTER_PATH_ROOT",
+                    Some(tmp.path().to_string_lossy().into_owned()),
+                ));
+                let _env = lock_env(env);
+                let root = cli_knowledge_root_with_base(&tmp, "k");
+                biorouter::knowledge::store::write_page(
+                    &root.join("k"),
+                    "knowledge/note/a.md",
+                    page,
+                    "add a",
+                    None,
+                )
+                .unwrap();
+
+                let outcome = handle_lint(Some("k".into()), false, None, None).await;
+                assert_eq!(
+                    outcome.is_ok(),
+                    expect_ok,
+                    "page {page:?} should exit {}",
+                    if expect_ok { "zero" } else { "non-zero" }
+                );
+                if let Err(e) = outcome {
+                    let message = e.to_string();
+                    assert!(
+                        message.contains("conformance error"),
+                        "the failure must say WHY the command failed: {message}"
+                    );
+                }
             }
         }
 

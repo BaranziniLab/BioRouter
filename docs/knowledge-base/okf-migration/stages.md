@@ -121,7 +121,9 @@ edge, and a rename that does not break inbound edges.
 
 - `kb_create_base` gains `format`.
 - New `kb_validate_page` (validate before write, as BioOKF's own toolchain does).
-- `kb_lint` returns typed diagnostics.
+- `kb_lint` returns typed diagnostics — and is now a **tool** as well as an HTTP route and a CLI
+  command, so an agent can check its own work. Read-only: the autofix half is deliberately not
+  reachable from MCP (DR-8's corollary).
 - `instructions.md` and a new pair of skills teach the agent **when** to pick each profile.
 - Every new mutating tool joins `KB_RATCHETING_TOOLS` (DR-8).
 

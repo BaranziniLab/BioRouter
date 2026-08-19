@@ -47,7 +47,7 @@ pub mod vocabulary;
 
 pub use aliases::{normalize, resolve_predicate, AliasKind, AliasNote, Normalized, NOT_PROVIDED};
 pub use domain_range::{Side, Violation};
-pub use lint::{BundleIndex, Finding, Severity};
+pub use lint::{check_credibility, BundleIndex, Finding, Severity};
 pub use profile::{check, check_bundle, check_doc, Report};
 pub use vocabulary::{
     Family, LegendFamily, NodeType, PositivePredicate, Predicate, PredicateError, PredicateGroup,

@@ -2649,11 +2649,11 @@ mod tier_route {
     use biorouter_mcp::knowledge::tier;
 
     /// The server secret this binary's "daemon" was launched with.
-    const TEST_SECRET: &str = "task-29a-kb-tier-route-secret";
+    pub(super) const TEST_SECRET: &str = "task-29a-kb-tier-route-secret";
     /// The raw user-action key the launcher would have minted.
-    const TEST_USER_ACTION_KEY: &str = "task-29a-kb-tier-user-action-key";
+    pub(super) const TEST_USER_ACTION_KEY: &str = "task-29a-kb-tier-user-action-key";
 
-    fn install_test_user_action_key() {
+    pub(super) fn install_test_user_action_key() {
         let digest: [u8; 32] =
             <sha2::Sha256 as sha2::Digest>::digest(TEST_USER_ACTION_KEY.as_bytes()).into();
         biorouter_server::auth::install_user_action_digest(Some(digest));
@@ -2664,7 +2664,7 @@ mod tier_route {
     /// what makes the 401 arm mean anything: `router()` alone is unauthenticated,
     /// so a test against it would assert that a route nobody guards lets everyone
     /// through.
-    fn guarded_router() -> (tempfile::TempDir, std::path::PathBuf, Router) {
+    pub(super) fn guarded_router() -> (tempfile::TempDir, std::path::PathBuf, Router) {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
         let svc = Arc::new(biorouter_mcp::knowledge::service::KnowledgeService::new(
@@ -3278,6 +3278,170 @@ mod okf_surface {
             report["diagnostics"]["total"],
             serde_json::json!(items.len()),
             "an uncapped report's total is its length: {report}"
+        );
+    }
+}
+
+/// `POST /knowledge/bases/{id}/merge` — the user's own KB-to-KB merge.
+///
+/// ⚠ It borrows `tier_route`'s key and router builder rather than minting its
+/// own, and that is forced rather than tidy: the installed user-action digest is
+/// a process-global `OnceLock`, so a second `install_user_action_digest` in this
+/// binary is a no-op by construction and merge tests keyed on their own secret
+/// would every one of them 403 for a reason that has nothing to do with merging.
+mod merge_route {
+    use super::tier_route::{
+        guarded_router, install_test_user_action_key, TEST_SECRET, TEST_USER_ACTION_KEY,
+    };
+    use super::*;
+    use biorouter_mcp::knowledge::tier;
+
+    async fn create(app: &Router, id: &str) {
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/bases")
+                    .header("content-type", "application/json")
+                    .header("X-Secret-Key", TEST_SECRET)
+                    .body(Body::from(
+                        serde_json::to_vec(&serde_json::json!({ "id": id, "name": id })).unwrap(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), 200);
+    }
+
+    async fn post_merge(
+        app: &Router,
+        kb_id: &str,
+        body: serde_json::Value,
+        secret: Option<&str>,
+        user_action: Option<&str>,
+    ) -> (u16, String) {
+        let mut builder = Request::builder()
+            .method("POST")
+            .uri(format!("/bases/{kb_id}/merge"))
+            .header("content-type", "application/json");
+        if let Some(key) = secret {
+            builder = builder.header("X-Secret-Key", key);
+        }
+        if let Some(key) = user_action {
+            builder = builder.header("X-User-Action", key);
+        }
+        let req = builder
+            .body(Body::from(serde_json::to_vec(&body).unwrap()))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        let status = res.status().as_u16();
+        let bytes = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// The proof-of-user is the whole of what separates this route from the tool
+    /// channel: it skips the caller barrier because the user can already read
+    /// both bases, so a caller holding only the secret key — which §9.3 A1 puts
+    /// inside any developer-enabled agent shell — must not reach it.
+    #[tokio::test]
+    async fn the_merge_route_needs_more_than_the_secret_key() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        create(&app, "dst").await;
+        create(&app, "src").await;
+        std::fs::write(
+            root.join("src/knowledge/only-here.md"),
+            valid_page("note", "Only Here", "b"),
+        )
+        .unwrap();
+
+        let body = serde_json::json!({ "source_kb_id": "src", "dry_run": false });
+        let (status, _) = post_merge(&app, "dst", body.clone(), None, None).await;
+        assert_eq!(status, 401);
+
+        let (status, refusal) =
+            post_merge(&app, "dst", body.clone(), Some(TEST_SECRET), None).await;
+        assert_eq!(status, 403, "a secret-key-only caller merged two bases");
+        assert!(
+            refusal.contains("Do not retry"),
+            "the refusal must foreclose the retry: {refusal}"
+        );
+        assert!(
+            !root.join("dst/knowledge/only-here.md").exists(),
+            "the refused call merged anyway"
+        );
+
+        let (status, out) = post_merge(
+            &app,
+            "dst",
+            body,
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {out}");
+        assert!(root.join("dst/knowledge/only-here.md").exists(), "{out}");
+    }
+
+    /// The body's `dry_run` defaults to **true**. A client that forgets the field
+    /// gets the preview, never the merge — this is the least reversible
+    /// operation in the subsystem and `POST /restore` restores a whole tree.
+    ///
+    /// The same call also proves the fold reaches the HTTP surface: a private
+    /// source raises the public destination, and the *preview* does not.
+    #[tokio::test]
+    async fn an_omitted_dry_run_previews_and_a_stated_false_merges() {
+        install_test_user_action_key();
+        let (_d, root, app) = guarded_router();
+        create(&app, "pubdst").await;
+        create(&app, "privsrc").await;
+        std::fs::write(
+            root.join("privsrc/knowledge/secret-note.md"),
+            valid_page("note", "Secret Note", "b"),
+        )
+        .unwrap();
+        tier::raise_unlocked(&root, "privsrc", /* caller_is_private */ true).unwrap();
+        assert!(!tier::is_private(&root, "pubdst"));
+
+        let (status, preview) = post_merge(
+            &app,
+            "pubdst",
+            serde_json::json!({ "source_kb_id": "privsrc" }),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {preview}");
+        let preview: serde_json::Value = serde_json::from_str(&preview).unwrap();
+        assert_eq!(preview["dry_run"], serde_json::json!(true));
+        assert_eq!(preview["destination_tier"], serde_json::json!("private"));
+        assert_eq!(preview["pages_carried"].as_array().unwrap().len(), 1);
+        assert!(
+            !root.join("pubdst/knowledge/secret-note.md").exists(),
+            "the default-on preview wrote to the destination"
+        );
+        assert!(
+            !tier::is_private(&root, "pubdst"),
+            "the preview ratcheted the destination's tier"
+        );
+
+        let (status, out) = post_merge(
+            &app,
+            "pubdst",
+            serde_json::json!({ "source_kb_id": "privsrc", "dry_run": false }),
+            Some(TEST_SECRET),
+            Some(TEST_USER_ACTION_KEY),
+        )
+        .await;
+        assert_eq!(status, 200, "got {out}");
+        assert!(root.join("pubdst/knowledge/secret-note.md").exists());
+        assert!(
+            tier::is_private(&root, "pubdst"),
+            "a public base absorbed a private base's pages and stayed public"
         );
     }
 }

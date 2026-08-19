@@ -291,6 +291,17 @@ fn format_diagnostics(kb_root: &Path, pages: &HashMap<String, String>) -> Vec<Di
                     .map(Diagnostic::from),
             );
         }
+        // §10's provenance-quality pass, and the only rule family that reads
+        // anything outside the pages above: a source node's credibility verdict
+        // lives in `raw/<id>/meta.yaml`. Until this line the classifier's
+        // `retracted` flag was written at ingest and read by nothing, so a base
+        // could cite a retracted paper as the `primary_source` of a clinical
+        // claim and lint clean.
+        out.extend(
+            biookf::check_credibility(kb_root, bundle.iter().map(|p| (p.path.as_str(), &p.doc)))
+                .into_iter()
+                .map(Diagnostic::from),
+        );
     }
     out
 }
@@ -730,6 +741,81 @@ mod tests {
             "{:#?}",
             report.diagnostics.items
         );
+    }
+
+    /// The credibility verdict `raw/<id>/meta.yaml` has always carried, finally
+    /// read by the base's own lint — not only by a unit test of the rule.
+    ///
+    /// Before this, a BioOKF base could cite a **retracted** paper as the
+    /// `primary_source` of a clinical claim and `scan` reported it clean: the
+    /// classifier wrote `retracted: true` at ingest and nothing ever looked.
+    #[test]
+    fn a_retracted_source_is_a_finding_of_the_bases_own_lint() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/publication/chen-2020.md",
+            "---\ntype: Publication\nidentifier: Chen 2020\nxref: [PMID:32504360]\n\
+             raw_source: [raw/chen-2020/source.md]\n---\n\n# Chen 2020\n",
+            "add source node",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/disease/covid-19.md",
+            "---\ntype: Disease\nidentifier: COVID-19\nedges:\n  - predicate: reported_in\n    \
+             object: Chen 2020\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: text_mining_agent\n    primary_source: Chen 2020\n---\n\n# COVID-19\n",
+            "add disease",
+            None,
+        )
+        .unwrap();
+
+        // Un-classified first: the base is clean, which is what the guard
+        // promises for every base built before the classifier existed.
+        assert!(!scan(&kb)
+            .unwrap()
+            .diagnostics
+            .has(crate::knowledge::biookf::lint::RULE_SOURCE_RETRACTED));
+
+        write_retraction(&kb, "chen-2020");
+        let report = scan(&kb).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .has(crate::knowledge::biookf::lint::RULE_SOURCE_RETRACTED),
+            "{:#?}",
+            report.diagnostics.items
+        );
+    }
+
+    /// `raw/<id>/meta.yaml` marking an ingested source retracted, in the shape
+    /// the classifier writes it.
+    fn write_retraction(kb_root: &Path, source_id: &str) {
+        let meta = crate::knowledge::types::SourceMeta {
+            id: source_id.to_string(),
+            title: source_id.to_string(),
+            url: None,
+            ingested_at: Utc::now(),
+            sha256: "0".into(),
+            mime: "text/markdown".into(),
+            original_filename: None,
+            credibility: crate::knowledge::types::Credibility {
+                tier: crate::knowledge::types::CredibilityTier::PeerReviewed,
+                confidence: 0.9,
+                publisher: None,
+                venue: None,
+                doi: None,
+                retracted: true,
+                reasoning: "fixture".into(),
+                classifier_version: 1,
+            },
+        };
+        let dir = kb_root.join("raw").join(source_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta.yaml"), serde_yaml::to_string(&meta).unwrap()).unwrap();
     }
 
     /// The counterexample that makes the test above mean something: drop the

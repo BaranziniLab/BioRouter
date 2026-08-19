@@ -11,6 +11,7 @@ use biorouter::model::ModelConfig;
 use biorouter_mcp::knowledge::{
     convert,
     macros::{ingest as ingest_macro, lint as lint_macro, query as query_macro},
+    merge::{MergeAuthority, MergeReport, UserKbMerge},
     paths,
     service::{KnowledgeService, PrimaryUpdate, ReadPageError},
     source_paths, store,
@@ -60,6 +61,7 @@ pub fn router(svc: Arc<KnowledgeService>) -> Router {
         .route("/bases/{id}/query", post(query_kb))
         .route("/bases/{id}/lint", post(lint))
         .route("/bases/{id}/export", get(export_brkb))
+        .route("/bases/{id}/merge", post(merge_bases))
         .route("/bases/{id}/sources/{sid}/reclassify", post(reclassify))
         .route(
             "/bases/{id}/sources/{sid}/credibility",
@@ -2079,6 +2081,108 @@ pub async fn import_brkb(
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?;
 
     Ok(Json(serde_json::json!({ "id": new_id })))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// POST /bases/:id/merge — the user's own KB-to-KB merge
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Refused for the same reason `TIER_NEEDS_USER` is, worded for this control.
+///
+/// A merge can raise a base's tier and can add an owning institution to it, both
+/// permanently — and it writes another base's content into this one. That is not
+/// a decision the tool channel gets to make on the user's behalf through an
+/// unproven HTTP call.
+const MERGE_NEEDS_USER: &str =
+    "Merging one knowledge base into another is a choice only the person at the keyboard can \
+     make, and this request carried no proof it came from them. Nothing was changed. Do not \
+     retry; the same call will be refused again. A model that wants this must use the kb_merge \
+     tool, which is gated on the privacy of both bases.";
+
+const MERGE_NEEDS_A_DAEMON_KEY: &str =
+    "This Biorouter backend was started without a user-action key, so it cannot tell a request \
+     made by you from one made by a model, and merging two knowledge bases is yours to decide. \
+     Nothing was changed. The desktop app supplies that key; a backend started by `just \
+     run-server`, by running `biorouterd agent` by hand, or as a headless server deployment does \
+     not, and cannot offer this control.";
+
+#[derive(Deserialize, ToSchema)]
+pub struct MergeBody {
+    /// The knowledge base to merge FROM. It is only read and is left unchanged.
+    pub source_kb_id: String,
+    /// Report what would happen and write nothing. Defaults to **true**, so a
+    /// client that forgets the field gets the preview rather than the merge.
+    /// This is the least reversible operation in the subsystem and
+    /// `POST /restore` restores a whole tree, not one page.
+    #[serde(default = "default_true")]
+    pub dry_run: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// ⚠ **No caller barrier here, and it is the same position `GET /export` takes.**
+/// This route is the USER's own path: they can already read both bases through
+/// `GET /bases/{id}/page` and download either as a `.brkb`, and DR-14 governs
+/// what a MODEL can reach. Passing a public-model identity instead would refuse
+/// the user every merge involving a private base of their own — the feature's
+/// main case — and passing a private one would be inventing a model that is not
+/// there.
+///
+/// What still runs, and is the part that matters, is the classification fold:
+/// the destination takes `max` over the tier axis and the union over owning
+/// institutions. That is what keeps the model side honest after a merge the user
+/// performed.
+///
+/// The proof-of-user is therefore load-bearing rather than ceremonial — it is
+/// the whole of what separates this branch from the tool channel.
+#[utoipa::path(
+    post, path = "/knowledge/bases/{id}/merge",
+    request_body = MergeBody,
+    params(("id" = String, Path, description = "Destination knowledge base ID — canonical; never modified")),
+    responses(
+        (status = 200, description = "What the merge did, or (dry run) would do", body = MergeReport),
+        (status = 400, description = "Bad request"),
+        (status = 403, description = "Refused: merging is the user's decision and the request \
+                                      carried no proof it came from them, or this daemon holds \
+                                      no user-action key at all (body = plain text)"),
+        (status = 404, description = "Not found"),
+        (status = 500, description = "Internal error"),
+    )
+)]
+pub async fn merge_bases(
+    State(svc): State<Arc<KnowledgeService>>,
+    Path(id): Path<String>,
+    // Before `Json`, which consumes the body and must be last.
+    headers: HeaderMap,
+    Json(body): Json<MergeBody>,
+) -> Result<Json<MergeReport>, (StatusCode, String)> {
+    // FIRST, before either base is looked up. An unproven caller learns nothing
+    // about which ids exist.
+    match user_action_proof(&headers) {
+        UserActionProof::Proven => {}
+        UserActionProof::Unproven => {
+            return Err((StatusCode::FORBIDDEN, MERGE_NEEDS_USER.to_string()))
+        }
+        UserActionProof::NoKeyInstalled => {
+            return Err((StatusCode::FORBIDDEN, MERGE_NEEDS_A_DAEMON_KEY.to_string()))
+        }
+    }
+
+    // The single construction site of the merge proof-of-user, pinned by
+    // `knowledge::merge::tests::the_merge_proof_of_user_is_constructed_in_exactly_one_place`.
+    let proof = UserKbMerge::from_user_action();
+    let report = svc
+        .merge_bases(
+            &id,
+            &body.source_kb_id,
+            &MergeAuthority::User(&proof),
+            body.dry_run,
+        )
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    Ok(Json(report))
 }
 
 // ──────────────────────────────────────────────────────────────────────────────

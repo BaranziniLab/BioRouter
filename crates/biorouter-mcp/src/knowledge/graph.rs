@@ -545,7 +545,7 @@ fn external_display_name(written: WrittenTarget<'_>) -> String {
         return text.to_string();
     }
     let target = written.target.trim();
-    if !target.contains('/') && !target.ends_with(".md") {
+    if !links::written_as_path(target) {
         return target.to_string();
     }
     let basename = target

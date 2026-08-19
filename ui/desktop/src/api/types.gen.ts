@@ -221,6 +221,20 @@ export type CancelTurnResponse = {
     turn_id?: string | null;
 };
 
+export type CarriedPage = {
+    destination_path: string;
+    /**
+     * The page's identifier as the source wrote it, when it has one.
+     */
+    identifier?: string | null;
+    /**
+     * Set only when the identifier collided with the destination's and was
+     * renamed.
+     */
+    renamed_identifier?: string | null;
+    source_path: string;
+};
+
 export type ChangeKind = 'ingest' | 'link' | 'flag' | 'query' | 'lint' | 'restore' | 'manual';
 
 export type ChatRequest = {
@@ -1176,12 +1190,15 @@ export type LintReport = {
     contradictions: Array<string>;
     diagnostics?: Diagnostics;
     /**
-     * `[[Target]]` references in source pages that have no corresponding page
-     * under `knowledge/`.
+     * Link targets written in source pages that name no page under
+     * `knowledge/` — again over all four grammars, so a typed base's `edges:`
+     * citations are read.
      */
     missing_concept_pages: Array<string>;
     /**
-     * Pages with no inbound `[[wiki-link]]` references from any other page.
+     * Pages nothing else in the bundle links to, in any of the four grammars
+     * (`graph::bundle_links`) — not the legacy bracket form alone, which is
+     * what made this list every page of a typed base.
      */
     orphans: Array<string>;
     /**
@@ -1577,6 +1594,96 @@ export type MemoryStoreInventory = {
      */
     path: string;
     scope: MemoryScope;
+};
+
+export type MergeBody = {
+    /**
+     * Report what would happen and write nothing. Defaults to **true**, so a
+     * client that forgets the field gets the preview rather than the merge.
+     * This is the least reversible operation in the subsystem and
+     * `POST /restore` restores a whole tree, not one page.
+     */
+    dry_run?: boolean;
+    /**
+     * The knowledge base to merge FROM. It is only read and is left unchanged.
+     */
+    source_kb_id: string;
+};
+
+/**
+ * What the merge did, or — for a dry run — what it *would* do.
+ *
+ * The dry run and the merge produce this from the **same** [`plan`] call, so
+ * the preview cannot describe a different operation from the one that runs.
+ */
+export type MergeReport = {
+    /**
+     * Empty when the destination stayed canonical. A non-empty list aborts the
+     * transaction, so it is only ever populated on a failure path or a dry run.
+     */
+    canonical_violations: Array<string>;
+    /**
+     * The squash commit on the destination's `main`, or `None` for a dry run.
+     */
+    commit_sha?: string | null;
+    destination_kb_id: string;
+    /**
+     * The destination's page count before the merge — the size of the set
+     * [`verify_snapshot`] checked.
+     */
+    destination_pages_before: number;
+    /**
+     * The destination's tier after the merge, as the word the store holds.
+     */
+    destination_tier: string;
+    /**
+     * True when nothing was written.
+     */
+    dry_run: boolean;
+    /**
+     * Identifier collisions. The **incoming** side was renamed; the
+     * destination's identifier is untouched.
+     */
+    identifiers_renamed: Array<Rename>;
+    /**
+     * Institutions added to the destination by the fold (DR-26).
+     */
+    owners_added: Array<string>;
+    pages_carried: Array<CarriedPage>;
+    /**
+     * Page-path collisions, as logical paths.
+     */
+    paths_renamed: Array<Rename>;
+    /**
+     * Raw sources copied into the destination, `from` → `to` (equal when there
+     * was no collision).
+     */
+    raw_copied: Array<Rename>;
+    /**
+     * Raw sources already present in the destination, matched on the sha256 in
+     * `raw/<id>/meta.yaml`. Not copied; every reference to them is repointed at
+     * the destination's copy.
+     */
+    raw_deduped: Array<RawDedup>;
+    /**
+     * How many references were repointed — edge `object`, edge
+     * `primary_source`, `raw_source` paths and body links.
+     */
+    references_rewritten: number;
+    /**
+     * How many references the rewriter **looked at**, of the same four kinds.
+     *
+     * The denominator, and it is here because its absence hid a corruption. A
+     * preview that says only "1 identifier renamed, 3 references rewritten"
+     * reads as complete, and read exactly that way while plain `[[Name]]`
+     * links went through a map that could not rename them — silently
+     * retargeted at the destination's own page of that name. `seen -
+     * rewritten` is what the merge saw and deliberately left alone, so a
+     * reader can ask why a number is large before approving the least
+     * reversible operation in the subsystem.
+     */
+    references_seen?: number;
+    source_kb_id: string;
 };
 
 /**
@@ -2124,6 +2231,18 @@ export type RawAudioContent = {
     mimeType: string;
 };
 
+export type RawDedup = {
+    /**
+     * The destination raw-source id it was found to be byte-identical to.
+     */
+    matched: string;
+    sha256: string;
+    /**
+     * The raw-source id in the source base.
+     */
+    source_id: string;
+};
+
 export type RawEmbeddedResource = {
     _meta?: {
         [key: string]: unknown;
@@ -2199,6 +2318,11 @@ export type RedactedThinkingContent = {
 export type RemoveExtensionRequest = {
     name: string;
     session_id: string;
+};
+
+export type Rename = {
+    from: string;
+    to: string;
 };
 
 export type ResetCategory = 'applications' | 'knowledge' | 'skills' | 'extensions' | 'schedules' | 'workflows' | 'history';
@@ -4878,6 +5002,46 @@ export type GetLocationResponses = {
 };
 
 export type GetLocationResponse = GetLocationResponses[keyof GetLocationResponses];
+
+export type MergeBasesData = {
+    body: MergeBody;
+    path: {
+        /**
+         * Destination knowledge base ID — canonical; never modified
+         */
+        id: string;
+    };
+    query?: never;
+    url: '/knowledge/bases/{id}/merge';
+};
+
+export type MergeBasesErrors = {
+    /**
+     * Bad request
+     */
+    400: unknown;
+    /**
+     * Refused: merging is the user's decision and the request carried no proof it came from them, or this daemon holds no user-action key at all (body = plain text)
+     */
+    403: unknown;
+    /**
+     * Not found
+     */
+    404: unknown;
+    /**
+     * Internal error
+     */
+    500: unknown;
+};
+
+export type MergeBasesResponses = {
+    /**
+     * What the merge did, or (dry run) would do
+     */
+    200: MergeReport;
+};
+
+export type MergeBasesResponse = MergeBasesResponses[keyof MergeBasesResponses];
 
 export type GetPageBodyData = {
     body?: never;

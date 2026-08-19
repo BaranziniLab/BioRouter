@@ -625,7 +625,7 @@ impl KnowledgeService {
     ///
     /// For callers OUTSIDE this module. Inside it — `create_base`,
     /// `import_brkb`, `delete_base` — the lock is already held, so those call
-    /// `tier::*_unlocked` directly (through [`Self::stamp_new_base_unlocked`],
+    /// `tier::*_unlocked` directly (through [`Self::stamp_base_unlocked`],
     /// which is this function's unlocked twin). Calling this from there
     /// deadlocks.
     ///
@@ -650,8 +650,8 @@ impl KnowledgeService {
         crate::knowledge::tier::raise_affiliation_unlocked(&self.root, kb_id, caller)
     }
 
-    /// Stamp a brand-new base on **both** of issue #56's axes, inside a root
-    /// lock the caller already holds.
+    /// Stamp a base on **both** of issue #56's axes from an explicit owner set,
+    /// inside a root lock the caller already holds.
     ///
     /// ⚠ **The pairing is this function, not a convention.** `create_base_as`
     /// and `import_brkb` are the two tools whose subject id is minted by the
@@ -663,7 +663,17 @@ impl KnowledgeService {
     /// laundered by `kb_export` + `kb_import`, both endpoints Private, no gate
     /// crossed. One function that does both is what stops that from being
     /// re-introduced by someone reading only one of the call sites.
-    fn stamp_new_base_unlocked(
+    ///
+    /// ⚠ **It was named `stamp_new_base_unlocked` and it is not only for new
+    /// bases.** [`Self::absorb_classification`] is the third caller: a merge
+    /// destination already exists, and what it needs is exactly this — a raise
+    /// on the tier axis and a UNION on the owner axis, from an owner set the
+    /// call supplies rather than derives from one caller.
+    /// [`Self::raise_tier_and_affiliation`] cannot serve it, because the owners
+    /// being folded in are the **source base's** and there is no single caller
+    /// to derive them from — the same reason `tier::add_owners_unlocked` exists
+    /// beside `tier::raise_affiliation_unlocked`.
+    fn stamp_base_unlocked(
         &self,
         kb_id: &str,
         caller_is_private: bool,
@@ -869,7 +879,7 @@ impl KnowledgeService {
         // so the `_unlocked` twin is the one that must be called — and in the
         // SAME transaction as the directory, so there is no window in which a
         // private session's new base reads PUBLIC.
-        self.stamp_new_base_unlocked(
+        self.stamp_base_unlocked(
             id,
             caller_is_private,
             crate::knowledge::affiliation::contributed_owners(caller_affiliation),
@@ -965,12 +975,224 @@ impl KnowledgeService {
         //
         // The floor is a disjunction, never the marker alone: a hostile archive
         // claiming "public" must not lower a private importer's base.
-        self.stamp_new_base_unlocked(
+        self.stamp_base_unlocked(
             &new_id,
             provenance_private.unwrap_or(false) || importer_is_private,
             owners,
         )?;
         Ok(new_id)
+    }
+
+    /// Merge `source_kb_id` **into** `destination_kb_id`. The deterministic half
+    /// — see [`crate::knowledge::merge`] for what that means and what it
+    /// deliberately leaves to a later macro.
+    ///
+    /// `dry_run` reports what would move, be renamed and be deduped, and writes
+    /// nothing. A merge is the least reversible operation in this subsystem and
+    /// `kb_restore_state` restores a whole tree, so a preview is not a
+    /// convenience.
+    ///
+    /// # Why this is a privacy write choke point (DR-17)
+    ///
+    /// A merge is a content-touching write, and it is the one write in the tree
+    /// whose content comes from **another base**. It joins the four existing
+    /// choke points rather than inheriting one:
+    ///
+    /// * The **barrier** runs first, over BOTH ids
+    ///   ([`crate::knowledge::merge::MergeAuthority::assert_may_merge`]). You
+    ///   cannot merge a base you cannot read into a base you cannot write — and
+    ///   the report itself quotes page paths and identifiers back to the caller,
+    ///   so a model barred from reading the source must be barred from previewing
+    ///   it too.
+    /// * The **fold** runs second, before a byte is written: the destination
+    ///   takes `max` over the tier axis and the UNION over owner institutions,
+    ///   which is exactly the rule
+    ///   [`Self::import_brkb`] already applies to an incoming archive. Merging
+    ///   base A into base B is the same transfer with the archive step removed,
+    ///   so it takes the same rule rather than a second one.
+    ///
+    /// A merge can therefore **raise** either axis and can never lower one: the
+    /// fold goes through the monotone ratchet, and the source base is only read,
+    /// so there is nothing of its own to lower.
+    ///
+    /// ⚠ **The fold precedes the write, and the residual is the accepted
+    /// direction.** A merge that fails after the fold leaves the destination
+    /// raised with no content added — visible to the user, and reversible with
+    /// the tier control. The other order would leave a base holding a private
+    /// source's content at PUBLIC if the process died mid-commit, which is
+    /// silent. It is the same ordering, for the same reason, as the ratchet in
+    /// `KnowledgeServer::call_tool`.
+    pub async fn merge_bases(
+        &self,
+        destination_kb_id: &str,
+        source_kb_id: &str,
+        authority: &crate::knowledge::merge::MergeAuthority<'_>,
+        dry_run: bool,
+    ) -> Result<crate::knowledge::merge::MergeReport> {
+        paths::validate_kb_id(destination_kb_id)?;
+        paths::validate_kb_id(source_kb_id)?;
+        anyhow::ensure!(
+            destination_kb_id != source_kb_id,
+            "cannot merge '{destination_kb_id}' into itself"
+        );
+        let dst_root = paths::kb_root(&self.root, destination_kb_id);
+        let src_root = paths::kb_root(&self.root, source_kb_id);
+        anyhow::ensure!(dst_root.exists(), "kb '{destination_kb_id}' not found");
+        anyhow::ensure!(src_root.exists(), "kb '{source_kb_id}' not found");
+
+        // FIRST, and over both ids.
+        authority.assert_may_merge(&self.root, destination_kb_id, source_kb_id)?;
+
+        // Both locks, in id order. A merge is the only operation that holds two
+        // KB locks at once, so it is the only one that can deadlock against a
+        // concurrent merge in the other direction; a total order on the ids is
+        // what stops that.
+        let (first, second) = if destination_kb_id < source_kb_id {
+            (destination_kb_id, source_kb_id)
+        } else {
+            (source_kb_id, destination_kb_id)
+        };
+        let _first = self.lock_kb(first).await?;
+        let _second = self.lock_kb(second).await?;
+
+        let plan = crate::knowledge::merge::plan(&dst_root, &src_root, source_kb_id)?;
+        if dry_run {
+            let (tier, owners) =
+                self.projected_classification(destination_kb_id, source_kb_id, authority)?;
+            return Ok(crate::knowledge::merge::report(
+                &plan,
+                destination_kb_id,
+                true,
+                &tier,
+                owners,
+                None,
+            ));
+        }
+
+        let (tier, owners_added) =
+            self.absorb_classification(destination_kb_id, source_kb_id, authority)?;
+        let sha = crate::knowledge::merge::apply(&dst_root, &src_root, &plan)?;
+        self.rebuild_graph_cache(destination_kb_id)?;
+        Ok(crate::knowledge::merge::report(
+            &plan,
+            destination_kb_id,
+            false,
+            &tier,
+            owners_added,
+            Some(sha),
+        ))
+    }
+
+    /// Fold the source base's classification into the destination's: `max` on
+    /// the tier axis, UNION on the owner axis. Returns the destination's tier
+    /// word afterwards and the owners the fold added.
+    ///
+    /// ⚠ It routes through [`Self::stamp_base_unlocked`] rather than calling
+    /// `tier::raise_unlocked` itself, and DR-20 says why: the two ratchets must
+    /// be reached from the same line of the same function, or a future edit
+    /// raises one axis and not the other.
+    fn absorb_classification(
+        &self,
+        destination_kb_id: &str,
+        source_kb_id: &str,
+        authority: &crate::knowledge::merge::MergeAuthority<'_>,
+    ) -> Result<(String, Vec<String>)> {
+        let _lock = self.lock_root()?;
+        let source_owners = self.owners_or_bail(source_kb_id)?;
+        let before = self.owners_or_bail(destination_kb_id)?;
+        // The caller's own institution rides along with the source's. The MCP
+        // seam already records it for `kb_merge` (it is in `KB_RATCHETING_TOOLS`),
+        // so this is idempotent there; it is what covers every other caller.
+        let mut owners = source_owners;
+        owners.extend(crate::knowledge::affiliation::contributed_owners(
+            &authority.caller_affiliation(),
+        ));
+        self.stamp_base_unlocked(
+            destination_kb_id,
+            crate::knowledge::tier::is_private(&self.root, source_kb_id)
+                || authority.caller_is_private(),
+            owners,
+        )?;
+        // Read back rather than predicted. `add_owners_unlocked` is a no-op with
+        // the master toggle off (DR-15), so a report built from what was *asked
+        // for* would tell the user their base gained owners it did not.
+        let after = self.owners_or_bail(destination_kb_id)?;
+        Ok((
+            self.tier_word(destination_kb_id),
+            after.difference(&before).cloned().collect(),
+        ))
+    }
+
+    /// What [`Self::absorb_classification`] *would* land on, without writing —
+    /// the dry run's answer to "what will this do to my base's privacy?", which
+    /// is the question a preview of a merge most needs to answer.
+    /// ⚠ It re-derives the ratchet's arithmetic rather than sharing it, which is
+    /// the one duplication in this feature and is bounded on purpose: the
+    /// alternative is applying the fold and rolling it back, and a ratchet with a
+    /// rollback path is a ratchet with a lowering path. What keeps the two in
+    /// step is a test that runs a dry run and the real merge over the same pair
+    /// and asserts they agree.
+    ///
+    /// DR-15's master toggle is read here for the same reason
+    /// `tier::raise_unlocked` reads it: with the feature off nothing ratchets, so
+    /// a preview promising a raise that will not happen would be worse than no
+    /// preview.
+    fn projected_classification(
+        &self,
+        destination_kb_id: &str,
+        source_kb_id: &str,
+        authority: &crate::knowledge::merge::MergeAuthority<'_>,
+    ) -> Result<(String, Vec<String>)> {
+        let mut incoming = self.owners_or_bail(source_kb_id)?;
+        incoming.extend(crate::knowledge::affiliation::contributed_owners(
+            &authority.caller_affiliation(),
+        ));
+        let before = self.owners_or_bail(destination_kb_id)?;
+        // Through `tier`'s own spelling, never a second read of the atomic — see
+        // `tier::ratchets_are_live`, which exists for this caller.
+        let enabled = crate::knowledge::tier::ratchets_are_live();
+        let raises = enabled
+            && (crate::knowledge::tier::is_private(&self.root, source_kb_id)
+                || authority.caller_is_private());
+        let private = crate::knowledge::tier::is_private(&self.root, destination_kb_id) || raises;
+        let word = if private {
+            crate::knowledge::tier::PRIVATE
+        } else {
+            crate::knowledge::tier::PUBLIC
+        };
+        let added = if enabled {
+            incoming.difference(&before).cloned().collect()
+        } else {
+            Vec::new()
+        };
+        Ok((word.to_string(), added))
+    }
+
+    /// A base's owner set, refusing when the store cannot say.
+    ///
+    /// `Unknown` — an unreadable classification store — is the one case with
+    /// nothing honest to do: a merge would fold an owner set nobody can read
+    /// into another base and the result would claim to belong to whoever the
+    /// destination already named. `export_brkb` refuses the same case for the
+    /// same reason, and the same machine cannot write any knowledge base either.
+    fn owners_or_bail(&self, kb_id: &str) -> Result<std::collections::BTreeSet<String>> {
+        match crate::knowledge::tier::affiliation(&self.root, kb_id).owners() {
+            Some(owners) => Ok(owners.clone()),
+            None => anyhow::bail!(
+                "cannot merge with '{kb_id}': the knowledge-base classification store is \
+                 unreadable, so whose content it holds cannot be established and the merge \
+                 would silently drop an institution's claim. Repair or remove {}",
+                crate::knowledge::paths::kb_tiers_path(&self.root).display()
+            ),
+        }
+    }
+
+    fn tier_word(&self, kb_id: &str) -> String {
+        if crate::knowledge::tier::is_private(&self.root, kb_id) {
+            crate::knowledge::tier::PRIVATE.to_string()
+        } else {
+            crate::knowledge::tier::PUBLIC.to_string()
+        }
     }
 
     pub fn list_bases(&self) -> Result<Vec<Manifest>> {
@@ -2388,12 +2610,20 @@ mod tests {
     /// could import the archive and read it, both endpoints Private, no gate
     /// crossed.
     ///
+    /// ⚠ **The count stayed at 2 when the merge landed, and that is the shape a
+    /// new choke point should have.** `merge_bases` is a fifth privacy write
+    /// choke point (DR-17) and folds the SOURCE base's classification into the
+    /// destination — a raise on the tier axis, a union on the owner axis — yet
+    /// it adds no site here, because `absorb_classification` routes through
+    /// `stamp_base_unlocked`. That is DR-20's instruction applied rather than
+    /// its number bumped.
+    ///
     /// ⚠ **A tripwire over one spelling, not a proof** — the same shape as
     /// `tier_user::tests::exactly_one_writer_outside_the_ratchet_saves_the_tier_store`.
     /// What it reliably catches is the realistic case: a third ratchet path
     /// added here that stamps the tier and forgets the third axis. The two
     /// permitted sites are [`KnowledgeService::raise_tier_and_affiliation`] (for
-    /// a base that already exists) and [`KnowledgeService::stamp_new_base_unlocked`]
+    /// a base that already exists) and [`KnowledgeService::stamp_base_unlocked`]
     /// (for one this call is minting); each does both raises itself, so there is
     /// no third function that could do one.
     #[test]
@@ -2413,7 +2643,7 @@ mod tests {
             2,
             "the tier ratchet is called {} times in service.rs, not 2. Every \
              production raise must be paired with the affiliation raise in the \
-             same function: use `stamp_new_base_unlocked` for a base this call \
+             same function: use `stamp_base_unlocked` for a base this call \
              is minting, or `raise_tier_and_affiliation` for one that already \
              exists. Sites found: {sites:#?}",
             sites.len()
@@ -2428,7 +2658,7 @@ mod tests {
             "the affiliation ratchet is reached from somewhere new. It must be \
              reached from exactly the two functions the tier ratchet is, and \
              from the same line of each: `raise_tier_and_affiliation` and \
-             `stamp_new_base_unlocked`."
+             `stamp_base_unlocked`."
         );
     }
 
