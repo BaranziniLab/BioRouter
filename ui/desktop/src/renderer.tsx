@@ -464,6 +464,9 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       // rejected rather than degrading. Empty list = "nothing to report", which is
       // the honest answer for a server the browser cannot probe.
       checkDependencies: async () => [],
+      // No background extension updater in browser mode; the app shell listens
+      // for this unconditionally, so the channel must at least exist.
+      onExtensionUpdateEvent: () => {},
       dependencyEnvironment: async () => ({ platform: 'linux' }),
       launchApp: async (url: string) => window.open(url, '_blank', 'noopener,noreferrer'),
     };
