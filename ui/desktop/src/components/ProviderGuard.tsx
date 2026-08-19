@@ -8,6 +8,7 @@ import { toastService } from '../toasts';
 import InstitutionalSetupCard from './onboarding/InstitutionalSetupCard';
 import LlamaServerInlineCard from './onboarding/LlamaServerInlineCard';
 import OllamaInlineCard from './onboarding/OllamaInlineCard';
+import CodingAgentInlineCard from './onboarding/CodingAgentInlineCard';
 import CommercialSetupCard from './onboarding/CommercialSetupCard';
 import type { DetectedProviderSetup } from './onboarding/CommercialSetupCard';
 import { SwitchModelModal } from './settings/models/subcomponents/SwitchModelModal';
@@ -63,7 +64,14 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
     setShowSwitchModelModal(true);
   };
 
-  const handleInstitutionalSuccess = (provider: string) => {
+  /**
+   * A card that did its own config writes (including `BIOROUTER_PROVIDER`) and has
+   * nothing left but model selection. Shared by the institutional card and the
+   * coding-agent card — both write their keys themselves and hand back only the
+   * provider id, unlike `CommercialSetupCard` (whose key is a secret this component
+   * persists) and the two local cards (which pick their own model).
+   */
+  const handleProviderReady = (provider: string) => {
     setSwitchModelProvider(provider);
     setShowSwitchModelModal(true);
   };
@@ -177,9 +185,13 @@ export default function ProviderGuard({ didSelectProvider, children }: ProviderG
             <LlamaServerInlineCard onSuccess={handleLlamaServerComplete} />
             <OllamaInlineCard onSuccess={handleOllamaComplete} />
             <InstitutionalSetupCard
-              onSuccess={handleInstitutionalSuccess}
+              onSuccess={handleProviderReady}
               onStartTesting={() => setUserInActiveSetup(true)}
             />
+            {/* Above CommercialSetupCard on purpose: a user who already pays for a
+                coding-agent plan needs no key at all, so the cheaper path is offered
+                before the one that asks them to paste a secret. */}
+            <CodingAgentInlineCard onSuccess={handleProviderReady} />
             <CommercialSetupCard
               onSuccess={handleCommercialSuccess}
               onStartTesting={() => setUserInActiveSetup(true)}

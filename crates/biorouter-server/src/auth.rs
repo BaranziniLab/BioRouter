@@ -184,6 +184,26 @@ fn is_public_app_get(method: &axum::http::Method, path: &str) -> bool {
 /// `check_token` so it is unit-testable — a security allowlist that no test
 /// can reach is one refactor away from admitting `/ui/workspaceX`.
 fn is_unauthenticated_path(path: &str) -> bool {
+    // The coding-agent tool bridge. A `claude` or `codex` child calls this to use
+    // Biorouter's own tools, and it cannot send the secret key: the child's
+    // environment is scrubbed of it (issue #57), and Codex sends no Authorization
+    // header on MCP requests at all. The capability is the 32-hex single-turn
+    // nonce in the path, which `routes::tool_bridge` resolves against a grant that
+    // its lease revokes when the turn ends.
+    //
+    // ⚠ This has to be an exemption rather than "the handler answers 401 itself".
+    // `check_token` calls `record_failed_attempt` for every request without the
+    // secret, and twenty of those inside a minute trips `check_rate_limit` — which
+    // is keyed on the client IP, and the child's IP is 127.0.0.1, the same one the
+    // desktop app uses. So without this the bridge never worked AND a couple of
+    // coding-agent turns would 429 the user out of their own app for a minute.
+    // Exactly one segment after the prefix, for the same reason the workspace
+    // socket below is an exact match: a bare `starts_with` would exempt every
+    // future route under this prefix, and the daemon has no other authentication.
+    if let Some(rest) = path.strip_prefix("/tool_bridge/") {
+        return !rest.is_empty() && !rest.contains('/');
+    }
+
     matches!(
         path,
         "/status"
@@ -662,6 +682,30 @@ mod tests {
         // …and nothing else is.
         assert!(!is_unauthenticated_path("/reply"));
         assert!(!is_unauthenticated_path("/sessions"));
+    }
+
+    /// The coding-agent tool bridge is exempt, and only its one nonce segment is.
+    ///
+    /// Why it must be exempt at all, rather than letting the handler answer for
+    /// itself: `check_token` calls `record_failed_attempt` for every request that
+    /// arrives without the secret, and twenty inside a minute trips
+    /// `check_rate_limit`, which is keyed on the client IP. The child's IP is
+    /// 127.0.0.1 — the same one the desktop app uses — so a couple of
+    /// coding-agent turns would 429 the user out of their own app. This was found
+    /// by running a real turn against a real daemon; the route's own tests served
+    /// it on a bare Router with no middleware and so could not see it.
+    #[test]
+    fn the_tool_bridge_is_exempt_and_only_its_nonce_segment_is() {
+        assert!(is_unauthenticated_path(
+            "/tool_bridge/21be84521e4745fbb1db5ff4e5d789a3"
+        ));
+        // One segment only. Anything deeper is a different route and gets the
+        // daemon's ordinary authentication.
+        assert!(!is_unauthenticated_path("/tool_bridge/abc/admin"));
+        assert!(!is_unauthenticated_path("/tool_bridge/"));
+        assert!(!is_unauthenticated_path("/tool_bridge"));
+        // A prefix that merely looks similar is not exempt.
+        assert!(!is_unauthenticated_path("/tool_bridgeX/abc"));
     }
 
     #[test]

@@ -60,6 +60,7 @@ use crate::permission::PermissionConfirmation;
 use crate::privacy::refusal::PrivacyRefusal;
 use crate::privacy::{ProviderTier, SessionClassification};
 use crate::providers::base::Provider;
+use crate::providers::coding_agent::bridge as coding_agent_bridge;
 use crate::providers::errors::ProviderError;
 use crate::scheduler_trait::SchedulerTrait;
 use crate::security::security_inspector::SecurityInspector;
@@ -2080,7 +2081,13 @@ pub struct Agent {
     pub(super) tool_result_rx: ToolResultReceiver,
 
     pub(super) retry_manager: RetryManager,
-    pub(super) tool_inspection_manager: ToolInspectionManager,
+    /// `Arc` so a bridged coding agent's tool call can be inspected by the very
+    /// same inspector stack the reply loop uses. The manager is built once in
+    /// `create_tool_inspection_manager` and only read afterwards, so sharing it
+    /// costs nothing — and the alternative (giving the bridge a dispatch path with
+    /// no inspectors) would mean a child agent's tool calls skipped PreToolUse
+    /// hooks, the sensitive-operation checks and the permission mode entirely.
+    pub(super) tool_inspection_manager: Arc<ToolInspectionManager>,
     pub(super) hooks_manager: Arc<crate::hooks::HooksManager>,
     /// Active `/goal` conditions per session (see [`crate::agents::goal`]).
     pub(super) goals: crate::agents::goal::GoalRegistry,
@@ -2700,13 +2707,13 @@ impl Agent {
             tool_result_tx: tool_tx,
             tool_result_rx: Arc::new(Mutex::new(tool_rx)),
             retry_manager: RetryManager::new(),
-            tool_inspection_manager: Self::create_tool_inspection_manager(
+            tool_inspection_manager: Arc::new(Self::create_tool_inspection_manager(
                 permission_manager,
                 Arc::clone(&hooks_manager),
                 Arc::clone(&managed),
                 Arc::clone(&tool_risks),
                 provider.clone(),
-            ),
+            )),
             hooks_manager,
             goals: Default::default(),
             fallback_scheduler: tokio::sync::OnceCell::new(),
@@ -4783,6 +4790,79 @@ impl Agent {
                 self.add_final_output_tool(response).await;
             }
         }
+    }
+
+    /// Establish this turn's tool bridge, when the bound provider is one that needs
+    /// one.
+    ///
+    /// Only `claude_code` and `codex` do: they run their own agent loop in a child
+    /// process, so the only way they can reach Biorouter's tools is by calling back
+    /// in over MCP. Every other provider receives its tools in the request and
+    /// needs no grant, and issuing one anyway would leave a live capability on
+    /// every turn in the process.
+    ///
+    /// Returns `None` when there is no bridge to offer — a CLI process with no HTTP
+    /// server has nothing for a child to connect to. The providers read that as
+    /// "run with no tools", which is the right degradation: an answer without tools
+    /// beats a failed turn.
+    ///
+    /// The returned lease revokes the grant when dropped, so it is bound in the
+    /// caller for the duration of the provider call and no longer.
+    async fn issue_tool_bridge(
+        &self,
+        session: &Session,
+        conversation: &Conversation,
+        tools: &[Tool],
+    ) -> Option<coding_agent_bridge::BridgeLease> {
+        let name = {
+            let guard = self.provider.lock().await;
+            guard.as_ref().map(|p| p.get_name().to_string())?
+        };
+        if !coding_agent_bridge::provider_uses_bridge(&name) {
+            return None;
+        }
+
+        // Sampled once, here, and carried in the grant. A bridged call is a call,
+        // and `CallCapability` exists so a call's privacy capability is fixed
+        // before it runs rather than re-read while it runs.
+        let capability = crate::privacy::CallCapability::sample(&self.provider).await;
+
+        // Advertise only what the bridge can actually execute.
+        //
+        // `tools` is not just the extension surface — `prepare_tools` deliberately
+        // includes the platform, frontend, subagent and final-output tools so the
+        // risk registry grades them. Those are dispatched by the branches at the
+        // top of `dispatch_tool_call`, NOT by the `ExtensionManager` the grant
+        // holds, so offering them over the bridge would advertise tools that then
+        // fail to resolve — the child would burn a turn calling something that was
+        // never going to work, and the failure would look like a broken tool
+        // rather than a missing one.
+        //
+        // Filtering here rather than in the grant because `is_frontend_tool` is
+        // per-agent state the grant has no access to.
+        let mut bridged = Vec::with_capacity(tools.len());
+        for tool in tools {
+            let name = tool.name.as_ref();
+            let dispatched_elsewhere = is_spawn_tool_call(name)
+                || name == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
+                || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
+                || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
+                || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+                || self.is_frontend_tool(name).await;
+            if !dispatched_elsewhere {
+                bridged.push(tool.clone());
+            }
+        }
+
+        coding_agent_bridge::issue(coding_agent_bridge::BridgeGrant::new(
+            session.clone(),
+            self.config.biorouter_mode,
+            Arc::clone(&self.extension_manager),
+            Arc::clone(&self.tool_inspection_manager),
+            capability,
+            bridged,
+            conversation.clone(),
+        ))
     }
 
     /// Dispatch a single tool call to the appropriate client
@@ -6932,13 +7012,32 @@ impl Agent {
 
                 let iteration_provider = Arc::clone(&reply_provider);
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
-                let mut stream = Self::stream_response_from_provider(
-                    iteration_provider,
-                    &system_prompt,
-                    conversation_with_moim.messages(),
-                    &tools,
-                    &toolshim_tools,
-                ).await?;
+                // A coding-agent provider drives a child process that has to call
+                // back in to use Biorouter's tools. The lease lives exactly as long
+                // as the provider call: it is bound here and dropped at the end of
+                // this iteration, and dropping it revokes the grant.
+                //
+                // The URL travels in a task-local because the `Provider` trait has
+                // no session in scope — `complete_with_model` receives a system
+                // prompt, messages and tools and nothing else. This works because
+                // those providers are non-streaming, so the whole child turn happens
+                // inside the awaited call and therefore inside this scope.
+                let bridge_lease = self
+                    .issue_tool_bridge(&session, &conversation_with_moim, &tools)
+                    .await;
+                let bridge_url = bridge_lease.as_ref().map(|l| l.url().to_string());
+                let mut stream = coding_agent_bridge::ACTIVE_BRIDGE_URL
+                    .scope(
+                        bridge_url,
+                        Self::stream_response_from_provider(
+                            iteration_provider,
+                            &system_prompt,
+                            conversation_with_moim.messages(),
+                            &tools,
+                            &toolshim_tools,
+                        ),
+                    )
+                    .await?;
 
                 let mut no_tools_called = true;
                 let mut messages_to_add = Conversation::default();

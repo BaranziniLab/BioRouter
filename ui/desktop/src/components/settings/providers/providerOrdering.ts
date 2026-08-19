@@ -12,6 +12,8 @@ const PRIORITY_ORDER: Record<string, number> = {
   google: 4,
   zai: 5,
   xiaomi_mimo: 6,
+  claude_code: 7,
+  codex: 8,
 };
 
 export type ProviderGroupKey = 'institutional' | 'local' | 'commercial';
@@ -92,12 +94,17 @@ function classifyProvider(provider: ProviderDetails): ProviderGroupKey {
 }
 
 /**
- * Every provider the daemon serves is shown. There used to be a hide-list here
- * for `claude-code`, `codex` and `cursor-agent` — soft-disabled shims that drove
- * another vendor's installed CLI as a subprocess. Those modules were removed, so
- * the daemon no longer serves them and there is nothing left to hide. A new
- * entry in this grid is a decision made where the provider is registered, not a
- * name recognised here.
+ * Every provider the daemon serves is shown. A hide-list used to live here for
+ * `claude-code`, `codex` and `cursor-agent` — soft-disabled shims that drove
+ * another vendor's installed CLI as a subprocess — and it is worth being precise
+ * about why it has not come back now that two of them have. `claude_code` and
+ * `codex` are registered providers the daemon serves on purpose, so a filter
+ * here would mean this grid silently contradicting the daemon it renders. They
+ * reach a section the same way every other provider does, from the
+ * `metadata.tier` and `runs_locally` the daemon sends over the wire, and they
+ * sort inside it from `PRIORITY_ORDER` above — nothing in this module
+ * recognises their names. A new entry in this grid is a decision made where the
+ * provider is registered, and so is removing one.
  */
 export function getOrderedProviderGroups(providers: ProviderDetails[]): OrderedProviderGroup[] {
   const grouped: Record<ProviderGroupKey, ProviderDetails[]> = {

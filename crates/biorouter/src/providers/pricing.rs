@@ -237,16 +237,20 @@ fn blocks_fallback_pricing(provider: &str) -> bool {
             | "ollama"
             | "llamacpp"
             | "github_copilot"
-            // The last four are providers Biorouter no longer has. They stay
-            // because this function is keyed on a provider-name *string*, and
-            // `session_manager::resolve_grain_pricing` feeds it `row.provider`
-            // straight out of stored usage rows — a row written while these
-            // were wired up still says `claude_code`. Drop the entry and
-            // `canonical_model_pricing` invents a price from the catalog for
-            // it, but these billed through the user's own CLI subscription,
-            // so any figure here is fabricated. Same reason as the guessed
-            // Claude tier below: a made-up rate makes a partial report look
-            // exact and can misstate a budget.
+            // The last four are the CLI-agent providers, and they are here for
+            // two different reasons. `codex` and `claude_code` are live
+            // providers that are deliberately unpriced: they drive the user's
+            // own installed CLI on the user's own subscription, so Biorouter
+            // never sees a metered rate and any per-token figure would be
+            // fabricated. `gemini_cli` and `cursor_agent` no longer exist, and
+            // stay only because this function is keyed on a provider-name
+            // *string*: `session_manager::resolve_grain_pricing` feeds it
+            // `row.provider` straight out of stored usage rows, so a row
+            // written while those two were wired up still says `gemini_cli`.
+            // Either way, drop the entry and `canonical_model_pricing` invents
+            // a price from the catalog for a run that billed a subscription.
+            // Same reason as the guessed Claude tier below: a made-up rate
+            // makes a partial report look exact and can misstate a budget.
             | "codex"
             | "claude_code"
             | "gemini_cli"
@@ -774,15 +778,17 @@ mod tests {
         assert!(model_cost_with_cache("ollama", "llama3", 10, 10, 5, 5).is_none());
     }
 
-    /// A usage row written while the CLI-agent providers existed still carries
-    /// `claude_code` / `codex` / `gemini_cli` / `cursor_agent` in its
-    /// `provider` column, and `session_manager::resolve_grain_pricing` reads
-    /// that column straight back. Those providers billed through the user's
-    /// own CLI subscription, so every one of them must stay unpriced on every
-    /// entry point — including `estimate_cost_usd`, which reaches the canonical
-    /// catalog on its own rather than through `blocks_fallback_pricing`.
+    /// Two of these are live providers (`claude_code`, `codex`) and two are
+    /// historical (`gemini_cli`, `cursor_agent`, whose names survive only in
+    /// stored usage rows — `session_manager::resolve_grain_pricing` reads
+    /// `row.provider` straight back out of the `provider` column). In both
+    /// cases a per-token price would be fabricated, because the run billed the
+    /// user's own CLI subscription rather than a metered API. So all four must
+    /// stay unpriced on every entry point — including `estimate_cost_usd`,
+    /// which reaches the canonical catalog on its own rather than through
+    /// `blocks_fallback_pricing`.
     #[test]
-    fn a_stored_row_from_a_removed_cli_agent_provider_is_never_priced() {
+    fn a_cli_agent_provider_is_never_priced_on_any_entry_point() {
         for (provider, model) in [
             ("claude_code", "claude-sonnet-4-20250514"),
             ("codex", "gpt-5.5"),
@@ -800,6 +806,33 @@ mod tests {
             assert!(
                 estimate_cost_usd(provider, model, 1_000_000, 1_000_000).is_none(),
                 "{provider}/{model} must not be given an estimated cost"
+            );
+        }
+
+        // The two live providers are registered, so the async path really does
+        // hand `resolve_pricing_with_metadata` their `ProviderMetadata` — the
+        // `None` case above does not cover the path production takes. The
+        // metadata is built inline rather than pulled from the provider modules
+        // so this test stays a test of *pricing*: it must fail if the block is
+        // dropped, whatever those modules happen to declare, and priced models
+        // here are the hostile input (a real provider listing a cost is exactly
+        // the regression to catch).
+        for (provider, model) in [
+            ("claude_code", "claude-sonnet-4-20250514"),
+            ("codex", "gpt-5.5"),
+        ] {
+            let metadata = ProviderMetadata::with_models(
+                provider,
+                provider,
+                "test",
+                model,
+                vec![ModelInfo::with_cost(model, 200_000, 0.000_001, 0.000_005)],
+                "",
+                vec![],
+            );
+            assert!(
+                resolve_pricing_with_metadata(provider, model, Some(&metadata)).is_none(),
+                "{provider}/{model} must not be priced from provider metadata"
             );
         }
     }

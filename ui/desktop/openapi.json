@@ -763,6 +763,26 @@
         }
       }
     },
+    "/coding_agents/status": {
+      "get": {
+        "tags": [
+          "super::routes::coding_agents"
+        ],
+        "operationId": "coding_agents_status",
+        "responses": {
+          "200": {
+            "description": "Install and sign-in state for each coding-agent CLI",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CodingAgentStatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/config": {
       "get": {
         "tags": [
@@ -5234,6 +5254,49 @@
           }
         }
       },
+      "AgentAvailability": {
+        "type": "object",
+        "description": "One CLI's full situation, as the settings card renders it.",
+        "required": [
+          "kind",
+          "providerId",
+          "displayName",
+          "auth",
+          "loginCommand",
+          "installHint"
+        ],
+        "properties": {
+          "auth": {
+            "$ref": "#/components/schemas/AuthState"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "installHint": {
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/CodingAgentKind"
+          },
+          "loginCommand": {
+            "type": "string",
+            "description": "The command to run when `auth` says the user must act."
+          },
+          "path": {
+            "type": "string",
+            "description": "Absolute path we resolved, when we found one.",
+            "nullable": true
+          },
+          "providerId": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string",
+            "description": "Raw first line of `--version`.",
+            "nullable": true
+          }
+        }
+      },
       "AgentInitializationError": {
         "type": "object",
         "required": [
@@ -5269,6 +5332,99 @@
           "priority": {
             "type": "number"
           }
+        }
+      },
+      "AuthState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "not_installed"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "signed_out"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Signed in on a subscription. This is the state the feature requires.",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "account": {
+                "type": "string",
+                "nullable": true
+              },
+              "plan": {
+                "type": "string",
+                "description": "`\"max\"`, `\"pro\"`, … as the vendor reports it. Advisory only.",
+                "nullable": true
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "signed_in_subscription"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ],
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "signed_in_with_api_key"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "The probe ran but its output could not be understood. Carries the reason\nrather than collapsing to \"signed out\", because telling a user to log in\nwhen they already are is worse than admitting we do not know.",
+            "required": [
+              "detail",
+              "state"
+            ],
+            "properties": {
+              "detail": {
+                "type": "string"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "indeterminate"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "What the vendor CLI's credential store says right now.\n\n`SignedInWithApiKey` is a distinct state rather than an error: the CLI works,\nbut the run bills a metered API account instead of the subscription, which is\nthe entire thing this feature exists to avoid. The user is told, rather than\nsilently getting a bill.",
+        "discriminator": {
+          "propertyName": "state"
         }
       },
       "Author": {
@@ -5501,6 +5657,28 @@
         "properties": {
           "provider": {
             "type": "string"
+          }
+        }
+      },
+      "CodingAgentKind": {
+        "type": "string",
+        "description": "Which vendor CLI. Kept as an enum rather than a string so the match arms that\ndiffer (and there are several — the auth probe especially) cannot silently\nfall through for a new variant.",
+        "enum": [
+          "claude_code",
+          "codex"
+        ]
+      },
+      "CodingAgentStatusResponse": {
+        "type": "object",
+        "required": [
+          "agents"
+        ],
+        "properties": {
+          "agents": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AgentAvailability"
+            }
           }
         }
       },
@@ -11564,7 +11742,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "X-Secret-Key",
-        "description": "The daemon's secret key. Biorouter's server is loopback-only and authenticates every route except /status with this header."
+        "description": "The daemon's secret key. Biorouter's server is loopback-only and authenticates every route with this header except two: /status, and /tool_bridge/{nonce}, which is not part of this API at all. The bridge is an MCP endpoint a coding-agent child process calls, its path carries a single-turn capability nonce instead of a header (Codex sends no Authorization header), and it is deliberately absent from this spec because no Biorouter client should ever call it."
       }
     }
   }

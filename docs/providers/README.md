@@ -16,8 +16,10 @@ pick one, find the credential it needs, or switch models — read
 the credential variable itself among all other settings, read
 [Environment variables](../configuration/environment-variables.md). Note that this folder
 is not an inventory of every shipping provider: BioRouter has 40+ provider modules under
-`crates/biorouter/src/providers/`, and only the three documented below have a reference
-page here.
+`crates/biorouter/src/providers/`, and only the few named below — the two reference pages in
+this folder, plus the bundled Llama Server and the two coding-agent providers in the
+subdirectories — are documented here. Every other provider is documented only by its own
+source module.
 
 ## Documents
 
@@ -31,6 +33,19 @@ checks can be compared line for line.
 
 ## Subdirectories
 
+- **[`coding-agents/`](coding-agents/README.md)** — the two providers that run inference on
+  the user's **own vendor subscription** by driving a coding-agent CLI the user installed and
+  signed in to: `claude_code` (shown as **Claude Code**) and `codex` (**Codex**). They share
+  a mechanism rather than just a vendor, which is why they are documented together: no API
+  key, no base URL, a credential BioRouter never touches, and a child process that is itself
+  a complete agent whose own tools must be switched off and replaced over MCP. The folder has
+  its own index and holds six documents covering the mechanism, user setup, the generic tool
+  bridge, the child-isolation flags, the vendor-terms and PHI compliance position, and the
+  measured performance limits. **Read
+  [the compliance page](coding-agents/compliance.md) before using either provider for
+  research data** — a consumer subscription carries no BAA and no zero-data-retention
+  agreement, so both providers are `ProviderTier::Public` and the privacy bind gate refuses
+  them to any session classified private.
 - **[`llama-server/`](llama-server/README.md)** — verification material
   for the bundled **Llama Server** (`llamacpp`) local provider and its managed sidecar.
   It has its own index and currently holds a single document, the

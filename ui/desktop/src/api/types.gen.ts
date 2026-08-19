@@ -153,6 +153,29 @@ export type AffiliationInstitution = {
     id: string;
 };
 
+/**
+ * One CLI's full situation, as the settings card renders it.
+ */
+export type AgentAvailability = {
+    auth: AuthState;
+    displayName: string;
+    installHint: string;
+    kind: CodingAgentKind;
+    /**
+     * The command to run when `auth` says the user must act.
+     */
+    loginCommand: string;
+    /**
+     * Absolute path we resolved, when we found one.
+     */
+    path?: string | null;
+    providerId: string;
+    /**
+     * Raw first line of `--version`.
+     */
+    version?: string | null;
+};
+
 export type AgentInitializationError = {
     code: string;
     message: string;
@@ -163,6 +186,32 @@ export type Annotations = {
     audience?: Array<Role>;
     lastModified?: string;
     priority?: number;
+};
+
+/**
+ * What the vendor CLI's credential store says right now.
+ *
+ * `SignedInWithApiKey` is a distinct state rather than an error: the CLI works,
+ * but the run bills a metered API account instead of the subscription, which is
+ * the entire thing this feature exists to avoid. The user is told, rather than
+ * silently getting a bill.
+ */
+export type AuthState = {
+    state: 'not_installed';
+} | {
+    state: 'signed_out';
+} | {
+    account?: string | null;
+    /**
+     * `"max"`, `"pro"`, … as the vendor reports it. Advisory only.
+     */
+    plan?: string | null;
+    state: 'signed_in_subscription';
+} | {
+    state: 'signed_in_with_api_key';
+} | {
+    detail: string;
+    state: 'indeterminate';
 };
 
 export type Author = {
@@ -281,6 +330,17 @@ export type CheckModelResponse = {
 
 export type CheckProviderRequest = {
     provider: string;
+};
+
+/**
+ * Which vendor CLI. Kept as an enum rather than a string so the match arms that
+ * differ (and there are several — the auth probe especially) cannot silently
+ * fall through for a new variant.
+ */
+export type CodingAgentKind = 'claude_code' | 'codex';
+
+export type CodingAgentStatusResponse = {
+    agents: Array<AgentAvailability>;
 };
 
 export type CommandType = 'Builtin' | 'Workflow';
@@ -3533,6 +3593,22 @@ export type UpdateWorkingDirResponses = {
      */
     200: unknown;
 };
+
+export type CodingAgentsStatusData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/coding_agents/status';
+};
+
+export type CodingAgentsStatusResponses = {
+    /**
+     * Install and sign-in state for each coding-agent CLI
+     */
+    200: CodingAgentStatusResponse;
+};
+
+export type CodingAgentsStatusResponse = CodingAgentsStatusResponses[keyof CodingAgentsStatusResponses];
 
 export type ReadAllConfigData = {
     body?: never;
