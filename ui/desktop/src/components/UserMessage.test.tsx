@@ -20,6 +20,18 @@ beforeEach(() => {
 });
 
 describe('UserMessage edit actions', () => {
+  it('intrinsically sizes only the bubble while preserving the message width cap', () => {
+    render(<UserMessage message={message} onMessageUpdate={vi.fn()} />);
+
+    const bubble = screen.getByTestId('user-message-bubble');
+    expect(bubble).toHaveClass('w-fit', 'max-w-full', 'min-w-0', 'self-end');
+    expect(bubble.firstElementChild).toHaveClass('min-w-0', 'break-words');
+    expect(bubble.parentElement).toHaveClass('flex-col', 'min-w-0');
+    expect(bubble.parentElement).not.toHaveClass('items-end');
+    expect(bubble.parentElement?.parentElement).toHaveClass('max-w-[85%]', 'w-fit', 'min-w-0');
+    expect(bubble.closest('.message')?.querySelector('[data-message-meta="end"]')).not.toBeNull();
+  });
+
   it('uses Diverge copy and emits the diverge action', () => {
     const onMessageUpdate = vi.fn();
     render(<UserMessage message={message} onMessageUpdate={onMessageUpdate} />);
