@@ -169,8 +169,15 @@ already has.
 `Manifest.schema_version` exists, is always `1`, and is read by nothing.
 
 **Decision:** add `format: okf | biookf` and `okf_version` / `biookf_version` to the manifest; bump
-`schema_version` to `2`. A base with `schema_version: 1` is a **legacy wiki base** and is read
-through the legacy path, unchanged, until the user migrates it.
+`schema_version` to **`3`**. A base below that is read through its own generation's path, unchanged,
+until the user migrates it.
+
+⚠ **Not `2` — that number was already taken.** Stage 1.5's S-g wired `schema_version` for the first
+time and had to give the *existing* content a generation number: every base on disk is stamped `1`
+while already carrying the cross-reference-rules schema, so `CURRENT_SCHEMA_VERSION = 2` now names
+**that** generation, not OKF. An earlier draft of this record said "bump to 2", which would have
+declared every existing base already-OKF and skipped its migration silently. The OKF schema is
+generation **3**.
 
 **Why (and the trap):** `tier.rs:55-74` records the counter-precedent — a reader that *refused* an
 unfamiliar schema number locked users out of everything. So the version **selects a code path and
