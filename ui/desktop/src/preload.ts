@@ -382,8 +382,20 @@ type ElectronAPI = {
   >;
   downloadRegistryAsset: (url: string) => Promise<{ path: string } | { error: string }>;
   // Dependency checker
-  checkDependencies: () => Promise<import('./utils/dependencyChecker').DependencyInfo[]>;
+  checkDependencies: (opts?: {
+    force?: boolean;
+  }) => Promise<import('./utils/dependencyChecker').DependencyInfo[]>;
   installDependency: (dep: string) => Promise<{ started: boolean } | { error: string }>;
+  /**
+   * The environment as the MAIN process sees it — which is not the environment
+   * the user's login shell sees. A debugging session that doesn't know that
+   * spends its first turns rediscovering it.
+   */
+  dependencyEnvironment: () => Promise<
+    import('./utils/dependencyDebugPrompt').DependencyEnvironment & {
+      uvResolvesTo?: string | null;
+    }
+  >;
   // Biorouter CLI install (delegates to the bundled `biorouter setup-path`)
   cliStatus: () => Promise<{
     bundled: string | null;
@@ -394,7 +406,9 @@ type ElectronAPI = {
     needsUpdate: boolean;
     brokenOnPath: boolean;
   }>;
-  installCli: () => Promise<{ success: true; output: string } | { success: false; error: string }>;
+  installCli: () => Promise<
+    { success: true; output: string } | { success: false; error: string; command?: string }
+  >;
   launchCli: (
     workingDir?: string
   ) => Promise<{ success: true } | { success: false; error: string }>;
@@ -677,8 +691,9 @@ const electronAPI: ElectronAPI = {
   extractSkillZip: (filePath: string) => ipcRenderer.invoke('skills:extract-zip', { filePath }),
   fetchRegistry: () => ipcRenderer.invoke('registry:fetch'),
   downloadRegistryAsset: (url: string) => ipcRenderer.invoke('registry:download', { url }),
-  checkDependencies: () => ipcRenderer.invoke('dep:check'),
+  checkDependencies: (opts?: { force?: boolean }) => ipcRenderer.invoke('dep:check', opts),
   installDependency: (dep: string) => ipcRenderer.invoke('dep:install', dep),
+  dependencyEnvironment: () => ipcRenderer.invoke('dep:environment'),
   cliStatus: () => ipcRenderer.invoke('cli:status'),
   installCli: () => ipcRenderer.invoke('cli:install'),
   launchCli: (workingDir?: string) => ipcRenderer.invoke('cli:launch', workingDir),

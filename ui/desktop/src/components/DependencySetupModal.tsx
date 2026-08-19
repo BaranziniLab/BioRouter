@@ -13,6 +13,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Button } from './ui/button';
 import type { DependencyInfo, DependencyEvent } from '../utils/dependencyChecker';
 import { ModalShell } from './ModalShell';
+import { launchDependencyDebugSession } from '../utils/launchDependencyDebug';
 
 type InstallState = 'idle' | 'running' | 'done' | 'error' | 'installed';
 
@@ -27,6 +28,18 @@ export default function DependencySetupModal() {
   const [deps, setDeps] = useState<DepState[]>([]);
   const [visible, setVisible] = useState(false);
   const outputRefs = useRef<Record<string, HTMLDivElement | null>>({});
+  // `dep:install` returns as soon as the child is SPAWNED — completion arrives
+  // later as a push event. "Install all" has to wait on the event, or every
+  // installer starts at once and two package managers fight over the same lock.
+  const installWaiters = useRef<Record<string, () => void>>({});
+
+  const settleInstall = (dep: string) => {
+    const resolve = installWaiters.current[dep];
+    if (resolve) {
+      delete installWaiters.current[dep];
+      resolve();
+    }
+  };
 
   // Biorouter CLI install state (the bundled `biorouter` onto PATH).
   type CliStatus = {
@@ -42,6 +55,7 @@ export default function DependencySetupModal() {
   const [cliState, setCliState] = useState<InstallState>('idle');
   const [cliOutput, setCliOutput] = useState('');
   const [cliError, setCliError] = useState('');
+  const [cliCommand, setCliCommand] = useState<string | undefined>(undefined);
 
   // Whether a given status warrants showing the card: not installed at all, a
   // stale (older) install after an app upgrade, or a broken/dangling entry.
@@ -114,6 +128,7 @@ export default function DependencySetupModal() {
     }
     if (!res.success) {
       setCliError(res.error);
+      setCliCommand(res.command);
       setCliState('error');
       return;
     }
@@ -192,6 +207,7 @@ export default function DependencySetupModal() {
       }
 
       if ((payload.type === 'install-done' || payload.type === 'recheck-results') && payload.dep) {
+        settleInstall(payload.dep);
         setDeps((prev) =>
           prev.map((d) => {
             if (d.info.name !== payload.dep) return d;
@@ -213,6 +229,7 @@ export default function DependencySetupModal() {
       }
 
       if (payload.type === 'install-error' && payload.dep) {
+        settleInstall(payload.dep);
         setDeps((prev) =>
           prev.map((d) =>
             d.info.name === payload.dep
@@ -239,11 +256,19 @@ export default function DependencySetupModal() {
     return undefined;
   }, [deps]);
 
-  const handleInstall = async (depName: string) => {
+  /** Resolves when the install reaches a terminal state, not when it starts. */
+  const handleInstall = async (depName: string): Promise<void> => {
     if (deps.some((dep) => dep.info.name === depName && dep.installState === 'running')) return;
+
+    const finished = new Promise<void>((resolve) => {
+      installWaiters.current[depName] = resolve;
+    });
+
     try {
-      await window.electron.installDependency(depName);
+      const res = await window.electron.installDependency(depName);
+      if (res && 'error' in res) throw new Error(res.error);
     } catch (error) {
+      settleInstall(depName);
       setDeps((prev) =>
         prev.map((dep) =>
           dep.info.name === depName
@@ -255,11 +280,49 @@ export default function DependencySetupModal() {
             : dep
         )
       );
+      return;
     }
+
+    await finished;
   };
 
   const handleOpenUrl = (url: string) => {
     if (url) window.electron.openExternal(url);
+  };
+
+  // Hand the failure to a fresh chat with shell access. New window, not this
+  // one — the user hit this mid-task and should not lose the chat they were in.
+  const handleDebugDependency = (dep: DepState) => {
+    void launchDependencyDebugSession({
+      kind: 'dependency',
+      name: dep.info.name,
+      displayName: dep.info.displayName,
+      command: dep.info.installCmd,
+      output: dep.output,
+      error: dep.errorMsg,
+      downloadUrl: dep.info.downloadUrl,
+      requiresSudo: dep.info.requiresSudo,
+    });
+  };
+
+  const handleDebugCli = () => {
+    void launchDependencyDebugSession({
+      kind: 'cli',
+      name: 'biorouter',
+      displayName: 'Biorouter CLI',
+      command: cliCommand ?? 'biorouter setup-path',
+      output: cliOutput,
+      error: cliError,
+    });
+  };
+
+  // One click for the whole list. Each install streams its own output and fails
+  // independently, so a dependency that needs a hand does not stop the others.
+  const handleInstallAll = async () => {
+    const pending = deps.filter((d) => !d.info.installed && d.installState !== 'done');
+    for (const dep of pending) {
+      await handleInstall(dep.info.name);
+    }
   };
 
   const showCli = cliNeedsAttention(cli) && cliState !== 'done';
@@ -274,6 +337,11 @@ export default function DependencySetupModal() {
       ? 'Updating…'
       : 'Installing…';
   const isBusy = cliState === 'running' || deps.some((dep) => dep.installState === 'running');
+  // Only deps that actually carry an automated installer — a row whose install
+  // command is a "use your package manager" placeholder cannot be batch-installed.
+  const installableCount = deps.filter(
+    (d) => !d.info.installed && d.installState !== 'done' && d.info.installCmd.trim().length > 0
+  ).length;
   if (!visible || (deps.length === 0 && !cli)) return null;
 
   const allDone =
@@ -320,9 +388,16 @@ export default function DependencySetupModal() {
                   ? 'Install the CLI to use `biorouter` from any terminal.'
                   : 'Biorouter features may be limited until these are installed.'}
           </p>
-          <Button variant="outline" size="sm" onClick={handleDismiss} disabled={isBusy}>
-            {allDone ? 'Done' : 'Dismiss'}
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            {installableCount > 1 && !allDone && (
+              <Button variant="default" size="sm" onClick={handleInstallAll} disabled={isBusy}>
+                Install all ({installableCount})
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={handleDismiss} disabled={isBusy}>
+              {allDone ? 'Done' : 'Dismiss'}
+            </Button>
+          </div>
         </div>
       }
     >
@@ -379,7 +454,18 @@ export default function DependencySetupModal() {
               </div>
             )}
             {cliState === 'error' && cliError && (
-              <p className="mt-2 text-xs text-text-danger">{cliError}</p>
+              <div className="mt-2 flex min-w-0 items-start justify-between gap-3">
+                <p className="min-w-0 text-xs text-text-danger">{cliError}</p>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 shrink-0 text-xs"
+                  onClick={handleDebugCli}
+                  title="Open a new chat with this error and let Biorouter work it out"
+                >
+                  Debug with Biorouter
+                </Button>
+              </div>
             )}
           </div>
         )}
@@ -456,9 +542,22 @@ export default function DependencySetupModal() {
                 </div>
               )}
 
-              {/* Error */}
+              {/* Error — always paired with the escape hatch. An error string on
+                  its own is a dead end; Biorouter can already read the output,
+                  probe the machine and fix it. */}
               {installState === 'error' && errorMsg && (
-                <p className="mt-2 text-xs text-text-danger">{errorMsg}</p>
+                <div className="mt-2 flex min-w-0 items-start justify-between gap-3">
+                  <p className="min-w-0 text-xs text-text-danger">{errorMsg}</p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 text-xs"
+                    onClick={() => handleDebugDependency({ info, installState, output, errorMsg })}
+                    title="Open a new chat with this error and let Biorouter work it out"
+                  >
+                    Debug with Biorouter
+                  </Button>
+                </div>
               )}
 
               {/* Linux sudo note */}
