@@ -14,7 +14,6 @@ use crate::knowledge::{
     types::ChangeKind,
 };
 use anyhow::{Context, Result};
-use regex::Regex;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -125,12 +124,9 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
-    // Idempotently upgrade legacy schema.md files that pre-date the
-    // cross-reference rules section. No-op for already-migrated KBs.
-    let _ = svc.migrate_schema_if_needed(&args.kb_id);
-    // Refresh the graph cache so any stale 0-edge cache produced by the
-    // pre-fix wiki-link deriver is replaced with a freshly derived one.
-    let _ = svc.rebuild_graph_cache(&args.kb_id);
+    // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
+    // stale graph cache, neither fatally. See `macros::refresh_base`.
+    super::refresh_base(svc, &args.kb_id);
 
     // Open a txn only when we will commit a new note page.
     let txn_branch: Option<String> = if args.file_as_page {
@@ -227,19 +223,39 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
 /// Extract `[[Page Name]]` wiki-link references from all Step events in order,
 /// deduplicating while preserving first-occurrence order.
 fn extract_wiki_links(events: &[SubAgentEvent]) -> Vec<String> {
-    let re = Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
     let mut out: Vec<String> = Vec::new();
     for e in events {
         if let SubAgentEvent::Step { assistant_text, .. } = e {
-            for cap in re.captures_iter(assistant_text) {
-                let s = cap.get(1).unwrap().as_str().to_string();
-                if !out.contains(&s) {
-                    out.push(s);
+            for cited in extract_wiki_links_from_text(assistant_text) {
+                if !out.contains(&cited) {
+                    out.push(cited);
                 }
             }
         }
     }
     out
+}
+
+/// The citations in one piece of assistant prose, in written order.
+///
+/// This used to be the third copy of the `[[…]]` regex, and the only one of the
+/// three with **no** resolver at all: the raw capture went straight into
+/// `cited_pages`, so `[[knowledge/entities/x|X]]` reached the user as the
+/// citation `knowledge/entities/x|X`, alias and all. Reading the same grammar as
+/// the graph and the lint (`knowledge::links`) is what makes the three
+/// answerable against each other — and what stops BioOKF's inline edge sugar
+/// from being cited as the literal string `treats:: COVID-19 | knowledge_level=…`
+/// once pages start carrying it (DR-14).
+///
+/// Targets are still returned as the model wrote them, not resolved to pages:
+/// a citation is prose, and there is no bundle in hand here. `pub(crate)` so the
+/// equivalence test in `knowledge::links` can drive this consumer beside the
+/// other two.
+pub(crate) fn extract_wiki_links_from_text(text: &str) -> Vec<String> {
+    crate::knowledge::links::wiki_links(text)
+        .into_iter()
+        .map(|link| link.target)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

@@ -199,25 +199,194 @@ fn source_input_from_args(args: &Value) -> Result<SourceInput> {
 // Tool specs for the sub-agent
 // ---------------------------------------------------------------------------
 
-/// Build the JSON input schema for a tool (minimal: object with given
-/// required + optional properties).
+/// One property of a tool's input schema.
+///
+/// ## Why this is not just `{"type": T}` any more (DR-16)
+///
+/// It was, and that made a closed vocabulary **unenforceable through the tool
+/// interface**. `make_schema` could say a field is a string and nothing else:
+/// no `description`, no `enum`, no arrays, no nesting. So the legal values for a
+/// BioOKF `type` or `predicate` could only be taught in prose in the system
+/// prompt — which the provider cannot use to constrain sampling, which means an
+/// invalid value is caught at *dispatch*, as free text, in an error string. A
+/// failed tool call is fed back as `error: …` and does not abort, so the model
+/// retries, and the retries burn the step budget until the run dies for a reason
+/// that has nothing to do with the actual mistake.
+///
+/// Declaring the vocabulary here instead kills the prompt bloat *and* makes it
+/// enforceable — the same fix for two problems.
+///
+/// ## Nothing in this build uses the rich forms yet
+///
+/// Every existing spec below still goes through [`make_schema`] and emits
+/// exactly the bytes it always did (pinned by
+/// `todays_specs_are_byte_identical_to_the_minimal_shape`). Stage 5 is what
+/// attaches the 28 node types and 35 predicates to the tools that take them.
+/// This change only makes that expressible.
+#[derive(Debug, Clone)]
+pub struct Prop {
+    ty: PropTy,
+    description: Option<String>,
+    /// The closed vocabulary for this property, empty when it is open.
+    allowed: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PropTy {
+    /// `"string"`, `"integer"`, `"boolean"`, `"number"`.
+    Scalar(String),
+    Array(Box<Prop>),
+    Object {
+        required: Vec<(String, Prop)>,
+        optional: Vec<(String, Prop)>,
+    },
+}
+
+impl Prop {
+    /// A scalar of the given JSON Schema type name.
+    pub fn scalar(ty: &str) -> Self {
+        Self {
+            ty: PropTy::Scalar(ty.to_string()),
+            description: None,
+            allowed: Vec::new(),
+        }
+    }
+
+    pub fn string() -> Self {
+        Self::scalar("string")
+    }
+
+    /// A homogeneous array. The item is a full [`Prop`], so an array of
+    /// enum-constrained strings — a page's `tags`, a `verified` list — is one
+    /// call and not a special case.
+    pub fn array_of(item: Prop) -> Self {
+        Self {
+            ty: PropTy::Array(Box::new(item)),
+            description: None,
+            allowed: Vec::new(),
+        }
+    }
+
+    /// A nested object with its own required/optional split. Needed for the
+    /// shapes the tools already accept in prose — `kb_add_raw_source`'s
+    /// `{type, text, title}` union, BioOKF's per-edge provenance triplet —
+    /// which today are documented in a doc-comment and validated by hand in
+    /// [`source_input_from_args`].
+    pub fn object(required: Vec<(&str, Prop)>, optional: Vec<(&str, Prop)>) -> Self {
+        let own = |v: Vec<(&str, Prop)>| {
+            v.into_iter()
+                .map(|(n, p)| (n.to_string(), p))
+                .collect::<Vec<_>>()
+        };
+        Self {
+            ty: PropTy::Object {
+                required: own(required),
+                optional: own(optional),
+            },
+            description: None,
+            allowed: Vec::new(),
+        }
+    }
+
+    /// The one sentence the model reads about this field.
+    #[must_use]
+    pub fn describe(mut self, description: &str) -> Self {
+        self.description = Some(description.to_string());
+        self
+    }
+
+    /// The closed vocabulary. This is the whole point of the rewrite: an `enum`
+    /// here is a constraint the provider can apply while sampling, rather than a
+    /// list the model may or may not have read.
+    #[must_use]
+    pub fn one_of(mut self, values: &[&str]) -> Self {
+        self.allowed = values.iter().map(|v| (*v).to_string()).collect();
+        self
+    }
+
+    fn to_json(&self) -> Value {
+        let mut out = serde_json::Map::new();
+        match &self.ty {
+            PropTy::Scalar(ty) => {
+                out.insert("type".into(), Value::String(ty.clone()));
+            }
+            PropTy::Array(item) => {
+                out.insert("type".into(), Value::String("array".into()));
+                out.insert("items".into(), item.to_json());
+            }
+            PropTy::Object { required, optional } => {
+                out.insert("type".into(), Value::String("object".into()));
+                out.insert(
+                    "properties".into(),
+                    Value::Object(properties(required, optional)),
+                );
+                out.insert("required".into(), required_names(required));
+            }
+        }
+        // Only when set, so a bare property is still exactly `{"type": T}` and
+        // every spec that predates this builder is byte-for-byte unchanged.
+        if let Some(d) = &self.description {
+            out.insert("description".into(), Value::String(d.clone()));
+        }
+        if !self.allowed.is_empty() {
+            out.insert(
+                "enum".into(),
+                Value::Array(
+                    self.allowed
+                        .iter()
+                        .map(|v| Value::String(v.clone()))
+                        .collect(),
+                ),
+            );
+        }
+        Value::Object(out)
+    }
+}
+
+fn properties(
+    required: &[(String, Prop)],
+    optional: &[(String, Prop)],
+) -> serde_json::Map<String, Value> {
+    required
+        .iter()
+        .chain(optional.iter())
+        .map(|(name, prop)| (name.clone(), prop.to_json()))
+        .collect()
+}
+
+fn required_names(required: &[(String, Prop)]) -> Value {
+    Value::Array(
+        required
+            .iter()
+            .map(|(name, _)| Value::String(name.clone()))
+            .collect(),
+    )
+}
+
+/// Build a tool's top-level input schema from named properties.
+///
+/// The rich form: every property is a [`Prop`], so it may carry a description,
+/// an `enum`, an item type or a nested object.
+fn schema_of(required: Vec<(&str, Prop)>, optional: Vec<(&str, Prop)>) -> Arc<JsonObject> {
+    let Value::Object(map) = Prop::object(required, optional).to_json() else {
+        unreachable!("Prop::object always renders an object");
+    };
+    Arc::new(map)
+}
+
+/// The minimal form, kept because most fields really are just "a string": name
+/// and JSON Schema type name, nothing else.
 fn make_schema(
     required: &[(&str, &str)], // (name, type)
     optional: &[(&str, &str)], // (name, type)
 ) -> Arc<JsonObject> {
-    let mut props = serde_json::Map::new();
-    for (n, t) in required.iter().chain(optional.iter()) {
-        props.insert(n.to_string(), serde_json::json!({ "type": t }));
+    fn lift<'a>(pairs: &[(&'a str, &str)]) -> Vec<(&'a str, Prop)> {
+        pairs
+            .iter()
+            .map(|(name, ty)| (*name, Prop::scalar(ty)))
+            .collect()
     }
-    let req_names: Vec<Value> = required
-        .iter()
-        .map(|(n, _)| Value::String(n.to_string()))
-        .collect();
-    let mut schema = serde_json::Map::new();
-    schema.insert("type".into(), Value::String("object".into()));
-    schema.insert("properties".into(), Value::Object(props));
-    schema.insert("required".into(), Value::Array(req_names));
-    Arc::new(schema)
+    schema_of(lift(required), lift(optional))
 }
 
 /// Returns the `Vec<Tool>` to pass to the sub-agent.
@@ -301,6 +470,145 @@ mod tests {
         let svc = KnowledgeService::new(dir.path().to_path_buf());
         svc.create_base("k", "K", None).unwrap();
         (dir, svc)
+    }
+
+    /// The minimal shape, spelled out independently of the builder: an object
+    /// whose every property is exactly `{"type": T}`, in `type`/`properties`/
+    /// `required` order.
+    fn minimal_shape(required: &[(&str, &str)], optional: &[(&str, &str)]) -> Value {
+        let mut props = serde_json::Map::new();
+        for (n, t) in required.iter().chain(optional.iter()) {
+            props.insert((*n).to_string(), serde_json::json!({ "type": t }));
+        }
+        serde_json::json!({
+            "type": "object",
+            "properties": props,
+            "required": required.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+        })
+    }
+
+    /// DR-16 replaced `make_schema` with a builder that *can* express
+    /// descriptions, enums, arrays and nesting — and must not have changed a
+    /// single byte of what today's eight tools declare while doing it. Stage 5
+    /// is where the richer forms get used; a change here now would be a change
+    /// to what the model is told, smuggled in under a refactor.
+    #[test]
+    fn todays_specs_are_byte_identical_to_the_minimal_shape() {
+        let expected: &[(&str, Value)] = &[
+            (
+                "kb_list_pages",
+                minimal_shape(&[], &[("path_prefix", "string")]),
+            ),
+            ("kb_read_page", minimal_shape(&[("path", "string")], &[])),
+            (
+                "kb_write_page",
+                minimal_shape(
+                    &[("path", "string"), ("content", "string")],
+                    &[("commit_message", "string")],
+                ),
+            ),
+            (
+                "kb_search",
+                minimal_shape(
+                    &[("query", "string")],
+                    &[("limit", "integer"), ("include_raw_sources", "boolean")],
+                ),
+            ),
+            (
+                "kb_append_log",
+                minimal_shape(
+                    &[("summary", "string")],
+                    &[("kind", "string"), ("delta", "string")],
+                ),
+            ),
+            (
+                "kb_add_raw_source",
+                minimal_shape(
+                    &[("type", "string")],
+                    &[
+                        ("text", "string"),
+                        ("title", "string"),
+                        ("url", "string"),
+                        ("bytes_b64", "string"),
+                        ("filename", "string"),
+                        ("mime", "string"),
+                    ],
+                ),
+            ),
+            (
+                "kb_classify_source",
+                minimal_shape(&[("source_id", "string")], &[]),
+            ),
+            ("complete", minimal_shape(&[], &[("message", "string")])),
+        ];
+
+        let specs = tool_specs();
+        assert_eq!(specs.len(), expected.len(), "a tool was added or removed");
+        for (name, want) in expected {
+            let tool = specs
+                .iter()
+                .find(|t| t.name == *name)
+                .unwrap_or_else(|| panic!("{name} is no longer declared"));
+            let got = Value::Object((*tool.input_schema).clone());
+            assert_eq!(&got, want, "{name}'s schema changed");
+        }
+    }
+
+    #[test]
+    fn a_closed_vocabulary_reaches_the_provider_as_an_enum() {
+        // The half that was impossible before: the legal values as data, where
+        // the provider can constrain sampling with them, instead of as a
+        // sentence in the system prompt that the model may not honour and the
+        // provider cannot read at all.
+        let schema = schema_of(
+            vec![(
+                "predicate",
+                Prop::string()
+                    .describe("The BioOKF relation this edge asserts.")
+                    .one_of(&["treats", "associated_with"]),
+            )],
+            vec![],
+        );
+        let got = Value::Object((*schema).clone());
+        assert_eq!(
+            got["properties"]["predicate"],
+            serde_json::json!({
+                "type": "string",
+                "description": "The BioOKF relation this edge asserts.",
+                "enum": ["treats", "associated_with"],
+            })
+        );
+        assert_eq!(got["required"], serde_json::json!(["predicate"]));
+    }
+
+    #[test]
+    fn arrays_and_nested_objects_are_expressible() {
+        // The shape `kb_add_raw_source` already accepts and documents only in a
+        // doc-comment, plus the list form an `edges:` argument needs.
+        let schema = schema_of(
+            vec![(
+                "source",
+                Prop::object(
+                    vec![("type", Prop::string().one_of(&["text", "url", "file"]))],
+                    vec![("title", Prop::string())],
+                ),
+            )],
+            vec![("tags", Prop::array_of(Prop::string()))],
+        );
+        let got = Value::Object((*schema).clone());
+        assert_eq!(got["properties"]["source"]["type"], "object");
+        assert_eq!(
+            got["properties"]["source"]["properties"]["type"]["enum"],
+            serde_json::json!(["text", "url", "file"])
+        );
+        assert_eq!(
+            got["properties"]["source"]["required"],
+            serde_json::json!(["type"])
+        );
+        assert_eq!(
+            got["properties"]["tags"],
+            serde_json::json!({ "type": "array", "items": { "type": "string" } })
+        );
     }
 
     #[tokio::test]

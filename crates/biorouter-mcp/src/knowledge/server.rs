@@ -1345,6 +1345,10 @@ fn not_a_member(kb_id: &str, visible: &[String], session_id: Option<&str>) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Every page these tests write goes through the one fixture builder, so
+    // that when the page format tightens the change lands there and not in
+    // twenty tests that are about tiers and paths (DR-19).
+    use crate::knowledge::page_fixtures::valid_page;
     use std::path::{Path, PathBuf};
 
     /// The knowledge instructions must teach the agent to consult the built-in
@@ -2089,7 +2093,8 @@ mod tests {
             "kb_write_page",
             serde_json::json!({
                 "kb_id": "default", "path": "knowledge/omop.md",
-                "content": "n=412 T2D patients", "commit_message": "x"
+                "content": valid_page("note", "OMOP", "n=412 T2D patients"),
+                "commit_message": "x"
             }),
             Private,
         )
@@ -2178,7 +2183,8 @@ mod tests {
             args: |kb| {
                 serde_json::json!({
                     "kb_id": kb, "path": "knowledge/p.md",
-                    "content": "body", "commit_message": "m"
+                    "content": valid_page("note", "P", "body"),
+                    "commit_message": "m"
                 })
             },
             ratchets: true,
@@ -2359,7 +2365,7 @@ mod tests {
             serde_json::json!({
                 "kb_id": "shared",
                 "path": "knowledge/ucsf.md",
-                "content": "SENTINEL-UCSF",
+                "content": valid_page("note", "UCSF", "SENTINEL-UCSF"),
                 "commit_message": "m",
             }),
             "ucsf",
@@ -2376,7 +2382,7 @@ mod tests {
             serde_json::json!({
                 "kb_id": "shared",
                 "path": "knowledge/stanford.md",
-                "content": "SENTINEL-STANFORD",
+                "content": valid_page("note", "Stanford", "SENTINEL-STANFORD"),
                 "commit_message": "m",
             }),
             "stanford",
@@ -2727,7 +2733,8 @@ mod tests {
             "kb_write_page",
             serde_json::json!({
                 "kb_id": "omop", "path": "knowledge/x.md",
-                "content": "c", "commit_message": "m"
+                "content": valid_page("note", "X", "c"),
+                "commit_message": "m"
             }),
             "stanford",
         )
@@ -2739,7 +2746,8 @@ mod tests {
             "kb_write_page",
             serde_json::json!({
                 "kb_id": "omop", "path": "knowledge/x.md",
-                "content": "c", "commit_message": "m"
+                "content": valid_page("note", "X", "c"),
+                "commit_message": "m"
             }),
             "ucsf",
         )
@@ -3065,7 +3073,7 @@ mod tests {
             serde_json::json!({
                 "kb_id": "  alpha  ",
                 "path": "knowledge/b.md",
-                "content": "PINNED-WRITE",
+                "content": valid_page("note", "B", "PINNED-WRITE"),
                 "commit_message": "pin",
             }),
             Private,

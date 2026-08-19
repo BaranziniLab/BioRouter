@@ -21,10 +21,21 @@ const DEFAULT_LOG: &str = "# Log\n\n";
 const GITIGNORE: &str =
     "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/\n.biorouter-knowledge/write.lock\n";
 
-/// Cross-reference rules block appended to legacy `schema.md` files that
-/// pre-date the Plan 5 Task 2 schema hardening. Kept in sync with the
-/// equivalent block in `schema_default.md`. The unique substring
-/// `"Cross-reference rules"` is used as the migration fingerprint.
+/// The generation of `schema.md` this build writes, and the version a base's
+/// `manifest.yaml` is stamped with when it is created or migrated.
+///
+/// - **1** — before Plan 5 Task 2: no cross-reference rules section, so the
+///   sub-agent was never told that the graph is derived purely from `[[link]]`
+///   patterns, and the bases of that era have nodes and no edges.
+/// - **2** — with [`SCHEMA_CROSSREF_RULES`].
+///
+/// Bump this together with the ladder in [`migrated_schema`], never on its own:
+/// the number is what decides that a base is behind, and the ladder is what
+/// catches it up.
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+
+/// Cross-reference rules block appended to `schema.md` files still at
+/// generation 1. Kept in sync with the equivalent block in `schema_default.md`.
 const SCHEMA_CROSSREF_RULES: &str = r#"
 ### Cross-reference rules (the graph depends on these)
 
@@ -48,6 +59,39 @@ When you write or update any knowledge page:
 The lint workflow (`kb_lint`) reports pages with no inbound links as orphans;
 fix them by adding inbound `[[links]]` from related pages.
 "#;
+
+/// Every `schema.md` step from generation `from` up to
+/// [`CURRENT_SCHEMA_VERSION`], applied in order.
+///
+/// A ladder rather than one branch, because a base can be arbitrarily far
+/// behind: a user who has not opened a knowledge base since before a migration
+/// landed must get every step, in order, on the next macro that touches it.
+/// Each step keeps its own idempotence guard so that a base whose *stamp* is
+/// behind but whose *content* is not comes out unchanged — which is the state
+/// every base on disk is in for step 1 → 2 (see
+/// [`KnowledgeService::migrate_schema_if_needed`]).
+fn migrated_schema(current: &str, from: u32) -> String {
+    let mut schema = current.to_string();
+    if from < 2 {
+        schema = with_crossref_rules(schema);
+    }
+    schema
+}
+
+/// Step 1 → 2: teach the sub-agent that the graph is derived purely from
+/// `[[link]]` patterns. Without it a base gains nodes and no edges.
+fn with_crossref_rules(mut schema: String) -> String {
+    if schema.contains("Cross-reference rules") {
+        return schema;
+    }
+    // A blank line between whatever the user had and the new section, even if
+    // their file did not end with a newline.
+    if !schema.ends_with('\n') {
+        schema.push('\n');
+    }
+    schema.push_str(SCHEMA_CROSSREF_RULES);
+    schema
+}
 
 #[derive(Clone)]
 pub struct KnowledgeService {
@@ -602,7 +646,12 @@ impl KnowledgeService {
             name: name.to_string(),
             color: color.unwrap_or("#5a6394").to_string(),
             created_at: Utc::now(),
-            schema_version: 1,
+            // The generation of the `schema.md` written four lines below, not a
+            // constant 1. A manifest that under-reports what its own base
+            // carries makes the migration ladder run on a base that is already
+            // current, which is only harmless for as long as every step happens
+            // to be idempotent.
+            schema_version: CURRENT_SCHEMA_VERSION,
             default_model: None,
         };
         manifest::save(&kb_root, &m)?;
@@ -745,8 +794,24 @@ impl KnowledgeService {
         let entries = registry::load(&self.root)?;
         let mut out = Vec::new();
         for e in entries {
-            if let Ok(m) = manifest::load(&e.path) {
-                out.push(m);
+            match manifest::load(&e.path) {
+                Ok(m) => out.push(m),
+                // Still not fatal — one broken base must not take the whole
+                // list with it — but no longer *silent*. A dropped base does
+                // not report as broken, it vanishes, and DR-12 traces what
+                // happens next: the id leaves the installed universe that
+                // `installed_kb_ids_unlocked` derives from this list,
+                // `repair_decision` reads the stored primary as pointing at
+                // something uninstalled, and the next selection edit PERSISTS
+                // the cleared `.active-kb`. The user loses their pointers to a
+                // base that is still sitting on disk, intact.
+                //
+                // So the log line has to carry the path: it is the only thing
+                // that tells a user with N bases which one to go and look at.
+                Err(err) => tracing::warn!(
+                    "knowledge: skipping a base whose manifest could not be read at {}: {err:#}",
+                    e.path.display()
+                ),
             }
         }
         Ok(out)
@@ -1264,61 +1329,98 @@ impl KnowledgeService {
         Ok(())
     }
 
-    /// One-shot, idempotent upgrade for KBs created before the schema gained
-    /// explicit cross-reference rules (Plan 5 Task 2). If `schema.md` does
-    /// not already mention `"Cross-reference rules"`, the rules block is
-    /// appended in place and committed. User customisations elsewhere in
-    /// the file are preserved.
+    /// Bring a base's `schema.md` up to [`CURRENT_SCHEMA_VERSION`], if it is
+    /// behind. User customisations elsewhere in the file are preserved.
     ///
-    /// Returns `Ok(true)` if the schema was rewritten, `Ok(false)` if it was
-    /// already up-to-date or the KB has no `schema.md`.
+    /// Returns `Ok(true)` when `schema.md` was actually rewritten (and
+    /// committed), `Ok(false)` when there was nothing to write — the base was
+    /// already current, it has no `schema.md`, or its stamp was behind but its
+    /// content was not.
+    ///
+    /// ## The decision is the version, not a substring
+    ///
+    /// This used to fingerprint on the literal text `"Cross-reference rules"`
+    /// and return early if it was present. That worked exactly once. Every base
+    /// created since that block joined `schema_default.md` contains the string,
+    /// so the function reported "already migrated" for the entire installed
+    /// base — and a *new* schema could therefore never be installed, however
+    /// different it was, because the fingerprint of the old migration was still
+    /// there. A content fingerprint answers "did migration N run?"; what the
+    /// caller needs to know is "which generation is this base at?", and only a
+    /// recorded version answers that.
+    ///
+    /// So `Manifest.schema_version` — declared long ago, always 1, and read by
+    /// nothing until now — is the gate, and the manifest is stamped forward
+    /// afterwards whether or not the content changed. That last part matters:
+    /// bases on disk today are stamped 1 while already carrying generation-2
+    /// content, because `create_base` wrote the current schema and hardcoded
+    /// the stamp. They must end up stamped 2 *without* gaining a second copy of
+    /// the rules block, which is why the step below keeps a content guard of its
+    /// own — as an idempotence check inside a step, never as the decision.
     pub fn migrate_schema_if_needed(&self, kb_id: &str) -> Result<bool> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
+        let mut manifest = manifest::load(&kb_root).context("read manifest.yaml")?;
+        if manifest.schema_version >= CURRENT_SCHEMA_VERSION {
+            return Ok(false);
+        }
         let schema_path = kb_root.join("schema.md");
         if !schema_path.exists() {
+            // Nothing to migrate and nothing to claim: leaving the stamp behind
+            // means a base that later gains a `schema.md` still gets the ladder.
             return Ok(false);
         }
+        let from = manifest.schema_version;
         let current = std::fs::read_to_string(&schema_path).context("read schema.md")?;
-        if current.contains("Cross-reference rules") {
-            return Ok(false);
+        let next = migrated_schema(&current, from);
+        let rewritten = next != current;
+        if rewritten {
+            std::fs::write(&schema_path, next).context("write schema.md")?;
         }
-        // Ensure a blank line separates whatever the user had from the new
-        // section, even if their file did not end with a newline.
-        let mut next = current;
-        if !next.ends_with('\n') {
-            next.push('\n');
-        }
-        next.push_str(SCHEMA_CROSSREF_RULES);
-        std::fs::write(&schema_path, next).context("write schema.md")?;
 
-        let repo = GitRepo::open(&kb_root)?;
-        repo.commit_all(
-            crate::knowledge::types::ChangeKind::Manual,
-            "migrate schema: add cross-reference rules",
-            None,
-        )
-        .context("commit schema migration")?;
-        Ok(true)
+        // Stamped before the commit, so the manifest change rides in the same
+        // commit as the schema change rather than surfacing later as a stray
+        // diff inside an unrelated ingest.
+        manifest.schema_version = CURRENT_SCHEMA_VERSION;
+        manifest::save(&kb_root, &manifest).context("stamp schema_version")?;
+
+        if rewritten {
+            let repo = GitRepo::open(&kb_root)?;
+            repo.commit_all(
+                crate::knowledge::types::ChangeKind::Manual,
+                &format!("migrate schema: v{from} → v{CURRENT_SCHEMA_VERSION}"),
+                None,
+            )
+            .context("commit schema migration")?;
+        }
+        Ok(rewritten)
     }
 
     pub fn get_graph(&self, kb_id: &str) -> anyhow::Result<crate::knowledge::types::Graph> {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         if let Some(g) = crate::knowledge::graph::read_cache(&kb_root)? {
-            // Self-heal caches written by an older deriver: if the cache still
-            // contains the scaffold `index`/`log` hub nodes (which the current
-            // deriver excludes), re-derive once and rewrite the cache so existing
-            // KBs pick up the fix without needing a fresh ingest.
-            let has_scaffold = g.nodes.iter().any(|n| n.id == "index" || n.id == "log");
-            if !has_scaffold {
-                return Ok(g);
-            }
-            let fresh = crate::knowledge::graph::derive(&kb_root)?;
-            let _ = crate::knowledge::graph::write_cache(&kb_root, &fresh);
-            return Ok(fresh);
+            return Ok(g);
         }
-        crate::knowledge::graph::derive(&kb_root)
+        // No usable cache. `read_cache` folds four cases into that one answer —
+        // absent, unreadable, malformed, or written to a shape this build does
+        // not read — because the repair for all four is the same, and it is
+        // here: derive fresh and rewrite the cache so the next reader is served
+        // from disk. Nothing on this path used to rewrite it, which is how a
+        // single bad cache became a permanent 404 on the graph route (DR-13).
+        //
+        // This subsumes and retires the scaffold self-heal that used to sit
+        // here — a hardcoded `n.id == "index" || n.id == "log"` predicate that
+        // detected exactly one historical shape change (the deriver learning to
+        // exclude the index/log hub pages) and could not detect any other. The
+        // envelope's `version` detects every shape change, including that one,
+        // because a cache written by the older deriver does not carry a version
+        // key at all.
+        let fresh = crate::knowledge::graph::derive(&kb_root)?;
+        if let Err(e) = crate::knowledge::graph::write_cache(&kb_root, &fresh) {
+            tracing::warn!("knowledge: could not rewrite the graph cache for '{kb_id}': {e:#}");
+        }
+        Ok(fresh)
     }
 
     /// Read the raw markdown body of a page (knowledge/*.md, raw/*/source.md,
@@ -3454,13 +3556,106 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // list_bases: a base that cannot be read must not vanish (DR-12)
+    // -----------------------------------------------------------------------
+
+    /// Collects formatted tracing output so a test can assert the *level* a
+    /// message was emitted at, not merely that something was written. The
+    /// subscriber is installed per-thread by `with_default`, so this is safe
+    /// under `cargo test`'s parallel threads.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+        type Writer = CapturedLogs;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    fn capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_max_level(tracing::Level::DEBUG)
+            .with_ansi(false)
+            .finish();
+        let value = tracing::subscriber::with_default(subscriber, f);
+        let text = String::from_utf8_lossy(&logs.0.lock().unwrap()).to_string();
+        (value, text)
+    }
+
+    /// DR-12's (b). A base whose `manifest.yaml` will not parse used to be
+    /// dropped by `if let Ok(m) = …`, and a base that vanishes with no
+    /// explanation is worse than an error: the id then leaves the installed
+    /// universe, the stored primary reads as pointing at something uninstalled,
+    /// and the next selection edit persists the cleared pointer. The user's
+    /// `.active-kb` is destroyed for a base still sitting intact on disk.
+    ///
+    /// It must still not be fatal — one broken base cannot take the listing
+    /// down — so what is asserted is the pair: the healthy base is still
+    /// listed, and the broken one is named at WARN with its path, because the
+    /// path is the only thing that tells a user with a dozen bases which
+    /// directory to go and look at.
+    #[test]
+    fn an_unreadable_manifest_is_named_at_warn_rather_than_silently_dropped() {
+        let (dir, svc) = svc();
+        svc.create_base("healthy", "Healthy", None).unwrap();
+        svc.create_base("broken", "Broken", None).unwrap();
+        let broken_manifest = dir.path().join("broken").join("manifest.yaml");
+        std::fs::write(&broken_manifest, "id: [this is not a manifest\n").unwrap();
+
+        let (bases, logs) = capture(|| svc.list_bases().expect("one bad base is not fatal"));
+
+        let ids: Vec<&str> = bases.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, vec!["healthy"], "the healthy base must still list");
+        assert!(
+            logs.contains("WARN"),
+            "the drop must be reported at WARN, got: {logs}"
+        );
+        assert!(
+            logs.contains("broken"),
+            "the report must name the base whose manifest failed, got: {logs}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
     // migrate_schema_if_needed tests
     // -----------------------------------------------------------------------
 
-    /// Legacy schema fingerprint: minimal pre-Plan-5-Task-2 schema (no
-    /// "Cross-reference rules" section).
+    /// A generation-1 `schema.md`: the minimal pre-Plan-5-Task-2 file, with no
+    /// "Cross-reference rules" section.
     const LEGACY_SCHEMA: &str =
         "# Knowledge Base: Maintenance Schema\n\n## Layout\n\n- wiki/sources/...\n";
+
+    /// Put a freshly created base back to schema generation 1 — **both** halves.
+    ///
+    /// The stamp is not decoration here: since the migration stopped
+    /// fingerprinting on a substring and started reading
+    /// `Manifest.schema_version`, a base with legacy bytes and a current stamp
+    /// is not a legacy base, it is a base someone hand-edited. Seeding only the
+    /// bytes would test a state the ladder deliberately does not act on.
+    fn seed_generation_1(svc: &KnowledgeService, kb_id: &str) {
+        let kb = svc.root().join(kb_id);
+        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 1;
+        manifest::save(&kb, &m).unwrap();
+        GitRepo::open(&kb)
+            .unwrap()
+            .commit_all(ChangeKind::Manual, "seed legacy schema", None)
+            .unwrap();
+    }
 
     #[test]
     fn migrate_schema_appends_cross_reference_rules_when_missing() {
@@ -3468,12 +3663,10 @@ mod tests {
         svc.create_base("k", "K", None).unwrap();
         let kb = svc.root().join("k");
 
-        // Overwrite with the legacy schema and commit so we have a clean
+        // Put the base back to generation 1 and commit, so we have a clean
         // baseline to migrate from.
-        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
+        seed_generation_1(&svc, "k");
         let repo = GitRepo::open(&kb).unwrap();
-        repo.commit_all(ChangeKind::Manual, "seed legacy schema", None)
-            .unwrap();
         let before = repo.log(10).unwrap().len();
 
         let migrated = svc.migrate_schema_if_needed("k").unwrap();
@@ -3487,6 +3680,101 @@ mod tests {
         let after = repo.log(10).unwrap().len();
         assert_eq!(after, before + 1, "exactly one migration commit added");
         assert!(repo.log(1).unwrap()[0].summary.contains("migrate schema"));
+    }
+
+    /// The state EVERY base on disk is in right now, and the one the old
+    /// substring fingerprint handled by accident: stamped generation 1 (because
+    /// `create_base` hardcoded the number) while already carrying generation-2
+    /// content (because it wrote the current `schema_default.md`).
+    ///
+    /// The version says migrate; the content says there is nothing to do. Both
+    /// must be honoured — the stamp moves forward so the base stops re-entering
+    /// the ladder, and the rules block must NOT be appended a second time.
+    #[test]
+    fn a_base_stamped_behind_but_already_current_is_stamped_forward_without_a_rewrite() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 1;
+        manifest::save(&kb, &m).unwrap();
+        let original = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+        let repo = GitRepo::open(&kb).unwrap();
+        let before = repo.log(10).unwrap().len();
+
+        assert!(
+            !svc.migrate_schema_if_needed("k").unwrap(),
+            "nothing was rewritten, so nothing is reported as rewritten"
+        );
+
+        let after_schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+        assert_eq!(after_schema, original, "the rules block was appended twice");
+        assert_eq!(
+            after_schema.matches("Cross-reference rules").count(),
+            original.matches("Cross-reference rules").count()
+        );
+        assert_eq!(
+            manifest::load(&kb).unwrap().schema_version,
+            CURRENT_SCHEMA_VERSION,
+            "the stamp must move even when the content did not, or the base \
+             re-enters the ladder on every macro call forever"
+        );
+        assert_eq!(
+            repo.log(10).unwrap().len(),
+            before,
+            "a stamp-only migration must not put an entry in the user's change log"
+        );
+    }
+
+    /// The bug this whole change is about: with the old substring fingerprint,
+    /// a base carrying the *previous* migration's text reported "already
+    /// migrated" and no later schema could ever be installed over it. Keyed off
+    /// the version, a base behind the current generation migrates however
+    /// familiar its contents look.
+    #[test]
+    fn a_base_behind_the_current_generation_migrates_even_carrying_the_old_marker() {
+        let (_dir, svc) = svc();
+        svc.create_base("k", "K", None).unwrap();
+        let kb = svc.root().join("k");
+        // Generation-1 stamp, and content that already contains the string the
+        // old fingerprint looked for — plus a marker of the user's own, to
+        // prove customisations survive.
+        std::fs::write(
+            kb.join("schema.md"),
+            "# Mine\n\n### Cross-reference rules\n\nold text\n",
+        )
+        .unwrap();
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 0; // behind every step in the ladder
+        manifest::save(&kb, &m).unwrap();
+
+        // Generation 0 → 2 runs the 1 → 2 step, whose own content guard sees
+        // the marker and leaves the file alone; the stamp still moves.
+        assert!(!svc.migrate_schema_if_needed("k").unwrap());
+        assert_eq!(
+            manifest::load(&kb).unwrap().schema_version,
+            CURRENT_SCHEMA_VERSION
+        );
+        assert!(std::fs::read_to_string(kb.join("schema.md"))
+            .unwrap()
+            .contains("old text"));
+    }
+
+    #[test]
+    fn a_new_base_is_stamped_with_the_generation_it_was_written_at() {
+        // Otherwise the first macro call on a brand-new base runs the ladder
+        // over a base that is already current — harmless only for as long as
+        // every step happens to be idempotent.
+        let (_dir, svc) = svc();
+        let m = svc.create_base("k", "K", None).unwrap();
+        assert_eq!(m.schema_version, CURRENT_SCHEMA_VERSION);
+        assert_eq!(
+            manifest::load(&svc.root().join("k"))
+                .unwrap()
+                .schema_version,
+            CURRENT_SCHEMA_VERSION,
+            "the stamp on disk must match the one handed back"
+        );
     }
 
     #[test]
@@ -3515,11 +3803,7 @@ mod tests {
     fn migrate_schema_is_idempotent_across_calls() {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
-        let kb = svc.root().join("k");
-        std::fs::write(kb.join("schema.md"), LEGACY_SCHEMA).unwrap();
-        let repo = GitRepo::open(&kb).unwrap();
-        repo.commit_all(ChangeKind::Manual, "seed legacy schema", None)
-            .unwrap();
+        seed_generation_1(&svc, "k");
 
         // First call migrates.
         assert!(svc.migrate_schema_if_needed("k").unwrap());

@@ -106,7 +106,21 @@ pub trait Completer: Send + Sync {
 
 pub struct SubAgentBounds {
     pub max_steps: usize,
+    /// Wall clock for the whole run — checked before each step **and** applied
+    /// as a timeout to the provider call itself. Only the first of those two
+    /// existed for a long time, which meant a single hung request was
+    /// completely unbounded: the check between iterations never came round
+    /// again, so a run with a 300 s budget could sit on one `await` for as long
+    /// as the socket stayed open (DR-16b).
     pub max_wall: Duration,
+    /// Ceiling on the conversation the sub-agent may accumulate, counted the
+    /// cheap way (see [`estimated_tokens`]).
+    ///
+    /// This field was declared and read by **nothing**, which is worse than a
+    /// missing bound: it reads as a bound that is being enforced. The step
+    /// budget does not substitute for it — 30 steps of `kb_read_page` over long
+    /// pages is a context overflow the provider rejects, and the rejection
+    /// arrives as an opaque provider error rather than as "this run got too big".
     pub max_tokens: u64,
 }
 
@@ -165,40 +179,32 @@ impl SubAgent {
 
         loop {
             // --- Bound checks before calling the LLM ---
-            if steps >= self.bounds.max_steps {
-                return Ok(make_result(
-                    events,
-                    DoneReason::StepBudgetReached,
-                    "step budget reached",
-                    steps,
-                ));
-            }
-            if started.elapsed() > self.bounds.max_wall {
-                return Ok(make_result(
-                    events,
-                    DoneReason::TimeBudgetReached,
-                    "time budget reached",
-                    steps,
-                ));
-            }
-            if let Some(c) = cancel {
-                // Non-blocking poll: fires if notify_one() was called.
-                // We use a manual flag via try_recv-style polling.
-                if cancel_was_signalled(c) {
-                    return Ok(make_result(
-                        events,
-                        DoneReason::Cancelled,
-                        "cancelled",
-                        steps,
-                    ));
-                }
+            if let Some(reason) = self.stop_before_step(steps, started, &messages, cancel) {
+                let text = stop_text(&reason);
+                return Ok(make_result(events, reason, text, steps));
             }
 
-            // --- LLM call ---
-            let reply = self
+            // --- LLM call, under the remaining wall-clock budget ---
+            //
+            // The timeout is the same budget the loop checks between steps, not
+            // a second one: a per-call cap would be a number nobody could
+            // reconcile with `max_wall`, and the question a caller asks is "how
+            // long may this run take", once.
+            let remaining = self.bounds.max_wall.saturating_sub(started.elapsed());
+            let call = self
                 .completer
-                .complete(&self.system_prompt, &messages, &self.tools)
-                .await?;
+                .complete(&self.system_prompt, &messages, &self.tools);
+            let reply = match tokio::time::timeout(remaining, call).await {
+                Ok(reply) => reply?,
+                Err(_elapsed) => {
+                    return Ok(make_result(
+                        events,
+                        DoneReason::TimeBudgetReached,
+                        "time budget reached while waiting for the model",
+                        steps,
+                    ))
+                }
+            };
 
             let step_ev = SubAgentEvent::Step {
                 index: steps,
@@ -218,8 +224,36 @@ impl SubAgent {
                 ));
             }
 
-            // Check for the complete() sentinel
-            if reply.tool_calls.iter().any(|t| t.name == "complete") {
+            // The `complete()` sentinel ends the run — but only AFTER the calls
+            // it arrived beside have actually run.
+            //
+            // This check used to sit here and `return` immediately, above both
+            // the assistant push and the dispatch loop, so every other tool call
+            // in the same turn was discarded undispatched. That was rare while
+            // the procedures ended with a lone `complete()` step; under typed
+            // extraction the natural model output is N writes followed by
+            // `complete` in one turn, which is exactly the losing shape.
+            //
+            // And it loses *silently*: nothing under `knowledge/` changed, so
+            // `txn_wrote_knowledge_pages` returns false, the txn aborts, and the
+            // ingest fails with "wrote no knowledge pages" — which points the
+            // investigator at the model's authoring rather than at this loop
+            // (DR-15).
+            let complete_requested = reply.tool_calls.iter().any(|t| t.name == "complete");
+
+            // Store the assistant turn in the conversation
+            messages.push(LlmMessage::Assistant(reply.clone()));
+
+            let result_parts = self
+                .dispatch_turn(&reply.tool_calls, dispatch, &mut events, event_sink)
+                .await;
+            // Bundle all results into one message so Bedrock sees a single user
+            // turn paired against the assistant turn above.
+            if !result_parts.is_empty() {
+                messages.push(LlmMessage::ToolResults(result_parts));
+            }
+
+            if complete_requested {
                 return Ok(make_result(
                     events,
                     DoneReason::CompleteSentinel,
@@ -227,68 +261,146 @@ impl SubAgent {
                     steps,
                 ));
             }
-
-            // Store the assistant turn in the conversation
-            messages.push(LlmMessage::Assistant(reply.clone()));
-
-            // Dispatch each tool call and collect results.
-            //
-            // All results are then pushed as a SINGLE `LlmMessage::ToolResults`
-            // containing every result block.  Bedrock (and the Anthropic spec)
-            // require that when an assistant turn has N `tool_use` blocks, ALL N
-            // `tool_result` blocks appear in one subsequent user message; emitting
-            // separate messages causes a ValidationException.
-            let mut result_parts: Vec<ToolResultPart> = Vec::new();
-            for call in &reply.tool_calls {
-                let call_ev = SubAgentEvent::ToolCall {
-                    name: call.name.clone(),
-                    args: call.args.clone(),
-                };
-                if let Some(tx) = event_sink {
-                    let _ = tx.send(call_ev.clone());
-                }
-                events.push(call_ev);
-
-                let result_content = match dispatch.call(&call.name, call.args.clone()).await {
-                    Ok(s) => {
-                        let result_ev = SubAgentEvent::ToolResult {
-                            name: call.name.clone(),
-                            ok: true,
-                            summary: s.chars().take(120).collect(),
-                        };
-                        if let Some(tx) = event_sink {
-                            let _ = tx.send(result_ev.clone());
-                        }
-                        events.push(result_ev);
-                        s
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        let result_ev = SubAgentEvent::ToolResult {
-                            name: call.name.clone(),
-                            ok: false,
-                            summary: msg.clone(),
-                        };
-                        if let Some(tx) = event_sink {
-                            let _ = tx.send(result_ev.clone());
-                        }
-                        events.push(result_ev);
-                        format!("error: {msg}")
-                    }
-                };
-                result_parts.push(ToolResultPart {
-                    request_id: call.id.clone(),
-                    name: call.name.clone(),
-                    content: result_content,
-                });
-            }
-            // Bundle all results into one message so Bedrock sees a single user
-            // turn paired against the assistant turn above.
-            if !result_parts.is_empty() {
-                messages.push(LlmMessage::ToolResults(result_parts));
-            }
             steps += 1;
         }
+    }
+
+    /// Every reason to stop *before* spending another provider call, in the
+    /// order they are cheapest to check.
+    ///
+    /// One function rather than four inline `if`s so that adding a bound is a
+    /// change in one place — the token budget below was declared in
+    /// [`SubAgentBounds`] and enforced nowhere, and a list of checks that is
+    /// hard to see the end of is how that happens.
+    fn stop_before_step(
+        &self,
+        steps: usize,
+        started: Instant,
+        messages: &[LlmMessage],
+        cancel: Option<&tokio::sync::Notify>,
+    ) -> Option<DoneReason> {
+        if steps >= self.bounds.max_steps {
+            return Some(DoneReason::StepBudgetReached);
+        }
+        if started.elapsed() > self.bounds.max_wall {
+            return Some(DoneReason::TimeBudgetReached);
+        }
+        if estimated_tokens(&self.system_prompt, messages) > self.bounds.max_tokens {
+            return Some(DoneReason::TokenBudgetReached);
+        }
+        // Non-blocking poll: fires if notify_one() was called.
+        if cancel.is_some_and(cancel_was_signalled) {
+            return Some(DoneReason::Cancelled);
+        }
+        None
+    }
+
+    /// Dispatch every tool call in one assistant turn, in order, recording an
+    /// event per call and per result.
+    ///
+    /// Results come back as parts of a SINGLE `LlmMessage::ToolResults`: Bedrock
+    /// (and the Anthropic spec) require that when an assistant turn contains N
+    /// `tool_use` blocks, ALL N `tool_result` blocks appear in one subsequent
+    /// user message, and emitting separate messages causes a ValidationException.
+    ///
+    /// `complete` is skipped rather than dispatched — it is a loop sentinel, not
+    /// a tool anyone implements, so dispatching it would produce an "unknown
+    /// tool" error event on a turn that in fact succeeded.
+    ///
+    /// A failing tool is fed back to the model as `error: …` rather than ending
+    /// the run: a bad argument is something the model can fix on the next step,
+    /// and `max_steps` is what stops it retrying forever.
+    async fn dispatch_turn(
+        &self,
+        calls: &[LlmToolCall],
+        dispatch: &dyn ToolDispatch,
+        events: &mut Vec<SubAgentEvent>,
+        event_sink: Option<&tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
+    ) -> Vec<ToolResultPart> {
+        let mut result_parts: Vec<ToolResultPart> = Vec::new();
+        for call in calls.iter().filter(|c| c.name != "complete") {
+            let call_ev = SubAgentEvent::ToolCall {
+                name: call.name.clone(),
+                args: call.args.clone(),
+            };
+            if let Some(tx) = event_sink {
+                let _ = tx.send(call_ev.clone());
+            }
+            events.push(call_ev);
+
+            let (ok, summary, content) = match dispatch.call(&call.name, call.args.clone()).await {
+                Ok(s) => (true, s.chars().take(120).collect(), s),
+                Err(e) => {
+                    let msg = e.to_string();
+                    (false, msg.clone(), format!("error: {msg}"))
+                }
+            };
+            let result_ev = SubAgentEvent::ToolResult {
+                name: call.name.clone(),
+                ok,
+                summary,
+            };
+            if let Some(tx) = event_sink {
+                let _ = tx.send(result_ev.clone());
+            }
+            events.push(result_ev);
+
+            result_parts.push(ToolResultPart {
+                request_id: call.id.clone(),
+                name: call.name.clone(),
+                content,
+            });
+        }
+        result_parts
+    }
+}
+
+/// The final text that goes with a stop decided before the model was asked.
+fn stop_text(reason: &DoneReason) -> &'static str {
+    match reason {
+        DoneReason::StepBudgetReached => "step budget reached",
+        DoneReason::TimeBudgetReached => "time budget reached",
+        DoneReason::TokenBudgetReached => "token budget reached",
+        DoneReason::Cancelled => "cancelled",
+        // Not reachable from `stop_before_step`, which only returns budget and
+        // cancellation reasons; spelled out rather than caught by a wildcard so
+        // a new variant is a compile error here and gets its own sentence.
+        DoneReason::CompleteSentinel | DoneReason::NoMoreToolCalls | DoneReason::Error => "stopped",
+    }
+}
+
+/// A deliberately cheap size estimate for the conversation so far: four
+/// characters to the token.
+///
+/// Not a tokenizer, and it must not become one here. The real counter
+/// (`tiktoken-rs`, in `context_mgmt`) lives in `biorouter`, which depends on
+/// this crate — reaching for it would be the circular dependency the whole
+/// `Completer` abstraction exists to avoid. What this bound is for is stopping
+/// a run whose context has grown to a size the provider is about to refuse, and
+/// for that a ratio that is right to within a factor of two, applied to a
+/// 200_000 default, does the job. It over-counts JSON tool arguments (which
+/// tokenize densely) and under-counts nothing, so it errs toward stopping early.
+fn estimated_tokens(system: &str, messages: &[LlmMessage]) -> u64 {
+    let chars: usize = system.chars().count() + messages.iter().map(message_chars).sum::<usize>();
+    (chars / 4) as u64
+}
+
+fn message_chars(message: &LlmMessage) -> usize {
+    match message {
+        LlmMessage::User(text) => text.chars().count(),
+        LlmMessage::Assistant(reply) => {
+            reply.text.chars().count()
+                + reply
+                    .tool_calls
+                    .iter()
+                    .map(|c| c.name.chars().count() + c.args.to_string().chars().count())
+                    .sum::<usize>()
+        }
+        LlmMessage::ToolResult { content, .. } => content.chars().count(),
+        LlmMessage::ToolResults(parts) => parts
+            .iter()
+            .map(|p| p.content.chars().count())
+            .sum::<usize>(),
     }
 }
 
@@ -468,6 +580,89 @@ mod tests {
         assert!(result.steps_used <= 5);
     }
 
+    /// DR-16b. `max_tokens` was declared and read by nothing, which reads as a
+    /// bound that is being enforced.
+    ///
+    /// The step budget is deliberately left wide open here: a run can blow its
+    /// context in three steps if the pages are big, and a test that could also
+    /// have been satisfied by `max_steps` would prove nothing about this bound.
+    #[tokio::test]
+    async fn a_conversation_that_outgrows_max_tokens_stops_and_says_so() {
+        let replies: Vec<LlmReply> = (0..10).map(|_| tool_call_reply("kb_read_page")).collect();
+        let agent = SubAgent {
+            completer: Box::new(MockCompleter::new(replies)),
+            tools: vec![],
+            system_prompt: "sys".into(),
+            bounds: SubAgentBounds {
+                max_steps: 10,
+                max_tokens: 100, // ≈400 characters
+                ..Default::default()
+            },
+        };
+        // One oversized page result per step, so the second check sees a
+        // conversation past the budget.
+        struct BigPages;
+        #[async_trait]
+        impl ToolDispatch for BigPages {
+            async fn call(&self, _name: &str, _args: serde_json::Value) -> Result<String> {
+                Ok("x".repeat(2000))
+            }
+        }
+
+        let result = agent.run("hello", &BigPages, None, None).await.unwrap();
+        assert_eq!(result.reason, DoneReason::TokenBudgetReached);
+        assert!(
+            result.steps_used < 10,
+            "the token bound must bite before the step bound, got {} steps",
+            result.steps_used
+        );
+    }
+
+    /// The other half of DR-16b: `max_wall` was checked only *between*
+    /// iterations, so one hung provider call was unbounded — a 300 s budget
+    /// could sit on a single `await` for as long as the socket stayed open,
+    /// and the ingest UI shows a run that never finishes and never fails.
+    #[tokio::test]
+    async fn a_hung_provider_call_is_cut_off_at_the_wall_clock() {
+        /// Never answers within any budget a test would set. A real one of
+        /// these is a socket the far end forgot.
+        struct NeverAnswers;
+
+        #[async_trait]
+        impl Completer for NeverAnswers {
+            async fn complete(
+                &self,
+                _system: &str,
+                _messages: &[LlmMessage],
+                _tools: &[Tool],
+            ) -> Result<LlmReply> {
+                std::future::pending().await
+            }
+        }
+
+        // A real (tiny) budget rather than tokio's paused clock, which needs the
+        // `test-util` feature this workspace does not enable. The run ends when
+        // the budget does, so the test costs exactly this much wall time — and
+        // the budget is generous enough that the between-steps check cannot win
+        // the race and report the same reason for the wrong cause.
+        let agent = SubAgent {
+            completer: Box::new(NeverAnswers),
+            tools: vec![],
+            system_prompt: "sys".into(),
+            bounds: SubAgentBounds {
+                max_wall: Duration::from_millis(250),
+                ..Default::default()
+            },
+        };
+        let result = agent.run("hello", &EchoDispatch, None, None).await.unwrap();
+        assert_eq!(result.reason, DoneReason::TimeBudgetReached);
+        assert!(
+            result.final_text.contains("waiting for the model"),
+            "the reason must distinguish a hung call from a long run, got: {}",
+            result.final_text
+        );
+    }
+
     /// Test 3: cancellation via Notify before the loop starts → returns Cancelled.
     #[tokio::test]
     async fn cancellation_via_notify() {
@@ -547,6 +742,67 @@ mod tests {
             matches!(tool_result_msgs[0], LlmMessage::ToolResults(parts) if parts.len() == 2),
             "the single tool-result message must be LlmMessage::ToolResults with 2 parts"
         );
+    }
+
+    /// A dispatcher that records every call it is handed, so a test can assert
+    /// what actually ran rather than what the loop said it did.
+    #[derive(Default)]
+    struct RecordingDispatch {
+        calls: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl ToolDispatch for RecordingDispatch {
+        async fn call(&self, name: &str, _args: serde_json::Value) -> Result<String> {
+            self.calls.lock().await.push(name.to_string());
+            Ok("ok".to_string())
+        }
+    }
+
+    /// DR-15. The natural shape of a typed-extraction turn: N writes and then
+    /// `complete`, in one assistant reply.
+    ///
+    /// The loop used to return on seeing the sentinel *before* the dispatch
+    /// loop, so the write never ran — and the failure surfaced far away and
+    /// wearing a disguise: nothing under `knowledge/` changed, so
+    /// `txn_wrote_knowledge_pages` returned false, the txn aborted, and the
+    /// ingest reported "wrote no knowledge pages", which reads as the model
+    /// having authored nothing.
+    #[tokio::test]
+    async fn a_write_beside_the_complete_sentinel_is_still_dispatched() {
+        let reply = LlmReply {
+            text: "filed".into(),
+            tool_calls: vec![
+                LlmToolCall {
+                    id: "tc-1".into(),
+                    name: "kb_write_page".to_string(),
+                    args: serde_json::Value::Object(Default::default()),
+                },
+                LlmToolCall {
+                    id: "tc-2".into(),
+                    name: "complete".to_string(),
+                    args: serde_json::Value::Object(Default::default()),
+                },
+            ],
+        };
+        let dispatch = RecordingDispatch::default();
+        let seen = dispatch.calls.clone();
+
+        let agent = make_agent(MockCompleter::new(vec![reply]), 10);
+        let result = agent.run("go", &dispatch, None, None).await.unwrap();
+
+        assert_eq!(
+            *seen.lock().await,
+            vec!["kb_write_page".to_string()],
+            "the sibling write must run, and the sentinel must not be dispatched \
+             as if it were a tool"
+        );
+        assert_eq!(
+            result.reason,
+            DoneReason::CompleteSentinel,
+            "the sentinel is still honoured, just not before its siblings"
+        );
+        assert_eq!(result.final_text, "filed");
     }
 
     /// Test 4: with an event_sink, events arrive in the channel as the loop runs.

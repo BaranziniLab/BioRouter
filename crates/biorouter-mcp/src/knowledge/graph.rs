@@ -1,17 +1,11 @@
 use crate::knowledge::{
+    links::{self, LinkIndex},
     raw,
     store::{self, PageRef},
     types::{Graph, GraphEdge, GraphNode, PageKind},
 };
 use anyhow::Result;
-use once_cell::sync::Lazy;
-use regex::Regex;
 use std::path::Path;
-
-const KNOWLEDGE_LINK_RE: &str = r"\[\[([^\]]+)\]\]";
-
-// Compiled once rather than on every `derive()` call.
-static KNOWLEDGE_LINK: Lazy<Regex> = Lazy::new(|| Regex::new(KNOWLEDGE_LINK_RE).unwrap());
 
 pub fn derive(kb_root: &Path) -> Result<Graph> {
     // `list_pages` walks the whole `knowledge/` tree, which includes the
@@ -27,12 +21,12 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
         .collect();
     let mut nodes = Vec::new();
     let mut id_for_path = std::collections::HashMap::new();
-    let mut label_to_id = std::collections::HashMap::new();
+    let mut by_link_key = Vec::new();
 
     for p in &pages {
         let node_id = path_to_node_id(&p.path);
         id_for_path.insert(p.path.clone(), node_id.clone());
-        label_to_id.insert(slug(page_basename(&p.path)).to_lowercase(), node_id.clone());
+        by_link_key.push((p.path.clone(), node_id.clone()));
         let kind = page_kind_of(p);
         nodes.push(GraphNode {
             id: node_id,
@@ -55,38 +49,29 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
         }
     }
 
+    // One index, one keying, shared with the lint and the query citation
+    // extractor — see `knowledge::links` for the three that used to disagree.
+    // A link to a scaffold page resolves to nothing, because the scaffold pages
+    // were filtered out above and so never entered the index.
+    let index: LinkIndex<String> = LinkIndex::from_pages(by_link_key);
     let mut edges = Vec::new();
-    let re = &*KNOWLEDGE_LINK;
     for p in &pages {
         let abs = kb_root.join(&p.path);
         let body = std::fs::read_to_string(&abs)?;
         let from = id_for_path.get(&p.path).cloned().unwrap();
-        for cap in re.captures_iter(&body) {
-            let raw = cap.get(1).unwrap().as_str().trim();
-            // Support Obsidian-style `[[target|alias]]` wiki-link syntax: only
-            // the part before the first `|` is the link target; the alias is
-            // display text. Without this split, the slug of the full bracket
-            // contents never matches any page's basename and every link is
-            // silently dropped.
-            let target = raw.split('|').next().unwrap_or(raw).trim();
-            // Targets may be plain labels (e.g. "Wanjun Gu") or full logical
-            // paths (e.g. "knowledge/entities/wanjun-gu" or with `.md`). For
-            // path-style targets, only the file basename participates in the
-            // label lookup since `label_to_id` is keyed by `slug(basename)`.
-            let basename = target
-                .rsplit('/')
-                .next()
-                .unwrap_or(target)
-                .trim_end_matches(".md");
-            let key = slug(&basename.to_lowercase());
-            if let Some(to) = label_to_id.get(&key) {
-                if to != &from {
-                    edges.push(GraphEdge {
-                        from: from.clone(),
-                        to: to.clone(),
-                        relation: None,
-                    });
-                }
+        for link in links::wiki_links(&body) {
+            // A self-link is dropped rather than drawn: a page that mentions
+            // its own name would otherwise get a loop that says nothing.
+            if let Some(to) = index.resolve(&link.target).filter(|to| *to != &from) {
+                edges.push(GraphEdge {
+                    from: from.clone(),
+                    to: to.clone(),
+                    // Stage 2's socket. `link.predicate` is already carried by
+                    // the BioOKF sugar form and is deliberately dropped here:
+                    // populating it is a graph-shape change with its own gate,
+                    // and this seam must not smuggle one in.
+                    relation: None,
+                });
             }
         }
     }
@@ -94,17 +79,66 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     Ok(Graph { nodes, edges })
 }
 
+/// The shape of the graph as this build writes and reads it. Bump this whenever
+/// [`Graph`], [`GraphNode`] or [`GraphEdge`] changes shape in a way that makes
+/// an older cache wrong rather than merely incomplete — a new node field the
+/// deriver now fills, a changed id scheme, a dropped node class.
+///
+/// Version 1 is the first *stated* version. Caches written before the envelope
+/// existed are bare `Graph` JSON with no `version` key at all; they fail to
+/// deserialize into [`CacheEnvelope`] and are therefore treated as absent, which
+/// is exactly the treatment they need.
+const CACHE_VERSION: u32 = 1;
+
+/// The on-disk envelope, so `graph-cache.json` says what it is.
+///
+/// A bare `Graph` on disk cannot answer "was this written by a deriver that
+/// knows about the fields I am about to read?", and DR-13 records both ways
+/// that ends badly. The loud way: `read_cache` was
+/// `Ok(Some(serde_json::from_str(&s)?))`, so a shape change made every existing
+/// base's cache a deserialize **error**, which propagated out of
+/// `GET /knowledge/bases/{id}/graph` as a 404 that nothing on that path ever
+/// repaired — a permanent error in the Knowledge view, healed only by deleting
+/// a file the user cannot see. The quiet way is worse: give the new fields
+/// `#[serde(default)]` and every stale cache deserializes cleanly, so every
+/// pre-existing base serves empty/typeless nodes forever and the change appears
+/// to work while producing nothing.
+///
+/// Generic over the payload so the write side can serialize a `&Graph` without
+/// cloning it while the read side deserializes an owned one.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct CacheEnvelope<G> {
+    version: u32,
+    graph: G,
+}
+
 pub fn write_cache(kb_root: &Path, graph: &Graph) -> Result<()> {
     let path = kb_root
         .join(".biorouter-knowledge")
         .join("graph-cache.json");
     std::fs::create_dir_all(path.parent().unwrap())?;
+    let envelope = CacheEnvelope {
+        version: CACHE_VERSION,
+        graph,
+    };
     let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(graph)?)?;
+    std::fs::write(&tmp, serde_json::to_string_pretty(&envelope)?)?;
     std::fs::rename(tmp, path)?;
     Ok(())
 }
 
+/// The cached graph, or `None` meaning "no usable cache — re-derive".
+///
+/// **This function never reports a bad cache as an error**, and that is the
+/// whole point of DR-13. A cache is an optimisation over `derive()`, which can
+/// always be run again; every way of failing to read one — missing file, unreadable
+/// file, malformed JSON, a version this build does not know — has the same
+/// correct answer, and it is `Ok(None)`. Returning `Err` here instead put a
+/// permanent 404 in front of the Knowledge view (see [`CacheEnvelope`]).
+///
+/// The `Result` in the signature is kept for the callers, not for the failures:
+/// it is where a future durable-read error would go, and dropping it would churn
+/// every call site for no gain.
 pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
     let path = kb_root
         .join(".biorouter-knowledge")
@@ -112,8 +146,36 @@ pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
     if !path.exists() {
         return Ok(None);
     }
-    let s = std::fs::read_to_string(&path)?;
-    Ok(Some(serde_json::from_str(&s)?))
+    let s = match std::fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!(
+                "knowledge: graph cache at {} unreadable, re-deriving: {e}",
+                path.display()
+            );
+            return Ok(None);
+        }
+    };
+    match serde_json::from_str::<CacheEnvelope<Graph>>(&s) {
+        Ok(envelope) if envelope.version == CACHE_VERSION => Ok(Some(envelope.graph)),
+        Ok(envelope) => {
+            tracing::info!(
+                "knowledge: graph cache at {} is version {}, this build writes {CACHE_VERSION}; re-deriving",
+                path.display(),
+                envelope.version
+            );
+            Ok(None)
+        }
+        Err(e) => {
+            // Includes every cache written before the envelope existed: those
+            // files are a bare `Graph` object with no `version` key.
+            tracing::info!(
+                "knowledge: graph cache at {} is not in a shape this build reads, re-deriving: {e}",
+                path.display()
+            );
+            Ok(None)
+        }
+    }
 }
 
 /// Scaffold pages that exist in every KB and should never appear as graph
@@ -132,28 +194,6 @@ fn path_to_node_id(logical: &str) -> String {
         .unwrap_or(logical)
         .trim_end_matches(".md")
         .replace('/', ":")
-}
-
-fn page_basename(logical: &str) -> &str {
-    logical
-        .rsplit('/')
-        .next()
-        .unwrap_or(logical)
-        .trim_end_matches(".md")
-}
-
-fn slug(s: &str) -> String {
-    s.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
-        .trim_matches('-')
-        .to_string()
 }
 
 fn page_kind_of(p: &PageRef) -> PageKind {
@@ -244,12 +284,32 @@ mod tests {
         assert!(g.edges.iter().all(|e| e.to != "index" && e.from != "index"));
     }
 
+    /// Write whatever bytes over the cache file, bypassing [`write_cache`] —
+    /// the only way to express "a file an older build left behind".
+    fn overwrite_cache_file(kb: &std::path::Path, bytes: &str) {
+        let path = kb.join(".biorouter-knowledge").join("graph-cache.json");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    /// DR-13, and the case every knowledge base on disk is in right now: its
+    /// cache is a bare `Graph` object with no `version` key, because it was
+    /// written before the envelope existed. It must read as *absent* — silently
+    /// re-derived — and not as the `Err` that used to leave `GET
+    /// /knowledge/bases/{id}/graph` answering 404 forever.
+    ///
+    /// This test replaces `get_graph_self_heals_stale_cache_with_scaffold_nodes`.
+    /// The v0 cache it writes contains the scaffold `index` node that test used
+    /// as its fingerprint, so the old assertion is made here too — the version
+    /// check subsumes the hardcoded predicate rather than merely coexisting
+    /// with it.
     #[test]
-    fn get_graph_self_heals_stale_cache_with_scaffold_nodes() {
+    fn a_v0_shaped_cache_is_treated_as_absent_and_silently_re_derived() {
         use crate::knowledge::types::{Graph, GraphNode, PageKind};
         let (_d, kb) = build_sample();
-        // Simulate an old cache that still contains the scaffold `index` hub.
-        let stale = Graph {
+        // Exactly what the pre-envelope `write_cache` produced: the graph
+        // itself, serialized at the top level.
+        let v0 = Graph {
             nodes: vec![GraphNode {
                 id: "index".into(),
                 label: "Index".into(),
@@ -260,18 +320,58 @@ mod tests {
             }],
             edges: vec![],
         };
-        write_cache(&kb, &stale).unwrap();
+        overwrite_cache_file(&kb, &serde_json::to_string_pretty(&v0).unwrap());
+
+        assert!(
+            read_cache(&kb)
+                .expect("a stale cache is never an error")
+                .is_none(),
+            "a cache with no version key must read as absent"
+        );
 
         let svc = KnowledgeService::new(_d.path().to_path_buf());
         let g = svc.get_graph("k").unwrap();
+        assert_eq!(g.nodes.len(), 2, "the two real pages were re-derived");
         assert!(
             g.nodes.iter().all(|n| n.id != "index"),
-            "stale scaffold cache must be re-derived, got {:?}",
+            "the scaffold node from the v0 cache survived, got {:?}",
             g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
         );
-        // And the cache on disk is now healed.
-        let healed = read_cache(&kb).unwrap().unwrap();
-        assert!(healed.nodes.iter().all(|n| n.id != "index"));
+        // And the cache on disk is healed, so the next read is served from it.
+        let healed = read_cache(&kb)
+            .unwrap()
+            .expect("re-derive rewrote the cache");
+        assert_eq!(healed, g);
+    }
+
+    #[test]
+    fn a_cache_from_a_future_version_is_treated_as_absent() {
+        let (_d, kb) = build_sample();
+        let g = derive(&kb).unwrap();
+        overwrite_cache_file(
+            &kb,
+            &serde_json::to_string(&serde_json::json!({
+                "version": CACHE_VERSION + 1,
+                "graph": g,
+            }))
+            .unwrap(),
+        );
+        assert!(
+            read_cache(&kb)
+                .expect("a newer cache is never an error")
+                .is_none(),
+            "a version this build does not write must read as absent"
+        );
+    }
+
+    #[test]
+    fn a_corrupt_cache_is_absent_rather_than_an_error() {
+        // Half-written JSON is what a machine losing power mid-`write_cache`
+        // leaves behind, tmp+rename notwithstanding — and a truncated file that
+        // 404s the graph route forever is the failure DR-13 names.
+        let (_d, kb) = build_sample();
+        overwrite_cache_file(&kb, "{\"version\": 1, \"graph\": {\"nodes\": [");
+        assert!(read_cache(&kb).expect("corrupt is not an error").is_none());
     }
 
     #[test]
@@ -281,6 +381,19 @@ mod tests {
         write_cache(&kb, &g).unwrap();
         let back = read_cache(&kb).unwrap().unwrap();
         assert_eq!(back, g);
+    }
+
+    #[test]
+    fn the_cache_file_states_its_own_version() {
+        // Self-describing on disk, not merely in the type: a reader holding the
+        // file and not this source has to be able to tell what it is.
+        let (_d, kb) = build_sample();
+        write_cache(&kb, &derive(&kb).unwrap()).unwrap();
+        let raw = std::fs::read_to_string(kb.join(".biorouter-knowledge").join("graph-cache.json"))
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(v["version"], serde_json::json!(CACHE_VERSION));
+        assert!(v["graph"]["nodes"].is_array(), "got: {raw}");
     }
 
     #[test]

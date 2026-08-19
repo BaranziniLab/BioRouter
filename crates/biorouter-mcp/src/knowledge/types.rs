@@ -96,13 +96,68 @@ impl KbTier {
     }
 }
 
+/// The schema generation a `manifest.yaml` that does not say belongs to.
+///
+/// 1, not 0: every manifest written before this default existed carries an
+/// explicit `schema_version: 1`, so a manifest that is *missing* the key is a
+/// hand-edited or externally produced one, and the right reading of it is "the
+/// oldest generation we know", not "a generation that never existed".
+fn default_schema_version() -> u32 {
+    1
+}
+
+/// The creation date a `manifest.yaml` that does not say gets.
+///
+/// The epoch rather than `Utc::now()`, because a default is a statement about a
+/// base that already exists: stamping it with the moment it was *read* would
+/// invent a fact and make the base sort as the newest one in the list every
+/// time it is loaded. The epoch reads as "unknown, and long ago", which is true.
+fn default_created_at() -> DateTime<Utc> {
+    DateTime::UNIX_EPOCH
+}
+
+// One knowledge base's `manifest.yaml`.
+//
+// A plain comment rather than a doc comment on purpose: utoipa publishes a
+// struct's doc comment as its OpenAPI `description`, and none of what follows
+// is addressed to an API consumer.
+//
+// ⚠ **Every field carries `#[serde(default)]`, and every field added later
+// must too** (DR-12). `manifest::load` is a bare deserialize, so a single
+// non-defaulted field fails the load for every `manifest.yaml` already on
+// disk — and the cascade from there is silent and ends in *persisted* data
+// loss, not in an error message: `list_bases` drops a base whose manifest will
+// not parse, `installed_kb_ids_unlocked` is built from `list_bases` so the id
+// leaves the installed universe, `repair_decision` sees a stored primary that
+// is not installed and clears it, and `apply_selection_unlocked` writes the
+// cleared pointer to disk. The user's `.active-kb` and every per-session
+// pointer are gone, downgrading does not bring them back, and the trigger is
+// the first thing a confused user does when their bases vanish: toggle
+// something.
+//
+// The `#[schema(required)]` beside each default is not redundant. utoipa reads
+// `serde(default)` and drops the field from the OpenAPI `required` list, which
+// would loosen the published API contract — and the generated TypeScript type —
+// as a side effect of a *robustness* change on the read side. The server always
+// serializes all of these, so they really are required in a response; the
+// default exists for what we read, not for what we send.
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct Manifest {
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub id: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub name: String,
+    #[serde(default)]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub color: String,
+    #[serde(default = "default_created_at")]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub created_at: DateTime<Utc>,
+    #[serde(default = "default_schema_version")]
+    #[cfg_attr(feature = "utoipa", schema(required))]
     pub schema_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<ModelRef>,

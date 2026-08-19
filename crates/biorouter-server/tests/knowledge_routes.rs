@@ -9,7 +9,7 @@ mod test_sandbox;
 /// need to construct a full `AppState`.  Each test gets a fresh tempdir-backed
 /// `KnowledgeService` via `build_test_router()`.
 use axum::{body::Body, http::Request, Router};
-use biorouter_mcp::knowledge::service::KnowledgeService;
+use biorouter_mcp::knowledge::{page_fixtures::valid_page, service::KnowledgeService};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -418,7 +418,7 @@ async fn write_then_read_page_roundtrip() {
 
     // Write a page.
     let write_body = serde_json::to_vec(&serde_json::json!({
-        "content": "# Hello\n\nWorld",
+        "content": valid_page("note", "Hello", "# Hello\n\nWorld"),
         "commit_message": "add hello page"
     }))
     .unwrap();
@@ -547,7 +547,7 @@ async fn history_write_restore_roundtrip() {
 
     // 3. Write a page.
     let write_body = serde_json::to_vec(&serde_json::json!({
-        "content": "# Temp Page",
+        "content": valid_page("note", "Temp Page", "# Temp Page"),
         "commit_message": "add temp page"
     }))
     .unwrap();
@@ -1452,7 +1452,7 @@ async fn read_page_returns_markdown_body() {
     std::fs::create_dir_all(&knowledge_dir).unwrap();
     std::fs::write(
         knowledge_dir.join("hello.md"),
-        "---\ntitle: Hello\nkind: note\n---\n\nbody text\n",
+        valid_page("note", "Hello", "body text"),
     )
     .unwrap();
 

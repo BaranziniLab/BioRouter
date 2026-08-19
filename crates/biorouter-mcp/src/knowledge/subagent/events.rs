@@ -29,6 +29,14 @@ pub enum DoneReason {
     NoMoreToolCalls,
     StepBudgetReached,
     TimeBudgetReached,
+    /// The conversation grew past `SubAgentBounds::max_tokens`.
+    ///
+    /// Its own reason rather than folded into `StepBudgetReached`, because the
+    /// two say different things to whoever reads the run: a step budget means
+    /// the sub-agent was still working and ran out of turns, a token budget
+    /// means its context got too big — which is usually one enormous page or a
+    /// tool result that should have been summarised, and is fixed differently.
+    TokenBudgetReached,
     Cancelled,
     Error,
 }

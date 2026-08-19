@@ -1,4 +1,7 @@
-use crate::knowledge::subagent::loop_::{Completer, LlmMessage, LlmReply, LlmToolCall};
+use crate::knowledge::{
+    page_fixtures::valid_page,
+    subagent::loop_::{Completer, LlmMessage, LlmReply, LlmToolCall},
+};
 use anyhow::Result;
 use async_trait::async_trait;
 use rmcp::model::Tool;
@@ -184,14 +187,21 @@ fn capitalize_word(word: &str) -> String {
     )
 }
 
+/// The page this mode's fake ingest files.
+///
+/// Built through [`valid_page`] rather than a local `format!` so the one thing
+/// the digest fixture and the real page format have in common — the frontmatter
+/// — cannot drift apart. This mode drives the *real* HTTP ingest stream, so a
+/// page it emits that the writer would reject is a test-only failure with no
+/// product bug behind it (DR-19).
 fn render_source_page(source_id: &str, title: &str, markdown: &str) -> Result<String> {
-    let frontmatter = serde_yaml::to_string(&json!({
-        "title": title,
-        "kind": "source",
-    }))?;
     let excerpt = excerpt_from_markdown(markdown);
-    Ok(format!(
-        "---\n{frontmatter}---\n\n# {title}\n\nImported from raw source `{source_id}` in knowledge test mode.\n\n## Extracted notes\n\n{excerpt}\n"
+    Ok(valid_page(
+        "source",
+        title,
+        &format!(
+            "# {title}\n\nImported from raw source `{source_id}` in knowledge test mode.\n\n## Extracted notes\n\n{excerpt}"
+        ),
     ))
 }
 

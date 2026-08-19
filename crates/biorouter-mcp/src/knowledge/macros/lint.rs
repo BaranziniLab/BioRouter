@@ -5,6 +5,7 @@
 
 use crate::knowledge::{
     git::{GitRepo, Txn},
+    links::{self, LinkIndex},
     paths, raw,
     service::KnowledgeService,
     store::{logical_path, split_frontmatter},
@@ -18,7 +19,6 @@ use crate::knowledge::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
-use regex::Regex;
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
@@ -56,9 +56,16 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     collect_pages(&knowledge_dir, &knowledge_dir, &mut pages)?;
 
     // Build inbound-link map: target_path -> set of source paths that link to it.
-    // We recognise `[[Name]]` and resolve to the first page whose filename stem
-    // case-insensitively matches.
-    let wiki_re = Regex::new(r"\[\[([^\]]+)\]\]").unwrap();
+    //
+    // The resolution is `knowledge::links`', which is the graph deriver's — this
+    // used to be a second regex followed by a second resolver (lowercase, spaces
+    // to hyphens, compared to the file stem), and the two disagreed in a way
+    // nothing caught: `[[knowledge/entities/x|X]]` was an edge in the graph and
+    // an ORPHAN here, for the same page. A lint that reports a page as
+    // unreferenced when the graph is drawing an edge into it sends the user to
+    // "fix" a page that is fine.
+    let index: LinkIndex<String> =
+        LinkIndex::from_pages(pages.keys().map(|p| (p.clone(), p.clone())));
     let mut inbound: HashMap<String, HashSet<String>> = HashMap::new();
 
     // Initialise all known pages with empty inbound sets.
@@ -70,16 +77,15 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     let mut wiki_targets_in_sources: HashSet<String> = HashSet::new();
 
     for (src_path, body) in &pages {
-        for cap in wiki_re.captures_iter(body) {
-            let target_name = cap.get(1).unwrap().as_str();
+        for link in links::wiki_links(body) {
             // Record as a target in source pages (used for missing-concept detection).
             if src_path.starts_with("knowledge/sources/") {
-                wiki_targets_in_sources.insert(target_name.to_string());
+                wiki_targets_in_sources.insert(link.target.clone());
             }
             // Try to resolve the wiki-link to a known page.
-            if let Some(resolved) = resolve_wiki_link(&pages, target_name) {
+            if let Some(resolved) = index.resolve(&link.target) {
                 inbound
-                    .entry(resolved)
+                    .entry(resolved.clone())
                     .or_default()
                     .insert(src_path.clone());
             }
@@ -131,7 +137,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     //      don't have a page under knowledge/ ----
     let mut missing_concept_pages: Vec<String> = Vec::new();
     for target in &wiki_targets_in_sources {
-        if resolve_wiki_link(&pages, target).is_none() && !missing_concept_pages.contains(target) {
+        if index.resolve(target).is_none() && !missing_concept_pages.contains(target) {
             missing_concept_pages.push(target.clone());
         }
     }
@@ -168,25 +174,11 @@ fn is_hub_page(path: &str) -> bool {
     !rest.contains('/')
 }
 
-/// Try to resolve a wiki-link target name to a logical page path.
-/// Matching strategy: case-insensitive stem comparison.
-fn resolve_wiki_link(pages: &HashMap<String, String>, target: &str) -> Option<String> {
-    let target_lower = target.to_ascii_lowercase();
-    // Replace spaces with hyphens as a normalisation step.
-    let target_slug = target_lower.replace(' ', "-");
-    pages
-        .keys()
-        .find(|path| {
-            // Extract the file stem from the logical path.
-            let stem = Path::new(path)
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            stem == target_lower || stem == target_slug
-        })
-        .cloned()
-}
+// `resolve_wiki_link` lived here: a case-insensitive stem comparison with
+// spaces replaced by hyphens, which could not read a path-style target at all.
+// It is `knowledge::links::LinkIndex::resolve` now — the graph's resolver, the
+// most complete of the three and the only one that had tests. See that module's
+// header for what each of the three used to do differently.
 
 // ---------------------------------------------------------------------------
 // Part B: async lint (with optional sub-agent autofix)
@@ -243,12 +235,9 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
-    // Idempotently upgrade legacy schema.md files that pre-date the
-    // cross-reference rules section. No-op for already-migrated KBs.
-    let _ = svc.migrate_schema_if_needed(&args.kb_id);
-    // Refresh the graph cache so any stale 0-edge cache produced by the
-    // pre-fix wiki-link deriver is replaced with a freshly derived one.
-    let _ = svc.rebuild_graph_cache(&args.kb_id);
+    // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
+    // stale graph cache, neither fatally. See `macros::refresh_base`.
+    super::refresh_base(svc, &args.kb_id);
 
     let report = scan(&kb_root)?;
 

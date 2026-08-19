@@ -10,6 +10,11 @@ pub mod convert;
 pub mod credibility;
 pub mod git;
 pub mod graph;
+// The one `[[…]]` parser and the one resolver behind it (Stage 1.5, DR-14).
+// Unlike `okf` and `biookf` this module is NOT additive: `graph`, `macros::query`
+// and `macros::lint` each used to carry their own copy of the regex and their own
+// resolver, and all three now call this.
+pub mod links;
 pub mod log;
 pub mod macros;
 pub mod manifest;
@@ -17,6 +22,10 @@ pub mod manifest;
 // in the modules above reads it yet — Stage 2 (`graph`) and Stage 3 (`store`,
 // `manifest`, `service`) are what wire it in.
 pub mod okf;
+// The one page-shaped fixture builder the tests in three crates write through
+// (Stage 1.5, DR-19). Production code so `biorouter` and `biorouter-server`
+// tests can reach it; nothing in production calls it.
+pub mod page_fixtures;
 pub mod paths;
 pub mod raw;
 pub mod registry;

@@ -82,12 +82,9 @@ pub async fn ingest(svc: &KnowledgeService, args: IngestArgs) -> Result<IngestRe
     )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
-    // Idempotently upgrade legacy schema.md files that pre-date the
-    // cross-reference rules section. No-op for already-migrated KBs.
-    let _ = svc.migrate_schema_if_needed(&args.kb_id);
-    // Refresh the graph cache so any stale 0-edge cache produced by the
-    // pre-fix wiki-link deriver is replaced with a freshly derived one.
-    let _ = svc.rebuild_graph_cache(&args.kb_id);
+    // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
+    // stale graph cache, neither fatally. See `macros::refresh_base`.
+    super::refresh_base(svc, &args.kb_id);
 
     // Materialize the raw source outside the sub-agent txn so it is durable
     // even if the sub-agent fails.
