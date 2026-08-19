@@ -207,21 +207,27 @@ export function ForceGraphCanvas({
     return () => window.clearTimeout(timeout);
   }, [graph, size.height, size.width, compactCanvas]);
 
-  // The remaining literal colours in this file were audited alongside the ink
-  // fix and are deliberately NOT tokenised: the wash below and the edge strokes
-  // are low-alpha tints that composite over whatever ground is behind them, and
-  // the node fills (`credColors.ts`) are a fixed semantic palette the legend
-  // reproduces verbatim. Only glyphs and outlines — the two opaque things drawn
-  // ON the ground — have to follow the theme, and both now do.
+  // The remaining literal colours in this file are the edge strokes (low-alpha
+  // tints that composite over whatever ground is behind them) and the node fills
+  // in `credColors.ts` (a fixed semantic palette the legend reproduces
+  // verbatim). Both are replaced by §5.2's generated palette in Slice B. Glyphs
+  // and outlines — the two opaque things drawn ON the ground — already resolve
+  // from theme tokens.
+  //
+  // ⚠ **The three-layer gradient wash that used to paint this container is
+  // DELETED (ui-spec §4.5).** It was the last gradient-washed surface in the
+  // application; it had no dark variant (the white→black layer painted
+  // identically on the near-black dark ground); its two tints were two of the
+  // off-system node hexes leaking into the background of the panel that displays
+  // them; and it broke the runtime ground resolve outright, because
+  // `getComputedStyle(el).backgroundColor` returns `rgba(0,0,0,0)` when the
+  // colour lives in `backgroundImage`. The pane above paints
+  // `--background-muted`, which is the ground the palette is audited against.
   return (
     <div
       data-testid="knowledge-graph-canvas"
       ref={containerRef}
       className="h-full w-full overflow-hidden"
-      style={{
-        background:
-          'radial-gradient(circle at top left, rgba(214, 176, 106, 0.08), transparent 32%), radial-gradient(circle at top right, rgba(73, 101, 154, 0.08), transparent 28%), linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(0, 0, 0, 0.04))',
-      }}
     >
       <ForceGraph2D
         ref={fgRef as unknown as React.MutableRefObject<ForceGraphMethods>}

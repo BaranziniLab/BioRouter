@@ -398,7 +398,12 @@
      own row BELOW this band rather than inside it, so nothing in the band was
      laid out against the missing 8px. */
   --chrome-height: 44px;
-  --dock-height: 36px; /* terminal dock strip — one step down, same tab language */
+  /* A pane-docked control strip: the terminal dock, the knowledge facet strip,
+     the knowledge legend dock. One step down from a chrome band, same tab
+     language. (The name used to say "terminal dock strip"; the object was
+     always the general one, and the knowledge section is its second consumer.
+     The VALUE does not move.) */
+  --dock-height: 36px;
   --tab-height: 32px; /* chat, artifact and dock tabs; pulled from 34 */
 
   /* Rows. Two rhythms and no more: the rail (sidebar, nav, menu item, recents,
@@ -471,6 +476,24 @@
      than its parent, so below 760px the chat column is simply pane-wide. */
   --measure-chat: 760px;
   --measure-page: clamp(1120px, 88%, 1720px);
+
+  /* Knowledge is the app's ONE canvas view, so it gets the app's one canvas
+     measure (knowledge-base/okf-migration/ui-spec.md §3.1, §6.2). The widening
+     is deliberate — a map of typed nodes is not prose and does not read better
+     at `--measure-page` — but the widest column in the app must not be an
+     un-tokenised arbitrary value sitting beside two that are named.
+     `ReadableContent`'s `graph` size reads this. */
+  --measure-graph: clamp(1440px, 96%, 2200px);
+
+  /* The Knowledge workspace's two rails. Tokens rather than literals because
+     each is written in three or four places — the xl grid column, the md
+     column/overlay, the <md tab panel or `Sheet`, and (for the detail rail) the
+     change-log drawer, which is deliberately the SAME object at the SAME width.
+     Structural: identical under every `data-theme`, and listed in
+     `scripts/lib/theme-contract.mjs`'s STRUCTURAL_TOKENS so no family can
+     re-point them. */
+  --knowledge-rail-sources: 300px;
+  --knowledge-rail-detail: 340px;
 
   --z-base: 0;
   --z-sticky: 100;
@@ -1270,6 +1293,16 @@
 
   --spacing-measure-chat: var(--measure-chat);
   --spacing-measure-page: var(--measure-page);
+  --spacing-measure-graph: var(--measure-graph);
+
+  /* The knowledge rails join every registry the geometry tokens join, so the
+     call sites can be `w-knowledge-rail-detail` — a KNOWN utility name that
+     Tailwind generates — rather than a freshly-invented
+     `w-[var(--knowledge-rail-detail)]`, which under `BIOROUTER_NO_HMR`
+     (`watch: { ignored: ['**'] }`) can silently never reach the stylesheet.
+     Only `grid-cols` keeps the `[var(…)]` form: it has no token shorthand. */
+  --spacing-knowledge-rail-sources: var(--knowledge-rail-sources);
+  --spacing-knowledge-rail-detail: var(--knowledge-rail-detail);
 }
 
 @layer base {
@@ -2302,6 +2335,43 @@
 .biorouter-list-row:hover,
 .biorouter-list-row:focus-within {
   background: color-mix(in srgb, var(--background-medium) 42%, transparent);
+}
+
+/* The swatch ring (knowledge-base/okf-migration/ui-spec.md §6.3).
+   Every DOM palette swatch — the knowledge-base dot, and later the node-type
+   swatches in the legend and the Type facet — sits on a 1px ring of
+   `--background-default`, so the mark's ADJACENT colour is a known ground
+   rather than whatever the row happens to be painting.
+
+   The measurement that forces it: an 8px dot on a `tint-selected` row is
+   composited against `color-mix(--text-default 14%/19%, transparent)`, and the
+   worst palette fill measures 2.15–2.93:1 against that in the twelve family ×
+   mode × state combinations — all below SC 1.4.11's 3:1. With the ring the
+   floor returns to 3.86 light / 3.81 dark. The alternative (re-solving all 28
+   palette fills a rung darker) fixes a DOM composite by darkening the canvas,
+   where the ground is flat and the floor is already correct.
+
+   AUTHORED, not a utility: `shadow-[0_0_0_1px_var(--background-default)]` is
+   exactly the freshly-invented arbitrary class that can fail to generate under
+   `BIOROUTER_NO_HMR`, and this one is load-bearing for legibility. */
+.br-swatch-ring {
+  box-shadow: 0 0 0 1px var(--background-default);
+}
+
+/* The Knowledge canvas's first-load cross-fade (ui-spec §4.12).
+   Two absolutely-stacked opacity layers, never a swap: the loading block fades
+   OUT at `--dur-fast` while the content fades IN at `--dur-med`. AUTHORED
+   rather than `transition-opacity duration-[var(--dur-fast)]`, because a
+   *newly written* arbitrary utility can silently fail to reach the stylesheet
+   under `BIOROUTER_NO_HMR` (`watch: { ignored: ['**'] }` is the same signal
+   Tailwind's scanner uses) — and without the transition the specified
+   cross-fade degrades to exactly the swap it exists to replace. */
+.br-knowledge-fade-out {
+  transition: opacity var(--dur-fast) var(--ease-out);
+}
+
+.br-knowledge-fade-in {
+  transition: opacity var(--dur-med) var(--ease-out);
 }
 
 .biorouter-home-content {

@@ -1,16 +1,21 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Brain, Check, ChevronDown, LoaderCircle } from '../../icons/app-icons';
 import type { ProviderDetails } from '../../../api';
 import type { ModelRef } from '../../../api/types.gen';
 import { useConfig } from '../../ConfigContext';
+import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { EmptyState } from '../../ui/empty-state';
+import { Popover, PopoverContent, PopoverTrigger } from '../../ui/popover';
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from '../../ui/dialog';
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '../../ui/command';
 import { fetchModelsForProviders } from '../../settings/models/modelInterface';
 import {
   getOrderedProviderGroups,
@@ -36,6 +41,50 @@ interface ProviderModelsSection extends OrderedProviderGroup {
   modelsByProvider: Record<string, string[]>;
 }
 
+/**
+ * The "no configured provider has a model" state (ui-spec §4.12 #8).
+ *
+ * ⚠ Its own component, and rendered only inside the OPEN popover, because
+ * `useNavigate` throws outside a router. Hoisting the hook to the picker would
+ * make the picker un-renderable in every test that does not wrap it in a
+ * `MemoryRouter` — and the picker is rendered for real by `IngestPanel.test.tsx`,
+ * which is one of the suites §9 says this pass must not break.
+ */
+function NoModelsAvailable() {
+  const navigate = useNavigate();
+  return (
+    <EmptyState
+      compact
+      icon={Brain}
+      title="No models available"
+      description="Configure a provider in Settings."
+      actions={
+        <Button
+          type="button"
+          variant="secondary"
+          onClick={() => navigate('/settings', { state: { section: 'models' } })}
+        >
+          Open settings
+        </Button>
+      }
+    />
+  );
+}
+
+/**
+ * Which model digests staged sources (ui-spec §4.0, §4.4).
+ *
+ * ⚠ **A `Popover` + searchable list, not a second 760px modal.** Choosing a
+ * model from a rail footer is a picker interaction; the dialog it used to open
+ * was the same width as the KB manager and covered the rail it was launched
+ * from. It is also not a `DropdownMenu`: a menu's typeahead fights a nested text
+ * field for every keystroke (see `components/ui/command.tsx`).
+ *
+ * The trigger takes the KB selector's chrome exactly (§4.1) — one Select shape
+ * for both selectors in this rail — and `Set as default` moves from a
+ * hand-rolled span in the trigger to a chip in the menu footer, where it
+ * describes what picking a row will DO instead of decorating the resting state.
+ */
 export function IngestModelPicker({
   value,
   valueState = 'resolved',
@@ -45,6 +94,7 @@ export function IngestModelPicker({
 }: Props) {
   const { getProviders, getProviderModels } = useConfig();
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
   const [sections, setSections] = useState<ProviderModelsSection[]>([]);
   const [providerDisplayNames, setProviderDisplayNames] = useState<Record<string, string>>({});
 
@@ -124,124 +174,140 @@ export function IngestModelPicker({
         ? 'Knowledge base unavailable'
         : 'No model configured';
 
-  function renderProvider(provider: ProviderDetails, section: ProviderModelsSection) {
-    const models = section.modelsByProvider[provider.name] ?? [];
-    if (models.length === 0) {
-      return null;
-    }
-
+  const needle = query.trim().toLowerCase();
+  function matches(provider: ProviderDetails, model: string): boolean {
+    if (!needle) return true;
+    const label = providerDisplayNames[provider.name] ?? provider.name;
     return (
-      <section key={provider.name} className="space-y-1.5">
-        <div className="px-1 text-caps text-text-muted">
-          {providerDisplayNames[provider.name] ?? provider.name}
-        </div>
-        <div className="space-y-0.5">
-          {models.map((model) => {
-            const selected = value?.provider === provider.name && value.model === model;
-            return (
-              <button
-                key={`${provider.name}:${model}`}
-                type="button"
-                onClick={() => {
-                  onChange({ provider: provider.name, model });
-                  setOpen(false);
-                }}
-                className={`flex w-full items-center gap-3 rounded-element px-3 py-2.5 text-left transition-colors ${selected ? 'tint-selected tint-interactive' : 'tint-interactive'}`}
-              >
-                <Brain className="h-4 w-4 shrink-0 text-text-muted" />
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-label">{model}</span>
-                  <span className="block text-supporting text-text-muted">
-                    {providerDisplayNames[provider.name] ?? provider.name}
-                  </span>
-                </span>
-                {selected && <Check className="h-4 w-4 shrink-0 text-text-default" />}
-              </button>
-            );
-          })}
-        </div>
-      </section>
+      model.toLowerCase().includes(needle) ||
+      provider.name.toLowerCase().includes(needle) ||
+      label.toLowerCase().includes(needle)
     );
   }
 
+  const visibleRows = sections.flatMap((section) =>
+    section.providers.flatMap((provider) =>
+      (section.modelsByProvider[provider.name] ?? [])
+        .filter((model) => matches(provider, model))
+        .map((model) => ({ provider, model }))
+    )
+  );
+
   return (
-    <>
-      <button
-        data-testid="knowledge-model-picker-trigger"
-        type="button"
-        onClick={() => {
-          if (!disabled) setOpen(true);
-        }}
-        disabled={disabled}
-        className="group flex h-control-md w-full items-center justify-between gap-2 rounded-element border border-border-input bg-background-default px-3 text-left transition-colors hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        <span className="flex min-w-0 flex-1 items-center gap-2">
-          <Brain className="h-4 w-4 shrink-0 text-text-muted" />
+    <Popover open={open} onOpenChange={(next) => (disabled ? undefined : setOpen(next))}>
+      <PopoverTrigger asChild>
+        <button
+          data-testid="knowledge-model-picker-trigger"
+          type="button"
+          disabled={disabled}
+          aria-label="Knowledge model"
+          aria-expanded={open}
+          className="flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <Brain className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden="true" />
           <span className="shrink-0 text-caps text-text-muted">Model</span>
           <span
-            className={`min-w-0 truncate text-label ${value ? 'text-text-default' : 'text-text-muted'}`}
+            className={`min-w-0 flex-1 truncate ${value ? 'text-text-default' : 'text-text-muted'}`}
           >
             {triggerLabel}
           </span>
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5 rounded-inner bg-background-medium px-2 py-1 text-chip text-text-muted">
-          {saving && <LoaderCircle className="h-3.5 w-3.5 animate-spin text-text-muted" />}
-          {saving ? 'Saving' : 'Set default'}
-          {!saving && (
+          {saving ? (
+            <>
+              <span className="sr-only">Saving</span>
+              <LoaderCircle
+                aria-hidden="true"
+                className="h-icon-row w-icon-row shrink-0 animate-spin text-text-muted"
+              />
+            </>
+          ) : (
             <ChevronDown
-              className={`h-3.5 w-3.5 text-text-muted transition-transform duration-[var(--motion-fast)] ${open ? 'rotate-180' : ''}`}
+              aria-hidden="true"
+              className={`h-icon-row w-icon-row shrink-0 text-text-muted transition-transform ${open ? 'rotate-180' : ''}`}
             />
           )}
-        </span>
-      </button>
+        </button>
+      </PopoverTrigger>
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="flex max-h-[82vh] flex-col overflow-hidden p-0 sm:max-w-[760px]">
-          <DialogHeader className="px-6 pb-3 pt-6">
-            <DialogTitle>Choose knowledge model</DialogTitle>
-            <DialogDescription>
-              This model digests staged sources and scheduled knowledge curation. Chat replies still
-              use the model selected in the chat composer.
-            </DialogDescription>
-          </DialogHeader>
-
-          <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
-            {!hasModels && (
-              <div className="rounded-element bg-background-medium px-4 py-3 text-body text-text-muted">
-                No configured providers have available models yet.
-              </div>
+      <PopoverContent
+        align="start"
+        sideOffset={6}
+        className="w-64 p-0"
+        onOpenAutoFocus={(event) => event.preventDefault()}
+      >
+        <Command
+          label="Knowledge models"
+          query={query}
+          onQueryChange={setQuery}
+          className="max-h-[400px]"
+        >
+          <CommandInput placeholder="Search models" aria-label="Search models" autoFocus />
+          <CommandList aria-label="Knowledge models">
+            {!hasModels ? (
+              <NoModelsAvailable />
+            ) : visibleRows.length === 0 ? (
+              <CommandEmpty>
+                <p className="text-body text-text-muted">No models match</p>
+                <p className="mt-1 text-supporting text-text-muted">
+                  Try a different name or provider.
+                </p>
+              </CommandEmpty>
+            ) : (
+              sections.map((section) =>
+                section.providers.map((provider) => {
+                  const models = (section.modelsByProvider[provider.name] ?? []).filter((model) =>
+                    matches(provider, model)
+                  );
+                  if (models.length === 0) return null;
+                  return (
+                    // ⚠ The heading comes from `providerOrdering.ts` and must keep
+                    // coming from there. This is a third model-selection surface
+                    // the design's §14.2 table never lists, and for a long time it
+                    // was the ONLY consumer of the group's label field — the
+                    // settings grid printed its own literals. Inline the words
+                    // here and this picker will quietly go on using the old
+                    // taxonomy after every other screen has been relabelled.
+                    <CommandGroup
+                      key={`${section.key}:${provider.name}`}
+                      heading={providerDisplayNames[provider.name] ?? provider.name}
+                    >
+                      {models.map((model) => {
+                        const selected = value?.provider === provider.name && value.model === model;
+                        return (
+                          <CommandItem
+                            key={`${provider.name}:${model}`}
+                            selected={selected}
+                            onSelect={() => {
+                              onChange({ provider: provider.name, model });
+                              setOpen(false);
+                            }}
+                          >
+                            <span className="min-w-0 flex-1 truncate">{model}</span>
+                            {selected && (
+                              <Check
+                                className="h-icon-row w-icon-row shrink-0 text-text-default"
+                                aria-hidden="true"
+                              />
+                            )}
+                          </CommandItem>
+                        );
+                      })}
+                    </CommandGroup>
+                  );
+                })
+              )
             )}
-
-            <div className="space-y-6">
-              {sections.map((section) => (
-                <section key={section.key} className="space-y-3">
-                  {/* ⚠ The heading and the accent below come from
-                      `providerOrdering.ts` and must keep coming from there.
-                      This is a third model-selection surface that the design's
-                      §14.2 table never lists, and for a long time it was the
-                      ONLY consumer of the group's label field — the settings
-                      grid printed its own literals. Inline the words here and
-                      the knowledge picker will quietly go on using the old
-                      taxonomy after every other screen has been relabelled. */}
-                  <div className="flex items-center gap-2 px-1 text-caps text-text-muted">
-                    <span className={`h-1.5 w-1.5 rounded-full ${section.accentClassName}`} />
-                    {section.label}
-                  </div>
-                  <div className="space-y-4">
-                    {section.providers.map((provider) => renderProvider(provider, section))}
-                  </div>
-                </section>
-              ))}
+          </CommandList>
+          {hasModels && (
+            <div className="flex-none border-t border-border-subtle px-2 py-2">
+              <Badge variant="chip">Set as default</Badge>
+              <p className="mt-1 text-supporting text-text-muted">
+                This model digests staged sources and scheduled knowledge curation. Chat replies
+                still use the model selected in the chat composer.
+              </p>
             </div>
-          </div>
-
-          <div className="px-6 pb-5 pt-3">
-            <Button type="button" variant="secondary" size="sm" onClick={() => setOpen(false)}>
-              Close
-            </Button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
+          )}
+        </Command>
+      </PopoverContent>
+    </Popover>
   );
 }

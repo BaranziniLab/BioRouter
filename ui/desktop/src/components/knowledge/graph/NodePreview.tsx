@@ -62,7 +62,7 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
       ref={panelRef}
       role="dialog"
       aria-label={`Preview ${prettyLabel(node.label, node.kind)}`}
-      className="absolute top-12 right-4 z-10 flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
+      className="absolute top-12 right-4 z-[var(--z-dropdown)] flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
     >
       <div className="flex items-center justify-between border-b border-border-subtle bg-background-muted px-4 py-3">
         <div className="flex items-center gap-2 min-w-0">

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react';
 import { Clipboard } from '../../icons/app-icons';
+import { Progress } from '../../ui/progress';
 import type { ModelRef } from '../../../api/types.gen';
 import { checkModel } from '../../../api/sdk.gen';
 import { toastError, toastSuccess } from '../../../toasts';
@@ -43,6 +44,14 @@ export function IngestPanel() {
   );
   const [warnings, setWarnings] = useState<FileDropWarning[]>([]);
   const [savingDefaultModel, setSavingDefaultModel] = useState(false);
+  // The queue's own progress, so the section's LONGEST operation finally has a
+  // `role="progressbar"` (ui-spec §4.4 state 3). Determinate on the QUEUE — the
+  // denominator is known — while `indeterminate` is reserved for the pre-flight
+  // model check, where there genuinely is none.
+  const [digestProgress, setDigestProgress] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
   const stopRequestedRef = useRef(false);
 
   // Only the user's explicit pick lives in state, and it is stamped with the
@@ -240,6 +249,7 @@ export function IngestPanel() {
     setDigestState('checking');
     const queue = [...items];
     const succeededIds: string[] = [];
+    setDigestProgress({ completed: 0, total: queue.filter((i) => i.status !== 'done').length });
 
     // Pre-flight: confirm the model is reachable before iterating staged items.
     try {
@@ -247,6 +257,7 @@ export function IngestPanel() {
       const data = res.data;
       if (!data?.ok) {
         setDigestState('idle');
+        setDigestProgress(null);
         toastError({
           title: 'Model unreachable',
           msg: `${data?.error ?? 'Unknown model error'}. Switch to a different model.`,
@@ -255,6 +266,7 @@ export function IngestPanel() {
       }
     } catch (err) {
       setDigestState('idle');
+      setDigestProgress(null);
       toastError({
         title: 'Model check failed',
         msg: `${err instanceof Error ? err.message : String(err)}. Verify your provider credentials and try a different model.`,
@@ -267,6 +279,11 @@ export function IngestPanel() {
       for (const item of queue) {
         if (stopRequestedRef.current) break;
         if (item.status === 'done') continue;
+        // Counted when the item is TAKEN, not when it succeeds: a failure is
+        // still one of the N the bar is measuring, and a bar that stalls on an
+        // error reads as a hang.
+        const advance = () =>
+          setDigestProgress((p) => (p ? { ...p, completed: p.completed + 1 } : p));
 
         if (item.kind === 'file') {
           update(item.id, { status: 'ingesting', error: undefined });
@@ -303,6 +320,7 @@ export function IngestPanel() {
               error: err instanceof Error ? err.message : String(err),
             });
           }
+          advance();
           continue;
         }
 
@@ -336,6 +354,7 @@ export function IngestPanel() {
               error: err instanceof Error ? err.message : String(err),
             });
           }
+          advance();
           continue;
         }
 
@@ -376,9 +395,11 @@ export function IngestPanel() {
             error: err instanceof Error ? err.message : String(err),
           });
         }
+        advance();
       }
     } finally {
       setDigestState('idle');
+      setDigestProgress(null);
       // Auto-clear successfully ingested items; keep errors visible for user action.
       for (const id of succeededIds) {
         remove(id);
@@ -420,7 +441,9 @@ export function IngestPanel() {
         ? 'Digesting…'
         : digestState === 'stopping'
           ? 'Stopping…'
-          : 'Digest Staged Sources';
+          : 'Digest staged sources';
+
+  const failed = items.filter((item) => item.status === 'error');
 
   return (
     <div className="flex flex-col">
@@ -429,12 +452,11 @@ export function IngestPanel() {
         <Button
           data-testid="knowledge-ingest-paste-text"
           type="button"
-          variant="outline"
-          size="sm"
+          variant="secondary"
           onClick={() => setShowPasteBox(true)}
           className="w-full"
         >
-          <Clipboard className="mr-1.5 h-4 w-4" />
+          <Clipboard aria-hidden="true" />
           Paste text
         </Button>
         <IngestWarnings
@@ -458,10 +480,58 @@ export function IngestPanel() {
 
         <StagedList items={items} onRemove={remove} onClear={clear} />
 
-        <DispatchProgress state={stream} onAbort={onAbort} />
+        {/* State 3. Determinate on the queue — `value`/`max` are the two numbers
+            the loop already knows — with `indeterminate` reserved for the
+            pre-flight model check, where there is no denominator to report. */}
+        {busy && (
+          <Progress
+            data-testid="knowledge-digest-progress"
+            label="Digesting staged sources"
+            indeterminate={digestState === 'checking' || digestProgress === null}
+            value={digestProgress?.completed ?? 0}
+            max={Math.max(1, digestProgress?.total ?? 1)}
+          />
+        )}
+
+        <DispatchProgress state={stream} />
+
+        {/* State 5. Successful rows auto-clear; errored ones stay, and this is
+            the one summary that lets the user act on all of them at once. */}
+        {!busy && failed.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-element bg-wash-danger px-3 py-2">
+            <span className="min-w-0 flex-1 text-supporting text-text-danger">
+              {failed.length} {failed.length === 1 ? 'source' : 'sources'} failed
+            </span>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => {
+                if (!nothingToDigest) void onDigest();
+              }}
+            >
+              Retry failed
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                for (const item of failed) remove(item.id);
+              }}
+            >
+              Clear failed
+            </Button>
+          </div>
+        )}
       </div>
 
-      <div className="flex flex-col gap-2 border-t border-border-subtle p-4">
+      {/* Pinned. `sticky` rather than a sibling of the scroll box because the
+          rail owns one scroll container and the footer belongs to this panel;
+          it is the last child, so it paints above the body without a z-index —
+          and an off-scale z-index is exactly the value class that soft-locked
+          this app once already. */}
+      <div className="sticky bottom-0 flex flex-col gap-2 border-t border-border-subtle bg-background-default p-4">
         <IngestModelPicker
           value={model}
           valueState={modelValueState}
@@ -469,18 +539,28 @@ export function IngestPanel() {
           disabled={!dispatchKbId || savingDefaultModel}
           saving={savingDefaultModel}
         />
+        {/* K-04 preserved verbatim: the one primary action stays full-opacity
+            with nothing staged, guarded by a cursor and a helper line, so it
+            never trains the eye to ignore a permanently half-lit button.
+            `size="lg"` and NO className height — `size="sm" className="min-h-9"`
+            was a contradiction that forced a 28px rung to render at 36px while
+            keeping `sm`'s own 6px icon gap. */}
         <Button
           data-testid="knowledge-digest-button"
-          variant="default"
-          size="sm"
-          disabled={busy}
-          aria-disabled={nothingToDigest || undefined}
+          variant={busy ? 'secondary' : 'default'}
+          size="lg"
+          disabled={digestState === 'stopping'}
+          aria-disabled={(!busy && nothingToDigest) || undefined}
           onClick={() => {
-            if (!nothingToDigest && !busy) void onDigest();
+            if (busy) {
+              onAbort();
+              return;
+            }
+            if (!nothingToDigest) void onDigest();
           }}
-          className={`w-full min-h-9 ${nothingToDigest && !busy ? 'cursor-not-allowed' : ''}`}
+          className={`w-full ${!busy && nothingToDigest ? 'cursor-not-allowed' : ''}`}
         >
-          {digestLabel}
+          {busy ? (digestState === 'stopping' ? 'Stopping…' : 'Stop') : digestLabel}
         </Button>
         {digestBlockedReason && !busy && (
           <p
@@ -494,14 +574,16 @@ export function IngestPanel() {
                 Offered for a missing base too — a base that came back, or one
                 the prune has since cleared, both settle this line. */}
             {kbUnavailable && (
-              <button
+              <Button
                 data-testid="knowledge-ingest-retry"
                 type="button"
+                variant="ghost"
+                size="sm"
+                className="ml-1 align-baseline"
                 onClick={() => void refresh()}
-                className="ml-1 underline underline-offset-2 transition-colors duration-[var(--motion-fast)] hover:text-text-default"
               >
                 Retry
-              </button>
+              </Button>
             )}
           </p>
         )}

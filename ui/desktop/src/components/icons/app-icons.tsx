@@ -54,6 +54,8 @@ import {
   FileStack as _FileStack,
   FileText as _FileText,
   FileX as _FileX,
+  Filter as _Filter,
+  Flag as _Flag,
   FlaskConical as _FlaskConical,
   Folder as _Folder,
   FolderDot as _FolderDot,
@@ -71,6 +73,7 @@ import {
   History as _History,
   Home as _Home,
   Image as _Image,
+  Inbox as _Inbox,
   Info as _Info,
   Landmark as _Landmark,
   Laptop as _Laptop,
@@ -217,6 +220,15 @@ export const FolderKey = light(_FolderKey);
 export const FolderOpen = light(_FolderOpen);
 export const FolderPlus = light(_FolderPlus);
 export const FolderTree = light(_FolderTree);
+// The Knowledge section's two `EmptyState` icons (ui-spec §4.12). Every other
+// icon that section names was already re-exported here; these two were the gap,
+// and a call site reaching past this module for them is how a second stroke
+// weight gets into the app.
+export const Filter = light(_Filter);
+export const Inbox = light(_Inbox);
+// The change log's `flag` kind glyph (ui-spec §4.10) — the one kind whose tone
+// stays `danger`, because a flag genuinely is a problem marker.
+export const Flag = light(_Flag);
 export const Gauge = light(_Gauge);
 export const GitBranch = light(_GitBranch);
 export const Github = light(_Github);

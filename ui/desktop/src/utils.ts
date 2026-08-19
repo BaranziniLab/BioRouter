@@ -71,6 +71,9 @@ const twMerge = extendTailwindMerge({
         'toast',
         'measure-chat',
         'measure-page',
+        'measure-graph',
+        'knowledge-rail-sources',
+        'knowledge-rail-detail',
       ],
       // All five elevations, not just the new one. The four that shipped before
       // `raised` were never registered, so they fell through to the `shadow-color`

@@ -125,17 +125,24 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             e.target.value = '';
           }}
         />
+        {/* The medallion is `EmptyState`'s own plate: a 48px `rounded-container`
+            box with a 24px icon (`empty-state.tsx:34-35`). Not `rounded-full` —
+            A-04 restricts that to status dots, the switch knob and avatars, and
+            a 48px circle is none of them. The 24px icon follows what SHIPS: the
+            primitive draws `h-6 w-6` while `--icon-banner` says 20px, and that
+            disagreement is a design-system item rather than something this
+            surface silently picks a side of. */}
         <div
-          className={`mx-auto flex h-10 w-10 items-center justify-center rounded-full transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-medium text-text-muted'}`}
+          className={`mx-auto flex h-12 w-12 items-center justify-center rounded-container border border-border-subtle transition-colors ${dragging ? 'bg-background-strong text-text-default' : 'bg-background-muted text-text-muted'}`}
         >
-          <Upload className="h-5 w-5" />
+          <Upload className="h-6 w-6" aria-hidden="true" />
         </div>
         <div className="mt-2 text-label">Drag and drop to stage</div>
         <div className="mt-1 text-supporting text-text-muted">
           Drop readable files directly, or click to choose files, folders, and archives for backend
           staging.
         </div>
-        <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+        <div className="mt-3 flex flex-wrap justify-center gap-2">
           {[
             '.pdf',
             '.pptx',
@@ -147,16 +154,17 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
             '.txt',
             'folders',
             'archives',
+            // A file extension in a chip is CHROME naming a thing, not data to
+            // be read character by character, so it takes the app's text face
+            // rather than the mono one (TYPE-11 / D-33).
           ].map((label) => (
-            <Badge key={label} className="font-mono">
-              {label}
-            </Badge>
+            <Badge key={label}>{label}</Badge>
           ))}
         </div>
         <div className="mt-2 text-supporting text-text-muted">
           Readable contents are staged file by file. Binaries are skipped, and{' '}
-          <span className="font-medium text-text-default">Import from .brkb</span> stays in the
-          knowledge base menu for full knowledge-base archives.
+          <span className="text-text-default">Import from .brkb</span> stays in the knowledge base
+          menu for full knowledge-base archives.
         </div>
       </div>
 
@@ -206,7 +214,7 @@ export function Dropzone({ onFiles, onPathPickRequested }: Props) {
           </div>
 
           <DialogFooter>
-            <Button type="button" variant="outline" onClick={() => setChooserOpen(false)}>
+            <Button type="button" variant="secondary" onClick={() => setChooserOpen(false)}>
               Close
             </Button>
           </DialogFooter>

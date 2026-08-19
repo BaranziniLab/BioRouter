@@ -29,7 +29,11 @@ const WIDTH_BY_SIZE: Record<NonNullable<ReadableContentProps['size']>, string> =
   chat: 'max-w-measure-chat',
   text: 'max-w-[clamp(1120px,88%,1720px)]',
   wide: 'max-w-[clamp(1280px,92%,1920px)]',
-  graph: 'max-w-[clamp(1440px,96%,2200px)]',
+  // `graph` is the Knowledge section's canvas measure and is the ONE size here
+  // that reads a token rather than restating a clamp: `--measure-graph` is the
+  // widest column in the app, and a literal beside two named siblings is the
+  // drift `--measure-chat` already had to be rescued from (ui-spec §3.1, §6.2).
+  graph: 'max-w-measure-graph',
 };
 
 export function ReadableContent({ children, className = '', size = 'text' }: ReadableContentProps) {

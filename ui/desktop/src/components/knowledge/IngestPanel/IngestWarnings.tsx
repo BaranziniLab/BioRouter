@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { AlertCircle, ChevronDown, ChevronRight, Info, X } from '../../icons/app-icons';
+import { Button } from '../../ui/button';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../ui/collapsible';
 import type { FileDropWarning } from './fileValidation';
 
@@ -17,7 +18,14 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
   }
 
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="biorouter-list-row overflow-hidden">
+    // The nesting ladder runs DOWNWARD: a 12px container holding 8px cards.
+    // Before this the panel was a `.biorouter-list-row` — a list ROW used as a
+    // card — with 12px cards inside it, so the ladder ran upward.
+    <Collapsible
+      open={open}
+      onOpenChange={setOpen}
+      className="overflow-hidden rounded-container border border-border-subtle"
+    >
       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 text-left">
           {open ? (
@@ -33,13 +41,9 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
             </p>
           </div>
         </CollapsibleTrigger>
-        <button
-          type="button"
-          onClick={onClear}
-          className="shrink-0 text-label text-text-muted transition-colors hover:text-text-default"
-        >
+        <Button type="button" variant="ghost" size="sm" className="shrink-0" onClick={onClear}>
           Clear
-        </button>
+        </Button>
       </div>
 
       <CollapsibleContent className="px-3 pb-3">
@@ -54,7 +58,7 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
             return (
               <div
                 key={warning.id}
-                className={`rounded-container border px-3 py-2 ${
+                className={`rounded-element border px-3 py-2 ${
                   isError
                     ? 'border-border-danger/40 bg-background-danger/10 text-text-danger'
                     : 'border-border-warning/40 bg-background-warning/10 text-text-warning'
@@ -68,16 +72,23 @@ export function IngestWarnings({ warnings, onDismiss, onClear }: Props) {
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="text-label">{warning.title}</div>
-                    <p className="mt-1 break-words text-supporting opacity-90">{warning.message}</p>
+                    {/* `text-text-muted`, not `opacity-90`: an alpha on ink is a
+                        colour nobody can name, and it fades the message out of
+                        the token system entirely. */}
+                    <p className="mt-1 break-words text-supporting text-text-muted">
+                      {warning.message}
+                    </p>
                   </div>
-                  <button
+                  <Button
                     type="button"
+                    variant="ghost"
+                    shape="round"
+                    size="xs"
                     onClick={() => onDismiss(warning.id)}
-                    className="shrink-0 opacity-70 transition-opacity hover:opacity-100"
-                    aria-label="Dismiss warning"
+                    aria-label={`Dismiss "${warning.title}"`}
                   >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
+                    <X aria-hidden="true" />
+                  </Button>
                 </div>
               </div>
             );

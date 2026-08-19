@@ -4,7 +4,6 @@ import {
   ChevronDown,
   ChevronRight,
   LoaderCircle,
-  StopCircle,
 } from '../icons/app-icons';
 import { useMemo, useState } from 'react';
 import type { StreamState, SubAgentEvent } from './hooks/useIngestStream';
@@ -73,19 +72,33 @@ function renderEventLine(ev: SubAgentEvent): { tone: string; text: string } {
 
 interface Props {
   state: StreamState;
-  onAbort?: () => void;
 }
 
-export function DispatchProgress({ state, onAbort }: Props) {
+/**
+ * The per-item sub-agent log (ui-spec §4.4 state 3).
+ *
+ * ⚠ **It no longer carries a Stop control.** The one Stop in this rail is the
+ * primary button in the footer, which turns into it while a digest runs. This
+ * component used to draw a second, bare-text one inside the log — and the two
+ * spelled the same word differently (`Stopping...` here, `Stopping…` in the
+ * panel) on screen at the same time.
+ *
+ * ⚠ **The status label must stay a DIRECT text child of one element.**
+ * `IngestPanel.streamFailure.test.tsx` selects it with `getByText(/Digest
+ * error/i)`, and testing-library matches on an element's own text nodes: split
+ * the label across two spans and the query finds nothing; hoist it so an
+ * ancestor also owns it directly and the query finds two.
+ */
+export function DispatchProgress({ state }: Props) {
   const [open, setOpen] = useState(true);
 
   const statusLabel =
     state.status === 'starting'
-      ? 'Preparing digest...'
+      ? 'Preparing digest…'
       : state.status === 'streaming'
-        ? 'Digesting...'
+        ? 'Digesting…'
         : state.status === 'stopping'
-          ? 'Stopping...'
+          ? 'Stopping…'
           : state.status === 'done'
             ? 'Digest complete'
             : state.status === 'error'
@@ -97,51 +110,41 @@ export function DispatchProgress({ state, onAbort }: Props) {
   if (state.status === 'idle') return null;
 
   return (
-    <div className="biorouter-list-row overflow-hidden">
+    <div className="overflow-hidden rounded-container border border-border-subtle">
       <div className="flex items-center justify-between gap-3 px-3 py-2.5">
         <button
           type="button"
+          aria-expanded={open}
           onClick={() => setOpen((value) => !value)}
           className="flex min-w-0 flex-1 items-center gap-2 text-left text-label"
         >
           {open ? (
-            <ChevronDown className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            <ChevronDown
+              className="h-icon-row w-icon-row shrink-0 text-text-muted"
+              aria-hidden="true"
+            />
           ) : (
-            <ChevronRight className="h-3.5 w-3.5 shrink-0 text-text-muted" />
+            <ChevronRight
+              className="h-icon-row w-icon-row shrink-0 text-text-muted"
+              aria-hidden="true"
+            />
           )}
-          <span className="min-w-0 break-words">
-            {statusLabel}
-            <span className="ml-2 text-text-muted">{state.events.length} events</span>
-          </span>
+          <span className="min-w-0 break-words">{statusLabel}</span>
         </button>
-
-        {(state.status === 'starting' ||
-          state.status === 'streaming' ||
-          state.status === 'stopping') &&
-          onAbort && (
-            <button
-              type="button"
-              onClick={onAbort}
-              className="inline-flex shrink-0 items-center gap-1 text-label text-text-muted transition-colors hover:text-text-danger"
-              title="Stop digestion"
-              disabled={state.status === 'stopping'}
-            >
-              {state.status === 'stopping' ? (
-                <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <StopCircle className="h-3.5 w-3.5" />
-              )}
-              {state.status === 'stopping' ? 'Stopping...' : 'Stop'}
-            </button>
-          )}
+        <span className="shrink-0 text-supporting font-mono tabular-nums text-text-muted">
+          {state.events.length} events
+        </span>
       </div>
 
       {open && (
         <div className="px-3 pb-3">
-          <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-container bg-background-muted px-3 py-3 text-supporting">
+          <div className="max-h-[260px] space-y-2 overflow-y-auto rounded-element bg-background-muted px-3 py-3 text-supporting">
             {lines.length === 0 && (
               <div className="flex items-start gap-2 text-text-muted">
-                <LoaderCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin" />
+                <LoaderCircle
+                  className="mt-0.5 h-icon-row w-icon-row shrink-0 animate-spin"
+                  aria-hidden="true"
+                />
                 <p className="min-w-0 break-words whitespace-pre-wrap">
                   {state.status === 'starting'
                     ? 'Checking the staged source and opening the digest pipeline.'
@@ -155,9 +158,15 @@ export function DispatchProgress({ state, onAbort }: Props) {
             {lines.map((line, index) => (
               <div key={index} className={`flex items-start gap-2 ${line.tone}`}>
                 {line.text.startsWith('Completed') ? (
-                  <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <CheckCircle2
+                    className="mt-0.5 h-icon-row w-icon-row shrink-0"
+                    aria-hidden="true"
+                  />
                 ) : line.text.startsWith('Issue') || line.text.startsWith('Digest error') ? (
-                  <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <AlertCircle
+                    className="mt-0.5 h-icon-row w-icon-row shrink-0"
+                    aria-hidden="true"
+                  />
                 ) : (
                   <span className="mt-[7px] h-1.5 w-1.5 shrink-0 rounded-full bg-current opacity-60" />
                 )}

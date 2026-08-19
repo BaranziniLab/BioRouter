@@ -1,6 +1,9 @@
 import { useMemo, useState } from 'react';
 import type { ChangeKind, HistoryEntry } from '../../../api/types.gen';
+import { AlertCircle, History } from '../../icons/app-icons';
+import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
+import { EmptyState } from '../../ui/empty-state';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
 import { useKnowledge } from '../KnowledgeContext';
 import { useHistory } from '../hooks/useHistory';
@@ -31,6 +34,25 @@ function relativeTime(iso: string): string {
   return new Date(iso).toLocaleDateString();
 }
 
+/**
+ * What changed in this knowledge base, and when (ui-spec §4.10).
+ *
+ * Four corrections over the drawer this replaces:
+ *
+ * - **Width is `--knowledge-rail-detail`**, so the drawer and the workspace's
+ *   detail rail are the same object at the same width instead of two arbitrary
+ *   numbers (420 here, 340 there).
+ * - **`SheetTitle` keeps `text-subheading`.** The `text-label` override made
+ *   this the app's second overlay title size, on a screen that can open both.
+ * - **Kind filters are real toggle buttons**, through `Badge asChild` so the
+ *   chip IS the button and takes the global focus fill. They used to be ~20px
+ *   lowercase words with no background at all in the unselected state, so the
+ *   filter row read as a run of prose.
+ * - **`tint-interactive` comes off the entry rows.** The targets are the two
+ *   buttons inside them; a row that lights up under the pointer and does nothing
+ *   when clicked is a promise the surface does not keep. The row keeps
+ *   `.biorouter-list-row` for its hairline.
+ */
 export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: Props) {
   const { primaryKbId, triggerGraphRefresh } = useKnowledge();
   const { history, loading, error, restore } = useHistory(primaryKbId);
@@ -73,57 +95,85 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="right" className="w-[420px] sm:max-w-[420px] flex flex-col p-0">
-        <SheetHeader className="px-5 py-3 border-b border-border-subtle flex-row items-center justify-between">
-          <SheetTitle className="text-label">Change log</SheetTitle>
+      <SheetContent
+        side="right"
+        className="flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
+      >
+        <SheetHeader className="h-row flex-none flex-row items-center justify-between border-b border-border-subtle px-4 py-0">
+          <SheetTitle>Change log</SheetTitle>
         </SheetHeader>
 
-        <div className="px-5 py-2 border-b border-border-subtle flex flex-wrap gap-1.5">
-          {ALL_KINDS.map((k) => (
-            <button
-              key={k}
-              onClick={() => toggleKind(k)}
-              className={`rounded-inner px-1.5 py-0.5 text-caps transition-colors ${
-                activeKinds.has(k)
-                  ? 'tint-selected tint-interactive text-text-default'
-                  : 'text-text-muted hover:text-text-default'
-              }`}
-            >
-              {k}
-            </button>
-          ))}
+        <div className="flex flex-none flex-wrap gap-2 border-b border-border-subtle px-4 py-2">
+          {ALL_KINDS.map((k) => {
+            const on = activeKinds.has(k);
+            return (
+              <Badge
+                key={k}
+                variant="chip"
+                asChild
+                uppercase
+                className={
+                  on
+                    ? 'tint-selected tint-interactive text-text-default'
+                    : 'tint-interactive text-text-muted'
+                }
+              >
+                <button type="button" aria-pressed={on} onClick={() => toggleKind(k)}>
+                  {k}
+                </button>
+              </Badge>
+            );
+          })}
         </div>
 
-        <div className="flex-1 overflow-y-auto">
-          {loading && <div className="p-5 text-supporting text-text-muted">Loading…</div>}
-          {error && <div className="p-5 text-supporting text-text-danger">{error}</div>}
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {loading && (
+            <EmptyState
+              compact
+              icon={History}
+              title="Loading history"
+              description="Reading this knowledge base's commits."
+            />
+          )}
+          {error && (
+            <EmptyState
+              compact
+              icon={AlertCircle}
+              title="Could not load the history"
+              description={error}
+            />
+          )}
           {!loading && !error && filtered.length === 0 && (
-            <div className="p-5 text-supporting text-text-muted">No history entries match.</div>
+            <EmptyState
+              compact
+              icon={History}
+              title="No changes yet"
+              description="Digesting a source records a commit here."
+            />
           )}
           {!loading &&
             !error &&
             filtered.map((entry) => (
-              <div
-                key={entry.commit_sha}
-                className="px-5 py-3 border-b border-border-subtle transition-colors tint-interactive"
-              >
-                <div className="flex items-center gap-2 mb-1">
+              <div key={entry.commit_sha} className="biorouter-list-row flex flex-col px-4 py-3">
+                <div className="mb-1 flex items-center gap-2">
                   <ChangeKindChip kind={entry.kind} />
-                  <span className="text-supporting text-text-muted font-mono">
+                  <span className="text-supporting font-mono text-text-muted">
                     {entry.commit_sha.slice(0, 7)}
                   </span>
-                  <span className="text-supporting text-text-muted ml-auto">
+                  <span className="ml-auto text-supporting text-text-muted">
                     {relativeTime(entry.timestamp)}
                   </span>
                 </div>
-                <div className="text-body text-text-default mb-2">{entry.summary}</div>
+                <div className="mb-2 text-body text-text-default">{entry.summary}</div>
                 <div className="flex items-center gap-2">
-                  <Button variant="ghost" size="xs" onClick={() => onPreview(entry.commit_sha)}>
+                  {/* `sm` (28px), not `xs`. The compact tier's contract is
+                      glyph-only — "a control carrying a label never uses it". */}
+                  <Button variant="ghost" size="sm" onClick={() => onPreview(entry.commit_sha)}>
                     Preview
                   </Button>
                   <Button
-                    variant="outline"
-                    size="xs"
+                    variant="secondary"
+                    size="sm"
                     onClick={() => setEntryToRestore(entry)}
                     disabled={restoring !== null}
                   >
