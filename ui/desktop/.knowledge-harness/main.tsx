@@ -31,12 +31,25 @@ import './harness.css';
 
 import basesFixture from './fixtures/bases.json';
 import graphFixture from './fixtures/graph.json';
+import graphBioOkfFixture from './fixtures/graph-biookf.json';
 import historyFixture from './fixtures/history.json';
 import pagesFixture from './fixtures/pages.json';
 import providersFixture from './fixtures/providers.json';
 
 const BASES = basesFixture as KbListEntry[];
 const GRAPH = graphFixture as Graph;
+/**
+ * The TYPED graph, for the base whose manifest says `biookf`.
+ *
+ * Hand-written, and this note is the honesty clause: there is no
+ * `knowledge_graph_fixture_dump` binary in this tree, so the file is built to
+ * exercise every RENDERING channel — all seven families, both credibility ring
+ * regimes, negated / synthesized / symmetric / parallel edges, external nodes, a
+ * retraction, statuses and quantitative slots — rather than to reproduce a real
+ * base's topology. When the dump lands, replace it rather than adding to it.
+ */
+const GRAPH_BIOOKF = graphBioOkfFixture as Graph;
+const graphFor = (id: string): Graph => (id === 'multiple-sclerosis' ? GRAPH_BIOOKF : GRAPH);
 const HISTORY = historyFixture as HistoryEntry[];
 const PAGES = pagesFixture as Record<string, string>;
 
@@ -120,7 +133,11 @@ const ROUTES: Route[] = [
       });
     },
   },
-  { method: 'GET', match: /^\/knowledge\/bases\/[^/]+\/graph$/, handler: () => json(GRAPH) },
+  {
+    method: 'GET',
+    match: /^\/knowledge\/bases\/([^/]+)\/graph$/,
+    handler: (m) => json(graphFor(m[1])),
+  },
   { method: 'GET', match: /^\/knowledge\/bases\/[^/]+\/history$/, handler: () => json(HISTORY) },
   {
     method: 'GET',
@@ -139,8 +156,8 @@ const ROUTES: Route[] = [
       return json({
         id: m[1],
         tier: base?.tier ?? 'public',
-        page_count: GRAPH.nodes.length,
-        raw_source_count: GRAPH.nodes.filter((n) => n.kind === 'source').length,
+        page_count: graphFor(m[1]).nodes.length,
+        raw_source_count: graphFor(m[1]).nodes.filter((n) => n.kind === 'source').length,
         reason: base?.tier === 'private' ? 'privatized_by_user' : null,
         changed_at: base?.tier === 'private' ? '2026-07-02T12:00:00Z' : null,
       });
@@ -296,7 +313,7 @@ function Surface({ id }: { id: SurfaceId }) {
         <div className="h-full bg-background-canvas p-8">
           <KnowledgeGraphPanel
             kbId={BASES[0].id}
-            graph={GRAPH}
+            graph={GRAPH_BIOOKF}
             loading={false}
             error={null}
             onRefresh={() => undefined}

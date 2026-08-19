@@ -4,8 +4,13 @@
 //   - `prettyLabel` rescues labels that are really machine identifiers
 //     (UUIDs, content hashes, `<uuid>.pdf` filenames) so the canvas shows a
 //     natural-language name instead of gibberish.
-//   - `wrapLabel` folds a long label across multiple lines so a single node
-//     never paints one very long horizontal string.
+//
+// `wrapLabel` USED to live here and is deleted (ui-spec §5.8). Three reasons, in
+// order: a wrapped label has no single AABB, so §5.8's priority-ranked collision
+// avoidance cannot work against it; its per-word `measureText` loop plus a
+// per-character shrink loop is the per-frame cost DR-9 identifies as the real
+// one; and at 28 node types the graph is read as a MAP, and a map wants short
+// consistent labels — the full title is one click away in the inspector.
 
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const LONG_HEX_RE = /\b[0-9a-f]{16,}\b/gi;
@@ -63,47 +68,4 @@ export function prettyLabel(label: string, kind?: string): string {
   if (cleaned.length >= 3) return cleaned;
   const noun = kind === 'source' ? 'source' : kind ? kind : 'item';
   return `Untitled ${noun}`;
-}
-
-/// Greedily wrap `label` into at most `maxLines` lines, each no wider than
-/// `maxWidth` device-independent pixels under the current canvas font. The last
-/// line is ellipsised if content remains. `measure` is the canvas
-/// `ctx.measureText(...).width` callback (already accounts for font + scale).
-export function wrapLabel(
-  label: string,
-  maxWidth: number,
-  maxLines: number,
-  measure: (s: string) => number
-): string[] {
-  const words = label.split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [label];
-  const lines: string[] = [];
-  let current = '';
-
-  const pushWord = (word: string) => {
-    const candidate = current ? `${current} ${word}` : word;
-    if (measure(candidate) <= maxWidth || current === '') {
-      current = candidate;
-    } else {
-      lines.push(current);
-      current = word;
-    }
-  };
-
-  for (const word of words) {
-    if (lines.length >= maxLines) break;
-    pushWord(word);
-  }
-  if (current && lines.length < maxLines) lines.push(current);
-
-  // If we ran out of lines with words remaining, ellipsise the final line.
-  const consumed = lines.join(' ').split(/\s+/).filter(Boolean).length;
-  if (consumed < words.length && lines.length > 0) {
-    let last = lines[lines.length - 1];
-    while (last.length > 1 && measure(`${last}…`) > maxWidth) {
-      last = last.slice(0, -1).trimEnd();
-    }
-    lines[lines.length - 1] = `${last}…`;
-  }
-  return lines;
 }

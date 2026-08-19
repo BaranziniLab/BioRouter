@@ -352,6 +352,65 @@ for (const [theme, scope] of Object.entries(SCOPES)) {
   // table above is recomputed; do not reintroduce a figure without a ground.)
 }
 
+/**
+ * THE SIX-SCOPE `--background-muted` IDENTITY — the CSS fact the knowledge-graph
+ * palette rests on.
+ *
+ * The graph pane paints `--background-muted`, and all 35 of its hexes are
+ * contrast ratios solved against it. `GRAPH_PALETTE` is therefore emitted ONCE,
+ * at module scope in `themes.generated.ts`, rather than per family — and that is
+ * only legitimate while the three families genuinely share the token in each
+ * mode.
+ *
+ * Nothing else in the repo enforces the shared neutral set. Every assertion
+ * above audits a family AGAINST ITSELF, so a diverged neutral passes all of
+ * them while silently invalidating the palette for two families out of three.
+ * That is the same class of hole the canvas/muted collapse was: no check had
+ * ever compared two families' resolutions of the same token to each other.
+ *
+ * The generator asserts this too, from the definitions it is about to write.
+ * This one asserts it from the STYLESHEET — including the hand-authored
+ * `:root` / `.dark` base block, which the generator never emits and which is
+ * exactly where a well-meaning neutral tweak would land.
+ */
+{
+  const byMode = { light: new Map(), dark: new Map() };
+  for (const id of ['parchment', ...FAMILIES]) {
+    for (const mode of ['light', 'dark']) {
+      const scope = SCOPES[`${id}:${mode}`];
+      const hex = scope ? resolve('--background-muted', scope) : null;
+      if (!hex) {
+        rows.push([
+          'UNRESOLVED',
+          '',
+          'graph ground',
+          `--background-muted does not resolve to a hex in ${id}:${mode}`,
+        ]);
+        failures++;
+        continue;
+      }
+      byMode[mode].set(hex, [...(byMode[mode].get(hex) ?? []), id]);
+    }
+  }
+  rows.push(['', '', '── graph ground (--background-muted) ──', '']);
+  for (const mode of ['light', 'dark']) {
+    const shared = byMode[mode].size === 1;
+    checks++;
+    if (!shared) failures++;
+    rows.push([
+      shared ? 'pass' : 'FAIL',
+      '',
+      `${mode}: every family shares --background-muted`,
+      shared
+        ? `all families resolve ${[...byMode[mode].keys()][0]}`
+        : `graph palette is emitted once because the three families share ` +
+          `--background-muted; they no longer do — move GRAPH_PALETTE per-family ` +
+          `or re-derive it. Resolved: ` +
+          [...byMode[mode]].map(([hex, ids]) => `${hex} (${ids.join(', ')})`).join('; '),
+    ]);
+  }
+}
+
 const w = Math.max(...rows.map((r) => r[2].length));
 for (const [status, r, label, note] of rows) {
   if (!status) {

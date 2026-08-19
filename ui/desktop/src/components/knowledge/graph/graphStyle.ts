@@ -1,103 +1,159 @@
 // ui/desktop/src/components/knowledge/graph/graphStyle.ts
-import type { CredibilityTier } from '../../../api/types.gen';
+import { GRAPH_PALETTE } from '../../../styles/graphPalette';
+import type { GraphMode } from '../../../styles/graphPalette';
 
-export const NODE_BASE_RADIUS = 4.5;
-export const HUB_RADIUS = 7.5;
-export const LABEL_FONT_PX = 11.5;
-export const LABEL_FONT_PX_HUB = 12.5;
-export const DIMMED_OPACITY = 0.22;
-
-/// Width by source-page credibility tier. The graph uses a single solid-line
-/// treatment so edge styling stays visually quiet behind node labels.
-export function edgeStyle(tier: CredibilityTier | null | undefined): {
-  width: number;
-  dash: number[] | null;
-} {
-  switch (tier) {
-    case 'peer_reviewed':
-    case 'book':
-      return { width: 0.85, dash: null };
-    case 'preprint':
-      return { width: 0.78, dash: null };
-    case 'gray_lit':
-      return { width: 0.74, dash: null };
-    case 'web':
-    case 'personal':
-      return { width: 0.68, dash: null };
-    default:
-      return { width: 0.68, dash: null };
+/**
+ * ONE resolver, and that is a requirement rather than a style note (ui-spec §5.11).
+ *
+ * A canvas cannot parse `var(--…)`: `ctx.font` and `ctx.fillStyle` are parsed
+ * against the canvas element, not the cascade, so the assignment is silently
+ * DROPPED and the previous value stays. Reading the custom property by name does
+ * not help either — `getPropertyValue('--text-default')` returns the *declared*
+ * value, which in the dark blocks is itself `var(--color-neutral-100)`, another
+ * reference the canvas cannot resolve. **Only the used value is safe.**
+ *
+ * ⚠ **The two guards below are the whole point, and this file has already been
+ * burned by writing them twice.** Before this rewrite there were two resolvers:
+ * `resolveCanvasInk` rejected `var(`, `resolveCanvasFontFamily` did not — and
+ * BOTH were covered by a test named "never hands a canvas an unresolved custom
+ * property". One of them was not actually guarded; the case passed because a
+ * computed `fontFamily` happens never to be a `var()`, not because the code
+ * prevented it. Two resolvers had already diverged, and §5.11 adds five more
+ * fields. So there is exactly one function, and every field goes through it.
+ */
+export function resolveComputed(
+  el: Element | null | undefined,
+  read: (style: CSSStyleDeclaration) => string,
+  fallback: string
+): string {
+  if (!el || typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
+    return fallback;
   }
+  const value = read(window.getComputedStyle(el));
+  return value && value.trim().length > 0 && !value.includes('var(') ? value : fallback;
 }
 
-/// Top-N degree centrality threshold for "hub" treatment.
-export const HUB_TOP_N = 6;
-
-/// The family a `ctx.font` shorthand must name so the graph's labels are drawn
-/// in the app's face.
-///
-/// A canvas cannot read `var(--font-body)` — `ctx.font` is parsed against the
-/// canvas element, not the cascade, so a custom property in the string is
-/// simply invalid and the assignment is dropped. Every label then paints in the
-/// canvas default (`10px sans-serif`), which is why the graph sat on the OS
-/// face while the rest of the app moved to Figtree.
-///
-/// The fix is to RESOLVE the family rather than to hardcode a second literal:
-/// the graph container inherits `font-family: var(--font-sans)` from `body`, so
-/// its computed style already holds the resolved stack. Hardcoding `'Figtree',
-/// …` here would work today and silently rot the first time the token moves.
-///
-/// `fallback` covers jsdom, where `getComputedStyle` reports no family at all.
+/**
+ * The family a `ctx.font` shorthand must name so the graph's labels are drawn in
+ * the app's face.
+ *
+ * The fix is to RESOLVE the family rather than to hardcode a second literal: the
+ * graph container inherits `font-family: var(--font-sans)` from `body`, so its
+ * computed style already holds the resolved stack. Hardcoding `'Figtree', …`
+ * here would work today and silently rot the first time the token moves.
+ *
+ * `fallback` covers jsdom, where `getComputedStyle` reports no family at all.
+ */
 export const CANVAS_FONT_FALLBACK = 'ui-sans-serif, system-ui, -apple-system, sans-serif';
 
-export function resolveCanvasFontFamily(el: Element | null | undefined): string {
-  if (!el || typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
-    return CANVAS_FONT_FALLBACK;
-  }
-  const resolved = window.getComputedStyle(el).fontFamily;
-  return resolved && resolved.trim().length > 0 ? resolved : CANVAS_FONT_FALLBACK;
-}
+/** The mono stack, resolved off a `font-mono` probe. Edge labels are machine tokens. */
+export const CANVAS_MONO_FALLBACK = 'ui-monospace, SFMono-Regular, Menlo, monospace';
 
-/// The ink every canvas glyph and outline is drawn in.
-///
-/// Same trap as the font family, and it bit the same file: `ctx.fillStyle` is
-/// parsed against the canvas, not the cascade, so a `var(--text-default)` in
-/// that string is dropped. The label ink was therefore a hardcoded `#1f242c` —
-/// a near-black that is correct in a light theme and INVISIBLE in every dark
-/// one, where the canvas ground is near-black too. The panel became a set of
-/// unlabelled coloured dots.
-///
-/// The fix is the same as the family's: resolve, do not name. The container
-/// inherits `color: var(--text-default)` from `body`, and
-/// `getComputedStyle().color` hands back a fully-resolved `rgb(…)`.
-///
-/// Reading the custom property BY NAME would not work and is the tempting wrong
-/// answer: `getPropertyValue('--text-default')` returns the declared value, and
-/// in the dark blocks that value is itself `var(--color-neutral-100)` — another
-/// reference the canvas cannot resolve. Only the used value is safe here.
+/**
+ * The ink every canvas glyph, outline, edge and grid dot is drawn in.
+ *
+ * Same trap as the family, and it bit the same file: the label ink was a
+ * hardcoded `#1f242c` — a near-black that is correct in a light theme and
+ * INVISIBLE in every dark one, where the canvas ground is near-black too. The
+ * panel became a set of unlabelled coloured dots.
+ */
 export const CANVAS_INK_FALLBACK = '#1f242c';
 
-export function resolveCanvasInk(el: Element | null | undefined): string {
-  if (!el || typeof window === 'undefined' || typeof window.getComputedStyle !== 'function') {
-    return CANVAS_INK_FALLBACK;
-  }
-  const resolved = window.getComputedStyle(el).color;
-  return resolved && resolved.trim().length > 0 && !resolved.includes('var(')
-    ? resolved
-    : CANVAS_INK_FALLBACK;
+/**
+ * ⚠ **There is deliberately NO danger fallback constant, and adding one is a
+ * regression.**
+ *
+ * The obvious candidate — a single light hex — is one FAMILY's value. Parchment
+ * light `--text-danger` is `#b3261e`, Alma Mater's is `#c40d3e`, Roche Limit's is
+ * `#c4232b`, and the three dark values are a different family again. The
+ * theme-system architecture is explicit that the status hues stay per family, so
+ * a shared constant here would paint one family's red inside the other two —
+ * on §5.7's negative-edge stroke and §5.8's strike-through, which are exactly
+ * the two places a wrong red is a wrong MEANING and not merely a wrong tint.
+ *
+ * `resolveGraphTheme` therefore returns `danger: null` when the probe does not
+ * resolve, and the painters skip the treatment rather than substituting. jsdom
+ * resolves nothing, so a fallback would make the test pass and ship the bug.
+ */
+export interface GraphTheme {
+  fontFamily: string;
+  monoFamily: string;
+  ink: string;
+  ground: string;
+  /** `null` when the probe did not resolve — see the note above. Never defaulted. */
+  danger: string | null;
+  muted: string;
+  border: string;
+  mode: GraphMode;
 }
 
-/// The node outline alpha. A ring in the label ink separates a node from the
-/// ground — and from an overlapping neighbour — in BOTH modes, where the old
-/// fixed `rgba(31, 36, 44, 0.5)` only did so on a light one.
+/**
+ * The four 0×0 probe elements §5.11's table resolves the non-inherited fields from.
+ *
+ * Every field is OPTIONAL, and that is the same argument `CanvasThemeProbeRefs`
+ * makes: a probe ref is `null` on the first render of every caller, so "this
+ * probe is not here" is a state the resolver already has to handle, and it
+ * handles it by falling back per field. A required field would only move the
+ * failure from a fallback to a crash.
+ */
+export interface GraphThemeProbes {
+  mono?: Element | null;
+  danger?: Element | null;
+  muted?: Element | null;
+  border?: Element | null;
+}
+
+/**
+ * Every field in one pass, so a caller cannot resolve six and forget the seventh.
+ *
+ * `ground` falls back to `GRAPH_PALETTE[mode].ground` — the value the theme
+ * generator resolves and emits, and the exact surface all 28 fills and 7 ring
+ * hues were solved against. No hex is restated and the fallback is per-mode,
+ * which is the whole point: a single light value for a dual-mode quantity is how
+ * the boot mark once came to measure 1.02:1 on every dark splash.
+ */
+export function resolveGraphTheme(
+  container: Element | null | undefined,
+  probes: GraphThemeProbes,
+  mode: GraphMode
+): GraphTheme {
+  const ink = resolveComputed(container, (s) => s.color, CANVAS_INK_FALLBACK);
+  return {
+    fontFamily: resolveComputed(container, (s) => s.fontFamily, CANVAS_FONT_FALLBACK),
+    monoFamily: resolveComputed(probes.mono, (s) => s.fontFamily, CANVAS_MONO_FALLBACK),
+    ink,
+    // ⚠ Resolving this AT ALL requires the container to have no
+    // `background-image`: `getComputedStyle(el).backgroundColor` returns
+    // `rgba(0, 0, 0, 0)` when the colour lives in a gradient. That is one of the
+    // four reasons §4.5 deletes the three-layer wash this container used to paint.
+    ground: resolveComputed(
+      container,
+      (s) => {
+        const bg = s.backgroundColor;
+        // A transparent ground is not a ground. Fall through to the palette's.
+        return !bg || bg === 'transparent' || /,\s*0\s*\)$/.test(bg) ? '' : bg;
+      },
+      GRAPH_PALETTE[mode].ground
+    ),
+    danger: resolveComputed(probes.danger, (s) => s.color, '') || null,
+    muted: resolveComputed(probes.muted, (s) => s.color, ink),
+    border: resolveComputed(probes.border, (s) => s.borderTopColor, ink),
+    mode,
+  };
+}
+
+/// The node outline alpha, when nothing in the density ladder is fading it.
 export const NODE_RING_ALPHA = 0.5;
 
-/// `color` with `alpha` substituted, for a canvas.
-///
-/// `getComputedStyle().color` is always a resolved `rgb()`/`rgba()` in a real
-/// engine, so the parse below is the whole job; the hex branch covers the
-/// fallback constant and any future authored literal. Anything unrecognised is
-/// returned unchanged rather than mangled into an invalid colour, which a
-/// canvas would silently ignore — leaving the previous fill in place.
+/**
+ * `color` with `alpha` substituted, for a canvas.
+ *
+ * `getComputedStyle().color` is always a resolved `rgb()`/`rgba()` in a real
+ * engine, so the parse below is the whole job; the hex branch covers the
+ * fallback constants and the palette's own hexes. Anything unrecognised is
+ * returned UNCHANGED rather than mangled into an invalid colour, which a canvas
+ * would silently ignore — leaving the previous fill in place.
+ */
 export function withAlpha(color: string, alpha: number): string {
   const rgb = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/i.exec(color);
   if (rgb) {

@@ -1,0 +1,788 @@
+{
+ "nodes": [
+  {
+   "id": "gene-il6",
+   "kind": "entity",
+   "label": "IL6",
+   "path": "knowledge/gene-il6.md",
+   "identifier": "IL6",
+   "node_type": "Gene",
+   "status": "stable",
+   "subtype": "protein_coding",
+   "degree": 5
+  },
+  {
+   "id": "gene-hla-drb1",
+   "kind": "entity",
+   "label": "HLA-DRB1",
+   "path": "knowledge/gene-hla-drb1.md",
+   "identifier": "HLA-DRB1",
+   "node_type": "Gene",
+   "status": "stable",
+   "degree": 2
+  },
+  {
+   "id": "var-rs2228145",
+   "kind": "entity",
+   "label": "rs2228145",
+   "path": "knowledge/var-rs2228145.md",
+   "identifier": "rs2228145",
+   "node_type": "Variant",
+   "status": "draft",
+   "degree": 1
+  },
+  {
+   "id": "var-hla-drb1-1501",
+   "kind": "entity",
+   "label": "HLA-DRB1*15:01",
+   "path": "knowledge/var-hla-drb1-1501.md",
+   "identifier": "HLA-DRB1*15:01",
+   "node_type": "Variant",
+   "degree": 2
+  },
+  {
+   "id": "seq-il6-promoter",
+   "kind": "entity",
+   "label": "IL6 promoter region",
+   "path": "knowledge/seq-il6-promoter.md",
+   "identifier": "IL6 promoter region",
+   "node_type": "SequenceFeature",
+   "degree": 1
+  },
+  {
+   "id": "struct-il6-receptor",
+   "kind": "entity",
+   "label": "IL-6 receptor complex",
+   "path": "knowledge/struct-il6-receptor.md",
+   "identifier": "IL-6 receptor complex",
+   "node_type": "Structure",
+   "status": "deprecated",
+   "degree": 1
+  },
+  {
+   "id": "mol-ocrelizumab",
+   "kind": "entity",
+   "label": "Ocrelizumab",
+   "path": "knowledge/mol-ocrelizumab.md",
+   "identifier": "Ocrelizumab",
+   "node_type": "Molecule",
+   "subtype": "monoclonal_antibody",
+   "degree": 5
+  },
+  {
+   "id": "mol-tocilizumab",
+   "kind": "entity",
+   "label": "Tocilizumab",
+   "path": "knowledge/mol-tocilizumab.md",
+   "identifier": "Tocilizumab",
+   "node_type": "Molecule",
+   "degree": 3
+  },
+  {
+   "id": "molclass-anti-cd20",
+   "kind": "entity",
+   "label": "Anti-CD20 monoclonal antibodies",
+   "path": "knowledge/molclass-anti-cd20.md",
+   "identifier": "Anti-CD20 monoclonal antibodies",
+   "node_type": "MolecularClass",
+   "degree": 1
+  },
+  {
+   "id": "path-jak-stat",
+   "kind": "entity",
+   "label": "JAK-STAT signalling",
+   "path": "knowledge/path-jak-stat.md",
+   "identifier": "JAK-STAT signalling",
+   "node_type": "BiologicalPathway",
+   "degree": 1
+  },
+  {
+   "id": "func-b-cell-depletion",
+   "kind": "entity",
+   "label": "B-cell depletion",
+   "path": "knowledge/func-b-cell-depletion.md",
+   "identifier": "B-cell depletion",
+   "node_type": "BiologicalFunction",
+   "degree": 1
+  },
+  {
+   "id": "anat-optic-nerve",
+   "kind": "entity",
+   "label": "Optic nerve",
+   "path": "knowledge/anat-optic-nerve.md",
+   "identifier": "Optic nerve",
+   "node_type": "Anatomy",
+   "degree": 2
+  },
+  {
+   "id": "cell-oligodendrocyte",
+   "kind": "entity",
+   "label": "Oligodendrocyte",
+   "path": "knowledge/cell-oligodendrocyte.md",
+   "identifier": "Oligodendrocyte",
+   "node_type": "CellType",
+   "degree": 1
+  },
+  {
+   "id": "org-ebv",
+   "kind": "entity",
+   "label": "Epstein-Barr virus",
+   "path": "knowledge/org-ebv.md",
+   "identifier": "Epstein-Barr virus",
+   "node_type": "Organism",
+   "degree": 2
+  },
+  {
+   "id": "dis-ms",
+   "kind": "entity",
+   "label": "Multiple sclerosis",
+   "path": "knowledge/dis-ms.md",
+   "identifier": "Multiple sclerosis",
+   "node_type": "Disease",
+   "status": "stable",
+   "subtype": "autoimmune",
+   "degree": 19
+  },
+  {
+   "id": "dis-nmosd",
+   "kind": "entity",
+   "label": "Neuromyelitis optica spectrum disorder",
+   "path": "knowledge/dis-nmosd.md",
+   "identifier": "Neuromyelitis optica spectrum disorder",
+   "node_type": "Disease",
+   "degree": 2
+  },
+  {
+   "id": "phen-optic-neuritis",
+   "kind": "entity",
+   "label": "Optic neuritis",
+   "path": "knowledge/phen-optic-neuritis.md",
+   "identifier": "Optic neuritis",
+   "node_type": "Phenotype",
+   "degree": 2
+  },
+  {
+   "id": "meas-edss",
+   "kind": "entity",
+   "label": "EDSS score",
+   "path": "knowledge/meas-edss.md",
+   "identifier": "EDSS score",
+   "node_type": "BiomedicalMeasure",
+   "degree": 1
+  },
+  {
+   "id": "meth-oct",
+   "kind": "entity",
+   "label": "Optical coherence tomography",
+   "path": "knowledge/meth-oct.md",
+   "identifier": "Optical coherence tomography",
+   "node_type": "MethodOrProcedure",
+   "degree": 2
+  },
+  {
+   "id": "exp-vitamin-d-deficiency",
+   "kind": "entity",
+   "label": "Vitamin D deficiency",
+   "path": "knowledge/exp-vitamin-d-deficiency.md",
+   "identifier": "Vitamin D deficiency",
+   "node_type": "Exposure",
+   "stale": true,
+   "degree": 1
+  },
+  {
+   "id": "exp-smoking",
+   "kind": "entity",
+   "label": "Cigarette smoking",
+   "path": "knowledge/exp-smoking.md",
+   "identifier": "Cigarette smoking",
+   "node_type": "Exposure",
+   "degree": 1
+  },
+  {
+   "id": "soc-latitude",
+   "kind": "entity",
+   "label": "Residential latitude",
+   "path": "knowledge/soc-latitude.md",
+   "identifier": "Residential latitude",
+   "node_type": "SocialFactor",
+   "degree": 2
+  },
+  {
+   "id": "food-oily-fish",
+   "kind": "entity",
+   "label": "Oily fish intake",
+   "path": "knowledge/food-oily-fish.md",
+   "identifier": "Oily fish intake",
+   "node_type": "Food",
+   "degree": 1
+  },
+  {
+   "id": "dev-3t-mri",
+   "kind": "entity",
+   "label": "3T MRI scanner",
+   "path": "knowledge/dev-3t-mri.md",
+   "identifier": "3T MRI scanner",
+   "node_type": "Device",
+   "degree": 1
+  },
+  {
+   "id": "samp-csf",
+   "kind": "entity",
+   "label": "Cerebrospinal fluid sample",
+   "path": "knowledge/samp-csf.md",
+   "identifier": "Cerebrospinal fluid sample",
+   "node_type": "MaterialSample",
+   "degree": 1
+  },
+  {
+   "id": "pub-hauser-2017",
+   "kind": "source",
+   "label": "Hauser et al. 2017, NEJM",
+   "path": "knowledge/pub-hauser-2017.md",
+   "identifier": "Hauser et al. 2017, NEJM",
+   "node_type": "Publication",
+   "credibility_tier": "peer_reviewed",
+   "degree": 0
+  },
+  {
+   "id": "pub-bjornevik-2022",
+   "kind": "source",
+   "label": "Bjornevik et al. 2022, Science",
+   "path": "knowledge/pub-bjornevik-2022.md",
+   "identifier": "Bjornevik et al. 2022, Science",
+   "node_type": "Publication",
+   "credibility_tier": "peer_reviewed",
+   "degree": 0
+  },
+  {
+   "id": "pub-preprint-2026",
+   "kind": "source",
+   "label": "Anti-CD20 in progressive MS (preprint)",
+   "path": "knowledge/pub-preprint-2026.md",
+   "identifier": "Anti-CD20 in progressive MS (preprint)",
+   "node_type": "Publication",
+   "credibility_tier": "preprint",
+   "status": "draft",
+   "degree": 0
+  },
+  {
+   "id": "pub-textbook",
+   "kind": "source",
+   "label": "McAlpine's Multiple Sclerosis, 5th ed.",
+   "path": "knowledge/pub-textbook.md",
+   "identifier": "McAlpine's Multiple Sclerosis, 5th ed.",
+   "node_type": "Publication",
+   "credibility_tier": "book",
+   "degree": 0
+  },
+  {
+   "id": "pub-who-report",
+   "kind": "source",
+   "label": "WHO Atlas of MS 2023",
+   "path": "knowledge/pub-who-report.md",
+   "identifier": "WHO Atlas of MS 2023",
+   "node_type": "Publication",
+   "credibility_tier": "gray_lit",
+   "degree": 0
+  },
+  {
+   "id": "pub-blog",
+   "kind": "source",
+   "label": "A patient advocacy blog post",
+   "path": "knowledge/pub-blog.md",
+   "identifier": "A patient advocacy blog post",
+   "node_type": "Publication",
+   "credibility_tier": "web",
+   "degree": 0
+  },
+  {
+   "id": "pub-notes",
+   "kind": "source",
+   "label": "Lab meeting notes, 2026-03-11",
+   "path": "knowledge/pub-notes.md",
+   "identifier": "Lab meeting notes, 2026-03-11",
+   "node_type": "Publication",
+   "credibility_tier": "personal",
+   "degree": 1
+  },
+  {
+   "id": "pub-retracted",
+   "kind": "source",
+   "label": "Retracted vaccine-MS association study",
+   "path": "knowledge/pub-retracted.md",
+   "identifier": "Retracted vaccine-MS association study",
+   "node_type": "Publication",
+   "credibility_tier": "peer_reviewed",
+   "retracted": true,
+   "status": "retracted",
+   "degree": 1
+  },
+  {
+   "id": "study-oratorio",
+   "kind": "source",
+   "label": "ORATORIO trial",
+   "path": "knowledge/study-oratorio.md",
+   "identifier": "ORATORIO trial",
+   "node_type": "Study",
+   "credibility_tier": "peer_reviewed",
+   "degree": 2
+  },
+  {
+   "id": "ds-uk-biobank",
+   "kind": "source",
+   "label": "UK Biobank imaging release",
+   "path": "knowledge/ds-uk-biobank.md",
+   "identifier": "UK Biobank imaging release",
+   "node_type": "Dataset",
+   "credibility_tier": "gray_lit",
+   "degree": 1
+  },
+  {
+   "id": "agent-curator",
+   "kind": "entity",
+   "label": "Biorouter curation agent",
+   "path": "knowledge/agent-curator.md",
+   "identifier": "Biorouter curation agent",
+   "node_type": "Agent",
+   "degree": 1
+  },
+  {
+   "id": "pop-us-veterans",
+   "kind": "entity",
+   "label": "US military personnel cohort",
+   "path": "knowledge/pop-us-veterans.md",
+   "identifier": "US military personnel cohort",
+   "node_type": "Population",
+   "degree": 2
+  },
+  {
+   "id": "geo-scandinavia",
+   "kind": "entity",
+   "label": "Scandinavia",
+   "path": "knowledge/geo-scandinavia.md",
+   "identifier": "Scandinavia",
+   "node_type": "GeographicLocation",
+   "degree": 1
+  },
+  {
+   "id": "concept-molecular-mimicry",
+   "kind": "concept",
+   "label": "Molecular mimicry",
+   "path": "knowledge/concept-molecular-mimicry.md",
+   "identifier": "Molecular mimicry",
+   "node_type": "Concept",
+   "degree": 2
+  },
+  {
+   "id": "other-registry",
+   "kind": "entity",
+   "label": "National MS registry",
+   "path": "knowledge/other-registry.md",
+   "identifier": "National MS registry",
+   "node_type": "Other",
+   "degree": 1
+  },
+  {
+   "id": "ext-gene-cd20",
+   "kind": "entity",
+   "label": "MS4A1",
+   "path": "",
+   "identifier": "MS4A1",
+   "node_type": "Gene",
+   "external": true,
+   "degree": 1
+  },
+  {
+   "id": "ext-dis-lupus",
+   "kind": "entity",
+   "label": "Systemic lupus erythematosus",
+   "path": "",
+   "identifier": "Systemic lupus erythematosus",
+   "node_type": "Disease",
+   "external": true,
+   "degree": 1
+  },
+  {
+   "id": "ext-mol-interferon",
+   "kind": "entity",
+   "label": "Interferon beta-1a",
+   "path": "",
+   "identifier": "Interferon beta-1a",
+   "node_type": "Molecule",
+   "external": true,
+   "degree": 1
+  }
+ ],
+ "edges": [
+  {
+   "from": "mol-ocrelizumab",
+   "to": "dis-ms",
+   "predicate": "treats",
+   "relation": "treats",
+   "primary_source": "pub-hauser-2017",
+   "publications": [
+    "https://doi.org/10.1056/NEJMoa1601277"
+   ],
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent",
+   "quantitative": {
+    "effect_size": {
+     "kind": "number",
+     "value": 0.53
+    },
+    "p_value": {
+     "kind": "text",
+     "value": "<0.001"
+    },
+    "ci_lower": {
+     "kind": "number",
+     "value": 0.4
+    },
+    "ci_upper": {
+     "kind": "number",
+     "value": 0.7
+    },
+    "sample_size": {
+     "kind": "number",
+     "value": 732
+    }
+   },
+   "qualifiers": {
+    "direction": "decreases",
+    "species_context": "human"
+   }
+  },
+  {
+   "from": "mol-ocrelizumab",
+   "to": "func-b-cell-depletion",
+   "predicate": "causes",
+   "relation": "causes",
+   "primary_source": "study-oratorio",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "mol-ocrelizumab",
+   "to": "molclass-anti-cd20",
+   "predicate": "is_a",
+   "relation": "is_a",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "mol-ocrelizumab",
+   "to": "ext-gene-cd20",
+   "predicate": "targets",
+   "relation": "targets",
+   "primary_source": "pub-hauser-2017",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "mol-tocilizumab",
+   "to": "gene-il6",
+   "predicate": "targets",
+   "relation": "targets",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "mol-tocilizumab",
+   "to": "dis-ms",
+   "predicate": "treats",
+   "relation": "treats",
+   "negated": true,
+   "primary_source": "pub-preprint-2026",
+   "knowledge_level": "statement",
+   "agent_type": "automated_agent"
+  },
+  {
+   "from": "mol-tocilizumab",
+   "to": "dis-ms",
+   "predicate": "reported_in",
+   "relation": "reported_in",
+   "primary_source": "pub-preprint-2026",
+   "synthesized": true,
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "org-ebv",
+   "to": "dis-ms",
+   "predicate": "causes",
+   "relation": "causes",
+   "primary_source": "pub-bjornevik-2022",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent",
+   "quantitative": {
+    "effect_size": {
+     "kind": "number",
+     "value": 32.4
+    },
+    "effect_metric": {
+     "kind": "text",
+     "value": "hazard ratio"
+    }
+   }
+  },
+  {
+   "from": "org-ebv",
+   "to": "concept-molecular-mimicry",
+   "predicate": "associated_with",
+   "relation": "associated_with",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "gene-hla-drb1",
+   "to": "dis-ms",
+   "predicate": "associated_with",
+   "relation": "associated_with",
+   "primary_source": "pub-textbook",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent",
+   "quantitative": {
+    "frequency": {
+     "kind": "number",
+     "value": 0.28
+    }
+   }
+  },
+  {
+   "from": "var-hla-drb1-1501",
+   "to": "gene-hla-drb1",
+   "predicate": "located_in",
+   "relation": "located_in",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "var-hla-drb1-1501",
+   "to": "dis-ms",
+   "predicate": "associated_with",
+   "relation": "associated_with",
+   "primary_source": "ds-uk-biobank",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "var-rs2228145",
+   "to": "gene-il6",
+   "predicate": "located_in",
+   "relation": "located_in",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "seq-il6-promoter",
+   "to": "gene-il6",
+   "predicate": "part_of",
+   "relation": "part_of",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "gene-il6",
+   "to": "path-jak-stat",
+   "predicate": "participates_in",
+   "relation": "participates_in",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "struct-il6-receptor",
+   "to": "gene-il6",
+   "predicate": "part_of",
+   "relation": "part_of",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "exp-vitamin-d-deficiency",
+   "to": "dis-ms",
+   "predicate": "increases_risk_of",
+   "relation": "increases_risk_of",
+   "primary_source": "pub-who-report",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "exp-smoking",
+   "to": "dis-ms",
+   "predicate": "increases_risk_of",
+   "relation": "increases_risk_of",
+   "primary_source": "pub-textbook",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "food-oily-fish",
+   "to": "dis-ms",
+   "predicate": "increases_risk_of",
+   "relation": "increases_risk_of",
+   "negated": true,
+   "primary_source": "pub-blog",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "soc-latitude",
+   "to": "dis-ms",
+   "predicate": "associated_with",
+   "relation": "associated_with",
+   "primary_source": "pub-who-report",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "soc-latitude",
+   "to": "geo-scandinavia",
+   "predicate": "located_in",
+   "relation": "located_in",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "dis-ms",
+   "to": "phen-optic-neuritis",
+   "predicate": "has_phenotype",
+   "relation": "has_phenotype",
+   "primary_source": "pub-textbook",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "dis-ms",
+   "to": "dis-nmosd",
+   "predicate": "differential_diagnosis_of",
+   "relation": "differential_diagnosis_of",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "dis-nmosd",
+   "to": "dis-ms",
+   "predicate": "differential_diagnosis_of",
+   "relation": "differential_diagnosis_of",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "phen-optic-neuritis",
+   "to": "anat-optic-nerve",
+   "predicate": "located_in",
+   "relation": "located_in",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "dis-ms",
+   "to": "cell-oligodendrocyte",
+   "predicate": "affects",
+   "relation": "affects",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "meth-oct",
+   "to": "anat-optic-nerve",
+   "predicate": "measures",
+   "relation": "measures",
+   "primary_source": "ds-uk-biobank",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "meth-oct",
+   "to": "dev-3t-mri",
+   "predicate": "uses",
+   "relation": "uses",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "meas-edss",
+   "to": "dis-ms",
+   "predicate": "measures",
+   "relation": "measures",
+   "primary_source": "pub-textbook",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "samp-csf",
+   "to": "dis-ms",
+   "predicate": "sampled_from",
+   "relation": "sampled_from",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "study-oratorio",
+   "to": "mol-ocrelizumab",
+   "predicate": "evaluates",
+   "relation": "evaluates",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "study-oratorio",
+   "to": "pop-us-veterans",
+   "predicate": "enrolled",
+   "relation": "enrolled",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "ds-uk-biobank",
+   "to": "pop-us-veterans",
+   "predicate": "describes",
+   "relation": "describes",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "agent-curator",
+   "to": "other-registry",
+   "predicate": "curated",
+   "relation": "curated",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "pub-retracted",
+   "to": "dis-ms",
+   "predicate": "associated_with",
+   "relation": "associated_with",
+   "negated": true,
+   "primary_source": "pub-retracted",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "pub-notes",
+   "to": "concept-molecular-mimicry",
+   "predicate": "discusses",
+   "relation": "discusses",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "ext-dis-lupus",
+   "to": "dis-ms",
+   "predicate": "differential_diagnosis_of",
+   "relation": "differential_diagnosis_of",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  },
+  {
+   "from": "ext-mol-interferon",
+   "to": "dis-ms",
+   "predicate": "treats",
+   "relation": "treats",
+   "primary_source": "pub-textbook",
+   "knowledge_level": "statement",
+   "agent_type": "manual_agent"
+  }
+ ]
+}

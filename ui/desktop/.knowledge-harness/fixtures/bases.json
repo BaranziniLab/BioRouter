@@ -4,17 +4,25 @@
     "name": "Multiple sclerosis",
     "color": "#cf6d47",
     "created_at": "2026-05-02T09:12:00Z",
-    "schema_version": 1,
+    "schema_version": 3,
     "tier": "private",
-    "default_model": { "provider": "anthropic", "model": "claude-opus-5" }
+    "default_model": {
+      "provider": "anthropic",
+      "model": "claude-opus-5"
+    },
+    "format": "biookf",
+    "biookf_version": "0.3",
+    "okf_version": "0.2"
   },
   {
     "id": "spoke-graph-notes",
     "name": "SPOKE graph notes",
     "color": "#638d68",
     "created_at": "2026-05-19T14:40:00Z",
-    "schema_version": 1,
-    "tier": "public"
+    "schema_version": 3,
+    "tier": "public",
+    "format": "okf",
+    "okf_version": "0.2"
   },
   {
     "id": "lab-protocols",

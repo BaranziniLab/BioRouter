@@ -397,3 +397,321 @@ export type ThemeFamilyId = keyof typeof GENERATED_THEMES;
 
 /** Every family id, in definition order. The one list. */
 export const THEME_FAMILY_IDS = Object.keys(GENERATED_THEMES) as ThemeFamilyId[];
+
+/* ── the knowledge-graph palette ── */
+
+/**
+ * The seven family silhouettes. SHAPE CARRIES FAMILY; lightness carries the
+ * member within a family — the redundant non-colour channel WCAG 1.4.1 asks
+ * for, and the reason this palette can be honest that cross-family colour
+ * distance under dichromacy bottoms out at ΔE00 0.00. Seven, because seven is
+ * about the discriminable limit for a silhouette at 10px; 28 would need shape
+ * to do the whole job and could not.
+ */
+export type NodeShape =
+  | 'circle'
+  | 'square'
+  | 'rounded-square'
+  | 'diamond'
+  | 'triangle'
+  | 'pentagon'
+  | 'hexagon';
+
+/**
+ * The credibility ring's keys: the six `CredibilityTier` values plus
+ * `retracted`, which is a FLAG rather than a tier — a retracted source takes
+ * the retracted colour and the continuous ring whatever its tier says, because
+ * retraction is the more important fact.
+ *
+ * Declared here rather than imported from `api/types.gen` so this generated
+ * module stays free of the API client's generation order;
+ * `graphPalette.test.ts` asserts at COMPILE TIME that the two agree.
+ */
+export type GraphCredibilityKey =
+  | 'peer_reviewed'
+  | 'book'
+  | 'preprint'
+  | 'gray_lit'
+  | 'web'
+  | 'personal'
+  | 'retracted';
+
+export type GraphPalette = {
+  /** The 28 curated fills, keyed by OKF type name. */
+  types: Record<string, string>;
+  /** Family name -> its silhouette and its members, in ladder order. */
+  families: Record<string, { shape: NodeShape; members: string[] }>;
+  /** Type name -> silhouette, precomputed so the node painter does no lookup walk. */
+  shapeOf: Record<string, NodeShape>;
+  /** The seven ring hues. */
+  credibility: Record<GraphCredibilityKey, string>;
+  /**
+   * The ring TREATMENT, which is the actual encoding: an arc count, a dashed
+   * ring, or a continuous one. Hue rides along as the fast channel for
+   * trichromats and carries nothing alone — a 1.6px stroke subtends ~2-3
+   * arcmin, well inside the regime where the visual system reads luminance
+   * only. `web` and `personal` share the dashed treatment because on the
+   * canvas they ARE one category: not academic.
+   */
+  ringArcs: Record<GraphCredibilityKey, number | 'dashed' | 'solid'>;
+  /** DR-11: the fixed chroma every hashed fallback colour takes. */
+  fallbackChroma: number;
+  /** DR-11: the four rungs a hashed fallback selects between. */
+  fallbackRungs: [number, number, number, number];
+  /**
+   * The surface every ratio above was solved against — the resolved
+   * `--background-muted`, which is what the graph pane paints.
+   *
+   * RESOLVED, never authored, and per-mode. Consumers that need a canvas
+   * fallback take it from here rather than restating a hex: a single light
+   * value for a dual-mode quantity is how the boot mark once came to measure
+   * 1.02:1 on every dark splash.
+   */
+  ground: string;
+};
+
+/**
+ * The knowledge-graph node palette — 28 curated type fills, 7 credibility ring
+ * hues, the shape map, and the DR-11 fallback parameters.
+ *
+ * ONE PAIR SERVES ALL THREE FAMILIES. That is not a simplification: the
+ * generator resolves `--background-muted` in all six (family × mode) scopes
+ * and refuses to emit unless the three light values are identical and the three
+ * dark values are identical. If a family ever diverges, this constant moves
+ * per-family — the generator will say so rather than letting the palette go
+ * quietly wrong.
+ *
+ * These are NOT theme tokens and no CSS consumes them. A 2D canvas is the same
+ * category of consumer as xterm and react-syntax-highlighter: it cannot read a
+ * custom property, so the value has to arrive as a string. Adding them to
+ * SEMANTIC_TOKENS would force every family to author 28 values it does not
+ * need, and this design deliberately adds ZERO theme tokens.
+ *
+ * Every hex is a solved contrast ratio against `ground`, so the ladder
+ * INVERTS between modes by construction: in light a higher rung is a darker
+ * colour, in dark a lighter one. Same rung index, same relative position within
+ * the family, opposite direction — which is what keeps a family readable in
+ * both modes without a second authored table.
+ */
+export const GRAPH_PALETTE: { light: GraphPalette; dark: GraphPalette } = {
+  light: {
+    types: {
+      Gene: '#6a7cd4',
+      Variant: '#6965be',
+      SequenceFeature: '#6750a7',
+      Structure: '#643d90',
+      Molecule: '#1d927a',
+      MolecularClass: '#007d75',
+      BiologicalPathway: '#006a6d',
+      BiologicalFunction: '#005963',
+      Anatomy: '#608d44',
+      CellType: '#367e45',
+      Organism: '#006d48',
+      Disease: '#cb5d82',
+      Phenotype: '#ba4a5e',
+      BiomedicalMeasure: '#a73939',
+      MethodOrProcedure: '#942b0f',
+      Exposure: '#b47327',
+      SocialFactor: '#966700',
+      Food: '#755c00',
+      Device: '#4788b0',
+      MaterialSample: '#546fa5',
+      Publication: '#738679',
+      Study: '#617a76',
+      Dataset: '#556d72',
+      Agent: '#4e606c',
+      Population: '#4a5263',
+      GeographicLocation: '#474557',
+      Concept: '#433847',
+      Other: '#3c2b34',
+    },
+    families: {
+      Genomic: { shape: 'square', members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
+      'Molecular & process': {
+        shape: 'diamond',
+        members: ['Molecule', 'MolecularClass', 'BiologicalPathway', 'BiologicalFunction'],
+      },
+      'Anatomy & organism': { shape: 'triangle', members: ['Anatomy', 'CellType', 'Organism'] },
+      Clinical: {
+        shape: 'rounded-square',
+        members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'],
+      },
+      Exposome: { shape: 'pentagon', members: ['Exposure', 'SocialFactor', 'Food'] },
+      Physical: { shape: 'circle', members: ['Device', 'MaterialSample'] },
+      'Provenance & context': {
+        shape: 'hexagon',
+        members: [
+          'Publication',
+          'Study',
+          'Dataset',
+          'Agent',
+          'Population',
+          'GeographicLocation',
+          'Concept',
+          'Other',
+        ],
+      },
+    },
+    shapeOf: {
+      Gene: 'square',
+      Variant: 'square',
+      SequenceFeature: 'square',
+      Structure: 'square',
+      Molecule: 'diamond',
+      MolecularClass: 'diamond',
+      BiologicalPathway: 'diamond',
+      BiologicalFunction: 'diamond',
+      Anatomy: 'triangle',
+      CellType: 'triangle',
+      Organism: 'triangle',
+      Disease: 'rounded-square',
+      Phenotype: 'rounded-square',
+      BiomedicalMeasure: 'rounded-square',
+      MethodOrProcedure: 'rounded-square',
+      Exposure: 'pentagon',
+      SocialFactor: 'pentagon',
+      Food: 'pentagon',
+      Device: 'circle',
+      MaterialSample: 'circle',
+      Publication: 'hexagon',
+      Study: 'hexagon',
+      Dataset: 'hexagon',
+      Agent: 'hexagon',
+      Population: 'hexagon',
+      GeographicLocation: 'hexagon',
+      Concept: 'hexagon',
+      Other: 'hexagon',
+    },
+    credibility: {
+      peer_reviewed: '#1c619f',
+      book: '#406e9d',
+      preprint: '#5d7b9a',
+      gray_lit: '#768290',
+      web: '#a26227',
+      personal: '#9f5c83',
+      retracted: '#c04441',
+    },
+    ringArcs: {
+      peer_reviewed: 4,
+      book: 3,
+      preprint: 2,
+      gray_lit: 1,
+      web: 'dashed',
+      personal: 'dashed',
+      retracted: 'solid',
+    },
+    fallbackChroma: 0.055,
+    fallbackRungs: [3.9, 4.95, 6.2, 7.9],
+    ground: '#f4f4f2',
+  },
+  dark: {
+    types: {
+      Gene: '#5f70c8',
+      Variant: '#817fdb',
+      SequenceFeature: '#a48fec',
+      Structure: '#c69efb',
+      Molecule: '#00866f',
+      MolecularClass: '#13998f',
+      BiologicalPathway: '#2fadb0',
+      BiologicalFunction: '#4cbfd1',
+      Anatomy: '#558239',
+      CellType: '#50985d',
+      Organism: '#4dae81',
+      Disease: '#bf5177',
+      Phenotype: '#d76476',
+      BiomedicalMeasure: '#ef7a76',
+      MethodOrProcedure: '#ff9379',
+      Exposure: '#a86817',
+      SocialFactor: '#b18023',
+      Food: '#ba9938',
+      Device: '#3b7da4',
+      MaterialSample: '#6d89c0',
+      Publication: '#697b6e',
+      Study: '#6f8884',
+      Dataset: '#7c959a',
+      Agent: '#8da1af',
+      Population: '#a4aec2',
+      GeographicLocation: '#bebbd1',
+      Concept: '#d8cadc',
+      Other: '#f2dae7',
+    },
+    families: {
+      Genomic: { shape: 'square', members: ['Gene', 'Variant', 'SequenceFeature', 'Structure'] },
+      'Molecular & process': {
+        shape: 'diamond',
+        members: ['Molecule', 'MolecularClass', 'BiologicalPathway', 'BiologicalFunction'],
+      },
+      'Anatomy & organism': { shape: 'triangle', members: ['Anatomy', 'CellType', 'Organism'] },
+      Clinical: {
+        shape: 'rounded-square',
+        members: ['Disease', 'Phenotype', 'BiomedicalMeasure', 'MethodOrProcedure'],
+      },
+      Exposome: { shape: 'pentagon', members: ['Exposure', 'SocialFactor', 'Food'] },
+      Physical: { shape: 'circle', members: ['Device', 'MaterialSample'] },
+      'Provenance & context': {
+        shape: 'hexagon',
+        members: [
+          'Publication',
+          'Study',
+          'Dataset',
+          'Agent',
+          'Population',
+          'GeographicLocation',
+          'Concept',
+          'Other',
+        ],
+      },
+    },
+    shapeOf: {
+      Gene: 'square',
+      Variant: 'square',
+      SequenceFeature: 'square',
+      Structure: 'square',
+      Molecule: 'diamond',
+      MolecularClass: 'diamond',
+      BiologicalPathway: 'diamond',
+      BiologicalFunction: 'diamond',
+      Anatomy: 'triangle',
+      CellType: 'triangle',
+      Organism: 'triangle',
+      Disease: 'rounded-square',
+      Phenotype: 'rounded-square',
+      BiomedicalMeasure: 'rounded-square',
+      MethodOrProcedure: 'rounded-square',
+      Exposure: 'pentagon',
+      SocialFactor: 'pentagon',
+      Food: 'pentagon',
+      Device: 'circle',
+      MaterialSample: 'circle',
+      Publication: 'hexagon',
+      Study: 'hexagon',
+      Dataset: 'hexagon',
+      Agent: 'hexagon',
+      Population: 'hexagon',
+      GeographicLocation: 'hexagon',
+      Concept: 'hexagon',
+      Other: 'hexagon',
+    },
+    credibility: {
+      peer_reviewed: '#5fa1e4',
+      book: '#6291c2',
+      preprint: '#6583a3',
+      gray_lit: '#6d7986',
+      web: '#ba783f',
+      personal: '#b67299',
+      retracted: '#e1625d',
+    },
+    ringArcs: {
+      peer_reviewed: 4,
+      book: 3,
+      preprint: 2,
+      gray_lit: 1,
+      web: 'dashed',
+      personal: 'dashed',
+      retracted: 'solid',
+    },
+    fallbackChroma: 0.055,
+    fallbackRungs: [3.9, 4.95, 6.2, 7.9],
+    ground: '#232320',
+  },
+};

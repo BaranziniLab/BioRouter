@@ -8,7 +8,7 @@ import {
   Search,
   Trash2,
 } from '../../icons/app-icons';
-import type { KbListEntry } from '../../../api/types.gen';
+import type { KbFormat, KbListEntry } from '../../../api/types.gen';
 import { Badge } from '../../ui/badge';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Button } from '../../ui/button';
@@ -30,15 +30,25 @@ import { BUILTIN_RECREATED_TITLE, isBuiltinKnowledgeBase } from '../../../utils/
 import { useKnowledge } from '../KnowledgeContext';
 import { useKnowledgeBases } from '../hooks/useKnowledgeBases';
 import { KbDot } from '../KbDot';
+import { kbFormatLabel, LEGACY_FORMAT_TITLE } from '../kbFormat';
+import { KbFormatChooser } from './KbFormatChooser';
 
 interface Props {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Open with the create form already unfolded (the picker's "Create…" row). */
+  /** Open with the create flow already started (the picker's "Create…" row). */
   startInCreate?: boolean;
 }
 
-type DraftMode = { kind: 'create' } | { kind: 'rename'; base: KbListEntry } | null;
+/**
+ * Renaming is still an inline draft; CREATING is not.
+ *
+ * The two used to share one text field, and that is what made the format an
+ * invisible daemon default: a create flow whose only input is a name has
+ * nowhere to put the choice §4.3 requires the user to make. Rename genuinely is
+ * one field and stays inline.
+ */
+type DraftMode = { kind: 'rename'; base: KbListEntry } | null;
 
 /**
  * The knowledge-base manager: the half of the old `KBSelectorPalette` that is
@@ -65,11 +75,13 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
   const [busyId, setBusyId] = useState<string | null>(null);
   const [baseToDelete, setBaseToDelete] = useState<KbListEntry | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [chooserOpen, setChooserOpen] = useState(false);
   const importRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!open) return;
-    setDraftMode(startInCreate ? { kind: 'create' } : null);
+    setDraftMode(null);
+    setChooserOpen(startInCreate);
     setDraft('');
     setError(null);
     // A base created elsewhere (chat, the knowledge MCP tools) is invisible here
@@ -109,8 +121,30 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
 
   function startCreate() {
     setError(null);
-    setDraftMode({ kind: 'create' });
-    setDraft(query.trim());
+    setDraftMode(null);
+    setChooserOpen(true);
+  }
+
+  /**
+   * Create through the chooser.
+   *
+   * The id is a LOCAL uniqueness pass over the bases this client knows about;
+   * the daemon still owns collision handling, which is why §4.3's preview line
+   * says the final id may differ and why the primary is set from the manifest
+   * the daemon returns rather than from `id`.
+   */
+  async function createWithFormat(name: string, format: KbFormat): Promise<string | undefined> {
+    const id = makeUniqueId(name);
+    if (!id) throw new Error('Choose a name with letters or numbers.');
+    setBusyId('__create');
+    try {
+      const manifest = await create(id, name, { format });
+      if (manifest?.id) setPrimaryKbId(manifest.id);
+      await refresh();
+      return manifest?.id;
+    } finally {
+      setBusyId(null);
+    }
   }
 
   function startRename(base: KbListEntry) {
@@ -133,18 +167,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
     }
 
     try {
-      if (draftMode?.kind === 'create') {
-        const id = makeUniqueId(trimmed);
-        if (!id) {
-          setError('Choose a name with letters or numbers.');
-          return;
-        }
-        setBusyId('__create');
-        const manifest = await create(id, trimmed);
-        if (manifest?.id) {
-          setPrimaryKbId(manifest.id);
-        }
-      } else if (draftMode?.kind === 'rename') {
+      if (draftMode?.kind === 'rename') {
         setBusyId(draftMode.base.id);
         const manifest = await rename(draftMode.base.id, trimmed);
         if (primaryKbId === draftMode.base.id) {
@@ -286,11 +309,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
             // An element inside the 12px dialog container takes the next step
             // DOWN, so 8px — not the 12px this block used to carry.
             <div className="mt-4 rounded-element border border-border-subtle p-3">
-              <div className="mb-2 text-label">
-                {draftMode.kind === 'create'
-                  ? 'Name your new knowledge base'
-                  : `Rename "${draftMode.base.name}"`}
-              </div>
+              <div className="mb-2 text-label">{`Rename "${draftMode.base.name}"`}</div>
               <div className="flex flex-col gap-2 sm:flex-row">
                 <Input
                   data-testid="knowledge-kb-name-input"
@@ -316,7 +335,7 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                     type="button"
                     onClick={() => void submitDraft()}
                   >
-                    {draftMode.kind === 'create' ? 'Create' : 'Save'}
+                    Save
                   </Button>
                 </div>
               </div>
@@ -396,6 +415,21 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
                               daemon sends that is not exactly Public is marked,
                               which is the polarity the whole feature uses and the
                               one that fails safe if the union ever widens. */}
+                          {/* The format the base's PAGES are written in. It reads
+                              `schema_version` as well as `format`, because
+                              `format` alone is the DR-6 trap: it is
+                              `serde(default)` on the daemon, so every legacy
+                              manifest deserializes as `okf` and a badge written
+                              against the field alone would call every legacy base
+                              OKF. */}
+                          <Badge
+                            uppercase
+                            title={
+                              kbFormatLabel(base) === 'Legacy' ? LEGACY_FORMAT_TITLE : undefined
+                            }
+                          >
+                            {kbFormatLabel(base)}
+                          </Badge>
                           {base.tier !== 'public' && <PrivacyBadge tier={base.tier} />}
                           {hidden && <Badge uppercase>Not in this chat</Badge>}
                         </div>
@@ -484,6 +518,13 @@ export function KBManagerDialog({ open, onOpenChange, startInCreate = false }: P
           )}
         </div>
       </ModalShell>
+
+      <KbFormatChooser
+        open={chooserOpen}
+        onOpenChange={setChooserOpen}
+        initialName={query.trim()}
+        onCreate={createWithFormat}
+      />
 
       <ConfirmationModal
         isOpen={baseToDelete !== null}

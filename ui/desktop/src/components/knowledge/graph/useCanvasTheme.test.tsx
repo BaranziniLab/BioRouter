@@ -108,4 +108,30 @@ describe('useCanvasTheme', () => {
     await waitFor(() => expect(result.current.ink).toBe('rgb(42, 37, 32)'));
     document.documentElement.removeAttribute('data-theme');
   });
+
+  // Every case above calls the hook with the container alone, and that is the
+  // case being pinned, not a shortcut: a probe ref's `.current` is null on the
+  // first render of every caller, so "no probes at all" and "probes not attached
+  // yet" have to take the same path. Requiring the argument put a bare
+  // `p.mono.current` on the mount path and threw
+  // `Cannot read properties of undefined (reading 'mono')` from inside the hook.
+  it('resolves the probe fields when they are supplied', async () => {
+    const container = host(LIGHT_INK);
+    const ref = createRef<HTMLElement>();
+    (ref as { current: HTMLElement | null }).current = container;
+
+    const danger = host('rgb(179, 38, 30)');
+    const dangerRef = createRef<HTMLElement>();
+    (dangerRef as { current: HTMLElement | null }).current = danger;
+
+    // `muted` is supplied but never attaches — the shape of the first render.
+    const { result } = renderHook(() =>
+      useCanvasTheme(ref, { danger: dangerRef, muted: createRef<HTMLElement>() })
+    );
+
+    await waitFor(() => expect(result.current.danger).toBe('rgb(179, 38, 30)'));
+    // An unattached probe falls back rather than throwing, and the fallback for
+    // `muted` is the ink — never an empty string, which a canvas silently drops.
+    expect(result.current.muted).toBe(LIGHT_INK);
+  });
 });

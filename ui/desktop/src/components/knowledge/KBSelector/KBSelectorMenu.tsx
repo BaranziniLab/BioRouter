@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Check, FolderPlus, Settings } from '../../icons/app-icons';
+import { Badge } from '../../ui/badge';
 import { PrivacyBadge } from '../../ui/PrivacyBadge';
 import { Button } from '../../ui/button';
 import {
@@ -13,6 +14,7 @@ import {
 } from '../../ui/command';
 import { useKnowledge } from '../KnowledgeContext';
 import { KbDot } from '../KbDot';
+import { kbFormatLabel, LEGACY_FORMAT_TITLE } from '../kbFormat';
 
 interface Props {
   /** Switch to the manager dialog. */
@@ -128,7 +130,13 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
                   }}
                 >
                   <KbDot color={base.color} />
-                  <span className="min-w-0 flex-1 truncate">{base.name}</span>
+                  <span data-row-name className="min-w-0 flex-1 truncate">{base.name}</span>
+                  <Badge
+                    uppercase
+                    title={kbFormatLabel(base) === 'Legacy' ? LEGACY_FORMAT_TITLE : undefined}
+                  >
+                    {kbFormatLabel(base)}
+                  </Badge>
                   {base.tier !== 'public' && <PrivacyBadge tier={base.tier} dense />}
                   {isPrimary && (
                     <Check
@@ -146,11 +154,11 @@ export function KBSelectorMenu({ onManage, onCreate, onClose }: Props) {
         <CommandGroup>
           <CommandItem onSelect={onManage} data-testid="knowledge-kb-open-manager">
             <Settings className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
-            <span className="min-w-0 flex-1 truncate">Manage bases…</span>
+            <span data-row-name className="min-w-0 flex-1 truncate">Manage bases…</span>
           </CommandItem>
           <CommandItem onSelect={onCreate} data-testid="knowledge-kb-open-create">
             <FolderPlus className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden />
-            <span className="min-w-0 flex-1 truncate">Create knowledge base…</span>
+            <span data-row-name className="min-w-0 flex-1 truncate">Create knowledge base…</span>
           </CommandItem>
         </CommandGroup>
       </CommandList>

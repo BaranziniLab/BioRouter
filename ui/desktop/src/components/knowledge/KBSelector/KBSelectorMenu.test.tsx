@@ -65,9 +65,24 @@ beforeEach(() => {
 });
 
 /** The row `aria-activedescendant` names, by its visible text. */
+/**
+ * Which row the highlight is on, by NAME.
+ *
+ * ⚠ **It reads `[data-row-name]`, not the row's `textContent`, and the
+ * difference is the whole point.** A row is a name plus however many badges it
+ * has grown — a format badge, a privacy lock, the primary check — so
+ * `textContent` answers "what does this row say" when the question is "which row
+ * is this". It read `'Alpha'` until the format badge landed and then read
+ * `'AlphaLegacy'`, failing a test about the HIGHLIGHT for a reason that had
+ * nothing to do with the highlight. Every row carries the marker, action rows
+ * included, so the assertion below still distinguishes a base row from
+ * "Manage bases…".
+ */
 function highlighted(): string | null {
   const id = screen.getByRole('combobox').getAttribute('aria-activedescendant');
-  return id ? (document.getElementById(id)?.textContent ?? null) : null;
+  if (!id) return null;
+  const row = document.getElementById(id);
+  return row?.querySelector('[data-row-name]')?.textContent ?? row?.textContent ?? null;
 }
 
 describe('KBSelectorMenu', () => {

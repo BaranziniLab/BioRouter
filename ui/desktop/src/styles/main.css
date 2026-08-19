@@ -2374,6 +2374,29 @@
   transition: opacity var(--dur-med) var(--ease-out);
 }
 
+/* The graph pane's two docked strips (ui-spec §4.5): the facet strip above the
+   canvas and the legend below it. `--dock-height` is reused deliberately —
+   this is the same object it already names, a horizontal control strip docked
+   to a pane edge, one step down from a chrome band.
+
+   AUTHORED for the same reason `.br-swatch-ring` is: `h-dock` appears nowhere
+   else in `src/`, so it is a *newly written* utility, and a newly written
+   utility can silently fail to reach the stylesheet under `BIOROUTER_NO_HMR`
+   (`watch: { ignored: ['**'] }` is the same signal Tailwind's class scanner
+   uses). A facet strip that collapses to zero height is not a degraded strip,
+   it is an absent one — and nothing in jsdom would ever report it. */
+.br-graph-dock {
+  height: var(--dock-height);
+}
+
+/* Expanded, the legend becomes the chip grid and takes up to 40% of the pane.
+   Same reasoning: an arbitrary `max-h-[40%]` is exactly the freshly-invented
+   class that can fail to generate, and without the cap the grid would push the
+   canvas out of the pane entirely. */
+.br-graph-legend-expanded {
+  max-height: 40%;
+}
+
 .biorouter-home-content {
   container-name: biorouter-home-content;
   container-type: size;

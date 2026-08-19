@@ -14,6 +14,7 @@ import {
 } from '../icons/app-icons';
 import { getLocation } from '../../api';
 import { Button } from '../ui/button';
+import { PrivacyBadge } from '../ui/PrivacyBadge';
 import { EmptyState } from '../ui/empty-state';
 import { ConfirmationModal } from '../ui/ConfirmationModal';
 import {
@@ -33,6 +34,8 @@ import { useKnowledge } from './KnowledgeContext';
 import { useKnowledgeGraph } from './hooks/useKnowledgeGraph';
 import { useKnowledgeBases } from './hooks/useKnowledgeBases';
 import { KbDot } from './KbDot';
+import { kbFormatLabel, LEGACY_FORMAT_TITLE } from './kbFormat';
+import { Badge } from '../ui/badge';
 
 export default function KnowledgeView() {
   return <KnowledgeViewInner />;
@@ -201,6 +204,22 @@ function KnowledgeViewInner() {
                       <span className="truncate text-label text-text-default">
                         {primaryKb.name}
                       </span>
+                      {/* `schema_version` is folded in, not just `format`: the
+                          field is `serde(default)` on the daemon so a legacy
+                          manifest reads `okf`, and a badge written against it
+                          alone calls every pre-OKF base OKF. */}
+                      <Badge
+                        uppercase
+                        className="shrink-0"
+                        title={
+                          kbFormatLabel(primaryKb) === 'Legacy' ? LEGACY_FORMAT_TITLE : undefined
+                        }
+                      >
+                        {kbFormatLabel(primaryKb)}
+                      </Badge>
+                      {primaryKb.tier !== 'public' && (
+                        <PrivacyBadge tier={primaryKb.tier} dense />
+                      )}
                       {graph && (
                         <span
                           data-testid="knowledge-graph-summary"

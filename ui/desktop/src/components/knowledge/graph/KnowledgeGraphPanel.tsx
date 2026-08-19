@@ -1,12 +1,17 @@
 // ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertCircle, LoaderCircle, Sparkles } from '../../icons/app-icons';
 import type { Graph, GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
-import { credColor, kindColor } from './credColors';
+import { useResolvedTheme } from '../../../contexts/ThemeContext';
 import { ForceGraphCanvas } from './ForceGraphCanvas';
+import { GraphFacetStrip } from './GraphFacetStrip';
+import { GraphLegend } from './GraphLegend';
 import { NodePreview } from './NodePreview';
+import { buildGraphModel } from './graphModel';
+import { applyFacets, EMPTY_FACETS, facetsActive } from './graphFacets';
+import type { FacetState } from './graphFacets';
 
 interface Props {
   kbId: string | null;
@@ -24,13 +29,15 @@ interface Props {
 /**
  * The graph pane (ui-spec §4.5).
  *
- * The header row this used to draw is gone: the base's name, its counts, the
- * Refresh button and the four overflow actions all belong to the section's
- * SUBJECT BAND, where they name the base the whole view is about rather than
- * decorating one of its three panes.
+ * Three stacked regions, no gutter between them: the facet strip, the canvas,
+ * and the legend dock. The canvas is the content — no card, no shadow, no inner
+ * padding — and the pane's own border is the only edge.
  *
- * The canvas is the content — no card, no shadow, no inner padding — and the
- * pane's own border is the only edge.
+ * ⚠ **The model is built HERE, once per graph, and passed down.** All three
+ * regions read the same derived counts, and DR-9 is explicit that the label
+ * pass and the radius model must not be paid `nodes × 60` times a second. A
+ * canvas that derived its own would also disagree with the legend that claims
+ * to describe it.
  *
  * ⚠ **Two loading behaviours, and conflating them is the bug this fixes.** The
  * FIRST load of a base's graph cross-fades a `role="status"` block against the
@@ -50,9 +57,18 @@ export function KnowledgeGraphPanel({
 }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  const [facets, setFacets] = useState<FacetState>(EMPTY_FACETS);
+  const mode = useResolvedTheme();
 
   const firstLoad = loading && !graph;
   const hasNodes = !!graph && graph.nodes.length > 0;
+
+  const model = useMemo(() => (graph ? buildGraphModel(graph) : null), [graph]);
+  const facetResult = useMemo(
+    () => (graph ? applyFacets(graph, facets) : null),
+    [graph, facets]
+  );
+  const active = facetsActive(facets);
 
   return (
     <div className="relative flex h-full w-full min-w-0 flex-1 flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default">
@@ -63,6 +79,18 @@ export function KnowledgeGraphPanel({
             Exit preview
           </Button>
         </div>
+      )}
+
+      {hasNodes && model && facetResult && (
+        <GraphFacetStrip
+          model={model}
+          mode={mode}
+          facets={facets}
+          onChange={setFacets}
+          passing={facetResult.passing}
+          total={facetResult.total}
+          active={active}
+        />
       )}
 
       <div className="relative min-h-0 flex-1 overflow-hidden bg-background-muted">
@@ -112,9 +140,12 @@ export function KnowledgeGraphPanel({
               title="Nothing digested yet"
               description="Stage a source in the Sources rail and press Digest."
             />
-          ) : hasNodes ? (
+          ) : hasNodes && model ? (
             <ForceGraphCanvas
               graph={graph}
+              model={model}
+              facets={facets}
+              passing={facetResult?.nodes ?? null}
               selectedId={selected?.id ?? null}
               hoveredId={hoveredId}
               onHover={setHoveredId}
@@ -132,67 +163,11 @@ export function KnowledgeGraphPanel({
             onClose={() => setSelected(null)}
           />
         )}
-
-        {/* ⚠ SLICE B. This legend still reads `credColors.ts` — the kind/tier
-            palette the OKF migration replaces with a generated, contrast- and
-            colour-vision-audited 28-type palette (§4.7, §5.2–§5.3). It is left
-            exactly as it was rather than half-rewritten: the typed palette has
-            no data source until Stage 6 puts `node_type` on `GraphNode`. */}
-        {hasNodes && (
-          <div className="absolute bottom-4 left-4 rounded-container border border-border-subtle bg-background-default px-3 py-2.5">
-            <div className="grid grid-cols-2 gap-x-4 gap-y-2 text-supporting text-text-default">
-              <div className="flex items-center gap-2">
-                <span
-                  className="br-swatch-ring h-2 w-2 rounded-full"
-                  style={{ background: kindColor.entity }}
-                  aria-hidden="true"
-                />
-                Entity
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className="br-swatch-ring h-2 w-2 rounded-full"
-                  style={{ background: kindColor.concept }}
-                  aria-hidden="true"
-                />
-                Concept
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className="br-swatch-ring h-2 w-2 rounded-full"
-                  style={{ background: kindColor.hub }}
-                  aria-hidden="true"
-                />
-                Hub
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className="br-swatch-ring h-2 w-2 rounded-full"
-                  style={{ background: credColor.peer_reviewed }}
-                  aria-hidden="true"
-                />
-                Peer reviewed
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className="br-swatch-ring h-2 w-2 rounded-full"
-                  style={{ background: credColor.web }}
-                  aria-hidden="true"
-                />
-                Web source
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className="br-swatch-ring h-2 w-2 rounded-full"
-                  style={{ background: credColor.personal }}
-                  aria-hidden="true"
-                />
-                Personal source
-              </div>
-            </div>
-          </div>
-        )}
       </div>
+
+      {hasNodes && model && (
+        <GraphLegend model={model} mode={mode} facets={facets} onChange={setFacets} />
+      )}
     </div>
   );
 }
