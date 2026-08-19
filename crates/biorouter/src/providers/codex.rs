@@ -371,7 +371,6 @@ fn parse_usage(usage: Option<&Value>) -> Usage {
         },
         cache_read_input_tokens: cached,
         cache_creation_input_tokens: cache_write,
-        ..Default::default()
     }
 }
 

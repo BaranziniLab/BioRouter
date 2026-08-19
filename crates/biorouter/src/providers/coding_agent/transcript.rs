@@ -189,9 +189,10 @@ mod tests {
         assert!(out.contains("Assistant: Noted."));
         assert!(out.trim_end().ends_with("Which gene did I name?"));
         // The live instruction must not be inside the history block.
-        let close = out.find(HISTORY_CLOSE).unwrap();
-        assert!(out[close..].contains("Which gene did I name?"));
-        assert!(!out[..close].contains("Which gene did I name?"));
+        let close = out.find(HISTORY_CLOSE).expect("the history block is closed");
+        let (before, after) = out.split_at(close);
+        assert!(after.contains("Which gene did I name?"));
+        assert!(!before.contains("Which gene did I name?"));
     }
 
     /// Messages hidden from the agent stay hidden. This is the same predicate the

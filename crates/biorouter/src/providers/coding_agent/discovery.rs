@@ -216,84 +216,6 @@ pub fn configured_command(kind: CodingAgentKind) -> Option<String> {
         .filter(|s| !s.trim().is_empty())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The ids are the pricing keys. Spelled out as a literal assertion because
-    /// a rename here re-opens the fabricated-pricing bug that
-    /// `blocks_fallback_pricing` exists to prevent, and nothing else would catch
-    /// it — the pricing table would simply stop matching.
-    #[test]
-    fn provider_ids_match_the_pricing_block_list() {
-        assert_eq!(CodingAgentKind::ClaudeCode.provider_id(), "claude_code");
-        assert_eq!(CodingAgentKind::Codex.provider_id(), "codex");
-    }
-
-    /// Anthropic's branding guidelines forbid "Claude Code" as a third-party
-    /// product label. This asserts the label, and asserts the *absence* of the
-    /// forbidden string, so a well-meaning "clarification" fails here.
-    #[test]
-    fn claude_display_name_obeys_the_branding_guidelines() {
-        let label = CodingAgentKind::ClaudeCode.display_name();
-        assert_eq!(label, "Claude Agent");
-        assert!(
-            !label.contains("Claude Code"),
-            "'Claude Code' is not a permitted third-party product label"
-        );
-    }
-
-    /// A pinned path is taken verbatim rather than looked up, which is the only
-    /// escape hatch for nvm/volta/bun installs.
-    #[test]
-    fn an_explicit_path_bypasses_the_search_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("claude");
-        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
-
-        let found = resolve_binary(CodingAgentKind::ClaudeCode, Some(exe.to_str().unwrap()));
-        assert_eq!(found.as_deref(), Some(exe.as_path()));
-
-        let missing = resolve_binary(
-            CodingAgentKind::ClaudeCode,
-            Some(dir.path().join("absent").to_str().unwrap()),
-        );
-        assert!(missing.is_none(), "a pinned path that does not exist is not a fallback");
-    }
-
-    /// An empty or whitespace config value falls back to the default name rather
-    /// than resolving the empty string.
-    #[test]
-    fn blank_configuration_falls_back_to_the_default_command() {
-        for blank in ["", "   "] {
-            // Cannot assert the resolution result (depends on the host), but it
-            // must not panic and must not treat "" as a relative path.
-            let _ = resolve_binary(CodingAgentKind::Codex, Some(blank));
-        }
-        assert_eq!(CodingAgentKind::Codex.default_command(), "codex");
-    }
-
-    #[test]
-    fn auth_state_only_reports_subscription_for_the_subscription_variant() {
-        assert!(AuthState::SignedInSubscription {
-            plan: Some("max".into()),
-            account: None
-        }
-        .is_subscription());
-        for other in [
-            AuthState::NotInstalled,
-            AuthState::SignedOut,
-            AuthState::SignedInWithApiKey,
-            AuthState::Indeterminate { detail: "x".into() },
-        ] {
-            assert!(
-                !other.is_subscription(),
-                "{other:?} must not count as subscription-backed"
-            );
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // The spawning half. Never call these from `from_env` — see the module header.
 // ---------------------------------------------------------------------------
@@ -483,4 +405,82 @@ pub fn codex_home() -> PathBuf {
         .map(PathBuf::from)
         .or_else(|| dirs::home_dir().map(|h| h.join(".codex")))
         .unwrap_or_else(|| PathBuf::from(".codex"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ids are the pricing keys. Spelled out as a literal assertion because
+    /// a rename here re-opens the fabricated-pricing bug that
+    /// `blocks_fallback_pricing` exists to prevent, and nothing else would catch
+    /// it — the pricing table would simply stop matching.
+    #[test]
+    fn provider_ids_match_the_pricing_block_list() {
+        assert_eq!(CodingAgentKind::ClaudeCode.provider_id(), "claude_code");
+        assert_eq!(CodingAgentKind::Codex.provider_id(), "codex");
+    }
+
+    /// Anthropic's branding guidelines forbid "Claude Code" as a third-party
+    /// product label. This asserts the label, and asserts the *absence* of the
+    /// forbidden string, so a well-meaning "clarification" fails here.
+    #[test]
+    fn claude_display_name_obeys_the_branding_guidelines() {
+        let label = CodingAgentKind::ClaudeCode.display_name();
+        assert_eq!(label, "Claude Agent");
+        assert!(
+            !label.contains("Claude Code"),
+            "'Claude Code' is not a permitted third-party product label"
+        );
+    }
+
+    /// A pinned path is taken verbatim rather than looked up, which is the only
+    /// escape hatch for nvm/volta/bun installs.
+    #[test]
+    fn an_explicit_path_bypasses_the_search_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("claude");
+        std::fs::write(&exe, b"#!/bin/sh\n").unwrap();
+
+        let found = resolve_binary(CodingAgentKind::ClaudeCode, Some(exe.to_str().unwrap()));
+        assert_eq!(found.as_deref(), Some(exe.as_path()));
+
+        let missing = resolve_binary(
+            CodingAgentKind::ClaudeCode,
+            Some(dir.path().join("absent").to_str().unwrap()),
+        );
+        assert!(missing.is_none(), "a pinned path that does not exist is not a fallback");
+    }
+
+    /// An empty or whitespace config value falls back to the default name rather
+    /// than resolving the empty string.
+    #[test]
+    fn blank_configuration_falls_back_to_the_default_command() {
+        for blank in ["", "   "] {
+            // Cannot assert the resolution result (depends on the host), but it
+            // must not panic and must not treat "" as a relative path.
+            let _ = resolve_binary(CodingAgentKind::Codex, Some(blank));
+        }
+        assert_eq!(CodingAgentKind::Codex.default_command(), "codex");
+    }
+
+    #[test]
+    fn auth_state_only_reports_subscription_for_the_subscription_variant() {
+        assert!(AuthState::SignedInSubscription {
+            plan: Some("max".into()),
+            account: None
+        }
+        .is_subscription());
+        for other in [
+            AuthState::NotInstalled,
+            AuthState::SignedOut,
+            AuthState::SignedInWithApiKey,
+            AuthState::Indeterminate { detail: "x".into() },
+        ] {
+            assert!(
+                !other.is_subscription(),
+                "{other:?} must not count as subscription-backed"
+            );
+        }
+    }
 }

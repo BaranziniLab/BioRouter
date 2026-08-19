@@ -37,6 +37,14 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 
 use super::super::errors::ProviderError;
 
+/// In-flight requests, keyed by the id we sent.
+///
+/// A named type because it appears in five signatures and clippy is right that the
+/// spelled-out form is unreadable: the `oneshot` carries `Result<Value, String>`
+/// where the `String` is the JSON-RPC error message, so a rejected request is
+/// distinguishable from one that resolved to `null`.
+type Pending = Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>;
+
 /// A single line may not exceed this. A runaway child that never emits a newline
 /// would otherwise grow one `String` without bound.
 const MAX_LINE_BYTES: usize = 32 * 1024 * 1024;
@@ -59,7 +67,7 @@ pub struct AppServer {
     child: tokio::process::Child,
     stdin: Arc<Mutex<ChildStdin>>,
     next_id: AtomicI64,
-    pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    pending: Pending,
     /// Behind a `Mutex` so it can be pumped through `&self`. That is not
     /// incidental: a turn is driven by awaiting `turn/start` *while*
     /// simultaneously answering the requests the server makes during it, so the
@@ -100,8 +108,7 @@ impl AppServer {
             .take()
             .ok_or_else(|| ProviderError::ExecutionError("no stderr on app server".into()))?;
 
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (tx, inbound) = mpsc::unbounded_channel();
         let stderr_buf = Arc::new(Mutex::new(String::new()));
 
@@ -213,7 +220,7 @@ impl AppServer {
 /// Classify and dispatch every line the child writes to stdout.
 fn spawn_reader(
     stdout: tokio::process::ChildStdout,
-    pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    pending: Pending,
     tx: mpsc::UnboundedSender<Inbound>,
 ) {
     tokio::spawn(async move {
@@ -240,7 +247,7 @@ fn spawn_reader(
 
 async fn dispatch(
     value: Value,
-    pending: &Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>>,
+    pending: &Pending,
     tx: &mpsc::UnboundedSender<Inbound>,
 ) {
     let method = value.get("method").and_then(Value::as_str);
@@ -295,8 +302,16 @@ fn spawn_stderr_drain(stderr: tokio::process::ChildStderr, buf: Arc<Mutex<String
             guard.push_str(&line);
             guard.push('\n');
             if guard.len() > STDERR_TAIL_BYTES {
+                // `cut` is a BYTE offset and the child's stderr is arbitrary text, so
+                // it can land inside a multi-byte character — slicing there panics.
+                // Walk forward to the next boundary instead; losing a few bytes off
+                // an already-truncated tail costs nothing.
                 let cut = guard.len() - STDERR_TAIL_BYTES;
-                *guard = guard[cut..].to_string();
+                let boundary = (cut..=guard.len())
+                    .find(|&i| guard.is_char_boundary(i))
+                    .unwrap_or(guard.len());
+                let tail = guard.split_off(boundary);
+                *guard = tail;
             }
         }
     });
@@ -311,8 +326,7 @@ mod tests {
     /// `dispatch` so it needs no child process.
     #[tokio::test]
     async fn classifies_responses_requests_and_notifications() {
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (tx, mut rx) = mpsc::unbounded_channel();
 
         // A response resolves the matching pending request and emits nothing.
@@ -364,8 +378,7 @@ mod tests {
     /// with an empty result, which would look like success.
     #[tokio::test]
     async fn an_error_response_rejects_the_request() {
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (tx, _rx) = mpsc::unbounded_channel();
         let (rtx, rrx) = oneshot::channel();
         pending.lock().await.insert(1, rtx);
@@ -383,8 +396,7 @@ mod tests {
     /// mistaken for a message.
     #[tokio::test]
     async fn unparseable_lines_are_ignored() {
-        let pending: Arc<Mutex<HashMap<i64, oneshot::Sender<Result<Value, String>>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
+        let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
         let (tx, mut rx) = mpsc::unbounded_channel();
         // A bare JSON value is neither a response, a request, nor a notification.
         dispatch(json!("just a string"), &pending, &tx).await;
