@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Clipboard } from '../../icons/app-icons';
 import { Progress } from '../../ui/progress';
 import type { ModelRef } from '../../../api/types.gen';
@@ -53,6 +53,52 @@ export function IngestPanel() {
     total: number;
   } | null>(null);
   const stopRequestedRef = useRef(false);
+  // The summoned box and the strip that would otherwise cover it.
+  const pasteBoxRef = useRef<HTMLDivElement>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
+
+  /**
+   * Bring the paste box into view when it opens, clear of the pinned footer.
+   *
+   * ⚠ **Without this, "Paste text" read as a dead button.** The box mounts at
+   * the END of the rail's one scroll container, below the fold at ordinary
+   * window heights (measured: y=790 in an 887px window), and the footer is
+   * `sticky bottom-0` — so it paints over exactly the region the box lands in.
+   * The user clicked, nothing appeared to happen, and the textarea *and* its
+   * Stage button were reachable only by scrolling the rail to its end by hand.
+   *
+   * `scroll-margin-bottom` is what keeps the footer off it, and it is measured
+   * rather than guessed: the footer holds the model picker, the primary button
+   * and a helper line that comes and goes, so its height is a runtime fact.
+   * Written straight onto the node in a layout effect, before the scroll — a
+   * state round-trip would scroll against the previous frame's inset.
+   *
+   * `behavior` honours `prefers-reduced-motion`, and `scrollIntoView` is
+   * feature-detected because jsdom does not implement it.
+   */
+  /**
+   * The digest log belongs to the base it ran against.
+   *
+   * Keyed on `primaryKbId` rather than on `dispatchKbId`, so the log clears the
+   * moment the user switches, not when the new base's manifest happens to
+   * arrive. `reset` also aborts anything in flight — a stream started against
+   * the base we just navigated away from has no surface left to report into.
+   */
+  const resetStream = stream.reset;
+  useEffect(() => {
+    resetStream();
+  }, [primaryKbId, resetStream]);
+
+  useLayoutEffect(() => {
+    if (!showPasteBox) return;
+    const box = pasteBoxRef.current;
+    if (!box) return;
+    const footer = footerRef.current?.getBoundingClientRect().height ?? 0;
+    box.style.setProperty('--br-ingest-footer-inset', `${Math.ceil(footer) + 12}px`);
+    if (typeof box.scrollIntoView !== 'function') return;
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches ?? false;
+    box.scrollIntoView({ block: 'end', behavior: reduced ? 'auto' : 'smooth' });
+  }, [showPasteBox]);
 
   // Only the user's explicit pick lives in state, and it is stamped with the
   // base it was made for. Everything else is derived below, in this render,
@@ -246,6 +292,11 @@ export function IngestPanel() {
   async function onDigest() {
     if (!dispatchKbId || !model || digestState !== 'idle') return;
     stopRequestedRef.current = false;
+    // Clear the finished run BEFORE the pre-flight model check, not when the
+    // first stream opens: the check is a network round-trip, and until it
+    // returns the panel would otherwise still be showing the previous run's
+    // "Digest complete" under a progress bar that has already started.
+    stream.reset();
     setDigestState('checking');
     const queue = [...items];
     const succeededIds: string[] = [];
@@ -468,14 +519,20 @@ export function IngestPanel() {
         />
 
         {showPasteBox && (
-          <PasteTextBox
-            onCancel={() => setShowPasteBox(false)}
-            onStage={(text, title, urls) => {
-              add({ kind: 'text', id: genId(), text, title, status: 'pending' });
-              for (const url of urls) add({ kind: 'url', id: genId(), url, status: 'pending' });
-              setShowPasteBox(false);
-            }}
-          />
+          // `br-ingest-summoned` carries the scroll margin the effect above
+          // fills in. AUTHORED CSS, never an arbitrary utility: a freshly
+          // written class can silently fail to generate under
+          // `BIOROUTER_NO_HMR`, and this one is the whole fix.
+          <div ref={pasteBoxRef} className="br-ingest-summoned">
+            <PasteTextBox
+              onCancel={() => setShowPasteBox(false)}
+              onStage={(text, title, urls) => {
+                add({ kind: 'text', id: genId(), text, title, status: 'pending' });
+                for (const url of urls) add({ kind: 'url', id: genId(), url, status: 'pending' });
+                setShowPasteBox(false);
+              }}
+            />
+          </div>
         )}
 
         <StagedList items={items} onRemove={remove} onClear={clear} />
@@ -531,7 +588,10 @@ export function IngestPanel() {
           it is the last child, so it paints above the body without a z-index —
           and an off-scale z-index is exactly the value class that soft-locked
           this app once already. */}
-      <div className="sticky bottom-0 flex flex-col gap-2 border-t border-border-subtle bg-background-default p-4">
+      <div
+        ref={footerRef}
+        className="sticky bottom-0 flex flex-col gap-2 border-t border-border-subtle bg-background-default p-4"
+      >
         <IngestModelPicker
           value={model}
           valueState={modelValueState}

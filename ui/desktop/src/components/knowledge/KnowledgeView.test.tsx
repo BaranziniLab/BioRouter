@@ -76,6 +76,14 @@ vi.mock('./changelog/ChangeLogDrawer', () => ({
   ChangeLogDrawer: () => null,
 }));
 
+// Mocked for the same reason `ChangeLogDrawer` is: the drawer reads the model
+// context to know what to lint with, and this file renders the SHELL. The band's
+// affordance is asserted below — the drawer's own behaviour is not this file's
+// subject.
+vi.mock('./lint/LintDrawer', () => ({
+  LintDrawer: ({ open }: { open: boolean }) => (open ? <div>lint drawer</div> : null),
+}));
+
 beforeAll(() => {
   vi.stubGlobal(
     'ResizeObserver',
@@ -143,6 +151,29 @@ describe('KnowledgeView compact workspace', () => {
       expect(controls).toBeTruthy();
       expect(document.getElementById(controls!)).toBe(panel);
     }
+  });
+});
+
+// The lint route and its generated client both shipped with no caller, so the
+// only validation the user was promised had no way to be run. The band is where
+// it lives: read-only, so NOT behind the `⋯` with the destructive actions.
+describe('KnowledgeView lint affordance', () => {
+  it('offers a way to run the check, and opens it', async () => {
+    render(<KnowledgeView />);
+
+    const check = screen.getByRole('button', { name: 'Check for problems' });
+    expect(check).toBeEnabled();
+    expect(screen.queryByText('lint drawer')).toBeNull();
+
+    await userEvent.click(check);
+    expect(screen.getByText('lint drawer')).toBeInTheDocument();
+  });
+
+  it('does not offer a check when there is no base to check', () => {
+    state.primaryKb = null;
+    state.bases = [{ id: 'omop' }];
+    render(<KnowledgeView />);
+    expect(screen.getByRole('button', { name: 'Check for problems' })).toBeDisabled();
   });
 });
 

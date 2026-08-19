@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { MainPanelLayout } from '../Layout/MainPanelLayout';
 import { ReadableContent } from '../Layout/ReadableContent';
 import {
+  ClipboardList,
   Download,
   FolderOpen,
   History,
@@ -30,6 +31,7 @@ import { KBManagerDialog } from './KBSelector/KBManagerDialog';
 import { SourcesRail } from './SourcesRail';
 import { KnowledgeGraphPanel } from './graph/KnowledgeGraphPanel';
 import { ChangeLogDrawer } from './changelog/ChangeLogDrawer';
+import { LintDrawer } from './lint/LintDrawer';
 import { useKnowledge } from './KnowledgeContext';
 import { useKnowledgeGraph } from './hooks/useKnowledgeGraph';
 import { useKnowledgeBases } from './hooks/useKnowledgeBases';
@@ -70,6 +72,7 @@ function KnowledgeViewInner() {
   const [managerOpen, setManagerOpen] = useState(false);
   const [managerStartsInCreate, setManagerStartsInCreate] = useState(false);
   const [changeLogOpen, setChangeLogOpen] = useState(false);
+  const [lintOpen, setLintOpen] = useState(false);
   const [previewSha, setPreviewSha] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
@@ -240,6 +243,22 @@ function KnowledgeViewInner() {
                 {/* Two visible actions against the app's ceiling of three, with
                   every destructive action behind the one `⋯` (ROWS-3). */}
                 <div className="flex shrink-0 items-center gap-2">
+                  {/* The third of the three. A check is READ-ONLY, so it does
+                      not belong behind the `⋯` with the destructive actions —
+                      and it was previously behind nothing at all: the route and
+                      its generated client both shipped with no caller, so the
+                      format chooser promised a validation the user could not
+                      run. */}
+                  <Button
+                    variant="ghost"
+                    shape="round"
+                    onClick={() => setLintOpen(true)}
+                    disabled={!primaryKbId}
+                    aria-label="Check for problems"
+                    title="Check for problems"
+                  >
+                    <ClipboardList aria-hidden="true" />
+                  </Button>
                   <Button
                     variant="ghost"
                     shape="round"
@@ -362,6 +381,8 @@ function KnowledgeViewInner() {
           onOpenChange={setManagerOpen}
           startInCreate={managerStartsInCreate}
         />
+
+        <LintDrawer open={lintOpen} onOpenChange={setLintOpen} />
 
         <ChangeLogDrawer
           open={changeLogOpen}

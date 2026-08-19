@@ -42,6 +42,16 @@ export interface GraphModel {
   statusValues: string[];
   /** True when NO node carries a `node_type` — a legacy base, drawn untyped. */
   untyped: boolean;
+  /**
+   * How many nodes carry no `node_type` at all.
+   *
+   * Counted rather than inferred from `untyped`, because the two answer
+   * different questions: `untyped` is "is this a legacy base", this is "how many
+   * pages here have no type". A MIXED base makes them disagree, and the Type
+   * facet needs the number — its `Untyped` row used to be hardcoded to 0, so on
+   * a legacy base it was the one row in the list with no count beside it.
+   */
+  untypedCount: number;
   /** True when at least one present type is outside the 28-term vocabulary. */
   hasUnrecognisedTypes: boolean;
   hasExternal: boolean;
@@ -94,6 +104,7 @@ export function buildGraphModel(graph: Graph): GraphModel {
   const typeCount = new Map<string, number>();
   const statuses = new Set<string>();
   let untyped = true;
+  let untypedCount = 0;
   let hasUnrecognisedTypes = false;
   let hasExternal = false;
 
@@ -113,6 +124,8 @@ export function buildGraphModel(graph: Graph): GraphModel {
       untyped = false;
       typeCount.set(type, (typeCount.get(type) ?? 0) + 1);
       if (!(type in shapeOf)) hasUnrecognisedTypes = true;
+    } else {
+      untypedCount += 1;
     }
     if (n.status) statuses.add(n.status);
 
@@ -157,6 +170,7 @@ export function buildGraphModel(graph: Graph): GraphModel {
     ],
     statusValues: [...statuses].sort(),
     untyped,
+    untypedCount,
     hasUnrecognisedTypes,
     hasExternal,
   };

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Badge } from '../../ui/badge';
 import { Button } from '../../ui/button';
 import { Input } from '../../ui/input';
@@ -26,6 +26,19 @@ interface Props {
 export function PasteTextBox({ onStage, onCancel }: Props) {
   const [text, setText] = useState('');
   const [title, setTitle] = useState('');
+  const textRef = useRef<HTMLTextAreaElement>(null);
+
+  /**
+   * The box is *summoned*, so the caret belongs in it.
+   *
+   * `preventScroll` is load-bearing rather than defensive: the panel scrolls
+   * this box clear of its pinned footer in a layout effect, and a focus that
+   * did its own scrolling would fight that — landing the box back under the
+   * footer, which is the defect the scroll exists to fix.
+   */
+  useEffect(() => {
+    textRef.current?.focus({ preventScroll: true });
+  }, []);
 
   const detectedUrls = useMemo(() => {
     // Redeclare regex inside useMemo to avoid sharing lastIndex state across calls
@@ -53,6 +66,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         aria-label="Title for the pasted source"
       />
       <textarea
+        ref={textRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."

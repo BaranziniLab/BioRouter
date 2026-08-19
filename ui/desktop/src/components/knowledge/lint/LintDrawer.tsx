@@ -1,0 +1,351 @@
+// ui/desktop/src/components/knowledge/lint/LintDrawer.tsx
+import { useCallback, useEffect, useMemo, useRef } from 'react';
+import {
+  AlertCircle,
+  AlertTriangle,
+  CheckCircle2,
+  Info,
+  LoaderCircle,
+} from '../../icons/app-icons';
+import type { Diagnostic, LintResult, Severity } from '../../../api/types.gen';
+import { Badge } from '../../ui/badge';
+import type { BadgeTone } from '../../ui/badge';
+import { Button } from '../../ui/button';
+import { EmptyState } from '../../ui/empty-state';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
+import { useModelAndProvider } from '../../ModelAndProviderContext';
+import { useKnowledge } from '../KnowledgeContext';
+import { useIngestStream } from '../hooks/useIngestStream';
+import { resolveIngestModel } from '../IngestPanel/resolveIngestModel';
+
+/**
+ * Running the base's lint, and reading what it found (ui-spec §4.11).
+ *
+ * ⚠ **The route and the generated client have always existed; nothing called
+ * them.** `lint` is exported from `api/sdk.gen.ts` and `POST
+ * /knowledge/bases/{id}/lint` answers, but no component imported it — so the
+ * format chooser's promise that "validation flags anything outside the
+ * vocabulary" was a promise with no surface behind it. A user could be told
+ * their base had problems only by reading the daemon's log.
+ *
+ * ⚠ **The stream is `useIngestStream`, deliberately, not a second hook.** The
+ * lint route is a POST that answers over SSE — the same shape the ingest route
+ * has, down to the terminal `event: done` frame — and that hook already carries
+ * the two things a second implementation would get wrong: `EventSource` cannot
+ * POST, so it is raw `fetch` + `ReadableStream`; and a body that ends WITHOUT a
+ * terminal frame is a FAILURE, never a silent success (issue #71). Its name says
+ * ingest and its behaviour is "one macro stream".
+ *
+ * ⚠ **Read-only.** `autofix` is never sent, so the lint reports and changes
+ * nothing. An autofix rewrites pages and commits, which is a different decision
+ * with a different confirmation, and this surface exists to answer "what is
+ * wrong" first.
+ */
+
+interface Props {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}
+
+/**
+ * Severity order, and the one place it is written.
+ *
+ * Most severe first, so a base with one error among forty infos still opens on
+ * the error. The daemon already sorts `items` this way; the grouping does not
+ * rely on that, because a caller that re-sorts is not a contract.
+ */
+const SEVERITIES: Severity[] = ['error', 'warning', 'info'];
+
+const SEVERITY_TONE: Record<Severity, BadgeTone> = {
+  error: 'danger',
+  warning: 'warning',
+  info: 'info',
+};
+
+const SEVERITY_ICON: Record<Severity, typeof AlertCircle> = {
+  error: AlertCircle,
+  warning: AlertTriangle,
+  info: Info,
+};
+
+const SEVERITY_LABEL: Record<Severity, string> = {
+  error: 'Errors',
+  warning: 'Warnings',
+  info: 'Notes',
+};
+
+/** The four hygiene lists the report carries beside its typed diagnostics. */
+const REPORT_LISTS: { key: keyof LintReportLists; label: string; hint: string }[] = [
+  {
+    key: 'contradictions',
+    label: 'Contradictions',
+    hint: 'Pages whose frontmatter marks them as contradicting another page.',
+  },
+  {
+    key: 'orphans',
+    label: 'Orphans',
+    hint: 'Pages nothing else links to.',
+  },
+  {
+    key: 'missing_concept_pages',
+    label: 'Missing pages',
+    hint: 'Referenced by a [[link]] that resolves to no page.',
+  },
+  {
+    key: 'stale_sources',
+    label: 'Stale sources',
+    hint: 'Ingested over 90 days ago with nothing linking to them.',
+  },
+];
+
+type LintReportLists = Pick<
+  LintResult['report'],
+  'contradictions' | 'orphans' | 'missing_concept_pages' | 'stale_sources'
+>;
+
+export function LintDrawer({ open, onOpenChange }: Props) {
+  const { primaryKbId, primaryKb } = useKnowledge();
+  const { currentProvider, currentModel } = useModelAndProvider();
+  const stream = useIngestStream();
+  const { start, reset } = stream;
+
+  const model = useMemo(
+    () => resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel),
+    [primaryKb?.default_model, currentProvider, currentModel]
+  );
+
+  const run = useCallback(() => {
+    if (!primaryKbId || !model) return;
+    void start(`/knowledge/bases/${primaryKbId}/lint`, { model });
+  }, [primaryKbId, model, start]);
+
+  /**
+   * Opening the drawer IS the request — the user picked "Check for problems",
+   * not "show me a panel with a button in it".
+   *
+   * The ref is what keeps that from firing twice: `run` changes identity when
+   * the model resolves, and an effect keyed on it would dispatch a second
+   * agentic loop the moment the manifest arrived. It also clears the previous
+   * base's report, for the same reason the ingest log clears — a finished
+   * report is a claim about the base it ran against.
+   */
+  const startedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!open) return;
+    if (!primaryKbId || !model) return;
+    if (startedFor.current === primaryKbId) return;
+    startedFor.current = primaryKbId;
+    reset();
+    run();
+  }, [open, primaryKbId, model, run, reset]);
+
+  useEffect(() => {
+    if (startedFor.current && startedFor.current !== primaryKbId) {
+      startedFor.current = null;
+      reset();
+    }
+  }, [primaryKbId, reset]);
+
+  const result = stream.finalResult as LintResult | null;
+  const report = stream.status === 'done' ? (result?.report ?? null) : null;
+  // Memoised, not `?? []` inline: a fresh literal every render would make the
+  // grouping below re-run on every commit — and `report` is already a stable
+  // reference for as long as the stream's terminal frame is.
+  const items = useMemo<Diagnostic[]>(() => report?.diagnostics?.items ?? [], [report]);
+  // `total` is the count BEFORE the daemon's cap, and it is the number that
+  // goes on screen: a truncated list reporting its own length is how "3 errors"
+  // gets rendered for a base with four hundred.
+  const total = report?.diagnostics?.total ?? items.length;
+
+  const grouped = useMemo(() => {
+    const map = new Map<Severity, Diagnostic[]>(SEVERITIES.map((s) => [s, []]));
+    for (const d of items) {
+      const bucket = map.get(d.severity);
+      if (bucket) bucket.push(d);
+      else map.set(d.severity, [d]);
+    }
+    return SEVERITIES.map((severity) => ({ severity, rows: map.get(severity) ?? [] })).filter(
+      (g) => g.rows.length > 0
+    );
+  }, [items]);
+
+  const lists = useMemo(
+    () =>
+      report
+        ? REPORT_LISTS.map((l) => ({ ...l, entries: report[l.key] ?? [] })).filter(
+            (l) => l.entries.length > 0
+          )
+        : [],
+    [report]
+  );
+
+  const running = stream.status === 'starting' || stream.status === 'streaming';
+  const clean = report != null && total === 0 && lists.length === 0;
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent
+        side="right"
+        className="flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
+        data-testid="knowledge-lint-drawer"
+      >
+        {/* The run control sits in the HEADER, beside the title, not in the
+            count row: the counts are a variable-width run of badges, and a
+            button sharing that row is pushed off a 340px drawer by the third
+            severity — which is exactly the base that most needs re-checking. */}
+        <SheetHeader className="h-row flex-none flex-row items-center justify-between gap-2 border-b border-border-subtle px-4 py-0">
+          <SheetTitle className="min-w-0 truncate">Check for problems</SheetTitle>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="mr-6 flex-none"
+            data-testid="knowledge-lint-run"
+            disabled={running || !primaryKbId || !model}
+            onClick={run}
+          >
+            {running ? 'Checking…' : report ? 'Check again' : 'Check'}
+          </Button>
+        </SheetHeader>
+
+        {/* The counts. Pinned above the scroll box, because a count the reader
+            has to scroll to find is the defect this drawer's sibling — the
+            facet strip — was fixed for. Wrapping, because a base with all three
+            severities plus the cap note does not fit one 340px line. */}
+        <div className="flex flex-none flex-wrap items-center gap-2 border-b border-border-subtle px-4 py-2">
+          {report ? (
+            <>
+              <span
+                data-testid="knowledge-lint-count"
+                className="font-mono text-supporting tabular-nums text-text-muted"
+              >
+                {total} {total === 1 ? 'finding' : 'findings'}
+              </span>
+              {grouped.map(({ severity, rows }) => (
+                <Badge key={severity} tone={SEVERITY_TONE[severity]}>
+                  {rows.length} {severity}
+                </Badge>
+              ))}
+              {items.length < total && (
+                <span className="text-supporting text-text-muted">first {items.length} shown</span>
+              )}
+            </>
+          ) : (
+            <span className="text-supporting text-text-muted">
+              {running ? 'Reading every page in this base…' : 'Nothing checked yet.'}
+            </span>
+          )}
+        </div>
+
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {!model && (
+            <EmptyState
+              compact
+              icon={AlertCircle}
+              title="No model is configured"
+              description="A check reads the base with a model. Choose one in the Sources rail and try again."
+            />
+          )}
+
+          {model && running && (
+            <div
+              role="status"
+              className="flex items-center gap-2 px-4 py-4 text-secondary text-text-muted"
+            >
+              <LoaderCircle aria-hidden="true" className="h-icon-row w-icon-row animate-spin" />
+              <span>
+                Checking this knowledge base
+                {stream.events.length > 0 ? ` · ${stream.events.length} events` : ''}
+              </span>
+            </div>
+          )}
+
+          {model && stream.status === 'error' && (
+            <EmptyState
+              compact
+              icon={AlertCircle}
+              title="The check did not finish"
+              description={stream.error ?? 'The stream ended without reporting a result.'}
+              actions={
+                <Button variant="secondary" onClick={run}>
+                  Try again
+                </Button>
+              }
+            />
+          )}
+
+          {clean && (
+            <EmptyState
+              compact
+              icon={CheckCircle2}
+              title="Nothing to fix"
+              description="Every page is inside the vocabulary, linked, and current."
+            />
+          )}
+
+          {report &&
+            grouped.map(({ severity, rows }) => {
+              const Icon = SEVERITY_ICON[severity];
+              return (
+                <section key={severity} aria-label={SEVERITY_LABEL[severity]}>
+                  <h3 className="flex items-center gap-2 border-b border-border-subtle bg-background-muted px-4 py-1.5 text-caps text-text-muted">
+                    <Icon aria-hidden="true" className="h-icon-row w-icon-row" />
+                    {SEVERITY_LABEL[severity]}
+                    <span className="font-mono tabular-nums">{rows.length}</span>
+                  </h3>
+                  {rows.map((d, i) => (
+                    <div
+                      key={`${d.rule}-${d.subject}-${i}`}
+                      data-testid="knowledge-lint-diagnostic"
+                      className="biorouter-list-row flex flex-col gap-1 px-4 py-3"
+                    >
+                      <div className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                        {/* The RULE ID, not the message. It is stable across
+                            releases and the message is prose that will be
+                            reworded — so it is the half a user can search for,
+                            quote in an issue, or match a fix against. */}
+                        <span className="shrink-0 font-mono text-supporting text-text-muted">
+                          {d.rule}
+                        </span>
+                        {/* WRAPPED, not truncated. The subject is a page's
+                            identifier or a whole edge rendered as
+                            `<subject> -<predicate>-> <object>`; clipped to one
+                            line, the half that names what the finding is about
+                            is the half that disappears. */}
+                        <span className="min-w-0 break-words text-label text-text-default">
+                          {d.subject}
+                        </span>
+                      </div>
+                      <p className="min-w-0 break-words text-body text-text-muted">{d.message}</p>
+                      {d.path && (
+                        <p className="min-w-0 break-all font-mono text-supporting text-text-muted">
+                          {d.path}
+                        </p>
+                      )}
+                    </div>
+                  ))}
+                </section>
+              );
+            })}
+
+          {lists.map((l) => (
+            <section key={l.key} aria-label={l.label}>
+              <h3 className="flex items-center gap-2 border-b border-border-subtle bg-background-muted px-4 py-1.5 text-caps text-text-muted">
+                {l.label}
+                <span className="font-mono tabular-nums">{l.entries.length}</span>
+              </h3>
+              <p className="px-4 pt-2 text-supporting text-text-muted">{l.hint}</p>
+              <ul className="flex flex-col gap-1 px-4 py-2">
+                {l.entries.map((entry) => (
+                  <li key={entry} className="min-w-0 break-all font-mono text-supporting">
+                    {entry}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}

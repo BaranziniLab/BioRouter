@@ -3,12 +3,15 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
 import { forceX, forceY } from 'd3-force';
 import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
-import { GRAPH_PALETTE, hashedFill, typeFill, typeShape } from '../../../styles/graphPalette';
-import type { GraphCredibilityKey, NodeShape } from '../../../styles/graphPalette';
+import { GRAPH_PALETTE } from '../../../styles/graphPalette';
+import type { GraphCredibilityKey } from '../../../styles/graphPalette';
 import { withAlpha } from './graphStyle';
 import { useCanvasTheme } from './useCanvasTheme';
 import type { CanvasTheme } from './useCanvasTheme';
 import { pathForShape } from './nodeShapes';
+// The mark — fill and silhouette — is shared with the inspector, so the two
+// surfaces cannot disagree about the same node. See `nodeMark.ts`.
+import { fillFor, shapeFor } from './nodeMark';
 import { edgePredicate, isNegated, readablePredicate, showsCredibility } from './graphModel';
 import type { GraphModel, NodeMetrics } from './graphModel';
 import { EMPTY_FACETS, facetsActive } from './graphFacets';
@@ -102,6 +105,16 @@ interface Props {
   hoveredId: string | null;
   onHover: (id: string | null) => void;
   onNodeClick: (node: GraphNode) => void;
+  /**
+   * Open an edge's details.
+   *
+   * The canvas already tracked a hovered edge and painted its label, so every
+   * §8.1 provenance field and §7.3 quantitative slot was one click away — and
+   * that click went nowhere, because `onLinkClick` was never wired. Optional so
+   * a caller that has no inspector (the preview-at-SHA reader) is not obliged
+   * to invent one.
+   */
+  onLinkClick?: (edge: GraphEdge) => void;
   /// Optional: if set, nodes whose id is NOT in this set are dimmed and dashed
   /// (used in "preview at SHA" mode to ghost future-state additions).
   visibleSet: Set<string> | null;
@@ -159,23 +172,6 @@ function credibilityKey(n: GraphNode): GraphCredibilityKey | null {
   return showsCredibility(n) ? (n.credibility_tier as GraphCredibilityKey) : null;
 }
 
-/**
- * The fill for a node.
- *
- * A node with a `node_type` takes the curated colour, or DR-11's hashed one when
- * the vocabulary does not know the type. A node with NO type — every page in a
- * legacy base — hashes its `kind` instead of falling back to `credColors.ts`'s
- * off-system hexes: the hash is deterministic, solved against the same ground,
- * and has a dark-mode value, which the six literals never did.
- */
-function fillFor(n: GraphNode, mode: 'light' | 'dark'): string {
-  return n.node_type ? typeFill(n.node_type, mode) : hashedFill(n.kind, mode);
-}
-
-function shapeFor(n: GraphNode, mode: 'light' | 'dark'): NodeShape {
-  return n.node_type ? typeShape(n.node_type, mode) : 'circle';
-}
-
 export function ForceGraphCanvas({
   graph,
   model,
@@ -185,6 +181,7 @@ export function ForceGraphCanvas({
   hoveredId,
   onHover,
   onNodeClick,
+  onLinkClick,
   visibleSet,
 }: Props) {
   const fgRef = useRef<ForceGraphMethods | undefined>(undefined);
@@ -780,6 +777,14 @@ export function ForceGraphCanvas({
         onNodeHover={(n: unknown) => onHover((n as GraphNode | null)?.id ?? null)}
         onNodeClick={(n: unknown) => onNodeClick(n as GraphNode)}
         onLinkHover={(l: unknown) => setHoveredEdge((l as LinkDatum | null)?.__i ?? null)}
+        // The ORIGINAL edge, off `__i`, never the force-graph datum: the library
+        // replaces `source`/`target` with node objects in place, so handing the
+        // datum straight out would give the inspector two mutated endpoints
+        // instead of the two ids the contract defines.
+        onLinkClick={(l: unknown) => {
+          const i = (l as LinkDatum | null)?.__i;
+          if (typeof i === 'number' && graph.edges[i]) onLinkClick?.(graph.edges[i]);
+        }}
         // Without this the shadow canvas hit-tests the straight chord and
         // hovering a multi-edge picks the wrong one.
         linkCurvature={(raw: unknown) => {

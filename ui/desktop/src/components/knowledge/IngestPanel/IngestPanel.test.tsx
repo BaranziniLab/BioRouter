@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   start: vi.fn(),
   startMultipart: vi.fn(),
   abort: vi.fn(),
+  reset: vi.fn(),
   knowledgeFetch: vi.fn(),
   expandKnowledgePath: vi.fn(),
   config: { getProviders: vi.fn(), getProviderModels: vi.fn() },
@@ -77,6 +78,7 @@ vi.mock('../hooks/useIngestStream', () => ({
     start: mocks.start,
     startMultipart: mocks.startMultipart,
     abort: mocks.abort,
+    reset: mocks.reset,
   }),
 }));
 
@@ -393,5 +395,86 @@ describe('IngestPanel with an unresolvable knowledge base', () => {
 
     expect(screen.getByText(/no model is configured/i)).toBeInTheDocument();
     expect(screen.queryByTestId('knowledge-ingest-retry')).not.toBeInTheDocument();
+  });
+});
+
+/**
+ * The paste box is SUMMONED, so it has to arrive where the user can see it.
+ *
+ * At 1172×887 the textarea landed at y=790, inside a rail whose `sticky
+ * bottom-0` footer paints over exactly that band — so "Paste text" read as a
+ * dead button, and the Stage button it revealed had the same problem. jsdom has
+ * no layout, so what is asserted here is the MECHANISM: the box asks to be
+ * scrolled to, and it asks with a scroll margin that clears the footer.
+ */
+describe('IngestPanel paste box visibility', () => {
+  it('scrolls the summoned box into view, clear of the pinned footer', () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(Element.prototype, 'scrollIntoView', {
+      configurable: true,
+      writable: true,
+      value: scrollIntoView,
+    });
+
+    render(<IngestPanel />);
+    fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
+
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    // `end`, not `start`: the box's BOTTOM edge is the one the footer covers,
+    // and it is the edge the Stage button sits on.
+    expect(scrollIntoView).toHaveBeenCalledWith(expect.objectContaining({ block: 'end' }));
+
+    const box = screen.getByPlaceholderText(/Paste knowledge/i).closest('.br-ingest-summoned');
+    expect(box).not.toBeNull();
+    // Measured from the footer rather than guessed. jsdom reports 0 height for
+    // everything, so the value here is only the +12px gutter — the assertion is
+    // that the property is SET, on the element the authored rule matches.
+    expect((box as HTMLElement).style.getPropertyValue('--br-ingest-footer-inset')).toMatch(/px$/);
+  });
+
+  it('puts the caret in the textarea without scrolling it back under the footer', () => {
+    render(<IngestPanel />);
+    fireEvent.click(screen.getByTestId('knowledge-ingest-paste-text'));
+    expect(screen.getByPlaceholderText(/Paste knowledge/i)).toHaveFocus();
+  });
+});
+
+/**
+ * The digest log is a claim about ONE knowledge base.
+ *
+ * Left alone it kept the previous base's "Digest complete · 38 events" on
+ * screen after a switch — attached, to the reader, to the base now named above
+ * it — and kept it there through the next digest's model check.
+ */
+describe('IngestPanel digest log lifetime', () => {
+  it('clears the log when the primary base changes', () => {
+    const { rerender } = render(<IngestPanel />);
+    const initial = mocks.reset.mock.calls.length;
+
+    mocks.knowledge.primaryKbId = 'kb-2';
+    mocks.knowledge.primaryKb = { id: 'kb-2', name: 'Papers', default_model: null };
+    rerender(<IngestPanel />);
+
+    expect(mocks.reset.mock.calls.length).toBeGreaterThan(initial);
+  });
+
+  it('clears the log before the pre-flight model check, not after it', async () => {
+    mocks.modelAndProvider.currentProvider = 'versa_azure';
+    mocks.modelAndProvider.currentModel = 'gpt-5.5-2026-04-24';
+    let resetsAtCheck = -1;
+    mocks.checkModel.mockImplementation(() => {
+      resetsAtCheck = mocks.reset.mock.calls.length;
+      return Promise.resolve({ data: { ok: true } });
+    });
+
+    render(<IngestPanel />);
+    const before = mocks.reset.mock.calls.length;
+    stageSomeText();
+    fireEvent.click(screen.getByTestId('knowledge-digest-button'));
+
+    await waitFor(() => expect(mocks.checkModel).toHaveBeenCalled());
+    // The check is a network round-trip; a log cleared only when the first
+    // stream opens leaves the last run's verdict under a live progress bar.
+    expect(resetsAtCheck).toBeGreaterThan(before);
   });
 });

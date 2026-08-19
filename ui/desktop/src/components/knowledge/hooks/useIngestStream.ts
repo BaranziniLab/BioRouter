@@ -198,6 +198,23 @@ export function useIngestStream() {
     [runStream]
   );
 
+  /**
+   * Drop the log and return to `idle`, aborting anything still in flight.
+   *
+   * ⚠ **This is a per-SUBJECT reset, not a cosmetic one.** The hook's state is
+   * the log of one run, and the panel that renders it is bound to whichever
+   * knowledge base is primary. Switching bases left the previous base's
+   * "Digest complete · 38 events" on screen — attached, to the reader, to the
+   * base now named above it — and it stayed there through the model check of
+   * the next digest, so the first thing a new run showed was the old run's
+   * verdict. A stale log is worse than none: it is a claim about the wrong base.
+   */
+  const reset = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setState({ events: [], status: 'idle', finalResult: null });
+  }, []);
+
   const abort = useCallback(() => {
     setState((s) => {
       if (s.status === 'idle' || s.status === 'done' || s.status === 'error') {
@@ -208,5 +225,5 @@ export function useIngestStream() {
     abortRef.current?.abort();
   }, []);
 
-  return { ...state, start, startMultipart, abort };
+  return { ...state, start, startMultipart, abort, reset };
 }

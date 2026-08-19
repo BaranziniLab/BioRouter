@@ -152,3 +152,41 @@ describe('useIngestStream terminal frames', () => {
     expect(result.current.status).not.toBe('error');
   });
 });
+
+/**
+ * The log is the record of ONE run against ONE knowledge base, so the surface
+ * holding it needs a way to say "that run is no longer about anything".
+ */
+describe('useIngestStream reset', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('returns a finished run to idle and drops its events', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          sseResponse(
+            'data: {"kind":"step","index":0,"assistant_text":"working"}\n\n' +
+              'event: done\ndata: {"source_id":"hrv"}\n\n'
+          )
+        )
+    );
+
+    const { result } = renderHook(() => useIngestStream());
+    await act(async () => {
+      await result.current.start('/knowledge/bases/kb-1/ingest', {});
+    });
+    expect(result.current.status).toBe('done');
+    expect(result.current.events.length).toBeGreaterThan(0);
+
+    act(() => result.current.reset());
+
+    expect(result.current.status).toBe('idle');
+    expect(result.current.events).toEqual([]);
+    expect(result.current.finalResult).toBeNull();
+    expect(result.current.error).toBeUndefined();
+  });
+});

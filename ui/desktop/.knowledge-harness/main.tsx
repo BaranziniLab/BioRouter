@@ -35,6 +35,7 @@ import graphBioOkfFixture from './fixtures/graph-biookf.json';
 import historyFixture from './fixtures/history.json';
 import pagesFixture from './fixtures/pages.json';
 import providersFixture from './fixtures/providers.json';
+import lintFixture from './fixtures/lint.json';
 
 const BASES = basesFixture as KbListEntry[];
 const GRAPH = graphFixture as Graph;
@@ -179,6 +180,37 @@ const ROUTES: Route[] = [
     handler: () => json({ nodes: GRAPH.nodes.slice(0, 8).map((n) => n.id) }),
   },
   { method: 'POST', match: /^\/knowledge\/check-model$/, handler: () => json({ ok: true }) },
+  {
+    // The lint macro answers over SSE, exactly like ingest: a few sub-agent
+    // frames and then a terminal `event: done` whose data is a `LintResult`.
+    // Delivered in stages, with a delay, because "the drawer while the check is
+    // still running" is a state the panel has to render and an instant reply
+    // would skip.
+    method: 'POST',
+    match: /^\/knowledge\/bases\/[^/]+\/lint$/,
+    handler: () => {
+      const encoder = new window.TextEncoder();
+      const frames = [
+        'data: {"kind":"step","index":0,"assistant_text":"Reading every page in the base."}\n\n',
+        'data: {"kind":"tool_call","name":"kb_list_pages","args":{}}\n\n',
+        'data: {"kind":"tool_result","name":"kb_list_pages","ok":true,"summary":"43 pages"}\n\n',
+        `event: done\ndata: ${JSON.stringify(lintFixture)}\n\n`,
+      ];
+      const stream = new ReadableStream<Uint8Array>({
+        async start(controller) {
+          for (const frame of frames) {
+            controller.enqueue(encoder.encode(frame));
+            await sleep(400);
+          }
+          controller.close();
+        },
+      });
+      return new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+  },
   { method: 'GET', match: /^\/config$/, handler: () => json({ config: {} }) },
   { method: 'POST', match: /^\/config\/read$/, handler: () => json(null) },
   { method: 'GET', match: /^\/config\/providers$/, handler: () => json(providersFixture) },

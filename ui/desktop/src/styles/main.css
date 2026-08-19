@@ -2397,6 +2397,31 @@
   max-height: 40%;
 }
 
+/* The Sources rail's summoned paste box (ui-spec §4.4).
+
+   The rail owns ONE scroll container and the ingest panel's footer is
+   `sticky bottom-0` inside it, so a control that mounts at the end of the flow
+   is painted over by the footer until the rail is scrolled all the way down.
+   "Paste text" therefore looked like a dead button: the box appeared at y=790
+   in an 887px window, underneath the pinned strip, and so did the Stage button
+   it contains.
+
+   `IngestPanel` measures the footer and writes `--br-ingest-footer-inset` onto
+   this element before it scrolls, because the footer's height is a runtime fact
+   — the helper line under the primary button comes and goes. The fallback is a
+   generous inset rather than 0: covered-but-scrollable is the failure this rule
+   exists to prevent.
+
+   AUTHORED for the same reason `.br-swatch-ring` and `.br-graph-dock` are:
+   `scroll-mb-[…]` would be a *newly written* arbitrary utility, and a newly
+   written utility can silently fail to reach the stylesheet under
+   `BIOROUTER_NO_HMR` (`watch: { ignored: ['**'] }` is the same signal
+   Tailwind's class scanner uses). A scroll margin that does not generate does
+   not degrade the fix — it removes it. */
+.br-ingest-summoned {
+  scroll-margin-bottom: var(--br-ingest-footer-inset, 12rem);
+}
+
 .biorouter-home-content {
   container-name: biorouter-home-content;
   container-type: size;

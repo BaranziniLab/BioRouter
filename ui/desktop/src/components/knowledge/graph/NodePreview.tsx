@@ -2,17 +2,58 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { FileCode2, X } from '../../icons/app-icons';
 import type { GraphNode } from '../../../api/types.gen';
+import type { GraphMode } from '../../../styles/graphPalette';
 import MarkdownContent from '../../MarkdownContent';
 import { Button } from '../../ui/button';
 import { usePagePreview } from '../hooks/usePagePreview';
-import { nodeFill } from './credColors';
+import { GraphShapeGlyph } from './GraphShapeGlyph';
+import { fillFor, shapeFor } from './nodeMark';
 import { prettyLabel } from './labelText';
 
 interface Props {
   kbId: string;
   node: GraphNode;
+  /**
+   * The resolved light/dark mode, passed in rather than read here so the
+   * inspector and the canvas it describes resolve the palette from the same
+   * value on the same commit — the facet strip and the legend take it the same
+   * way, from `KnowledgeGraphPanel`.
+   */
+  mode: GraphMode;
   previewSha?: string | null;
   onClose: () => void;
+}
+
+/**
+ * The node's display identity (ui-spec §5.8).
+ *
+ * `identifier` first, `label` second — the same order `buildGraphModel` uses for
+ * the canvas label. The two used to disagree: the inspector's title showed the
+ * slug (`metformin`) while the frontmatter block one line below it showed the
+ * `identifier` (`Metformin`), so the panel contradicted itself inside 40px.
+ */
+export function nodeTitle(node: GraphNode): string {
+  return prettyLabel(node.identifier || node.label, node.kind);
+}
+
+/**
+ * The line under the title.
+ *
+ * ⚠ **It reads `node_type`, and only falls back to `kind` when there is none.**
+ * The deriver writes `kind: 'hub'` onto every typed page, so a subtitle written
+ * against `kind` said "hub" for every node in an OKF base — beside a canvas that
+ * was correctly drawing the same node as a `Drug`. An untyped page is labelled
+ * `Untyped` and then by its legacy `kind`, because DR-28 makes absence a real
+ * state that has to be *shown*, not filled in.
+ */
+export function nodeSubtitle(node: GraphNode, previewSha?: string | null): string {
+  const parts: string[] = [node.node_type ?? `Untyped · ${node.kind}`];
+  if (node.subtype) parts.push(node.subtype);
+  if (node.status) parts.push(node.status);
+  if (node.credibility_tier) parts.push(node.credibility_tier.replace(/_/g, ' '));
+  if (node.retracted) parts.push('retracted');
+  if (previewSha) parts.push(previewSha.slice(0, 7));
+  return parts.join(' · ');
 }
 
 function splitFrontmatter(content: string): { frontmatter: string | null; body: string } {
@@ -31,7 +72,7 @@ function splitFrontmatter(content: string): { frontmatter: string | null; body: 
   };
 }
 
-export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
+export function NodePreview({ kbId, node, mode, previewSha, onClose }: Props) {
   const { content, loading, error } = usePagePreview(kbId, node.path, previewSha);
   const parsed = useMemo(() => splitFrontmatter(content ?? ''), [content]);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -61,22 +102,24 @@ export function NodePreview({ kbId, node, previewSha, onClose }: Props) {
     <div
       ref={panelRef}
       role="dialog"
-      aria-label={`Preview ${prettyLabel(node.label, node.kind)}`}
+      aria-label={`Preview ${nodeTitle(node)}`}
       className="absolute top-12 right-4 z-[var(--z-dropdown)] flex max-h-[calc(100%-5rem)] w-[min(360px,calc(100%-2rem))] flex-col overflow-hidden rounded-container border border-border-subtle bg-background-default shadow-popover"
     >
       <div className="flex items-center justify-between border-b border-border-subtle bg-background-muted px-4 py-3">
         <div className="flex items-center gap-2 min-w-0">
-          <span
-            aria-hidden
-            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
-            style={{ background: nodeFill(node) }}
+          {/* The SAME mark the canvas paints, from the same function — fill by
+              `node_type` through `GRAPH_PALETTE`, silhouette by family. A swatch
+              that disagrees with the mark it describes is worse than none. */}
+          <GraphShapeGlyph
+            shape={shapeFor(node, mode)}
+            fill={fillFor(node, mode)}
+            size={14}
+            className="br-swatch-ring flex-shrink-0"
           />
           <div className="flex flex-col min-w-0">
-            <div className="text-label truncate">{prettyLabel(node.label, node.kind)}</div>
+            <div className="text-label truncate">{nodeTitle(node)}</div>
             <div className="text-supporting text-text-muted truncate">
-              {node.kind}
-              {node.credibility_tier ? ` · ${node.credibility_tier.replace('_', ' ')}` : ''}
-              {previewSha ? ` · ${previewSha.slice(0, 7)}` : ''}
+              {nodeSubtitle(node, previewSha)}
             </div>
           </div>
         </div>

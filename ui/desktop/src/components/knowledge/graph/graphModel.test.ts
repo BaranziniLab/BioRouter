@@ -175,6 +175,24 @@ describe('buildGraphModel', () => {
     expect(m.nodes.get('a')!.type).toBeNull();
   });
 
+  // `untyped` and `untypedCount` answer different questions, and a MIXED base is
+  // where they part company: the Type facet needs the NUMBER (its `Untyped` row
+  // used to be hardcoded to 0), and "is this a legacy base" cannot supply it.
+  it('counts the untyped pages, separately from calling the base legacy', () => {
+    const legacy = buildGraphModel(graph([node('a'), node('b')]));
+    expect(legacy.untyped).toBe(true);
+    expect(legacy.untypedCount).toBe(2);
+
+    const mixed = buildGraphModel(
+      graph([node('a', { node_type: 'Gene' }), node('b'), node('c')])
+    );
+    expect(mixed.untyped).toBe(false);
+    expect(mixed.untypedCount).toBe(2);
+
+    const fullyTyped = buildGraphModel(graph([node('a', { node_type: 'Gene' })]));
+    expect(fullyTyped.untypedCount).toBe(0);
+  });
+
   it('adds the synthetic no-source bucket only when an edge lacks one', () => {
     const withSource = buildGraphModel(
       graph([node('a'), node('b')], [edge('a', 'b', { primary_source: 'a' })])

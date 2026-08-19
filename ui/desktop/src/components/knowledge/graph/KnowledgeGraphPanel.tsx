@@ -1,13 +1,14 @@
 // ui/desktop/src/components/knowledge/graph/KnowledgeGraphPanel.tsx
 import { useMemo, useState } from 'react';
 import { AlertCircle, LoaderCircle, Sparkles } from '../../icons/app-icons';
-import type { Graph, GraphNode } from '../../../api/types.gen';
+import type { Graph, GraphEdge, GraphNode } from '../../../api/types.gen';
 import { Button } from '../../ui/button';
 import { EmptyState } from '../../ui/empty-state';
 import { useResolvedTheme } from '../../../contexts/ThemeContext';
 import { ForceGraphCanvas } from './ForceGraphCanvas';
 import { GraphFacetStrip } from './GraphFacetStrip';
 import { GraphLegend } from './GraphLegend';
+import { EdgePreview } from './EdgePreview';
 import { NodePreview } from './NodePreview';
 import { buildGraphModel } from './graphModel';
 import { applyFacets, EMPTY_FACETS, facetsActive } from './graphFacets';
@@ -57,6 +58,10 @@ export function KnowledgeGraphPanel({
 }: Props) {
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [selected, setSelected] = useState<GraphNode | null>(null);
+  // ⚠ **One inspector at a time.** Both panels dock to the same top-right
+  // corner, so two open at once is one panel with another on top of it —
+  // selecting either therefore clears the other rather than stacking.
+  const [selectedEdge, setSelectedEdge] = useState<GraphEdge | null>(null);
   const [facets, setFacets] = useState<FacetState>(EMPTY_FACETS);
   const mode = useResolvedTheme();
 
@@ -64,10 +69,7 @@ export function KnowledgeGraphPanel({
   const hasNodes = !!graph && graph.nodes.length > 0;
 
   const model = useMemo(() => (graph ? buildGraphModel(graph) : null), [graph]);
-  const facetResult = useMemo(
-    () => (graph ? applyFacets(graph, facets) : null),
-    [graph, facets]
-  );
+  const facetResult = useMemo(() => (graph ? applyFacets(graph, facets) : null), [graph, facets]);
   const active = facetsActive(facets);
 
   return (
@@ -149,7 +151,14 @@ export function KnowledgeGraphPanel({
               selectedId={selected?.id ?? null}
               hoveredId={hoveredId}
               onHover={setHoveredId}
-              onNodeClick={(n) => setSelected(n)}
+              onNodeClick={(n) => {
+                setSelectedEdge(null);
+                setSelected(n);
+              }}
+              onLinkClick={(e) => {
+                setSelected(null);
+                setSelectedEdge(e);
+              }}
               visibleSet={null}
             />
           ) : null}
@@ -159,9 +168,14 @@ export function KnowledgeGraphPanel({
           <NodePreview
             kbId={kbId}
             node={selected}
+            mode={mode}
             previewSha={previewSha}
             onClose={() => setSelected(null)}
           />
+        )}
+
+        {selectedEdge && model && (
+          <EdgePreview edge={selectedEdge} model={model} onClose={() => setSelectedEdge(null)} />
         )}
       </div>
 
