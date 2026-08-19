@@ -1149,20 +1149,57 @@ mod tests {
         let data = TempDir::new().unwrap();
         let permissions = TempDir::new().unwrap();
         std::fs::create_dir_all(work.path().join(".biorouter")).unwrap();
+        // The hook body is emitted by the platform shell — `sh -c` on unix,
+        // `cmd.exe /D /S /C` on Windows (see hooks/command_runner.rs). A single
+        // quote is a QUOTING character in sh and a LITERAL in cmd, so one
+        // command string cannot serve both: the sh form echoes its apostrophes
+        // into the JSON under cmd and the parse fails, taking `additionalContext`
+        // with it. cmd's `echo` preserves double quotes (the runner passes its
+        // /C payload verbatim for exactly this reason), so the unquoted form is
+        // the correct one there.
+        //
+        // This is the only hook-driven test that lives in the LIB rather than in
+        // crates/biorouter/tests/, and Windows CI runs `cargo test --workspace
+        // --lib --bins` — so it is the only one Windows actually executes. Keep
+        // any new hook command here portable, or it will pass locally on macOS
+        // and fail only on Windows CI.
+        // Same split as `json_stdout_command` in hooks/command_runner.rs's tests,
+        // which is the existing precedent for emitting JSON from a hook on both
+        // platforms.
+        fn echo_json(json: &str) -> String {
+            if cfg!(target_os = "windows") {
+                format!("echo {json}")
+            } else {
+                format!("echo '{json}'")
+            }
+        }
+        let hooks_file = serde_json::json!({
+            "hooks": {
+                "PreToolUse": [{
+                    "matcher": "developer__shell",
+                    "hooks": [{
+                        "type": "command",
+                        "command": echo_json(
+                            r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","updatedInput":{"command":"printf rewritten-by-hook"}}}"#
+                        ),
+                    }],
+                }],
+                "PostToolUse": [{
+                    "matcher": "developer__shell",
+                    "hooks": [{
+                        "type": "command",
+                        "command": echo_json(
+                            r#"{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"post-tool-audit-context"}}"#
+                        ),
+                    }],
+                }],
+            }
+        });
+        // YAML is a superset of JSON and the loader is serde_yaml, so writing
+        // JSON here sidesteps a second layer of quoting inside the file itself.
         std::fs::write(
             work.path().join(".biorouter/hooks.yaml"),
-            r#"hooks:
-  PreToolUse:
-    - matcher: "developer__shell"
-      hooks:
-        - type: command
-          command: "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"updatedInput\":{\"command\":\"printf rewritten-by-hook\"}}}'"
-  PostToolUse:
-    - matcher: "developer__shell"
-      hooks:
-        - type: command
-          command: "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"post-tool-audit-context\"}}'"
-"#,
+            serde_json::to_string_pretty(&hooks_file).unwrap(),
         )
         .unwrap();
 
