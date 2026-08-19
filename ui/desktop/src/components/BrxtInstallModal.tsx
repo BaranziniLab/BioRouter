@@ -11,6 +11,7 @@ import { classifyExtension } from './settings/extensions/extensionPrivacy';
 import { upsertConfig } from '../api';
 import { userActionHeaders } from '../utils/userAction';
 import { toastService } from '../toasts';
+import { DependencyErrorBanner } from './DependencyErrorBanner';
 
 interface EnvEntry {
   key: string;
@@ -362,11 +363,19 @@ export function BrxtInstallModal({
             )}
           </div>
 
-          {/* Error banner */}
+          {/* Error banner. A `.brxt` install fails most often on `uv sync` —
+              a Python dependency that will not build on this machine — which is
+              precisely the kind of thing a session with a shell can work out. */}
           {error && (
-            <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
-              <p className="text-sm text-text-danger">{error}</p>
-            </div>
+            <DependencyErrorBanner
+              error={error}
+              failure={{
+                kind: 'extension',
+                name: manifest?.name ?? 'extension',
+                displayName: manifest?.display_name ?? manifest?.name,
+                command: 'uv sync',
+              }}
+            />
           )}
 
           {/* Manifest preview card */}
@@ -465,9 +474,15 @@ export function BrxtInstallModal({
           )}
 
           {error && (
-            <div className="bg-background-danger/10 border border-border-danger/40 rounded-lg p-3">
-              <p className="text-sm text-text-danger">{error}</p>
-            </div>
+            <DependencyErrorBanner
+              error={error}
+              failure={{
+                kind: 'extension',
+                name: manifest?.name ?? 'extension',
+                displayName: manifest?.display_name ?? manifest?.name,
+                command: 'uv sync',
+              }}
+            />
           )}
 
           {/* §13.5: the resulting badge, above the Install button — the footer

@@ -15,6 +15,10 @@ SERVICE_HOME="$(eval echo "~$SERVICE_USER")"
 
 log() { printf '\033[1;36m[headless-setup]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[headless-setup] %s\033[0m\n' "$*" >&2; exit 1; }
+BR_HINT_LABEL="headless-setup"
+# shellcheck source=scripts/lib/dependency-hint.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/dependency-hint.sh"
+
 
 require_ubuntu() {
   [ -r /etc/os-release ] || die "cannot read /etc/os-release"
@@ -42,7 +46,9 @@ install_uv() {
   fi
   local uv_bin
   uv_bin="$SERVICE_HOME/.local/bin/uv"
-  [ -x "$uv_bin" ] || die "uv install did not produce $uv_bin"
+  [ -x "$uv_bin" ] || br_dependency_die uv "uv install did not produce $uv_bin" \
+    "The astral.sh installer ran but left nothing at that path." \
+    "Common causes: no network, a proxy intercepting the download, or \$HOME differing from $SERVICE_HOME."
   sudo rm -f /usr/local/bin/uv
   sudo ln -sf "$uv_bin" /usr/local/bin/uv
   /usr/local/bin/uv --version >/dev/null

@@ -9,6 +9,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 log() { printf '\033[1;36m[headless-test]\033[0m %s\n' "$*"; }
 fail() { printf '\033[1;31m[headless-test] FAIL: %s\033[0m\n' "$*" >&2; exit 1; }
+BR_HINT_LABEL="headless-test"
+# shellcheck source=scripts/lib/dependency-hint.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/dependency-hint.sh"
+
 
 SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "$REMOTE")
 
@@ -17,7 +21,8 @@ run_remote() {
 }
 
 require_local() {
-  command -v "$1" >/dev/null 2>&1 || fail "missing local dependency: $1"
+  command -v "$1" >/dev/null 2>&1 || br_dependency_die "$1" "missing local dependency: $1" \
+    "This smoke test runs from your machine, so the tool has to be installed here, not on the remote host."
 }
 
 require_local curl

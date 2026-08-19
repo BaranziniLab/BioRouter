@@ -685,7 +685,9 @@ pub fn debug_prompt(failure: &DependencyFailure<'_>) -> String {
     if d.requires_sudo {
         out.push_str("- This install normally needs administrator privileges.\n");
     }
-    out.push_str(&format!("- Official install page: {}\n", d.doc_url));
+    if !d.doc_url.is_empty() {
+        out.push_str(&format!("- Official install page: {}\n", d.doc_url));
+    }
     if let Some(err) = failure.error {
         out.push_str(&format!("- Error reported: {err}\n"));
     }

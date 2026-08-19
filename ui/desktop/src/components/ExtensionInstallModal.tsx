@@ -8,6 +8,7 @@ import type { ExtensionConfig } from '../api/types.gen';
 import { View, ViewOptions } from '../utils/navigationUtils';
 import { useConfig } from './ConfigContext';
 import { toastService } from '../toasts';
+import { DependencyErrorBanner } from './DependencyErrorBanner';
 
 type ModalType = 'blocked' | 'untrusted' | 'trusted';
 
@@ -340,11 +341,20 @@ export function ExtensionInstallModal({ addExtension, setView }: ExtensionInstal
         {config.message}
       </p>
       {/* The install failure was recorded but never shown: the dialog simply
-          stayed open with no explanation. */}
+          stayed open with no explanation. Now it also carries the way out — a
+          deeplink install fails on the extension's own runtime prerequisites
+          (uv, npx, a missing interpreter) more often than on anything Biorouter
+          controls. */}
       {modalState.error && (
-        <p className="mt-3 text-supporting text-text-danger [overflow-wrap:anywhere]">
-          {modalState.error}
-        </p>
+        <DependencyErrorBanner
+          className="mt-3"
+          error={modalState.error}
+          failure={{
+            kind: 'extension',
+            name: extractExtensionName(pendingLink ?? '') || 'extension',
+            displayName: config.title,
+          }}
+        />
       )}
     </ModalShell>
   );

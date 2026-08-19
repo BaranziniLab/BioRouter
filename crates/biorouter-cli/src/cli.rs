@@ -2307,12 +2307,30 @@ async fn handle_doctor_fix(dep: String) -> Result<()> {
     } else {
         match biorouter::system::status_of(&dep) {
             Some(status) => Some(status),
+            // Not one of Biorouter's tracked prerequisites — `docker`, `jq`,
+            // `shellcheck` and friends are all things a setup script can die on,
+            // and refusing to help with them would make the hint those scripts
+            // print a lie. Synthesize a status so the session still gets a
+            // briefing that names the tool and this machine.
             None => {
                 let known: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
-                anyhow::bail!(
-                    "unknown dependency `{dep}`. Known prerequisites: {}",
+                println!(
+                    "`{dep}` is not one of Biorouter's tracked prerequisites ({}), \
+                     so there is no install command on file for it. Starting a session anyway.",
                     known.join(", ")
                 );
+                Some(biorouter::system::DependencyStatus {
+                    name: dep.clone(),
+                    display_name: dep.clone(),
+                    installed: false,
+                    version: None,
+                    required: false,
+                    purpose: "Required by a Biorouter setup or build script".to_string(),
+                    doc_url: String::new(),
+                    install_command: None,
+                    requires_sudo: false,
+                    download_url: None,
+                })
             }
         }
     };
