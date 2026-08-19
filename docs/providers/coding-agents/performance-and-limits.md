@@ -94,15 +94,23 @@ Two details of the flattening are worth knowing when output looks odd:
 
 ## There is no streaming yet
 
-Both providers are non-streaming: the answer appears when the turn completes. The reason is
-structural rather than an oversight.
+Both providers are non-streaming: the answer appears when the turn completes. `supports_streaming()`
+returns false, so the agent takes the blocking branch.
 
-The tool bridge URL rides a **task-local scoped to the awaited `complete()`**, because the `Provider`
-trait has no session and no agent in scope for the provider to ask. That works precisely because the
-whole child turn happens inside the awaited call. A streaming implementation would return a stream
-that is polled *after* the scope ends, so the lease would have to be threaded through differently —
-the bridge grant, not the vendor protocol, is what blocks it. Claude Agent's `--output-format
-stream-json` path already exists in the argument builder for that day.
+This is unfinished work rather than a structural obstacle, and an earlier version of this page
+overstated the difficulty by blaming the bridge. It does not: `Agent::reply` binds the bridge lease
+before the task-local scope and it lives to the end of that loop iteration, which outlasts stream
+consumption, and a `stream()` implementation runs *inside* the scope — so it can read the URL and
+spawn the child exactly as `complete()` does. The one real rule is that the URL must be captured at
+construction time, never read from inside a poll.
+
+What is genuinely left is the parsing. For Claude Agent most of it already exists: the CLI's
+`--output-format stream-json` emits raw Anthropic frames inside a `stream_event` envelope, so
+unwrapping the envelope and feeding `providers::formats::anthropic::response_to_streaming_message`
+reuses the decoder the Anthropic provider already uses — and the argument builder already takes the
+output format as its only varying axis. For Codex the equivalent is the `item/agentMessage/delta`
+and `item/reasoning/textDelta` notifications the app server already sends and the provider currently
+ignores. Cancellation would want wiring at the same time.
 
 ## Failure modes worth recognising
 

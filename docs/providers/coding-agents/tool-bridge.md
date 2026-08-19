@@ -157,13 +157,15 @@ If there is **no base URL** — a CLI process with no HTTP server — the provid
 **tool-less** rather than failing. That is the correct degradation: there would be nothing for the
 child to connect to, and a turn that can answer from the conversation should still answer.
 
-⚠ **The bridge URL rides a task-local scoped to the awaited `complete()`.** The `Provider` trait
-has no session and no agent in scope — `complete_with_model` receives only a system prompt,
-messages and tools — so the agent sets the URL around the provider call and the provider reads it
-there. This works *because* these providers are non-streaming: the whole child turn happens inside
-the awaited call, and therefore inside the scope. A streaming implementation would return a stream
-polled *after* the scope ends, and would need the lease threaded differently. That is the reason
-[streaming has not landed](performance-and-limits.md#there-is-no-streaming-yet).
+⚠ **The bridge URL rides a task-local, and it must be read at construction time.** The `Provider`
+trait has no session in scope — `complete_with_model` receives a system prompt, messages and tools
+and nothing else — so `Agent::reply` scopes the URL around the call it makes into the provider.
+
+The scope wraps the awaited call that *builds* the response, not the consumption of what that call
+returns. A `stream()` implementation may therefore read the URL (it runs inside the scope, and is
+where the child would be spawned); a poll of the returned stream may not, because by then the scope
+is gone. The lease itself is not the constraint — `Agent::reply` binds it before the scope and it
+lives to the end of that loop iteration, which outlasts stream consumption.
 
 ## Where the code is
 

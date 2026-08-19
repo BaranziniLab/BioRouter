@@ -275,10 +275,18 @@ tokio::task_local! {
     /// call, and the coding-agent providers read it to build the child's MCP
     /// configuration.
     ///
-    /// ⚠ This works because these providers are non-streaming, so the whole child
-    /// turn happens inside the awaited `complete()` and therefore inside the
-    /// scope. A streaming implementation would return a stream that is polled
-    /// *after* the scope ends and would need the lease threaded differently.
+    /// ⚠ Read it at **construction** time, never from inside a stream's poll. The
+    /// scope wraps the awaited call that builds the response, not the consumption
+    /// of what that call returns — so a `stream()` implementation may read this
+    /// (it runs inside the scope, and is where the child is spawned), while a
+    /// poll of the returned stream may not: by then the scope is gone and the
+    /// task-local reads `None`.
+    ///
+    /// The *lease* is not the constraint here, and an earlier version of this note
+    /// wrongly implied it was: `Agent::reply` binds it before the scope and it
+    /// lives to the end of that loop iteration, which outlasts stream
+    /// consumption. What a streaming implementation has to do is capture the URL
+    /// up front, not thread the lease differently.
     pub static ACTIVE_BRIDGE_URL: Option<String>;
 }
 
