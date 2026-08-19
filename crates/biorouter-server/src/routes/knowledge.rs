@@ -858,6 +858,32 @@ pub async fn write_page(
     )
     .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     let commit_sha = sha_opt.unwrap_or_default();
+    // Re-derive the graph cache, exactly as the MCP `kb_write_page` tool does.
+    //
+    // `get_graph` serves `graph-cache.json` whenever it can read one, and a
+    // base is created with an EMPTY cache. So a writer that does not refresh
+    // it leaves the graph route answering "no nodes, no edges" for a base whose
+    // pages are on disk and listed by `GET /pages` — measured on this route:
+    // two pages written, one `[[wiki]]` link between them, `/graph` empty; the
+    // same request after deleting the cache file returned both nodes and the
+    // edge. Nothing in the UI can repair that, because "Refresh graph" re-reads
+    // the same cache.
+    //
+    // The same fix already exists on the tool that writes a page from chat, and
+    // this route is the other writer. If a third appears, it needs this too —
+    // the cache is refreshed by the caller, not by `store::write_page`, because
+    // a macro writes many pages under one lock and re-deriving per page would
+    // do the whole derivation N times for one logical change.
+    if let Err(e) = svc.rebuild_graph_cache(&id) {
+        // The page IS written and committed at this point, so a cache that
+        // could not be rebuilt must not turn a successful write into a 500.
+        // The next reader re-derives: `get_graph` rewrites the cache whenever
+        // it cannot read a usable one, and a stale cache is recoverable while
+        // a lost commit is not.
+        tracing::warn!(
+            "knowledge: page written to '{id}' but the graph cache did not rebuild: {e:#}"
+        );
+    }
     Ok(Json(CommitResponse { commit_sha }))
 }
 

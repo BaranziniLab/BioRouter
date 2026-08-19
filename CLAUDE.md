@@ -278,7 +278,7 @@ The Knowledge feature (built across Plans 1-6 in `docs/history/knowledge-base-bu
 - **Sub-agent loop:** `crates/biorouter-mcp/src/knowledge/subagent/loop_.rs` drives ingest / query / lint macros. Mutating tools accept an optional `txn` so a macro's tool calls commit as one logical change.
 
 When working on the Knowledge feature:
-- Run `cargo test -p biorouter-mcp --lib knowledge::` and `cargo test -p biorouter-server --test knowledge_routes` (38 tests) for backend changes. A count written here must be *measured*, not approximate — a stale figure is worse than none, because a "pre + N" assertion against it reads a shortfall as a pass. The `knowledge::` figure carried here had drifted, so it was deleted rather than guessed: measure it in your own run. Re-measure the 38 too rather than trusting this line. The ingest stream's terminal-frame contract lives in its own binary, `cargo test -p biorouter-server --test knowledge_ingest_stream` (1 test), because it sets `BIOROUTER_KNOWLEDGE_TEST_MODE` and would race the un-mocked provider tests next door.
+- Run `cargo test -p biorouter-mcp --lib knowledge::` and `cargo test -p biorouter-server --test knowledge_routes` for backend changes. A count written here must be *measured*, not approximate — a stale figure is worse than none, because a "pre + N" assertion against it reads a shortfall as a pass. The `knowledge::` figure carried here had drifted, so it was deleted rather than guessed: measure it in your own run. The `knowledge_routes` figure that used to sit here had drifted the same way (it read 38 against a suite of 58) and is gone for the same reason. The ingest stream's terminal-frame contract lives in its own binary, `cargo test -p biorouter-server --test knowledge_ingest_stream` (1 test), because it sets `BIOROUTER_KNOWLEDGE_TEST_MODE` and would race the un-mocked provider tests next door.
 - After touching `routes/knowledge.rs`, regenerate the TS client with `just generate-openapi && cd ui/desktop && npm run generate-api`.
 - Graph derivation lives in `graph.rs` and depends on the sub-agent emitting `[[knowledge-link]]` markers in page bodies; the default `schema_default.md` reinforces this. If a graph has nodes but no edges, the underlying pages likely lack `[[…]]` cross-references.
 
@@ -286,9 +286,11 @@ When working on the Knowledge feature:
 base now declares a `format` in its `manifest.yaml`: the informal LLM-wiki page
 shape it always had, OKF v0.2 (`crates/biorouter-mcp/src/knowledge/okf/`), or
 BioOKF v0.5 (`.../knowledge/biookf/`) — a *strict* biomedical profile with a
-controlled vocabulary, typed domain/range constraints and its own lint. The
-format is chosen at creation time in `KbFormatChooser.tsx` and is not a
-migration the user is dragged through: **a legacy manifest keeps working**, the
+controlled vocabulary, typed domain/range constraints and its own lint. Only the
+latter two can be **created** (`KbFormatChooser.tsx`; `POST /knowledge/bases`
+with `format: "legacy"` is refused, and names the two that work). `legacy` is a
+state a base is *found* in, never one it is put into — and it is not a migration
+the user is dragged through: **a legacy manifest keeps working**, the
 `format` key it gains on re-save is inert, and the migration ladder runs for a
 base that has none of the stage-3 keys rather than skipping it
 (`knowledge/manifest.rs` pins all three in tests). Design, decision records and

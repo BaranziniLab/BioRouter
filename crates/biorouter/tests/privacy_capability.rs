@@ -117,13 +117,21 @@ const EXPECTED: &[Site] = &[
     Site {
         needle: "CallCapability::sample(",
         file: "crates/biorouter/src/agents/agent.rs",
-        count: 4,
+        count: 5,
         what: "`call_prefetch_tool` (which dispatches before the turn), the agent \
                loop's own tool-call sample, `cross_affiliation_grant_subject` \
-               (which composes the sentence the user is asked to accept), and the \
+               (which composes the sentence the user is asked to accept), the \
                schedule branch of `dispatch_tool_call`, which returns before the \
                loop's own sample, so `platform__manage_schedule` had no capability \
-               in scope while two of its actions read another chat's content",
+               in scope while two of its actions read another chat's content — and \
+               `issue_tool_bridge`, which decides for a caller that is not in this \
+               process at all. A bridged coding agent (`claude_code`, `codex`) runs \
+               its own loop in a child and reaches Biorouter's tools by calling back \
+               in over MCP, so the child's calls arrive with no capability of their \
+               own to inherit. Sampling once when the grant is issued and carrying it \
+               in the lease is what fixes a bridged call's capability BEFORE it runs, \
+               which is the whole reason this type exists; re-reading per callback \
+               would be the two-reads race with a process boundary through the middle",
     },
     Site {
         needle: "CallCapability::sample(",
@@ -152,6 +160,19 @@ const EXPECTED: &[Site] = &[
         count: 1,
         what: "`POST /agent/call_tool`, an entry with no caller identity, which \
                therefore takes the most restrictive pair this type can express",
+    },
+    Site {
+        needle: "CallCapability::public_enforced(",
+        file: "crates/biorouter/src/providers/coding_agent/bridge.rs",
+        count: 1,
+        what: "NOT a production decider: `mod tests`' `dummy_grant()` helper, which \
+               builds a `BridgeGrant` for the bridge's own unit tests and gives it \
+               the most restrictive pair rather than inventing a permissive one. \
+               Counted for the same reason `privacy/grant.rs`'s test helper is — a \
+               line-wise grep cannot tell a `#[cfg(test)]` block from production, and \
+               a filter that tried would blind the census to production too. The \
+               production side of this bridge decides in `Agent::issue_tool_bridge`, \
+               which is a `sample(` row above",
     },
     // ---------------------------------------------------------- DR-26's third
     // axis, asked through the free function rather than off a capability. Its

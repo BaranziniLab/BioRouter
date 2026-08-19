@@ -399,6 +399,80 @@ async fn list_pages_empty_on_new_kb() {
 }
 
 #[tokio::test]
+async fn a_page_written_over_http_reaches_the_graph() {
+    // `get_graph` serves `graph-cache.json` whenever it can read one, and a base
+    // is created carrying an EMPTY cache. So this route's write is only visible
+    // in the graph if the route refreshes the cache — and it did not: measured
+    // against a running daemon, two pages written over this route with a
+    // `[[wiki]]` link between them left `GET /graph` answering `{"nodes": [],
+    // "edges": []}`, while the same request after deleting the cache file
+    // returned both nodes and the edge.
+    //
+    // That failure is invisible to `write_then_read_page_roundtrip` below,
+    // because reading the page back reads the file rather than the derivation.
+    // The MCP `kb_write_page` tool carries the same fix and a comment describing
+    // the same symptom; this is the other writer.
+    let (_d, app) = build_test_router();
+    let create_body =
+        serde_json::to_vec(&serde_json::json!({"id": "gc", "name": "Graph Cache"})).unwrap();
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/bases")
+                .header("content-type", "application/json")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    let write_body = serde_json::to_vec(&serde_json::json!({
+        "content": valid_page("note", "Graphed", "# Graphed\n\nA page that must reach the graph."),
+        "commit_message": "add a page that must reach the graph"
+    }))
+    .unwrap();
+    let res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("PUT")
+                .uri("/bases/gc/pages/knowledge/notes/graphed.md")
+                .header("content-type", "application/json")
+                .body(Body::from(write_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "PUT page should return 200");
+
+    let res = app
+        .oneshot(
+            Request::builder()
+                .uri("/bases/gc/graph")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), 200, "GET graph should return 200");
+    let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let nodes = v["nodes"]
+        .as_array()
+        .expect("graph must carry a node array");
+    assert!(
+        !nodes.is_empty(),
+        "a page written over HTTP must appear in the graph; got {v}. An empty \
+         graph beside a page that GET /pages lists is the stale-cache symptom: \
+         the write did not rebuild graph-cache.json, and nothing in the UI can \
+         repair that because \"Refresh graph\" re-reads the same cache"
+    );
+}
+
+#[tokio::test]
 async fn write_then_read_page_roundtrip() {
     let (_d, app) = build_test_router();
     // Create KB.
