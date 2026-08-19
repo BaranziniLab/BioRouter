@@ -11,8 +11,8 @@ import type { CanvasTheme } from './useCanvasTheme';
 import { pathForShape } from './nodeShapes';
 // The mark — fill and silhouette — is shared with the inspector, so the two
 // surfaces cannot disagree about the same node. See `nodeMark.ts`.
-import { fillFor, shapeFor } from './nodeMark';
-import { edgePredicate, isNegated, readablePredicate, showsCredibility } from './graphModel';
+import { credibilityKey, fillFor, shapeFor } from './nodeMark';
+import { edgePredicate, isNegated, readablePredicate } from './graphModel';
 import type { GraphModel, NodeMetrics } from './graphModel';
 import { EMPTY_FACETS, facetsActive } from './graphFacets';
 import type { FacetState } from './graphFacets';
@@ -162,14 +162,6 @@ function layoutBand(count: number) {
   if (count <= 900) return { L: 78, strength: 0.2, charge: -155, distanceMax: 300 };
   if (count <= 1500) return { L: 82, strength: 0.16, charge: -175, distanceMax: 340 };
   return { L: 96, strength: 0.12, charge: -200, distanceMax: 380 };
-}
-
-/** The credibility key a node rings in, or `null` when it shows no orbit ring. */
-function credibilityKey(n: GraphNode): GraphCredibilityKey | null {
-  // Retraction OVERRIDES the tier: it is a flag rather than a rung, and it is
-  // the more important fact about the source.
-  if (n.retracted) return 'retracted';
-  return showsCredibility(n) ? (n.credibility_tier as GraphCredibilityKey) : null;
 }
 
 export function ForceGraphCanvas({

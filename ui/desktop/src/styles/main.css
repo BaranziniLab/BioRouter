@@ -2374,6 +2374,30 @@
   transition: opacity var(--dur-med) var(--ease-out);
 }
 
+/* The inspector's labelled row (ui-spec §4.8 items 2, 3 and 5).
+
+   A fixed 96px label column beside a `minmax(0, 1fr)` value column. The 96px is
+   24 × 4 and is on the grid; it is stated as a real column rather than left as a
+   bare literal, and the `minmax(0, …)` is what stops a long unbroken value —
+   a DOI, a 60-character identifier — from forcing the grid wider than the panel
+   and taking the whole 360px rail into horizontal scroll (the `min-width: auto`
+   trap).
+
+   AUTHORED for the same reason `.br-swatch-ring` and the two fades above are:
+   `grid-cols-[96px_minmax(0,1fr)]` is a freshly-invented arbitrary utility, and
+   a *newly written* class can silently fail to reach the stylesheet under
+   `BIOROUTER_NO_HMR` — `watch: { ignored: ['**'] }` is the same signal
+   Tailwind's scanner uses. Without the rule these rows do not merely lose their
+   alignment, they collapse to a stack of unlabelled values, which is a worse
+   panel than the `<pre>` this replaced. */
+.br-inspector-row {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 0.75rem;
+  padding-block: 0.5rem;
+  align-items: baseline;
+}
+
 /* The graph pane's two docked strips (ui-spec §4.5): the facet strip above the
    canvas and the legend below it. `--dock-height` is reused deliberately —
    this is the same object it already names, a horizontal control strip docked

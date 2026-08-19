@@ -69,6 +69,13 @@ export function KnowledgeGraphPanel({
   const hasNodes = !!graph && graph.nodes.length > 0;
 
   const model = useMemo(() => (graph ? buildGraphModel(graph) : null), [graph]);
+  // The edge inspector draws each endpoint's real mark, so it needs the NODE
+  // rather than the model's `NodeMetrics` (which carries `type` but no `kind`).
+  // Built here, once per graph, for the same reason the model is.
+  const nodesById = useMemo(
+    () => new Map((graph?.nodes ?? []).map((n) => [n.id, n])),
+    [graph]
+  );
   const facetResult = useMemo(() => (graph ? applyFacets(graph, facets) : null), [graph, facets]);
   const active = facetsActive(facets);
 
@@ -175,7 +182,17 @@ export function KnowledgeGraphPanel({
         )}
 
         {selectedEdge && model && (
-          <EdgePreview edge={selectedEdge} model={model} onClose={() => setSelectedEdge(null)} />
+          <EdgePreview
+            edge={selectedEdge}
+            model={model}
+            nodeById={(id) => nodesById.get(id)}
+            mode={mode}
+            onSelectNode={(n) => {
+              setSelectedEdge(null);
+              setSelected(n);
+            }}
+            onClose={() => setSelectedEdge(null)}
+          />
         )}
       </div>
 
