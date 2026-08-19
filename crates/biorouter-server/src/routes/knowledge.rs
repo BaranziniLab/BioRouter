@@ -1224,6 +1224,50 @@ async fn build_completer(
     Ok((Box::new(completer), tier, affiliation))
 }
 
+/// The caller's identity for a lint that will **not** write (issue #56).
+///
+/// The tier comes from [`build_completer`] — the same one funnel the autofix
+/// path and the two sibling macro routes use — so it is read off a *constructed
+/// instance*, never re-derived from `model.provider`. That name-keyed lookup is
+/// precisely what [`ProviderCompleter::paired`] exists to close: `ollama`'s
+/// registry entry is Private unconditionally while its instance reads the
+/// resolved base URL, and `providers::create` intercepts `BIOROUTER_LEAD_MODEL`
+/// before the registry is consulted at all. The completer that comes back is
+/// dropped: a scan has nothing to say to a model.
+///
+/// ⚠ **This read-only lint used to answer with a hardcoded `Public`**, on the
+/// reasoning that a scan constructs no provider and so has no instance to read
+/// a tier from. The premise was a choice, not a fact — `LintBody::model` is
+/// required, so a lint always names a model and the tier was there to be had —
+/// and the conclusion broke the feature: a Public capability can never reach a
+/// private base, so [`assert_macro_target_reachable`] refused **every**
+/// read-only lint of a private base, and refused it with a message telling the
+/// user to switch this chat to a private model, the one remedy that could not
+/// work while the model was not being read. That is the failure
+/// `a_private_model_may_ingest_its_own_private_conversation_over_http` is
+/// written to catch on the sibling gate: "refuse the public caller" is
+/// satisfied by "refuse everyone".
+///
+/// ⚠ **The one thing this does differently is that it does not fail.** `autofix`
+/// keeps `build_completer`'s 400, because a fix with no model cannot run at all.
+/// A scan can, and always could — a read-only lint against an unconfigured or
+/// unknown provider streams its report today, which is a real capability and
+/// not an accident of the literal. So a provider that will not construct
+/// resolves to Public with no affiliation: the restrictive reading on both axes,
+/// so an identity that cannot be read can only ever refuse, never admit. Same
+/// fail-safe direction, for the same reason, as `routes::apps::row_capability`.
+async fn read_only_caller_identity(
+    model: &ModelRef,
+) -> (
+    biorouter::privacy::ProviderTier,
+    Option<biorouter::privacy::affiliation::ModelAffiliation>,
+) {
+    match build_completer(model).await {
+        Ok((_completer, tier, affiliation)) => (tier, affiliation),
+        Err(_) => (biorouter::privacy::ProviderTier::Public, None),
+    }
+}
+
 /// Issue #56, Task 10C. Refuse a macro run whose model may not reach the target
 /// base, **before** the SSE stream opens.
 ///
@@ -1762,12 +1806,10 @@ pub async fn lint(
     Json(body): Json<LintBody>,
 ) -> Result<crate::routes::reply::SseResponse, (StatusCode, String)> {
     let autofix = body.autofix.unwrap_or(false);
-    // Only build a completer when autofix is requested (it requires an LLM).
-    //
-    // Issue #56: a lint with no autofix constructs no provider, so there is no
-    // instance to read a tier from and nothing a model can write. It reports
-    // Public and the ratchet is a no-op — the same reasoning as the test-mode
-    // branch of `build_completer`, and it is not a caller-supplied literal.
+    // Only build a *completer* when autofix is requested (it requires an LLM).
+    // The caller's CAPABILITY is read on both paths, off the provider
+    // `body.model` names — see `read_only_caller_identity` for why a scan asks
+    // the same question a fix does, and why it may not answer with a literal.
     let (completer, caller_capability, caller_affiliation): (
         Option<Box<dyn biorouter_mcp::knowledge::subagent::loop_::Completer>>,
         biorouter::privacy::ProviderTier,
@@ -1776,10 +1818,8 @@ pub async fn lint(
         let (c, tier, affiliation) = build_completer(&body.model).await?;
         (Some(c), tier, affiliation)
     } else {
-        // A read-only lint builds no provider, so there is no institution to
-        // read. `None` pairs with the Public tier beside it — the restrictive
-        // reading on both axes.
-        (None, biorouter::privacy::ProviderTier::Public, None)
+        let (tier, affiliation) = read_only_caller_identity(&body.model).await;
+        (None, tier, affiliation)
     };
     assert_macro_target_reachable(&svc, &id, caller_capability, caller_affiliation)?;
 

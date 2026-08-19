@@ -110,6 +110,43 @@ async fn build_completer(
     Ok((Box::new(completer), tier, affiliation))
 }
 
+/// The caller's identity for a `biorouter kb lint` that will **not** write
+/// (issue #56). The CLI twin of `routes::knowledge::read_only_caller_identity`,
+/// and it exists for the defect that route had.
+///
+/// The tier comes from [`build_completer`] — the one funnel — so it is read off
+/// a *constructed instance* and never re-derived from the provider NAME, which
+/// is the gap [`ProviderCompleter::paired`] exists to close and which the CLI is
+/// most exposed to, because a name is all `--provider` ever supplies. The
+/// completer that comes back is dropped: a scan has nothing to say to a model.
+///
+/// ⚠ **This branch used to answer with a hardcoded `Public`**, on the reasoning
+/// that a scan constructs no provider and so has no instance to read a tier
+/// from. The premise was a choice, not a fact, and the conclusion refused
+/// `biorouter kb lint` on **every** private base for **every** caller — telling
+/// the user to re-run on a private model, the one remedy that could not work
+/// while no model was being read.
+///
+/// ⚠ **It does not fail.** `--fix` keeps `build_completer`'s error, because a
+/// fix with no model cannot run; a scan can, and always could — `kb lint` on a
+/// machine with nothing configured still prints its report, and that is a real
+/// capability rather than an accident of the literal. A provider that will not
+/// construct therefore resolves to Public with no affiliation: the restrictive
+/// reading on both axes, so an identity that cannot be read can only ever
+/// refuse, never admit.
+async fn read_only_caller_identity(
+    provider: Option<String>,
+    model: Option<String>,
+) -> (
+    ProviderTier,
+    Option<biorouter::privacy::affiliation::ModelAffiliation>,
+) {
+    match build_completer(provider, model).await {
+        Ok((_completer, tier, affiliation)) => (tier, affiliation),
+        Err(_) => (ProviderTier::Public, None),
+    }
+}
+
 /// First 10 characters of a commit sha, for compact display.
 fn short_sha(sha: &str) -> String {
     sha.chars().take(10).collect()
@@ -683,17 +720,15 @@ pub async fn handle_lint(
         println!("{notice}");
     }
 
-    // Issue #56: with no `--fix` no provider is constructed, so there is no
-    // instance to read a tier from and no model that can write. Public, for the
-    // same reason as the test-mode branch above — and Task 10C's barrier still
-    // refuses a public caller reading a private base.
+    // Issue #56: only a `--fix` needs a COMPLETER, but both paths need the
+    // caller's capability — see `read_only_caller_identity` for why a scan asks
+    // the same question a fix does, and why it may not answer with a literal.
     let (completer, caller_capability, caller_affiliation) = if fix {
         let (c, tier, affiliation) = build_completer(provider, model).await?;
         (Some(c), tier, affiliation)
     } else {
-        // No provider, so no institution either. `None` pairs with the Public
-        // tier beside it — the restrictive reading on both axes.
-        (None, ProviderTier::Public, None)
+        let (tier, affiliation) = read_only_caller_identity(provider, model).await;
+        (None, tier, affiliation)
     };
 
     let spinner = cliclack::spinner();
@@ -1162,7 +1197,7 @@ mod tests {
     // ── Issue #56, Task 10B: the CLI's capability ───────────────────────────
 
     mod privacy_tier {
-        use super::super::{build_completer, handle_ingest};
+        use super::super::{build_completer, handle_ingest, handle_lint};
         use biorouter::privacy::ProviderTier;
         use serial_test::serial;
 
@@ -1310,6 +1345,59 @@ mod tests {
                     want_private,
                     "OLLAMA_HOST={host}: the handler did not read the constructed instance"
                 );
+            }
+        }
+
+        /// `kb lint` with no `--fix`, BOTH directions — the path that answered
+        /// with a hardcoded `Public` and so refused every caller.
+        ///
+        /// ⚠ The public leg alone proves nothing here: "a public model may not
+        /// lint a private base" is satisfied by "nobody may", which is what the
+        /// handler did. It is the PRIVATE leg that separates a barrier from an
+        /// outage, and it is the leg the literal fails. Same name in both legs
+        /// (`--provider ollama`), only `OLLAMA_HOST` moves, for the reason
+        /// `the_cli_ingest_handler_…` states.
+        ///
+        /// A scan needs no LLM, so unlike the ingest row above this one asserts
+        /// the handler's own `Result` rather than a side effect: nothing answers
+        /// on either host, and nothing has to.
+        #[tokio::test]
+        #[serial]
+        async fn the_cli_read_only_lint_admits_a_private_model_and_still_refuses_a_public_one() {
+            for (host, expect_ok) in [
+                ("http://127.0.0.1:1", true),
+                ("http://ollama.invalid:11434", false),
+            ] {
+                let tmp = tempfile::TempDir::new().unwrap();
+                let mut env = base_env(host);
+                env.push((
+                    "BIOROUTER_PATH_ROOT",
+                    Some(tmp.path().to_string_lossy().into_owned()),
+                ));
+                let _env = lock_env(env);
+                let root = cli_knowledge_root_with_base(&tmp, "k");
+                biorouter::knowledge::tier::raise_unlocked(&root, "k", true).unwrap();
+
+                let outcome = handle_lint(
+                    Some("k".into()),
+                    /* fix */ false,
+                    Some("ollama".into()),
+                    Some("qwen3.5:4b".into()),
+                )
+                .await;
+
+                if expect_ok {
+                    outcome.expect("a private model was refused a read-only lint of its own base");
+                } else {
+                    let err = outcome
+                        .expect_err("a public model linted a private base")
+                        .to_string();
+                    assert!(
+                        err.contains("only a private model may read or write it")
+                            && err.contains("switch this chat to a private model"),
+                        "the refusal named neither the reason nor a usable remedy: {err}"
+                    );
+                }
             }
         }
     }

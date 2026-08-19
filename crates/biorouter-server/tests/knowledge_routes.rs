@@ -2506,6 +2506,133 @@ mod privacy_ratchet {
             "the Knowledge view was locked out of the user's own notes"
         );
     }
+
+    // ── The read-only lint, BOTH directions ─────────────────────────────────
+    //
+    // `POST /bases/{id}/lint` with `autofix: false` is the DEFAULT lint and the
+    // read-only one, and it used to report a hardcoded `ProviderTier::Public`
+    // whatever model the caller named. A Public capability can never reach a
+    // private base, so the refusal was unconditional — and the refusal text
+    // asks the user to switch this chat to a private model, which was the one
+    // remedy that could not possibly work while the model was not being read.
+    //
+    // The two rows below differ in ONE thing, `OLLAMA_HOST`, exactly as the
+    // ratchet matrix above does: same route, same base, same provider name,
+    // same body. So the pair is also the proof that the refusal's remedy is
+    // now followable — switching to a private model is precisely the difference
+    // between the 409 row and the 200 row.
+
+    /// Seed a private base with one orphan page, so a lint has a real finding.
+    async fn private_base_with_an_orphan(app: &Router, root: &std::path::Path) {
+        create_kb(app.clone(), "omop", "OMOP").await;
+        let notes = root.join("omop").join("knowledge").join("notes");
+        std::fs::create_dir_all(&notes).unwrap();
+        std::fs::write(
+            notes.join("lonely.md"),
+            "---\ntitle: Lonely\n---\nSENTINEL-BODY, linked by nothing\n",
+        )
+        .unwrap();
+        biorouter_mcp::knowledge::tier::raise_unlocked(root, "omop", true).unwrap();
+    }
+
+    fn read_only_lint(m: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({ "autofix": false, "model": m })
+    }
+
+    /// ⚠ **The row the literal could not pass.** Its sibling below is satisfied
+    /// by "refuse everyone", which is what the route did; only this one
+    /// distinguishes a barrier from an outage. Same shape, and the same reason,
+    /// as `routes::knowledge::tests::
+    /// a_private_model_may_ingest_its_own_private_conversation_over_http`.
+    ///
+    /// Driven end to end rather than against `assert_macro_target_reachable`,
+    /// because one capability feeds TWO gates: the pre-check that chooses the
+    /// status code, and CP2 inside `lint_macro::lint`, which chooses whether the
+    /// stream carries a report or an error. A test that stopped at the 200 would
+    /// pass on a fix that merely moved the refusal into the stream.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_private_model_may_run_a_read_only_lint_on_its_own_private_base() {
+        // Private the way the matrix above spells it: a LOOPBACK `OLLAMA_HOST`,
+        // so the capability follows the constructed instance and not the
+        // provider name — port 1, which nothing can listen on without root.
+        let _env = lock_env_for("http://127.0.0.1:1");
+        let (_d, root, app) = build_test_router_with_root();
+        private_base_with_an_orphan(&app, &root).await;
+
+        let (status, body) = post_json_raw(
+            &app,
+            "/bases/omop/lint",
+            read_only_lint(model("ollama", "qwen3.5:4b")),
+        )
+        .await;
+        assert_eq!(
+            status, 200,
+            "a private model was refused a read-only lint of its own private base: {body}"
+        );
+
+        // The stream carried a REPORT, not an error frame: CP2 admitted it too.
+        let payload = body
+            .split("event: done\ndata: ")
+            .nth(1)
+            .unwrap_or_else(|| {
+                panic!("no terminal done frame — the barrier moved into the stream:\n{body}")
+            })
+            .split("\n\n")
+            .next()
+            .unwrap();
+        let result: serde_json::Value =
+            serde_json::from_str(payload).expect("the done frame must be valid JSON");
+        assert_eq!(
+            result["report"]["orphans"],
+            serde_json::json!(["knowledge/notes/lonely.md"]),
+            "the lint ran but found nothing, so it did not really read the base: {result}"
+        );
+        assert!(
+            result["commit_sha"].is_null() && result["fixes_applied"] == 0,
+            "a read-only lint must still write nothing: {result}"
+        );
+    }
+
+    /// The barrier itself, unchanged: a public model may not read a private base
+    /// even to lint it, because a lint's scan reads every page.
+    ///
+    /// And the refusal is worth asserting, not just the status: it must name the
+    /// real reason and a remedy the caller can act on — the same remedy the row
+    /// above then follows to a 200. The text is `assert_reachable`'s own, never
+    /// a second spelling of it, so these substrings are checked here and owned
+    /// there.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_public_model_still_cannot_run_a_read_only_lint_on_a_private_base() {
+        let _env = lock_env_for("http://ollama.invalid:11434");
+        let (_d, root, app) = build_test_router_with_root();
+        private_base_with_an_orphan(&app, &root).await;
+
+        let (status, body) = post_json_raw(
+            &app,
+            "/bases/omop/lint",
+            read_only_lint(model("ollama", "qwen3.5:4b")),
+        )
+        .await;
+        assert_eq!(
+            status, 409,
+            "a public model read a private base through a read-only lint: {body}"
+        );
+        assert!(
+            body.contains("only a private model may read or write it"),
+            "the refusal did not name the real reason: {body}"
+        );
+        assert!(
+            body.contains("switch this chat to a private model"),
+            "the refusal did not name a remedy the caller can act on: {body}"
+        );
+        // A refusal that leaked the base's contents would defeat itself.
+        assert!(
+            !body.contains("SENTINEL-BODY") && !body.contains("lonely.md"),
+            "the refusal named what it refused: {body}"
+        );
+    }
 }
 
 /// Issue #56 DR-18 — `POST /knowledge/bases/{id}/tier`, the user's own
