@@ -126,18 +126,43 @@ typed diagnostics. Then `just generate-openapi && cd ui/desktop && npm run gener
 
 **Gate:** the generated client compiles and the SSE terminal-frame contract test still passes.
 
-## Stage 7 — Desktop UI
+## Stage 7 — Desktop UI: a comprehensive design pass
 
-- **Format chooser** at creation (`KBSelectorPalette.tsx:107`), two cards with the guidance text.
-- **Typed graph**: 28-type palette with theme-token structure and a hashed fallback for arbitrary
-  OKF types (DR-11), tapered edges, dashed-red negation, focus glow, collision-avoiding labels,
-  density LOD.
-- **Faceting**: filter by node type, predicate, source, status.
-- **Inspector**: typed frontmatter, edges in and out, provenance chain to `raw/`.
-- **Shadow-canvas fix**: `nodePointerAreaPaint` / `linkPointerAreaPaint`.
+This stage is a full redesign of the Knowledge section, not only the typed-graph work. The brief is
+to revise **every** design choice in the section and update the graph aesthetics so it reads as
+native to the app — matching the app as it actually is, not only as `design.md` describes it.
 
-**Gate:** verified in a real browser via a harness — jsdom has no canvas layout and cannot catch any
-of this. All three theme families, light and dark.
+The design itself is produced and reviewed before any code is written; the binding output is
+[`ui-spec.md`](ui-spec.md), reviewed by a three-reviewer committee (design-system fidelity,
+accessibility with real contrast arithmetic, and implementation feasibility).
+
+**Design pass inputs**
+- The binding rule set extracted from `design.md` (all 1659 lines), the theme-system architecture,
+  the three `themes/*.theme.mjs` sources, and the still-open entries in the Drift register.
+- A per-component drift audit of all ~30 files under `components/knowledge/`, verdict per visual
+  choice: on-system or drift.
+- A pattern-library extraction from the sections that are **not** Knowledge (shell, chat, Home,
+  Settings, Applications, artifact panel) — the conventions a new section must copy to feel native.
+- BioOKF Studio's information architecture: its inspector, legend, facet and lint surfaces.
+
+**Surfaces specified and rebuilt**
+- The section shell, header band and panes.
+- KB selector palette and trigger, now carrying the **format chooser** (OKF vs BioOKF with guidance
+  on when to pick which).
+- The ingest panel and all five of its states.
+- The graph panel: 28-type palette generated into `themes.generated.ts` beside the existing heat
+  ramp (never hand-written into `main.css`), a hashed fallback for arbitrary OKF types (DR-11),
+  tapered edges, dashed-red negation with struck-through labels, focus glow, priority-ranked
+  collision-avoiding labels, density LOD, and memoised label computation (DR-9).
+- The legend: 28 types grouped into their 7 families in the app's chip vocabulary.
+- The facet rail: node type, predicate, source, status.
+- The typed inspector: frontmatter, inbound and outbound edges, provenance chain to `raw/`.
+- The change-log drawer, the tier control, and every empty / loading / error state.
+- Credibility moves to the node ring so the type can take the fill (DR-9b).
+
+**Gate:** verified in a **real browser** via a harness on the `.artifact-harness` pattern — jsdom has
+no canvas layout, no WebGL, does not run Tailwind and does not evaluate `:has()`, so it can catch
+none of this. All three theme families, light and dark. Contrast measured, not asserted.
 
 ## Stage 8 — Verification in the real app
 
