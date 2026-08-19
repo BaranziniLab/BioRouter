@@ -540,3 +540,56 @@ three grammars and nothing in Stage 2 deduplicates them.
 a second, predicate-less edge beside it. In OKF mode, where there are no predicates, links to the
 same target collapse to one edge. Without this a BioOKF page renders every relationship twice: once
 typed, once grey.
+
+## 6. Decisions forced by the Stage 2/3 gate
+
+### DR-26 — An existing base has no path to OKF in this release, and that is deliberate
+
+The Stage 2/3 gate measured it: `CURRENT_SCHEMA_VERSION` is 3, but `AUTOMATIC_SCHEMA_CEILING` is 2,
+so the automatic ladder stops one generation below OKF — and `kb_migrate_format` was deliberately not
+built (DR-17, DR-22). A base stamped generation 2 therefore does not migrate, by **any** path.
+
+**Decision:** this is the intended behaviour for this release, not an oversight, and DR-6's phrase
+"until the user migrates it" overstated what ships. **New** bases are OKF or BioOKF; **existing**
+bases keep working unchanged on their own generation, with their own schema, their own graph and no
+loss of function. What they do not get is typed nodes and edges.
+
+**Why not just raise the ceiling:** rewriting every page of an existing base is exactly the operation
+DR-17 identified as a fifth privacy write choke point — one that bypasses all four that exist, and
+that in its eager form has no caller identity at all, so nothing would have called
+`tier::assert_reachable` before rewriting a private base. Shipping the format without shipping that
+hazard is the right trade for one day of work. Migration is the first item of the next pass, and it
+must be lazy, gated behind `assert_reachable` inside `lock_kb`, and never a model-facing tool.
+
+### DR-27 — The quantitative bundle is an open map, not a fixed field list
+
+Stage 2 emitted six flat statistical fields (`effect_metric`, `effect_size`, `ci_lower`, `ci_upper`,
+`p_value`, `sample_size`) because that is what its task named. The committee-reviewed UI spec §2.1
+instead specifies an open `quantitative` map, *"so a vocabulary addition needs no renderer change"*.
+
+**Decision:** the UI spec wins. BioOKF §7.3 lists around twenty quantitative slots —
+`adjusted_p_value`, `standard_error`, `sensitivity`, `specificity`, `auc`, `frequency`,
+`clinical_phase`, `response_direction`, `unit` and more — and six flat fields silently drop fourteen
+of them. Stage 2 argued the rest survive in `qualifiers`, but that conflates two different things:
+`qualifiers` is BioOKF's **context** map (`species_context`, `sex`, `age_group`, `timepoint`), and
+putting a p-value in it is a category error that a renderer cannot undo.
+
+**Also adopted from §2.1:** `GraphEdge.synthesized` (the faint dashed provenance treatment) and
+`GraphNode.degree` (hub sizing). Both are consumed by the renderer and neither can be derived
+cheaply in the client.
+
+### DR-28 — Typed fields stay `Option`; the UI spec is wrong here, not the code
+
+UI spec §2.1 draws `node_type`, `identifier` and `predicate` as **required** strings. Stage 2 made
+them `Option` and was right to: a legacy page genuinely has no `type`, and a required field would
+have to be filled with a fabricated value — which is worse than an absent one, because a consumer
+cannot tell an invented `Concept` from a declared one.
+
+**Decision:** they stay `Option`. The UI spec is amended, and the renderer treats absence as "untyped
+legacy page" — which is a real state that needs its own rendering, not an error.
+
+**Related:** no new field takes `#[schema(required)]`. The `Manifest` pattern pairs `serde(default)`
+with `schema(required)` because the server always serializes those fields, so the default describes
+only the read side. Here the defaults describe genuinely absent data, so `required` would be a false
+statement about the response and the generated TypeScript would be wrong at **runtime** rather than
+at compile time.
