@@ -6,6 +6,7 @@ import { Button } from '../../ui/button';
 import { GRAPH_PALETTE, typeFill } from '../../../styles/graphPalette';
 import type { GraphCredibilityKey, GraphMode } from '../../../styles/graphPalette';
 import { GraphShapeGlyph } from './GraphShapeGlyph';
+import { CredibilityRing } from './CredibilityRing';
 import { toggle, UNTYPED_KEY } from './graphFacets';
 import type { FacetState } from './graphFacets';
 import type { GraphModel } from './graphModel';
@@ -197,7 +198,7 @@ export function GraphLegend({ model, mode, facets, onChange }: Props) {
 
           {CREDIBILITY_KEY.map((entry) => (
             <span key={entry.key} className="flex flex-none items-center gap-2">
-              <CredibilityGlyph entry={entry.key} mode={mode} />
+              <CredibilityRing tier={entry.key} mode={mode} />
               <span className="whitespace-nowrap text-supporting text-text-muted">
                 {entry.label}
               </span>
@@ -273,52 +274,3 @@ function ExtraRows({
   );
 }
 
-/**
- * The credibility ring, drawn in the DOM exactly as the canvas draws it (§5.5).
- *
- * An arc count, a dashed ring or a solid one — never a filled disc. The hue
- * never sits behind text and nothing anywhere fills a surface with a ring hue,
- * so this is a 10px ring with a transparent centre.
- */
-function CredibilityGlyph({ entry, mode }: { entry: GraphCredibilityKey; mode: GraphMode }) {
-  const palette = GRAPH_PALETTE[mode];
-  const colour = palette.credibility[entry];
-  const treatment = palette.ringArcs[entry];
-  const r = 4;
-  const c = 2 * Math.PI * r;
-
-  if (treatment === 'solid' || treatment === 'dashed') {
-    return (
-      <svg aria-hidden="true" width={10} height={10} viewBox="0 0 10 10" style={{ flex: 'none' }}>
-        <circle
-          cx={5}
-          cy={5}
-          r={r}
-          fill="none"
-          stroke={colour}
-          strokeWidth={1.6}
-          strokeDasharray={treatment === 'dashed' ? `${c / 16} ${c / 16}` : undefined}
-        />
-      </svg>
-    );
-  }
-
-  const n = treatment;
-  const gap = 0.5;
-  const span = (Math.PI * 2) / n - gap;
-  const arcs = Array.from({ length: n }, (_, i) => {
-    const start = -Math.PI / 2 + ((Math.PI * 2) / n) * i;
-    const end = start + span;
-    const x0 = 5 + r * Math.cos(start);
-    const y0 = 5 + r * Math.sin(start);
-    const x1 = 5 + r * Math.cos(end);
-    const y1 = 5 + r * Math.sin(end);
-    return `M${x0.toFixed(2)},${y0.toFixed(2)}A${r},${r} 0 0 1 ${x1.toFixed(2)},${y1.toFixed(2)}`;
-  }).join(' ');
-
-  return (
-    <svg aria-hidden="true" width={10} height={10} viewBox="0 0 10 10" style={{ flex: 'none' }}>
-      <path d={arcs} fill="none" stroke={colour} strokeWidth={1.6} strokeLinecap="butt" />
-    </svg>
-  );
-}

@@ -1,7 +1,8 @@
 // ui/desktop/src/components/knowledge/graph/nodeMark.ts
 import type { GraphNode } from '../../../api/types.gen';
 import { hashedFill, typeFill, typeShape } from '../../../styles/graphPalette';
-import type { GraphMode, NodeShape } from '../../../styles/graphPalette';
+import type { GraphCredibilityKey, GraphMode, NodeShape } from '../../../styles/graphPalette';
+import { showsCredibility } from './graphModel';
 
 /**
  * A node's MARK — the fill and the silhouette — in exactly one place.
@@ -38,4 +39,28 @@ export function fillFor(n: GraphNode, mode: GraphMode): string {
  */
 export function shapeFor(n: GraphNode, mode: GraphMode): NodeShape {
   return n.node_type ? typeShape(n.node_type, mode) : 'circle';
+}
+
+/**
+ * The credibility key a node rings in, or `null` when it shows no orbit ring.
+ *
+ * ⚠ **Third reader of one node, same rule as the fill.** This lived privately in
+ * `ForceGraphCanvas.tsx` while the inspector showed the tier as a bare word and
+ * the legend drew its own ring — so "does this node ring, and in what?" had one
+ * implementation and two surfaces guessing around it. It sits beside `fillFor`
+ * for the same reason `fillFor` exists.
+ *
+ * ⚠ **Retraction OVERRIDES the tier.** It is a flag rather than a rung, and it
+ * is the more important fact about a source: a retracted peer-reviewed paper
+ * rings `retracted`, not `peer_reviewed`.
+ *
+ * ⚠ **A tier alone does not earn a ring** (§5.5). The gate is `showsCredibility`
+ * — written in `node_type`, over the three Provenance-family source types — so
+ * the ring and §4.6's Source facet agree by construction. A non-source page that
+ * somehow carries a tier gets `null` here, and the inspector then shows the
+ * tier's WORD with no ring, which is exactly what the canvas shows: nothing.
+ */
+export function credibilityKey(n: GraphNode): GraphCredibilityKey | null {
+  if (n.retracted) return 'retracted';
+  return showsCredibility(n) ? (n.credibility_tier as GraphCredibilityKey) : null;
 }

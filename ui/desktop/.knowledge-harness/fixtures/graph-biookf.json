@@ -426,26 +426,11 @@
    "knowledge_level": "statement",
    "agent_type": "manual_agent",
    "quantitative": {
-    "effect_size": {
-     "kind": "number",
-     "value": 0.53
-    },
-    "p_value": {
-     "kind": "text",
-     "value": "<0.001"
-    },
-    "ci_lower": {
-     "kind": "number",
-     "value": 0.4
-    },
-    "ci_upper": {
-     "kind": "number",
-     "value": 0.7
-    },
-    "sample_size": {
-     "kind": "number",
-     "value": 732
-    }
+    "effect_size": 0.53,
+    "p_value": "<0.001",
+    "ci_lower": 0.4,
+    "ci_upper": 0.7,
+    "sample_size": 732
    },
    "qualifiers": {
     "direction": "decreases",
@@ -515,14 +500,8 @@
    "knowledge_level": "statement",
    "agent_type": "manual_agent",
    "quantitative": {
-    "effect_size": {
-     "kind": "number",
-     "value": 32.4
-    },
-    "effect_metric": {
-     "kind": "text",
-     "value": "hazard ratio"
-    }
+    "effect_size": 32.4,
+    "effect_metric": "hazard ratio"
    }
   },
   {
@@ -542,10 +521,7 @@
    "knowledge_level": "statement",
    "agent_type": "manual_agent",
    "quantitative": {
-    "frequency": {
-     "kind": "number",
-     "value": 0.28
-    }
+    "frequency": 0.28
    }
   },
   {
