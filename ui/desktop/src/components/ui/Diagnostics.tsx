@@ -3,6 +3,7 @@ import { AlertTriangle, Download, Github, Loader2 } from '../icons/app-icons';
 import { Button } from './button';
 import { toastError, toastSuccess } from '../../toasts';
 import { diagnostics, systemInfo } from '../../api';
+import { userActionHeaders } from '../../utils/userAction';
 import {
   Dialog,
   DialogContent,
@@ -31,6 +32,7 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
 
     try {
       const response = await diagnostics({
+        headers: await userActionHeaders(),
         path: { session_id: sessionId },
         throwOnError: true,
       });
@@ -55,7 +57,12 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
     } catch (error) {
       toastError({
         title: 'Diagnostics error',
-        msg: error instanceof Error ? error.message : 'Failed to generate diagnostics.',
+        msg:
+          error instanceof Error
+            ? error.message
+            : typeof error === 'string' && error.trim()
+              ? error
+              : 'Failed to generate diagnostics.',
       });
     } finally {
       setIsDownloading(false);
