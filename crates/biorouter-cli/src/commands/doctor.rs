@@ -106,6 +106,24 @@ pub async fn handle_doctor(format: &str, check_update: bool) -> Result<()> {
                 None => println!("      {}", style(&d.doc_url).dim()),
             }
         }
+        // An install command the user has to debug alone is a dead end. This is
+        // the terminal equivalent of the desktop's "Debug with Biorouter" button:
+        // it opens a session already briefed on the failure and this machine.
+        println!();
+        println!(
+            "    {} if one of these will not install, run {} and Biorouter will diagnose it",
+            style("·").dim(),
+            style(format!(
+                "biorouter doctor --fix {}",
+                missing_required
+                    .first()
+                    .or_else(|| missing_optional.first())
+                    .map(|d| d.name.as_str())
+                    .unwrap_or("<name>")
+            ))
+            .fg(ACCENT)
+            .bold()
+        );
     } else {
         println!();
         println!("  {} all prerequisites present", style("✓").green());
