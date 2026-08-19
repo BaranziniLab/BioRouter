@@ -254,7 +254,7 @@ async fn prepare_for_reset(
     {
         return Err(api_error(
             StatusCode::CONFLICT,
-            "Finish or stop active conversations and scheduled runs before resetting",
+            "Finish or stop active chats and scheduled runs before resetting",
         ));
     }
     if categories.iter().any(|category| {

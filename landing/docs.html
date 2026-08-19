@@ -949,22 +949,22 @@ biorouter run --workflow daily-report.yaml --explain</code></pre>
   <tbody>
     <tr><td><code>/help</code>, <code>/?</code></td><td>Show the in-session help with every slash command.</td></tr>
     <tr><td><code>/clear</code></td><td>Clear the current chat history.</td></tr>
-    <tr><td><code>/compact</code></td><td>Compact and summarize the conversation to reclaim context while keeping key information. (Replaces the deprecated <code>/summarize</code>.)</td></tr>
-    <tr><td><code>/diverge [name]</code></td><td>Branch this conversation into a new session, keeping the full history.</td></tr>
-    <tr><td><code>/rename &lt;name&gt;</code></td><td>Rename the current session.</td></tr>
+    <tr><td><code>/compact</code></td><td>Compact and summarize the chat to reclaim context while keeping key information. (Replaces the deprecated <code>/summarize</code>.)</td></tr>
+    <tr><td><code>/diverge [name]</code></td><td>Branch this chat into a new session, keeping the full history.</td></tr>
+    <tr><td><code>/rename &lt;name&gt;</code></td><td>Rename the current chat.</td></tr>
     <tr><td><code>/goal &lt;condition&gt;</code></td><td>Keep working until the condition is met. <code>/goal clear</code> stops it.</td></tr>
     <tr><td><code>/loop &lt;interval&gt; &lt;prompt&gt;</code></td><td>Run a prompt on an interval, for example <code>/loop 5m ...</code>. <code>/loop stop &lt;id&gt;</code> stops it.</td></tr>
     <tr><td><code>/schedule &lt;spec&gt; &lt;prompt&gt;</code></td><td>Schedule a recurring prompt using <code>5m</code>, <code>@daily</code>, or a quoted cron expression.</td></tr>
     <tr><td><code>/mode &lt;name&gt;</code></td><td>Set the permission mode: <code>auto</code>, <code>approve</code>, <code>chat</code>, or <code>smart_approve</code>.</td></tr>
-    <tr><td><code>/plan [message]</code></td><td>Enter plan mode: build a plan from the current conversation and offer to act on it.</td></tr>
+    <tr><td><code>/plan [message]</code></td><td>Enter plan mode: build a plan from the current chat and offer to act on it.</td></tr>
     <tr><td><code>/endplan</code></td><td>Exit plan mode and return to normal mode.</td></tr>
-    <tr><td><code>/workflow [file.yaml]</code></td><td>Save the current conversation as a workflow. Defaults to <code>./workflow.yaml</code>; a supplied path must end in <code>.yaml</code>.</td></tr>
+    <tr><td><code>/workflow [file.yaml]</code></td><td>Save the current chat as a workflow. Defaults to <code>./workflow.yaml</code>; a supplied path must end in <code>.yaml</code>.</td></tr>
     <tr><td><code>/extension &lt;cmd&gt;</code></td><td>Add a stdio extension during the session. Format: <code>ENV1=val1 command args...</code>.</td></tr>
     <tr><td><code>/builtin &lt;names&gt;</code></td><td>Add built-in extensions by name (comma-separated).</td></tr>
     <tr><td><code>/t</code></td><td>Toggle the markdown theme through light, dark, ansi.</td></tr>
     <tr><td><code>/t &lt;name&gt;</code></td><td>Set the theme directly to <code>light</code>, <code>dark</code>, or <code>ansi</code>.</td></tr>
     <tr><td><code>/r</code></td><td>Toggle full, untruncated tool output.</td></tr>
-    <tr><td><code>/exit</code>, <code>/quit</code></td><td>Exit the session.</td></tr>
+    <tr><td><code>/exit</code>, <code>/quit</code></td><td>Exit the chat.</td></tr>
   </tbody>
 </table></div>
 
@@ -972,7 +972,7 @@ biorouter run --workflow daily-report.yaml --explain</code></pre>
 <div class="doc-table-scroll"><table class="doc-table">
   <thead><tr><th>Key</th><th>Action</th></tr></thead>
   <tbody>
-    <tr><td><code>Ctrl+C</code></td><td>Interrupt the current request. The conversation resets to before the interrupted turn.</td></tr>
+    <tr><td><code>Ctrl+C</code></td><td>Interrupt the current request. The chat resets to before the interrupted turn.</td></tr>
     <tr><td><code>Ctrl+J</code></td><td>Insert a newline without submitting.</td></tr>
     <tr><td><code>Up</code> / <code>Down</code></td><td>Navigate command history.</td></tr>
     <tr><td><code>Ctrl+R</code></td><td>Reverse-search command history. Type a term, press <code>Ctrl+R</code> to cycle backward and <code>Ctrl+S</code> to cycle forward, then <code>Enter</code> to run or <code>Esc</code> to cancel.</td></tr>

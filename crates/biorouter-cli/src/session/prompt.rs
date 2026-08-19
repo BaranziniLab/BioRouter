@@ -8,7 +8,7 @@ font, so keep responses short and skip decorative formatting; a one-line answer 
 The following slash commands are available
 - you can let the user know about them if they need help:
 
-- /exit or /quit - Exit the session
+- /exit or /quit - Exit the chat
 - /t - Toggle between Light/Dark/Ansi themes
 - /? or /help - Display help message
 

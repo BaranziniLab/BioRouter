@@ -799,12 +799,12 @@ Once you're in an interactive session (via `biorouter session` or `biorouter run
 - **`/builtin <names>`** - Add builtin extensions by name (comma-separated)
 - **`/clear`** - Clear the current chat history
 - **`/endplan`** - Exit plan mode and return to 'normal' biorouter mode
-- **`/exit` or `/quit`** - Exit the session
+- **`/exit` or `/quit`** - Exit the chat
 - **`/extension <command>`** - Add a stdio extension (format: ENV1=val1 command args...)
 - **`/mode <name>`** - Set the biorouter mode to use ('auto', 'approve', 'chat', 'smart_approve')
 - **`/plan <message_text>`** - Enter 'plan' mode with optional message. Create a plan based on the current messages and ask user if they want to act on it
-- **`/workflow [filepath]`** - Generate a workflow from the current conversation and save it to the specified filepath (must end with .yaml). If no filepath is provided, it will be saved to ./workflow.yaml
-- **`/compact`** - Compact and summarize the current conversation to reduce context length while preserving key information
+- **`/workflow [filepath]`** - Generate a workflow from the current chat and save it to the specified filepath (must end with .yaml). If no filepath is provided, it will be saved to ./workflow.yaml
+- **`/compact`** - Compact and summarize the current chat to reduce context length while preserving key information
 - **`/t`** - Toggle between `light`, `dark`, and `ansi` themes. [More info](#themes).
 - **`/t <name>`** - Set theme directly (light, dark, ansi)
 
@@ -820,7 +820,7 @@ Once you're in an interactive session (via `biorouter session` or `biorouter run
 # Add a builtin extension during the session
 /builtin developer
 
-# Clear the current conversation history
+# Clear the current chat history
 /clear
 ```
 
