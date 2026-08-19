@@ -295,7 +295,10 @@ export class GitHubUpdater {
       );
 
       // A truncated transfer would otherwise land in Downloads looking complete.
-      if (totalSize > 0 && downloadedSize !== totalSize) {
+      // Strictly `<`: a stream that decodes to MORE than content-length (a proxy
+      // that re-encodes, a mis-reported header) is not a truncation, and failing
+      // it would break a download that actually succeeded.
+      if (totalSize > 0 && downloadedSize < totalSize) {
         await fs.rm(partPath, { force: true });
         throw new Error(
           `Download truncated: got ${downloadedSize} of ${totalSize} bytes. Check your connection and try again.`
