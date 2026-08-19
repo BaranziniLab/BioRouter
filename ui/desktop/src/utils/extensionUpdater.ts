@@ -13,13 +13,12 @@ import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import { mkdirSync } from 'fs';
-import { spawnSync } from 'child_process';
 import { BrowserWindow } from 'electron';
 import { compareVersions } from 'compare-versions';
 import AdmZip from 'adm-zip';
 import { safeExtractZip } from './safeZip';
 import log from './logger';
-import { SPAWN_ENV } from './dependencyChecker';
+import { runProbe } from './dependencyChecker';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -242,20 +241,14 @@ async function applyUpdate(
     const zip = new AdmZip(tmpBrxt);
     safeExtractZip(zip, info.installDir);
 
-    // Re-run uv sync to apply any dependency changes
-    const uvResult = spawnSync('uv', ['sync'], {
-      cwd: info.installDir,
-      encoding: 'utf8',
-      timeout: 120_000,
-      env: SPAWN_ENV,
-    });
+    // Re-run uv sync to apply any dependency changes.
+    // Async, not spawnSync: this runs on a background timer 8 s after launch,
+    // and a synchronous child froze the whole app for up to two minutes (#88).
+    const uvResult = await runProbe('uv', ['sync'], 120_000, { cwd: info.installDir });
 
-    if (uvResult.status !== 0) {
+    if (!uvResult.ok) {
       const detail =
-        uvResult.error?.message ||
-        uvResult.stderr ||
-        uvResult.stdout ||
-        `exited with status ${uvResult.status}`;
+        uvResult.stderr || uvResult.stdout || uvResult.error || `exited with status ${uvResult.code}`;
       throw new Error(`uv sync failed: ${detail}`);
     }
 
@@ -326,10 +319,13 @@ export async function runExtensionUpdateCheck(): Promise<void> {
   log.info(`[ExtensionUpdater] Done. ${updatedCount} extension(s) updated.`);
 }
 
-/** Called from main.ts after app window is ready. */
-export function scheduleExtensionUpdateCheck(): void {
-  // Run after 8 seconds — later than dependency check and auto-updater
+/**
+ * Called from main.ts after the app window is ready. The delay is supplied by the
+ * caller so every startup task's timing lives in one place — see
+ * `utils/startupSchedule.ts`.
+ */
+export function scheduleExtensionUpdateCheck(delayMs = 15_000): void {
   setTimeout(() => {
     runExtensionUpdateCheck().catch((err) => log.error('[ExtensionUpdater] Unhandled error:', err));
-  }, 8000);
+  }, delayMs);
 }

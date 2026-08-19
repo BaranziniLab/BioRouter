@@ -11,7 +11,8 @@
  */
 
 import { app, ipcMain, BrowserWindow } from 'electron';
-import { spawnSync, spawn } from 'child_process';
+import { execFile, spawn } from 'child_process';
+import { promisify } from 'util';
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -46,6 +47,17 @@ export interface DependencyEvent {
   installed?: boolean;
   version?: string | null;
 }
+
+// ─── Timing budgets ───────────────────────────────────────────────────────────
+
+// Every probe below runs off the main thread (see `runProbe`), so these bound how
+// long a *stale* answer takes to arrive, not how long the UI is frozen.
+export const PROBE_TIMEOUT_MS = 8_000;
+export const DOCTOR_TIMEOUT_MS = 15_000;
+// A dependency set does not change while the app is open often enough to justify
+// re-spawning `biorouter doctor` on every caller. Startup, the modal mount and the
+// post-install re-check used to each pay the full probe cost.
+export const DEPENDENCY_CACHE_TTL_MS = 60_000;
 
 // ─── PATH augmentation ────────────────────────────────────────────────────────
 
@@ -145,20 +157,78 @@ function detectLinuxDistro(): LinuxDistro {
 
 // ─── Version probing ──────────────────────────────────────────────────────────
 
-function probeVersion(cmd: string, args: string[]): string | null {
+const execFileAsync = promisify(execFile);
+
+/**
+ * Run a probe WITHOUT blocking the Electron main thread.
+ *
+ * This used to be `spawnSync`. It must never go back: the main process runs the
+ * window compositor, IPC and input handling on this one thread, so a synchronous
+ * child process freezes the whole app for its full duration — which is exactly
+ * the startup freeze in #88 (`biorouter doctor` alone measured 3.45 s warm, and
+ * the timeout budget was 15 s). `execFile` returns a promise and keeps the event
+ * loop turning.
+ */
+export interface ProbeResult {
+  stdout: string;
+  stderr: string;
+  ok: boolean;
+  code: number | null;
+  timedOut: boolean;
+  error: string | null;
+}
+
+export async function runProbe(
+  cmd: string,
+  args: string[],
+  timeoutMs = PROBE_TIMEOUT_MS,
+  opts?: { cwd?: string }
+): Promise<ProbeResult> {
   try {
-    const result = spawnSync(cmd, args, {
+    const { stdout, stderr } = await execFileAsync(cmd, args, {
       encoding: 'utf8',
-      timeout: 8000,
+      timeout: timeoutMs,
       env: SPAWN_ENV,
       // On Windows, use shell so we pick up .cmd/.bat wrappers (npm.cmd, etc.)
       shell: process.platform === 'win32',
+      maxBuffer: 8 * 1024 * 1024,
+      ...(opts?.cwd ? { cwd: opts.cwd } : {}),
     });
-    if (result.status === 0 && result.stdout) {
-      return result.stdout.trim().split('\n')[0].trim();
-    }
-  } catch {
-    /* command missing or failed to spawn — report the version as unknown */
+    return {
+      stdout: stdout ?? '',
+      stderr: stderr ?? '',
+      ok: true,
+      code: 0,
+      timedOut: false,
+      error: null,
+    };
+  } catch (err) {
+    const e = err as {
+      stdout?: string;
+      stderr?: string;
+      code?: number | string;
+      killed?: boolean;
+      signal?: string;
+      message?: string;
+    };
+    // `execFile` reports a timeout by killing the child, so the signal is the
+    // only reliable marker — the exit code is null in that case.
+    const timedOut = !!e?.killed && (e?.signal === 'SIGTERM' || e?.code === undefined);
+    return {
+      stdout: e?.stdout ?? '',
+      stderr: e?.stderr ?? '',
+      ok: false,
+      code: typeof e?.code === 'number' ? e.code : null,
+      timedOut,
+      error: e?.message ?? null,
+    };
+  }
+}
+
+async function probeVersion(cmd: string, args: string[]): Promise<string | null> {
+  const { stdout, ok } = await runProbe(cmd, args);
+  if (ok && stdout.trim()) {
+    return stdout.trim().split('\n')[0].trim();
   }
   return null;
 }
@@ -358,19 +428,51 @@ function getLinuxDistro(): LinuxDistro {
  * probes below if the CLI isn't available (e.g. dev build) or errors, so the
  * desktop never loses its dependency check.
  */
-export function checkAllDependencies(): DependencyInfo[] {
-  return checkViaBundledCli() ?? checkNativeDependencies();
+let _cache: { at: number; deps: DependencyInfo[] } | null = null;
+let _inFlight: Promise<DependencyInfo[]> | null = null;
+
+/** Drop the memoised result so the next check re-probes (after an install). */
+export function invalidateDependencyCache(): void {
+  _cache = null;
 }
 
-function checkViaBundledCli(): DependencyInfo[] | null {
+/**
+ * Async by construction — there is deliberately no synchronous variant.
+ *
+ * Concurrent callers share one in-flight probe rather than each spawning their
+ * own `biorouter doctor`; a fresh result is reused for `DEPENDENCY_CACHE_TTL_MS`.
+ */
+export function checkAllDependencies(opts?: { force?: boolean }): Promise<DependencyInfo[]> {
+  if (opts?.force) {
+    _cache = null;
+    _inFlight = null;
+  } else {
+    if (_cache && Date.now() - _cache.at < DEPENDENCY_CACHE_TTL_MS) {
+      return Promise.resolve(_cache.deps);
+    }
+    if (_inFlight) return _inFlight;
+  }
+
+  _inFlight = (async () => {
+    const deps = (await checkViaBundledCli()) ?? (await checkNativeDependencies());
+    _cache = { at: Date.now(), deps };
+    return deps;
+  })().finally(() => {
+    _inFlight = null;
+  });
+
+  return _inFlight;
+}
+
+async function checkViaBundledCli(): Promise<DependencyInfo[] | null> {
   try {
     const cli = getBiorouterCliBinaryPath(app);
-    const res = spawnSync(cli, ['doctor', '--format', 'json', '--no-update'], {
-      encoding: 'utf8',
-      timeout: 15000,
-      env: SPAWN_ENV,
-    });
-    if (res.status !== 0 || !res.stdout) return null;
+    const res = await runProbe(
+      cli,
+      ['doctor', '--format', 'json', '--no-update'],
+      DOCTOR_TIMEOUT_MS
+    );
+    if (!res.ok || !res.stdout) return null;
     const parsed = JSON.parse(res.stdout) as {
       dependencies?: Array<{
         name: string;
@@ -416,7 +518,7 @@ function bundledLlamaServerPath(): string | null {
   }
 }
 
-function checkNativeDependencies(): DependencyInfo[] {
+async function checkNativeDependencies(): Promise<DependencyInfo[]> {
   const distro = getLinuxDistro();
 
   const checks: Array<{
@@ -472,40 +574,44 @@ function checkNativeDependencies(): DependencyInfo[] {
 
   // On Windows, uv manages its own Python runtime via uvx — system Python is not
   // required for extensions. If uv is present, mark Python as satisfied.
-  const uvVersion = process.platform === 'win32' ? probeVersion('uv', ['--version']) : null;
+  const uvVersion = process.platform === 'win32' ? await probeVersion('uv', ['--version']) : null;
 
-  return checks.map(({ name, displayName, probes, required }) => {
-    let version: string | null = null;
+  // Probed concurrently: these are independent subprocesses, and running them in
+  // sequence made the fallback path cost the SUM of every probe's timeout.
+  return Promise.all(
+    checks.map(async ({ name, displayName, probes, required }) => {
+      let version: string | null = null;
 
-    if (name === 'python' && uvVersion !== null) {
-      // uv bundles Python internally; no separate system Python needed on Windows
-      version = `managed by uv ${uvVersion}`;
-    } else {
-      for (const [cmd, args] of probes) {
-        version = probeVersion(cmd, args);
-        if (version) break;
+      if (name === 'python' && uvVersion !== null) {
+        // uv bundles Python internally; no separate system Python needed on Windows
+        version = `managed by uv ${uvVersion}`;
+      } else {
+        for (const [cmd, args] of probes) {
+          version = await probeVersion(cmd, args);
+          if (version) break;
+        }
       }
-    }
 
-    // llama-server usually isn't on PATH — the desktop app bundles it next to
-    // the CLI. Fall back to probing the bundled copy (matches `biorouter doctor`).
-    if (version === null && name === 'llama-server') {
-      const bundled = bundledLlamaServerPath();
-      if (bundled) version = probeVersion(bundled, ['--version']);
-    }
+      // llama-server usually isn't on PATH — the desktop app bundles it next to
+      // the CLI. Fall back to probing the bundled copy (matches `biorouter doctor`).
+      if (version === null && name === 'llama-server') {
+        const bundled = bundledLlamaServerPath();
+        if (bundled) version = await probeVersion(bundled, ['--version']);
+      }
 
-    const { cmd, requiresSudo, downloadUrl } = buildInstallInfo(name, distro);
-    return {
-      name,
-      displayName,
-      version,
-      installed: version !== null,
-      installCmd: cmd,
-      requiresSudo,
-      downloadUrl,
-      required: required ?? true,
-    };
-  });
+      const { cmd, requiresSudo, downloadUrl } = buildInstallInfo(name, distro);
+      return {
+        name,
+        displayName,
+        version,
+        installed: version !== null,
+        installCmd: cmd,
+        requiresSudo,
+        downloadUrl,
+        required: required ?? true,
+      };
+    })
+  );
 }
 
 // ─── Install runner ───────────────────────────────────────────────────────────
@@ -543,18 +649,34 @@ function runInstallCommand(dep: string, cmd: string, send: SendFn): void {
   });
 
   child.on('close', (code) => {
-    if (code === 0) {
-      // Re-probe to get the version
-      const info = checkAllDependencies().find((d) => d.name === dep);
-      send({
-        type: 'install-done',
-        dep,
-        installed: info?.installed ?? false,
-        version: info?.version ?? null,
-      });
-    } else {
+    void (async () => {
+      if (code === 0) {
+        // Re-probe to get the version. `force` because the install just changed
+        // the very state the cache is holding.
+        const info = (await checkAllDependencies({ force: true })).find((d) => d.name === dep);
+        if (info?.installed) {
+          send({
+            type: 'install-done',
+            dep,
+            installed: true,
+            version: info.version ?? null,
+          });
+          return;
+        }
+        // Exit code 0 but the tool still isn't detectable. That is a failure the
+        // user can act on, so report it as one and carry the context a debugging
+        // session would need.
+        send({
+          type: 'install-error',
+          dep,
+          error:
+            'The installer finished successfully but the tool is still not detectable on PATH.',
+          installed: false,
+        });
+        return;
+      }
       send({ type: 'install-error', dep, error: `Process exited with code ${code}` });
-    }
+    })();
   });
 
   child.on('error', (err) => {
@@ -570,9 +692,9 @@ export function registerDependencyIpcHandlers(): void {
   if (_registered) return;
   _registered = true;
 
-  ipcMain.handle('dep:check', async () => {
+  ipcMain.handle('dep:check', async (_event, opts?: { force?: boolean }) => {
     try {
-      return checkAllDependencies();
+      return await checkAllDependencies({ force: opts?.force });
     } catch (err) {
       log.error('[DependencyChecker] check error:', err);
       return [];
@@ -580,7 +702,7 @@ export function registerDependencyIpcHandlers(): void {
   });
 
   ipcMain.handle('dep:install', async (_event, dep: string) => {
-    const info = checkAllDependencies().find((d) => d.name === dep);
+    const info = (await checkAllDependencies()).find((d) => d.name === dep);
     if (!info) return { error: `Unknown dependency: ${dep}` };
 
     const win = BrowserWindow.fromWebContents(_event.sender);
@@ -593,44 +715,73 @@ export function registerDependencyIpcHandlers(): void {
     runInstallCommand(dep, info.installCmd, send);
     return { started: true };
   });
+
+  // Environment snapshot for a debugging session: what the app can actually see,
+  // which is routinely different from what the user's login shell sees.
+  ipcMain.handle('dep:environment', async () => {
+    const [shellPath, unameOut] = await Promise.all([
+      runProbe(process.platform === 'win32' ? 'where' : 'which', ['uv']).catch(() => null),
+      process.platform === 'win32'
+        ? Promise.resolve(null)
+        : runProbe('uname', ['-a']).catch(() => null),
+    ]);
+    return {
+      platform: process.platform,
+      arch: process.arch,
+      appVersion: app.getVersion(),
+      osRelease: (unameOut?.stdout ?? '').trim() || os.release(),
+      augmentedPath: AUGMENTED_PATH,
+      inheritedPath: process.env.PATH ?? '',
+      homedir: os.homedir(),
+      uvResolvesTo: (shellPath?.stdout ?? '').trim() || null,
+    };
+  });
 }
 
 // ─── Startup orchestrator ─────────────────────────────────────────────────────
 
-export function setupDependencyChecker(): void {
-  // Delay so the window is ready to receive IPC
-  setTimeout(() => {
-    try {
-      const deps = checkAllDependencies();
-      const missing = deps.filter((d) => !d.installed);
-      if (missing.length === 0) {
-        log.info('[DependencyChecker] All dependencies present.');
-        return;
-      }
-      log.warn(
-        '[DependencyChecker] Missing deps:',
-        missing.map((d) => d.name)
-      );
+function broadcastResults(deps: DependencyInfo[]): void {
+  const payload: DependencyEvent = { type: 'check-results', deps };
+  BrowserWindow.getAllWindows().forEach((win) => {
+    if (!win.isDestroyed()) win.webContents.send('dependency-event', payload);
+  });
+}
 
-      // Notify all open windows
-      const payload: DependencyEvent = { type: 'check-results', deps };
-      BrowserWindow.getAllWindows().forEach((win) => {
-        if (!win.isDestroyed()) win.webContents.send('dependency-event', payload);
-      });
-    } catch (err) {
-      log.error('[DependencyChecker] startup check error:', err);
-    }
-  }, 4000);
+/**
+ * Startup dependency check.
+ *
+ * `delayMs` exists so the caller can stagger this against the other startup
+ * timers; the probe itself no longer blocks the main thread, so the delay is
+ * only about not competing with the renderer's first paint.
+ */
+export function setupDependencyChecker(delayMs = 4000): void {
+  setTimeout(() => {
+    void (async () => {
+      try {
+        const deps = await checkAllDependencies();
+        const missing = deps.filter((d) => !d.installed);
+        if (missing.length === 0) {
+          log.info('[DependencyChecker] All dependencies present.');
+          return;
+        }
+        log.warn(
+          '[DependencyChecker] Missing deps:',
+          missing.map((d) => d.name)
+        );
+        broadcastResults(deps);
+      } catch (err) {
+        log.error('[DependencyChecker] startup check error:', err);
+      }
+    })();
+  }, delayMs);
 }
 
 export function triggerDependencyCheck(): void {
-  try {
-    const deps = checkAllDependencies();
-    const payload: DependencyEvent = { type: 'check-results', deps };
-    BrowserWindow.getAllWindows().forEach((win) => {
-      if (!win.isDestroyed()) win.webContents.send('dependency-event', payload);
-    });
-  } catch (err) {
-    log.error('[DependencyChecker] manual check error:', err);
-  }
+  void (async () => {
+    try {
+      broadcastResults(await checkAllDependencies({ force: true }));
+    } catch (err) {
+      log.error('[DependencyChecker] manual check error:', err);
+    }
+  })();
 }
