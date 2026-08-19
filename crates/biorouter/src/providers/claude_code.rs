@@ -66,7 +66,9 @@ use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
-use super::coding_agent::{self, bridge, discovery, env as agent_env, transcript, CodingAgentKind};
+use super::coding_agent::{
+    self, bridge, discovery, effort, env as agent_env, transcript, CodingAgentKind,
+};
 use super::errors::ProviderError;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
@@ -214,23 +216,15 @@ impl ClaudeCodeProvider {
             args.push(model.to_string());
         }
 
-        // BR-63: the turn's reasoning effort. `--effort` takes
-        // `low|medium|high|xhigh|max` (verified against `claude` 2.1.235), and
-        // `provider_effort()` yields the same low/high pair the OpenAI-family
-        // formats send, so `/effort` means one thing across providers.
+        // BR-63: the turn's reasoning effort, on the CLI's own ladder rather than
+        // the OpenAI-family low/high pair — `coding_agent::effort` owns the table
+        // and the reasoning.
         //
-        // ⚠ `Normal` and `None` must emit **no flag at all**, which is why this
-        // reads the `Option` rather than matching all three arms: `Normal` is
-        // documented as a strict no-op, so passing `--effort medium` would
-        // override whatever the model itself defaults to — for every user who
-        // never touched `/effort`, since `Normal` is the default.
-        if let Some(effort) = model_config
-            .reasoning_effort
-            .and_then(|effort| effort.provider_effort())
-        {
-            args.push("--effort".into());
-            args.push(effort.to_string());
-        }
+        // Always emitted, including for the default: `Normal` (which arrives as
+        // `None`) maps to `high`, so a turn from a user who never touched
+        // `/effort` asks for more reasoning than the model would have chosen.
+        args.push("--effort".into());
+        args.push(effort::claude_effort(model_config.reasoning_effort).to_string());
 
         args
     }
@@ -760,19 +754,22 @@ mod tests {
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
     }
 
-    /// `/effort quick|deep` has to reach the child, or the setting is a silent
-    /// no-op on this provider. The CLI's own vocabulary is
-    /// `low|medium|high|xhigh|max` (`claude --help`, 2.1.235), and the two ends
-    /// Biorouter pins are the same `low`/`high` the OpenAI-family formats send.
+    /// The ladder, as it reaches the CLI. `Deep` climbing to `max` is the point:
+    /// the Claude CLI's scale runs `low, medium, high, xhigh, max` (verified
+    /// against 2.1.235), so stopping at `high` — where the OpenAI-family formats
+    /// stop, because that is the top of *their* scale — would leave the two
+    /// strongest rungs unreachable and make "deep" mean less here than it says.
     #[test]
-    fn quick_and_deep_pin_the_cli_effort_level() {
+    fn the_effort_ladder_reaches_the_cli() {
         for (effort, expected) in [
-            (ReasoningEffort::Quick, "low"),
-            (ReasoningEffort::Deep, "high"),
+            (Some(ReasoningEffort::Quick), "low"),
+            (Some(ReasoningEffort::Normal), "high"),
+            (Some(ReasoningEffort::Deep), "max"),
+            (None, "high"),
         ] {
             let m = ModelConfig::new("claude-sonnet-4-6")
                 .unwrap()
-                .with_reasoning_effort(Some(effort));
+                .with_reasoning_effort(effort);
             let args = provider().base_args(&m, "SYS", "json", None);
             let i = args
                 .iter()
@@ -786,28 +783,53 @@ mod tests {
         }
     }
 
-    /// The assertion that matters: `Normal` is documented as a strict no-op, and
-    /// it is the default every user who never typed `/effort` is on. Emitting
-    /// `--effort medium` for it would quietly override whatever depth the model
-    /// itself defaults to on every single call.
+    /// An effort level is sent on **every** turn, including the default one — a
+    /// deliberate departure from every other provider, where `Normal` is silence.
+    ///
+    /// Two reasons to assert it rather than leave it implicit. It costs the user
+    /// thinking tokens on their own subscription on every turn, so it must not be
+    /// able to change by accident. And `Normal` never actually reaches a provider:
+    /// `Agent::effort_stamped_provider` returns early when the effort is default,
+    /// so the config is not re-stamped and `None` arrives instead — a mapping that
+    /// handled only `Some(Normal)` would be dead code and the middle rung would
+    /// silently never apply.
     #[test]
-    fn the_default_effort_sends_no_flag_at_all() {
+    fn the_default_effort_is_high_rather_than_silence() {
         for effort in [None, Some(ReasoningEffort::Normal)] {
             let m = ModelConfig::new("claude-sonnet-4-6")
                 .unwrap()
                 .with_reasoning_effort(effort);
             let args = provider().base_args(&m, "SYS", "json", None);
+            let i = args
+                .iter()
+                .position(|a| a == "--effort")
+                .unwrap_or_else(|| panic!("{effort:?} must still send an effort"));
+            assert_eq!(args[i + 1], "high", "{effort:?} is Biorouter's normal rung");
+        }
+    }
+
+    /// `ultra` is not on the Claude CLI's scale at all: it warns and falls back to
+    /// the default, which is a silent DOWNGRADE rather than an error. So every
+    /// rung this provider can emit must be one the CLI actually knows.
+    #[test]
+    fn every_rung_we_emit_is_one_the_cli_accepts() {
+        const ACCEPTED: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+        for effort in [
+            None,
+            Some(ReasoningEffort::Quick),
+            Some(ReasoningEffort::Normal),
+            Some(ReasoningEffort::Deep),
+        ] {
+            let m = ModelConfig::new("claude-sonnet-4-6")
+                .unwrap()
+                .with_reasoning_effort(effort);
+            let args = provider().base_args(&m, "SYS", "json", None);
+            let i = args.iter().position(|a| a == "--effort").unwrap();
             assert!(
-                !args.iter().any(|a| a == "--effort"),
-                "{effort:?} must leave the model's own default in place, but sent: {args:?}"
+                ACCEPTED.contains(&args[i + 1].as_str()),
+                "{effort:?} emitted `{}`, which the CLI would warn about and ignore",
+                args[i + 1]
             );
-            // …and no level leaked in as a bare positional either.
-            for level in ["low", "medium", "high", "xhigh", "max"] {
-                assert!(
-                    !args.iter().any(|a| a == level),
-                    "{effort:?} must not put `{level}` in argv"
-                );
-            }
         }
     }
 

@@ -182,15 +182,22 @@ impl CodexProvider {
     /// override each model's own `defaultReasoningEffort` — which is not
     /// uniformly medium (gpt-5.6-sol defaults to `low`, gpt-5.3-codex-spark to
     /// `high`) — on every turn of every user who never touched `/effort`.
-    fn turn_params(thread_id: &str, prompt: &str, effort: Option<ReasoningEffort>) -> Value {
-        let mut params = json!({
+    fn turn_params(
+        thread_id: &str,
+        prompt: &str,
+        effort: Option<ReasoningEffort>,
+        model: &str,
+    ) -> Value {
+        json!({
             "threadId": thread_id,
             "input": [{ "type": "text", "text": prompt }],
-        });
-        if let Some(level) = effort.and_then(|effort| effort.provider_effort()) {
-            params["effort"] = json!(level);
-        }
-        params
+            // Always sent, and on Codex's own per-model ladder rather than the
+            // OpenAI-family low/high pair — see `coding_agent::effort`. The model
+            // is needed because that ladder differs between models: `max` exists
+            // only on part of the 5.6 family, and Biorouter's own four advertised
+            // models stop at `xhigh`.
+            "effort": crate::providers::coding_agent::effort::codex_effort(effort, model),
+        })
     }
 
     /// Answer a server-originated request.
@@ -333,7 +340,12 @@ impl CodexProvider {
         // notifications, so the pump has to run alongside it rather than after it.
         let start = server.request(
             "turn/start",
-            Self::turn_params(&thread_id, prompt, model.reasoning_effort),
+            Self::turn_params(
+                &thread_id,
+                prompt,
+                model.reasoning_effort,
+                &model.model_name,
+            ),
         );
         let pump = Self::pump(server);
 
@@ -560,23 +572,28 @@ mod tests {
     /// alongside them and must not displace either.
     #[test]
     fn turn_params_always_carry_the_thread_and_the_prompt() {
-        let p = CodexProvider::turn_params("th_1", "why?", Some(ReasoningEffort::Deep));
+        let p = CodexProvider::turn_params("th_1", "why?", Some(ReasoningEffort::Deep), "gpt-5.5");
         assert_eq!(p["threadId"], "th_1");
         assert_eq!(p["input"][0]["type"], "text");
         assert_eq!(p["input"][0]["text"], "why?");
     }
 
-    /// `/effort quick|deep` has to arrive on `turn/start`, or it is a silent
-    /// no-op: `thread/start` declares no `effort` field at all, so shaping the
-    /// thread cannot carry it. The two values are the `low`/`high` pair every
-    /// model in `model/list` advertises (codex-cli 0.147.0).
+    /// `/effort` has to arrive on `turn/start`, or it is a silent no-op:
+    /// `thread/start` declares no `effort` field at all, so shaping the thread
+    /// cannot carry it.
+    ///
+    /// The rungs are Codex's own ladder rather than the OpenAI-family `low`/`high`
+    /// pair — `coding_agent::effort` owns the table and the reasoning. `Deep`
+    /// stops at `xhigh` here because `gpt-5.5` does not advertise `max`.
     #[test]
-    fn quick_and_deep_pin_the_turn_effort() {
+    fn the_effort_ladder_reaches_the_turn() {
         for (effort, expected) in [
-            (ReasoningEffort::Quick, "low"),
-            (ReasoningEffort::Deep, "high"),
+            (Some(ReasoningEffort::Quick), "low"),
+            (Some(ReasoningEffort::Normal), "high"),
+            (Some(ReasoningEffort::Deep), "xhigh"),
+            (None, "high"),
         ] {
-            let p = CodexProvider::turn_params("th_1", "hi", Some(effort));
+            let p = CodexProvider::turn_params("th_1", "hi", effort, "gpt-5.5");
             assert_eq!(
                 p["effort"], expected,
                 "{effort:?} must reach the app server as effort={expected}"
@@ -584,25 +601,30 @@ mod tests {
         }
     }
 
-    /// The assertion that matters. `Normal` is a strict no-op and is the default
-    /// every user who never typed `/effort` is on, so the key must be **absent**
-    /// rather than set to "medium" — each model carries its own
-    /// `defaultReasoningEffort` (low for gpt-5.6-sol, high for
-    /// gpt-5.3-codex-spark, medium for gpt-5.5) and sending a level would
-    /// override it on every turn.
+    /// The effort is **always** sent, including for the default. That is a
+    /// deliberate departure from every other provider, where `Normal` is silence:
+    /// a coding agent is reached for when the work is hard, so Biorouter's default
+    /// here is `high` rather than whatever the model would have chosen. Asserted
+    /// explicitly because it costs the user thinking tokens on every turn.
     #[test]
-    fn the_default_effort_omits_the_field_entirely() {
-        for effort in [None, Some(ReasoningEffort::Normal)] {
-            let p = CodexProvider::turn_params("th_1", "hi", effort);
-            // `Value::get` yields `Some(Null)` for a present-but-null key, so
-            // this rejects `"effort": null` as well as `"effort": "medium"`.
-            // That matters because the schema types the field as nullable, which
-            // makes an explicit null look harmless and is still a value sent.
-            assert!(
-                p.get("effort").is_none(),
-                "{effort:?} must leave the model's own default in place, but sent: {p}"
-            );
-        }
+    fn the_default_effort_is_high_rather_than_silence() {
+        let p = CodexProvider::turn_params("th_1", "hi", None, "gpt-5.5");
+        assert_eq!(p["effort"], "high");
+        assert!(
+            !p["effort"].is_null(),
+            "an explicit null is a value sent, not an absence"
+        );
+    }
+
+    /// Codex's ladder is per-model, so the same `/effort deep` reaches a different
+    /// rung on a model that advertises `max`.
+    #[test]
+    fn deep_follows_the_models_own_ladder() {
+        let short = CodexProvider::turn_params("t", "hi", Some(ReasoningEffort::Deep), "gpt-5.5");
+        let tall =
+            CodexProvider::turn_params("t", "hi", Some(ReasoningEffort::Deep), "gpt-5.6-sol");
+        assert_eq!(short["effort"], "xhigh");
+        assert_eq!(tall["effort"], "max");
     }
 
     /// Every approval that would let the child act on the machine is refused;

@@ -54,6 +54,7 @@
 pub mod appserver;
 pub mod bridge;
 pub mod discovery;
+pub mod effort;
 pub mod env;
 pub mod transcript;
 

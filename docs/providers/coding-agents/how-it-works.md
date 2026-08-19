@@ -239,6 +239,40 @@ change fixes it. Every setup error names the exact command the user should run �
 reason the setup errors are built separately from the generic mapper. The four states and their
 messages are on [installing and signing in](installing-and-signing-in.md).
 
+## Thinking effort climbs the CLI's own ladder
+
+Both CLIs expose a taller reasoning scale than the API providers do —
+`low, medium, high, xhigh, max` — so these two providers do not reuse the shared
+`ReasoningEffort::provider_effort()` helper, which stops at `high` because `high` is the top of the
+*API* scale. They climb their own ladder instead:
+
+| BioRouter `/effort` | Claude Agent | Codex |
+| --- | --- | --- |
+| `quick` | `low` | `low` |
+| *default* | `high` | `high` |
+| `deep` | `max` | the model's top rung — usually `xhigh` |
+
+Three things follow that are worth knowing before you rely on it.
+
+**The default is no longer silent.** Everywhere else in BioRouter the default effort means "say
+nothing and let the model choose". Here it emits `high`, so every turn — including from someone who
+has never typed `/effort` — asks for more reasoning than the vendor default (`medium` on
+`gpt-5.5`). That is deliberate: a coding agent is what you reach for when the work is hard. It also
+costs thinking tokens against your own subscription on every turn, which is the trade being made.
+
+**Codex's ladder is per-model, so `deep` lands differently.** `max` and `ultra` exist only on part
+of the 5.6 family; BioRouter's own four advertised Codex models (`gpt-5.5`, `gpt-5.4`,
+`gpt-5.4-mini`, `gpt-5.3-codex`) all stop at `xhigh`. Sending an unadvertised rung is *accepted*
+rather than rejected — measured on `gpt-5.5`, which has no `max` — so the failure mode is a silent
+clamp or a silent ignore, and there is no way to tell which from the outside. An ignore would fall
+back to the model's default and quietly deliver *less* than `deep` asked for, so BioRouter sends
+only what the model advertises.
+
+**`deep` is not `ultra`.** Two Codex models advertise an `ultra` rung above `max`, and Claude Code
+has no such level at all (passing one makes the CLI warn and fall back to its default, which is a
+silent downgrade rather than an error). `deep` is the strongest *ordinary* tier; the delegating mode
+above it is not something `/effort deep` should buy without being asked for.
+
 ## Using one for a single task, without rebinding the chat
 
 A coding agent does not have to become the whole conversation's provider. A chat bound to any
