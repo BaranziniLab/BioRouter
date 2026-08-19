@@ -1,5 +1,5 @@
 //! Tests for the session auto-naming fix: after a real exchange a session must
-//! never be left as the "New Session" placeholder. The LLM namer is
+//! never be left as the "New chat" placeholder. The LLM namer is
 //! best-effort; on error or empty output a deterministic fallback derived from
 //! the first user message is used.
 
@@ -82,7 +82,7 @@ async fn session_with_first_user_message(text: &str) -> (Arc<SessionManager>, St
     let session = manager
         .create_session(
             std::path::PathBuf::from("/tmp"),
-            "New Session".to_string(),
+            biorouter::session::DEFAULT_SESSION_NAME.to_string(),
             SessionType::User,
         )
         .await
@@ -108,7 +108,10 @@ async fn llm_namer_failure_falls_back_to_first_message() {
         "Explain the difference between DNA and RNA in two sentences.",
     )
     .await;
-    assert_eq!(name_of(&manager, &id).await, "New Session");
+    assert_eq!(
+        name_of(&manager, &id).await,
+        biorouter::session::DEFAULT_SESSION_NAME
+    );
 
     manager
         .maybe_update_name(
@@ -122,7 +125,8 @@ async fn llm_namer_failure_falls_back_to_first_message() {
 
     let name = name_of(&manager, &id).await;
     assert_ne!(
-        name, "New Session",
+        name,
+        biorouter::session::DEFAULT_SESSION_NAME,
         "session must not stay as the placeholder"
     );
     assert_eq!(name, "Explain the difference between DNA and RNA in");
@@ -143,7 +147,7 @@ async fn empty_llm_name_falls_back() {
         .unwrap();
 
     let name = name_of(&manager, &id).await;
-    assert_ne!(name, "New Session");
+    assert_ne!(name, biorouter::session::DEFAULT_SESSION_NAME);
     assert_eq!(name, "Summarize this paper for me please");
 }
 

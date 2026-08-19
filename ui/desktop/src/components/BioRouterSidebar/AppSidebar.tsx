@@ -242,16 +242,16 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
   // `title` rides along in route state so the tab opens already named. It is
   // only ever a HINT: the URL alone still opens the chat (a deep link, a
   // reload, an external nav carry no state), and BaseChat's load still renames
-  // the tab authoritatively — including the `userSetName` flag, which the
-  // session LIST does not carry. This removes the flash, not the correction.
-  const handleOpenChat = (sessionId: string, title?: string) => {
+  // the tab authoritatively. The summary carries `userSetName`, so a literal
+  // user-chosen legacy placeholder is never mistaken for an automatic title.
+  const handleOpenChat = (sessionId: string, title?: string, userSetName?: boolean) => {
     // NB: the 3rd arg of navigateWithViewTransition IS the route state itself,
     // not an options bag — `{ state: … }` here would nest it one level deep and
     // silently do nothing.
     navigateWithViewTransition(
       navigate,
       `/pair?resumeSessionId=${sessionId}`,
-      title ? { title } : undefined
+      title ? { title, userSetName } : undefined
     );
   };
 
@@ -259,7 +259,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
    * NEW SESSION IS AN ACTION, AND ACTIONS DO NOT STAY LIT (Astryx §4.1.3).
    *
    * A destination keeps the selected wash and the accent rail because you are
-   * still THERE. New Session fires and the view moves on — leaving a lit row
+   * still THERE. New chat fires and the view moves on — leaving a lit row
    * behind claims a location that is no longer true, and it is the reason a rail
    * with one action and one destination read as a rail with two selected states.
    */
@@ -384,7 +384,7 @@ const AppSidebar: React.FC<SidebarProps> = ({ currentPath }) => {
               <BioRouterWordmark
                 data-testid="sidebar-biorouter-mark"
                 // h-[22px] so the wordmark's cap height reads at the same size as
-                // the text-sm nav labels beside it — measured against "New Session"
+                // the text-sm nav labels beside it — measured against "New chat"
                 // in the calibration harness. (The SVG box includes the underline,
                 // so the letters are smaller than the box; 17px looked undersized.)
                 className="h-[22px] w-auto shrink-0"

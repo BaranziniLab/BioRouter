@@ -22,7 +22,7 @@ pub fn handle_project_default() -> Result<()> {
 
     if projects.is_empty() {
         // If no projects exist, just start a new one in the current directory
-        println!("No previous projects found. Starting a new session in the current directory.");
+        println!("No previous projects found. Starting a new chat in the current directory.");
         let mut command = std::process::Command::new("biorouter");
         command.arg("session");
         let status = command.status()?;
@@ -74,13 +74,13 @@ pub fn handle_project_default() -> Result<()> {
     let choice = cliclack::select("Choose an option:")
         .item(
             "resume",
-            format!("Resume project with session: {}", short_path),
-            "Continue with the previous session",
+            format!("Resume project chat: {}", short_path),
+            "Continue with the previous chat",
         )
         .item(
             "fresh",
-            format!("Resume project with fresh session: {}", short_path),
-            "Change to the project directory but start a new session",
+            format!("Resume project with a fresh chat: {}", short_path),
+            "Change to the project directory but start a new chat",
         )
         .item(
             "new",
@@ -88,7 +88,7 @@ pub fn handle_project_default() -> Result<()> {
                 "Start new project in current directory: {}",
                 current_dir_display
             ),
-            "Stay in the current directory and start a new session",
+            "Stay in the current directory and start a new chat",
         )
         .interact()?;
 
@@ -108,7 +108,7 @@ pub fn handle_project_default() -> Result<()> {
 
             if let Some(id) = session_id {
                 command.arg("--name").arg(&id).arg("--resume");
-                println!("Resuming session: {}", id);
+                println!("Resuming chat: {}", id);
             }
 
             // Execute the command
@@ -120,7 +120,7 @@ pub fn handle_project_default() -> Result<()> {
         }
         "fresh" => {
             let _ = outro(format!(
-                "Changing to directory: {} with a fresh session",
+                "Changing to directory: {} with a fresh chat",
                 project_dir
             ));
 
@@ -139,7 +139,7 @@ pub fn handle_project_default() -> Result<()> {
             }
         }
         "new" => {
-            let _ = outro("Starting a new session in the current directory");
+            let _ = outro("Starting a new chat in the current directory");
 
             // Build the command to run biorouter
             let mut command = std::process::Command::new("biorouter");
@@ -267,13 +267,13 @@ pub fn handle_projects_interactive() -> Result<()> {
         let session_choice = cliclack::select("What would you like to do?")
             .item(
                 "resume",
-                "Resume previous session",
-                "Continue with the previous session",
+                "Resume previous chat",
+                "Continue with the previous chat",
             )
             .item(
                 "new",
-                "Start new session",
-                "Start a fresh session in this project directory",
+                "Start new chat",
+                "Start a fresh chat in this project directory",
             )
             .interact()?;
 
@@ -289,10 +289,10 @@ pub fn handle_projects_interactive() -> Result<()> {
     if resume_session {
         if let Some(id) = session_id {
             command.arg("--name").arg(&id).arg("--resume");
-            println!("Resuming session: {}", id);
+            println!("Resuming chat: {}", id);
         }
     } else {
-        println!("Starting new session");
+        println!("Starting new chat");
     }
 
     // Execute the command

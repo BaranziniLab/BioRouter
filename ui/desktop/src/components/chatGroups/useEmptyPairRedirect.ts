@@ -6,7 +6,7 @@ import { leafGroupIds } from './chatGroupsTypes';
 import { hasPendingNewTab } from './newTabRegistry';
 
 /**
- * No tabs → Home (issue #38). The empty "New Session" pane is never the
+ * No tabs → Home (issue #38). The empty "New chat" pane is never the
  * resting state: when the ENTIRE layout has zero tabs and nothing is en route
  * to becoming one, /pair redirects to '/' (the Hub — greeting + usage heatmap).
  *

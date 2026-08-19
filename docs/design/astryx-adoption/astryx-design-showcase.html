@@ -1507,7 +1507,7 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
               </div>
               <div class="navrow" style="height:32px"><span class="mark" style="font-size:14px">Bio<i>Router</i></span></div>
               <div class="caps">Menu</div>
-              <div class="navrow on"><svg class="ico ic"><use href="#i-plus"/></svg>New Session</div>
+              <div class="navrow on"><svg class="ico ic"><use href="#i-plus"/></svg>New chat</div>
               <div class="navrow"><svg class="ico ic"><use href="#i-home"/></svg>Home</div>
               <div class="navrow"><svg class="ico ic"><use href="#i-workflow"/></svg>Workflows</div>
               <div class="navrow"><svg class="ico ic"><use href="#i-clock"/></svg>Scheduler</div>
@@ -1536,7 +1536,7 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
               </div>
               <div class="brandrow"><span class="mark" style="font-size:15px">Bio<i>Router</i></span></div>
               <div class="navrow on"><svg class="ico ic"><use href="#i-home"/></svg>Home</div>
-              <button class="navrow navrow--action" id="newSessionRow" style="width:100%;border:0;background:transparent;font:inherit;text-align:left;cursor:pointer"><svg class="ico ic"><use href="#i-plus"/></svg>New Session</button>
+              <button class="navrow navrow--action" id="newSessionRow" style="width:100%;border:0;background:transparent;font:inherit;text-align:left;cursor:pointer"><svg class="ico ic"><use href="#i-plus"/></svg>New chat</button>
               <button class="navrow" id="compToggle" aria-expanded="false" style="width:100%;border:0;background:transparent;font:inherit;text-align:left;cursor:pointer">
                 <svg class="ico ic" id="compChev" style="transition:transform var(--dur-fast) var(--ease)"><use href="#i-chevrondown"/></svg>Components<span class="sp"></span>
               </button>
@@ -1567,7 +1567,7 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
               <div><span>2px between rail rows</span><span>+4</span></div>
               <div class="tot"><span>Returned to content</span><span>−220px</span></div>
             </div>
-            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The rail carries only what you reach for constantly — <b>Home</b> and <b>New Session</b> — plus one <b>Components</b> disclosure holding the six destination views. <span style="color:var(--accent-ink)">Click it</span> to expand; the group remembers its state, and everything below it is history.</p>
+            <p style="font-size:var(--t-support);color:var(--ink-subtle)">The rail carries only what you reach for constantly — <b>Home</b> and <b>New chat</b> — plus one <b>Components</b> disclosure holding the six destination views. <span style="color:var(--accent-ink)">Click it</span> to expand; the group remembers its state, and everything below it is history.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The wordmark keeps its own line. Sharing the band with the traffic lights saved 32px but buried the brand between two rows of controls; on its own line it introduces the app properly, and the compaction still lands because the row count does the work. In the band, a 16px channel separates the OS's traffic lights from our two controls, and the pair itself sits at 2px — one control group, not two loose buttons.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)"><b>Twenty of those pixels come back, and the rail is better for it.</b> <span class="pill ok" style="height:20px">shipped</span> When the band dropped 52 → 44 the wordmark came up with it and landed 8px under the hairline with the first nav row directly beneath — three elements stacked at one rhythm, which reads as crowded rather than dense. The brand block now takes <b>16px above and 8px below</b> (<code>px-2 pt-4 pb-2</code>), and the nav rows sit at <b>2px</b> rather than flush: at zero the rounded washes touch, so a hover bleeds into its neighbours and the destinations read as one block of colour. 2px is the gap the menu recipe already uses between items, so the rail and the menus agree, and Recents takes the same gap — one rhythm down the whole column, or its two halves read as two different lists. Row height is untouched: <code>--row-height-rail</code> is still 32px, at a 34px pitch. Measured in the app: band 44px at y=0, wordmark 32px at y=60, first nav row at y=100.</p>
             <p style="font-size:var(--t-support);color:var(--ink-subtle)">The Recents <b>well is gone</b> — the app's only surface grounded on a <code>color-mix</code> of a <i>border</i> token, at a radius nothing else in the rail uses. The list now sits directly on the rail like every other list, glyphs at their real weight: a chat is a message square, a diverged session is a branch. Running sessions get a trailing status dot; the ring-and-glow stays in the chat.</p>
@@ -1598,7 +1598,7 @@ footer { margin-top:72px; padding-top:24px; border-top:1px solid var(--line);
           </div>
           <div style="padding:16px 20px;display:flex;gap:8px;align-items:center;background:var(--muted)">
             <span style="font-size:var(--t-caps);letter-spacing:.08em;text-transform:uppercase;color:var(--ink-subtle)">Document tabs</span>
-            <div class="doctab on"><svg class="ico"><use href="#i-message"/></svg>New Session</div>
+            <div class="doctab on"><svg class="ico"><use href="#i-message"/></svg>New chat</div>
             <div class="doctab"><svg class="ico"><use href="#i-message"/></svg>MS cohort</div>
           </div>
         </div>
@@ -2336,7 +2336,7 @@ IndexError: index out of range for axis 0 with size 18452</div>
     });
   });
 
-  // "New Session" is an action, not a destination: a pointer click fires it and
+  // "New chat" is an action, not a destination: a pointer click fires it and
   // the rail moves on, so focus must not linger. `event.detail > 0` is true only
   // for pointer activation — a keyboard Enter/Space reports 0 and keeps focus,
   // which is what a Tab user needs.

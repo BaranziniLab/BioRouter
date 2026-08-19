@@ -1071,7 +1071,7 @@ function BaseChatContent({
   const [hasWorkflowSecurityWarnings, setHasWorkflowSecurityWarnings] = useState(false);
   const [isCreatingSession, setIsCreatingSession] = useState(false);
   // #39 — the working directory chosen in the composer BEFORE a session
-  // exists (sidebar "New Session" mounts this chat with no sessionId, so
+  // exists (sidebar "New chat" mounts this chat with no sessionId, so
   // DirSwitcher has nothing to persist to yet). Read exactly once, by the
   // pre-session createSession below; once a session exists DirSwitcher
   // persists directly via updateWorkingDir and this value is never consulted.
@@ -2343,7 +2343,7 @@ function BaseChatContent({
                     }
                   >
                     <SessionNamePill
-                      name={session?.name || 'New Session'}
+                      name={session?.name || 'New chat'}
                       onRename={handleRename}
                       onDiverge={handleTitleDiverge}
                       canDiverge={canDivergeSession}

@@ -95,7 +95,7 @@ For direct access using your own API key:
 
 1. On the welcome screen, enter your API key in the Quick Setup panel.
 2. Biorouter will test the key and prompt you to choose a model.
-3. You're ready to start a session.
+3. You're ready to start a chat.
 
 **CLI setup:**
 
@@ -118,7 +118,7 @@ biorouter configure
 
 ## Verify the setup
 
-After configuration, start a session and send a test message.
+After configuration, start a chat and send a test message.
 
 **Desktop:** Type a message in the chat input and press Enter.
 

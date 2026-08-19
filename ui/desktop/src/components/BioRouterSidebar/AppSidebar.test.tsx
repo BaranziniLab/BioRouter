@@ -36,6 +36,7 @@ const session: SessionSummary = {
   updated_at: '2026-07-15T12:00:00.000Z',
   working_dir: '/workspace/cohort-study',
   message_count: 4,
+  user_set_name: true,
 };
 
 beforeAll(() => {
@@ -192,6 +193,7 @@ describe('AppSidebar chat navigation', () => {
     expect(screen.getByTestId('location-state')).toHaveTextContent(
       '/pair?resumeSessionId=session-1'
     );
+    expect(screen.getByTestId('route-state')).toHaveTextContent('"userSetName":true');
 
     fireEvent.click(screen.getByTestId('view-all-chat-history'));
     expect(screen.getByTestId('location-state')).toHaveTextContent('/sessions');

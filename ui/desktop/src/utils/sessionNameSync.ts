@@ -13,10 +13,11 @@
 //   1. The cache (cacheGet / cacheSet / cacheUpdateName) so renames update
 //      every caller's view of `session` consistently.
 //   2. The definition of a "default" session name. Backend assigns
-//      `'New Session'` to every freshly-created session (see
+//      `'New chat'` to every freshly-created session (see
 //      crates/biorouter-server/src/routes/agent.rs); legacy sessions may
 //      still carry numbered variants like `'New session 154'` or
-//      `'Session 5'`. `isDefaultSessionName` accepts all three so older
+//      `'Session 5'`. `isDefaultSessionName` accepts the current and legacy
+//      forms so older
 //      data continues to read correctly.
 //   3. `renameSession` — optimistic API call + cache update + cross-window
 //      broadcast. Callers do not need to coordinate cache invalidation or
@@ -28,9 +29,15 @@
 import type { Message, Session } from '../api';
 import { updateSessionName } from '../api';
 
-export const DEFAULT_SESSION_NAME = 'New Session';
+export const DEFAULT_SESSION_NAME = 'New chat';
 
-const DEFAULT_NAME_PATTERNS: RegExp[] = [/^New Session$/i, /^New session \d+$/i, /^Session \d+$/i];
+const DEFAULT_NAME_PATTERNS: RegExp[] = [
+  /^New chat$/i,
+  /^New Session$/i,
+  /^CLI Session$/i,
+  /^New session \d+$/i,
+  /^Session \d+$/i,
+];
 
 export function isDefaultSessionName(name: string | null | undefined): boolean {
   if (!name) return true;
@@ -135,7 +142,7 @@ export async function renameSession(
   origin: SessionNameChange['origin'] = 'user'
 ): Promise<string> {
   const trimmed = newName.trim();
-  if (!trimmed) throw new Error('Session name cannot be empty');
+  if (!trimmed) throw new Error('Chat name cannot be empty');
 
   await updateSessionName({
     path: { session_id: sessionId },

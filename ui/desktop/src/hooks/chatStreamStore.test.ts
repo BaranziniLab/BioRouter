@@ -126,6 +126,17 @@ beforeEach(() => {
 });
 
 describe('ChatStreamRegistry', () => {
+  it('labels a running chat without session metadata or submitted text as New chat', async () => {
+    const registry = new ChatStreamRegistry();
+    registry.getController('unnamed').setChatState(ChatState.Thinking);
+
+    await vi.advanceTimersByTimeAsync(NOTIFY_FALLBACK_MS);
+
+    expect(registry.getRunningSnapshot()).toEqual([
+      expect.objectContaining({ sessionId: 'unnamed', title: 'New chat' }),
+    ]);
+  });
+
   it('does not auto-open Agent Drafter launch metadata', async () => {
     const registry = new ChatStreamRegistry();
     vi.mocked(resumeAgent).mockResolvedValue({ data: { session: session('s1') } } as never);

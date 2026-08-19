@@ -9862,6 +9862,9 @@
             "type": "string",
             "format": "date-time"
           },
+          "user_set_name": {
+            "type": "boolean"
+          },
           "working_dir": {
             "type": "string"
           }

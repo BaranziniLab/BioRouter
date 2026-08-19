@@ -28,8 +28,13 @@ const makeSession = (overrides: Record<string, unknown> = {}) =>
   }) as any;
 
 describe('isDefaultSessionName', () => {
-  it('flags the current "New Session" placeholder', () => {
+  it('flags the current "New chat" placeholder', () => {
+    expect(isDefaultSessionName('New chat')).toBe(true);
+  });
+
+  it('keeps recognizing the legacy "New Session" placeholder', () => {
     expect(isDefaultSessionName('New Session')).toBe(true);
+    expect(isDefaultSessionName('CLI Session')).toBe(true);
   });
   it('flags legacy numbered placeholders so old data still reads as default', () => {
     expect(isDefaultSessionName('New session 154')).toBe(true);

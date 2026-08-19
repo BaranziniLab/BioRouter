@@ -192,7 +192,11 @@ impl WorkspaceServices for ServerWorkspaceServices {
 
         let manager = self.state.session_manager();
         let session = manager
-            .create_session(working_dir, "New Session".to_string(), SessionType::User)
+            .create_session(
+                working_dir,
+                biorouter::session::DEFAULT_SESSION_NAME.to_string(),
+                SessionType::User,
+            )
             .await
             .map_err(|e| format!("failed to create session: {e}"))?;
 

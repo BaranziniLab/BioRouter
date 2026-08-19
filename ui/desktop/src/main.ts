@@ -1050,7 +1050,7 @@ interface ChatWindowOptions {
   manageWindowState?: boolean;
   /** Canonical title for the resumed session, carried in the URL so the tab is
    *  born with the real name (e.g. a diverge branch name) instead of the
-   *  "New Session" placeholder it would otherwise show until the session loads. */
+   *  "New chat" placeholder it would otherwise show until the session loads. */
   resumeSessionTitle?: string;
 }
 

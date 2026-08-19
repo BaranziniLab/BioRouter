@@ -5,6 +5,7 @@ import {
   activeTabOf,
   activeSessionIdOf,
   ChatGroupsAction,
+  DEFAULT_TAB_TITLE,
 } from './chatGroupsReducer';
 import { ChatGroupsState, firstLeaf, leafGroupIds } from './chatGroupsTypes';
 
@@ -30,6 +31,16 @@ const submit = (sessionId: string, message = 'hello'): ChatGroupsAction => ({
  * Recents must never disturb the chat you were reading.
  */
 describe('chatGroupsReducer — a click opens a real tab', () => {
+  it('uses the canonical title for a tab whose caller has no name yet', () => {
+    const state = chatGroupsReducer(createInitialChatGroupsState(), {
+      type: 'openTab',
+      payload: { sessionId: 'unnamed' },
+    });
+
+    expect(DEFAULT_TAB_TITLE).toBe('New chat');
+    expect(activeTabOf(state)?.title).toBe(DEFAULT_TAB_TITLE);
+  });
+
   it('opens a NEW tab per chat and never replaces the previous one', () => {
     const a = run(createInitialChatGroupsState(), open('s1'));
     const firstTabId = a.groups['grp-1'].tabs[0].tabId;

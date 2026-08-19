@@ -526,9 +526,9 @@ narrows 96→64px and the session-title reserve 204→172px — the title moves 
 
 ### One glyph, one meaning
 
-The titlebar's *New window* button and the sidebar's *New Session* row both draw the same
+The titlebar's *New window* button and the sidebar's *New chat* row both draw the same
 `Plus` icon for two different actions — the same glyph promising two things. New window
-takes a distinct window-with-arrow mark; Plus stays with New Session.
+takes a distinct window-with-arrow mark; Plus stays with New chat.
 
 - **Now:** Plus = new session AND new window
 - **New:** Plus = new session; `⧉` = new window

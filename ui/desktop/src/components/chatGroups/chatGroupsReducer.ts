@@ -74,7 +74,7 @@ export type ChatGroupsAction =
   /** …and the crossing back up, which gives the user their layout back. */
   | { type: 'restoreLayout'; snapshot: GroupLayoutSnapshot };
 
-export const DEFAULT_TAB_TITLE = 'New Session';
+export const DEFAULT_TAB_TITLE = 'New chat';
 
 /**
  * What rung 4 has to hand back when the window grows again.

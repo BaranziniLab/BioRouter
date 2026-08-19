@@ -2228,7 +2228,7 @@ one writer) and removes the friction from the large majority of affected rows â€
 
 **When a typed confirmation is required, confirm on the last 6 characters of the session id**,
 displayed immediately beside the field â€” **not** the session name. `is_default_session_name`
-(`session_manager.rs:1614-1632`) shows `"New Session"`, `"CLI Session"`, `"Session <N>"` and
+(`session_manager.rs:1614-1632`) shows `"New chat"`, legacy `"New Session"`, `"CLI Session"`, `"Session <N>"` and
 `"New session <N>"` are all live placeholders, and the naming pass is best-effort, so failures
 leave sessions stuck on them; `fallback_session_name` (`:1527`) produces up-to-60-character titles
 built from the first words of the user's message. A name-typed phrase is therefore either a

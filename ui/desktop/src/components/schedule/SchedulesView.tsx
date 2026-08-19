@@ -422,7 +422,7 @@ const SchedulesView: React.FC<SchedulesViewProps> = ({ onClose: _onClose }) => {
           : 'Unknown';
         toastSuccess({
           title: 'Job inspection',
-          msg: `Session: ${result.sessionId}\nRunning for: ${duration}`,
+          msg: `Session ID: ${result.sessionId}\nRunning for: ${duration}`,
         });
       } else {
         toastSuccess({

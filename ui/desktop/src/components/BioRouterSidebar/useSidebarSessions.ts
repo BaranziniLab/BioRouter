@@ -88,9 +88,9 @@ export default function useSidebarSessions(): SidebarSessionsState {
       }, 250);
     };
 
-    const unsubscribeNames = subscribeSessionNameChanges(({ sessionId, name }) => {
+    const unsubscribeNames = subscribeSessionNameChanges(({ sessionId, name, userSetName }) => {
       const renamedSessions = sessionsRef.current.map((session) =>
-        session.id === sessionId ? { ...session, name } : session
+        session.id === sessionId ? { ...session, name, user_set_name: userSetName } : session
       );
       sessionsRef.current = renamedSessions;
       setSessions(renamedSessions);

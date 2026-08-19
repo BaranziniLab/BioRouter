@@ -78,7 +78,7 @@ Current top-level areas:
 
 | Folder | Scope |
 |---|---|
-| `getting-started/` | installing, first run, choosing a provider, session basics, usage habits |
+| `getting-started/` | installing, first run, choosing a provider, chat basics, usage habits |
 | `architecture/` | how the system is put together, across crates |
 | `agent-loop/` | the reasoning loop: accepted designs, hooks, subagents, context engineering |
 | `agent-drafter/` | the apps platform — the agent that builds apps |

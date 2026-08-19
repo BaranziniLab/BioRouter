@@ -231,7 +231,7 @@ async fn offer_extension_debugging_help(
         return Ok(());
     }
 
-    println!("{}", style("Starting debugging session...").cyan());
+    println!("{}", style("Starting debugging chat...").cyan());
 
     // Create a debugging prompt with context about the extension failure
     let debug_prompt = format!(
@@ -288,14 +288,11 @@ async fn offer_extension_debugging_help(
         Ok(_) => {
             println!(
                 "{}",
-                style("Debugging session completed. Check the suggestions above.").green()
+                style("Debugging chat completed. Check the suggestions above.").green()
             );
         }
         Err(e) => {
-            eprintln!(
-                "{}",
-                style(format!("Debugging session failed: {}", e)).red()
-            );
+            eprintln!("{}", style(format!("Debugging chat failed: {}", e)).red());
         }
     }
     Ok(())
@@ -373,7 +370,7 @@ async fn load_extensions(
         )
         .await
         {
-            eprintln!("Note: Could not start debugging session: {}", debug_err);
+            eprintln!("Note: Could not start debugging chat: {}", debug_err);
         }
     }
 
@@ -396,7 +393,7 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], intera
 
         if interactive {
             if !cliclack::confirm(format!(
-                "Extension(s) {} from previous session are no longer available. Restore for this session?",
+                "Extension(s) {} from the previous chat are no longer available. Restore for this chat?",
                 names
             ))
             .initial_value(true)
@@ -410,7 +407,7 @@ fn check_missing_extensions_or_exit(saved_extensions: &[ExtensionConfig], intera
             eprintln!(
                 "{}",
                 style(format!(
-                    "Warning: Extension(s) {} from previous session are no longer available, continuing without them.",
+                    "Warning: Extension(s) {} from the previous chat are no longer available, continuing without them.",
                     names
                 ))
                 .yellow()
@@ -786,7 +783,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             match session_manager.list_sessions().await {
                 Ok(sessions) if !sessions.is_empty() => sessions[0].id.clone(),
                 _ => {
-                    output::render_error("Cannot resume - no previous sessions found");
+                    output::render_error("Cannot resume - no previous chats found");
                     close_ephemeral_store_with_manager(&session_manager, ephemeral_store_dir).await;
                     process::exit(1);
                 }
@@ -821,7 +818,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
             std::env::current_dir().expect("Failed to get current working directory");
         if current_workdir != session.working_dir {
             if session_config.interactive {
-                let change_workdir = cliclack::confirm(format!("{} The original working directory of this session was set to {}. Your current directory is {}. Do you want to switch back to the original working directory?", style("WARNING:").yellow(), style(session.working_dir.display()).cyan(), style(current_workdir.display()).cyan()))
+                let change_workdir = cliclack::confirm(format!("{} The original working directory of this chat was set to {}. Your current directory is {}. Do you want to switch back to the original working directory?", style("WARNING:").yellow(), style(session.working_dir.display()).cyan(), style(current_workdir.display()).cyan()))
                         .initial_value(true)
                         .interact().expect("Failed to get user input");
 
@@ -842,7 +839,7 @@ pub async fn build_session(session_config: SessionBuilderConfig) -> CliSession {
                 eprintln!(
                     "{}",
                     style(format!(
-                        "Warning: Working directory differs from session (current: {}, session: {}). Staying in current directory.",
+                        "Warning: Working directory differs from the chat (current: {}, chat: {}). Staying in current directory.",
                         current_workdir.display(),
                         session.working_dir.display()
                     ))

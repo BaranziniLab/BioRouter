@@ -610,7 +610,7 @@ pub async fn handle_ingest_conversation(
         build_completer(provider, model).await?;
 
     let spinner = cliclack::spinner();
-    spinner.start(format!("digesting {} conversation(s)...", loaded.len()));
+    spinner.start(format!("digesting {} chat(s)...", loaded.len()));
 
     let result = ingest_conversation(
         &svc,
@@ -635,7 +635,7 @@ pub async fn handle_ingest_conversation(
     match result {
         Ok(res) => {
             println!(
-                "  {} {} conversation(s) ingested into {} {}",
+                "  {} {} chat(s) ingested into {} {}",
                 style("✓").green(),
                 session_ids.len().saturating_sub(res.refused),
                 style(&kb_id).fg(ACCENT).bold(),
@@ -655,7 +655,7 @@ pub async fn handle_ingest_conversation(
             // title and working directory are all content (§11.4).
             if res.refused > 0 {
                 println!(
-                    "  {} {} private conversation(s) skipped: this model is public. \
+                    "  {} {} private chat(s) skipped: this model is public. \
                      Re-run with a private --provider/--model to include them.",
                     style("!").yellow(),
                     res.refused
@@ -663,7 +663,7 @@ pub async fn handle_ingest_conversation(
             }
             Ok(())
         }
-        Err(e) => Err(anyhow!("Conversation ingest failed: {}", e)),
+        Err(e) => Err(anyhow!("Chat ingest failed: {}", e)),
     }
 }
 

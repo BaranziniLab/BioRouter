@@ -468,7 +468,7 @@ async fn submit(
     // /compact runs a normal turn whose trigger tells the agent to condense the
     // history (mirrors the classic `/compact`).
     if text.trim() == "/compact" {
-        app.push_note("Compacting the conversation…");
+        app.push_note("Compacting the chat…");
         let msg = Message::user().with_text(biorouter::agents::COMPACT_TRIGGERS[0]);
         session.messages.push(msg.clone());
         return drive_response(session, app, tui, rx, msg).await;
@@ -777,11 +777,11 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
             match session.diverge_and_open(|url| open::that(url), name).await {
                 Ok(outcome) => match outcome.open_error {
                     None => app.push_note(&format!(
-                        "Diverged into a new window (session {}). This conversation is unchanged.",
+                        "Branched into a new window (session ID {}). This chat is unchanged.",
                         outcome.new_session_id
                     )),
                     Some(err) => app.push_note(&format!(
-                        "Created diverged session {} but couldn't open a window ({}). Open Biorouter and run: {}",
+                        "Created a branched chat (session ID {}) but couldn't open a window ({}). Open Biorouter and run: {}",
                         outcome.new_session_id, err, outcome.url
                     )),
                 },
@@ -803,8 +803,8 @@ async fn handle_slash(session: &mut CliSession, app: &mut App, text: &str) -> bo
                     .apply()
                     .await
                 {
-                    Ok(()) => app.push_note(&format!("Renamed this session to \"{name}\".")),
-                    Err(e) => app.push_error(&format!("Couldn't rename session: {e}")),
+                    Ok(()) => app.push_note(&format!("Renamed this chat to \"{name}\".")),
+                    Err(e) => app.push_error(&format!("Couldn't rename chat: {e}")),
                 }
             }
             true
@@ -1621,12 +1621,9 @@ fn build_catalog(_session: &CliSession) -> Vec<app::CompletionItem> {
         kind: CompletionKind::Command,
     };
     items.push(cmd("/help", "Show commands and shortcuts"));
-    items.push(cmd(
-        "/compact",
-        "Condense the conversation to reclaim context",
-    ));
-    items.push(cmd("/clear", "Clear the conversation"));
-    items.push(cmd("/exit", "Leave the session"));
+    items.push(cmd("/compact", "Condense the chat to reclaim context"));
+    items.push(cmd("/clear", "Clear the chat"));
+    items.push(cmd("/exit", "Leave the chat"));
 
     for name in list_skills() {
         items.push(skill_completion_item(&name));
@@ -1758,8 +1755,8 @@ fn help_into(app: &mut App) {
     );
     for (cmd, desc) in [
         ("/help, /?", "show this help"),
-        ("/compact", "condense the conversation to reclaim context"),
-        ("/clear", "clear the conversation"),
+        ("/compact", "condense the chat to reclaim context"),
+        ("/clear", "clear the chat"),
         (
             "/goal <condition>",
             "keep working until the condition is met",
@@ -1772,7 +1769,7 @@ fn help_into(app: &mut App) {
             "/schedule <spec> <prompt>",
             "recurring prompt: 5m, @daily, or cron",
         ),
-        ("/exit, /quit", "leave the session"),
+        ("/exit, /quit", "leave the chat"),
     ] {
         app.push_line(Line::from(vec![
             Span::styled(format!("  {:<14}", cmd), Style::new().fg(ACCENT)),
