@@ -97,6 +97,12 @@ export function ChangeLogDrawer({ open, onOpenChange, onPreview, onRestored }: P
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
+        // This drawer's header is a bare title on an `h-row` bar — there is no
+        // explanatory line on screen to link, so it takes Radix's own explicit
+        // opt-out. Without it Radix leaves `aria-describedby` pointing at an id
+        // nothing claims and warns on every open. See `ui/sheet.tsx` for why the
+        // choice cannot be defaulted in the primitive.
+        aria-describedby={undefined}
         className="flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
       >
         <SheetHeader className="h-row flex-none flex-row items-center justify-between border-b border-border-subtle px-4 py-0">

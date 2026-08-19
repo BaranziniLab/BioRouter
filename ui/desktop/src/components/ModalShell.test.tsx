@@ -87,3 +87,47 @@ describe('ModalShell — the purpose axis', () => {
     expect(screen.queryAllByRole('button', { name: 'Close' })).toHaveLength(shown ? 1 : 0);
   });
 });
+
+/**
+ * The description axis, pinned at both ends.
+ *
+ * ⚠ **The subtitle IS the description — one string, two audiences.** A modal
+ * whose screen-reader description says something the visible line does not is a
+ * worse defect than the console warning it silences, so the shell links the
+ * paragraph it already renders rather than authoring a second one. `KBManagerDialog`
+ * is the case that matters: its "Choose which knowledge bases this chat uses…"
+ * line reaches the accessibility tree only through this wiring.
+ *
+ * ⚠ **`console.warn` is a `vi.fn()` for the whole suite** (`src/test/setup.ts`),
+ * so Radix's warning is swallowed here rather than absent. Reading the mock back
+ * is the only way a jsdom test can see it — which is why the drawers in
+ * `components/knowledge/` warned in a browser for months with a green suite.
+ */
+describe('ModalShell — the description contract', () => {
+  const warned = () =>
+    vi
+      .mocked(console.warn)
+      .mock.calls.some((call) => String(call[0]).includes('Missing `Description`'));
+
+  it('links the subtitle, so the description and the visible line are one string', () => {
+    vi.mocked(console.warn).mockClear();
+    open({ subtitle: 'Choose which knowledge bases this chat uses.' });
+
+    const id = surface().getAttribute('aria-describedby');
+    expect(id).toBeTruthy();
+    expect(document.getElementById(id!)).toHaveTextContent(
+      'Choose which knowledge bases this chat uses.'
+    );
+    expect(warned()).toBe(false);
+  });
+
+  it('drops the attribute without a subtitle, rather than dangling it at nothing', () => {
+    vi.mocked(console.warn).mockClear();
+    open();
+
+    // Absent, not empty: an id that resolves to no element is the actual defect,
+    // and it is what Radix warns about.
+    expect(surface().hasAttribute('aria-describedby')).toBe(false);
+    expect(warned()).toBe(false);
+  });
+});
