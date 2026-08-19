@@ -178,6 +178,22 @@ export interface ProbeResult {
   error: string | null;
 }
 
+/**
+ * Whether to route this invocation through a shell.
+ *
+ * On Windows a BARE command name has to go through `cmd.exe`, or `npm`/`npx`
+ * (which are `.cmd` wrappers, not `.exe`s) cannot be found at all. An ABSOLUTE
+ * PATH must not: under a shell the path is re-parsed as a command line, so
+ * `C:\Program Files\Biorouter\resources\bin\biorouter.exe` splits at the
+ * space and the probe fails on exactly the machines the bundled CLI ships to.
+ *
+ * Deciding from the command itself keeps every call site correct by default.
+ */
+function needsShell(cmd: string): boolean {
+  if (process.platform !== 'win32') return false;
+  return !/[\\/]/.test(cmd);
+}
+
 export async function runProbe(
   cmd: string,
   args: string[],
@@ -189,8 +205,7 @@ export async function runProbe(
       encoding: 'utf8',
       timeout: timeoutMs,
       env: SPAWN_ENV,
-      // On Windows, use shell so we pick up .cmd/.bat wrappers (npm.cmd, etc.)
-      shell: process.platform === 'win32',
+      shell: needsShell(cmd),
       maxBuffer: 8 * 1024 * 1024,
       ...(opts?.cwd ? { cwd: opts.cwd } : {}),
     });

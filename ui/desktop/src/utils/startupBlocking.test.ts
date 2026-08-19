@@ -109,3 +109,25 @@ describe('startup schedule', () => {
     expect(main).toContain('scheduleExtensionUpdateCheck(STARTUP_EXTENSION_CHECK_DELAY_MS)');
   });
 });
+
+describe('runProbe shell selection', () => {
+  // A Windows-only regression that no test on this machine would otherwise
+  // exercise: routing an ABSOLUTE path through cmd.exe re-parses it as a command
+  // line, so a bundled CLI under `C:\Program Files\…` splits at the space and the
+  // probe fails on exactly the machines it ships to. A BARE name must still go
+  // through the shell, or `npm`/`npx` (`.cmd` wrappers, not `.exe`s) are unfindable.
+  const source = sourceOf('utils/dependencyChecker.ts');
+
+  it('decides from the command rather than passing a constant', () => {
+    expect(source).toContain('shell: needsShell(cmd)');
+    expect(source).not.toMatch(/shell:\s*process\.platform === 'win32'/);
+  });
+
+  it('treats a path as a path and a bare name as a bare name', () => {
+    const isPath = /[\\/]/;
+    expect(isPath.test('C:\\Program Files\\Biorouter\\bin\\biorouter.exe')).toBe(true);
+    expect(isPath.test('/Applications/Biorouter.app/Contents/Resources/bin/biorouter')).toBe(true);
+    expect(isPath.test('npm')).toBe(false);
+    expect(isPath.test('uv')).toBe(false);
+  });
+});
