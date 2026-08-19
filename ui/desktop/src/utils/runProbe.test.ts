@@ -7,7 +7,23 @@
  * These spawn real processes — via `process.execPath`, so they run wherever Node
  * does rather than assuming a POSIX shell.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+
+// CI installs npm dependencies without the Electron binary, so evaluating the real
+// `electron` module throws "Electron failed to install correctly" at IMPORT time —
+// the suite never loads and every test in it is silently skipped rather than
+// failing. Anything reaching `electron` (here via `./logger`) must be mocked, and
+// a local run cannot catch it: this machine has the binary.
+vi.mock('electron', () => ({
+  app: { getVersion: () => '0.0.0-test', getPath: () => '/tmp', isPackaged: false },
+  ipcMain: { handle: () => {} },
+  BrowserWindow: { getAllWindows: () => [] },
+}));
+vi.mock('./logger', () => ({
+  default: { info: () => {}, warn: () => {}, error: () => {} },
+}));
+vi.mock('../biorouterd', () => ({ getBiorouterCliBinaryPath: () => '/nonexistent/biorouter' }));
+
 import { runProbe } from './dependencyChecker';
 
 const NODE = process.execPath;

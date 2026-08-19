@@ -11,7 +11,7 @@
  * `spawnSync` still returns the right answer, it just blocks while doing it.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'fs';
+import { readFileSync, readdirSync } from 'fs';
 import * as path from 'path';
 import {
   STARTUP_SCHEDULE,
@@ -130,4 +130,41 @@ describe('runProbe shell selection', () => {
     expect(isPath.test('npm')).toBe(false);
     expect(isPath.test('uv')).toBe(false);
   });
+});
+
+describe('test files that reach Electron must mock it', () => {
+  /**
+   * CI installs npm dependencies without the Electron binary, so evaluating the
+   * real `electron` module throws at IMPORT time. A suite that fails to load
+   * reports as a failed *suite* while every test inside it is silently skipped —
+   * the run said "2761 passed, 0 failed" with two suites never executed. And a
+   * local run cannot catch it, because a dev machine has the binary.
+   *
+   * So the rule is checked at the source: a test importing one of these modules
+   * pulls in `electron` transitively and has to mock it.
+   */
+  const REACHES_ELECTRON = ['./dependencyChecker', './logger', './mainThreadWatchdog'];
+
+  const testFiles = readdirSync(path.join(SRC, 'utils')).filter((f) => /\.test\.tsx?$/.test(f));
+
+  it('finds the test files to check', () => {
+    expect(testFiles.length).toBeGreaterThan(0);
+  });
+
+  for (const file of testFiles) {
+    it(`${file} mocks electron if it imports a module that loads it`, () => {
+      const code = readFileSync(path.join(SRC, 'utils', file), 'utf8');
+      const importsElectronReacher = REACHES_ELECTRON.some((m) =>
+        // A `import type {...}` is erased at compile time and loads nothing.
+        new RegExp(`import\\s+(?!type\\s)[^;]*from\\s+'${m.replace('.', '\\.')}'`).test(code)
+      );
+      if (!importsElectronReacher) return;
+
+      expect(
+        code,
+        `${file} imports a module that loads 'electron'. Without vi.mock('electron', …) ` +
+          `the whole suite fails to LOAD in CI and its tests are skipped silently.`
+      ).toMatch(/vi\.mock\(\s*'electron'/);
+    });
+  }
 });
