@@ -41,7 +41,9 @@ function dep(name: string): DependencyInfo {
 
 beforeEach(() => {
   installDependency.mockReset().mockResolvedValue({ started: true });
-  // @ts-expect-error — partial stub, only what the modal touches.
+  // A partial stub — only what this modal touches. Cast rather than
+  // `@ts-expect-error`, which suppresses the NEXT LINE only and so cannot cover
+  // a multi-line object literal.
   window.electron = {
     on: (_channel: string, handler: (e: unknown, ...args: unknown[]) => void) => {
       emit = (payload: DependencyEvent) => handler({}, payload);
@@ -52,7 +54,7 @@ beforeEach(() => {
     openExternal: vi.fn(),
     createChatWindow: vi.fn(),
     dependencyEnvironment: async () => ({}),
-  };
+  } as unknown as typeof window.electron;
 });
 
 describe('Install all', () => {
