@@ -153,7 +153,9 @@ async fn the_url_carries_the_nonce_and_the_published_base() {
     bridge::publish_base_url("http://127.0.0.1:8123");
     let lease = bridge::issue(grant().await).expect("issued");
     assert!(
-        lease.url().starts_with("http://127.0.0.1:8123/tool_bridge/"),
+        lease
+            .url()
+            .starts_with("http://127.0.0.1:8123/tool_bridge/"),
         "the child is given an absolute URL on the daemon: {}",
         lease.url()
     );
@@ -292,10 +294,8 @@ async fn the_real_claude_cli_discovers_biorouters_tools_over_the_bridge() {
     // `mcp__<server>__<tool>`.
     let tools = init["tools"].as_array().cloned().unwrap_or_default();
     assert!(
-        tools
-            .iter()
-            .any(|t| t.as_str().unwrap_or_default()
-                == "mcp__biorouter__spokeagent__query_knowledge_graph"),
+        tools.iter().any(|t| t.as_str().unwrap_or_default()
+            == "mcp__biorouter__spokeagent__query_knowledge_graph"),
         "the grant's tool should have reached the model: {tools:?}"
     );
 
@@ -312,10 +312,10 @@ async fn the_real_claude_cli_discovers_biorouters_tools_over_the_bridge() {
 #[serial_test::serial]
 #[ignore = "needs the `codex` CLI installed and signed in; spends the user's own plan quota"]
 async fn the_real_codex_provider_reaches_biorouters_tools_over_the_bridge() {
+    use biorouter::conversation::message::Message;
     use biorouter::model::ModelConfig;
     use biorouter::providers::base::Provider;
     use biorouter::providers::codex::CodexProvider;
-    use biorouter::conversation::message::Message;
 
     serve_real_bridge().await;
     let lease = bridge::issue(grant().await).expect("the base URL is published");
@@ -366,4 +366,267 @@ async fn the_real_codex_provider_reaches_biorouters_tools_over_the_bridge() {
         }
         Err(e) => panic!("the codex turn failed: {e}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// The real-extension round trip. Also `--ignored`, for the same reasons.
+// ---------------------------------------------------------------------------
+
+/// A grant whose `ExtensionManager` holds the **real** `developer` builtin, with
+/// its file jail rooted at `working_dir`, and whose advertised tool set is the
+/// manager's own prefixed list.
+///
+/// Two things here are load-bearing and easy to get subtly wrong:
+///
+/// * `set_working_dir` runs **before** `add_extension`. A `Builtin` is spawned
+///   in-process over a duplex pipe and is handed the *resolved* working
+///   directory at spawn time, which becomes the developer server's jail base for
+///   the rest of its life. Setting it afterwards would leave the jail at the test
+///   binary's cwd and every path under the temp dir would come back "outside the
+///   working directory".
+/// * The inspection manager carries a real [`PermissionInspector`]. With the
+///   empty `ToolInspectionManager` the other tests use,
+///   `process_inspection_results_with_permission_inspector` returns `None` and
+///   `BridgeGrant::call` refuses before dispatch ever happens — so an empty
+///   manager can only ever prove a refusal, never an execution.
+async fn real_developer_grant(working_dir: &std::path::Path) -> bridge::BridgeGrant {
+    use biorouter::agents::ExtensionConfig;
+    use biorouter::config::permission::PermissionManager;
+    use biorouter::managed::ManagedPolicy;
+    use biorouter::permission::managed_inspector::ManagedPolicyInspector;
+    use biorouter::permission::permission_inspector::PermissionInspector;
+    use biorouter::permission::tool_risk::ToolRiskRegistry;
+    use biorouter::security::security_inspector::SecurityInspector;
+    use biorouter::security::sensitive_ops::SensitiveOpsInspector;
+
+    let provider: biorouter::agents::types::SharedProvider =
+        Arc::new(tokio::sync::Mutex::new(None));
+    let extensions = Arc::new(ExtensionManager::new(
+        Arc::clone(&provider),
+        Arc::new(biorouter::session::SessionManager::instance()),
+    ));
+    extensions.set_working_dir(working_dir.to_path_buf()).await;
+    extensions
+        .add_extension(ExtensionConfig::Builtin {
+            name: "developer".to_string(),
+            display_name: Some("Developer".to_string()),
+            description: "Biorouter's built-in file and shell tools.".to_string(),
+            timeout: Some(120),
+            bundled: Some(true),
+            available_tools: Vec::new(),
+        })
+        .await
+        .expect("the developer builtin loads in-process over a duplex pipe");
+
+    // The SAME source the agent reads. `Agent::prepare_tools` calls exactly this
+    // and then appends the platform/frontend/subagent tools, which the grant
+    // construction filters back out again because they are not dispatched by the
+    // `ExtensionManager`. So for a session whose only extension is `developer`,
+    // this IS the bridged set — not an approximation of it.
+    let tools = extensions
+        .get_prefixed_tools(None)
+        .await
+        .expect("the developer extension serves its tool list");
+
+    // The inspectors the agent registers ahead of dispatch, minus the two that
+    // need agent-owned state (hooks, repetition history). Auto mode's blanket
+    // allow is what lets a bridged call through, and the security gates above it
+    // still run — an escalation-only merge, so a refusal from any of them would
+    // be a real finding rather than test noise.
+    let risks = Arc::new(ToolRiskRegistry::new());
+    risks.refresh_from_tools(&tools);
+    let managed = Arc::new(ManagedPolicy::empty());
+    let mut inspections = ToolInspectionManager::new();
+    inspections.add_inspector(Box::new(ManagedPolicyInspector::new(Arc::clone(&managed))));
+    inspections.add_inspector(Box::new(SecurityInspector::new()));
+    inspections.add_inspector(Box::new(SensitiveOpsInspector));
+    inspections.add_inspector(Box::new(PermissionInspector::new(
+        risks,
+        PermissionManager::instance(),
+        managed,
+        Arc::clone(&provider),
+    )));
+
+    bridge::BridgeGrant::new(
+        Session::default(),
+        BioRouterMode::Auto,
+        extensions,
+        Arc::new(inspections),
+        CallCapability::public_enforced(),
+        tools,
+        Conversation::new_unvalidated(vec![]),
+    )
+}
+
+/// A real Biorouter extension, called by the real child, executed here, with the
+/// real result reaching the child's answer.
+///
+/// **What this proves that no other test in this file does.** Every other test —
+/// including the live `claude` one above — issues a grant whose
+/// `ExtensionManager` is EMPTY and whose tool set is one synthetic
+/// `rmcp::model::Tool`. Those prove the wiring: that a nonce resolves, that a
+/// child connects, that `tools/list` serves the grant's own set, and (for codex)
+/// that a `tools/call` reaches Biorouter's gate stack — but the call they prove
+/// reaches it is one that can only ever be *refused*, because there is no
+/// extension behind the name. Nothing yet showed that a tool actually **ran**.
+///
+/// This closes that gap end to end, in the one direction that matters:
+///
+/// 1. the grant carries a real, loaded extension (`developer`), and its
+///    advertised tools come from `ExtensionManager::get_prefixed_tools` — the
+///    same call the agent makes — so the real schemas and the real prefixed
+///    names are what crosses the bridge;
+/// 2. the child chooses a tool and calls it back over HTTP;
+/// 3. Biorouter executes it for real, against the filesystem;
+/// 4. and the bytes it produced come back out in the child's final answer.
+///
+/// The assertion is a marker written into a temp file and **never put in the
+/// prompt**. That is what makes step 3 non-fakeable: a model that never reached
+/// the bridge, or reached it and got a refusal, cannot produce a random 64-bit
+/// token it was never shown. A weaker fixture ("hello world") would pass on a
+/// hallucination.
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `claude` CLI installed and signed in; spends the user's own plan quota"]
+async fn a_real_biorouter_extension_executes_and_its_output_reaches_the_childs_answer() {
+    // Unguessable, and deliberately a single bare token so a model copies it
+    // verbatim. It exists only on disk — see the doc comment.
+    let marker = format!("BRIDGEPROOF{:016x}", rand::random::<u64>());
+
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let target = dir.path().join("marker.txt");
+    std::fs::write(&target, format!("{marker}\n")).expect("write the marker file");
+
+    let grant = real_developer_grant(dir.path()).await;
+
+    // Fail here, loudly, rather than blaming the model for a tool it was never
+    // offered: if the extension did not load, nothing downstream is meaningful.
+    let advertised: Vec<String> = grant.tools().iter().map(|t| t.name.to_string()).collect();
+    assert!(
+        advertised.iter().any(|n| n == "developer__text_editor"),
+        "the real developer extension must have loaded and served its tools; got: {advertised:?}"
+    );
+
+    serve_real_bridge().await;
+    let lease = bridge::issue(grant).expect("the base URL is published");
+
+    let config = serde_json::json!({
+        "mcpServers": { "biorouter": { "type": "http", "url": lease.url() } }
+    });
+    let config_path = dir.path().join("mcp.json");
+    std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
+
+    let mut child = tokio::process::Command::new("claude")
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            "haiku",
+            // The child's OWN file tools are off, so the only way to read the
+            // file is through Biorouter. Without this the test could pass with
+            // the bridge never touched.
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+            "--system-prompt",
+            "You are Biorouter. Use the tools you are given.",
+        ])
+        .arg("--mcp-config")
+        .arg(&config_path)
+        // ⚠ stdin, not a trailing positional — `--mcp-config` is variadic and
+        // would swallow the prompt as a second config path. See the test above.
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_remove("ANTHROPIC_API_KEY")
+        .spawn()
+        .expect("the claude CLI runs");
+
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(
+                format!(
+                    "Use your text_editor tool with command \"view\" to read the file at {}. \
+                     Then reply with ONLY the single word that file contains, and nothing else.",
+                    target.display()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write the prompt");
+        stdin.shutdown().await.expect("close stdin");
+    }
+    let output = child.wait_with_output().await.expect("the CLI finishes");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let frames: Vec<serde_json::Value> = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .collect();
+    let dump = || format!("stdout was:\n{stdout}\nstderr:\n{stderr}");
+
+    // The bridge connected and served the REAL tool set.
+    let init = frames
+        .iter()
+        .find(|v| v["type"] == "system" && v["subtype"] == "init")
+        .unwrap_or_else(|| panic!("no system/init frame; {}", dump()));
+    let servers = init["mcp_servers"].as_array().cloned().unwrap_or_default();
+    assert!(
+        servers
+            .iter()
+            .any(|s| s["name"] == "biorouter" && s["status"] == "connected"),
+        "the bridge should be connected: {init}"
+    );
+    let offered = init["tools"].as_array().cloned().unwrap_or_default();
+    assert!(
+        offered
+            .iter()
+            .any(|t| t.as_str().unwrap_or_default() == "mcp__biorouter__developer__text_editor"),
+        "the real extension's tool should have reached the model: {offered:?}"
+    );
+
+    // The child actually CALLED it — not merely saw it listed.
+    let called: Vec<String> = frames
+        .iter()
+        .filter(|v| v["type"] == "assistant")
+        .filter_map(|v| v["message"]["content"].as_array())
+        .flatten()
+        .filter(|block| block["type"] == "tool_use")
+        .filter_map(|block| block["name"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        called
+            .iter()
+            .any(|n| n.starts_with("mcp__biorouter__developer__")),
+        "the child should have called a bridged Biorouter tool; it called {called:?}. {}",
+        dump()
+    );
+
+    // ...and BIOROUTER executed it: the marker exists only on disk, so its
+    // presence in the answer is the round trip.
+    let result = frames
+        .iter()
+        .find(|v| v["type"] == "result")
+        .unwrap_or_else(|| panic!("no result frame; {}", dump()));
+    assert_eq!(
+        result["subtype"], "success",
+        "the child turn failed: {result}"
+    );
+    let answer = result["result"].as_str().unwrap_or_default();
+    assert!(
+        answer.contains(&marker),
+        "the real tool's output never reached the answer. Expected {marker}, answer was: \
+         {answer:?}. {}",
+        dump()
+    );
 }
