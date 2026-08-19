@@ -13,6 +13,7 @@ use biorouter::providers::ollama::OLLAMA_DEFAULT_MODEL;
 use biorouter::providers::openai::OPEN_AI_DEFAULT_MODEL;
 use biorouter::providers::sagemaker_tgi::SAGEMAKER_TGI_DEFAULT_MODEL;
 use biorouter::providers::snowflake::SNOWFLAKE_DEFAULT_MODEL;
+use biorouter::providers::versa_bedrock::VERSA_BEDROCK_DEFAULT_MODEL;
 use biorouter::providers::xai::XAI_DEFAULT_MODEL;
 use biorouter::providers::xiaomi_mimo::XIAOMI_MIMO_DEFAULT_MODEL;
 use biorouter::providers::zai::ZAI_DEFAULT_MODEL;
@@ -210,22 +211,44 @@ impl ProviderTester {
     }
 
     async fn test_context_length_exceeded_error(&self) -> Result<()> {
-        // Anthropic context windows change independently of this client. A live
-        // over-limit request either stops being over-limit or risks submitting
-        // an unexpectedly billable million-token prompt. The provider's exact
-        // error-payload mapping is covered deterministically in anthropic.rs;
-        // this suite still exercises Anthropic live through its basic and tool
-        // requests, plus image requests when the fixture is available.
-        if self.name.eq_ignore_ascii_case("anthropic") {
-            println!("Skipping Anthropic live over-limit request; response mapping is unit-tested");
-            return Ok(());
-        }
+        // Ollama and Xiaomi MiMo silently truncate oversized input to their
+        // context window (MiMo caps at its ~1M window and returns Ok) rather
+        // than returning a context-length error. They are asserted on
+        // separately below, and so must still send the request.
+        let truncates_silently =
+            matches!(self.name.to_lowercase().as_str(), "ollama" | "xiaomi_mimo");
 
         let large_message_content = if self.name.to_lowercase() == "google" {
             "hello ".repeat(1_300_000)
         } else {
             "hello ".repeat(300_000)
         };
+
+        // An over-limit request is only worth sending when the fixture can
+        // actually overflow the window. Against a million-token model it
+        // cannot: the request would not error, it would submit a very large
+        // *billable* prompt and then fail the assertion below. This used to be
+        // a hardcoded `name == "anthropic"` carve-out; the window is the real
+        // reason, and stating it that way covers every large-context model
+        // rather than the one that happened to be noticed. Each provider's
+        // error-payload mapping is covered deterministically in unit tests, and
+        // this suite still exercises it live through the basic, tool and image
+        // requests.
+        //
+        // `len() / 4` OVERESTIMATES tokens for this fixture — it is repeated
+        // "hello ", roughly 6 chars per token — which is the direction that
+        // makes skipping safe: if even the overestimate fits inside the window,
+        // the real prompt certainly does.
+        let window = self.provider.get_model_config().context_limit();
+        let upper_bound_tokens = large_message_content.len() / 4;
+        if !truncates_silently && upper_bound_tokens <= window {
+            println!(
+                "Skipping {} live over-limit request: ~{} tokens cannot exceed a {}-token \
+                 window, so the call would be billed without testing anything",
+                self.name, upper_bound_tokens, window
+            );
+            return Ok(());
+        }
 
         let messages = vec![
             Message::user().with_text("hi there. what is 2 + 2?"),
@@ -248,10 +271,7 @@ impl ProviderTester {
         dbg!(&result);
         println!("===================");
 
-        // Ollama and Xiaomi MiMo silently truncate oversized input to their
-        // context window (MiMo caps at its ~1M window and returns Ok) rather
-        // than returning a context-length error.
-        if matches!(self.name.to_lowercase().as_str(), "ollama" | "xiaomi_mimo") {
+        if truncates_silently {
             assert!(
                 result.is_ok(),
                 "Expected to succeed because of default truncation"
@@ -384,6 +404,22 @@ fn load_env() {
     }
 }
 
+/// The broad, credential-**optional** sweep: a provider with no credentials
+/// configured records ⏭️ and returns `Ok`, so the suite can be run by anyone
+/// with any subset of keys.
+///
+/// `name` is the provider's **registry key** — `metadata().name`, the exact
+/// string [`create_with_named_model`] looks up. It is used verbatim, and it is
+/// also the label in the report. It used to be a display name that was
+/// `.to_lowercase()`d into a lookup, which silently produced a key that does
+/// not exist for three providers ("Bedrock" → `bedrock`, but the registry holds
+/// `aws_bedrock`); the resulting "Unknown provider" was then swallowed as one
+/// more skip, so the test reported green having called nothing.
+/// [`every_registry_key_used_by_this_suite_resolves`] is the guard that keeps
+/// that from coming back, and it needs no credentials to catch it.
+///
+/// Tests that must not be allowed to pass without calling anything use
+/// [`run_live_suite`] instead.
 async fn test_provider(
     name: &str,
     model_name: &str,
@@ -430,7 +466,7 @@ async fn test_provider(
         original_env
     };
 
-    let provider = match create_with_named_model(&name.to_lowercase(), model_name).await {
+    let provider = match create_with_named_model(name, model_name).await {
         Ok(p) => p,
         Err(e) => {
             println!("Skipping {} tests - failed to create provider: {}", name, e);
@@ -475,7 +511,7 @@ async fn test_openai_provider() -> Result<()> {
 #[tokio::test]
 async fn test_azure_provider() -> Result<()> {
     test_provider(
-        "Azure",
+        "azure_openai",
         AZURE_DEFAULT_MODEL,
         &[
             "AZURE_OPENAI_API_KEY",
@@ -487,27 +523,314 @@ async fn test_azure_provider() -> Result<()> {
     .await
 }
 
+// ===========================================================================
+// Live Bedrock / Versa Bedrock checks
+//
+// These make REAL, BILLED API calls, so they are `#[ignore]`d and must be asked
+// for by name. In exchange for being opt-in they are held to a stricter rule
+// than the sweep above: **no early exit may return `Ok`**. Every one of them is
+// an `Err`, because the state being replaced was a pair of tests that reported
+// green while calling nothing at all — a missing credential returned `Ok`, and
+// so did an "Unknown provider" from a registry key that never existed.
+//
+//     cargo test -p biorouter --test providers -- --ignored bedrock
+// ===========================================================================
+
+/// How a live test establishes that a credential is actually available.
+#[derive(Clone, Copy)]
+enum Credential {
+    /// Present only if the process environment carries it.
+    Env(&'static str),
+    /// Present if the environment carries it **or** Biorouter's secret store
+    /// does. Versa Bedrock resolves its keys through `Config::get_secret`,
+    /// which reads the environment first and the OS keychain second — so on a
+    /// machine where the UCSF keys live in the keychain (the normal desktop
+    /// install) there is no environment variable to find, and an env-only check
+    /// would hard-fail the exact configuration this test exists to cover.
+    EnvOrSecret(&'static str),
+}
+
+impl Credential {
+    fn key(self) -> &'static str {
+        match self {
+            Credential::Env(key) | Credential::EnvOrSecret(key) => key,
+        }
+    }
+
+    fn is_present(self) -> bool {
+        match self {
+            Credential::Env(key) => std::env::var(key).is_ok(),
+            Credential::EnvOrSecret(key) => {
+                std::env::var(key).is_ok()
+                    || biorouter::config::Config::global()
+                        .get_secret::<String>(key)
+                        .is_ok()
+            }
+        }
+    }
+}
+
+/// Run the full provider suite live, failing loudly instead of skipping.
+///
+/// `registry_key` is `metadata().name` and is passed to the factory verbatim.
+/// `label` is only the report row, so two tests of the same provider do not
+/// overwrite each other's status.
+async fn run_live_suite(
+    label: &str,
+    registry_key: &str,
+    model_name: &str,
+    required: &[Credential],
+    env_modifications: Option<HashMap<&str, Option<String>>>,
+) -> Result<()> {
+    TEST_REPORT.record_fail(label);
+
+    let original_env = {
+        let _lock = ENV_LOCK.lock().unwrap();
+
+        load_env();
+
+        let mut original_env = HashMap::new();
+        for credential in required {
+            if let Ok(val) = std::env::var(credential.key()) {
+                original_env.insert(credential.key(), val);
+            }
+        }
+        if let Some(mods) = &env_modifications {
+            for &var in mods.keys() {
+                if let Ok(val) = std::env::var(var) {
+                    original_env.insert(var, val);
+                }
+            }
+        }
+
+        if let Some(mods) = &env_modifications {
+            for (&var, value) in mods.iter() {
+                match value {
+                    Some(val) => std::env::set_var(var, val),
+                    None => std::env::remove_var(var),
+                }
+            }
+        }
+
+        original_env
+    };
+
+    // The environment modifications above are part of what is under test (the
+    // AWS_PROFILE variant works by *removing* the long-term keys), so they stay
+    // applied across the whole run and are restored exactly once, on every
+    // path, before the result is inspected.
+    let outcome = live_suite_inner(registry_key, model_name, required).await;
+
+    {
+        let _lock = ENV_LOCK.lock().unwrap();
+        for (&var, value) in original_env.iter() {
+            std::env::set_var(var, value);
+        }
+        if let Some(mods) = env_modifications {
+            for &var in mods.keys() {
+                if !original_env.contains_key(var) {
+                    std::env::remove_var(var);
+                }
+            }
+        }
+    }
+
+    match outcome {
+        Ok(()) => {
+            TEST_REPORT.record_pass(label);
+            Ok(())
+        }
+        Err(e) => {
+            println!("{} live test failed: {:#}", label, e);
+            TEST_REPORT.record_fail(label);
+            Err(e)
+        }
+    }
+}
+
+async fn live_suite_inner(
+    registry_key: &str,
+    model_name: &str,
+    required: &[Credential],
+) -> Result<()> {
+    let missing: Vec<&str> = required
+        .iter()
+        .copied()
+        .filter(|credential| !credential.is_present())
+        .map(Credential::key)
+        .collect();
+    if !missing.is_empty() {
+        anyhow::bail!(
+            "{} live test requires credentials that are not configured: {}. \
+             This test is #[ignore]d, so reaching it means it was asked for by \
+             name — it fails rather than skipping, because a skipped live test \
+             that reports success is worse than no test.",
+            registry_key,
+            missing.join(", ")
+        );
+    }
+
+    let provider = create_with_named_model(registry_key, model_name)
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "failed to construct provider {:?} with model {:?}: {}. A registry-key \
+                 typo surfaces here as \"Unknown provider\"; the valid keys are asserted \
+                 by every_registry_key_used_by_this_suite_resolves.",
+                registry_key,
+                model_name,
+                e
+            )
+        })?;
+
+    ProviderTester::new(provider, registry_key.to_string())
+        .run_test_suite()
+        .await
+}
+
+/// Every registry key this file passes to the factory must actually exist.
+///
+/// This is the cheap instrument the live tests lacked: no credentials, no
+/// network, no billing, and it runs in the ordinary `cargo test` sweep. The
+/// defect it pins is that `create_with_named_model("bedrock", …)` fails with
+/// "Unknown provider: bedrock" — the registry key is `aws_bedrock` — and that
+/// failure was being swallowed as a skip, so the test stayed green. Azure
+/// (`azure_openai`) and SageMaker TGI (`sagemaker_tgi`) were broken the same
+/// way and just as invisibly.
 #[tokio::test]
+async fn every_registry_key_used_by_this_suite_resolves() {
+    const KEYS_USED: &[&str] = &[
+        "anthropic",
+        "aws_bedrock",
+        "azure_openai",
+        "databricks",
+        "google",
+        "litellm",
+        "ollama",
+        "openai",
+        "openrouter",
+        "sagemaker_tgi",
+        "snowflake",
+        "versa_bedrock",
+        "xai",
+        "xiaomi_mimo",
+        "zai",
+    ];
+
+    let registered: Vec<String> = biorouter::providers::providers()
+        .await
+        .into_iter()
+        .map(|(metadata, _)| metadata.name)
+        .collect();
+
+    let unknown: Vec<&str> = KEYS_USED
+        .iter()
+        .copied()
+        .filter(|key| !registered.iter().any(|name| name == key))
+        .collect();
+
+    assert!(
+        unknown.is_empty(),
+        "these tests look up provider keys that the registry does not hold: {:?}.\n\
+         A lookup miss is reported as a skip, so the affected tests pass without \
+         calling anything. Registered keys: {:?}",
+        unknown,
+        registered
+    );
+}
+
+#[tokio::test]
+#[ignore = "live billed Bedrock call; run deliberately with --ignored"]
 async fn test_bedrock_provider_long_term_credentials() -> Result<()> {
-    test_provider(
-        "Bedrock",
+    run_live_suite(
+        "aws_bedrock (long-term keys)",
+        "aws_bedrock",
         BEDROCK_DEFAULT_MODEL,
-        &["AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"],
+        &[
+            Credential::Env("AWS_ACCESS_KEY_ID"),
+            Credential::Env("AWS_SECRET_ACCESS_KEY"),
+        ],
         None,
     )
     .await
 }
 
 #[tokio::test]
+#[ignore = "live billed Bedrock call; run deliberately with --ignored"]
 async fn test_bedrock_provider_aws_profile_credentials() -> Result<()> {
+    // Removing the long-term keys is the point: without this the SDK would
+    // satisfy the request from them and the profile path would go untested.
     let env_mods =
         HashMap::from_iter([("AWS_ACCESS_KEY_ID", None), ("AWS_SECRET_ACCESS_KEY", None)]);
 
-    test_provider(
-        "Bedrock",
+    run_live_suite(
+        "aws_bedrock (AWS_PROFILE)",
+        "aws_bedrock",
         BEDROCK_DEFAULT_MODEL,
-        &["AWS_PROFILE"],
+        &[Credential::Env("AWS_PROFILE")],
         Some(env_mods),
+    )
+    .await
+}
+
+/// The model in the issue #87 reports.
+///
+/// The two tests above pin [`BEDROCK_DEFAULT_MODEL`], which has never been
+/// `claude-sonnet-5`, so no live test reached the model actually being reported
+/// on. Pinned literally rather than to the default constant, so that moving the
+/// default cannot quietly stop covering it.
+#[tokio::test]
+#[ignore = "live billed Bedrock call; run deliberately with --ignored"]
+async fn test_bedrock_provider_sonnet_5() -> Result<()> {
+    run_live_suite(
+        "aws_bedrock (sonnet-5)",
+        "aws_bedrock",
+        "us.anthropic.claude-sonnet-5",
+        &[
+            Credential::Env("AWS_ACCESS_KEY_ID"),
+            Credential::Env("AWS_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
+/// Versa Bedrock — the UCSF MuleSoft proxy — had no live test at all, despite
+/// being the path a UCSF `config.yaml` actually routes to. Its credentials are
+/// normally in the OS keychain rather than the environment, hence
+/// [`Credential::EnvOrSecret`].
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (default model)",
+        "versa_bedrock",
+        VERSA_BEDROCK_DEFAULT_MODEL,
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
+    )
+    .await
+}
+
+/// Sonnet 4.6 over the Versa proxy. Not in `VERSA_BEDROCK_KNOWN_MODELS`' first
+/// position and not the default, so nothing else exercises it; UCSF entitlement
+/// is per-account, so a failure here is a real signal about this account rather
+/// than about the client.
+#[tokio::test]
+#[ignore = "live billed Versa Bedrock call; run deliberately with --ignored"]
+async fn test_versa_bedrock_provider_sonnet_4_6() -> Result<()> {
+    run_live_suite(
+        "versa_bedrock (sonnet-4-6)",
+        "versa_bedrock",
+        "us.anthropic.claude-sonnet-4-6",
+        &[
+            Credential::EnvOrSecret("VERSA_BEDROCK_ACCESS_KEY_ID"),
+            Credential::EnvOrSecret("VERSA_BEDROCK_SECRET_ACCESS_KEY"),
+        ],
+        None,
     )
     .await
 }
@@ -515,7 +838,7 @@ async fn test_bedrock_provider_aws_profile_credentials() -> Result<()> {
 #[tokio::test]
 async fn test_databricks_provider() -> Result<()> {
     test_provider(
-        "Databricks",
+        "databricks",
         DATABRICKS_DEFAULT_MODEL,
         &["DATABRICKS_HOST", "DATABRICKS_TOKEN"],
         None,
@@ -525,13 +848,13 @@ async fn test_databricks_provider() -> Result<()> {
 
 #[tokio::test]
 async fn test_ollama_provider() -> Result<()> {
-    test_provider("Ollama", OLLAMA_DEFAULT_MODEL, &["OLLAMA_HOST"], None).await
+    test_provider("ollama", OLLAMA_DEFAULT_MODEL, &["OLLAMA_HOST"], None).await
 }
 
 #[tokio::test]
 async fn test_anthropic_provider() -> Result<()> {
     test_provider(
-        "Anthropic",
+        "anthropic",
         ANTHROPIC_DEFAULT_MODEL,
         &["ANTHROPIC_API_KEY"],
         None,
@@ -542,7 +865,7 @@ async fn test_anthropic_provider() -> Result<()> {
 #[tokio::test]
 async fn test_openrouter_provider() -> Result<()> {
     test_provider(
-        "OpenRouter",
+        "openrouter",
         OPEN_AI_DEFAULT_MODEL,
         &["OPENROUTER_API_KEY"],
         None,
@@ -552,13 +875,13 @@ async fn test_openrouter_provider() -> Result<()> {
 
 #[tokio::test]
 async fn test_google_provider() -> Result<()> {
-    test_provider("Google", GOOGLE_DEFAULT_MODEL, &["GOOGLE_API_KEY"], None).await
+    test_provider("google", GOOGLE_DEFAULT_MODEL, &["GOOGLE_API_KEY"], None).await
 }
 
 #[tokio::test]
 async fn test_snowflake_provider() -> Result<()> {
     test_provider(
-        "Snowflake",
+        "snowflake",
         SNOWFLAKE_DEFAULT_MODEL,
         &["SNOWFLAKE_HOST", "SNOWFLAKE_TOKEN"],
         None,
@@ -569,7 +892,7 @@ async fn test_snowflake_provider() -> Result<()> {
 #[tokio::test]
 async fn test_sagemaker_tgi_provider() -> Result<()> {
     test_provider(
-        "SageMakerTgi",
+        "sagemaker_tgi",
         SAGEMAKER_TGI_DEFAULT_MODEL,
         &["SAGEMAKER_ENDPOINT_NAME"],
         None,
@@ -581,7 +904,7 @@ async fn test_sagemaker_tgi_provider() -> Result<()> {
 async fn test_litellm_provider() -> Result<()> {
     if std::env::var("LITELLM_HOST").is_err() {
         println!("LITELLM_HOST not set, skipping test");
-        TEST_REPORT.record_skip("LiteLLM");
+        TEST_REPORT.record_skip("litellm");
         return Ok(());
     }
 
@@ -590,17 +913,17 @@ async fn test_litellm_provider() -> Result<()> {
         ("LITELLM_API_KEY", Some("".to_string())),
     ]);
 
-    test_provider("LiteLLM", LITELLM_DEFAULT_MODEL, &[], Some(env_mods)).await
+    test_provider("litellm", LITELLM_DEFAULT_MODEL, &[], Some(env_mods)).await
 }
 
 #[tokio::test]
 async fn test_xai_provider() -> Result<()> {
-    test_provider("Xai", XAI_DEFAULT_MODEL, &["XAI_API_KEY"], None).await
+    test_provider("xai", XAI_DEFAULT_MODEL, &["XAI_API_KEY"], None).await
 }
 
 #[tokio::test]
 async fn test_zai_provider() -> Result<()> {
-    test_provider("Zai", ZAI_DEFAULT_MODEL, &["ZAI_API_KEY"], None).await
+    test_provider("zai", ZAI_DEFAULT_MODEL, &["ZAI_API_KEY"], None).await
 }
 
 #[tokio::test]
