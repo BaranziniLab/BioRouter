@@ -110,6 +110,14 @@ it is what the privacy bind gate reads.
 - So the bind gate **refuses to attach either coding-agent provider to a Private session.** The
   refusal happens at the bind, before a turn can send anything.
 
+> **Warning — the gate is enforcement, not a guarantee.** Privacy tiers have a master switch, and
+> turning them off removes the *enforcement*, not the exposure: with the feature disabled nothing
+> stops a user binding Claude Agent to a chat that has touched clinical data. The gate is also a
+> **safety** boundary rather than a security one — it prevents mistakes, and it does not pretend to
+> withstand a determined path, because the filesystem is open to any chat with a shell. The rule
+> above ("no PHI") is therefore a rule you follow, with a gate that catches the ordinary way of
+> breaking it.
+
 The design, the eight gates and the two lattices are in [privacy tiers](../../security/privacy-tiers.md);
 what a user sees is in
 [data privacy and PHI](../../security/data-privacy-and-phi.md). Neither provider declares an

@@ -99,6 +99,9 @@ describe('CodingAgentInlineCard', () => {
       }
       // Nor does it tell a user with no binary to sign in.
       expect(screen.queryByText('claude auth login')).not.toBeInTheDocument();
+      // A shell is still offered — the user typing the install line is the user
+      // installing it; only Biorouter running it is out of bounds.
+      expect(screen.getByTestId('coding-agent-terminal-toggle-claude_code')).toBeInTheDocument();
     });
 
     it('copies the install hint to the clipboard', async () => {

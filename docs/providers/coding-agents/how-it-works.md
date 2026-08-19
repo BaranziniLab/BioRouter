@@ -239,6 +239,40 @@ change fixes it. Every setup error names the exact command the user should run �
 reason the setup errors are built separately from the generic mapper. The four states and their
 messages are on [installing and signing in](installing-and-signing-in.md).
 
+## Using one for a single task, without rebinding the chat
+
+A coding agent does not have to become the whole conversation's provider. A chat bound to any
+other model can hand one task to `claude_code` or `codex` by spawning a subagent and naming the
+provider in the spawn's settings:
+
+```json
+{
+  "instructions": "Refactor the cohort-loading module and run its tests.",
+  "settings": { "provider": "claude_code" }
+}
+```
+
+This works through machinery that already existed rather than through anything added for these
+providers. `TaskConfig` carries an `Arc<dyn Provider>`, and `subagent_tool::apply_settings_overrides`
+resolves the named provider and applies the privacy rules to the pair before the child's session row
+is written.
+
+There is deliberately **no** separate `delegate_to_claude_agent` tool, and the reason is recorded in
+the agent's own code: `Agent::subagent_tool_enabled` exists because when two delegation mechanisms
+are armed at once the model reaches for the more general one, and the declared alternative becomes
+dead configuration. A second tool covering the same ground would reproduce that, so delegation stays
+one mechanism with a provider argument.
+
+The privacy consequence follows automatically and is worth stating, because it is the case a reader
+will want to check. Both providers are `Public`, so a **private** parent naming either one as its
+child's provider is refused outright — not flagged for approval, refused. A subagent spawn arrives
+as tool arguments the model wrote, so a private parent handing private-origin prompt text to a
+public model it chose itself is an agent-initiated disclosure with no human in the loop to escalate
+to, and `apply_settings_overrides` runs in-process inside the parent's turn where there is nothing to
+escalate to. The refusal is the same one that governs every other public model, which is why it
+needed no new rule here — and why there is no second list of provider names that a future provider
+could be forgotten from.
+
 ## Related documentation
 
 - [Installing and signing in](installing-and-signing-in.md) — the setup path, the four card
@@ -253,5 +287,7 @@ messages are on [installing and signing in](installing-and-signing-in.md).
   the absence of streaming.
 - [Model provider integration references](../README.md) — the parent folder and the API-key
   provider references.
+- [Subagents](../../agent-loop/subagents.md) — the delegation mechanism the section above
+  uses, and the settings a spawn accepts.
 - [Environment variables](../../configuration/environment-variables.md) — where the two command
   keys sit among all other configuration.

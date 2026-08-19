@@ -120,13 +120,16 @@ Find the real path with `which claude` or `which codex` in the terminal where it
 ## Verifying from the command line
 
 ```bash
-# what BioRouter will see, per provider
-curl -s localhost:3000/coding_agents/status | jq
+# what BioRouter will see, per provider (no secret key needed on this route)
+curl -s http://127.0.0.1:3000/coding_agents/status | jq
 
 # what each vendor CLI says about itself
 claude auth status
 codex login status
 ```
+
+The port is `3000` for a `biorouterd` you started yourself; the desktop app starts its own daemon
+on an **ephemeral** port, so query that one only through the app.
 
 `GET /coding_agents/status` spawns both CLIs, so it takes a moment — a cold `claude` start was
 measured at about 3.5 seconds, and the probe's own ceiling is 20 seconds per CLI. This is exactly

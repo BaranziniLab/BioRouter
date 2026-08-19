@@ -136,8 +136,9 @@ Isolation is not a sandbox, and this section is the honest statement of the boun
   holding the user's credential.
 
 This is the same posture BioRouter's own shell tooling takes, and it rests on the same premise
-recorded in [privacy tiers](../../security/privacy-tiers.md): the barrier stops mistakes, not a
-determined path.
+recorded in [where the privacy campaign stands](../../security/privacy-tiers-campaign-state.md):
+these are safety boundaries, not security boundaries — they reliably prevent mistakes, and they do
+not pretend to withstand a determined path.
 
 ## Related documentation
 

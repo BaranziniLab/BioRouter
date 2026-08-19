@@ -217,22 +217,25 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
     [connectingProviderId, onSuccess, upsert]
   );
 
+  /**
+   * An in-app shell, offered *beside* the copyable command and never instead of it.
+   * A user who prefers their own terminal loses nothing; a user who does not has to
+   * leave the app to type one line.
+   */
   const renderTerminalOption = (agent: CodingAgentAvailability) => {
     const open = terminalFor === agent.kind;
     return (
-      <>
-        <Button
-          type="button"
-          variant="ghost"
-          size="sm"
-          shape="pill"
-          onClick={() => setTerminalFor(open ? null : agent.kind)}
-          data-testid={`coding-agent-terminal-toggle-${agent.providerId}`}
-        >
-          <Terminal />
-          {open ? 'Hide terminal' : 'Open a terminal here'}
-        </Button>
-      </>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        shape="pill"
+        onClick={() => setTerminalFor(open ? null : agent.kind)}
+        data-testid={`coding-agent-terminal-toggle-${agent.providerId}`}
+      >
+        <Terminal />
+        {open ? 'Hide terminal' : 'Open a terminal here'}
+      </Button>
     );
   };
 
@@ -293,9 +296,13 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
               <code className="font-mono">{AGENT_COMMAND_CONFIG[agent.kind].key}</code> to its full
               path in Settings instead.
             </p>
-            <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="flex flex-col items-stretch gap-2 pt-1 sm:flex-row sm:flex-wrap sm:items-center sm:gap-x-3">
               {renderRecheck(agent)}
+              {/* A shell the user types the install line into is still the user
+                  installing it. What is prohibited is Biorouter running it. */}
+              {renderTerminalOption(agent)}
             </div>
+            {renderTerminal(agent)}
           </div>
         );
 
