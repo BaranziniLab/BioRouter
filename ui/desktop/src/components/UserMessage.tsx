@@ -359,6 +359,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                 <div
                   ref={bubbleRef}
                   id={clampBodyId}
+                  data-testid="user-message-bubble"
                   style={
                     isClamped
                       ? {
@@ -372,7 +373,7 @@ export default function UserMessage({ message, onMessageUpdate }: UserMessagePro
                       : undefined
                   }
                   className={cn(
-                    'flex min-w-0 rounded-container bg-background-medium px-3.5 py-2.5',
+                    'flex w-fit max-w-full min-w-0 self-end rounded-container bg-background-medium px-3.5 py-2.5',
                     isClamped && [
                       'relative overflow-hidden',
                       "after:pointer-events-none after:absolute after:inset-x-0 after:bottom-0 after:h-14 after:content-['']",
