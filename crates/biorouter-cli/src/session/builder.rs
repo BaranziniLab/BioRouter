@@ -458,11 +458,31 @@ async fn close_ephemeral_store_with_manager(
     close_ephemeral_store(ephemeral_store_dir);
 }
 
-/// How long to keep re-trying a store removal the OS is still refusing, and
-/// how long to pause between attempts. Small, because the handles are already
-/// closing; the wait exists to let the OS notice, not to outlast real work.
+/// The budget for re-trying a store removal the OS is still refusing: how
+/// many attempts, and how long to pause between them.
+///
+/// The pause *backs off* instead of staying flat, because the two cases it
+/// serves pull in opposite directions. The common one is a handle a
+/// millisecond from release, which wants the first retry almost immediately.
+/// The rare one is a runner under enough load that the same handle takes
+/// seconds, which wants a budget long enough to outlast it. A flat 50 ms over
+/// 40 attempts served the first well and the second not at all: 2 s total,
+/// and it went red on windows-latest while two sibling tests doing the
+/// identical thing passed in the same run — which is what a budget slightly
+/// too short looks like, and why the fix is a longer tail rather than a
+/// different mechanism. Doubling from 25 ms to a 500 ms ceiling reaches the
+/// first retry twice as fast as the flat pause did AND spends ~17.8 s over
+/// the same bounded 40 attempts.
 const STORE_REMOVAL_ATTEMPTS: u32 = 40;
-const STORE_REMOVAL_PAUSE: std::time::Duration = std::time::Duration::from_millis(50);
+const STORE_REMOVAL_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
+const STORE_REMOVAL_MAX_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// The pause before retry number `attempt` (1-based): double the last one,
+/// stopping at [`STORE_REMOVAL_MAX_PAUSE`].
+fn store_removal_pause(attempt: u32) -> std::time::Duration {
+    let doublings = attempt.saturating_sub(1).min(16);
+    (STORE_REMOVAL_FIRST_PAUSE * (1u32 << doublings)).min(STORE_REMOVAL_MAX_PAUSE)
+}
 
 /// Remove a directory, re-trying while the OS says something still has it open.
 ///
@@ -483,18 +503,38 @@ const STORE_REMOVAL_PAUSE: std::time::Duration = std::time::Duration::from_milli
 ///
 /// `remove` is injected so the retry can be tested on any platform. A test that
 /// could only fail on Windows would not be a test.
-fn remove_dir_all_retrying<F>(path: &Path, mut remove: F) -> std::io::Result<()>
+fn remove_dir_all_retrying<F>(path: &Path, remove: F) -> std::io::Result<()>
 where
     F: FnMut(&Path) -> std::io::Result<()>,
 {
+    remove_dir_all_retrying_with(path, remove, std::thread::sleep)
+}
+
+/// The retry loop with its wait injected as well as its removal.
+///
+/// Injecting the wait is what lets a test assert the *schedule* — that the
+/// pause grows, and that the budget is still bounded — without serving it.
+/// Asserting the schedule against the real clock would mean a unit test that
+/// sleeps for the whole 17.8 s budget to prove the budget is 17.8 s, so the
+/// tail nobody can afford to wait for is exactly the part that would go
+/// unverified.
+fn remove_dir_all_retrying_with<F, S>(
+    path: &Path,
+    mut remove: F,
+    mut sleep: S,
+) -> std::io::Result<()>
+where
+    F: FnMut(&Path) -> std::io::Result<()>,
+    S: FnMut(std::time::Duration),
+{
     let mut last = remove(path);
-    for _ in 1..STORE_REMOVAL_ATTEMPTS {
+    for attempt in 1..STORE_REMOVAL_ATTEMPTS {
         match last {
             Ok(()) => return Ok(()),
             Err(ref e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(_) => {}
         }
-        std::thread::sleep(STORE_REMOVAL_PAUSE);
+        sleep(store_removal_pause(attempt));
         last = remove(path);
     }
     last
@@ -1137,7 +1177,8 @@ mod tests {
 
         assert!(
             !path.exists(),
-            "the biorouter-no-session-* directory must be removed"
+            "the biorouter-no-session-* directory must be removed{}",
+            why_the_store_survived(&path)
         );
         assert!(
             manager
@@ -1248,15 +1289,23 @@ mod tests {
         use std::cell::Cell;
         use std::io::{Error, ErrorKind};
 
+        // The wait is injected alongside the removal, so the whole budget can
+        // be spent in a test that takes no time to run.
+        let no_wait = |_| {};
+
         let calls = Cell::new(0);
-        let result = remove_dir_all_retrying(Path::new("irrelevant"), |_| {
-            calls.set(calls.get() + 1);
-            if calls.get() < 3 {
-                Err(Error::other("still in use"))
-            } else {
-                Ok(())
-            }
-        });
+        let result = remove_dir_all_retrying_with(
+            Path::new("irrelevant"),
+            |_| {
+                calls.set(calls.get() + 1);
+                if calls.get() < 3 {
+                    Err(Error::other("still in use"))
+                } else {
+                    Ok(())
+                }
+            },
+            no_wait,
+        );
         assert!(
             result.is_ok(),
             "a removal that eventually succeeds must succeed"
@@ -1270,10 +1319,14 @@ mod tests {
         // It also has to give up rather than hang on a directory that is never
         // going to be removable.
         let calls = Cell::new(0);
-        let result = remove_dir_all_retrying(Path::new("irrelevant"), |_| {
-            calls.set(calls.get() + 1);
-            Err(Error::new(ErrorKind::PermissionDenied, "never"))
-        });
+        let result = remove_dir_all_retrying_with(
+            Path::new("irrelevant"),
+            |_| {
+                calls.set(calls.get() + 1);
+                Err(Error::new(ErrorKind::PermissionDenied, "never"))
+            },
+            no_wait,
+        );
         assert!(
             result.is_err(),
             "a permanent failure must be reported, not swallowed"
@@ -1286,12 +1339,66 @@ mod tests {
 
         // An already-absent directory is the goal state, not a failure.
         let calls = Cell::new(0);
-        let result = remove_dir_all_retrying(Path::new("irrelevant"), |_| {
-            calls.set(calls.get() + 1);
-            Err(Error::new(ErrorKind::NotFound, "gone"))
-        });
+        let result = remove_dir_all_retrying_with(
+            Path::new("irrelevant"),
+            |_| {
+                calls.set(calls.get() + 1);
+                Err(Error::new(ErrorKind::NotFound, "gone"))
+            },
+            no_wait,
+        );
         assert!(result.is_ok(), "already gone is success");
         assert_eq!(calls.get(), 1, "and needs no retries");
+    }
+
+    /// The budget is the fix, so the budget is what needs pinning.
+    ///
+    /// A flat 50 ms pause over these same 40 attempts spent 2 s in total, and
+    /// 2 s was measurably not enough on a loaded windows-latest runner. Both
+    /// halves of the replacement have to hold for that to be addressed: the
+    /// first retry must stay prompt (a backoff that starts slow would make
+    /// the ordinary case worse to fix the rare one), and the tail must be
+    /// long enough that a handle taking seconds to close is still waited out.
+    #[test]
+    fn the_removal_budget_backs_off_and_still_outlasts_a_slow_handle() {
+        use std::cell::RefCell;
+        use std::io::Error;
+
+        let waits: RefCell<Vec<std::time::Duration>> = RefCell::new(Vec::new());
+        let result = remove_dir_all_retrying_with(
+            Path::new("irrelevant"),
+            |_| Err(Error::other("never")),
+            |d| waits.borrow_mut().push(d),
+        );
+        assert!(result.is_err(), "a permanent failure is still reported");
+
+        let waits = waits.into_inner();
+        assert_eq!(
+            waits.len() as u32,
+            STORE_REMOVAL_ATTEMPTS - 1,
+            "one wait between each pair of attempts, and none after the last"
+        );
+        assert_eq!(
+            waits[0], STORE_REMOVAL_FIRST_PAUSE,
+            "the first retry must stay prompt: the common case is a handle a \
+             millisecond from release, and it pays this wait in full"
+        );
+        assert!(
+            waits.windows(2).all(|w| w[1] >= w[0]),
+            "the pause must never shrink: {waits:?}"
+        );
+        assert_eq!(
+            *waits.last().expect("a bounded budget still has waits"),
+            STORE_REMOVAL_MAX_PAUSE,
+            "the backoff must reach its ceiling rather than growing without bound"
+        );
+
+        let total: std::time::Duration = waits.iter().sum();
+        assert!(
+            total >= std::time::Duration::from_secs(15),
+            "the budget must outlast a handle that takes seconds to close; the flat 2 s \
+             it replaced did not, and went red on windows-latest. Got {total:?}"
+        );
     }
 
     /// Diagnostics for a store directory that outlived the thing meant to
