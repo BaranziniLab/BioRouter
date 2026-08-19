@@ -463,7 +463,7 @@ pub fn tool_specs() -> Vec<Tool> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::service::KnowledgeService;
+    use crate::knowledge::{page_fixtures::valid_page, service::KnowledgeService};
 
     fn fresh_svc() -> (tempfile::TempDir, KnowledgeService) {
         let dir = tempfile::tempdir().unwrap();
@@ -623,7 +623,7 @@ mod tests {
         // Write a page
         let write_args = serde_json::json!({
             "path": "knowledge/entities/hrv.md",
-            "content": "---\ntitle: HRV\nkind: entity\n---\n\nHeart rate variability.",
+            "content": valid_page("entity", "HRV", "Heart rate variability."),
             "commit_message": "test write"
         });
         let write_result = dispatch.call("kb_write_page", write_args).await.unwrap();

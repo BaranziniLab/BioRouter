@@ -128,6 +128,8 @@ impl<T> LinkIndex<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::knowledge::types::Graph;
+    use std::path::Path;
 
     #[test]
     fn a_bare_title_and_its_logical_path_reduce_to_the_same_key() {
@@ -213,112 +215,198 @@ mod tests {
     // The equivalence test (DR-14's gate)
     // -----------------------------------------------------------------------
 
-    /// One corpus, all three consumers, one question: *which links resolve?*
+    /// The link shapes the sub-agent actually emits, one *page* each:
+    /// `(page stem, the single link that must reach that page)`.
     ///
-    /// This is the test that could not be written while the three regexes and
-    /// their three resolvers were separate — and the reason it is worth having
-    /// even now that they share a path is that the sharing is not structurally
-    /// enforced. Nothing stops a future edit re-spelling the regex in one macro;
-    /// this test is what notices, because that macro would then disagree with
-    /// the graph about the piped, path-style link below.
+    /// One page per shape is the load-bearing part, and it is the fix for a test
+    /// that could not fail. The first corpus pointed all four shapes at one page
+    /// and asked whether that page was an orphan — a question any one of the
+    /// four satisfies. Mutating the lint's inbound resolution back to its old
+    /// stem comparison left the test green, because the plain link alone kept
+    /// the page linked while the piped and path-style handling (the
+    /// disagreement DR-14 is *about*) was broken. Here each page's only inbound
+    /// link is written in one shape, so breaking that shape orphans that page
+    /// and no other link covers for it.
     ///
-    /// The corpus carries one of each form the sub-agent actually emits: a plain
-    /// link, a piped alias link, a path-style link with and without `.md`, and a
-    /// link to a page that does not exist.
-    #[tokio::test]
-    async fn graph_lint_and_query_agree_on_what_resolves() {
-        use crate::knowledge::{graph, macros, service::KnowledgeService, store::write_page};
+    /// The stems are hyphenated deliberately: `[[Plain target]]` resolves under
+    /// the *old* per-consumer resolvers too, so the plain row is the control
+    /// that stays green while the other three go red. A shape every resolver
+    /// ever written got right cannot tell two resolvers apart.
+    const SHAPES: [(&str, &str); 4] = [
+        ("plain-target", "[[Plain target]]"),
+        ("piped-target", "[[piped-target|the alias]]"),
+        ("path-target", "[[knowledge/concepts/path-target]]"),
+        ("suffix-target", "[[knowledge/concepts/suffix-target.md]]"),
+    ];
 
-        const BODY: &str = "\
-Plain [[Zone-2 base]].
-Piped [[knowledge/concepts/zone-2 base|the base]].
-Path-style [[knowledge/concepts/zone-2 base.md]].
-Dangling [[Nonexistent Page]].";
+    /// A link to a page that does not exist. All three consumers must agree it
+    /// resolves to nothing — the other half of "which links resolve?", and the
+    /// half a resolver that matches too eagerly gets wrong.
+    const DANGLING: &str = "Nonexistent Page";
 
-        let dir = tempfile::tempdir().unwrap();
-        let svc = KnowledgeService::new(dir.path().to_path_buf());
-        svc.create_base("k", "K", None).unwrap();
-        let kb = dir.path().join("k");
-        // A *source* page, so the lint's missing-concept check (which only
-        // looks at source pages) sees the dangling link.
+    /// The node id of the one page every link above is written in.
+    const SOURCE_NODE: &str = "sources:paper";
+
+    fn concept_path(stem: &str) -> String {
+        format!("knowledge/concepts/{stem}.md")
+    }
+
+    fn concept_node(stem: &str) -> String {
+        format!("concepts:{stem}")
+    }
+
+    /// One line per shape, in `SHAPES` order, then the dangling one — the query
+    /// assertion reads the citation list back positionally against it.
+    fn source_body() -> String {
+        let mut body = String::new();
+        for (stem, link) in SHAPES {
+            body.push_str(&format!("The {stem} page: {link}.\n"));
+        }
+        body.push_str(&format!("And a link to nothing: [[{DANGLING}]].\n"));
+        body
+    }
+
+    fn write_corpus(kb: &Path) {
+        use crate::knowledge::{page_fixtures::valid_page, store::write_page};
+
+        // A *source* page, because the lint's missing-concept check looks only
+        // at those — write the dangling link anywhere else and that half of the
+        // report is empty for a reason that has nothing to do with resolution.
         write_page(
-            &kb,
+            kb,
             "knowledge/sources/paper.md",
-            &format!("---\ntitle: Paper\nkind: source\n---\n\n{BODY}"),
+            &valid_page("source", "Paper", &source_body()),
             "add paper",
             None,
         )
         .unwrap();
-        write_page(
-            &kb,
-            "knowledge/concepts/zone-2 base.md",
-            "---\ntitle: Zone-2 base\nkind: concept\n---\n\nThe base.",
-            "add z2",
-            None,
-        )
-        .unwrap();
+        for (stem, _) in SHAPES {
+            write_page(
+                kb,
+                &concept_path(stem),
+                &valid_page("concept", stem, "A target page."),
+                "add target",
+                None,
+            )
+            .unwrap();
+        }
+    }
 
-        // 1. The graph: three edges into the concept, none for the dangling one.
-        let g = graph::derive(&kb).unwrap();
-        let into_concept = g
-            .edges
-            .iter()
-            .filter(|e| e.from == "sources:paper" && e.to == "concepts:zone-2 base")
-            .count();
-        assert_eq!(
-            into_concept, 3,
-            "all three resolvable forms must be edges, got {:?}",
-            g.edges
-        );
+    /// Exactly one edge per shape, and no node invented for the dangling target.
+    fn assert_graph_agrees(g: &Graph) {
+        for (stem, link) in SHAPES {
+            let to = concept_node(stem);
+            let drawn = g
+                .edges
+                .iter()
+                .filter(|e| e.from == SOURCE_NODE && e.to == to)
+                .count();
+            assert_eq!(
+                drawn, 1,
+                "{link} is the only link to {to}, so {drawn} edges means the \
+                 deriver stopped resolving that shape; edges={:?}",
+                g.edges
+            );
+        }
         assert!(
-            g.nodes.iter().all(|n| n.label != "Nonexistent Page"),
-            "a dangling link must not invent a node"
+            g.nodes.iter().all(|n| n.label != DANGLING),
+            "a dangling link must not invent a node; nodes={:?}",
+            g.nodes
         );
+    }
 
-        // 2. The lint: the concept has an inbound link (so it is not an orphan),
-        //    and the dangling target is the one missing page reported.
-        let report = macros::lint::scan(&kb).unwrap();
-        assert!(
-            !report
-                .orphans
-                .contains(&"knowledge/concepts/zone-2 base.md".to_string()),
-            "the piped path-style link must count as inbound; orphans={:?}",
-            report.orphans
-        );
+    /// The lint must see the same inbound link the graph drew an edge for, and
+    /// must report as missing exactly the target the graph refused to resolve.
+    fn assert_lint_agrees(kb: &Path) {
+        let report = crate::knowledge::macros::lint::scan(kb).unwrap();
+        for (stem, link) in SHAPES {
+            let path = concept_path(stem);
+            assert!(
+                !report.orphans.contains(&path),
+                "{path} has exactly one inbound link, {link} — an orphan here is \
+                 the lint contradicting the edge the graph just drew, and sends \
+                 the user to fix a page that is fine; orphans={:?}",
+                report.orphans
+            );
+        }
         assert_eq!(
             report.missing_concept_pages,
-            vec!["Nonexistent Page".to_string()],
-            "exactly the dangling target, and no resolvable one"
+            vec![DANGLING.to_string()],
+            "the dangling target and nothing else: a resolvable shape listed \
+             here is the missing-concept check resolving differently from the \
+             inbound-link check fifty lines above it"
         );
+    }
 
-        // 3. The query citation extractor, over the same text. It has no bundle
-        //    to resolve against, so what is compared is the *target it hands
-        //    back*: run those through the same index and the answer must match.
-        let cited = macros::query::extract_wiki_links_from_text(BODY);
-        let index = LinkIndex::from_pages(
+    /// The citation extractor has no bundle to resolve against, so what is
+    /// compared is the *target it hands back*: run those through the shared
+    /// index and every answer must match the graph's.
+    fn assert_query_agrees(g: &Graph) {
+        let cited = crate::knowledge::macros::query::extract_wiki_links_from_text(&source_body());
+        let index: LinkIndex<String> = LinkIndex::from_pages(
             g.nodes
                 .iter()
                 .map(|n| (n.path.clone(), n.id.clone()))
                 .collect::<Vec<_>>(),
         );
-        let resolved: Vec<Option<&String>> =
-            cited.iter().map(|c| index.resolve(c)).collect::<Vec<_>>();
         assert_eq!(
-            resolved
-                .iter()
-                .filter(|r| r.map(String::as_str) == Some("concepts:zone-2 base"))
-                .count(),
-            3,
-            "query handed back targets the shared index cannot resolve: {cited:?}"
+            cited.len(),
+            SHAPES.len() + 1,
+            "one citation per link, in document order, plus the dangling one: {cited:?}"
+        );
+        for (i, (stem, link)) in SHAPES.iter().enumerate() {
+            let want = concept_node(stem);
+            assert_eq!(
+                index.resolve(&cited[i]),
+                Some(&want),
+                "query handed back {:?} for {link}; a citation is prose shown to \
+                 the user, so a target the shared index rejects is a citation \
+                 pointing nowhere",
+                cited[i]
+            );
+        }
+        assert_eq!(
+            cited[SHAPES.len()],
+            DANGLING,
+            "the dangling target must survive extraction verbatim: {cited:?}"
         );
         assert!(
-            cited.contains(&"Nonexistent Page".to_string())
-                && index.resolve("Nonexistent Page").is_none(),
-            "the dangling target must survive extraction and resolve nowhere: {cited:?}"
+            index.resolve(DANGLING).is_none(),
+            "the dangling target must resolve nowhere"
         );
         assert!(
             !cited.iter().any(|c| c.contains('|')),
-            "an alias reached the citation list verbatim — the old query resolver: {cited:?}"
+            "an alias reached the citation list verbatim — the old query \
+             resolver, which had none: {cited:?}"
         );
+    }
+
+    /// One corpus, all three consumers, one question: *which links resolve?*
+    ///
+    /// This is the test that could not be written while the three regexes and
+    /// their three resolvers were separate — and the reason it is worth having
+    /// even now that they share a path is that the sharing is not structurally
+    /// enforced. Nothing stops a future edit re-resolving in one consumer; this
+    /// test is what notices, because that consumer would then disagree with the
+    /// other two about one of the shapes in [`SHAPES`].
+    ///
+    /// It is checked by mutation, not by being green: break any one of the four
+    /// resolution sites — the graph's edge resolve, the lint's inbound resolve,
+    /// the lint's missing-concept resolve, or the query extractor's target — and
+    /// exactly the assertion for that consumer fires.
+    #[tokio::test]
+    async fn graph_lint_and_query_agree_on_what_resolves() {
+        use crate::knowledge::{graph, service::KnowledgeService};
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("k", "K", None).unwrap();
+        let kb = dir.path().join("k");
+        write_corpus(&kb);
+
+        let g = graph::derive(&kb).unwrap();
+        assert_graph_agrees(&g);
+        assert_lint_agrees(&kb);
+        assert_query_agrees(&g);
     }
 }

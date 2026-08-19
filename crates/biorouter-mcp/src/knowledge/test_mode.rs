@@ -278,6 +278,13 @@ mod tests {
                 request_id: "test".into(),
                 name: "kb_read_page".into(),
                 content: json!({
+                    // Deliberately NOT a `valid_page`. This is the body of a
+                    // `raw/` source — whatever the converter produced from a
+                    // PDF or a paste — and `write_raw` stores it verbatim, with
+                    // no frontmatter of any kind. Giving the digest's *input*
+                    // the format of its output is the one change that would
+                    // stop this test saying anything: it asserts a conformant
+                    // page is built from unstructured markdown.
                     "path": "raw/alpha/source.md",
                     "content": "# Example page\n\nUseful details",
                     "frontmatter": null,

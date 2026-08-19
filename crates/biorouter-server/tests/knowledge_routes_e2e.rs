@@ -11,7 +11,7 @@ mod test_sandbox;
 /// The router is constructed from `Arc<KnowledgeService>` directly so we need
 /// no full AppState, network, or real provider.
 use axum::{body::Body, http::Request};
-use biorouter_mcp::knowledge::service::KnowledgeService;
+use biorouter_mcp::knowledge::{page_fixtures::valid_page, service::KnowledgeService};
 use std::sync::Arc;
 use tower::ServiceExt;
 
@@ -156,7 +156,7 @@ async fn e2e_create_raw_history_graph_export_import() {
                 .header("content-type", "application/json")
                 .body(Body::from(
                     serde_json::to_vec(&serde_json::json!({
-                        "content": "# HRV\n\nZone-2 training increases HRV.",
+                        "content": valid_page("note", "HRV", "# HRV\n\nZone-2 training increases HRV."),
                         "commit_message": "add hrv note"
                     }))
                     .unwrap(),

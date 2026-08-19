@@ -13,6 +13,7 @@ use biorouter_mcp::knowledge::{
         lint,
         query::{query, QueryArgs},
     },
+    page_fixtures::valid_page,
     service::KnowledgeService,
     subagent::loop_::{Completer, LlmMessage, LlmReply, LlmToolCall, SubAgentBounds},
     test_mode::TestModeCompleter,
@@ -102,7 +103,11 @@ async fn macros_e2e_ingest_query_lint() {
             "kb_write_page",
             serde_json::json!({
                 "path": "knowledge/sources/hrv-zone2.md",
-                "content": "---\ntitle: HRV zone-2\nkind: source\n---\n\nHRV improves after zone-2 training. See also [[Zone-2]].",
+                "content": valid_page(
+                    "source",
+                    "HRV zone-2",
+                    "HRV improves after zone-2 training. See also [[Zone-2]].",
+                ),
                 "commit_message": "add hrv source page"
             }),
         ),

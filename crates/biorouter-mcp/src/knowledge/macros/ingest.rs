@@ -251,6 +251,7 @@ mod tests {
     use super::*;
     use crate::knowledge::{
         git::GitRepo,
+        page_fixtures::valid_page,
         service::KnowledgeService,
         subagent::loop_::{LlmReply, LlmToolCall},
         types::ChangeKind,
@@ -332,7 +333,7 @@ mod tests {
                 "kb_write_page",
                 serde_json::json!({
                     "path": "knowledge/sources/stub.md",
-                    "content": "---\ntitle: stub\nkind: source\n---\n\nStub.",
+                    "content": valid_page("source", "stub", "Stub."),
                     "commit_message": "add source"
                 }),
             ),
@@ -551,8 +552,12 @@ mod tests {
             tool_call_reply(
                 "kb_write_page",
                 serde_json::json!({
+                    // A conformant body on purpose. The one thing wrong with
+                    // this call is its path, and a body the writer would also
+                    // refuse (Stage 3's validator, DR-19) would satisfy the
+                    // assertion below with the traversal guard removed.
                     "path": "knowledge/../escape.md",
-                    "content": "evil",
+                    "content": valid_page("source", "Escape", "Body."),
                     "commit_message": "escape"
                 }),
             ),
@@ -746,7 +751,7 @@ mod tests {
                 "kb_write_page",
                 serde_json::json!({
                     "path": "knowledge/sources/half-done.md",
-                    "content": "---\ntitle: half\nkind: source\n---\n\nHalf.",
+                    "content": valid_page("source", "half", "Half."),
                     "commit_message": "half a digest"
                 }),
             )]),
@@ -825,7 +830,7 @@ mod tests {
                 "kb_write_page",
                 serde_json::json!({
                     "path": "knowledge/../escape.md",
-                    "content": "evil",
+                    "content": valid_page("source", "Escape", "Body."),
                     "commit_message": "escape"
                 }),
             ),

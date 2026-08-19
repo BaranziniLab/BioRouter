@@ -266,6 +266,7 @@ pub(crate) fn extract_wiki_links_from_text(text: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::knowledge::{
+        page_fixtures::valid_page,
         service::KnowledgeService,
         subagent::loop_::{LlmMessage, LlmReply, LlmToolCall},
         types::ChangeKind,
@@ -396,7 +397,7 @@ mod tests {
                 "kb_write_page",
                 serde_json::json!({
                     "path": "knowledge/notes/zone2-hrv.md",
-                    "content": "---\ntitle: zone2-hrv\nkind: note\n---\n\nAnswer.",
+                    "content": valid_page("note", "zone2-hrv", "Answer."),
                     "commit_message": "file query"
                 }),
             ),
