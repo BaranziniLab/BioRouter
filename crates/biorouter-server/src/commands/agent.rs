@@ -162,6 +162,12 @@ pub async fn run() -> Result<()> {
     // Publish the base URL so in-process MCP tools (e.g. Agent Drafter's
     // `launch_app`) can emit absolute http://host:port/apps/<id>/ URLs.
     std::env::set_var("BIOROUTER_APP_BASE_URL", format!("http://{local_addr}"));
+    // Publish the same base to the coding-agent tool bridge, so a bridged child
+    // (`claude`, `codex`) can be handed an absolute URL for the session's tools.
+    // Until this is set no grant can be issued at all, which is the correct
+    // behaviour in a CLI process with no HTTP server: there would be nothing for a
+    // child to connect to, and the providers then run tool-less rather than failing.
+    biorouter::providers::coding_agent::bridge::publish_base_url(format!("http://{local_addr}"));
 
     let tunnel_manager = app_state.tunnel_manager.clone();
     tokio::spawn(async move {

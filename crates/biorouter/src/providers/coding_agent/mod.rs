@@ -52,6 +52,7 @@
 //! still fires on them. See [`super::coding_agent::bridge`] once that lands.
 
 pub mod appserver;
+pub mod bridge;
 pub mod discovery;
 pub mod env;
 pub mod transcript;

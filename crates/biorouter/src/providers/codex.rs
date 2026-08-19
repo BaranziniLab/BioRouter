@@ -43,7 +43,9 @@ use serde_json::{json, Value};
 
 use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::coding_agent::appserver::{AppServer, Inbound};
-use super::coding_agent::{self, discovery, env as agent_env, transcript, CodingAgentKind};
+use super::coding_agent::{
+    self, bridge, discovery, env as agent_env, transcript, CodingAgentKind,
+};
 use super::errors::ProviderError;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
@@ -127,7 +129,7 @@ impl CodexProvider {
     /// `ephemeral` keeps Codex from writing its own session files: Biorouter owns
     /// the transcript, and a second copy on disk would be governed by none of
     /// Biorouter's controls.
-    fn thread_params(system: &str, cwd: &str, model: &str) -> Value {
+    fn thread_params(system: &str, cwd: &str, model: &str, bridge_url: Option<&str>) -> Value {
         let mut params = json!({
             "cwd": cwd,
             "ephemeral": true,
@@ -137,6 +139,21 @@ impl CodexProvider {
         });
         if !model.trim().is_empty() {
             params["model"] = json!(model);
+        }
+        // Biorouter's own tools, when this turn has a bridge. `config` is the same
+        // override map `-c` writes, so this is `mcp_servers.<name>.url` — the
+        // streamable-HTTP form, which is the only one that needs no second process.
+        //
+        // ⚠ The URL is the credential. Codex sends no Authorization header on MCP
+        // requests (observed), so the capability has to travel in the path, and it
+        // must not be logged. `dynamicTools` would remove the HTTP hop entirely and
+        // is the eventual replacement — but the installed Codex declares the
+        // DynamicToolSpec types without any request that accepts them, so it is not
+        // reachable yet.
+        if let Some(url) = bridge_url {
+            params["config"] = json!({
+                "mcp_servers": { "biorouter": { "url": url } }
+            });
         }
         params
     }
@@ -256,7 +273,10 @@ impl CodexProvider {
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_else(|_| ".".to_string());
         let thread = server
-            .request("thread/start", Self::thread_params(system, &cwd, model))
+            .request(
+                "thread/start",
+                Self::thread_params(system, &cwd, model, bridge::active_bridge_url().as_deref()),
+            )
             .await?;
         let thread_id = thread
             .get("thread")
@@ -447,7 +467,7 @@ mod tests {
     /// Each of the four is a decision rather than a default, so each is pinned.
     #[test]
     fn thread_params_are_locked_down() {
-        let p = CodexProvider::thread_params("SYSTEM", "/tmp/work", "gpt-5.5");
+        let p = CodexProvider::thread_params("SYSTEM", "/tmp/work", "gpt-5.5", None);
         assert_eq!(p["sandbox"], "read-only", "the child must not be able to write");
         assert_eq!(p["ephemeral"], true, "Codex must not persist its own transcript");
         assert_eq!(p["approvalPolicy"], "never");
@@ -463,8 +483,31 @@ mod tests {
     /// by omitting the key rather than sending an empty string.
     #[test]
     fn an_empty_model_is_omitted_rather_than_sent_blank() {
-        let p = CodexProvider::thread_params("S", "/tmp", "   ");
+        let p = CodexProvider::thread_params("S", "/tmp", "   ", None);
         assert!(p.get("model").is_none());
+    }
+
+    /// A bridge URL becomes an `mcp_servers` config override, which is how
+    /// Biorouter's own tools reach the child. Without a bridge no `config` key is
+    /// sent at all, so the child gets no tools rather than an empty server map.
+    #[test]
+    fn a_bridge_url_becomes_an_mcp_server_override() {
+        let with = CodexProvider::thread_params(
+            "S",
+            "/tmp",
+            "gpt-5.5",
+            Some("http://127.0.0.1:9/tool_bridge/deadbeef"),
+        );
+        assert_eq!(
+            with["config"]["mcp_servers"]["biorouter"]["url"],
+            "http://127.0.0.1:9/tool_bridge/deadbeef"
+        );
+
+        let without = CodexProvider::thread_params("S", "/tmp", "gpt-5.5", None);
+        assert!(
+            without.get("config").is_none(),
+            "no bridge must mean no config key, not an empty server map"
+        );
     }
 
     /// Every approval that would let the child act on the machine is refused;

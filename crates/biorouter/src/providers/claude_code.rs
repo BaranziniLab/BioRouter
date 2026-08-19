@@ -69,7 +69,7 @@ use super::base::{
     ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
 };
 use super::coding_agent::{
-    self, discovery, env as agent_env, transcript, CodingAgentKind,
+    self, bridge, discovery, env as agent_env, transcript, CodingAgentKind,
 };
 use super::errors::ProviderError;
 use crate::config::search_path::SearchPaths;
@@ -163,7 +163,13 @@ impl ClaudeCodeProvider {
     ///
     /// `output_format` is the only axis that varies: `json` for a single blocking
     /// result, `stream-json` for the streaming path.
-    fn base_args(&self, model_config: &ModelConfig, system: &str, output_format: &str) -> Vec<String> {
+    fn base_args(
+        &self,
+        model_config: &ModelConfig,
+        system: &str,
+        output_format: &str,
+        mcp_config: Option<&std::path::Path>,
+    ) -> Vec<String> {
         let mut args: Vec<String> = vec!["-p".into()];
 
         // Isolation. See the module header — both of these are security-relevant
@@ -176,6 +182,22 @@ impl ClaudeCodeProvider {
         // MCP, where Biorouter executes them behind its own gates.
         args.push("--tools".into());
         args.push(String::new());
+
+        // Biorouter's own tools, when this turn has a bridge. `--strict-mcp-config`
+        // above means this is the *only* MCP server the child sees, so the set is
+        // exactly the session's tool surface and nothing of the user's own.
+        //
+        // `bypassPermissions` looks alarming and is the correct mode here: with
+        // built-ins off, the only tools that exist are Biorouter's, and each one is
+        // inspected and permission-checked on Biorouter's side of the bridge before
+        // it runs. Leaving the child to prompt instead would stall the turn, since
+        // a `-p` session has nobody to ask.
+        if let Some(path) = mcp_config {
+            args.push("--mcp-config".into());
+            args.push(path.to_string_lossy().into_owned());
+            args.push("--permission-mode".into());
+            args.push("bypassPermissions".into());
+        }
 
         // Biorouter's system prompt replaces Claude Code's, rather than being
         // appended to it.
@@ -206,9 +228,10 @@ impl ClaudeCodeProvider {
         model_config: &ModelConfig,
         system: &str,
         output_format: &str,
+        mcp_config: Option<&std::path::Path>,
     ) -> tokio::process::Command {
         let mut cmd = tokio::process::Command::new(&self.command);
-        cmd.args(self.base_args(model_config, system, output_format));
+        cmd.args(self.base_args(model_config, system, output_format, mcp_config));
 
         // The child shells out to git, ripgrep and node on its own account, so
         // handing it the resolved absolute path is not enough — it needs the
@@ -453,6 +476,40 @@ impl ClaudeCodeProvider {
     }
 }
 
+/// Write this turn's bridge configuration to a private file, if there is a bridge.
+///
+/// A file rather than an inline `--mcp-config` JSON string, even though the CLI
+/// accepts both: the URL carries the turn's capability nonce, and argv is readable
+/// by any process running as the same user. `NamedTempFile` creates it 0600.
+///
+/// `Ok(None)` means this turn has no bridge — a CLI process with no HTTP server, or
+/// an agent that did not establish one. The child then runs with no tools at all,
+/// which is the correct degradation rather than an error.
+fn bridge_mcp_config() -> Result<Option<tempfile::NamedTempFile>, ProviderError> {
+    let Some(url) = bridge::active_bridge_url() else {
+        return Ok(None);
+    };
+    let body = serde_json::json!({
+        "mcpServers": { "biorouter": { "type": "http", "url": url } }
+    });
+
+    let mut file = tempfile::Builder::new()
+        .prefix("biorouter-bridge-")
+        .suffix(".json")
+        .tempfile()
+        .map_err(|e| {
+            ProviderError::ExecutionError(format!("could not write the tool bridge config: {e}"))
+        })?;
+    use std::io::Write;
+    file.write_all(body.to_string().as_bytes()).map_err(|e| {
+        ProviderError::ExecutionError(format!("could not write the tool bridge config: {e}"))
+    })?;
+    file.flush().map_err(|e| {
+        ProviderError::ExecutionError(format!("could not write the tool bridge config: {e}"))
+    })?;
+    Ok(Some(file))
+}
+
 /// Pull Biorouter's four disjoint token buckets out of the CLI's `usage` object.
 ///
 /// Claude Code reports the same shape the Anthropic API does, where `input_tokens`
@@ -540,7 +597,16 @@ impl Provider for ClaudeCodeProvider {
             )
         })?;
 
-        let cmd = self.command_for(model_config, system, "json");
+        // The bridge file must outlive the run, so it is bound here rather than
+        // inlined: dropping a `NamedTempFile` deletes it, and a child that started
+        // a moment later would find no configuration.
+        let bridge_config = bridge_mcp_config()?;
+        let cmd = self.command_for(
+            model_config,
+            system,
+            "json",
+            bridge_config.as_ref().map(|f| f.path()),
+        );
         let (lines, stderr, status) = self.run(cmd, &prompt).await?;
         self.parse_result_object(&model_config.model_name, &lines, &stderr, status)
     }
@@ -578,7 +644,7 @@ mod tests {
     /// `--strict-mcp-config` it connects the user's own MCP servers.
     #[test]
     fn the_isolation_flags_are_always_present() {
-        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json");
+        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json", None);
 
         let i = args.iter().position(|a| a == "--setting-sources").expect(
             "--setting-sources is required: without it a -p run executes the cwd's hooks",
@@ -603,7 +669,7 @@ mod tests {
     /// silently defeat the entire provider.
     #[test]
     fn bare_mode_is_never_requested() {
-        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json");
+        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json", None);
         assert!(
             !args.iter().any(|a| a == "--bare"),
             "--bare never reads OAuth credentials and must not be passed"
@@ -614,7 +680,7 @@ mod tests {
     /// is both correct and a 16x token saving.
     #[test]
     fn the_system_prompt_replaces_rather_than_appends() {
-        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json");
+        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json", None);
         let i = args.iter().position(|a| a == "--system-prompt").unwrap();
         assert_eq!(args[i + 1], "SYS");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -624,8 +690,8 @@ mod tests {
     fn the_output_format_is_the_only_axis_that_varies() {
         let p = provider();
         let m = ModelConfig::new("claude-sonnet-4-6").unwrap();
-        let json = p.base_args(&m, "SYS", "json");
-        let stream = p.base_args(&m, "SYS", "stream-json");
+        let json = p.base_args(&m, "SYS", "json", None);
+        let stream = p.base_args(&m, "SYS", "stream-json", None);
         assert_eq!(json.len(), stream.len());
         let differences: Vec<_> = json
             .iter()
