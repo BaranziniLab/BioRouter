@@ -202,7 +202,7 @@ export function IngestModelPicker({
           disabled={disabled}
           aria-label="Knowledge model"
           aria-expanded={open}
-          className="flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
+          className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-left text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30 disabled:cursor-not-allowed disabled:opacity-60"
         >
           <Brain className="h-icon-row w-icon-row shrink-0 text-text-muted" aria-hidden="true" />
           <span className="shrink-0 text-caps text-text-muted">Model</span>

@@ -1,0 +1,93 @@
+[
+  {
+    "name": "anthropic",
+    "is_configured": true,
+    "provider_type": "anthropic",
+    "resolved_tier": "public",
+    "metadata": {
+      "name": "anthropic",
+      "display_name": "Anthropic",
+      "description": "Claude models",
+      "default_model": "claude-opus-5",
+      "model_doc_link": "https://docs.anthropic.com/en/docs/about-claude/models",
+      "config_keys": [],
+      "known_models": [
+        {
+          "name": "claude-opus-5",
+          "context_limit": 200000
+        },
+        {
+          "name": "claude-sonnet-4-5",
+          "context_limit": 200000
+        },
+        {
+          "name": "claude-haiku-4-5",
+          "context_limit": 200000
+        }
+      ]
+    }
+  },
+  {
+    "name": "llamacpp",
+    "is_configured": true,
+    "provider_type": "llamacpp",
+    "resolved_tier": "private",
+    "metadata": {
+      "name": "llamacpp",
+      "display_name": "Llama Server",
+      "description": "Bundled llama.cpp local models",
+      "default_model": "qwen3.5-4b",
+      "model_doc_link": "https://github.com/ggml-org/llama.cpp",
+      "local_inference": true,
+      "config_keys": [],
+      "known_models": [
+        {
+          "name": "qwen3.5-4b",
+          "context_limit": 262144
+        },
+        {
+          "name": "gemma-4-12b",
+          "context_limit": 131072
+        }
+      ]
+    }
+  },
+  {
+    "name": "openai",
+    "is_configured": true,
+    "provider_type": "openai",
+    "resolved_tier": "public",
+    "metadata": {
+      "name": "openai",
+      "display_name": "OpenAI",
+      "description": "GPT models",
+      "default_model": "gpt-5.5",
+      "model_doc_link": "https://platform.openai.com/docs/models",
+      "config_keys": [],
+      "known_models": [
+        {
+          "name": "gpt-5.5",
+          "context_limit": 400000
+        },
+        {
+          "name": "gpt-5.5-mini",
+          "context_limit": 400000
+        }
+      ]
+    }
+  },
+  {
+    "name": "ollama",
+    "is_configured": false,
+    "provider_type": "ollama",
+    "metadata": {
+      "name": "ollama",
+      "display_name": "Ollama",
+      "description": "Local models via Ollama",
+      "default_model": "qwen3.6:latest",
+      "model_doc_link": "https://ollama.com/library",
+      "config_keys": [],
+      "known_models": []
+    }
+  }
+]

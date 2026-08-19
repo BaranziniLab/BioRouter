@@ -3186,6 +3186,60 @@ code [class~='token'] {
   display: inline;
 }
 
+/*
+ * P5 / D-15's focus surface, for a control that paints its OWN fill.
+ *
+ * The base rule — `:where(a, button, …):focus-visible { background-color:
+ * var(--background-focus) }` — is written with `:where()` so any component can
+ * opt out, which puts it at specificity 0. Specificity is not what beats it: a
+ * Tailwind `bg-*` utility lives in the `utilities` cascade LAYER, and every
+ * layered utility beats every `@layer base` rule outright whatever either one's
+ * specificity is. So the moment a control writes `bg-background-default` (the
+ * KB selector, the ingest model picker) or the `Button` primitive writes
+ * `bg-background-medium` / `bg-transparent`, the focus surface silently stops
+ * existing. Measured in Chrome with a real Tab press and `:focus-visible`
+ * matching: `backgroundColor` stayed `rgb(255, 255, 255)`, `outline` `none`,
+ * `boxShadow` `none`, border unchanged — no focus indication at all on the one
+ * control the section's keyboard path starts at.
+ *
+ * ⚠ **Authored CSS with an opt-in class, NOT a `focus-visible:bg-*` utility at
+ * the call site.** Same reason as `.biorouter-composer-card:has(textarea:focus)`
+ * — a *newly written* Tailwind class can silently fail to generate (the
+ * renderer runs `watch: { ignored: ['**'] }` under `BIOROUTER_NO_HMR`, which is
+ * the signal Tailwind's scanner uses to notice new class strings), and a focus
+ * indicator must not depend on class-scanning having worked. The class here is
+ * only a selector hook; nothing has to be generated for it.
+ *
+ * ⚠ **Unlayered, deliberately** — the same mechanism as the Prism rule above.
+ * That, not specificity, is what lets it reach past the `utilities` layer.
+ *
+ * Two classes because a solid accent fill cannot take the grey: white
+ * `--text-on-accent` over `--background-focus` is unreadable. §3.1's rule for a
+ * solid fill is that it brightens its own token, which is what
+ * `--background-accent-hover` is.
+ *
+ * No ring, in either case. Focus is a surface shift; the ring comes back only
+ * under `prefers-contrast: more` / `forced-colors`, which the base block
+ * already handles.
+ */
+.biorouter-focus-surface:focus-visible {
+  outline: none;
+  background-color: var(--background-focus);
+}
+
+.biorouter-focus-surface-accent:focus-visible {
+  outline: none;
+  background-color: var(--background-accent-hover);
+}
+
+/* A text field owns a border, so it firms that edge as well rather than
+   introducing a new strip — matching what the base block does for a bare
+   `<textarea>`. Browsers treat text fields as always `:focus-visible`, so the
+   fill above already covers them. */
+:is(input, textarea, select).biorouter-focus-surface:focus {
+  border-color: var(--border-focus);
+}
+
 .artifact-docx-preview .docx-wrapper {
   box-sizing: border-box;
   min-width: 100%;

@@ -6,8 +6,6 @@ import type { Graph, GraphNode } from '../../../api/types.gen';
 import { nodeFill, retractedColor } from './credColors';
 import { prettyLabel, wrapLabel } from './labelText';
 import {
-  CANVAS_FONT_FALLBACK,
-  CANVAS_INK_FALLBACK,
   DIMMED_OPACITY,
   edgeStyle,
   HUB_RADIUS,
@@ -16,10 +14,9 @@ import {
   LABEL_FONT_PX_HUB,
   NODE_BASE_RADIUS,
   NODE_RING_ALPHA,
-  resolveCanvasFontFamily,
-  resolveCanvasInk,
   withAlpha,
 } from './graphStyle';
+import { useCanvasTheme } from './useCanvasTheme';
 
 interface Props {
   graph: Graph;
@@ -63,46 +60,6 @@ function useSize(): [React.RefObject<HTMLDivElement | null>, Sized] {
     };
   }, []);
   return [ref, size];
-}
-
-/// The resolved UI font family AND label ink, read off the graph container's
-/// computed style.
-///
-/// Read once on mount and again whenever the root's theme signal changes, so a
-/// family that re-points the face — or a mode that inverts the ink — is picked
-/// up without re-reading a computed style on every node of every frame.
-///
-/// Both values ride ONE observer deliberately. The family already did this and
-/// the ink did not, which is exactly how the ink came to be a hardcoded
-/// near-black: a second, parallel piece of theme plumbing is a second thing to
-/// forget. Anything else this canvas needs from the cascade belongs here too.
-function useCanvasTheme(ref: React.RefObject<HTMLDivElement | null>): {
-  fontFamily: string;
-  ink: string;
-} {
-  const [theme, setTheme] = useState<{ fontFamily: string; ink: string }>({
-    fontFamily: CANVAS_FONT_FALLBACK,
-    ink: CANVAS_INK_FALLBACK,
-  });
-  useEffect(() => {
-    const read = () =>
-      setTheme((prev) => {
-        const next = {
-          fontFamily: resolveCanvasFontFamily(ref.current),
-          ink: resolveCanvasInk(ref.current),
-        };
-        return prev.fontFamily === next.fontFamily && prev.ink === next.ink ? prev : next;
-      });
-    read();
-    if (typeof MutationObserver !== 'function') return;
-    const observer = new MutationObserver(read);
-    observer.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ['class', 'data-theme'],
-    });
-    return () => observer.disconnect();
-  }, [ref]);
-  return theme;
 }
 
 export function ForceGraphCanvas({

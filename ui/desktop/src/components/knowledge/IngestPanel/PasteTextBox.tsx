@@ -57,7 +57,7 @@ export function PasteTextBox({ onStage, onCancel }: Props) {
         onChange={(e) => setText(e.target.value)}
         placeholder="Paste knowledge, snippets, or a chunk of prose. URLs will be extracted and offered for ingestion."
         aria-label="Text to stage"
-        className="min-h-[100px] w-full resize-y rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-label text-text-default placeholder:text-text-muted"
+        className="biorouter-focus-surface min-h-[100px] w-full resize-y rounded-element border border-border-emphasized bg-background-default px-2 py-1.5 text-label text-text-default placeholder:text-text-muted"
       />
 
       {detectedUrls.length > 0 && (

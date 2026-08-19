@@ -59,7 +59,7 @@ export function KBSelectorTrigger({ open: openProp, onOpenChange, onManage, onCr
           data-testid="knowledge-kb-selector-trigger"
           aria-label="Knowledge base"
           aria-expanded={open}
-          className="flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30"
+          className="biorouter-focus-surface flex h-control-md w-full items-center gap-2 rounded-element border border-border-emphasized bg-background-default px-3 text-label transition-[color,background-color,border-color,box-shadow] hover:inset-ring-2 hover:inset-ring-border-emphasized/30"
         >
           <KbDot color={primaryKb?.color} />
           <span className="min-w-0 flex-1 truncate text-left">

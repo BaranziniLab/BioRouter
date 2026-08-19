@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Knowledge harness</title>
+    <script>
+      // Mirrors index.html's pre-hydration script: the family must be on the
+      // root before the first paint, or every surface flashes Parchment.
+      try {
+        var f = localStorage.getItem('theme_family');
+        if (f === 'parchment' || f === 'alma-mater' || f === 'roche-limit') {
+          document.documentElement.setAttribute('data-theme', f);
+        } else {
+          document.documentElement.setAttribute('data-theme', 'parchment');
+        }
+        document.documentElement.classList.add(
+          localStorage.getItem('theme') === 'dark' ? 'dark' : 'light'
+        );
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>

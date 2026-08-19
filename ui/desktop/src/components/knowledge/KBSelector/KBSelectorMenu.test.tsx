@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { KBSelectorMenu } from './KBSelectorMenu';
@@ -24,18 +24,22 @@ const mocks = vi.hoisted(() => ({
   onCreate: vi.fn(),
 }));
 
+const BASES = vi.hoisted(() => [
+  { id: 'alpha', name: 'Alpha', color: '#cf6d47', tier: 'private' },
+  { id: 'beta', name: 'Beta', color: '#b85a32', tier: 'public' },
+]);
+
 const state = vi.hoisted(() => ({
   primaryKbId: 'alpha' as string | null,
   defaultPrimaryKb: null as Partial<Manifest> | null,
   canFollowDefaultPrimary: false,
+  /** The list is a fetch. It is EMPTY while that fetch is in flight. */
+  visibleBases: BASES as Array<Record<string, unknown>>,
 }));
 
 vi.mock('../KnowledgeContext', () => ({
   useKnowledge: () => ({
-    visibleBases: [
-      { id: 'alpha', name: 'Alpha', color: '#cf6d47', tier: 'private' },
-      { id: 'beta', name: 'Beta', color: '#b85a32', tier: 'public' },
-    ],
+    visibleBases: state.visibleBases,
     primaryKbId: state.primaryKbId,
     defaultPrimaryKb: state.defaultPrimaryKb,
     canFollowDefaultPrimary: state.canFollowDefaultPrimary,
@@ -57,7 +61,14 @@ beforeEach(() => {
   state.primaryKbId = 'alpha';
   state.defaultPrimaryKb = null;
   state.canFollowDefaultPrimary = false;
+  state.visibleBases = BASES;
 });
+
+/** The row `aria-activedescendant` names, by its visible text. */
+function highlighted(): string | null {
+  const id = screen.getByRole('combobox').getAttribute('aria-activedescendant');
+  return id ? (document.getElementById(id)?.textContent ?? null) : null;
+}
 
 describe('KBSelectorMenu', () => {
   // The picker is the "which base am I pointed at" surface, so picking one is a
@@ -79,6 +90,28 @@ describe('KBSelectorMenu', () => {
     const pub = screen.getByRole('option', { name: /Beta/ });
     expect(within(priv).queryByTestId('privacy-badge')).not.toBeNull();
     expect(within(pub).queryByTestId('privacy-badge')).toBeNull();
+  });
+
+  // The picker opens over a list that is still being read — `refresh()` runs on
+  // mount — so for a frame the only rows are "Manage bases…" and "Create
+  // knowledge base…". A highlight seeded then and kept because it still exists
+  // leaves Enter, as the first keystroke on an untouched picker, opening the
+  // manager instead of committing a base.
+  it('does not leave the highlight on an action row when the bases arrive late', async () => {
+    state.visibleBases = [];
+    const { rerender } = renderMenu();
+    await waitFor(() => expect(highlighted()).toBe('Manage bases…'));
+
+    state.visibleBases = BASES;
+    rerender(
+      <KBSelectorMenu onClose={mocks.onClose} onManage={mocks.onManage} onCreate={mocks.onCreate} />
+    );
+    await waitFor(() => expect(highlighted()).toBe('Alpha'));
+
+    screen.getByRole('combobox').focus();
+    await userEvent.keyboard('{Enter}');
+    expect(mocks.onManage).not.toHaveBeenCalled();
+    expect(mocks.setPrimaryKbId).toHaveBeenCalledWith('alpha');
   });
 
   it('routes management and creation out of the picker', async () => {

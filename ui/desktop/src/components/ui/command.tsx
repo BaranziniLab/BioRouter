@@ -75,6 +75,28 @@ export function Command({
   const [activeId, setActiveId] = React.useState<string | null>(null);
   const rootRef = React.useRef<HTMLDivElement>(null);
 
+  // Whose highlight this is. `false` means nobody has expressed a preference and
+  // the component is showing its default — the first row.
+  //
+  // ⚠ **A default highlight has to FOLLOW the first row, not merely be seeded
+  // onto it once.** Both callers open over a collection that is still in flight
+  // and a couple of rows that are present from the first paint —
+  // `KBSelectorMenu`'s "Manage bases… / Create knowledge base…",
+  // `IngestModelPicker`'s groups under a `fetchModelsForProviders`. Seeding
+  // against the rows that happened to exist at mount and then keeping that id
+  // because it still *exists* parks the highlight on an action row, and Enter as
+  // the first keystroke fires that action instead of committing the row the user
+  // is looking at. This is not scoped to "the picker opened", because the
+  // primitive is unmounted and remounted by the `Popover` that owns it — opening
+  // IS mounting, which is exactly the moment the list is at its emptiest.
+  const ownership = React.useRef({ userMoved: false });
+
+  /** Move the highlight *on the user's behalf* — arrows, Home/End, the pointer. */
+  const chooseActiveId = React.useCallback((id: string | null) => {
+    ownership.current.userMoved = true;
+    setActiveId(id);
+  }, []);
+
   const visibleIds = React.useCallback((): string[] => {
     const root = rootRef.current;
     if (!root) return [];
@@ -83,20 +105,43 @@ export function Command({
       .map((el) => el.id);
   }, []);
 
-  // Keep the highlight on a row that exists. It reads the DOM the render just
-  // produced, because that is the only place that knows what the CALLER's
-  // filter left behind. Keyed on the query — the one input that changes the set
-  // — with `move()` and Enter resolving defensively for every other cause.
-  React.useEffect(() => {
+  // Put the highlight on a row that exists, and on the FIRST row until the user
+  // moves it. It reads the DOM the render just produced, because that is the
+  // only place that knows what the CALLER's filter — and the caller's
+  // still-arriving collection — left behind.
+  const repair = React.useCallback(() => {
     const ids = visibleIds();
-    if (ids.length === 0) {
-      if (activeId !== null) setActiveId(null);
-      return;
-    }
-    if (activeId === null || !ids.includes(activeId)) {
-      setActiveId(ids[0]);
-    }
-  }, [query, activeId, visibleIds]);
+    setActiveId((prev) => {
+      if (ids.length === 0) return null;
+      return ownership.current.userMoved && prev !== null && ids.includes(prev) ? prev : ids[0];
+    });
+  }, [visibleIds]);
+
+  // A new query is a new question, so the answer starts at the top again. This
+  // also seeds the highlight on mount.
+  React.useEffect(() => {
+    ownership.current.userMoved = false;
+    repair();
+  }, [query, repair]);
+
+  // ⚠ **The set of rows is not a value this component is given**, so it is
+  // OBSERVED rather than depended on. It is whatever the caller rendered, and it
+  // changes without `query` or `activeId` changing — which is exactly how a
+  // highlight seeded against a still-loading list survived the list arriving.
+  // `class` is deliberately outside the filter: the highlight itself is painted
+  // with a class, so watching it would make every repair schedule another.
+  React.useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof MutationObserver !== 'function') return;
+    const observer = new MutationObserver(repair);
+    observer.observe(root, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['aria-disabled'],
+    });
+    return () => observer.disconnect();
+  }, [repair]);
 
   /** The highlighted row, resolved against what is actually on screen now. */
   function effectiveActive(ids: string[]): string | null {
@@ -116,8 +161,8 @@ export function Command({
           ? ids.length - 1
           : (index + delta + ids.length) % ids.length;
     const id = ids[next];
-    setActiveId(id);
-    document.getElementById(id)?.scrollIntoView({ block: 'nearest' });
+    chooseActiveId(id);
+    document.getElementById(id)?.scrollIntoView?.({ block: 'nearest' });
   }
 
   function onKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -152,7 +197,9 @@ export function Command({
   }
 
   return (
-    <CommandContext.Provider value={{ query, setQuery: onQueryChange, activeId, setActiveId }}>
+    <CommandContext.Provider
+      value={{ query, setQuery: onQueryChange, activeId, setActiveId: chooseActiveId }}
+    >
       <div
         ref={rootRef}
         data-command-root
