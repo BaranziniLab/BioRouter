@@ -77,9 +77,18 @@ passes, and a v1 `manifest.yaml` with no `format` key still loads. Nothing user-
 
 Rewrite `graph.rs` to emit typed nodes and edges:
 
-- `GraphNode` gains `node_type`, `subtype`, `identifier`, `status`, `stale`.
-- `GraphEdge.relation` — the pre-cut socket — is finally populated, plus `knowledge_level`,
-  `negated`, `primary_source`.
+- `GraphNode` gains `node_type`, `subtype`, `identifier`, `status`, `stale`, `external` and
+  `degree`.
+- `GraphEdge.relation` — the pre-cut socket — is finally populated, plus `predicate`, `negated`,
+  `synthesized`, the provenance triplet (`knowledge_level`, `agent_type`, `primary_source`),
+  `publications`, and the two open maps `quantitative` and `qualifiers`.
+- **The contract is [ui-spec.md](ui-spec.md) §2.1, not the draft above it.** §2.1 revised this list
+  and said so — "a change to stages.md Stage 2, taken here and to be mirrored there" — and the
+  mirroring is this bullet. DR-27 then replaced the six flat statistical fields Stage 2 shipped
+  (`effect_metric`, `effect_size`, `ci_lower`, `ci_upper`, `p_value`, `sample_size`) with the open
+  `quantitative` map, because §7.3 names around twenty slots and six fields drop fourteen; and it
+  added `synthesized` and `degree`. DR-28 keeps the typed fields `Option` against §2.1's drawing of
+  them as required.
 - Dangling links become **recorded**, not dropped (`graph.rs:82`'s `if let Some(to)` has no `else`
   today), so lint has a real check.
 - Identity resolves through the DR-3 ladder.
@@ -119,6 +128,21 @@ edge, and a rename that does not break inbound edges.
 **Gate:** the privacy repo-grep assertions are re-run and each change to a counted site is
 deliberate. A private session creating a base still yields a PRIVATE base.
 
+**Landed, with three notes worth carrying forward:**
+
+- `kb_validate_page` is gated (`KB_ID_GATED_TOOLS`) and deliberately **not** ratcheting. It is the
+  first tool that names a base and writes nothing, so DR-8's "every mutating one also" is answered
+  with a no — a permanent tier raise for a check that committed nothing is a one-way loss of reach
+  bought for nothing. The decision is recorded as a `ratchets: false` row in `KB_TOOL_PROBES`,
+  which is what `every_tool_the_router_exposes_is_classified_by_the_probe_table` demands.
+- DR-8's **second** surface — `KbToolDispatch` must never accept a `kb_id` — was pinned for the
+  first time, by schema, by grep and by behaviour. It was load-bearing and untested.
+- Four skills ship, not two: choosing a format, ingesting into OKF, ingesting into BioOKF (which
+  carries the typing decision procedure) and reading a lint report. They ship in their own
+  `KNOWLEDGE_SKILLS` array rather than in `BUILTIN_SKILLS`, because that array doubles as the
+  desktop Contexts list and is pinned from `ui/`; see progress.md's deviation note for the Stage 7
+  follow-up.
+
 ## Stage 5 — Sub-agent macros
 
 `INGEST_PROCEDURE` / `QUERY_PROCEDURE` / `LINT_PROCEDURE` become profile-aware. The BioOKF prompt
@@ -127,12 +151,59 @@ injects the type cheatsheet and the predicate table; the OKF prompt stays short 
 **Gate:** token cost of the injected vocabulary is measured, not assumed; a real ingest into a
 BioOKF base produces valid typed edges without a retry storm.
 
+**Landed, with four notes worth carrying forward:**
+
+- **The vocabulary is an `enum` on `kb_write_concept`, not a table in the prompt.** DR-16's fix
+  for two problems with one change: the provider can constrain sampling with it, and it costs
+  the prompt nothing per step. Measured — 8,937 bytes for an OKF ingest prompt, 14,397 for a
+  BioOKF one, against a 4,975-byte *floor* for the vocabulary as prose that would have been paid
+  on all 30 iterations. Figures in [`progress.md`](progress.md).
+- **The measurement failed first, correctly.** The BioOKF procedure was bigger than the
+  vocabulary it replaced, because it had grown a numbered loop duplicating the `schema.md`
+  sitting directly above it in the same prompt. The assertion is on the *procedure* rather than
+  the assembled prompt, because the two `schema.md` templates differ for Stage 3's reasons.
+- **Materializing the source node broke issue #71's guarantee** until the wrote-knowledge check
+  was re-baselined after the seed: a run that wrote nothing would otherwise have committed.
+- **A typed writer must merge, not replace.** Rewriting a page through `kb_write_concept` would
+  have dropped `sources`, `generated`, `br_credibility`, `br_page_id`, the body and every
+  preserved unknown key — conformantly, and therefore invisibly.
+
+⚠ **Half of the gate has not been run.** The token cost is measured (a test prints it). *"A real
+ingest into a BioOKF base produces valid typed edges without a retry storm"* is exercised only
+against a `MockCompleter`: the bundle a scripted run produces is asserted conformant, edge for
+edge, but no live provider has been asked to choose among 28 types with the enums in front of it.
+That is Stage 8's job, and until it runs, the claim that the retry storm is gone is a design
+argument rather than an observation.
+
 ## Stage 6 — HTTP routes, OpenAPI, TS client
 
 `POST /knowledge/bases` takes `format`; `GET /knowledge/graph` returns the typed graph; lint returns
-typed diagnostics. Then `just generate-openapi && cd ui/desktop && npm run generate-api`.
+typed diagnostics; `.brkb` import becomes format-aware (DR-18). Then
+`just generate-openapi && cd ui/desktop && npm run generate-api`.
 
 **Gate:** the generated client compiles and the SSE terminal-frame contract test still passes.
+
+**Landed, with four notes worth carrying forward:**
+
+- **The route parses `format` strictly, and the reasoning is Stage 4's applied one layer out.**
+  `KbFormat`'s `Deserialize` is lenient because DR-12 traces what a failing `manifest.yaml` costs
+  the user, so the body field is an `Option<String>` checked by hand; `schema(value_type)` keeps
+  the published contract — and the generated TypeScript — an `enum` of exactly the two words. A
+  misspelt format is a **400 that creates nothing**, asserted on disk as well as on the wire.
+- **The typed graph was already derived; what Stage 6 added is proof it reaches a client.** Stage
+  2's tests assert the deriver fills the fields, which is a different claim: an over-eager
+  `skip_serializing_if`, an unregistered `$ref`, or a route answering from an older cache would
+  each leave them green and the renderer blind. The new route test reads the JSON only.
+- **The lint stream's terminal frame is a `LintResult`, not a `LintReport`** — the wrapper carries
+  `commit_sha` and `fixes_applied`. Both are published as `components.schemas` and neither is
+  declared as the response body, because the body is an event stream: `body = LintResult` would
+  type the generated client's return value as JSON and be wrong at runtime. The test found the
+  wrapper; the first draft of the schema registration had missed it.
+- **DR-18's refusal is an ORDERING, not a check.** The provenance marker is the last entry the
+  exporter writes, so a format check made inside the extraction loop fires with the whole base
+  already unpacked — exactly the partial extraction DR-18 forbids. The marker is now read in a
+  pre-pass, before the extraction root is created, and the mutation (move the check back after
+  `create_dir_all`) fails the test that says so.
 
 ## Stage 7 — Desktop UI: a comprehensive design pass
 

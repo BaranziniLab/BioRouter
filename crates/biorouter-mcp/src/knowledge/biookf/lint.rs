@@ -619,7 +619,14 @@ fn looks_opaque(identifier: &str) -> bool {
 /// mode it prevents is a model retrying the same invalid token until its step
 /// budget dies. The threshold keeps the hint honest: suggesting `Gene` for
 /// `Spacecraft` would be worse than saying nothing.
-fn closest<S, I>(needle: &str, candidates: I) -> Option<String>
+/// The nearest candidate to `needle`, or `None` when nothing is near enough for
+/// a suggestion to be a suggestion rather than a misdirection.
+///
+/// Shared with the sub-agent's typed write tool (DR-16): a rejected value has to
+/// come back naming the closest legal one, and a second implementation of
+/// "closest" would let a lint hint and a dispatch hint disagree about the same
+/// typo.
+pub(crate) fn closest<S, I>(needle: &str, candidates: I) -> Option<String>
 where
     S: AsRef<str>,
     I: IntoIterator<Item = S>,

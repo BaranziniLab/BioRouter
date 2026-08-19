@@ -17,7 +17,7 @@ use biorouter_mcp::knowledge::{
     subagent::{events::SubAgentEvent, loop_::SubAgentBounds},
     tier,
     tier_user::UserKbTierChange,
-    types::{Credibility, Graph, HistoryEntry, KbTier, Manifest, ModelRef},
+    types::{Credibility, Graph, HistoryEntry, KbFormat, KbTier, Manifest, ModelRef},
 };
 // Issue #56 DR-16/DR-18. `src/routes/` is compiled into the `biorouterd` binary
 // as well as the lib and cannot name `crate::auth`, so this is the shared
@@ -189,6 +189,50 @@ pub struct CreateBaseBody {
     pub name: String,
     #[serde(default)]
     pub color: Option<String>,
+    /// Which profile the new base is written in: `okf` (the default) or
+    /// `biookf`. It decides the scaffolded tree and the `schema.md` the
+    /// sub-agent is taught from, and it cannot be changed afterwards — DR-22
+    /// defers format migration and DR-26 says so in as many words.
+    ///
+    /// ⚠ **A `String` parsed by hand, not a `KbFormat`, for the reason
+    /// `kb_create_base`'s parameter is** (Stage 4). `KbFormat`'s own
+    /// `Deserialize` is deliberately lenient because DR-12 traces what a
+    /// `manifest.yaml` that fails to load costs the user — so an unknown
+    /// profile *on disk* reads as plain OKF rather than destroying their
+    /// pointers. That is the right reading of a file already written and the
+    /// wrong reading of a request: a caller that asks for `bio-okf` and
+    /// silently receives a plain-OKF base has been handed the opposite of what
+    /// it asked for, and cannot convert. DR-7's rule — producers are held to a
+    /// higher bar than consumers — applied to the HTTP surface.
+    ///
+    /// `schema(value_type)` keeps the published contract, and therefore the
+    /// generated TypeScript, an enum of exactly the two words, so the strict
+    /// parse below is the backstop and not the first line of defence.
+    #[serde(default)]
+    #[schema(value_type = Option<KbFormat>)]
+    pub format: Option<String>,
+}
+
+impl CreateBaseBody {
+    /// The requested profile, or a 400 naming the two that exist.
+    fn format(&self) -> Result<KbFormat, (StatusCode, String)> {
+        let raw = self.format.as_deref().map(str::trim).unwrap_or_default();
+        if raw.is_empty() {
+            return Ok(KbFormat::default());
+        }
+        KbFormat::parse(raw).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "unknown knowledge base format {raw:?}: use \"{}\" for general-purpose \
+                     knowledge or \"{}\" for biomedical knowledge under the BioOKF controlled \
+                     vocabulary",
+                    KbFormat::Okf.as_str(),
+                    KbFormat::Biookf.as_str(),
+                ),
+            )
+        })
+    }
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -383,14 +427,22 @@ pub async fn list_bases(
 #[utoipa::path(
     post, path = "/knowledge/bases",
     request_body = CreateBaseBody,
-    responses((status = 200, description = "Created knowledge base", body = Manifest))
+    responses(
+        (status = 200, description = "Created knowledge base", body = Manifest),
+        (status = 400, description = "Duplicate id, invalid id, or unknown format"),
+    )
 )]
 pub async fn create_base(
     State(svc): State<Arc<KnowledgeService>>,
     Json(body): Json<CreateBaseBody>,
 ) -> Result<Json<Manifest>, (StatusCode, String)> {
+    // Refused before anything is created: `create_base_in` writes the manifest,
+    // the scaffolded tree and `schema.md` in one transaction precisely because
+    // those are three statements about one base, and a request this route
+    // cannot read must not reach it half-answered.
+    let format = body.format()?;
     let m = svc
-        .create_base(&body.id, &body.name, body.color.as_deref())
+        .create_base_in(&body.id, &body.name, body.color.as_deref(), format)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
     Ok(Json(m))
 }
@@ -1677,12 +1729,30 @@ pub async fn query_kb(
     Ok(crate::routes::reply::SseResponse::from_rx(sse_rx))
 }
 
+/// Lint a knowledge base and stream the result.
+///
+/// The stream's terminal `event: done` frame carries a `LintResult`: the
+/// autofix commit, if any, wrapped around a `LintReport` — the four hygiene
+/// lists this route has always returned, plus `diagnostics`, the typed findings.
+/// Each of those is a stable rule id (`kb.` for hygiene, `okf.` and `biookf.`
+/// for the format layers), a severity, the subject it is about and a message;
+/// a consumer matches on `rule` and never on `message`, which is prose.
+///
+/// Both schemas are published under `components.schemas` rather than as this
+/// response's body, because the body is an event stream and typing it as JSON
+/// would be a false statement the generated client believes.
+///
+/// A **legacy** base (below the OKF generation) is given the hygiene rules and
+/// no format layer, so its report carries `kb.*` diagnostics only — DR-26: this
+/// build has promised never to rewrite those pages, and reporting that decision
+/// as one conformance error per page would bury the findings that are real.
 #[utoipa::path(
     post, path = "/knowledge/bases/{id}/lint",
     request_body = LintBody,
     params(("id" = String, Path, description = "Knowledge base ID")),
     responses(
-        (status = 200, description = "SSE stream of sub-agent events (text/event-stream)"),
+        (status = 200, description = "SSE stream of sub-agent events (text/event-stream); \
+                                      the terminal `event: done` frame's data is a LintResult"),
         (status = 400, description = "Invalid model"),
     )
 )]

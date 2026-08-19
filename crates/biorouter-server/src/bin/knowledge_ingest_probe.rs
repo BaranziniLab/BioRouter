@@ -217,6 +217,7 @@ fn render_done_reason(reason: &DoneReason) -> &'static str {
         DoneReason::StepBudgetReached => "step_budget_reached",
         DoneReason::TimeBudgetReached => "time_budget_reached",
         DoneReason::TokenBudgetReached => "token_budget_reached",
+        DoneReason::VocabularyRetriesExhausted => "vocabulary_retries_exhausted",
         DoneReason::Cancelled => "cancelled",
         DoneReason::Error => "error",
     }

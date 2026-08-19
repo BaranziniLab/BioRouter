@@ -6,12 +6,15 @@ knowledge folders + git history. Use these primitive tools to read and write the
 Common operations:
 
 - `kb_list_bases` — see which knowledge bases are visible to this session.
-- `kb_create_base` — create a new one.
+- `kb_create_base` — create a new one. Takes a `format` — see "Two formats" below.
 - `kb_add_raw_source` — ingest a URL or pasted text. The result is filed under
   `raw/<source-id>/` with `source.md` and `meta.yaml`; credibility is auto-classified.
   This does NOT create knowledge pages — read the source and write knowledge pages with
   `kb_write_page` to integrate the source into the knowledge graph.
 - `kb_list_pages` / `kb_read_page` / `kb_write_page` — knowledge CRUD.
+- `kb_validate_page` — check a page against its base's format **before** writing it.
+  Writes nothing; returns diagnostics, each with a stable rule id, a severity, the page
+  or edge it is about, and a message. In a BioOKF base, validate every draft.
 - `kb_get_graph` — derived nodes+edges for visualisation. The graph is
   rebuilt automatically whenever you `kb_write_page`, so pages you author show
   up in the Knowledge tab without any extra step.
@@ -21,6 +24,36 @@ Common operations:
 - `kb_list_history` / `kb_restore_state` — git-backed change log + revert.
 - `kb_search` — search curated knowledge pages. If you omit `kb_id`, the search runs across **every knowledge base in this session** and each hit is tagged with the `kb_id` it came from. Cite that id when you use a hit.
 - `kb_search_raw_sources` — search original raw source markdown only. Use this rarely, when the user specifically asks for raw/original/source-document evidence or when curated pages clearly omit a needed detail.
+
+Two formats:
+
+A knowledge base is written in one of two formats, chosen when it is created and fixed
+for its lifetime — this build has no conversion between them. Both write the same kind
+of file (YAML frontmatter + markdown body); BioOKF only adds constraints, so a BioOKF
+base is also a valid OKF base.
+
+- **OKF** (the default) — the Open Knowledge Format v0.2. Open vocabulary: a page's
+  `type` is any word that fits, and relationships are ordinary markdown links to other
+  pages. Use it for general-purpose memory, retrieval, development and design notes,
+  project and codebase context, meeting records, personal knowledge — anything that is
+  not biomedical.
+- **BioOKF** — OKF v0.2 plus the BioOKF v0.5 profile: a controlled vocabulary of 28
+  entity types and 35 relationship predicates, where every asserted relationship carries
+  provenance (how the claim is known, what produced it, and which source page it came
+  from). Use it for biomedical literature, curated biology, clinical or genomic
+  knowledge, and for anything meant to be exchanged with another institution or another
+  BioOKF tool.
+
+Choosing: if the subject is not biomedical, choose OKF. A biomedical vocabulary does not
+make a non-biomedical base stricter, it makes it wrong — every page ends up typed
+`Other`. If the user has not said and the subject could go either way, ask; failing that
+choose OKF. The base's own `schema.md` states which format it is in and carries the
+vocabulary if it has one, so read it before writing into a base you did not create.
+
+A base created before this format shipped keeps working exactly as it did, with its own
+`title`/`kind` frontmatter and `[[wiki links]]`. It is never rewritten, and
+`kb_validate_page` reports nothing for it — that is the right answer for such a base,
+not a failure.
 
 Retrieval behavior:
 

@@ -184,8 +184,14 @@ When `kb_ingest_source` is called:
 4. For each entity: update the page if it exists, otherwise create it. Give it a
    `reported_in` edge to the source node, and typed `edges:` for the
    relationships the source actually asserts.
-5. Put the numbers on the edge, not only in the prose: `effect_metric`,
-   `effect_size`, `ci_lower`, `ci_upper`, `p_value`, `sample_size`.
+5. Put the numbers on the edge, not only in the prose. Any §7.3 slot the source
+   reports: `effect_metric`, `effect_size`, `ci_lower`, `ci_upper`, `p_value`,
+   `adjusted_p_value`, `standard_error`, `sample_size`, `sensitivity`,
+   `specificity`, `auc`, `frequency`, `clinical_phase`, `response_direction`,
+   `unit`. Write the value the source gives, including `<0.001` — a number you
+   cannot write exactly is still better recorded than dropped. Keep *context*
+   (`species_context`, `sex`, `age_group`, `timepoint`) as its own attributes;
+   it qualifies the claim rather than measuring it.
 6. If the source contradicts an existing page, do not overwrite it — add an
    `## Open contradictions` section naming both positions and their sources, or
    assert the `not_<X>` edge with its own provenance.

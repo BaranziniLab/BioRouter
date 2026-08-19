@@ -113,6 +113,18 @@ impl KbTier {
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
+// ⚠ **The doc comment above is shipped to the model unless this overrides it.**
+// schemars renders a type's `///` block into its schema `description`, and this
+// enum is referenced by `kb_create_base`'s input schema — so every paragraph
+// above would be re-read by the model on every tool listing, on every turn, at
+// the cost of the whole DR-6/DR-12 argument in tokens and to no effect: the
+// model cannot act on any of it. The one sentence it *can* act on is here, and
+// the rest of the guidance lives in the tool description where it belongs.
+// Pinned by `the_format_argument_reaches_the_model_as_a_closed_vocabulary_with_
+// the_choice_explained`.
+#[schemars(description = "Which knowledge-base format a base is written in: \
+                          `okf` (open vocabulary, general purpose) or `biookf` \
+                          (OKF plus the BioOKF biomedical profile).")]
 pub enum KbFormat {
     /// OKF v0.2, open vocabulary. The default for a new base.
     #[default]
@@ -300,6 +312,23 @@ pub struct Manifest {
     // ── OKF profile (Stage 3, DR-6) ─────────────────────────────────────────
     /// Which profile the producer follows. Read it through
     /// [`Manifest::profile`], never on its own — see [`KbFormat`].
+    ///
+    /// ⚠ **Re-saving a legacy manifest writes `format: okf` into it, and that is
+    /// left alone on purpose.** The schema ladder stamps a base forward on the
+    /// first macro call, so a v1 file on disk really does gain the key. It is
+    /// inert: `format` is not the profile, [`Manifest::profile`] is, and it
+    /// answers `None` for anything below `CURRENT_SCHEMA_VERSION` however the
+    /// field reads. `re_saving_a_legacy_manifest_writes_an_inert_format_key`
+    /// pins both halves.
+    ///
+    /// The obvious fix does not exist. `skip_serializing_if` is handed the field
+    /// and nothing else, so it cannot see `schema_version` and cannot express
+    /// "omit below the OKF generation". The only skip it *can* express is "omit
+    /// when it equals the default", which deletes the declaration from every
+    /// genuine OKF base — exactly the file DR-6 wants it stated in — and makes
+    /// the `schema(required)` above a false statement about the response.
+    /// Turning the field `Option` would push a `None` case into every reader to
+    /// buy the same nothing.
     #[serde(default)]
     #[cfg_attr(feature = "utoipa", schema(required))]
     pub format: KbFormat,
@@ -452,6 +481,59 @@ pub struct GraphNode {
     /// one of these.
     #[serde(default, skip_serializing_if = "is_false")]
     pub external: bool,
+    /// Incident edge count — every edge with this node at either end, after
+    /// [`crate::knowledge::graph`] has deduplicated them.
+    ///
+    /// UI spec §2.1, adopted by DR-27. It drives hub sizing (§5.6 floors its
+    /// `deg(n)` at this value) and the descending-degree keyboard order (§5.12),
+    /// and the renderer cannot derive it cheaply: it would have to walk the
+    /// whole edge list on every frame of a force layout, for a number that is
+    /// constant for the life of the graph.
+    ///
+    /// `Option` because the spec draws it optional and a consumer must be able
+    /// to tell "the producer did not supply this" from "this node has no edges"
+    /// — the deriver always fills it, and fills it with `Some(0)` for an
+    /// isolated node.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub degree: Option<u32>,
+}
+
+/// One reading of one BioOKF §7.3 quantitative slot: a number when the producer
+/// wrote one, and the text they wrote otherwise.
+///
+/// UI spec §2.1 types the map as `Record<string, string | number>`, and both
+/// arms are load-bearing. `p_value: 3.0e-6` is a number and a renderer that
+/// received it as a string could not right-align or format it; `p_value: <0.001`
+/// and `effect_size: 2.5 nM` are *also* things a model writes, and coercing
+/// those to `None` deletes a statistic with nothing left to report it.
+///
+/// The variant is chosen by the value alone, never by the key — see
+/// [`crate::knowledge::graph`]'s `QUANTITATIVE_KEYS` for why the key decides
+/// only which map an attribute lands in.
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(untagged)]
+pub enum QuantitativeValue {
+    /// Ordered before [`Self::Text`] so a JSON number deserializes as one;
+    /// serde's untagged reader takes the first arm that matches, and a JSON
+    /// string never matches `f64`.
+    Number(f64),
+    Text(String),
+}
+
+impl QuantitativeValue {
+    /// The written value as a number when it is one, and as text when it is not.
+    ///
+    /// Non-finite is deliberately *text*. `"NaN"`, `"inf"` and `"infinity"` all
+    /// parse as `f64` and none of them can be serialized to JSON — a page
+    /// carrying `p_value: NaN` would otherwise fail the graph cache write, which
+    /// is a whole-base failure caused by one attribute on one edge.
+    pub fn parse(written: &str) -> Self {
+        match written.parse::<f64>() {
+            Ok(n) if n.is_finite() => Self::Number(n),
+            _ => Self::Text(written.to_string()),
+        }
+    }
 }
 
 // An edge in the derived knowledge graph. See [`GraphNode`] for why every field
@@ -479,6 +561,24 @@ pub struct GraphEdge {
     /// first draws a negative claim as a positive one.
     #[serde(default, skip_serializing_if = "is_false")]
     pub negated: bool,
+    /// This edge was derived from provenance rather than authored as a
+    /// relationship (UI spec §2.1, adopted by DR-27).
+    ///
+    /// §5.7 draws it as the faint dotted line with **no taper** and §4.8 replaces
+    /// its provenance triplet with the "author an explicit `reported_in` edge to
+    /// make it first-class" note, so it is a rendering channel a consumer cannot
+    /// reconstruct: an implicit provenance link and an authored `reported_in`
+    /// edge are the same `(from, to, predicate)` triple and differ only in who
+    /// wrote them.
+    ///
+    /// ⚠ **Nothing in this build sets it.** The deriver emits only edges a page
+    /// states, and DR-24 puts the `reported_in` emission in BioOKF-mode *ingest*
+    /// — so today this is always `false` and therefore never serialized. It is
+    /// declared now because Stage 6 freezes the generated TypeScript client and
+    /// a channel absent from that contract cannot be added by the producer
+    /// alone.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub synthesized: bool,
     /// The BioOKF §8.1 provenance triplet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub knowledge_level: Option<String>,
@@ -492,28 +592,39 @@ pub struct GraphEdge {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub publications: Vec<String>,
 
-    // ── BioOKF §7.3 quantitative bundle ─────────────────────────────────────
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_metric: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effect_size: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ci_lower: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub ci_upper: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub p_value: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sample_size: Option<u64>,
-
-    /// Every other edge attribute the producer wrote — `direction`, `aspect`,
-    /// `clinical_phase`, `frequency`, and anything BioOKF adds after this build
-    /// shipped — as text, in key order.
+    // ── The two open maps ───────────────────────────────────────────────────
+    //
+    // ⚠ **These are two different things and merging them is lossy in a way no
+    // renderer can undo** (DR-27). `quantitative` is BioOKF §7.3, *how much* —
+    // effect sizes, p-values, sensitivities. `qualifiers` is §7.2's context,
+    // *whose and when* — `species_context`, `sex`, `age_group`, `timepoint`. A
+    // p-value filed as context is a category error: the value survives, but the
+    // statement "this number measures the claim" does not, and a consumer
+    // reading the merged map back cannot tell which key was which.
+    //
+    // Both are open maps rather than a field per slot, because §7.3 alone names
+    // around twenty and the six flat fields this replaced silently dropped
+    // fourteen of them. An open map costs no change here and none in the
+    // renderer when the vocabulary grows — §4.8 renders every key in both maps
+    // uniformly, with exactly one privileged merge (`ci_lower` + `ci_upper` into
+    // a single `95% CI` row).
+    /// BioOKF §7.3: the quantitative bundle, keyed by the slot the producer
+    /// wrote. `effect_size`, `p_value`, `ci_lower`, `ci_upper`, `sample_size`,
+    /// `effect_metric`, `adjusted_p_value`, `standard_error`, `sensitivity`,
+    /// `specificity`, `auc`, `frequency`, `clinical_phase`, `response_direction`,
+    /// `unit`, … — see `graph::QUANTITATIVE_KEYS` for the set this build routes
+    /// here and for why an unrecognised key does not land here by default.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub quantitative: std::collections::BTreeMap<String, QuantitativeValue>,
+    /// BioOKF §7.2 context, plus every attribute this build does not recognise —
+    /// `direction`, `aspect`, `species_context`, `sex`, `timepoint`, and
+    /// anything BioOKF adds after this build shipped — as text, in key order.
     ///
-    /// An open map rather than a field per attribute, so a vocabulary addition
-    /// costs no change here and no change in the renderer. The alternative loses
-    /// data: the attribute exists on disk, and a deriver that models only what
-    /// it recognises drops the rest on the floor where nothing can report it.
+    /// It is the residue map as well as the context map, and that asymmetry is
+    /// deliberate: an attribute nobody has classified is *context* until someone
+    /// says otherwise. The alternative loses data outright — the attribute
+    /// exists on disk, and a deriver that models only what it recognises drops
+    /// the rest on the floor where nothing can report it.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub qualifiers: std::collections::BTreeMap<String, String>,
 }

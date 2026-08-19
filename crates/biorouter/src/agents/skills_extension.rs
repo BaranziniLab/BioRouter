@@ -38,6 +38,56 @@ pub static BUILTIN_SKILLS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Skills that ship with Biorouter and teach the **knowledge-base formats** —
+/// which of OKF and BioOKF to create, how to ingest into each, and how to read a
+/// lint report. Seeded exactly like the array above.
+///
+/// ⚠ **A separate array, and the separation is not cosmetic.** The list above is
+/// also the *Contexts* list: the shipped skills the desktop Settings pane offers
+/// as toggles, hand-synced into two TypeScript copies, and pinned by
+/// `ui/desktop/src/components/settings/contexts/contexts.test.ts`, which reads
+/// **this file's source text** — it slices from the identifier above to its
+/// closing `];` and matches the `("name", include_str!` pairs inside. Adding a
+/// knowledge skill there would make that test fail on a UI this change does not
+/// touch. These four are shipped skills that are not Contexts, which is a real
+/// distinction (they trigger on a task, they are not always-on self-knowledge)
+/// and is why they can live here honestly rather than as a workaround.
+///
+/// The consequence to know about, and the Stage 7 item it leaves: the desktop's
+/// own `BUILTIN_SKILL_NAMES` does not list these, so the Skills pane shows them
+/// with a Delete control. Deleting one lasts until the next startup, when the
+/// seeder rewrites it — the same behaviour every shipped skill has always had if
+/// its folder is removed, surfaced by a button that should not be there. Adding
+/// them to the two TypeScript lists is the fix, in the stage that owns the UI.
+pub static KNOWLEDGE_SKILLS: &[(&str, &str)] = &[
+    (
+        "knowledge-choose-a-format",
+        include_str!("builtin_skills/knowledge-choose-a-format/SKILL.md"),
+    ),
+    (
+        "knowledge-ingest-okf",
+        include_str!("builtin_skills/knowledge-ingest-okf/SKILL.md"),
+    ),
+    (
+        "knowledge-ingest-biookf",
+        include_str!("builtin_skills/knowledge-ingest-biookf/SKILL.md"),
+    ),
+    (
+        "knowledge-lint",
+        include_str!("builtin_skills/knowledge-lint/SKILL.md"),
+    ),
+];
+
+/// Every skill whose bytes ship inside the binary, Contexts and otherwise.
+///
+/// This is what the seeder and the reset path write, and what
+/// [`is_builtin_skill_name`] answers over — "did Biorouter put this here?" is a
+/// different question from "does Settings offer a toggle for it?", and conflating
+/// them is what would make a knowledge skill count as one the *user* installed.
+pub fn shipped_skills() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
+    BUILTIN_SKILLS.iter().chain(KNOWLEDGE_SKILLS.iter())
+}
+
 pub(crate) fn install_builtin_skills() {
     SkillsClient::ensure_builtin_skills(&Paths::config_dir().join("skills"));
 }
@@ -49,6 +99,10 @@ pub(crate) fn install_builtin_skills() {
 /// string in `soul.rs` rather than in that array. Hand-synced with
 /// `ui/desktop/src/components/settings/contexts/contexts.ts`, whose
 /// `contexts.test.ts` reads *this file* and asserts the two agree (#77).
+///
+/// ⚠ Deliberately **not** [`shipped_skills`]. The two answer different questions
+/// — see [`KNOWLEDGE_SKILLS`] — and widening this one would change what the
+/// Settings pane claims to offer.
 pub fn context_skill_names() -> impl Iterator<Item = &'static str> {
     BUILTIN_SKILLS
         .iter()
@@ -56,8 +110,14 @@ pub fn context_skill_names() -> impl Iterator<Item = &'static str> {
         .chain(std::iter::once(crate::knowledge::soul::SOUL_SKILL_DIR))
 }
 
+/// Did Biorouter put this skill on disk? Every shipped skill, not only the
+/// Contexts — a knowledge skill the seeder wrote is not one the user installed,
+/// so it must not be counted as one by [`count_user_skills`].
 pub fn is_builtin_skill_name(name: &str) -> bool {
-    context_skill_names().any(|builtin_name| builtin_name == name)
+    shipped_skills()
+        .map(|(name, _)| *name)
+        .chain(std::iter::once(crate::knowledge::soul::SOUL_SKILL_DIR))
+        .any(|builtin_name| builtin_name == name)
 }
 
 /// The config key holding one Context's enablement, as the desktop Settings
@@ -141,7 +201,7 @@ pub fn reset_to_builtin_skills() -> Result<usize> {
         crate::knowledge::soul::SOUL_SKILL_MD,
     )?;
 
-    for (name, _) in BUILTIN_SKILLS {
+    for (name, _) in shipped_skills() {
         if !skills_dir.join(name).join("SKILL.md").is_file() {
             anyhow::bail!("failed to restore built-in skill '{name}'");
         }
@@ -250,7 +310,7 @@ impl SkillsClient {
 
         // Guarantee builtin skills are present even if seeding to disk failed
         // (e.g. read-only config dir) or a user skill shadowed the slug.
-        for (name, content) in BUILTIN_SKILLS {
+        for (name, content) in shipped_skills() {
             if !skills.contains_key(*name) {
                 if let Ok((metadata, body)) = Self::parse_frontmatter(content) {
                     skills.insert(
@@ -282,7 +342,7 @@ impl SkillsClient {
     /// rewritten when it differs so app updates propagate. Failures are
     /// non-fatal: the in-memory fallback in `new()` still registers them.
     fn ensure_builtin_skills(skills_dir: &Path) {
-        for (name, content) in BUILTIN_SKILLS {
+        for (name, content) in shipped_skills() {
             let dir = skills_dir.join(name);
             let file = dir.join("SKILL.md");
             let up_to_date = std::fs::read_to_string(&file)
@@ -2484,6 +2544,63 @@ Working dir biorouter content
             seeded.exists(),
             "builtin skill should be restored after deletion"
         );
+    }
+
+    /// The knowledge-format skills seed through the same path and are
+    /// recognised as shipped, so `count_user_skills` does not report four
+    /// skills the user never installed.
+    #[test]
+    fn the_knowledge_skills_ship_and_are_not_counted_as_the_users() {
+        let temp_dir = TempDir::new().unwrap();
+        let skills_dir = temp_dir.path().join("skills");
+        SkillsClient::ensure_builtin_skills(&skills_dir);
+        for (name, content) in KNOWLEDGE_SKILLS {
+            let seeded = skills_dir.join(name).join("SKILL.md");
+            assert!(seeded.exists(), "{name} should be seeded");
+            assert_eq!(fs::read_to_string(seeded).unwrap(), *content);
+            assert!(is_builtin_skill_name(name), "{name} reads as a user skill");
+        }
+    }
+
+    /// ⚠ **They are shipped, and they are NOT Contexts.** `contexts.test.ts`
+    /// reads this file's source, slices the `BUILTIN_SKILLS` literal, and
+    /// asserts the desktop's two hand-synced copies name exactly those four plus
+    /// `update-soul`. The knowledge skills live in their own array *because* of
+    /// that: they are task-triggered, not always-on self-knowledge, so they do
+    /// not belong in the Settings Contexts pane — and putting them there would
+    /// fail a UI test from a Rust edit. This asserts the separation directly, so
+    /// the reason cannot be lost by someone tidying the two arrays into one.
+    #[test]
+    fn a_knowledge_skill_is_shipped_but_is_not_a_context() {
+        let contexts: Vec<&str> = context_skill_names().collect();
+        assert_eq!(contexts.len(), 5, "the Contexts list moved: {contexts:?}");
+        for (name, _) in KNOWLEDGE_SKILLS {
+            assert!(
+                !contexts.contains(name),
+                "{name} became a Context; ui/desktop's CONTEXTS and \
+                 skillUtils.BUILTIN_SKILL_NAMES must gain it in the same change"
+            );
+        }
+    }
+
+    /// Every shipped skill parses, and its frontmatter `name` is its directory
+    /// name — which is the key it occupies in the skill map, so a mismatch makes
+    /// the skill both un-loadable by name and un-filterable by directory.
+    #[test]
+    fn every_shipped_skill_parses_and_names_itself_after_its_directory() {
+        let mut seen: Vec<&str> = Vec::new();
+        for (dir, content) in shipped_skills() {
+            let (metadata, body) = SkillsClient::parse_frontmatter(content)
+                .unwrap_or_else(|e| panic!("{dir}/SKILL.md has unparseable frontmatter: {e}"));
+            assert_eq!(&metadata.name, dir, "{dir} names itself something else");
+            assert!(
+                !metadata.description.trim().is_empty(),
+                "{dir} has no description, which is its entire trigger"
+            );
+            assert!(!body.trim().is_empty(), "{dir} has no body");
+            assert!(!seen.contains(dir), "{dir} is declared twice");
+            seen.push(dir);
+        }
     }
 
     /// ⚠ **The literal, both sides.** `contexts.test.ts` pins

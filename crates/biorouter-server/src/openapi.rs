@@ -750,9 +750,19 @@ impl utoipa::Modify for ApiKeySecurity {
         biorouter::biorouter_apps::ResourceMetadata,
         // knowledge types
         biorouter_mcp::knowledge::types::Manifest,
+        // `Manifest::format` and `CreateBaseBody::format` both name it, so it
+        // is a `$ref` from two places; an unregistered one is a dangling
+        // reference that surfaces as a broken `types.gen.ts` rather than as a
+        // generator error (DR-6).
+        biorouter_mcp::knowledge::types::KbFormat,
         biorouter_mcp::knowledge::types::Graph,
         biorouter_mcp::knowledge::types::GraphNode,
         biorouter_mcp::knowledge::types::GraphEdge,
+        // `GraphEdge::quantitative`'s value type. Registered because utoipa
+        // emits a `$ref` to any named `ToSchema` a field mentions, and an
+        // unregistered one is a dangling reference the generator does not
+        // complain about — it surfaces as a broken `types.gen.ts`.
+        biorouter_mcp::knowledge::types::QuantitativeValue,
         biorouter_mcp::knowledge::types::HistoryEntry,
         biorouter_mcp::knowledge::types::ChangeKind,
         biorouter_mcp::knowledge::types::Credibility,
@@ -782,6 +792,16 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::knowledge::IngestBody,
         super::routes::knowledge::QueryBody,
         super::routes::knowledge::LintBody,
+        // The lint stream's terminal `event: done` payload (`LintResult`) and
+        // the typed findings inside it. Registered as components without being
+        // any path's response body, because the response IS an event stream —
+        // declaring it as the body would type the generated client's return
+        // value as JSON and be wrong at runtime. See `routes::knowledge::lint`.
+        biorouter_mcp::knowledge::macros::lint::LintResult,
+        biorouter_mcp::knowledge::macros::lint::LintReport,
+        biorouter_mcp::knowledge::validate::Diagnostics,
+        biorouter_mcp::knowledge::validate::Diagnostic,
+        biorouter_mcp::knowledge::validate::Severity,
         super::routes::knowledge::CheckModelBody,
         super::routes::knowledge::CheckModelResponse,
         super::routes::knowledge::SetActiveBody,

@@ -340,6 +340,7 @@ export type Conversation = Array<Message>;
 
 export type CreateBaseBody = {
     color?: string | null;
+    format?: KbFormat | null;
     id: string;
     name: string;
 };
@@ -544,6 +545,50 @@ export type DetectableProvider = {
 
 export type DetectableProvidersResponse = {
     providers: Array<DetectableProvider>;
+};
+
+/**
+ * One finding, addressed to whoever has to fix it.
+ */
+export type Diagnostic = {
+    message: string;
+    /**
+     * Bundle-relative path of the page, when there is one. Absent for a
+     * base-wide finding and for a draft that has not been given a path yet.
+     */
+    path?: string | null;
+    /**
+     * Stable across releases. Callers, tests and the UI match on this and
+     * never on `message`, which is prose and will be reworded. Prefixed by the
+     * layer that raised it: `okf.`, `biookf.`, or `kb.` for the deterministic
+     * hygiene scan that predates both.
+     */
+    rule: string;
+    severity: Severity;
+    /**
+     * What the finding is *about*: a page's `identifier`, a bundle-relative
+     * path, or an edge rendered as `<subject> -<predicate>-> <object>`.
+     * Never empty — a diagnostic whose subject a caller has to reconstruct
+     * from the message is one nobody acts on.
+     */
+    subject: string;
+};
+
+/**
+ * A capped list plus the count before the cap.
+ *
+ * The pair, not the `Vec` alone: a truncated list that reports its own length
+ * as the answer is how "3 errors" gets rendered for a base with four hundred.
+ */
+export type Diagnostics = {
+    /**
+     * At most [`MAX_DIAGNOSTICS`], most severe first.
+     */
+    items?: Array<Diagnostic>;
+    /**
+     * How many were raised, which is `items.len()` unless the cap bit.
+     */
+    total?: number;
 };
 
 export type DivergeSessionRequest = {
@@ -790,21 +835,158 @@ export type Graph = {
 };
 
 export type GraphEdge = {
+    agent_type?: string | null;
     from: string;
+    /**
+     * The BioOKF §8.1 provenance triplet.
+     */
+    knowledge_level?: string | null;
+    /**
+     * SPEC §6.F polarity, emitted rather than left for the renderer to infer
+     * from a `not_` prefix — the prefix is one of two spellings (the other is
+     * the legacy `negated: true` attribute) and a renderer that knows only the
+     * first draws a negative claim as a positive one.
+     */
+    negated?: boolean;
+    /**
+     * The BioOKF §6 predicate. `None` for an untyped link, which is what makes
+     * "this edge has no type" answerable rather than inferred from an empty
+     * string.
+     */
+    predicate?: string | null;
+    /**
+     * The source node this claim came from: a node id when the identifier
+     * resolves to a page in this bundle, and otherwise the identifier exactly
+     * as written, so an unresolved one is visible instead of vanishing.
+     */
+    primary_source?: string | null;
+    publications?: Array<string>;
+    /**
+     * BioOKF §7.2 context, plus every attribute this build does not recognise —
+     * `direction`, `aspect`, `species_context`, `sex`, `timepoint`, and
+     * anything BioOKF adds after this build shipped — as text, in key order.
+     *
+     * It is the residue map as well as the context map, and that asymmetry is
+     * deliberate: an attribute nobody has classified is *context* until someone
+     * says otherwise. The alternative loses data outright — the attribute
+     * exists on disk, and a deriver that models only what it recognises drops
+     * the rest on the floor where nothing can report it.
+     */
+    qualifiers?: {
+        [key: string]: string;
+    };
+    /**
+     * BioOKF §7.3: the quantitative bundle, keyed by the slot the producer
+     * wrote. `effect_size`, `p_value`, `ci_lower`, `ci_upper`, `sample_size`,
+     * `effect_metric`, `adjusted_p_value`, `standard_error`, `sensitivity`,
+     * `specificity`, `auc`, `frequency`, `clinical_phase`, `response_direction`,
+     * `unit`, … — see `graph::QUANTITATIVE_KEYS` for the set this build routes
+     * here and for why an unrecognised key does not land here by default.
+     */
+    quantitative?: {
+        [key: string]: QuantitativeValue;
+    };
+    /**
+     * The deprecated alias of [`Self::predicate`], carrying the identical
+     * value. Kept for one release because it is the only relation field the
+     * generated TypeScript client has ever had; new readers use `predicate`.
+     */
     relation?: string | null;
+    /**
+     * This edge was derived from provenance rather than authored as a
+     * relationship (UI spec §2.1, adopted by DR-27).
+     *
+     * §5.7 draws it as the faint dotted line with **no taper** and §4.8 replaces
+     * its provenance triplet with the "author an explicit `reported_in` edge to
+     * make it first-class" note, so it is a rendering channel a consumer cannot
+     * reconstruct: an implicit provenance link and an authored `reported_in`
+     * edge are the same `(from, to, predicate)` triple and differ only in who
+     * wrote them.
+     *
+     * ⚠ **Nothing in this build sets it.** The deriver emits only edges a page
+     * states, and DR-24 puts the `reported_in` emission in BioOKF-mode *ingest*
+     * — so today this is always `false` and therefore never serialized. It is
+     * declared now because Stage 6 freezes the generated TypeScript client and
+     * a channel absent from that contract cannot be added by the producer
+     * alone.
+     */
+    synthesized?: boolean;
     to: string;
 };
 
 export type GraphNode = {
     credibility_tier?: CredibilityTier | null;
+    /**
+     * Incident edge count — every edge with this node at either end, after
+     * [`crate::knowledge::graph`] has deduplicated them.
+     *
+     * UI spec §2.1, adopted by DR-27. It drives hub sizing (§5.6 floors its
+     * `deg(n)` at this value) and the descending-degree keyboard order (§5.12),
+     * and the renderer cannot derive it cheaply: it would have to walk the
+     * whole edge list on every frame of a force layout, for a number that is
+     * constant for the life of the graph.
+     *
+     * `Option` because the spec draws it optional and a consumer must be able
+     * to tell "the producer did not supply this" from "this node has no edges"
+     * — the deriver always fills it, and fills it with `Some(0)` for an
+     * isolated node.
+     */
+    degree?: number | null;
+    /**
+     * A node an edge points at that has no page in this bundle yet.
+     *
+     * OKF §11 makes a broken link something a consumer MUST tolerate, so this
+     * is not an error state — it is the curation queue, surfaced. See
+     * `graph::derive` for why a dangling *legacy* `[[…]]` link does not produce
+     * one of these.
+     */
+    external?: boolean;
     id: string;
+    /**
+     * The display identity — `identifier`, or `title` as SPEC §14's deprecated
+     * alias for it. Distinct from `label`, which stays whatever the page list
+     * has always shown, so a renderer can change what it shows without the
+     * deriver changing what an edge resolves against.
+     */
+    identifier?: string | null;
     kind: PageKind;
     label: string;
+    /**
+     * The concept document's own `type` (OKF §4.1), exactly as written.
+     *
+     * A raw `String` and not an enum, in both profiles. OKF leaves `type` open,
+     * and DR-7 forbids rejecting a page over an unrecognised value — an enum
+     * here would be a rejection mechanism wearing a different hat, silently
+     * replacing the producer's word with a fallback on the way past. `None` for
+     * every page in a legacy base, which carries `kind` and no `type`.
+     */
+    node_type?: string | null;
+    /**
+     * The page's logical path, or the empty string for an `external` node,
+     * which has no page to open.
+     */
     path: string;
     /**
      * True if this is a source node whose `raw/<id>/meta.yaml` marks it retracted.
      */
     retracted?: boolean;
+    /**
+     * OKF §5.5: `stale_after` has passed. Computed here, at derivation time,
+     * rather than in the renderer — a renderer that compares dates would give a
+     * different answer per client clock and per cache age.
+     */
+    stale?: boolean;
+    /**
+     * OKF §5.4 `draft | stable | deprecated`, or whatever else the producer
+     * wrote. Emitted only when the page states one: §5.4 says an absent
+     * `status` *reads* as `stable`, and writing `stable` onto every legacy node
+     * would turn a consumer's assumption into the producer's assertion.
+     */
+    status?: string | null;
+    /**
+     * BioOKF §7.1 `subtype`: agent-coined, never validated against anything.
+     */
+    subtype?: string | null;
 };
 
 export type HistoryEntry = {
@@ -887,6 +1069,24 @@ export type JsonObject = {
 };
 
 /**
+ * Which of the two OKF profiles a base's **producer** follows (DR-6).
+ *
+ * Both profiles write the same on-disk shape — BioOKF only adds constraints,
+ * so a BioOKF bundle is always a valid OKF bundle. The value therefore selects
+ * how strictly a *write* is checked and which vocabulary the sub-agent is
+ * taught; it never selects how a page is *read*, which is the property that
+ * lets one reader, one graph deriver and one renderer serve both.
+ *
+ * ⚠ **On its own this does not answer "is this base OKF?".** It carries
+ * `#[serde(default)]` like every other manifest field (DR-12), so every
+ * `manifest.yaml` written before Stage 3 — every base on disk — reads back as
+ * `Okf` while its pages are `title`/`kind` frontmatter and `[[wiki links]]`.
+ * The **generation number** is what separates them: ask [`Manifest::profile`],
+ * which folds [`CURRENT_SCHEMA_VERSION`] in, and never this field alone.
+ */
+export type KbFormat = 'okf' | 'biookf';
+
+/**
  * One row of `GET /knowledge/bases`: the stored manifest plus the privacy tier
  * (issue #56).
  *
@@ -955,6 +1155,58 @@ export type KillJobResponse = {
 export type LintBody = {
     autofix?: boolean | null;
     model: ModelRef;
+};
+
+/**
+ * The payload of the lint stream's terminal `event: done` frame, and — since
+ * Stage 6 — a published schema.
+ *
+ * It is `ToSchema` rather than merely `Serialize` because
+ * `POST /knowledge/bases/{id}/lint` answers over SSE, so the shape a client
+ * has to parse cannot be inferred from the response body's own type. Declaring
+ * it puts the four lists **and** the typed [`Diagnostics`] into
+ * `components.schemas`, and therefore into the generated TypeScript, where the
+ * renderer reads the frame. A hand-written interface in `ui/` would be the
+ * same contract with nothing keeping it in step.
+ */
+export type LintReport = {
+    /**
+     * Pages with `contradiction: true` in frontmatter.
+     */
+    contradictions: Array<string>;
+    diagnostics?: Diagnostics;
+    /**
+     * `[[Target]]` references in source pages that have no corresponding page
+     * under `knowledge/`.
+     */
+    missing_concept_pages: Array<string>;
+    /**
+     * Pages with no inbound `[[wiki-link]]` references from any other page.
+     */
+    orphans: Array<string>;
+    /**
+     * Sources whose `ingested_at` is >90 days ago AND have no inbound links.
+     */
+    stale_sources: Array<string>;
+};
+
+/**
+ * What the lint stream's terminal `event: done` frame actually carries.
+ *
+ * The [`LintReport`] is nested rather than flattened because a lint answers two
+ * questions — what is wrong, and what was changed about it — and an autofix
+ * that rewrote pages has a `commit_sha` the report itself cannot express.
+ * Published as a schema for the reason its `report` field is; see
+ * [`LintReport`].
+ */
+export type LintResult = {
+    /**
+     * The autofix commit, or `None` for a read-only lint — which is every lint
+     * that ran without `autofix`, and therefore without a provider at all.
+     */
+    commit_sha?: string | null;
+    fixes_applied: number;
+    report: LintReport;
 };
 
 export type ListAppsRequest = {
@@ -1108,11 +1360,34 @@ export type LocationResponse = {
 };
 
 export type Manifest = {
+    /**
+     * The BioOKF revision, when [`Self::format`] is `biookf`.
+     *
+     * It lives **here and not in `index.md`** (DR-23's corollary): OKF §8
+     * permits `okf_version` in a bundle-root index file and nothing else, so a
+     * `biookf_version` there is a conformance failure — which is exactly the
+     * deviation BioOKF's own spec makes and BioRouter does not.
+     */
+    biookf_version?: string | null;
     color: string;
     created_at: string;
     default_model?: ModelRef | null;
+    format: KbFormat;
     id: string;
     name: string;
+    /**
+     * The OKF revision this bundle declares, mirroring the bundle-root
+     * `index.md` frontmatter (OKF §8/§12). `None` on a base written before the
+     * OKF generation, which is the honest answer: it declares no revision.
+     *
+     * Unlike the six fields above these two take no `#[schema(required)]`.
+     * That pairing exists there because the server always serializes those, so
+     * the `serde(default)` describes only the read side; here the `None`
+     * describes genuinely absent data, and `required` would be a false
+     * statement about the response that the generated TypeScript would then
+     * believe.
+     */
+    okf_version?: string | null;
     schema_version: number;
 };
 
@@ -1822,6 +2097,22 @@ export type ProvidersResponse = {
     providers: Array<ProviderDetails>;
 };
 
+/**
+ * One reading of one BioOKF §7.3 quantitative slot: a number when the producer
+ * wrote one, and the text they wrote otherwise.
+ *
+ * UI spec §2.1 types the map as `Record<string, string | number>`, and both
+ * arms are load-bearing. `p_value: 3.0e-6` is a number and a renderer that
+ * received it as a string could not right-align or format it; `p_value: <0.001`
+ * and `effect_size: 2.5 nM` are *also* things a model writes, and coercing
+ * those to `None` deletes a statistic with nothing left to report it.
+ *
+ * The variant is chosen by the value alone, never by the key — see
+ * [`crate::knowledge::graph`]'s `QUANTITATIVE_KEYS` for why the key decides
+ * only which map an attribute lands in.
+ */
+export type QuantitativeValue = number | string;
+
 export type QueryBody = {
     file_as_page?: boolean | null;
     model: ModelRef;
@@ -2329,6 +2620,16 @@ export type SetupResponse = {
     message: string;
     success: boolean;
 };
+
+/**
+ * Three severities, no fatal one — see the module header.
+ *
+ * A distinct type from [`okf::Severity`] rather than a re-export, because this
+ * one crosses the wire: it is `Deserialize` and `rename_all = "lowercase"`, and
+ * pinning that spelling here means a rename upstream cannot silently change a
+ * JSON payload the UI reads.
+ */
+export type Severity = 'error' | 'warning' | 'info';
 
 export type SidebarSessionListResponse = {
     has_more: boolean;
@@ -4258,6 +4559,13 @@ export type CreateBaseData = {
     url: '/knowledge/bases';
 };
 
+export type CreateBaseErrors = {
+    /**
+     * Duplicate id, invalid id, or unknown format
+     */
+    400: unknown;
+};
+
 export type CreateBaseResponses = {
     /**
      * Created knowledge base
@@ -4538,7 +4846,7 @@ export type LintErrors = {
 
 export type LintResponses = {
     /**
-     * SSE stream of sub-agent events (text/event-stream)
+     * SSE stream of sub-agent events (text/event-stream); the terminal `event: done` frame's data is a LintResult
      */
     200: unknown;
 };

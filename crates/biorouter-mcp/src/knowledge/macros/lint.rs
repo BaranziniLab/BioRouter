@@ -4,18 +4,22 @@
 //! Part B: `lint(svc, args)` — calls `scan`, optionally runs a sub-agent to fix issues.
 
 use crate::knowledge::{
+    biookf,
     git::{GitRepo, Txn},
+    graph,
     links::{self, LinkIndex},
-    paths, raw,
+    manifest, okf, paths, raw,
     service::KnowledgeService,
     store::{logical_path, split_frontmatter},
     subagent::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds, SubAgentResult},
-        procedures::LINT_PROCEDURE,
+        procedures::{lint_procedure, system_prompt},
     },
     types::ChangeKind,
+    types::KbFormat,
+    validate::{BundlePage, Diagnostic, Diagnostics, Severity},
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -28,6 +32,29 @@ use std::{
 // LintReport
 // ---------------------------------------------------------------------------
 
+/// The four hygiene rules that predate the format layers, as stable ids.
+///
+/// Prefixed `kb.` rather than `okf.` / `biookf.` because they are BioRouter's
+/// own housekeeping and not a clause of either spec: no OKF rule says a page
+/// must be linked to, and §11 rule 4 explicitly forbids rejecting a bundle for
+/// a broken cross-link. Keeping the prefixes apart is what lets a reader — and a
+/// Stage 6 UI — tell "your base is untidy" from "this file is not conformant".
+pub const RULE_ORPHAN: &str = "kb.orphan";
+pub const RULE_CONTRADICTION: &str = "kb.contradiction";
+pub const RULE_STALE_SOURCE: &str = "kb.stale_source";
+pub const RULE_MISSING_CONCEPT_PAGE: &str = "kb.missing_concept_page";
+
+/// The payload of the lint stream's terminal `event: done` frame, and — since
+/// Stage 6 — a published schema.
+///
+/// It is `ToSchema` rather than merely `Serialize` because
+/// `POST /knowledge/bases/{id}/lint` answers over SSE, so the shape a client
+/// has to parse cannot be inferred from the response body's own type. Declaring
+/// it puts the four lists **and** the typed [`Diagnostics`] into
+/// `components.schemas`, and therefore into the generated TypeScript, where the
+/// renderer reads the frame. A hand-written interface in `ui/` would be the
+/// same contract with nothing keeping it in step.
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LintReport {
     /// Pages with no inbound `[[wiki-link]]` references from any other page.
@@ -39,6 +66,19 @@ pub struct LintReport {
     /// `[[Target]]` references in source pages that have no corresponding page
     /// under `knowledge/`.
     pub missing_concept_pages: Vec<String>,
+    /// Everything above, plus the format layers, as one typed list: a stable
+    /// rule id, a severity, the page or edge it is about, and a message.
+    ///
+    /// ⚠ **It does not replace the four lists, and that is deliberate.** They
+    /// are the shape `LINT_PROCEDURE` teaches the autofix sub-agent and the
+    /// shape a stored report deserializes into; dropping them would rewrite a
+    /// working prompt under a change whose subject is structure. The four
+    /// re-appear here as `kb.*` diagnostics, so a consumer reads either and a
+    /// new consumer reads only this.
+    ///
+    /// `serde(default)` so a report written before Stage 4 still loads.
+    #[serde(default)]
+    pub diagnostics: Diagnostics,
 }
 
 // ---------------------------------------------------------------------------
@@ -142,12 +182,133 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
         }
     }
 
-    Ok(LintReport {
+    let mut report = LintReport {
         orphans,
         contradictions,
         stale_sources,
         missing_concept_pages,
-    })
+        diagnostics: Diagnostics::default(),
+    };
+    // Three of the four are collected out of a `HashMap`/`HashSet`, so before
+    // this line the same base lint into a different order on every run. It was
+    // invisible while the report was four bags of strings a human skimmed; it
+    // stops being invisible the moment the entries are diagnostics, because a
+    // diff of two reports becomes noise and the `MAX_DIAGNOSTICS` cut picks a
+    // different subset each time. Sorting here rather than at each collection
+    // site keeps it one statement about the whole report.
+    report.orphans.sort();
+    report.contradictions.sort();
+    report.stale_sources.sort();
+    report.missing_concept_pages.sort();
+    report.diagnostics = Diagnostics::new(
+        scan_diagnostics(&report)
+            .chain(format_diagnostics(kb_root, &pages))
+            .collect(),
+    );
+    Ok(report)
+}
+
+/// The four deterministic lists, restated as typed diagnostics.
+///
+/// Built from the report rather than from the loops that produced it, so the two
+/// halves cannot disagree about what was found: there is one place a page
+/// becomes an orphan, and this reads its answer.
+fn scan_diagnostics(report: &LintReport) -> impl Iterator<Item = Diagnostic> + '_ {
+    let rule = |rule: &'static str, severity, message: &'static str| {
+        move |subject: &String| Diagnostic::scan(rule, severity, subject.clone(), message)
+    };
+    report
+        .orphans
+        .iter()
+        .map(rule(
+            RULE_ORPHAN,
+            Severity::Warning,
+            "no other page links to this one; link it from a hub page or remove it",
+        ))
+        .chain(report.contradictions.iter().map(rule(
+            RULE_CONTRADICTION,
+            Severity::Warning,
+            "the page declares `contradiction: true`; resolve it or record which source wins",
+        )))
+        .chain(report.stale_sources.iter().map(rule(
+            RULE_STALE_SOURCE,
+            Severity::Info,
+            "ingested over 90 days ago and still unreferenced by any page",
+        )))
+        .chain(report.missing_concept_pages.iter().map(rule(
+            RULE_MISSING_CONCEPT_PAGE,
+            Severity::Warning,
+            "a source page links to this target, but no page under knowledge/ carries it",
+        )))
+}
+
+/// The OKF layer over every page, plus the BioOKF profile when the base is in
+/// it.
+///
+/// **A legacy base gets nothing** (DR-26). Its pages are `title`/`kind`
+/// frontmatter and `[[wiki]]` links, which this build has promised never to
+/// rewrite — so `okf.type.missing` on every one of them would report a decision
+/// as several hundred defects and bury the four hygiene findings that are real.
+/// `Manifest::profile` is the accessor that answers this and `Manifest::format`
+/// is the trap: it reads `Okf` on every base written before Stage 3.
+///
+/// An unreadable manifest is treated as legacy, for the same reason: guessing
+/// `Okf` for a base whose generation we could not establish produces exactly the
+/// flood the paragraph above describes.
+fn format_diagnostics(kb_root: &Path, pages: &HashMap<String, String>) -> Vec<Diagnostic> {
+    let Some(format) = manifest::load(kb_root).ok().and_then(|m| m.profile()) else {
+        return Vec::new();
+    };
+    let mut checked: Vec<(&String, &String, Option<okf::Page>)> = pages
+        .iter()
+        .filter(|(path, _)| !graph::is_scaffold_page(path))
+        .map(|(path, text)| (path, text, okf::Page::parse(text).ok()))
+        .collect();
+    // `HashMap` iteration order is random, so without this the same base lints
+    // into a different order on every run — which turns a diff of two reports
+    // into noise and makes the `MAX_DIAGNOSTICS` cut pick a different subset
+    // each time.
+    checked.sort_by(|a, b| a.0.cmp(b.0));
+
+    let subject_of = |path: &str, page: &Option<okf::Page>| {
+        page.as_ref()
+            .and_then(|p| p.doc.primary_key())
+            .unwrap_or(path)
+            .to_string()
+    };
+    let mut out: Vec<Diagnostic> = Vec::new();
+    for (path, text, page) in &checked {
+        let subject = subject_of(path, page);
+        out.extend(
+            okf::check_source(text)
+                .into_iter()
+                .map(|d| Diagnostic::from_okf_at(d, &subject, Some(path))),
+        );
+    }
+    if format == KbFormat::Biookf {
+        // One index for the whole run, which is what makes the cross-document
+        // rules (duplicate `identifier`, unresolved `object` / `primary_source`)
+        // answerable at all — and O(bundle) once rather than per page.
+        let bundle: Vec<BundlePage> = checked
+            .iter()
+            .filter_map(|(path, _, page)| {
+                page.as_ref().map(|p| BundlePage {
+                    path: (*path).clone(),
+                    doc: p.doc.clone(),
+                })
+            })
+            .collect();
+        let index = biookf::BundleIndex::build(bundle.iter().map(|p| (p.path.as_str(), &p.doc)));
+        for p in &bundle {
+            out.extend(
+                biookf::check_doc(Some(&p.path), &p.doc, &index)
+                    .findings
+                    .into_iter()
+                    .map(Diagnostic::from),
+            );
+        }
+    }
+    out
 }
 
 // ---- helpers ----------------------------------------------------------------
@@ -207,9 +368,19 @@ pub struct LintArgs {
     pub cancel: Option<std::sync::Arc<tokio::sync::Notify>>,
 }
 
+/// What the lint stream's terminal `event: done` frame actually carries.
+///
+/// The [`LintReport`] is nested rather than flattened because a lint answers two
+/// questions — what is wrong, and what was changed about it — and an autofix
+/// that rewrote pages has a `commit_sha` the report itself cannot express.
+/// Published as a schema for the reason its `report` field is; see
+/// [`LintReport`].
+#[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LintResult {
     pub report: LintReport,
+    /// The autofix commit, or `None` for a read-only lint — which is every lint
+    /// that ran without `autofix`, and therefore without a provider at all.
     pub commit_sha: Option<String>,
     pub fixes_applied: usize,
 }
@@ -257,13 +428,21 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     let txn = repo.begin_txn("lint")?;
 
     let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
+    // The four lists are what `LINT_PROCEDURE` teaches, so they stay exactly as
+    // they were. `diagnostics` is added beside them rather than instead of them,
+    // and is already capped at `MAX_DIAGNOSTICS` — an uncapped list over a large
+    // base is a context-window failure that presents as the model losing track.
     let report_json = serde_json::to_string_pretty(&serde_json::json!({
         "orphans": report.orphans,
         "contradictions": report.contradictions,
         "stale_sources": report.stale_sources,
         "missing_concept_pages": report.missing_concept_pages,
+        "diagnostics": report.diagnostics,
     }))?;
-    let system = format!("{schema}\n\n---\n{LINT_PROCEDURE}");
+    // See `query`'s note on `profile()` vs `format`: an autofix run on a legacy
+    // base must not be handed BioOKF's typed writer.
+    let format = manifest::load(&kb_root).ok().and_then(|m| m.profile());
+    let system = system_prompt(&schema, lint_procedure(format));
     let user = format!(
         "autofix=true. Here is the current lint report:\n```json\n{report_json}\n```\nPlease fix the issues."
     );
@@ -275,7 +454,7 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     };
     let agent = SubAgent {
         completer,
-        tools: tool_specs(),
+        tools: tool_specs(format),
         system_prompt: system,
         bounds: args.bounds,
     };
@@ -366,13 +545,328 @@ fn settle_autofix(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::knowledge::{service::KnowledgeService, store::write_page};
+    use crate::knowledge::{
+        affiliation::CallerAffiliation, service::KnowledgeService, store::write_page,
+    };
 
     fn fresh_svc() -> (tempfile::TempDir, KnowledgeService) {
         let dir = tempfile::tempdir().unwrap();
         let svc = KnowledgeService::new(dir.path().to_path_buf());
         svc.create_base("k", "K", None).unwrap();
         (dir, svc)
+    }
+
+    /// A base in a named profile, created through the production path so its
+    /// `schema.md`, its scaffold directories and its `schema_version` are the
+    /// real ones and not a hand-built approximation.
+    fn svc_in(format: KbFormat) -> (tempfile::TempDir, KnowledgeService) {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base_as("k", "K", None, format, false, &CallerAffiliation::Unstated)
+            .unwrap();
+        (dir, svc)
+    }
+
+    /// A base written before the OKF generation: the shape every base on disk
+    /// has today. `schema_version` is what separates it, not `format` — see
+    /// `Manifest::profile`.
+    fn make_legacy(svc: &KnowledgeService) {
+        let kb = svc.root().join("k");
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 1;
+        manifest::save(&kb, &m).unwrap();
+    }
+
+    fn rules(report: &LintReport) -> Vec<&str> {
+        report
+            .diagnostics
+            .items
+            .iter()
+            .map(|d| d.rule.as_str())
+            .collect()
+    }
+
+    // ---- Stage 4: typed diagnostics ----------------------------------------
+
+    /// The structure is additive. The four lists keep their contents and their
+    /// meaning, and each entry re-appears as a `kb.*` diagnostic carrying the
+    /// same subject — so a consumer reads either and neither can drift.
+    #[test]
+    fn the_four_lists_survive_and_re_appear_as_typed_diagnostics() {
+        let (_dir, svc) = fresh_svc();
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/entities/c.md",
+            "---\ntitle: C\nkind: entity\ncontradiction: true\n---\n\nNothing links here.",
+            "add c",
+            None,
+        )
+        .unwrap();
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(report.orphans, vec!["knowledge/entities/c.md"]);
+        assert_eq!(report.contradictions, vec!["knowledge/entities/c.md"]);
+
+        for rule in [RULE_ORPHAN, RULE_CONTRADICTION] {
+            let found = report
+                .diagnostics
+                .items
+                .iter()
+                .find(|d| d.rule == rule)
+                .unwrap_or_else(|| panic!("{rule} missing from {:?}", rules(&report)));
+            assert_eq!(found.subject, "knowledge/entities/c.md");
+            assert_eq!(found.path.as_deref(), Some("knowledge/entities/c.md"));
+            assert!(!found.message.is_empty());
+        }
+    }
+
+    /// DR-26. A legacy base is read through its own generation's path and never
+    /// rewritten, so it gets the four hygiene rules and **no format layer** —
+    /// otherwise every one of its `title`/`kind` pages reports `okf.type.missing`
+    /// and the findings that are real are buried under a decision.
+    #[test]
+    fn a_legacy_base_is_linted_for_hygiene_and_not_for_conformance() {
+        let (_dir, svc) = fresh_svc();
+        make_legacy(&svc);
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/entities/c.md",
+            "---\ntitle: C\nkind: entity\n---\n\nNothing links here.",
+            "add c",
+            None,
+        )
+        .unwrap();
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(rules(&report), vec![RULE_ORPHAN]);
+        assert!(
+            !rules(&report).iter().any(|r| r.starts_with("okf.")),
+            "a legacy base was checked against OKF: {:?}",
+            rules(&report)
+        );
+    }
+
+    /// The same page in an OKF base **is** checked, which is what makes the
+    /// silence above the profile answering rather than the checker doing
+    /// nothing.
+    #[test]
+    fn an_okf_base_reports_the_format_layer_too() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/concept/c.md",
+            "---\ntitle: C\nkind: entity\n---\n\nNothing links here.",
+            "add c",
+            None,
+        )
+        .unwrap();
+
+        let report = scan(&kb).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .has(crate::knowledge::okf::conformance::RULE_TYPE_MISSING),
+            "{:?}",
+            rules(&report)
+        );
+    }
+
+    /// DR-24, end to end and at the bundle level: a base an ingest produced —
+    /// materialised source node, concept pages citing it, `reported_in` edges
+    /// back to it — lints with **no** unresolved provenance, and the source
+    /// node's self-citing `reported_in` is not reported as a dangling source.
+    ///
+    /// The self-reference is the part that needs an assertion. It is the
+    /// intended terminating base case (SPEC §8.1: a source attests its own
+    /// contents), and a lint that treated it as an ordinary citation would flag
+    /// **every source in every base** — a finding per source, on the one page
+    /// that can never be fixed, drowning the findings that are real.
+    #[test]
+    fn a_bundle_with_materialized_sources_has_no_unresolved_provenance() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/publication/chen-2020.md",
+            "---\ntype: Publication\nidentifier: Chen 2020\nxref: [PMID:32504360]\n\
+             raw_source: [raw/chen-2020/source.md]\nedges:\n  - predicate: reported_in\n    \
+             object: Chen 2020\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: automated_agent\n    primary_source: Chen 2020\n---\n\n# Chen 2020\n",
+            "add source node",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/disease/covid-19.md",
+            "---\ntype: Disease\nidentifier: COVID-19\nedges:\n  - predicate: reported_in\n    \
+             object: Chen 2020\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: text_mining_agent\n    primary_source: Chen 2020\n---\n\n# COVID-19\n",
+            "add disease",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/molecule/interleukin-6.md",
+            "---\ntype: Molecule\nidentifier: Interleukin-6\nedges:\n  \
+             - predicate: associated_with\n    object: COVID-19\n    \
+             knowledge_level: statistical_association\n    agent_type: text_mining_agent\n    \
+             primary_source: Chen 2020\n    p_value: 3.0e-6\n  - predicate: reported_in\n    \
+             object: Chen 2020\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: text_mining_agent\n    primary_source: Chen 2020\n---\n\n# Interleukin-6\n",
+            "add molecule",
+            None,
+        )
+        .unwrap();
+
+        let report = scan(&kb).unwrap();
+        for rule in [
+            crate::knowledge::biookf::lint::RULE_EDGE_PRIMARY_SOURCE_UNRESOLVED,
+            crate::knowledge::biookf::lint::RULE_EDGE_PRIMARY_SOURCE_NOT_SOURCE,
+            crate::knowledge::biookf::lint::RULE_EDGE_OBJECT_UNRESOLVED,
+            crate::knowledge::biookf::lint::RULE_SOURCE_UNANCHORED,
+        ] {
+            assert!(
+                !report.diagnostics.has(rule),
+                "{rule} fired on a bundle whose sources are all materialised: {:#?}",
+                report.diagnostics.items
+            );
+        }
+        assert_eq!(
+            report
+                .diagnostics
+                .count(crate::knowledge::validate::Severity::Error),
+            0,
+            "{:#?}",
+            report.diagnostics.items
+        );
+    }
+
+    /// The counterexample that makes the test above mean something: drop the
+    /// source node and every edge citing it is reported. This is precisely what
+    /// a BioOKF ingest looked like before DR-24 was implemented — one omission,
+    /// one finding per edge, and nothing in the report naming the omission.
+    #[test]
+    fn without_the_source_node_every_citing_edge_is_reported() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/disease/covid-19.md",
+            "---\ntype: Disease\nidentifier: COVID-19\nedges:\n  - predicate: reported_in\n    \
+             object: Chen 2020\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: text_mining_agent\n    primary_source: Chen 2020\n---\n\n# COVID-19\n",
+            "add disease",
+            None,
+        )
+        .unwrap();
+        let report = scan(&kb).unwrap();
+        assert!(report
+            .diagnostics
+            .has(crate::knowledge::biookf::lint::RULE_EDGE_PRIMARY_SOURCE_UNRESOLVED));
+    }
+
+    /// The vocabulary layer only runs in BioOKF mode, and it runs against a
+    /// bundle index — so an edge into a page that exists resolves, and only the
+    /// invented predicate is reported.
+    #[test]
+    fn a_biookf_base_reports_the_vocabulary_and_resolves_real_edges() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write_page(
+            &kb,
+            "knowledge/dataset/drugbank.md",
+            "---\ntype: Dataset\nidentifier: DrugBank\nxref: [infores:drugbank]\n---\n\n# DrugBank\n",
+            "add source node",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/disease/headache.md",
+            "---\ntype: Disease\nidentifier: Headache\n---\n\nSee [[Aspirin]].\n",
+            "add disease",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/molecule/aspirin.md",
+            "---\ntype: Molecule\nidentifier: Aspirin\nedges:\n  - predicate: treats\n    \
+             object: Headache\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: manual_agent\n    primary_source: DrugBank\n  - predicate: heals\n    \
+             object: Headache\n    knowledge_level: knowledge_assertion\n    \
+             agent_type: manual_agent\n    primary_source: DrugBank\n---\n\nSee [[Headache]].\n",
+            "add molecule",
+            None,
+        )
+        .unwrap();
+
+        let report = scan(&kb).unwrap();
+        assert!(
+            report
+                .diagnostics
+                .has(crate::knowledge::biookf::lint::RULE_PREDICATE_INVALID),
+            "{:?}",
+            rules(&report)
+        );
+        assert!(
+            !report
+                .diagnostics
+                .has(crate::knowledge::biookf::lint::RULE_EDGE_OBJECT_UNRESOLVED),
+            "`treats -> Headache` should resolve against the bundle: {:?}",
+            report.diagnostics.items
+        );
+        // The invalid predicate names a page, so the finding is actionable.
+        let finding = report
+            .diagnostics
+            .items
+            .iter()
+            .find(|d| d.rule == crate::knowledge::biookf::lint::RULE_PREDICATE_INVALID)
+            .unwrap();
+        assert_eq!(finding.subject, "Aspirin");
+        assert_eq!(
+            finding.path.as_deref(),
+            Some("knowledge/molecule/aspirin.md")
+        );
+    }
+
+    /// `HashMap` iteration order is random. Without the sort in
+    /// `format_diagnostics` the same base lints into a different order every
+    /// run, which turns a diff of two reports into noise and makes the
+    /// `MAX_DIAGNOSTICS` cut pick a different subset each time.
+    #[test]
+    fn two_scans_of_one_base_produce_the_same_diagnostics_in_the_same_order() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        for i in 0..12 {
+            write_page(
+                &kb,
+                &format!("knowledge/concept/p{i}.md"),
+                "---\ntitle: P\n---\n\nbody\n",
+                "add",
+                None,
+            )
+            .unwrap();
+        }
+        let first = scan(&kb).unwrap().diagnostics;
+        let second = scan(&kb).unwrap().diagnostics;
+        assert_eq!(first, second);
+        assert!(first.total >= 12);
+    }
+
+    /// A report written before Stage 4 has no `diagnostics` key at all.
+    #[test]
+    fn a_report_without_the_new_field_still_deserializes() {
+        let legacy = r#"{"orphans":["knowledge/a.md"],"contradictions":[],
+                         "stale_sources":[],"missing_concept_pages":[]}"#;
+        let report: LintReport = serde_json::from_str(legacy).unwrap();
+        assert_eq!(report.orphans, vec!["knowledge/a.md"]);
+        assert!(report.diagnostics.is_empty());
     }
 
     // ---- Part A: scan tests -------------------------------------------------

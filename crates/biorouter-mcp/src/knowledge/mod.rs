@@ -38,5 +38,9 @@ pub mod test_mode;
 pub mod tier;
 pub mod tier_user;
 pub mod types;
+// One serializable diagnostic type over `okf::Diagnostic` and `biookf::Finding`,
+// plus the validate-before-write entry point behind `kb_validate_page` and the
+// typed half of the lint report (Stage 4).
+pub mod validate;
 
 pub use server::KnowledgeServer;

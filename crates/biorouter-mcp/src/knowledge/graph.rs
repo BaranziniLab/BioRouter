@@ -44,7 +44,7 @@ use crate::knowledge::{
     okf::{self, ConceptDoc, Edge as OkfEdge, LinkForm, LinkRef},
     raw,
     store::{self, PageRef},
-    types::{Graph, GraphEdge, GraphNode, PageKind},
+    types::{Graph, GraphEdge, GraphNode, PageKind, QuantitativeValue},
 };
 use anyhow::Result;
 use chrono::NaiveDate;
@@ -67,10 +67,31 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     // Externals last: a real page always outranks a placeholder for the same
     // concept, and appending keeps every existing node's position unchanged.
     nodes.extend(collector.external.into_values());
-    Ok(Graph {
-        nodes,
-        edges: dedupe(collector.edges),
-    })
+    // After `dedupe`, never before: DR-25 collapses a relationship written in
+    // two grammars into one edge, and a degree counted over the raw list would
+    // size a hub by how many ways its page happened to spell its links.
+    let edges = dedupe(collector.edges);
+    apply_degrees(&mut nodes, &edges);
+    Ok(Graph { nodes, edges })
+}
+
+/// UI spec §2.1's `degree`: incident edges per node, counted once per edge at
+/// each end.
+///
+/// A self-loop cannot inflate a node here because `classify_target` drops one
+/// before it is ever collected. A node with no edges gets `Some(0)` and not
+/// `None` — "the producer counted, and the answer was zero" is a different
+/// statement from "the producer did not supply this", and §5.6 floors `deg(n)`
+/// at whichever it receives.
+fn apply_degrees(nodes: &mut [GraphNode], edges: &[GraphEdge]) {
+    let mut degree: HashMap<&str, u32> = HashMap::new();
+    for e in edges {
+        *degree.entry(e.from.as_str()).or_default() += 1;
+        *degree.entry(e.to.as_str()).or_default() += 1;
+    }
+    for n in nodes.iter_mut() {
+        n.degree = Some(degree.get(n.id.as_str()).copied().unwrap_or(0));
+    }
 }
 
 /// One page, read and parsed once.
@@ -140,6 +161,9 @@ fn node_for(p: &LoadedPage, today: NaiveDate) -> GraphNode {
         status: p.doc.status.as_ref().map(|s| s.as_str().to_string()),
         stale: okf::is_stale(&p.doc, today),
         external: false,
+        // Filled by `apply_degrees` once the edges exist and have been
+        // deduplicated; there is nothing to count from at this point.
+        degree: None,
     }
 }
 
@@ -220,6 +244,35 @@ fn insert_name(map: &mut HashMap<String, String>, name: Option<&str>, node_id: &
 
 // ── Edge collection ─────────────────────────────────────────────────────────
 
+/// A link target as the grammar handed it over: what it points *at*, and what
+/// the page *called* it.
+///
+/// The two are the same string in the two grammars that name a concept
+/// (`edges: [{object: Neutropenia}]`, `[[causes:: Neutropenia]]`) and different
+/// in the one that names a file — an OKF §6.1 markdown link points at
+/// `/knowledge/concepts/neutropenia.md` and calls it `Neutropenia`. Carrying
+/// both is what lets an unresolved target be drawn under its name instead of
+/// under its path; see [`external_display_name`].
+///
+/// A struct rather than a seventh parameter on [`EdgeCollector::push`]: the two
+/// halves are only ever meaningful together, and separating them is how the
+/// path came to be used as a label in the first place.
+#[derive(Clone, Copy)]
+struct WrittenTarget<'a> {
+    /// The destination exactly as written — a path, a title, or an identifier.
+    target: &'a str,
+    /// The markdown link text or the wiki-link alias, when the grammar has one.
+    text: Option<&'a str>,
+}
+
+impl<'a> WrittenTarget<'a> {
+    /// A target that names itself: the frontmatter `edges:` object, which
+    /// BioOKF §7.2 defines as the target node's `identifier`.
+    fn named(target: &'a str) -> Self {
+        Self { target, text: None }
+    }
+}
+
 /// Where an edge points, once the ladder has had its say.
 enum Target {
     /// A page in this bundle.
@@ -250,7 +303,7 @@ impl EdgeCollector {
             self.push(
                 index,
                 &p.node_id,
-                &e.object,
+                WrittenTarget::named(&e.object),
                 non_empty(&e.predicate),
                 attrs_from_frontmatter(e),
                 true,
@@ -267,7 +320,10 @@ impl EdgeCollector {
             self.push(
                 index,
                 &p.node_id,
-                &link.target,
+                WrittenTarget {
+                    target: &link.target,
+                    text: link.label.as_deref(),
+                },
                 link.predicate.clone(),
                 attrs_from_sugar(&link),
                 record_dangling,
@@ -280,7 +336,10 @@ impl EdgeCollector {
                 self.push(
                     index,
                     &p.node_id,
-                    &link.target,
+                    WrittenTarget {
+                        target: &link.target,
+                        text: link.label.as_deref(),
+                    },
                     None,
                     EdgeAttrs::default(),
                     true,
@@ -293,12 +352,12 @@ impl EdgeCollector {
         &mut self,
         index: &NodeIndex,
         from: &str,
-        written: &str,
+        written: WrittenTarget<'_>,
         predicate: Option<String>,
         attrs: EdgeAttrs,
         record_dangling: bool,
     ) {
-        let to = match classify_target(index, from, written, record_dangling) {
+        let to = match classify_target(index, from, written.target, record_dangling) {
             Target::Page(id) => id,
             Target::External(id) => {
                 self.ensure_external(&id, written);
@@ -310,13 +369,20 @@ impl EdgeCollector {
             .push(make_edge(from, to, predicate, attrs, index));
     }
 
-    fn ensure_external(&mut self, id: &str, written: &str) {
-        let name = written.trim();
+    /// The placeholder for an unresolved target.
+    ///
+    /// **Keyed on the id, named by the first page to reach it.** The id comes
+    /// from the target (`links::link_key`), so two pages naming the same missing
+    /// concept — by identifier, by path, in either grammar — still share one
+    /// node; only the *display* name is first-writer-wins, and it is a name for
+    /// the same thing either way.
+    fn ensure_external(&mut self, id: &str, written: WrittenTarget<'_>) {
+        let name = external_display_name(written);
         self.external
             .entry(id.to_string())
             .or_insert_with(|| GraphNode {
                 id: id.to_string(),
-                label: name.to_string(),
+                label: name.clone(),
                 // The least-loaded value in the enum. An external node's own
                 // flag is what a renderer keys on; `kind` is a *page* taxonomy
                 // and this node has no page, so any answer here is a guess and
@@ -329,11 +395,64 @@ impl EdgeCollector {
                 path: String::new(),
                 node_type: None,
                 subtype: None,
-                identifier: Some(name.to_string()),
+                identifier: Some(name),
                 status: None,
                 stale: false,
                 external: true,
+                // As in `node_for`: `apply_degrees` fills it once the edges are
+                // deduplicated. An external node is by construction incident to
+                // at least one, so this never stays `Some(0)`.
+                degree: None,
             });
+    }
+}
+
+/// What to call a node that has no page.
+///
+/// The gate found this drawing a **file path** in the graph: a dangling
+/// `[Nonexistent Thing](/knowledge/concept/nonexistent-thing.md)` produced a node
+/// labelled `/knowledge/concept/nonexistent-thing.md`, because the deriver used
+/// the link's *destination* where the page had supplied a perfectly good name
+/// next to it. The destination is right for identity — it is what
+/// `links::link_key` keys the node on — and wrong for display.
+///
+/// So: the link text where the grammar supplies one (markdown label, wiki-link
+/// alias), and the target itself otherwise, since the two grammars with no text
+/// name the concept directly (BioOKF §7.2's `edges: [{object}]` is the target's
+/// `identifier`).
+///
+/// **The basename is humanised only for a path-shaped target**, and that guard
+/// is the whole subtlety. `-` is punctuation in `nonexistent-thing.md` and part
+/// of the name in `COVID-19`; a page names the second form far more often than
+/// the first, so an unconditional separator swap would rewrite more names than
+/// it repaired. Case is never touched either — title-casing would turn the gene
+/// symbol `il6` into `Il6`, and a symbol's case is information, not formatting.
+fn external_display_name(written: WrittenTarget<'_>) -> String {
+    if let Some(text) = written.text.map(str::trim).filter(|t| !t.is_empty()) {
+        return text.to_string();
+    }
+    let target = written.target.trim();
+    if !target.contains('/') && !target.ends_with(".md") {
+        return target.to_string();
+    }
+    let basename = target
+        .rsplit('/')
+        .next()
+        .unwrap_or(target)
+        .trim_end_matches(".md")
+        .trim();
+    let humanised = basename
+        .chars()
+        .map(|c| if c == '-' || c == '_' { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string();
+    // A target that is all separators (`/`, `--.md`) leaves nothing readable;
+    // showing what was written beats showing an empty label.
+    if humanised.is_empty() {
+        target.to_string()
+    } else {
+        humanised
     }
 }
 
@@ -388,13 +507,12 @@ fn make_edge(
             .primary_source
             .map(|s| index.resolve(&s).cloned().unwrap_or(s)),
         publications: attrs.publications,
-        effect_metric: attrs.effect_metric,
-        effect_size: attrs.effect_size,
-        ci_lower: attrs.ci_lower,
-        ci_upper: attrs.ci_upper,
-        p_value: attrs.p_value,
-        sample_size: attrs.sample_size,
+        quantitative: attrs.quantitative,
         qualifiers: attrs.qualifiers,
+        // Always false here: the deriver emits only edges a page states, and
+        // DR-24 puts the `reported_in` emission in BioOKF-mode ingest. See
+        // [`GraphEdge::synthesized`].
+        synthesized: false,
     }
 }
 
@@ -424,6 +542,47 @@ fn dedupe(edges: Vec<GraphEdge>) -> Vec<GraphEdge> {
 
 // ── Edge attributes ─────────────────────────────────────────────────────────
 
+/// BioOKF §7.3's quantitative slots: the keys that go to
+/// [`GraphEdge::quantitative`] rather than to [`GraphEdge::qualifiers`].
+///
+/// **The key decides the map; the value decides the type** ([`QuantitativeValue`]).
+/// Splitting on the value instead is the bug worth naming, because it is the
+/// obvious implementation: `p_value: 3.0e-6` would land in `quantitative` and
+/// `p_value: <0.001` — the same slot, written by the same model, on the next
+/// page — would land in `qualifiers`. One key must not be able to appear in two
+/// maps depending on how precisely someone measured it.
+///
+/// An unrecognised key falls through to `qualifiers`, which is also the residue
+/// map. That direction is the conservative one: §7.2 context wrongly filed as a
+/// statistic is the category error DR-27 names, while a statistic sitting in the
+/// residue map still renders — §4.8 draws every key in both maps the same way,
+/// and its two key-sensitive behaviours (the `ci_lower`/`ci_upper` merge and the
+/// headline stat pick) name slots that are in this list.
+///
+/// `direction` and `aspect` are deliberately **not** here. They are BioOKF §7.2
+/// typed edge attributes — Biolink's `object_direction_qualifier` and
+/// `object_aspect_qualifier` — and [`attrs_from_frontmatter`] has always filed
+/// them as qualifiers. UI spec §4.8's stat pick lists `direction` under
+/// `quantitative`; this build does not move it there, so that pick falls through
+/// to the next slot it names.
+const QUANTITATIVE_KEYS: &[&str] = &[
+    "adjusted_p_value",
+    "auc",
+    "ci_lower",
+    "ci_upper",
+    "clinical_phase",
+    "effect_metric",
+    "effect_size",
+    "frequency",
+    "p_value",
+    "response_direction",
+    "sample_size",
+    "sensitivity",
+    "specificity",
+    "standard_error",
+    "unit",
+];
+
 /// The BioOKF §7.2/§7.3 attributes this build models, plus everything else as
 /// text. One type for both attributed grammars, so the frontmatter array and the
 /// inline sugar cannot come to disagree about what `p_value` means.
@@ -434,12 +593,7 @@ struct EdgeAttrs {
     primary_source: Option<String>,
     publications: Vec<String>,
     negated: bool,
-    effect_metric: Option<String>,
-    effect_size: Option<f64>,
-    ci_lower: Option<f64>,
-    ci_upper: Option<f64>,
-    p_value: Option<f64>,
-    sample_size: Option<u64>,
+    quantitative: BTreeMap<String, QuantitativeValue>,
     qualifiers: BTreeMap<String, String>,
 }
 
@@ -449,7 +603,12 @@ impl EdgeAttrs {
         if v.is_empty() {
             return;
         }
-        if self.absorb_named(key, v) || self.absorb_number(key, v) {
+        if self.absorb_named(key, v) {
+            return;
+        }
+        if QUANTITATIVE_KEYS.contains(&key) {
+            self.quantitative
+                .insert(key.to_string(), QuantitativeValue::parse(v));
             return;
         }
         self.qualifiers.insert(key.to_string(), v.to_string());
@@ -460,7 +619,6 @@ impl EdgeAttrs {
             "knowledge_level" => self.knowledge_level = Some(v.to_string()),
             "agent_type" => self.agent_type = Some(v.to_string()),
             "primary_source" => self.primary_source = Some(v.to_string()),
-            "effect_metric" => self.effect_metric = Some(v.to_string()),
             "publications" => self.publications.extend(
                 v.split(',')
                     .map(str::trim)
@@ -471,26 +629,6 @@ impl EdgeAttrs {
             _ => return false,
         }
         true
-    }
-
-    /// Returns false — so [`Self::absorb`] falls through to `qualifiers` — when
-    /// a quantitative key does not hold a number. `p_value: <0.001` and
-    /// `effect_size: 2.5 nM` are both things a model writes, and parsing them to
-    /// `None` deletes a statistic with nothing left to report it.
-    fn absorb_number(&mut self, key: &str, v: &str) -> bool {
-        let slot: &mut Option<f64> = match key {
-            "effect_size" => &mut self.effect_size,
-            "ci_lower" => &mut self.ci_lower,
-            "ci_upper" => &mut self.ci_upper,
-            "p_value" => &mut self.p_value,
-            "sample_size" => {
-                self.sample_size = v.parse().ok();
-                return self.sample_size.is_some();
-            }
-            _ => return false,
-        };
-        *slot = v.parse().ok();
-        slot.is_some()
     }
 }
 
@@ -563,7 +701,14 @@ fn non_empty(s: &str) -> Option<String> {
 /// base that already exists, with the change appearing to work and producing
 /// nothing. The version is what makes that impossible: a v1 cache is absent, so
 /// the base re-derives once and is typed from then on.
-const CACHE_VERSION: u32 = 2;
+///
+/// **Version 3 is DR-27's payload**: the six flat statistical fields became the
+/// open `quantitative` map, and `GraphNode::degree` arrived. Both are the same
+/// hazard one turn further on, and the second is the quieter of the two — a v2
+/// cache carries the six old keys under names nothing reads any more *and* no
+/// degree at all, so a renderer sizing hubs by `degree` would draw every node in
+/// every pre-existing base at the same size and look like a layout bug.
+const CACHE_VERSION: u32 = 3;
 
 /// The on-disk envelope, so `graph-cache.json` says what it is.
 ///
@@ -671,7 +816,7 @@ pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
 /// written down: the day the walker widens to the whole bundle (which OKF's own
 /// "every non-reserved `.md`" framing invites), a typed `schema.md` would
 /// otherwise arrive in the graph as a `Schema` node with no warning.
-fn is_scaffold_page(logical: &str) -> bool {
+pub(crate) fn is_scaffold_page(logical: &str) -> bool {
     matches!(
         logical,
         "knowledge/index.md"
@@ -896,6 +1041,7 @@ mod tests {
                 status: None,
                 stale: false,
                 external: false,
+                degree: None,
             }],
             edges: vec![],
         };
@@ -1137,7 +1283,13 @@ mod tests {
 
     /// BioOKF §12's worked example, trimmed to one edge that carries every
     /// attribute family at once: the provenance triplet, the §7.3 quantitative
-    /// bundle, a publication list and an attribute this build does not model.
+    /// bundle (numeric *and* non-numeric slots), a §7.2 context attribute, a
+    /// publication list and an attribute this build has never heard of.
+    ///
+    /// The last three are there so DR-27's split is exercised rather than
+    /// asserted: `clinical_phase` is a statistic that is not a number,
+    /// `species_context` is context that could be mistaken for one, and
+    /// `assay_readout` is a key from no vocabulary this build knows.
     const TOCILIZUMAB: &str = "---
 type: Molecule
 identifier: Tocilizumab
@@ -1156,6 +1308,8 @@ edges:
     p_value: 3.0e-6
     sample_size: 4116
     clinical_phase: approved
+    species_context: human
+    assay_readout: viral load
     publications: [PMID:33933206]
 ---
 
@@ -1207,18 +1361,44 @@ A platform trial.
         );
         assert_eq!(e.agent_type.as_deref(), Some("data_analysis_pipeline"));
         assert_eq!(e.publications, vec!["PMID:33933206".to_string()]);
-        assert_eq!(e.effect_metric.as_deref(), Some("relative_risk"));
-        assert_eq!(e.effect_size, Some(0.85));
-        assert_eq!(e.ci_lower, Some(0.76));
-        assert_eq!(e.ci_upper, Some(0.94));
-        assert_eq!(e.p_value, Some(3.0e-6));
-        assert_eq!(e.sample_size, Some(4116));
+
+        // DR-27: one open map, keyed by the slot the producer wrote. The six
+        // flat fields this replaced could hold exactly these six keys and
+        // silently dropped the other fourteen §7.3 names.
         assert_eq!(
-            e.qualifiers.get("clinical_phase").map(String::as_str),
-            Some("approved"),
-            "an attribute this build does not model must survive as text, not \
-             be dropped: {:?}",
-            e.qualifiers
+            e.quantitative,
+            [
+                (
+                    "effect_metric",
+                    QuantitativeValue::Text("relative_risk".into())
+                ),
+                ("effect_size", QuantitativeValue::Number(0.85)),
+                ("ci_lower", QuantitativeValue::Number(0.76)),
+                ("ci_upper", QuantitativeValue::Number(0.94)),
+                ("p_value", QuantitativeValue::Number(3.0e-6)),
+                ("sample_size", QuantitativeValue::Number(4116.0)),
+                // A §7.3 slot the old six fields had no room for, so it used to
+                // land in `qualifiers` — the category error DR-27 names.
+                ("clinical_phase", QuantitativeValue::Text("approved".into())),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect::<BTreeMap<_, _>>(),
+        );
+
+        // …and the other map stays the other map. `species_context` is §7.2
+        // context and belongs nowhere near the statistics; `assay_readout` is
+        // from no vocabulary this build knows and must survive as text rather
+        // than be dropped on the floor where nothing can report it.
+        assert_eq!(
+            e.qualifiers,
+            [
+                ("assay_readout", "viral load"),
+                ("species_context", "human")
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect::<BTreeMap<_, _>>(),
         );
     }
 
@@ -1416,8 +1596,14 @@ A platform trial.
 
     /// A statistic written the way a model actually writes it. Parsing it to
     /// `None` would delete it with nothing left to report the loss.
+    ///
+    /// **And it stays in the same map as its numeric twin**, which is the half
+    /// this pins. The obvious implementation of DR-27 splits the two maps on the
+    /// *value*, and then `p_value: 3.0e-6` (the fixture above) and
+    /// `p_value: <0.001` (here) are one slot filed in two places, so a consumer
+    /// looking for a p-value has to look in both and merge them.
     #[test]
-    fn an_unparseable_statistic_survives_as_a_qualifier() {
+    fn an_unparseable_statistic_stays_quantitative_as_text() {
         let (_d, kb) = kb_with(&[
             (
                 "knowledge/molecules/x.md",
@@ -1429,14 +1615,88 @@ A platform trial.
         ]);
         let g = derive(&kb).unwrap();
         let e = find_edge(&g, "molecules:x", "concepts:covid-19");
-        assert_eq!(e.p_value, None);
         assert_eq!(
-            e.qualifiers.get("p_value").map(String::as_str),
-            Some("<0.001")
+            e.quantitative.get("p_value"),
+            Some(&QuantitativeValue::Text("<0.001".into()))
         );
         assert_eq!(
-            e.qualifiers.get("effect_size").map(String::as_str),
-            Some("2.5 nM")
+            e.quantitative.get("effect_size"),
+            Some(&QuantitativeValue::Text("2.5 nM".into()))
+        );
+        assert!(
+            e.qualifiers.is_empty(),
+            "a statistic must not fall through to the context map: {:?}",
+            e.qualifiers
+        );
+    }
+
+    /// `NaN`, `inf` and `infinity` all parse as `f64` and none of them can be
+    /// serialized to JSON. Admitting one as a number would fail the graph cache
+    /// write for the whole base over a single attribute on a single edge — so
+    /// they are text, and the base still writes.
+    #[test]
+    fn a_non_finite_statistic_is_text_so_the_cache_can_still_be_written() {
+        let (_d, kb) = kb_with(&[
+            (
+                "knowledge/molecules/x.md",
+                "---\ntype: Molecule\nidentifier: X\nedges:\n  \
+                 - predicate: treats\n    object: COVID-19\n    effect_size: NaN\n\
+                     \x20   p_value: inf\n---\nBody.\n",
+            ),
+            ("knowledge/concepts/covid-19.md", COVID),
+        ]);
+        let g = derive(&kb).unwrap();
+        let e = find_edge(&g, "molecules:x", "concepts:covid-19");
+        assert_eq!(
+            e.quantitative.get("effect_size"),
+            Some(&QuantitativeValue::Text("NaN".into()))
+        );
+        assert_eq!(
+            e.quantitative.get("p_value"),
+            Some(&QuantitativeValue::Text("inf".into()))
+        );
+        write_cache(&kb, &g).expect("a non-finite statistic must not cost the cache");
+    }
+
+    /// UI spec §2.1's `degree`, which §5.6 sizes hubs by and §5.12 orders the
+    /// keyboard walk by. Counted per incident edge at each end, **after** DR-25's
+    /// deduplication — a node whose page happens to spell one relationship in two
+    /// grammars is not a bigger hub for it.
+    #[test]
+    fn degree_counts_incident_edges_at_both_ends_after_deduplication() {
+        let (_d, kb) = kb_with(&[
+            (
+                "knowledge/molecules/x.md",
+                // The same relationship twice: typed in `edges:`, restated as
+                // prose. DR-25 collapses it to one edge.
+                "---\ntype: Molecule\nidentifier: X\nedges:\n  \
+                 - predicate: treats\n    object: COVID-19\n---\n\
+                 Also see [[COVID-19]].\n",
+            ),
+            (
+                "knowledge/molecules/y.md",
+                "---\ntype: Molecule\nidentifier: Y\nedges:\n  \
+                 - predicate: treats\n    object: COVID-19\n---\nBody.\n",
+            ),
+            ("knowledge/concepts/covid-19.md", COVID),
+            (
+                "knowledge/concepts/lonely.md",
+                "---\ntitle: Lonely\n---\n.\n",
+            ),
+        ]);
+        let g = derive(&kb).unwrap();
+        assert_eq!(g.edges.len(), 2, "edges={:?}", g.edges);
+        assert_eq!(find_node(&g, "molecules:x").degree, Some(1));
+        assert_eq!(find_node(&g, "molecules:y").degree, Some(1));
+        assert_eq!(
+            find_node(&g, "concepts:covid-19").degree,
+            Some(2),
+            "both ends are counted"
+        );
+        assert_eq!(
+            find_node(&g, "concepts:lonely").degree,
+            Some(0),
+            "counted and zero, not absent — see GraphNode::degree"
         );
     }
 
@@ -1463,6 +1723,57 @@ A platform trial.
         );
     }
 
+    /// The gate measured this one drawing a **file path** in the graph.
+    ///
+    /// A markdown link points at a file and *calls* the target something; the
+    /// deriver used the destination for both, so the node arrived labelled
+    /// `/knowledge/concepts/nonexistent-thing.md`. The identity still comes from
+    /// the destination — that is what two pages must agree on — and only the
+    /// display name comes from the text.
+    #[test]
+    fn a_dangling_markdown_link_is_named_by_its_text_and_not_by_its_path() {
+        let (_d, kb) = kb_with(&[(
+            "knowledge/concepts/a.md",
+            "---\ntitle: A\n---\n\
+             See [Nonexistent Thing](/knowledge/concepts/nonexistent-thing.md).\n",
+        )]);
+        let g = derive(&kb).unwrap();
+        let n = find_node(&g, "external::nonexistent-thing");
+        assert!(n.external);
+        assert_eq!(n.label, "Nonexistent Thing");
+        assert_eq!(n.identifier.as_deref(), Some("Nonexistent Thing"));
+    }
+
+    /// No link text to use, so the basename is humanised — separators to spaces,
+    /// `.md` off, and the case left exactly as written.
+    #[test]
+    fn a_dangling_link_with_no_text_is_named_by_its_humanised_basename() {
+        let (_d, kb) = kb_with(&[(
+            "knowledge/concepts/a.md",
+            "---\ntitle: A\n---\nSee [](/knowledge/concepts/nonexistent-thing.md).\n",
+        )]);
+        let g = derive(&kb).unwrap();
+        assert_eq!(
+            find_node(&g, "external::nonexistent-thing").label,
+            "nonexistent thing"
+        );
+    }
+
+    /// The guard on the humanising, and the reason it is conditional. A target
+    /// that is *not* path-shaped is already the name its author chose, and `-`
+    /// in `COVID-19` is part of that name — an unconditional separator swap
+    /// would rewrite far more names than it repaired.
+    #[test]
+    fn a_hyphen_in_a_bare_identifier_is_part_of_the_name_and_survives() {
+        let (_d, kb) = kb_with(&[(
+            "knowledge/molecules/x.md",
+            "---\ntype: Molecule\nidentifier: X\nedges:\n  \
+             - predicate: treats\n    object: COVID-19\n---\nBody.\n",
+        )]);
+        let g = derive(&kb).unwrap();
+        assert_eq!(find_node(&g, "external::covid-19").label, "COVID-19");
+    }
+
     #[test]
     fn one_missing_concept_named_by_two_pages_is_one_external_node() {
         let (_d, kb) = kb_with(&[
@@ -1476,15 +1787,23 @@ A platform trial.
                 "---\ntype: Molecule\nidentifier: Y\n---\n\
                  Also [[causes:: neutropenia]] sometimes.\n",
             ),
+            // A third spelling, and the one that made the naming fix delicate:
+            // it points at a *path*. Identity must still come from the target,
+            // or naming the node after the link text would split it in two.
+            (
+                "knowledge/molecules/z.md",
+                "---\ntitle: Z\n---\n\
+                 And [Neutropenia](/knowledge/concepts/neutropenia.md) too.\n",
+            ),
         ]);
         let g = derive(&kb).unwrap();
         assert_eq!(
             g.nodes.iter().filter(|n| n.external).count(),
             1,
-            "two spellings of one missing concept must share a placeholder: {:?}",
+            "three spellings of one missing concept must share a placeholder: {:?}",
             g.nodes.iter().map(|n| &n.id).collect::<Vec<_>>()
         );
-        assert_eq!(g.edges.len(), 2);
+        assert_eq!(g.edges.len(), 3);
     }
 
     /// The back-compat half of requirement D, and the reason the recording is
@@ -1567,9 +1886,21 @@ A platform trial.
     // ── The property that governs the stage ─────────────────────────────────
 
     /// A legacy base derives exactly the graph it always did, and — the part a
-    /// field-by-field assertion would miss — its JSON gains no keys. Every new
-    /// field is skipped when absent, so a base of untyped pages serializes to
-    /// what this build produced before Stage 2.
+    /// field-by-field assertion would miss — its JSON gains **two** keys and no
+    /// others.
+    ///
+    /// The prose here used to say it gained none, which was never what the code
+    /// did: the allowed set below has listed `identifier` since Stage 2, on
+    /// purpose and with a reason. `degree` joined it at DR-27. Neither is new
+    /// *information* — `identifier` is SPEC §14's deprecated alias for the
+    /// `title` these pages already carry, and `degree` is a count of edges that
+    /// were already in the payload — but "no keys" and "two keys, both derived
+    /// from what was already there" are different claims, and a comment that
+    /// overstates what the code does is worse than no comment: the next reader
+    /// finds `identifier` in the list, believes the prose, and deletes it.
+    ///
+    /// Every other new field is skipped when absent, which is the property that
+    /// actually holds.
     #[test]
     fn a_legacy_base_derives_exactly_what_it_always_did() {
         let (_d, kb) = build_sample();
@@ -1586,12 +1917,21 @@ A platform trial.
             .all(|e| e.relation.is_none() && e.predicate.is_none() && !e.negated));
 
         let json = serde_json::to_value(&g).unwrap();
-        // `identifier` is the one addition, and it is not new information: these
-        // pages carry `title`, which SPEC §14 makes the deprecated alias of
-        // `identifier`, so the display identity was already on disk.
-        let allowed: HashSet<&str> = ["id", "label", "kind", "retracted", "path", "identifier"]
-            .into_iter()
-            .collect();
+        // The two additions, both derived from what the base already held:
+        // `identifier` because these pages carry `title`, which SPEC §14 makes
+        // its deprecated alias, so the display identity was already on disk; and
+        // `degree` because it counts the edges in this same payload.
+        let allowed: HashSet<&str> = [
+            "id",
+            "label",
+            "kind",
+            "retracted",
+            "path",
+            "identifier",
+            "degree",
+        ]
+        .into_iter()
+        .collect();
         for node in json["nodes"].as_array().unwrap() {
             let keys: Vec<&str> = node
                 .as_object()
@@ -1673,5 +2013,50 @@ A platform trial.
             "the base re-derived and is typed from here on"
         );
         assert_eq!(read_cache(&kb).unwrap().as_ref(), Some(&g), "cache healed");
+    }
+
+    /// The same hazard one generation on, and the quieter of the two.
+    ///
+    /// A v2 cache is *typed* — it deserializes into today's `Graph` with nothing
+    /// visibly missing — but its edges carry the six flat statistical keys under
+    /// names nothing reads any more, and not one of its nodes has a `degree`. A
+    /// renderer sizing hubs by `degree` would then draw every node in every
+    /// pre-existing base at the same size, which reads as a layout bug and not
+    /// as a stale cache. Only the version number separates the two.
+    #[test]
+    fn a_v2_cache_from_before_the_open_quantitative_map_is_absent_and_re_derived() {
+        let (_d, kb) = biookf_base();
+        let flat_stats = serde_json::json!({
+            "version": 2,
+            "graph": {
+                "nodes": [{
+                    "id": "molecules:tocilizumab", "label": "tocilizumab",
+                    "kind": "hub", "retracted": false,
+                    "path": "knowledge/molecules/tocilizumab.md",
+                    "node_type": "Molecule", "identifier": "Tocilizumab",
+                }],
+                "edges": [{
+                    "from": "molecules:tocilizumab", "to": "concepts:covid-19",
+                    "predicate": "treats", "p_value": 3.0e-6, "effect_size": 0.85,
+                }],
+            },
+        });
+        overwrite_cache_file(&kb, &flat_stats.to_string());
+        assert!(
+            read_cache(&kb)
+                .expect("a stale cache is never an error")
+                .is_none(),
+            "a v2 cache must read as absent, not as a degreeless typed graph"
+        );
+
+        let svc = KnowledgeService::new(_d.path().to_path_buf());
+        let g = svc.get_graph("k").unwrap();
+        assert!(
+            find_node(&g, "molecules:tocilizumab").degree.is_some(),
+            "the base re-derived and carries degrees from here on"
+        );
+        assert!(!find_edge(&g, "molecules:tocilizumab", "concepts:covid-19")
+            .quantitative
+            .is_empty());
     }
 }

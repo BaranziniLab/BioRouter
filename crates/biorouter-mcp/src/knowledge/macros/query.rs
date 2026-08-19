@@ -9,7 +9,7 @@ use crate::knowledge::{
         events::{DoneReason, SubAgentEvent},
         kb_tools::{tool_specs, KbToolDispatch},
         loop_::{Completer, SubAgent, SubAgentBounds},
-        procedures::QUERY_PROCEDURE,
+        procedures::{query_procedure, system_prompt},
     },
     types::ChangeKind,
 };
@@ -136,9 +136,16 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
         None
     };
 
-    // Build the system prompt: schema.md + QUERY_PROCEDURE + optional read-only reminder.
+    // Build the system prompt: schema.md + the profile's query procedure +
+    // optional read-only reminder. `Manifest::profile` and never
+    // `Manifest::format`, which reads `Okf` on every base written before Stage 3
+    // (DR-6's trap, reached from the reader): a legacy base would then be taught
+    // OKF's page contract and handed BioOKF's tools.
+    let format = crate::knowledge::manifest::load(&kb_root)
+        .ok()
+        .and_then(|m| m.profile());
     let schema = std::fs::read_to_string(kb_root.join("schema.md")).context("read schema.md")?;
-    let mut system = format!("{schema}\n\n---\n{QUERY_PROCEDURE}");
+    let mut system = system_prompt(&schema, query_procedure(format));
     if !args.file_as_page {
         system.push_str(
             "\n\nIMPORTANT: file_as_page is FALSE for this call. \
@@ -153,7 +160,7 @@ pub async fn query(svc: &KnowledgeService, args: QueryArgs) -> Result<QueryResul
     };
     let agent = SubAgent {
         completer: args.completer,
-        tools: tool_specs(),
+        tools: tool_specs(format),
         system_prompt: system,
         bounds: args.bounds,
     };

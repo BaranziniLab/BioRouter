@@ -193,12 +193,24 @@ mod tests {
         assert_eq!(load(dir.path()).unwrap().profile(), Some(KbFormat::Biookf));
     }
 
-    /// The two optional revision keys are omitted rather than written as
-    /// `null`, so a legacy manifest that is re-saved (the schema ladder stamps
-    /// one forward on the first macro call) does not gain keys claiming an OKF
+    /// What a re-saved legacy manifest does and does not gain, pinned in both
+    /// directions. The schema ladder stamps a base forward on the first macro
+    /// call, so this is the ordinary path, not a corner.
+    ///
+    /// **It does not gain a revision.** `okf_version` and `biookf_version` are
+    /// omitted rather than written as `null`, so the file never claims an OKF
     /// revision it does not have.
+    ///
+    /// **It does gain `format: okf`, and that key is inert.** `format` is not
+    /// `Option`, so serde writes the default. Asserted rather than tolerated
+    /// because the alternative reading is the DR-6 trap: the key looks like a
+    /// declaration that this base is OKF, and it is not one — [`Manifest::profile`]
+    /// answers `None` for anything below `CURRENT_SCHEMA_VERSION` however the
+    /// field reads, which is what the last assertion here measures. See the
+    /// field's own comment for why `skip_serializing_if` cannot express the
+    /// obvious fix.
     #[test]
-    fn re_saving_a_legacy_manifest_does_not_invent_an_okf_revision() {
+    fn re_saving_a_legacy_manifest_writes_an_inert_format_key() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(manifest_path(dir.path()), V1_ON_DISK).unwrap();
         let mut m = load(dir.path()).unwrap();
@@ -208,7 +220,16 @@ mod tests {
         let yaml = std::fs::read_to_string(manifest_path(dir.path())).unwrap();
         assert!(!yaml.contains("okf_version"), "{yaml}");
         assert!(!yaml.contains("biookf_version"), "{yaml}");
-        assert_eq!(load(dir.path()).unwrap().profile(), None);
+        assert!(
+            yaml.contains("format: okf"),
+            "the default is written; if this ever stops being true, the field's \
+             comment and `schema(required)` are both stale: {yaml}"
+        );
+        assert_eq!(
+            load(dir.path()).unwrap().profile(),
+            None,
+            "and it changes nothing: the generation decides the profile"
+        );
     }
 
     /// An unknown profile word must not be able to make a base vanish.

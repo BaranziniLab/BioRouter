@@ -142,6 +142,93 @@ pub struct SubAgentResult {
 }
 
 // ---------------------------------------------------------------------------
+// VocabularyRejection
+// ---------------------------------------------------------------------------
+
+/// A tool call was refused because an argument was not a member of that
+/// argument's **closed vocabulary** (DR-16).
+///
+/// ## Why the loop owns this type and not the dispatch
+///
+/// It changes how the *run* ends, which is a loop-level fact. Every other tool
+/// failure is something the model can plausibly fix on the next step — a bad
+/// path, a missing argument, a page that is not there — so
+/// [`SubAgent::dispatch_turn`] feeds it back as `error: …` and lets the step
+/// budget be the thing that stops an unproductive retry. A vocabulary rejection
+/// is the one failure where "try again" is *structurally* unlikely to succeed:
+/// the model that guessed `treats_disease` will guess again from the same place
+/// it guessed the first time, and the budget dies with the run misreported as
+/// "the sub-agent ran out of turns".
+///
+/// So it travels as a typed error inside `anyhow::Error` — recovered with
+/// `downcast_ref`, never by matching on message text — and produces
+/// [`DoneReason::VocabularyRetriesExhausted`].
+///
+/// ## It is also the model's error message
+///
+/// [`Display`](std::fmt::Display) is what gets fed back, and it names the
+/// closest legal value, because "invalid predicate" without one is a retry
+/// prompt and with one is a fix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VocabularyRejection {
+    /// The argument that was refused, as the tool schema spells it —
+    /// `type`, `predicate`, `knowledge_level`, `agent_type`.
+    pub field: String,
+    /// What the model sent.
+    pub value: String,
+    /// The nearest legal value, when one is near enough to be a real
+    /// suggestion. `None` for a value that resembles nothing in the
+    /// vocabulary, where naming an arbitrary member would misdirect.
+    pub closest: Option<String>,
+    /// How many values the vocabulary has, so the message can say where to
+    /// look rather than listing all of them.
+    pub legal_count: usize,
+    /// The reason this value is not legal, when the vocabulary has more to say
+    /// than "not a member" — BioOKF's §6.F non-negatable predicates, for one.
+    pub detail: Option<String>,
+}
+
+impl std::fmt::Display for VocabularyRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "`{}` is not a legal `{}`: this base's vocabulary is closed and has {} value(s), \
+             declared as the `enum` on this argument in the tool schema",
+            self.value, self.field, self.legal_count
+        )?;
+        if let Some(detail) = &self.detail {
+            write!(f, ". {detail}")?;
+        }
+        match &self.closest {
+            Some(closest) => write!(
+                f,
+                ". Closest legal value: `{closest}` — use it, or pick another value from the \
+                 enum; do not send `{}` again",
+                self.value
+            ),
+            None => write!(
+                f,
+                ". Nothing in the vocabulary is close to it, so re-read the enum on this \
+                 argument and choose from it rather than guessing"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for VocabularyRejection {}
+
+impl VocabularyRejection {
+    /// True when `err` is (or wraps) a vocabulary rejection.
+    ///
+    /// `downcast_ref` and not a string match: the message is prose written for
+    /// a model and will be reworded, and a terminal reason that depended on its
+    /// wording would go quietly wrong the first time it was.
+    pub fn is_one(err: &anyhow::Error) -> bool {
+        err.downcast_ref::<Self>().is_some()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ToolDispatch trait
 // ---------------------------------------------------------------------------
 
@@ -176,10 +263,15 @@ impl SubAgent {
         let mut messages: Vec<LlmMessage> = vec![LlmMessage::User(user_message.to_string())];
         let started = Instant::now();
         let mut steps = 0usize;
+        // Whether the most recent turn that dispatched anything was refused for
+        // a closed-vocabulary value. Read only when a budget stops the run —
+        // see `budget_reason`.
+        let mut retrying_vocabulary = false;
 
         loop {
             // --- Bound checks before calling the LLM ---
             if let Some(reason) = self.stop_before_step(steps, started, &messages, cancel) {
+                let reason = budget_reason(reason, retrying_vocabulary);
                 let text = stop_text(&reason);
                 return Ok(make_result(events, reason, text, steps));
             }
@@ -197,12 +289,13 @@ impl SubAgent {
             let reply = match tokio::time::timeout(remaining, call).await {
                 Ok(reply) => reply?,
                 Err(_elapsed) => {
-                    return Ok(make_result(
-                        events,
-                        DoneReason::TimeBudgetReached,
-                        "time budget reached while waiting for the model",
-                        steps,
-                    ))
+                    let reason = budget_reason(DoneReason::TimeBudgetReached, retrying_vocabulary);
+                    let text = if reason == DoneReason::TimeBudgetReached {
+                        "time budget reached while waiting for the model"
+                    } else {
+                        stop_text(&reason)
+                    };
+                    return Ok(make_result(events, reason, text, steps));
                 }
             };
 
@@ -244,9 +337,16 @@ impl SubAgent {
             // Store the assistant turn in the conversation
             messages.push(LlmMessage::Assistant(reply.clone()));
 
-            let result_parts = self
+            let (result_parts, turn_rejected_vocabulary) = self
                 .dispatch_turn(&reply.tool_calls, dispatch, &mut events, event_sink)
                 .await;
+            // Only a turn that actually dispatched something updates the flag:
+            // a turn of pure prose is not evidence that the model stopped
+            // retrying, and clearing it there would hide the diagnosis behind
+            // one apologetic message.
+            if !result_parts.is_empty() {
+                retrying_vocabulary = turn_rejected_vocabulary;
+            }
             // Bundle all results into one message so Bedrock sees a single user
             // turn paired against the assistant turn above.
             if !result_parts.is_empty() {
@@ -310,14 +410,20 @@ impl SubAgent {
     /// A failing tool is fed back to the model as `error: …` rather than ending
     /// the run: a bad argument is something the model can fix on the next step,
     /// and `max_steps` is what stops it retrying forever.
+    ///
+    /// The returned flag says whether any of those failures was a
+    /// [`VocabularyRejection`] — the one class of failure where retrying is not
+    /// a fix, and which therefore renames the run's terminal reason if a budget
+    /// is what ends it.
     async fn dispatch_turn(
         &self,
         calls: &[LlmToolCall],
         dispatch: &dyn ToolDispatch,
         events: &mut Vec<SubAgentEvent>,
         event_sink: Option<&tokio::sync::mpsc::UnboundedSender<SubAgentEvent>>,
-    ) -> Vec<ToolResultPart> {
+    ) -> (Vec<ToolResultPart>, bool) {
         let mut result_parts: Vec<ToolResultPart> = Vec::new();
+        let mut rejected_vocabulary = false;
         for call in calls.iter().filter(|c| c.name != "complete") {
             let call_ev = SubAgentEvent::ToolCall {
                 name: call.name.clone(),
@@ -331,6 +437,7 @@ impl SubAgent {
             let (ok, summary, content) = match dispatch.call(&call.name, call.args.clone()).await {
                 Ok(s) => (true, s.chars().take(120).collect(), s),
                 Err(e) => {
+                    rejected_vocabulary |= VocabularyRejection::is_one(&e);
                     let msg = e.to_string();
                     (false, msg.clone(), format!("error: {msg}"))
                 }
@@ -351,7 +458,30 @@ impl SubAgent {
                 content,
             });
         }
-        result_parts
+        (result_parts, rejected_vocabulary)
+    }
+}
+
+/// Rename a budget stop when the run was, at the moment it ran out, still
+/// retrying a rejected controlled-vocabulary value (DR-16).
+///
+/// All three budgets and not only the step budget: a run that spends its wall
+/// clock or fills its context re-guessing a predicate died of the same thing the
+/// step-budget one did, and telling a caller "time budget reached" sends them to
+/// look at provider latency.
+///
+/// Nothing else is renamed. `CompleteSentinel`, `NoMoreToolCalls` and
+/// `Cancelled` are decisions somebody made, and a rejected argument earlier in
+/// the run does not make them something else.
+fn budget_reason(reason: DoneReason, retrying_vocabulary: bool) -> DoneReason {
+    if !retrying_vocabulary {
+        return reason;
+    }
+    match reason {
+        DoneReason::StepBudgetReached
+        | DoneReason::TimeBudgetReached
+        | DoneReason::TokenBudgetReached => DoneReason::VocabularyRetriesExhausted,
+        other => other,
     }
 }
 
@@ -361,6 +491,11 @@ fn stop_text(reason: &DoneReason) -> &'static str {
         DoneReason::StepBudgetReached => "step budget reached",
         DoneReason::TimeBudgetReached => "time budget reached",
         DoneReason::TokenBudgetReached => "token budget reached",
+        DoneReason::VocabularyRetriesExhausted => {
+            "the budget ran out while the sub-agent was still retrying a value that is not in \
+             this base's controlled vocabulary; the tool's rejection names the closest legal \
+             value, and the full list is the `enum` on that argument"
+        }
         DoneReason::Cancelled => "cancelled",
         // Not reachable from `stop_before_step`, which only returns budget and
         // cancellation reasons; spelled out rather than caught by a wildcard so
@@ -578,6 +713,110 @@ mod tests {
         let result = agent.run("hello", &EchoDispatch, None, None).await.unwrap();
         assert_eq!(result.reason, DoneReason::StepBudgetReached);
         assert!(result.steps_used <= 5);
+    }
+
+    // ── DR-16: a budget that ran out re-guessing a closed vocabulary ────────
+
+    /// A dispatcher that refuses every call the way the typed BioOKF writer
+    /// refuses an invented predicate.
+    struct VocabularyRefusing;
+
+    #[async_trait]
+    impl ToolDispatch for VocabularyRefusing {
+        async fn call(&self, _name: &str, _args: serde_json::Value) -> Result<String> {
+            Err(VocabularyRejection {
+                field: "predicate".into(),
+                value: "treats_disease".into(),
+                closest: Some("treats".into()),
+                legal_count: 35,
+                detail: None,
+            }
+            .into())
+        }
+    }
+
+    /// A dispatcher that fails for an ordinary reason.
+    struct AlwaysFailing;
+
+    #[async_trait]
+    impl ToolDispatch for AlwaysFailing {
+        async fn call(&self, _name: &str, _args: serde_json::Value) -> Result<String> {
+            Err(anyhow::anyhow!("no such page"))
+        }
+    }
+
+    /// The failure Stage 5 exists to make legible. Today's run reports
+    /// `StepBudgetReached`, ingest then aborts the txn with *"wrote no knowledge
+    /// pages"*, and both sentences send the investigator to look at the model's
+    /// page authoring — which is the one thing that was not wrong.
+    #[tokio::test]
+    async fn a_budget_spent_retrying_an_invalid_vocabulary_says_that_and_not_step_budget() {
+        let replies: Vec<LlmReply> = (0..35)
+            .map(|_| tool_call_reply("kb_write_concept"))
+            .collect();
+        let agent = make_agent(MockCompleter::new(replies), 5);
+        let result = agent
+            .run("hello", &VocabularyRefusing, None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.reason, DoneReason::VocabularyRetriesExhausted);
+        assert!(
+            result.final_text.contains("controlled vocabulary"),
+            "the terminal text has to be readable on its own: {}",
+            result.final_text
+        );
+    }
+
+    /// The negative half, and the one that keeps the new reason honest: an
+    /// ordinary tool failure is still a step budget, because retrying a bad path
+    /// really can succeed and a vocabulary guess really cannot.
+    #[tokio::test]
+    async fn an_ordinary_tool_failure_still_reports_the_step_budget() {
+        let replies: Vec<LlmReply> = (0..35).map(|_| tool_call_reply("kb_read_page")).collect();
+        let agent = make_agent(MockCompleter::new(replies), 5);
+        let result = agent
+            .run("hello", &AlwaysFailing, None, None)
+            .await
+            .unwrap();
+        assert_eq!(result.reason, DoneReason::StepBudgetReached);
+    }
+
+    /// A run that hit a rejection and then recovered ends normally. Without
+    /// this the reason would be "was there ever a bad predicate", which would
+    /// relabel every successful run that took one wrong turn.
+    #[tokio::test]
+    async fn recovering_from_a_rejection_does_not_relabel_the_run() {
+        struct RefuseOnce(std::sync::atomic::AtomicBool);
+        #[async_trait]
+        impl ToolDispatch for RefuseOnce {
+            async fn call(&self, _name: &str, _args: serde_json::Value) -> Result<String> {
+                if self.0.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    return Err(VocabularyRejection {
+                        field: "type".into(),
+                        value: "Diseases".into(),
+                        closest: Some("Disease".into()),
+                        legal_count: 28,
+                        detail: None,
+                    }
+                    .into());
+                }
+                Ok("ok".to_string())
+            }
+        }
+        let replies: Vec<LlmReply> = (0..35)
+            .map(|_| tool_call_reply("kb_write_concept"))
+            .collect();
+        let agent = make_agent(MockCompleter::new(replies), 5);
+        let result = agent
+            .run(
+                "hello",
+                &RefuseOnce(std::sync::atomic::AtomicBool::new(true)),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.reason, DoneReason::StepBudgetReached);
     }
 
     /// DR-16b. `max_tokens` was declared and read by nothing, which reads as a

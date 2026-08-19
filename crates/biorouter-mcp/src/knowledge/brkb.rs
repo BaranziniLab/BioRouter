@@ -33,6 +33,25 @@ struct Provenance {
     /// refuses to package a base whose owners it cannot establish.
     #[serde(default)]
     owners: Vec<String>,
+    /// Which profile the packed bundle is written in (DR-18), or `None` for an
+    /// archive written before this field existed and for a **legacy** base,
+    /// which genuinely declares no profile ([`crate::knowledge::types::Manifest::profile`]).
+    ///
+    /// ⚠ **An `Option<String>`, not an `Option<KbFormat>`, and the whole of
+    /// DR-18 rests on it.** `KbFormat`'s own `Deserialize` is lenient by design
+    /// — DR-12 traces what a `manifest.yaml` that fails to load costs the user
+    /// — so a typed field here would read a profile this build has never heard
+    /// of as plain `okf`, and [`import`] could never refuse. The unknown word
+    /// has to survive as itself all the way to the check.
+    ///
+    /// It is read as a **refusal**, where `tier` is read as a floor and
+    /// `owners` as a union. The asymmetry is the point: over-classifying is a
+    /// hostile archive's only power on those two axes, whereas a profile this
+    /// build cannot read is a statement about whether the *content* is legible
+    /// at all, and extracting it anyway lands a base whose pages nothing here
+    /// can read and DR-22/DR-26 give no way to convert.
+    #[serde(default)]
+    format: Option<String>,
 }
 
 /// Pack a knowledge base directory (including .git, manifest.yaml, raw/, knowledge/, .biorouter-knowledge/)
@@ -60,9 +79,30 @@ pub fn export<W: Write + Seek>(
         // and never sees the new field, where a reader that refused an
         // unfamiliar number would read every archive this build writes as
         // having no marker at all — which is the fail-open direction.
-        schema: 2,
+        //
+        // 2 -> 3 with `format`, on the same terms: an older binary ignores it
+        // and imports exactly as it did before, which is correct — the archives
+        // it can then mis-read are the ones this field was added to catch, and
+        // no numbering here can teach a build that shipped first about a profile
+        // invented after it.
+        schema: 3,
         tier: if is_private { "private" } else { "public" }.to_string(),
         owners: owners.iter().cloned().collect(),
+        // Read off the tree being packed rather than taken as an argument
+        // (DR-18): the marker's job is to describe *this bundle*, and a
+        // caller-supplied value would be a second answer that can disagree with
+        // the `manifest.yaml` sitting inside the same archive.
+        //
+        // `profile()` and not `format`, because DR-6's trap is reached from
+        // here too: the field reads `okf` on every `manifest.yaml` written
+        // before Stage 3, so an archive of a legacy base would otherwise claim
+        // to be an OKF bundle. `None` is the honest marker for one, and it is
+        // also what a pre-Stage-6 archive carries — both mean "this says
+        // nothing about its profile", which is the case [`import`] passes.
+        format: crate::knowledge::manifest::load(kb_root)
+            .ok()
+            .and_then(|m| m.profile())
+            .map(|f| f.as_str().to_string()),
     })?;
     zip.start_file(format!("{kb_id}/{PROVENANCE_ENTRY}"), opts)?;
     zip.write_all(&provenance)?;
@@ -193,6 +233,27 @@ pub struct Imported {
     pub owners: std::collections::BTreeSet<String>,
 }
 
+/// The archive's provenance marker, or `None` when there is none and when there
+/// is one this reader cannot parse.
+///
+/// The two are folded together on purpose, and it is the pre-#56 behaviour
+/// preserved: an absent marker and a corrupt one are both "this archive says
+/// nothing about itself", the tier floor is then the importer's own and the
+/// owner set is empty. Only a marker that parses *and* names a profile can
+/// refuse an import — a reader that bailed on unreadable JSON would turn one
+/// byte of corruption into a base the user cannot get back at all.
+fn read_provenance<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
+    original_id: &str,
+) -> Option<Provenance> {
+    let mut entry = archive
+        .by_name(&format!("{original_id}/{PROVENANCE_ENTRY}"))
+        .ok()?;
+    let mut raw = String::new();
+    entry.read_to_string(&mut raw).ok()?;
+    serde_json::from_str::<Provenance>(&raw).ok()
+}
+
 /// Unpack a .brkb zip into a fresh directory under `knowledge_root` and return
 /// the new kb_id together with the archive's provenance (issue #56).
 ///
@@ -218,6 +279,37 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Imp
             top_names.len()
         );
     };
+
+    // ⚠ **The marker is read here, before a single byte is written** (DR-18).
+    //
+    // It used to be read inside the extraction loop, which was fine while
+    // everything it carried was advisory: `tier` and `owners` are applied
+    // *after* extraction either way. `format` is not advisory — it can refuse —
+    // and the marker is the last entry the exporter writes, so a refusal
+    // decided in the loop would fire with the whole base already unpacked on
+    // disk. "Partial-extracting a bundle whose format this build cannot read"
+    // is precisely what DR-18 forbids, and the fix is an ordering, not a
+    // cleanup path: there is nothing to roll back if nothing was created.
+    let provenance = read_provenance(&mut archive, &original_id);
+    if let Some(raw) = provenance
+        .as_ref()
+        .and_then(|p| p.format.as_deref())
+        .map(str::trim)
+        .filter(|raw| !raw.is_empty())
+    {
+        if crate::knowledge::types::KbFormat::parse(raw).is_none() {
+            anyhow::bail!(
+                "cannot import this .brkb: it declares knowledge-base format {raw:?}, and this \
+                 build reads only {:?} and {:?}. Nothing has been extracted and the archive is \
+                 unchanged — update Biorouter to a version that knows {raw:?} and import it \
+                 again. Unpacking it here would leave a base whose pages this build cannot read \
+                 and has no way to convert.",
+                crate::knowledge::types::KbFormat::Okf.as_str(),
+                crate::knowledge::types::KbFormat::Biookf.as_str(),
+            );
+        }
+    }
+
     // Resolve a non-colliding id. Issue #56: a directory is not the only thing
     // that claims an id — the tier store can hold an entry for a base with no
     // directory (`tier::raise_unlocked` registers ids that have not been
@@ -234,8 +326,19 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Imp
     // Extract.
     let target = knowledge_root.join(&id);
     std::fs::create_dir_all(&target)?;
-    let mut provenance_private: Option<bool> = None;
-    let mut owners: std::collections::BTreeSet<String> = Default::default();
+    let provenance_private = provenance.as_ref().map(|p| p.tier == "private");
+    // Normalised on the way in, exactly as the wire id is
+    // (`affiliation::caller_affiliation`): an archive written by hand, or by a
+    // build whose normaliser differed, must not land a `UCSF` that mismatches
+    // the `ucsf` every model states. Empty ids are dropped rather than recorded
+    // — an owner nothing can ever match would make the base permanently
+    // unreachable with no declassification path.
+    let owners: std::collections::BTreeSet<String> = provenance
+        .into_iter()
+        .flat_map(|p| p.owners)
+        .map(|o| crate::knowledge::affiliation::normalize_institution(&o))
+        .filter(|o| !o.is_empty())
+        .collect();
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let entry_name = entry.name().to_string();
@@ -243,29 +346,11 @@ pub fn import<R: Read + Seek>(zip_bytes: R, knowledge_root: &Path) -> Result<Imp
             .strip_prefix(&format!("{original_id}/"))
             .unwrap_or(entry_name.as_str())
             .into();
-        // Issue #56. Read the marker and SKIP it: it is provenance about the
-        // archive, not a file of the knowledge base, so it must not be
-        // extracted (a re-export would then carry a stale disk copy).
+        // Issue #56. SKIP the marker: it is provenance about the archive, not a
+        // file of the knowledge base, so it must not be extracted (a re-export
+        // would then carry a stale disk copy). It was already *read*, above,
+        // before this loop could create anything.
         if rel == Path::new(PROVENANCE_ENTRY) {
-            let mut raw = String::new();
-            if entry.read_to_string(&mut raw).is_ok() {
-                if let Ok(p) = serde_json::from_str::<Provenance>(&raw) {
-                    provenance_private = Some(p.tier == "private");
-                    // Normalised on the way in, exactly as the wire id is
-                    // (`affiliation::caller_affiliation`): an archive written by
-                    // hand, or by a build whose normaliser differed, must not
-                    // land a `UCSF` that mismatches the `ucsf` every model
-                    // states. Empty ids are dropped rather than recorded — an
-                    // owner nothing can ever match would make the base
-                    // permanently unreachable with no declassification path.
-                    owners.extend(
-                        p.owners
-                            .into_iter()
-                            .map(|o| crate::knowledge::affiliation::normalize_institution(&o))
-                            .filter(|o| !o.is_empty()),
-                    );
-                }
-            }
             continue;
         }
         // Reject any path component that could escape the extraction root.
@@ -566,5 +651,176 @@ mod tests {
         let rel = std::path::Path::new("subdir/file.txt");
         let dest = safe_join(target, rel).unwrap();
         assert_eq!(dest, std::path::Path::new("/tmp/safe-root/subdir/file.txt"));
+    }
+    // ── DR-18: the marker declares a profile, and import refuses one it cannot
+    // read ─────────────────────────────────────────────────────────────────
+
+    fn marker_of(bytes: &[u8], kb_id: &str) -> serde_json::Value {
+        let mut a = ZipArchive::new(std::io::Cursor::new(bytes.to_vec())).unwrap();
+        let mut raw = String::new();
+        a.by_name(&format!("{kb_id}/{PROVENANCE_ENTRY}"))
+            .expect("every archive this build writes carries a marker")
+            .read_to_string(&mut raw)
+            .unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    /// The marker states the bundle's profile, read off the tree being packed.
+    ///
+    /// `Manifest::profile()` and not `Manifest::format`, which is DR-6's trap
+    /// reached from the exporter: the field reads `okf` on every `manifest.yaml`
+    /// written before Stage 3, so a legacy base would otherwise ship an archive
+    /// claiming to be an OKF bundle when its pages are `title`/`kind`
+    /// frontmatter. `None` is the honest marker for one — and it is the same
+    /// thing a pre-Stage-6 archive carries, which is the case `import` waves
+    /// through.
+    #[test]
+    fn the_marker_declares_the_bundles_profile_and_a_legacy_base_declares_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base_in(
+            "lit",
+            "Lit",
+            None,
+            crate::knowledge::types::KbFormat::Biookf,
+        )
+        .unwrap();
+        svc.create_base("gen", "Gen", None).unwrap();
+
+        assert_eq!(
+            marker_of(&svc.export_brkb("lit").unwrap(), "lit")["format"],
+            "biookf"
+        );
+        assert_eq!(
+            marker_of(&svc.export_brkb("gen").unwrap(), "gen")["format"],
+            "okf"
+        );
+
+        // Now walk `gen` back to the generation every base on disk carries. Its
+        // `format` field still reads `okf` — that is the trap — and the marker
+        // must not repeat it.
+        let kb_root = dir.path().join("gen");
+        let mut m = crate::knowledge::manifest::load(&kb_root).unwrap();
+        m.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+        crate::knowledge::manifest::save(&kb_root, &m).unwrap();
+        assert_eq!(m.format, crate::knowledge::types::KbFormat::Okf);
+
+        let marker = marker_of(&svc.export_brkb("gen").unwrap(), "gen");
+        assert!(
+            marker["format"].is_null(),
+            "a legacy base declares no profile: {marker}"
+        );
+        // The other two axes are untouched by any of this.
+        assert_eq!(marker["tier"], "public", "{marker}");
+        assert!(marker["owners"].as_array().is_some(), "{marker}");
+    }
+
+    /// DR-18's refusal, and the half of it that is an ORDERING.
+    ///
+    /// The marker is the last entry the exporter writes, so a check made while
+    /// the extraction loop is running would fire with the whole base already
+    /// unpacked — "partial-extracting a bundle whose format this build cannot
+    /// read" is exactly what DR-18 forbids. The second assertion is therefore
+    /// the load-bearing one: move the check back into the loop and the message
+    /// is unchanged and this line fails.
+    #[test]
+    fn an_unreadable_profile_is_refused_before_anything_is_extracted() {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = ZipWriter::new(&mut buf);
+            let opts = FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+            zip.start_file("future/manifest.yaml", opts).unwrap();
+            zip.write_all(b"id: future\nschema_version: 9\n").unwrap();
+            zip.start_file("future/knowledge/x.md", opts).unwrap();
+            zip.write_all(b"---\ntype: Whatever\n---\nbody").unwrap();
+            // Last, exactly where a real export puts it.
+            zip.start_file(format!("future/{PROVENANCE_ENTRY}"), opts)
+                .unwrap();
+            zip.write_all(br#"{"schema":9,"tier":"public","owners":[],"format":"okf-2030"}"#)
+                .unwrap();
+            zip.finish().unwrap();
+        }
+        let bytes = buf.into_inner();
+
+        let dest = tempfile::tempdir().unwrap();
+        let err = import(std::io::Cursor::new(bytes), dest.path()).unwrap_err();
+        let msg = err.to_string();
+        for word in ["okf-2030", "okf", "biookf"] {
+            assert!(
+                msg.contains(word),
+                "the refusal must name the profile asked for and the ones that exist: {msg}"
+            );
+        }
+        assert!(
+            !dest.path().join("future").exists(),
+            "the archive was partially extracted before it was refused"
+        );
+    }
+
+    /// The refusal is narrow: only a marker that parses AND names a profile this
+    /// build does not know can stop an import.
+    ///
+    /// An absent `format` (every archive written before Stage 6, and every
+    /// legacy base) and a corrupt marker are both "this archive says nothing
+    /// about itself", which is the pre-existing fail-open the tier floor already
+    /// takes. A reader that bailed on unreadable JSON would turn one byte of
+    /// corruption into a base the user cannot get back at all.
+    #[test]
+    fn a_marker_that_says_nothing_about_its_profile_still_imports() {
+        for marker in [
+            &br#"{"schema":1,"tier":"public"}"#[..],
+            &br#"{"schema":3,"tier":"public","owners":[],"format":""}"#[..],
+            &b"not json at all"[..],
+        ] {
+            let mut buf = std::io::Cursor::new(Vec::new());
+            {
+                let mut zip = ZipWriter::new(&mut buf);
+                let opts =
+                    FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+                zip.start_file("old/knowledge/x.md", opts).unwrap();
+                zip.write_all(b"body").unwrap();
+                zip.start_file(format!("old/{PROVENANCE_ENTRY}"), opts)
+                    .unwrap();
+                zip.write_all(marker).unwrap();
+                zip.finish().unwrap();
+            }
+            let dest = tempfile::tempdir().unwrap();
+            let imported = import(std::io::Cursor::new(buf.into_inner()), dest.path())
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "an archive that declares no profile must import: {e} \
+                         (marker was {:?})",
+                        String::from_utf8_lossy(marker)
+                    )
+                });
+            assert_eq!(imported.id, "old");
+            assert!(dest.path().join("old/knowledge/x.md").exists());
+        }
+    }
+
+    /// A profile this build DOES know is not refused, and the archive round
+    /// trips through the new pre-pass with its other two axes intact.
+    #[test]
+    fn a_biookf_archive_imports_with_its_tier_and_owners_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base_in(
+            "lit",
+            "Lit",
+            None,
+            crate::knowledge::types::KbFormat::Biookf,
+        )
+        .unwrap();
+        let kb_root = dir.path().join("lit");
+        let owners: std::collections::BTreeSet<String> = ["ucsf".to_string()].into();
+        let mut buf = std::io::Cursor::new(Vec::new());
+        export(&kb_root, &mut buf, true, &owners).unwrap();
+
+        let dest = tempfile::tempdir().unwrap();
+        let imported = import(std::io::Cursor::new(buf.into_inner()), dest.path()).unwrap();
+        assert_eq!(imported.provenance_private, Some(true));
+        assert_eq!(imported.owners, owners);
+        let m = crate::knowledge::manifest::load(&dest.path().join("lit")).unwrap();
+        assert_eq!(m.profile(), Some(crate::knowledge::types::KbFormat::Biookf));
     }
 }
