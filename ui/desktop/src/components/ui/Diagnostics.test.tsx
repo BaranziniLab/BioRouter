@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { diagnostics } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
+import { userActionHeaders } from '../../utils/userAction';
 import { DiagnosticsModal } from './Diagnostics';
 
 vi.mock('../../api', () => ({
@@ -14,9 +15,14 @@ vi.mock('../../toasts', () => ({
   toastSuccess: vi.fn(),
 }));
 
+vi.mock('../../utils/userAction', () => ({
+  userActionHeaders: vi.fn(),
+}));
+
 const diagnosticsMock = vi.mocked(diagnostics);
 const toastErrorMock = vi.mocked(toastError);
 const toastSuccessMock = vi.mocked(toastSuccess);
+const userActionHeadersMock = vi.mocked(userActionHeaders);
 const saveDiagnosticsBundle = vi.fn();
 
 const diagnosticsResponse = () => ({
@@ -29,6 +35,7 @@ describe('DiagnosticsModal', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     (window as unknown as { electron: unknown }).electron = { saveDiagnosticsBundle };
+    userActionHeadersMock.mockResolvedValue({ 'X-User-Action': 'proof-of-user' });
     diagnosticsMock.mockResolvedValue(diagnosticsResponse() as never);
   });
 
@@ -46,6 +53,11 @@ describe('DiagnosticsModal', () => {
 
     await waitFor(() => {
       expect(saveDiagnosticsBundle).toHaveBeenCalledWith('20260716_27', expect.any(ArrayBuffer));
+    });
+    expect(diagnosticsMock).toHaveBeenCalledWith({
+      headers: { 'X-User-Action': 'proof-of-user' },
+      path: { session_id: '20260716_27' },
+      throwOnError: true,
     });
     expect(toastSuccessMock).toHaveBeenCalledWith({
       title: 'Diagnostics saved',
@@ -98,5 +110,22 @@ describe('DiagnosticsModal', () => {
     });
     expect(onClose).not.toHaveBeenCalled();
     expect(screen.getByRole('dialog', { name: 'Report a Problem' })).toBeVisible();
+  });
+
+  it('shows a server refusal instead of replacing it with a generic error', async () => {
+    const onClose = vi.fn();
+    diagnosticsMock.mockRejectedValue('The diagnostics request was refused.');
+
+    render(<DiagnosticsModal isOpen onClose={onClose} sessionId="20260716_27" />);
+    fireEvent.click(screen.getByRole('button', { name: 'Generate diagnostics' }));
+
+    await waitFor(() => {
+      expect(toastErrorMock).toHaveBeenCalledWith({
+        title: 'Diagnostics error',
+        msg: 'The diagnostics request was refused.',
+      });
+    });
+    expect(saveDiagnosticsBundle).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
