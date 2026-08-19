@@ -39,14 +39,24 @@
 //! rather than by widening this helper — because the widening is a graph
 //! decision and this helper has two other callers.
 //!
-//! `macros/lint.rs` and `macros/query.rs` keep the `[[…]]`-only view on purpose:
-//! lint's orphan and missing-concept checks and query's citation list are prose
-//! surfaces shown to the user, and a KB page's prose is full of ordinary
-//! markdown links to `raw/` files and to the open web. Feeding those to the
-//! citation extractor would put `../raw/pmid-1/original.pdf` in a citation list;
-//! feeding them to the orphan check would call a page linked only from a
-//! footnote "linked". Widening those two is its own change with its own
-//! evidence, and this header is where it should be argued.
+//! **`macros/lint.rs` has since moved off this helper entirely**, and that is
+//! the change this paragraph used to argue against. The evidence it was waiting
+//! for arrived from the running app: a BioOKF base of 11 pages and 17 typed
+//! edges reported all 11 pages as orphans, because a base in that profile writes
+//! its relationships in `edges:` frontmatter and a `[[…]]`-only view of it is
+//! empty. Lint now asks `graph::bundle_links`, so its two link-shaped rules read
+//! precisely the edge set the graph draws — which is the stronger form of the
+//! property this module exists for: not "the same resolver" but "the same
+//! edges". The cost is the one predicted here — a source page whose body links
+//! to `../raw/pmid-1/original.pdf` puts that path in `missing_concept_pages` —
+//! and it is the right trade, because the deriver already draws that link as an
+//! `external` node and a lint that disagreed with the picture beside it is the
+//! bug being fixed.
+//!
+//! `macros/query.rs` keeps the `[[…]]`-only view, unchanged and for the reason
+//! stated: a citation list is prose shown to the user, and `../raw/pmid-1/
+//! original.pdf` is not a citation. Widening *that* one is still its own change
+//! with its own evidence, and this header is still where it should be argued.
 
 use crate::knowledge::okf::links::{extract_links, LinkForm, LinkRef};
 use std::collections::HashMap;

@@ -6,9 +6,7 @@
 use crate::knowledge::{
     biookf,
     git::{GitRepo, Txn},
-    graph,
-    links::{self, LinkIndex},
-    manifest, okf, paths, raw,
+    graph, manifest, okf, paths, raw,
     service::KnowledgeService,
     store::{logical_path, split_frontmatter},
     subagent::{
@@ -23,10 +21,7 @@ use crate::knowledge::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::{
-    collections::{HashMap, HashSet},
-    path::Path,
-};
+use std::{collections::HashMap, path::Path};
 
 // ---------------------------------------------------------------------------
 // LintReport
@@ -57,14 +52,17 @@ pub const RULE_MISSING_CONCEPT_PAGE: &str = "kb.missing_concept_page";
 #[cfg_attr(feature = "utoipa", derive(utoipa::ToSchema))]
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LintReport {
-    /// Pages with no inbound `[[wiki-link]]` references from any other page.
+    /// Pages nothing else in the bundle links to, in any of the four grammars
+    /// (`graph::bundle_links`) — not the legacy bracket form alone, which is
+    /// what made this list every page of a typed base.
     pub orphans: Vec<String>,
     /// Pages with `contradiction: true` in frontmatter.
     pub contradictions: Vec<String>,
     /// Sources whose `ingested_at` is >90 days ago AND have no inbound links.
     pub stale_sources: Vec<String>,
-    /// `[[Target]]` references in source pages that have no corresponding page
-    /// under `knowledge/`.
+    /// Link targets written in source pages that name no page under
+    /// `knowledge/` — again over all four grammars, so a typed base's `edges:`
+    /// citations are read.
     pub missing_concept_pages: Vec<String>,
     /// Everything above, plus the format layers, as one typed list: a stable
     /// rule id, a severity, the page or edge it is about, and a message.
@@ -91,46 +89,26 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
         return Ok(LintReport::default());
     }
 
-    // Collect all pages and their bodies.
+    // Collect all pages and their bodies — for the checks that read a page's own
+    // frontmatter and text. The *links* come from the deriver; see below.
     let mut pages: HashMap<String, String> = HashMap::new(); // logical_path -> body
     collect_pages(&knowledge_dir, &knowledge_dir, &mut pages)?;
 
-    // Build inbound-link map: target_path -> set of source paths that link to it.
+    // Both link-shaped rules — "does anything link to this page?" and "does this
+    // target name a page?" — are answered off the graph deriver's own edge set
+    // (`graph::bundle_links`), which reads all four grammars and resolves through
+    // DR-3's identity ladder.
     //
-    // The resolution is `knowledge::links`', which is the graph deriver's — this
-    // used to be a second regex followed by a second resolver (lowercase, spaces
-    // to hyphens, compared to the file stem), and the two disagreed in a way
-    // nothing caught: `[[knowledge/entities/x|X]]` was an edge in the graph and
-    // an ORPHAN here, for the same page. A lint that reports a page as
-    // unreferenced when the graph is drawing an edge into it sends the user to
-    // "fix" a page that is fine.
-    let index: LinkIndex<String> =
-        LinkIndex::from_pages(pages.keys().map(|p| (p.clone(), p.clone())));
-    let mut inbound: HashMap<String, HashSet<String>> = HashMap::new();
-
-    // Initialise all known pages with empty inbound sets.
-    for p in pages.keys() {
-        inbound.entry(p.clone()).or_default();
-    }
-
-    // Also track which wiki-link targets appear in source pages.
-    let mut wiki_targets_in_sources: HashSet<String> = HashSet::new();
-
-    for (src_path, body) in &pages {
-        for link in links::wiki_links(body) {
-            // Record as a target in source pages (used for missing-concept detection).
-            if src_path.starts_with("knowledge/sources/") {
-                wiki_targets_in_sources.insert(link.target.clone());
-            }
-            // Try to resolve the wiki-link to a known page.
-            if let Some(resolved) = index.resolve(&link.target) {
-                inbound
-                    .entry(resolved.clone())
-                    .or_default()
-                    .insert(src_path.clone());
-            }
-        }
-    }
+    // Lint used to walk the tree itself for `okf::links`' legacy bracket form
+    // alone. That is exactly right for a legacy base and blind on a typed one,
+    // where relationships live in BioOKF §6's `edges:` frontmatter array: a
+    // BioOKF base of 11 pages and 17 typed edges reported **all 11 as orphans**
+    // while the subject band beside it said "17 links" — lint sending the user to
+    // fix every page of a base that was fine, and contradicting the graph drawn
+    // next to it. Reading the deriver's answer rather than re-deriving one is
+    // what makes a fifth grammar impossible to add to one and not the other.
+    let links = graph::bundle_links(kb_root)?;
+    let inbound = &links.inbound;
 
     // ---- Orphans: pages with no inbound links, excluding hub pages ----
     // Hub pages = any page directly under knowledge/ (not in a subdirectory).
@@ -173,11 +151,17 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
         }
     }
 
-    // ---- Missing concept pages: wiki-link targets from source pages that
-    //      don't have a page under knowledge/ ----
+    // ---- Missing concept pages: link targets written in source pages that name
+    //      no page under knowledge/ ----
+    //
+    // The same widening, for the same reason: on a typed base the citations a
+    // source page makes are `edges:` entries, so a bracket-only reader found
+    // none of them and this list was empty on exactly the bases the migration
+    // produces. `unresolved` is the deriver's own set of non-resolutions, which
+    // is why a target the graph draws an edge to can no longer appear here.
     let mut missing_concept_pages: Vec<String> = Vec::new();
-    for target in &wiki_targets_in_sources {
-        if index.resolve(target).is_none() && !missing_concept_pages.contains(target) {
+    for (src_path, target) in &links.unresolved {
+        if src_path.starts_with("knowledge/sources/") && !missing_concept_pages.contains(target) {
             missing_concept_pages.push(target.clone());
         }
     }
@@ -337,9 +321,11 @@ fn is_hub_page(path: &str) -> bool {
 
 // `resolve_wiki_link` lived here: a case-insensitive stem comparison with
 // spaces replaced by hyphens, which could not read a path-style target at all.
-// It is `knowledge::links::LinkIndex::resolve` now — the graph's resolver, the
-// most complete of the three and the only one that had tests. See that module's
-// header for what each of the three used to do differently.
+// It became `knowledge::links::LinkIndex::resolve` — the graph's resolver, the
+// most complete of the three and the only one that had tests — and is now
+// `graph::bundle_links`, the deriver's whole answer rather than one rung of it.
+// The intermediate step fixed *how* a target resolved and left *which* links
+// were read alone, which is why a typed base still linted as all orphans.
 
 // ---------------------------------------------------------------------------
 // Part B: async lint (with optional sub-agent autofix)
@@ -867,6 +853,209 @@ mod tests {
         let report: LintReport = serde_json::from_str(legacy).unwrap();
         assert_eq!(report.orphans, vec!["knowledge/a.md"]);
         assert!(report.diagnostics.is_empty());
+    }
+
+    // ---- The link-grammar widening ------------------------------------------
+
+    /// One typed page: `type` + `identifier`, and an `edges:` array with the
+    /// three required attributes. Deliberately carries **no bracket link at
+    /// all**, because that is the shape of a base this migration produces and
+    /// the shape the bracket-only reader was blind to.
+    fn typed_page(kind: &str, id: &str, edges: &[(&str, &str)]) -> String {
+        let mut fm = format!("---\ntype: {kind}\nidentifier: {id}\n");
+        if !edges.is_empty() {
+            fm.push_str("edges:\n");
+            for (predicate, object) in edges {
+                fm.push_str(&format!(
+                    "  - predicate: {predicate}\n    object: {object}\n    \
+                     knowledge_level: knowledge_assertion\n    \
+                     agent_type: manual_agent\n    primary_source: DrugBank\n"
+                ));
+            }
+        }
+        fm.push_str(&format!("---\n\n# {id}\n\nProse with no links in it.\n"));
+        fm
+    }
+
+    fn write(kb: &Path, path: &str, body: &str) {
+        write_page(kb, path, body, "add", None).unwrap();
+    }
+
+    /// The defect, measured in the running app: a BioOKF base whose pages link
+    /// to each other **only** through `edges:` frontmatter had every page
+    /// reported as an orphan, while the subject band beside it counted the typed
+    /// edges. Lint was reading one grammar and the graph four.
+    ///
+    /// The cycle is what makes this fail loudly against the old reader: every
+    /// page has an inbound typed edge, so a correct lint reports **no** orphan
+    /// and a bracket-only one reports all three. `lonely` is the control in the
+    /// next test — without it "no orphans" is also what a check that stopped
+    /// firing would print.
+    #[test]
+    fn a_base_linked_only_by_typed_edges_has_no_orphans() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/molecule/aspirin.md",
+            &typed_page("Molecule", "Aspirin", &[("treats", "Headache")]),
+        );
+        write(
+            &kb,
+            "knowledge/disease/headache.md",
+            &typed_page("Disease", "Headache", &[("has_phenotype", "Pain")]),
+        );
+        write(
+            &kb,
+            "knowledge/phenotype/pain.md",
+            &typed_page("PhenotypicFeature", "Pain", &[("treated_by", "Aspirin")]),
+        );
+
+        let report = scan(&kb).unwrap();
+        assert!(
+            report.orphans.is_empty(),
+            "every page has an inbound `edges:` entry, so none is an orphan — \
+             this is the reported defect: {:?}",
+            report.orphans
+        );
+    }
+
+    /// …and the check still fires. A page with no inbound edge in **any**
+    /// grammar is still an orphan, which is what separates "lint reads the typed
+    /// edges now" from "lint stopped reporting orphans".
+    #[test]
+    fn a_page_with_no_inbound_edge_in_any_grammar_is_still_an_orphan() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/molecule/aspirin.md",
+            &typed_page("Molecule", "Aspirin", &[("treats", "Headache")]),
+        );
+        write(
+            &kb,
+            "knowledge/disease/headache.md",
+            &typed_page("Disease", "Headache", &[("treated_by", "Aspirin")]),
+        );
+        // Points outward at Aspirin and is named by nobody.
+        write(
+            &kb,
+            "knowledge/molecule/ibuprofen.md",
+            &typed_page("Molecule", "Ibuprofen", &[("treats", "Headache")]),
+        );
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(
+            report.orphans,
+            vec!["knowledge/molecule/ibuprofen.md"],
+            "an outbound-only page is still unreferenced"
+        );
+    }
+
+    /// A base carrying both generations at once — one page reachable only by a
+    /// typed `edges:` entry, one only by a legacy bracket link, one only by an
+    /// OKF §6.1 markdown link. Each grammar is the *sole* inbound route to its
+    /// page, so dropping any one of the three orphans exactly that page.
+    #[test]
+    fn a_mixed_base_reads_all_three_inbound_grammars() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/molecule/aspirin.md",
+            &typed_page("Molecule", "Aspirin", &[("treats", "Headache")]),
+        );
+        write(
+            &kb,
+            "knowledge/disease/headache.md",
+            "---\ntype: Disease\nidentifier: Headache\n---\n\nSee also [[Migraine]].\n",
+        );
+        write(
+            &kb,
+            "knowledge/disease/migraine.md",
+            "---\ntype: Disease\nidentifier: Migraine\n---\n\n\
+             Related: [Cluster headache](/knowledge/disease/cluster-headache.md).\n",
+        );
+        write(
+            &kb,
+            "knowledge/disease/cluster-headache.md",
+            &typed_page("Disease", "Cluster headache", &[("treated_by", "Aspirin")]),
+        );
+
+        let report = scan(&kb).unwrap();
+        assert!(
+            report.orphans.is_empty(),
+            "one page per grammar, each with exactly one inbound link: {:?}",
+            report.orphans
+        );
+    }
+
+    /// `missing_concept_pages` had the same blindness, and it matters on the
+    /// same bases: a typed source page cites its concepts through `edges:`, so a
+    /// bracket-only reader found no citations at all and the list was silently
+    /// empty on every base the migration produces.
+    #[test]
+    fn a_typed_source_pages_unresolved_citation_is_a_missing_concept_page() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/disease/covid-19.md",
+            &typed_page("Disease", "COVID-19", &[]),
+        );
+        write(
+            &kb,
+            "knowledge/sources/chen-2020.md",
+            &typed_page(
+                "Publication",
+                "Chen 2020",
+                &[("mentions", "COVID-19"), ("mentions", "Long COVID")],
+            ),
+        );
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(
+            report.missing_concept_pages,
+            vec!["Long COVID".to_string()],
+            "the cited concept with no page, and only it — `COVID-19` resolves, \
+             so a lint that listed it would be resolving differently from the \
+             edge the graph just drew"
+        );
+    }
+
+    /// The graph and the lint must now agree by construction, because they read
+    /// the same edge set. Asserted on a typed base, which is where they used to
+    /// disagree most completely: 17 edges drawn, every page called an orphan.
+    #[test]
+    fn no_page_the_graph_draws_an_inbound_edge_to_is_reported_as_an_orphan() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/molecule/aspirin.md",
+            &typed_page("Molecule", "Aspirin", &[("treats", "Headache")]),
+        );
+        write(
+            &kb,
+            "knowledge/disease/headache.md",
+            &typed_page("Disease", "Headache", &[]),
+        );
+
+        let g = crate::knowledge::graph::derive(&kb).unwrap();
+        let report = scan(&kb).unwrap();
+        for edge in &g.edges {
+            let Some(target) = g.nodes.iter().find(|n| n.id == edge.to) else {
+                continue;
+            };
+            assert!(
+                !report.orphans.contains(&target.path),
+                "{} has an inbound {edge:?} in the graph and is an orphan in the \
+                 lint; orphans={:?}",
+                target.path,
+                report.orphans
+            );
+        }
+        assert!(!g.edges.is_empty(), "the premise of this test is gone");
     }
 
     // ---- Part A: scan tests -------------------------------------------------

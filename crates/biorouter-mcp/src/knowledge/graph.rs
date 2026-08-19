@@ -52,7 +52,14 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 pub fn derive(kb_root: &Path) -> Result<Graph> {
-    let pages = load_pages(kb_root)?;
+    // Scaffold pages are dropped here rather than by the loader, because
+    // [`bundle_links`] wants them: they are not graph nodes, but they *are* link
+    // sources. As nodes they would be giant hubs linked to everything — see
+    // [`is_scaffold_page`] — so a link pointing at one resolves to nothing.
+    let pages: Vec<LoadedPage> = load_pages(kb_root)?
+        .into_iter()
+        .filter(|p| !is_scaffold_page(&p.page.path))
+        .collect();
     // One date for the whole derivation, so two nodes with the same
     // `stale_after` can never disagree because the clock ticked between them.
     let today = chrono::Utc::now().date_naive();
@@ -73,6 +80,91 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     let edges = dedupe(collector.edges);
     apply_degrees(&mut nodes, &edges);
     Ok(Graph { nodes, edges })
+}
+
+// ── The link view of a bundle (what lint asks) ──────────────────────────────
+
+/// A bundle's links, keyed by logical path rather than by node id.
+#[derive(Debug, Clone, Default)]
+pub struct BundleLinks {
+    /// Logical path → the logical paths of the pages that link *to* it. Every
+    /// page that can be a node has an entry, empty when nothing links to it —
+    /// so a reader distinguishes "nothing links here" from "no such page".
+    pub inbound: HashMap<String, HashSet<String>>,
+    /// `(source page's logical path, target exactly as written)` for every link
+    /// that named no page in this bundle.
+    pub unresolved: Vec<(String, String)>,
+}
+
+/// Every inbound link in a bundle, over all four grammars.
+///
+/// This exists because lint used to answer "does anything link to this page?"
+/// from `okf::links`' legacy bracket form alone, and a typed base states its
+/// relationships in BioOKF §6's `edges:` frontmatter array instead. Measured in
+/// the running app: a BioOKF base of 11 pages and 17 typed edges showed *17
+/// links* in the subject band and reported **all 11 pages as orphans** — lint
+/// telling the user to fix every page in a base that was fine, and one grammar
+/// away from the graph drawn beside it. The same blindness reached
+/// `missing_concept_pages`.
+///
+/// So this is deliberately **not** another reader. It is the deriver's own
+/// [`EdgeCollector`], over the same [`load_pages`], resolving through the same
+/// DR-3 [`NodeIndex`] ladder, projected from node ids back onto logical paths.
+/// A `derive` that starts reading a fifth grammar changes this answer with it.
+///
+/// Two differences from [`derive`], each demanded by the question rather than
+/// chosen:
+///
+/// 1. **Scaffold pages are link sources.** They are not nodes, but the orphan
+///    rule's own advice is "link it from a hub page", and `knowledge/index.md`
+///    is that page. They are not inbound *keys*, since they are not pages the
+///    rule can fire on.
+/// 2. **An unresolved target is reported whether or not a placeholder was
+///    drawn.** A dangling legacy `[[…]]` link invents no `external` node — that
+///    is what keeps a legacy base's node set unchanged, see the module header —
+///    and it is exactly what the missing-concept rule is looking for.
+///
+/// Re-derived rather than read from `graph-cache.json` on purpose: a cache this
+/// build cannot read comes back as `Ok(None)` (DR-13), and lint has no third
+/// answer to give — a hygiene report that silently emptied itself because a
+/// cache was stale would be the misleading-lint bug over again.
+pub fn bundle_links(kb_root: &Path) -> Result<BundleLinks> {
+    let pages = load_pages(kb_root)?;
+    let index = NodeIndex::build(&pages);
+    let mut collector = EdgeCollector::default();
+    for page in &pages {
+        collector.collect_page(page, &index);
+    }
+    let path_of: HashMap<&str, &str> = pages
+        .iter()
+        .map(|p| (p.node_id.as_str(), p.page.path.as_str()))
+        .collect();
+    // Seeded with every page that can be a node, so a page nothing links to is
+    // an empty set here and not a missing key.
+    let mut inbound: HashMap<String, HashSet<String>> = pages
+        .iter()
+        .filter(|p| !is_scaffold_page(&p.page.path))
+        .map(|p| (p.page.path.clone(), HashSet::new()))
+        .collect();
+    // No `dedupe` first: DR-25 collapses two spellings of one relationship, and
+    // this is already a set of *pages* — the pair survives either way.
+    for e in &collector.edges {
+        if let (Some(from), Some(to)) = (path_of.get(e.from.as_str()), path_of.get(e.to.as_str())) {
+            inbound
+                .entry((*to).to_string())
+                .or_default()
+                .insert((*from).to_string());
+        }
+    }
+    let unresolved = collector
+        .unresolved
+        .into_iter()
+        .filter_map(|(from, target)| Some(((*path_of.get(from.as_str())?).to_string(), target)))
+        .collect();
+    Ok(BundleLinks {
+        inbound,
+        unresolved,
+    })
 }
 
 /// UI spec §2.1's `degree`: incident edges per node, counted once per edge at
@@ -110,18 +202,17 @@ struct LoadedPage {
     body: String,
 }
 
+/// Every page under `knowledge/`, **scaffold pages included** — [`derive`] drops
+/// them and [`bundle_links`] keeps them as link *sources*.
+///
+/// The filter used to live here, which made the two indistinguishable. They are
+/// not: `knowledge/index.md` must never be a graph node (it links to everything,
+/// so it draws as a hub that crowds out the real structure), and it must still
+/// count as an inbound link, because the orphan rule's own advice is "link it
+/// from a hub page".
 fn load_pages(kb_root: &Path) -> Result<Vec<LoadedPage>> {
-    // `list_pages` walks the whole `knowledge/` tree, which includes the
-    // scaffold pages `index.md` and `log.md`. The index page links to (or is
-    // linked from) virtually every other page, so as a graph node it becomes a
-    // giant hub connected to everything — visually redundant and it crowds out
-    // the real structure. Exclude scaffold pages from the graph entirely; any
-    // link pointing at them then resolves to nothing.
     let mut out = Vec::new();
     for page in store::list_pages(kb_root, None)? {
-        if is_scaffold_page(&page.path) {
-            continue;
-        }
         let text = std::fs::read_to_string(kb_root.join(&page.path))?;
         // DR-7: nothing rejects a page on read. `Page::parse` fails on exactly
         // one input — an unterminated `---` block — and the answer there is a
@@ -204,10 +295,16 @@ struct NodeIndex {
 }
 
 impl NodeIndex {
+    /// Built from the pages a link may resolve *to*, which is every page that
+    /// becomes a node — so scaffold pages are skipped here and not only in
+    /// [`derive`]. A no-op for `derive`, which has already dropped them, and
+    /// load-bearing for [`bundle_links`], which passes the whole tree so that
+    /// scaffold pages can still be link sources.
     fn build(pages: &[LoadedPage]) -> Self {
+        let targets = || pages.iter().filter(|p| !is_scaffold_page(&p.page.path));
         let mut by_identifier = HashMap::new();
         let mut by_title = HashMap::new();
-        for p in pages {
+        for p in targets() {
             insert_name(&mut by_identifier, p.doc.identifier.as_deref(), &p.node_id);
             insert_name(&mut by_title, p.doc.title.as_deref(), &p.node_id);
         }
@@ -215,8 +312,7 @@ impl NodeIndex {
             by_identifier,
             by_title,
             by_basename: LinkIndex::from_pages(
-                pages
-                    .iter()
+                targets()
                     .map(|p| (p.page.path.clone(), p.node_id.clone()))
                     .collect::<Vec<_>>(),
             ),
@@ -277,11 +373,19 @@ impl<'a> WrittenTarget<'a> {
 enum Target {
     /// A page in this bundle.
     Page(String),
-    /// No page yet: the node id to draw a placeholder under.
-    External(String),
-    /// Nothing to draw — a scaffold page, an off-bundle URI, or a self-link. A
-    /// page that mentions its own name would otherwise get a loop that says
-    /// nothing.
+    /// No page in this bundle carries this target. `placeholder` is the node id
+    /// to draw an `external` node under, or `None` when the deriver must not
+    /// invent one — a dangling legacy `[[…]]` link, see the module header.
+    ///
+    /// The two used to be one `External(String)` variant and a fall through to
+    /// `Drop`, which made "unresolved" unaskable: the *drawing* decision had
+    /// eaten the *resolution* fact. Lint's missing-concept rule needs the fact
+    /// and not the decision, because on a legacy base every unresolved target is
+    /// on the branch that draws nothing.
+    Unresolved { placeholder: Option<String> },
+    /// Nothing to record at all — a link at the bundle's own scaffold files, or
+    /// a self-link. A page that mentions its own name would otherwise get a loop
+    /// that says nothing.
     Drop,
 }
 
@@ -293,6 +397,12 @@ struct EdgeCollector {
     /// is cached on disk and compared in tests: iteration order has to be a
     /// function of the content and not of the hasher's seed.
     external: BTreeMap<String, GraphNode>,
+    /// `(source node id, target exactly as written)` for every link that named
+    /// no page in this bundle, in the order the pages were walked. [`derive`]
+    /// ignores it; [`bundle_links`] hands it to lint's missing-concept rule,
+    /// which has to see the same non-resolutions the ladder saw or it reports a
+    /// different set from the graph drawn beside it.
+    unresolved: Vec<(String, String)>,
 }
 
 impl EdgeCollector {
@@ -359,7 +469,10 @@ impl EdgeCollector {
     ) {
         let to = match classify_target(index, from, written.target, record_dangling) {
             Target::Page(id) => id,
-            Target::External(id) => {
+            Target::Unresolved { placeholder } => {
+                self.unresolved
+                    .push((from.to_string(), written.target.to_string()));
+                let Some(id) = placeholder else { return };
                 self.ensure_external(&id, written);
                 id
             }
@@ -462,19 +575,19 @@ fn classify_target(index: &NodeIndex, from: &str, written: &str, record_dangling
         Some(to) => Target::Page(to.clone()),
         // The scaffold check sits on the *dangling* branch alone, on purpose. A
         // real page at `knowledge/topics/index.md` is a node, and a link naming
-        // it resolves above; checking the name first would drop that edge.
-        None if record_dangling && !is_scaffold_target(written) => {
+        // it resolves above; checking the name first would drop that edge. It is
+        // also not "unresolved": the bundle's own furniture is not a concept the
+        // base is missing a page for.
+        None if is_scaffold_target(written) => Target::Drop,
+        None => {
             let key = links::link_key(written);
-            if key.is_empty() {
-                Target::Drop
-            } else {
-                // `external::` cannot collide with a page-derived id: those are
-                // path segments joined by a single `:`, and a walked directory
-                // never yields an empty segment.
-                Target::External(format!("external::{key}"))
-            }
+            // `external::` cannot collide with a page-derived id: those are
+            // path segments joined by a single `:`, and a walked directory
+            // never yields an empty segment.
+            let placeholder =
+                (record_dangling && !key.is_empty()).then(|| format!("external::{key}"));
+            Target::Unresolved { placeholder }
         }
-        None => Target::Drop,
     }
 }
 
@@ -1182,6 +1295,143 @@ mod tests {
                 g.edges
             );
         }
+    }
+
+    // ── `bundle_links`: the link view lint reads ────────────────────────────
+
+    /// A scaffold page is not a node and **is** a link source.
+    ///
+    /// The two are separate questions and the loader used to answer only the
+    /// first, by dropping scaffold pages before anything could read them. The
+    /// orphan rule's own advice is "link it from a hub page"; taking that advice
+    /// and being told the page is still an orphan is the failure this guards.
+    #[test]
+    fn the_index_page_is_a_link_source_but_never_a_node() {
+        let (_d, kb) = build_sample();
+        write_page(
+            &kb,
+            "knowledge/notes/mentioned-only-by-the-index.md",
+            "---\ntitle: Mentioned only by the index\nkind: note\n---\nBody.",
+            "add",
+            None,
+        )
+        .unwrap();
+        write_page(
+            &kb,
+            "knowledge/index.md",
+            "---\ntitle: Index\nkind: hub\n---\nSee [[mentioned-only-by-the-index]].",
+            "add index",
+            None,
+        )
+        .unwrap();
+
+        let links = bundle_links(&kb).unwrap();
+        let inbound = links
+            .inbound
+            .get("knowledge/notes/mentioned-only-by-the-index.md")
+            .expect("every non-scaffold page has an entry");
+        assert_eq!(
+            inbound.iter().collect::<Vec<_>>(),
+            vec!["knowledge/index.md"],
+            "the index links to it; inbound={inbound:?}"
+        );
+        assert!(
+            !links.inbound.contains_key("knowledge/index.md"),
+            "a scaffold page is not a page the orphan rule can fire on"
+        );
+        assert!(
+            derive(&kb).unwrap().nodes.iter().all(|n| n.id != "index"),
+            "and it is still not a graph node"
+        );
+    }
+
+    /// A page nothing names has an entry with an **empty** set, not a missing
+    /// key — "nothing links here" and "no such page" are different answers and
+    /// the orphan rule is the difference between them.
+    #[test]
+    fn a_page_nothing_links_to_is_an_empty_set_and_not_a_missing_key() {
+        let (_d, kb) = build_sample();
+        write_page(
+            &kb,
+            "knowledge/notes/lonely.md",
+            "---\ntitle: Lonely\nkind: note\n---\nBody.",
+            "add",
+            None,
+        )
+        .unwrap();
+        let links = bundle_links(&kb).unwrap();
+        assert_eq!(
+            links.inbound.get("knowledge/notes/lonely.md"),
+            Some(&HashSet::new())
+        );
+        assert_eq!(links.inbound.get("knowledge/notes/absent.md"), None);
+    }
+
+    /// A dangling legacy bracket link draws **no** external node — that is what
+    /// keeps a legacy base's node set unchanged (see the module header) — and is
+    /// still recorded as unresolved, because lint's missing-concept rule is
+    /// asking about the resolution and not about the drawing. Collapsing the two
+    /// is what left that rule empty.
+    #[test]
+    fn a_dangling_legacy_link_draws_no_node_and_is_still_unresolved() {
+        let (_d, kb) = build_sample();
+        write_page(
+            &kb,
+            "knowledge/sources/paper.md",
+            "---\ntitle: Paper\nkind: source\n---\nMentions [[Nonexistent Page]].",
+            "add",
+            None,
+        )
+        .unwrap();
+        assert!(
+            derive(&kb).unwrap().nodes.iter().all(|n| !n.external),
+            "a dangling legacy link must not invent a node"
+        );
+        assert!(
+            bundle_links(&kb).unwrap().unresolved.contains(&(
+                "knowledge/sources/paper.md".into(),
+                "Nonexistent Page".into()
+            )),
+            "…and must still be reported as unresolved"
+        );
+    }
+
+    /// A typed `edges:` object that names no page is unresolved too, which is
+    /// the half a bracket-only reader could never see.
+    #[test]
+    fn an_unresolved_frontmatter_edge_object_is_reported() {
+        let (_d, kb) = kb_with(&[(
+            "knowledge/sources/paper.md",
+            "---\ntype: Publication\nidentifier: Paper\nedges:\n  \
+             - predicate: mentions\n    object: Long COVID\n    \
+             knowledge_level: knowledge_assertion\n    agent_type: manual_agent\n    \
+             primary_source: Paper\n---\n\nBody.\n",
+        )]);
+        let unresolved = bundle_links(&kb).unwrap().unresolved;
+        assert!(
+            unresolved.contains(&("knowledge/sources/paper.md".into(), "Long COVID".into())),
+            "got {unresolved:?}"
+        );
+    }
+
+    /// A link at the bundle's own furniture is neither an edge nor a missing
+    /// concept: the base is not short of an `index.md`.
+    #[test]
+    fn a_link_at_the_scaffold_is_not_reported_as_unresolved() {
+        let (_d, kb) = build_sample();
+        write_page(
+            &kb,
+            "knowledge/sources/paper.md",
+            "---\ntitle: Paper\nkind: source\n---\nSee [[index]], [[log]] and [[schema]].",
+            "add",
+            None,
+        )
+        .unwrap();
+        assert!(
+            bundle_links(&kb).unwrap().unresolved.is_empty(),
+            "{:?}",
+            bundle_links(&kb).unwrap().unresolved
+        );
     }
 
     #[test]
