@@ -282,6 +282,33 @@ When working on the Knowledge feature:
 - After touching `routes/knowledge.rs`, regenerate the TS client with `just generate-openapi && cd ui/desktop && npm run generate-api`.
 - Graph derivation lives in `graph.rs` and depends on the sub-agent emitting `[[knowledge-link]]` markers in page bodies; the default `schema_default.md` reinforces this. If a graph has nodes but no edges, the underlying pages likely lack `[[…]]` cross-references.
 
+**The Open Knowledge Format (OKF), and BioOKF as a strict profile.** A knowledge
+base now declares a `format` in its `manifest.yaml`: the informal LLM-wiki page
+shape it always had, OKF v0.2 (`crates/biorouter-mcp/src/knowledge/okf/`), or
+BioOKF v0.5 (`.../knowledge/biookf/`) — a *strict* biomedical profile with a
+controlled vocabulary, typed domain/range constraints and its own lint. The
+format is chosen at creation time in `KbFormatChooser.tsx` and is not a
+migration the user is dragged through: **a legacy manifest keeps working**, the
+`format` key it gains on re-save is inert, and the migration ladder runs for a
+base that has none of the stage-3 keys rather than skipping it
+(`knowledge/manifest.rs` pins all three in tests). Design, decision records and
+the live progress tracker: [`docs/knowledge-base/okf-migration/`](docs/knowledge-base/okf-migration/README.md).
+
+- **Links are typed now, and the old grammar still parses.** `knowledge/links.rs`
+  reads both the legacy `[[bare-slug]]` and OKF's typed edge, so the same page
+  yields edges under either format. ⚠ **A reader that only understands the
+  bracket grammar silently produces a graph with nodes and no edges** — that was
+  a real bug in lint, and the shape it takes is exactly the "nodes but no edges"
+  symptom the line above blames on missing cross-references. Check which grammar
+  the reader handles before concluding the pages are at fault.
+- **Two bases can be merged** (`knowledge/merge.rs`), and the merge is a write
+  choke point, so the tier ratchet in `knowledge/tier*.rs` applies: the result
+  takes the more sensitive of the two.
+- **Lint is reachable from a chat**, not only from the Knowledge view, and a
+  *private* model may run a read-only lint on its own private base — the
+  read-only qualifier is what makes that safe, so do not generalise it to the
+  mutating macros.
+
 ### Llama Server (bundled llama.cpp local models)
 
 The "Llama Server" provider (`llamacpp`) gives zero-setup local models: the
@@ -330,6 +357,43 @@ settings provider grid, `biorouter configure`).
   `cargo test -p biorouter-server --test llamacpp_routes`; live end-to-end
   (real server + tiny Qwen3.5 0.8B, ~0.5 GB one-time download):
   `BIOROUTER_LLAMACPP_BIN=ui/desktop/src/bin/llamacpp/llama-server cargo test -p biorouter --test llamacpp_integration -- --ignored --test-threads=1`
+
+### Coding-agent providers (Claude Code / Codex)
+
+Two providers that run inference on the user's **own vendor subscription** by
+driving a coding-agent CLI they already installed and signed in to: `claude_code`
+(shown **Claude Code**) and `codex` (shown **Codex**). BioRouter never sees a
+credential — there is no base URL and no API key. Full reference:
+[`docs/providers/coding-agents/`](docs/providers/coding-agents/README.md), whose
+compliance page is required reading before research data goes near either.
+
+- **Both are `ProviderTier::Public`, deliberately.** A consumer Pro/Max or
+  ChatGPT Plus plan carries no BAA and no zero-data-retention agreement, so PHI
+  must never reach them. Being Public is not an oversight — it is what makes the
+  privacy bind gate (Gate A) keep them out of a clinical session.
+- **The child is a whole agent, so its own tools are switched off and replaced.**
+  `crates/biorouter/src/providers/coding_agent/` holds the shared machinery
+  (`discovery` finds the binary without spawning it, `appserver` speaks the
+  vendor protocol, `transcript` flattens the conversation into one prompt,
+  `effort` maps the reasoning-effort setting onto each vendor's own ladder).
+  The isolation flags are security-relevant, not hygiene: `--setting-sources ""`
+  stops a hook in the cwd executing, `--strict-mcp-config` closes a measured MCP
+  leak, and `--bare` must never be passed.
+- **BioRouter's own extensions reach the child over one MCP relay**
+  (`coding_agent/bridge.rs` + `routes/tool_bridge.rs`). MCP is the only channel
+  that returns a result into a live turn, and the capability **rides the URL**
+  (`/tool_bridge/{nonce}`) because Codex sends no auth header — which is why that
+  one route is exempt from the secret-key middleware and absent from the OpenAPI
+  spec. Tools still execute on BioRouter's side, behind its inspectors,
+  permission mode, `.biorouterignore`, vault and privacy gates.
+- **Install/sign-in state is reported, not guessed:** `/coding_agents/status`
+  (`routes/coding_agents.rs`) backs the onboarding card
+  `onboarding/CodingAgentInlineCard.tsx`, wired beside `LlamaServerInlineCard` in
+  `ProviderGuard.tsx`. `CLAUDE_CODE_COMMAND` / `CODEX_COMMAND` override discovery.
+- **Tests:** `cargo test -p biorouter --lib providers::coding_agent`,
+  `cargo test -p biorouter-server --test tool_bridge_routes`, and the vitest
+  suite for the onboarding card. The live end-to-end tests need the real vendor
+  CLIs installed and signed in.
 
 ### Artifact side panel (desktop)
 
@@ -503,6 +567,38 @@ Design docs: [`docs/design/theming/theme-system-architecture.md`](docs/design/th
 [`design.md`](design.md) at the **repo root** (Parchment; note it self-reports an
 older version than the tree), and `docs/design/theming/alma-mater-theme-tokens.md`
 and `docs/design/theming/roche-limit-theme.md`.
+
+### Desktop startup path (issue #88)
+
+The app used to freeze for seconds on launch, and the cause generalises past the
+one bug: **the Electron main thread was running synchronous `spawn`s** — version
+probes for the dependency check, then the updater — so the window could not paint
+until every probe returned. Fixed in `ui/desktop/src/main.ts` +
+`utils/startupSchedule.ts`; the write-up worth reading before adding anything to
+launch is
+[`docs/desktop-ui/startup-freeze-and-main-thread-blocking.md`](docs/desktop-ui/startup-freeze-and-main-thread-blocking.md).
+
+- **Nothing synchronous goes on the main thread at startup.** `runProbe` in
+  `utils/dependencyChecker.ts` is the async replacement for `spawnSync` that
+  every dependency check now goes through, and `utils/startupSchedule.ts`
+  decides what is allowed to run before first paint. The updater no longer runs
+  immediately either — it was heating the machine right after launch. `runProbe`
+  has its own test binary (`utils/runProbe.test.ts`) because its mapping of a
+  child's outcome onto `{ ok, code, timedOut }` is what decides whether the user
+  is told "failed", "timed out" or "not installed".
+- **`utils/mainThreadWatchdog.ts` reports a blocked main thread** instead of
+  leaving the next freeze to be guessed at, and
+  `ui/desktop/scripts/measure-startup-freeze.mjs` is how you measure one.
+- **A failed dependency is actionable, not a dead end.** `DependencySetupModal`
+  offers one-click installs (serialized — one installer at a time), and every
+  dependency surface carries a "Debug with Biorouter" escape hatch
+  (`utils/launchDependencyDebug.ts`, `utils/dependencyDebugPrompt.ts`) that hands
+  the failure to the agent. The terminal half is
+  **`biorouter doctor --fix [DEP]`** (`commands/doctor.rs`).
+- **Background extension-update failures are reported** (`ExtensionUpdateReporter`);
+  they used to fail silently.
+- ⚠ **On Windows an absolute path must not be routed through `cmd.exe`** — doing
+  so was one of the four defects an adversarial review of this branch found.
 
 ### Desktop shell geometry (layout tokens in `main.css`)
 

@@ -14,6 +14,7 @@
 | [design.md](design.md) | The decision records (DR-1…) and the target format contract. |
 | [stages.md](stages.md) | The stepwise implementation plan: nine stages, each with its own gate. |
 | [progress.md](progress.md) | Live progress tracker: what has landed, what is in flight, what is blocked. |
+| [ui-spec.md](ui-spec.md) | The binding UI specification for Stage 7's Knowledge-section redesign, delivered in slices. |
 
 ## The one-paragraph summary
 
