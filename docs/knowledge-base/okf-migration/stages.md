@@ -89,16 +89,24 @@ edge, and a rename that does not break inbound edges.
 
 ## Stage 3 — Store, manifest, service
 
-- `Manifest` gains `format`, `okf_version`, `biookf_version`; `schema_version` → 2 (DR-6).
+- `Manifest` gains `format`, `okf_version`, `biookf_version`; `schema_version` → **3**, not 2
+  (DR-6 — 2 was already taken by the cross-reference-rules generation every base on disk carries,
+  and numbering OKF 2 would declare every one of them already-migrated).
 - `create_base_as` takes a `KbFormat` and scaffolds the matching tree and `schema.md`.
-- A legacy base (`schema_version: 1`) keeps working untouched; an explicit `kb_migrate_format`
-  upgrades one on request.
+- `schema.md` carries `type: Schema` frontmatter (DR-23) and the deriver skips it as a scaffold
+  page, exactly as it skips `index.md` and `log.md`.
+- A legacy base keeps working untouched, read through its own generation's path. **`kb_migrate_format`
+  is NOT built** — DR-22 defers it, and DR-17 explains why a migration path would be a fifth privacy
+  write choke point bypassing all four that exist. The automatic schema ladder therefore stops at
+  generation 2 (`AUTOMATIC_SCHEMA_CEILING`), one below the OKF generation, asserted at compile time.
 - `index.md` and `log.md` are written in the OKF shapes (`# Section` + `* [Title](link) - desc`;
-  `## YYYY-MM-DD` groups) — both are silent conformance failures today.
+  `## YYYY-MM-DD` groups, newest first, the kind in the bullet) — both were silent conformance
+  failures before this stage.
 
 **Gate:** the three durability invariants hold — tmp+rename on every durable write, no re-entrant
 `lock_root()`, and `txn_wrote_knowledge_pages` still compares only the `knowledge/` subtree oid
-(issue #71). Migration is verified on a copy of a real base.
+(issue #71). Both scaffolds are checked against the project's own `okf::check` / `check_index` /
+`check_log`, and a legacy base is verified end to end.
 
 ## Stage 4 — MCP tool surface
 

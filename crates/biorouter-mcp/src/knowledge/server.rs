@@ -623,6 +623,11 @@ impl KnowledgeServer {
                 &p.id,
                 &p.name,
                 p.color.as_deref(),
+                // Stage 4 is where `kb_create_base` grows a `format` parameter
+                // and the model gets to choose; until then every model-created
+                // base is plain OKF, which is the profile a BioOKF base is also
+                // valid under.
+                crate::knowledge::types::KbFormat::default(),
                 Self::caller_is_private(Some(&context)),
                 // Issue #56 DR-26 / Task 50: the third axis is stamped in the
                 // same transaction as the tier, by the same argument — see

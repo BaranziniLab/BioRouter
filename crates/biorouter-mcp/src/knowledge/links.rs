@@ -31,14 +31,22 @@
 //! them too — and the equivalence test at the bottom of this file is what makes
 //! that a decision rather than a drift.
 //!
-//! ## What is deliberately not resolved yet
+//! ## Why [`wiki_links`] still filters markdown links out
 //!
-//! **Markdown links are not edges.** `okf::links::extract_links` also returns
-//! OKF §6.1 `[label](/path/to/x.md)` links, which OKF calls untyped directed
-//! edges — but nothing in this tree has ever derived an edge from one, and
-//! turning them on is a graph change, not a seam. [`wiki_links`] filters to the
-//! two `[[…]]` forms, which is precisely the set the three regexes matched.
-//! Stage 2 widens it, with the graph tests that a widening needs.
+//! `okf::links::extract_links` also returns OKF §6.1 `[label](/path/to/x.md)`
+//! links, which OKF calls untyped directed edges. Stage 2 widened the *graph
+//! deriver* to read them (DR-2), and did it by calling `extract_links` directly
+//! rather than by widening this helper — because the widening is a graph
+//! decision and this helper has two other callers.
+//!
+//! `macros/lint.rs` and `macros/query.rs` keep the `[[…]]`-only view on purpose:
+//! lint's orphan and missing-concept checks and query's citation list are prose
+//! surfaces shown to the user, and a KB page's prose is full of ordinary
+//! markdown links to `raw/` files and to the open web. Feeding those to the
+//! citation extractor would put `../raw/pmid-1/original.pdf` in a citation list;
+//! feeding them to the orphan check would call a page linked only from a
+//! footnote "linked". Widening those two is its own change with its own
+//! evidence, and this header is where it should be argued.
 
 use crate::knowledge::okf::links::{extract_links, LinkForm, LinkRef};
 use std::collections::HashMap;
@@ -72,6 +80,22 @@ pub fn wiki_links(body: &str) -> Vec<LinkRef> {
 pub fn link_key(target: &str) -> String {
     let basename = target.rsplit('/').next().unwrap_or(target);
     slug(&basename.trim_end_matches(".md").to_lowercase())
+}
+
+/// The key for the *identifier* and *title* rungs of DR-3's identity ladder —
+/// the whole string slugged, with no basename split.
+///
+/// [`link_key`] and this one differ in exactly one step, and the step matters.
+/// `link_key` throws away everything before the last `/` because its input is a
+/// path; an `identifier` is a name and may legitimately contain a slash
+/// (`CD4/CD8 ratio`, `mg/dL`), so splitting on it would index that page under
+/// `cd8-ratio` and make its own identifier fail to find it.
+///
+/// Both keys share [`slug`], so case, spaces and punctuation are folded exactly
+/// once and identically — the property DR-14 is about, applied to a second
+/// rung rather than abandoned for it.
+pub fn identity_key(name: &str) -> String {
+    slug(&name.to_lowercase())
 }
 
 fn slug(s: &str) -> String {
@@ -118,8 +142,11 @@ impl<T> LinkIndex<T> {
 
     /// The page a link target names, or `None` for a dangling link.
     ///
-    /// Stage 2 makes a dangling link a *recorded* fact rather than a silent
-    /// drop; until then every caller drops it, as all three did before.
+    /// This is the *basename* rung of DR-3's ladder — the bottom one, and the
+    /// only one that existed before Stage 2. The deriver stacks the identifier
+    /// and title rungs above it (`graph::NodeIndex`); lint and query stay on
+    /// this rung alone, because their question is "does a file by this name
+    /// exist?" and not "which concept does this name?".
     pub fn resolve(&self, target: &str) -> Option<&T> {
         self.by_key.get(&link_key(target))
     }
@@ -151,8 +178,22 @@ mod tests {
         assert_eq!(
             targets,
             vec!["A", "C"],
-            "a markdown link is not an edge until Stage 2 says so"
+            "the graph deriver reads markdown links; lint and query deliberately \
+             do not — see the module header"
         );
+    }
+
+    #[test]
+    fn a_name_containing_a_slash_keeps_it_and_a_path_does_not() {
+        // The whole difference between the two keys, and the bug it prevents:
+        // an `identifier` may legitimately contain a slash, so reducing it the
+        // way a path is reduced would index `CD4/CD8 ratio` under `cd8-ratio`
+        // and make the page unfindable by its own name.
+        assert_eq!(identity_key("CD4/CD8 ratio"), "cd4-cd8-ratio");
+        assert_eq!(link_key("CD4/CD8 ratio"), "cd8-ratio");
+        // On a name with no slash the two agree, which is why a legacy base —
+        // where every target is a bare title or a path — resolves identically.
+        assert_eq!(identity_key("Zone-2 base"), link_key("Zone-2 base"));
     }
 
     #[test]

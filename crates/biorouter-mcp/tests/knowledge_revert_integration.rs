@@ -21,7 +21,8 @@ fn restore_state_reverts_a_page_creation() {
     svc.create_base(kb_id, "Revert Test", None).unwrap();
 
     let kb_root = paths::kb_root(svc.root(), kb_id);
-    let notes_dir = paths::kb_knowledge_dir(svc.root(), kb_id).join("notes");
+    let notes_dir = paths::kb_knowledge_dir(svc.root(), kb_id).join("note");
+    std::fs::create_dir_all(&notes_dir).unwrap();
     let page_a = notes_dir.join("page_a.md");
     let page_b = notes_dir.join("page_b.md");
 

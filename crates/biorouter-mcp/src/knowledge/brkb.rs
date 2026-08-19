@@ -421,9 +421,14 @@ mod tests {
         svc.create_base("orig", "Orig", None).unwrap();
         // add some pages
         let kb_root = dir.path().join("orig");
+        // `concept/`, because that is one of the directories `create_base`
+        // scaffolds under OKF; `create_dir_all` all the same, so the test is
+        // about the archive and not about the scaffold's directory names.
+        let pages = kb_root.join("knowledge").join("concept");
+        std::fs::create_dir_all(&pages).unwrap();
         std::fs::write(
-            kb_root.join("knowledge").join("entities").join("hrv.md"),
-            "---\ntitle: HRV\n---\nbody",
+            pages.join("hrv.md"),
+            "---\ntype: Method\nidentifier: HRV\n---\nbody",
         )
         .unwrap();
 
@@ -446,7 +451,7 @@ mod tests {
             .path()
             .join("orig")
             .join("knowledge")
-            .join("entities")
+            .join("concept")
             .join("hrv.md")
             .exists());
         assert!(

@@ -31,6 +31,7 @@
 use biorouter_mcp::knowledge::affiliation::CallerAffiliation;
 use biorouter_mcp::knowledge::caller::KbCaller;
 use biorouter_mcp::knowledge::service::KnowledgeService;
+use biorouter_mcp::knowledge::types::KbFormat;
 
 /// Restores the toggle on drop, including on the unwind path a failing
 /// assertion takes.
@@ -57,6 +58,7 @@ fn every_kb_listing_predicate_follows_the_master_toggle() {
         "omop",
         "OMOP",
         None,
+        KbFormat::default(),
         /* caller_is_private */ true,
         &CallerAffiliation::Institution("ucsf".to_string()),
     )
@@ -65,6 +67,7 @@ fn every_kb_listing_predicate_follows_the_master_toggle() {
         "notes",
         "Notes",
         None,
+        KbFormat::default(),
         /* caller_is_private */ false,
         &CallerAffiliation::Unstated,
     )

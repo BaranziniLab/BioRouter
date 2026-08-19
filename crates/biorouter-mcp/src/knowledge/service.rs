@@ -1,8 +1,8 @@
 use crate::knowledge::{
-    convert, credibility,
+    biookf, convert, credibility,
     git::GitRepo,
-    manifest, paths, raw, registry,
-    types::{Manifest, ModelRef, RegistryEntry, SourceMeta},
+    manifest, okf, paths, raw, registry,
+    types::{KbFormat, Manifest, ModelRef, RegistryEntry, SourceMeta},
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
@@ -15,24 +15,38 @@ use std::{
 };
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
-const DEFAULT_SCHEMA: &str = include_str!("schema_default.md");
-const DEFAULT_INDEX: &str = "# Index\n\n_no pages yet_\n";
+/// The `schema.md` a new base is scaffolded with, one per profile (DR-6).
+///
+/// Both carry `type: Schema` frontmatter (DR-23). OKF §3.1 reserves exactly
+/// `index.md` and `log.md` and then says "All other `.md` files are concept
+/// documents", so an untyped `schema.md` is a **conformance failure**, not an
+/// extension — BioOKF's own spec reserves a third file and is wrong to.
+const SCHEMA_OKF: &str = include_str!("schema_okf.md");
+const SCHEMA_BIOOKF: &str = include_str!("schema_biookf.md");
+
+/// Placeholders the BioOKF schema template carries, filled from
+/// [`crate::knowledge::biookf::vocabulary`] at write time rather than typed into
+/// the markdown.
+///
+/// The vocabulary is declared once, by a macro over a single table, precisely so
+/// the enum and its accessors cannot drift; a hand-written copy of the 28 types
+/// in a prompt file would be the one place that could, and it would drift
+/// silently because nothing reads a prompt for correctness.
+const PLACEHOLDER_NODE_TYPES: &str = "{{NODE_TYPES}}";
+const PLACEHOLDER_PREDICATES: &str = "{{PREDICATES}}";
+const PLACEHOLDER_KNOWLEDGE_LEVELS: &str = "{{KNOWLEDGE_LEVELS}}";
+const PLACEHOLDER_AGENT_TYPES: &str = "{{AGENT_TYPES}}";
+
 const DEFAULT_LOG: &str = "# Log\n\n";
 const GITIGNORE: &str =
     "raw/*/original.*\n.biorouter-knowledge/.crossref-cache/\n.biorouter-knowledge/write.lock\n";
 
-/// The generation of `schema.md` this build writes, and the version a base's
-/// `manifest.yaml` is stamped with when it is created or migrated.
-///
-/// - **1** — before Plan 5 Task 2: no cross-reference rules section, so the
-///   sub-agent was never told that the graph is derived purely from `[[link]]`
-///   patterns, and the bases of that era have nodes and no edges.
-/// - **2** — with [`SCHEMA_CROSSREF_RULES`].
-///
-/// Bump this together with the ladder in [`migrated_schema`], never on its own:
-/// the number is what decides that a base is behind, and the ladder is what
-/// catches it up.
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// The generation this build writes, and the ceiling an automatic migration may
+/// reach. Both live on [`crate::knowledge::types`] beside [`Manifest`] itself,
+/// because [`Manifest::profile`] — the accessor every reader should use — has to
+/// fold the first one in, and a second declaration of a number is one more than
+/// can be kept in step.
+pub use crate::knowledge::types::{AUTOMATIC_SCHEMA_CEILING, CURRENT_SCHEMA_VERSION};
 
 /// Cross-reference rules block appended to `schema.md` files still at
 /// generation 1. Kept in sync with the equivalent block in `schema_default.md`.
@@ -61,7 +75,7 @@ fix them by adding inbound `[[links]]` from related pages.
 "#;
 
 /// Every `schema.md` step from generation `from` up to
-/// [`CURRENT_SCHEMA_VERSION`], applied in order.
+/// [`AUTOMATIC_SCHEMA_CEILING`], applied in order.
 ///
 /// A ladder rather than one branch, because a base can be arbitrarily far
 /// behind: a user who has not opened a knowledge base since before a migration
@@ -70,6 +84,17 @@ fix them by adding inbound `[[links]]` from related pages.
 /// behind but whose *content* is not comes out unchanged — which is the state
 /// every base on disk is in for step 1 → 2 (see
 /// [`KnowledgeService::migrate_schema_if_needed`]).
+///
+/// ⚠ **There is deliberately no 2 → 3 step, and there must not be one here.**
+/// Generation 3 is the OKF format, and reaching it is not a schema edit: it
+/// rewrites the base's *pages* out of `title`/`kind` frontmatter and `[[wiki]]`
+/// links into typed OKF frontmatter. DR-17 traces three concrete privacy
+/// bypasses that a migration on this path would open — this ladder runs from
+/// the three macros with no caller identity of its own, so a rewrite here would
+/// touch every page of a private base with nothing having called
+/// `tier::assert_reachable` — and DR-22 defers the migration outright. A base
+/// below generation 3 keeps working untouched, through its own generation's
+/// path, which is exactly what DR-6 promises.
 fn migrated_schema(current: &str, from: u32) -> String {
     let mut schema = current.to_string();
     if from < 2 {
@@ -91,6 +116,120 @@ fn with_crossref_rules(mut schema: String) -> String {
     }
     schema.push_str(SCHEMA_CROSSREF_RULES);
     schema
+}
+
+/// The `knowledge/` subdirectories a new base is scaffolded with.
+///
+/// Under OKF the layout is **producer-defined** — §3.1 reserves two filenames
+/// and says nothing about directories — so this is a starting convention, not a
+/// contract, and the convention both profiles teach is one directory per
+/// lowercased `type`.
+///
+/// The two lists differ because the two vocabularies do. OKF's is open, so three
+/// generic type names are all that can honestly be pre-created; a fourth would
+/// be a guess about a base nobody has written yet. BioOKF's is closed, and yet
+/// pre-creating all 28 would be a table of contents for a bundle that does not
+/// exist — so it gets the four SPEC §8.1 **source** types, which are the only
+/// directories the profile genuinely requires: every edge must cite a
+/// `primary_source`, and that citation has to resolve to a real page of one of
+/// these four types. Entity directories appear as their types are used.
+///
+/// ⚠ **Everything here is under `knowledge/`, and that is load-bearing** (issue
+/// #71). `GitRepo::txn_wrote_knowledge_pages` compares only the `knowledge/`
+/// subtree oid, because `log.md`, `raw/` and `index.md` each move the whole tree
+/// on their own — an ingest that wrote nothing but a log line would otherwise
+/// look like a digest. Scaffolding authored content anywhere else silently
+/// breaks that guard.
+fn scaffold_dirs(format: KbFormat) -> Vec<String> {
+    match format {
+        KbFormat::Okf => ["concept", "source", "note"]
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
+        KbFormat::Biookf => biookf::NodeType::SOURCE_TYPES
+            .iter()
+            .map(|t| t.as_str().to_lowercase())
+            .collect(),
+    }
+}
+
+/// The `schema.md` for `format`, with the BioOKF template's vocabulary
+/// placeholders filled in from the vocabulary module.
+fn schema_for(format: KbFormat) -> String {
+    match format {
+        KbFormat::Okf => SCHEMA_OKF.to_string(),
+        KbFormat::Biookf => SCHEMA_BIOOKF
+            .replace(PLACEHOLDER_NODE_TYPES, &node_type_cheatsheet())
+            .replace(PLACEHOLDER_PREDICATES, &predicate_cheatsheet())
+            .replace(
+                PLACEHOLDER_KNOWLEDGE_LEVELS,
+                &join(biookf::KNOWLEDGE_LEVELS),
+            )
+            .replace(PLACEHOLDER_AGENT_TYPES, &join(biookf::AGENT_TYPES)),
+    }
+}
+
+fn join(words: &[&str]) -> String {
+    words.join(", ")
+}
+
+/// The 28 types, grouped by SPEC §5's own two families so the 20/8 split is
+/// visible rather than implied by a comma count.
+fn node_type_cheatsheet() -> String {
+    biookf::Family::ALL
+        .iter()
+        .map(|family| {
+            let members: Vec<&str> = family.members().iter().map(|t| t.as_str()).collect();
+            format!(
+                "- **{}** ({}): {}",
+                family.as_str(),
+                members.len(),
+                members.join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The 24 positive predicates, plus the negatable subset named rather than
+/// listed twice — `not_<X>` is derived from `<X>`, and printing both lists is
+/// how the two would come to disagree.
+fn predicate_cheatsheet() -> String {
+    let positives: Vec<&str> = biookf::PositivePredicate::ALL
+        .iter()
+        .map(|p| p.as_str())
+        .collect();
+    let negatables: Vec<String> = biookf::PositivePredicate::negatables()
+        .iter()
+        .map(|p| format!("{}{}", biookf::NEGATION_PREFIX, p.as_str()))
+        .collect();
+    format!(
+        "- **Positive** ({}): {}\n- **Negated** ({}): {}",
+        positives.len(),
+        positives.join(", "),
+        negatables.len(),
+        negatables.join(", ")
+    )
+}
+
+/// The bundle-root `index.md` a new base is scaffolded with (OKF §8).
+///
+/// `okf_version` in the frontmatter, and nothing else: §8 permits exactly that
+/// one key in exactly this one file, which is why `okf::check_index` takes an
+/// `is_bundle_root` flag. `biookf_version` is deliberately absent even for a
+/// BioOKF base — it lives in `manifest.yaml` (DR-23's corollary), and BioOKF's
+/// own spec permitting it here is one of its two known divergences from OKF
+/// v0.2.
+///
+/// Built through `serde_yaml` rather than `format!` so the revision is emitted
+/// **quoted**. Unquoted, YAML resolves `0.2` to a float and a later `0.10` would
+/// silently become `0.1` — a revision that sorts *below* `0.2`.
+fn index_scaffold() -> String {
+    let mut frontmatter = serde_yaml::Mapping::new();
+    frontmatter.insert("okf_version".into(), okf::OKF_VERSION.into());
+    let yaml = serde_yaml::to_string(&serde_yaml::Value::Mapping(frontmatter))
+        .expect("a one-key string mapping always serializes");
+    format!("---\n{yaml}---\n\n# Pages\n\n_No pages yet._\n")
 }
 
 #[derive(Clone)]
@@ -595,10 +734,25 @@ impl KnowledgeService {
     /// PUBLIC and unclaimed. Model-facing callers use [`Self::create_base_as`]
     /// instead.
     pub fn create_base(&self, id: &str, name: &str, color: Option<&str>) -> Result<Manifest> {
+        self.create_base_in(id, name, color, KbFormat::default())
+    }
+
+    /// [`Self::create_base`] with an explicit profile. Same user-facing,
+    /// born-PUBLIC path; the profile is the one thing about a base that cannot
+    /// be changed afterwards without a format migration, so it has to be
+    /// choosable at the only moment it is free.
+    pub fn create_base_in(
+        &self,
+        id: &str,
+        name: &str,
+        color: Option<&str>,
+        format: KbFormat,
+    ) -> Result<Manifest> {
         self.create_base_as(
             id,
             name,
             color,
+            format,
             false,
             &crate::knowledge::affiliation::CallerAffiliation::Unstated,
         )
@@ -620,11 +774,24 @@ impl KnowledgeService {
     /// not at the first ingest (DR-18(b)), and a base born in a UCSF chat that
     /// recorded no owner would read as unclaimed — reachable from every other
     /// institution's model — until something happened to write into it.
+    ///
+    /// `format` picks the profile (DR-6) and therefore the scaffolded tree and
+    /// the `schema.md` written into it. It rides in the same transaction for a
+    /// duller reason than the tier does: the manifest, the directories and the
+    /// schema are three statements about one base and a half-written base whose
+    /// manifest says `biookf` over an OKF tree would teach the sub-agent the
+    /// wrong format for the rest of its life.
+    ///
+    /// ⚠ **Do not add a second transaction here, and do not call
+    /// [`Self::lock_root`] from anything this calls.** The lock is *not*
+    /// re-entrant — that is why the `_unlocked` twins exist — so a helper that
+    /// takes it deadlocks the creation of every base.
     pub fn create_base_as(
         &self,
         id: &str,
         name: &str,
         color: Option<&str>,
+        format: KbFormat,
         caller_is_private: bool,
         caller_affiliation: &crate::knowledge::affiliation::CallerAffiliation,
     ) -> Result<Manifest> {
@@ -634,10 +801,16 @@ impl KnowledgeService {
         if kb_root.exists() {
             anyhow::bail!("kb '{id}' already exists at {}", kb_root.display());
         }
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("entities"))?;
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("concepts"))?;
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("sources"))?;
-        std::fs::create_dir_all(paths::kb_knowledge_dir(&self.root, id).join("notes"))?;
+        // The four hardcoded directories this replaced (`entities`, `concepts`,
+        // `sources`, `notes`) were the pre-OKF taxonomy, encoded in a `kind:`
+        // frontmatter key. Under OKF the axis is `type` and the layout is the
+        // producer's — see `scaffold_dirs`, including why every one of these is
+        // still under `knowledge/`.
+        let knowledge_dir = paths::kb_knowledge_dir(&self.root, id);
+        std::fs::create_dir_all(&knowledge_dir)?;
+        for dir in scaffold_dirs(format) {
+            std::fs::create_dir_all(knowledge_dir.join(dir))?;
+        }
         std::fs::create_dir_all(paths::kb_raw_dir(&self.root, id))?;
         std::fs::create_dir_all(paths::kb_internal_dir(&self.root, id))?;
 
@@ -646,18 +819,28 @@ impl KnowledgeService {
             name: name.to_string(),
             color: color.unwrap_or("#5a6394").to_string(),
             created_at: Utc::now(),
-            // The generation of the `schema.md` written four lines below, not a
-            // constant 1. A manifest that under-reports what its own base
-            // carries makes the migration ladder run on a base that is already
-            // current, which is only harmless for as long as every step happens
-            // to be idempotent.
+            // The generation of the `schema.md` written below, not a constant 1.
+            // A manifest that under-reports what its own base carries makes the
+            // migration ladder run on a base that is already current, which is
+            // only harmless for as long as every step happens to be idempotent.
             schema_version: CURRENT_SCHEMA_VERSION,
             default_model: None,
+            format,
+            // Written for BOTH profiles, because a BioOKF bundle is an OKF
+            // bundle — the profile only adds constraints. It mirrors what
+            // `index_scaffold` puts in the bundle-root `index.md`, which is the
+            // one place OKF permits it.
+            okf_version: Some(okf::OKF_VERSION.to_string()),
+            // …and this one is here rather than in `index.md` (DR-23's
+            // corollary): OKF §8 permits `okf_version` there and nothing else.
+            biookf_version: format
+                .is_biookf()
+                .then(|| biookf::BIOOKF_VERSION.to_string()),
         };
         manifest::save(&kb_root, &m)?;
 
-        std::fs::write(kb_root.join("schema.md"), DEFAULT_SCHEMA)?;
-        std::fs::write(kb_root.join("index.md"), DEFAULT_INDEX)?;
+        std::fs::write(kb_root.join("schema.md"), schema_for(format))?;
+        std::fs::write(kb_root.join("index.md"), index_scaffold())?;
         std::fs::write(kb_root.join("log.md"), DEFAULT_LOG)?;
         std::fs::write(kb_root.join(".gitignore"), GITIGNORE)?;
 
@@ -1329,8 +1512,20 @@ impl KnowledgeService {
         Ok(())
     }
 
-    /// Bring a base's `schema.md` up to [`CURRENT_SCHEMA_VERSION`], if it is
+    /// Bring a base's `schema.md` up to [`AUTOMATIC_SCHEMA_CEILING`], if it is
     /// behind. User customisations elsewhere in the file are preserved.
+    ///
+    /// ## The ceiling is not [`CURRENT_SCHEMA_VERSION`], and the gap is the point
+    ///
+    /// This runs from all three macros, on whatever base they were pointed at,
+    /// with no caller identity of its own. That is fine for a *schema* edit and
+    /// disqualifying for a *format* one: generation 3 is OKF, reaching it means
+    /// rewriting the base's pages, and DR-17 names three concrete privacy
+    /// bypasses that a migration on this path opens — starting with rewriting
+    /// every page of a private base with nothing having called
+    /// `tier::assert_reachable`. DR-22 defers the migration outright. So a base
+    /// at generation 2 is **already current** as far as this function is
+    /// concerned and comes back `Ok(false)` forever.
     ///
     /// Returns `Ok(true)` when `schema.md` was actually rewritten (and
     /// committed), `Ok(false)` when there was nothing to write — the base was
@@ -1361,7 +1556,7 @@ impl KnowledgeService {
         paths::validate_kb_id(kb_id)?;
         let kb_root = paths::kb_root(&self.root, kb_id);
         let mut manifest = manifest::load(&kb_root).context("read manifest.yaml")?;
-        if manifest.schema_version >= CURRENT_SCHEMA_VERSION {
+        if manifest.schema_version >= AUTOMATIC_SCHEMA_CEILING {
             return Ok(false);
         }
         let schema_path = kb_root.join("schema.md");
@@ -1381,14 +1576,19 @@ impl KnowledgeService {
         // Stamped before the commit, so the manifest change rides in the same
         // commit as the schema change rather than surfacing later as a stray
         // diff inside an unrelated ingest.
-        manifest.schema_version = CURRENT_SCHEMA_VERSION;
+        //
+        // To the CEILING, never to `CURRENT_SCHEMA_VERSION`: stamping a base 3
+        // would declare it OKF on the strength of a `[[wiki]]`-linked schema,
+        // and `Manifest::profile` would hand every later reader that answer with
+        // nothing left on disk to contradict it.
+        manifest.schema_version = AUTOMATIC_SCHEMA_CEILING;
         manifest::save(&kb_root, &manifest).context("stamp schema_version")?;
 
         if rewritten {
             let repo = GitRepo::open(&kb_root)?;
             repo.commit_all(
                 crate::knowledge::types::ChangeKind::Manual,
-                &format!("migrate schema: v{from} → v{CURRENT_SCHEMA_VERSION}"),
+                &format!("migrate schema: v{from} → v{AUTOMATIC_SCHEMA_CEILING}"),
                 None,
             )
             .context("commit schema migration")?;
@@ -2242,10 +2442,12 @@ mod tests {
         assert!(kb.join("index.md").exists());
         assert!(kb.join("log.md").exists());
         assert!(kb.join(".gitignore").exists());
-        assert!(kb.join("knowledge/entities").exists());
-        assert!(kb.join("knowledge/concepts").exists());
-        assert!(kb.join("knowledge/sources").exists());
-        assert!(kb.join("knowledge/notes").exists());
+        for dir in scaffold_dirs(KbFormat::Okf) {
+            assert!(
+                kb.join("knowledge").join(&dir).exists(),
+                "scaffold directory knowledge/{dir} was not created"
+            );
+        }
         assert!(kb.join("raw").exists());
         assert!(kb.join(".biorouter-knowledge").exists());
         assert!(kb.join(".git").exists());
@@ -2261,6 +2463,228 @@ mod tests {
         let bases = svc.list_bases().unwrap();
         assert_eq!(bases.len(), 1);
         assert_eq!(bases[0].name, "MS Patient Analysis");
+    }
+
+    // -----------------------------------------------------------------------
+    // Stage 3: the scaffold, per profile (DR-6, DR-23, requirement E)
+    // -----------------------------------------------------------------------
+
+    /// Both profiles, one assertion set: whatever `create_base_in` scaffolds has
+    /// to be an OKF-conformant bundle by the project's own checker — the one
+    /// that has been able to answer this since Stage 0 and was never asked.
+    #[test]
+    fn what_create_base_scaffolds_is_conformant_by_the_projects_own_checker() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            svc.create_base_in("k", "K", None, format).unwrap();
+            let kb = svc.root().join("k");
+
+            // §11 rules 1 and 2 for `schema.md` — DR-23: it is a concept
+            // document, not a third reserved file, so it needs a `type`.
+            let schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
+            let page = okf::Page::parse(&schema)
+                .unwrap_or_else(|e| panic!("{format:?} schema.md does not parse: {e}"));
+            assert_eq!(page.doc.r#type, "Schema", "{format:?}");
+            assert!(page.doc.primary_key().is_some(), "{format:?} has no title");
+            assert!(page.doc.description.is_some(), "{format:?}");
+            let diagnostics = okf::check(&page);
+            assert!(diagnostics.is_empty(), "{format:?}: {diagnostics:?}");
+
+            // §8 for the bundle-root index, §9 for the log.
+            let index = std::fs::read_to_string(kb.join("index.md")).unwrap();
+            assert!(
+                okf::check_index(&index, true).is_empty(),
+                "{format:?}: {:?}",
+                okf::check_index(&index, true)
+            );
+            let log = std::fs::read_to_string(kb.join("log.md")).unwrap();
+            assert!(okf::check_log(&log).is_empty(), "{format:?}");
+        }
+    }
+
+    /// OKF §8 permits exactly one frontmatter key in exactly one file, and
+    /// DR-23's corollary is that `biookf_version` is not it. The BioOKF profile
+    /// declares its own revision in `manifest.yaml` instead — which is the one
+    /// place BioRouter is deliberately stricter than BioOKF's own spec.
+    #[test]
+    fn the_root_index_declares_okf_version_and_never_biookf_version() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            let m = svc.create_base_in("k", "K", None, format).unwrap();
+            let index = std::fs::read_to_string(svc.root().join("k").join("index.md")).unwrap();
+            let split = okf::frontmatter::split(&index).unwrap();
+            let keys: Vec<String> = split
+                .frontmatter
+                .keys()
+                .map(|k| k.as_str().unwrap_or("?").to_string())
+                .collect();
+            assert_eq!(keys, vec!["okf_version".to_string()], "{format:?}");
+            assert_eq!(
+                split
+                    .frontmatter
+                    .get("okf_version")
+                    .and_then(|v| v.as_str()),
+                Some(okf::OKF_VERSION),
+                "{format:?}: the revision must be a STRING; unquoted, YAML reads \
+                 0.2 as a float and a later 0.10 becomes 0.1"
+            );
+
+            // …and the manifest carries the pair.
+            assert_eq!(
+                m.okf_version.as_deref(),
+                Some(okf::OKF_VERSION),
+                "{format:?}"
+            );
+            assert_eq!(
+                m.biookf_version.as_deref(),
+                format.is_biookf().then_some(biookf::BIOOKF_VERSION),
+                "{format:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_new_base_records_its_profile_and_reads_back_as_that_profile() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            let m = svc.create_base_in("k", "K", None, format).unwrap();
+            assert_eq!(m.format, format);
+            let on_disk = manifest::load(&svc.root().join("k")).unwrap();
+            assert_eq!(
+                on_disk, m,
+                "the stamp on disk must match the one handed back"
+            );
+            assert_eq!(
+                on_disk.profile(),
+                Some(format),
+                "a base created at the OKF generation must report its profile"
+            );
+        }
+    }
+
+    /// The two schemas are different documents, and the BioOKF one is generated
+    /// from the vocabulary rather than typed out — so a spec bump moves the
+    /// prompt instead of leaving a stale copy of the 28 types in a markdown
+    /// file that nothing reads for correctness.
+    #[test]
+    fn the_biookf_schema_carries_the_vocabulary_the_module_declares() {
+        let schema = schema_for(KbFormat::Biookf);
+        assert!(
+            !schema.contains("{{"),
+            "an unfilled placeholder shipped into the prompt: {:?}",
+            schema
+                .lines()
+                .filter(|l| l.contains("{{"))
+                .collect::<Vec<_>>()
+        );
+        for t in biookf::NodeType::ALL {
+            assert!(
+                schema.contains(t.as_str()),
+                "missing node type {}",
+                t.as_str()
+            );
+        }
+        for p in biookf::PositivePredicate::ALL {
+            assert!(
+                schema.contains(p.as_str()),
+                "missing predicate {}",
+                p.as_str()
+            );
+        }
+        for level in biookf::KNOWLEDGE_LEVELS {
+            assert!(schema.contains(level), "missing knowledge level {level}");
+        }
+        for agent in biookf::AGENT_TYPES {
+            assert!(schema.contains(agent), "missing agent type {agent}");
+        }
+        // The negatives are derived from `negatable()`, not listed twice.
+        let negated = format!("{}treats", biookf::NEGATION_PREFIX);
+        assert!(schema.contains(&negated), "missing {negated}");
+
+        // The OKF schema must NOT carry it: its vocabulary is open, and handing
+        // the model 28 types would quietly turn it into the other profile.
+        let okf_schema = schema_for(KbFormat::Okf);
+        assert!(!okf_schema.contains("BiologicalPathway"), "{okf_schema}");
+        assert!(!okf_schema.contains("knowledge_level"), "{okf_schema}");
+    }
+
+    /// Issue #71, stated as a property of the scaffold rather than left to be
+    /// noticed later. `txn_wrote_knowledge_pages` compares ONLY the `knowledge/`
+    /// subtree oid, because `log.md`, `raw/` and `index.md` each move the whole
+    /// tree on their own — an ingest that wrote nothing but a log line would
+    /// otherwise report as a digest. A profile that scaffolded authored content
+    /// outside `knowledge/` would break that guard silently.
+    #[test]
+    fn every_scaffolded_directory_lives_under_knowledge() {
+        for format in [KbFormat::Okf, KbFormat::Biookf] {
+            let (_dir, svc) = svc();
+            svc.create_base_in("k", "K", None, format).unwrap();
+            let kb = svc.root().join("k");
+            for dir in scaffold_dirs(format) {
+                assert!(
+                    kb.join("knowledge").join(&dir).is_dir(),
+                    "{format:?}: knowledge/{dir} missing"
+                );
+                assert!(
+                    !dir.starts_with('/') && !dir.contains(".."),
+                    "{format:?}: {dir} escapes knowledge/"
+                );
+            }
+            // Nothing authored at the bundle root beyond the three reserved-ish
+            // files, the manifest and the ignore file.
+            let mut top: Vec<String> = std::fs::read_dir(&kb)
+                .unwrap()
+                .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                .filter(|n| !n.starts_with('.'))
+                .collect();
+            top.sort();
+            assert_eq!(
+                top,
+                vec![
+                    "index.md".to_string(),
+                    "knowledge".to_string(),
+                    "log.md".to_string(),
+                    "manifest.yaml".to_string(),
+                    "raw".to_string(),
+                    "schema.md".to_string(),
+                ],
+                "{format:?}"
+            );
+        }
+    }
+
+    /// The BioOKF directories are derived from SPEC §8.1's source types rather
+    /// than typed out, because those four are the only directories the profile
+    /// genuinely requires: every edge must cite a `primary_source`, and that
+    /// citation has to resolve to a real page of one of them.
+    #[test]
+    fn the_biookf_scaffold_is_the_four_source_types_lowercased() {
+        let dirs = scaffold_dirs(KbFormat::Biookf);
+        let expected: Vec<String> = biookf::NodeType::SOURCE_TYPES
+            .iter()
+            .map(|t| t.as_str().to_lowercase())
+            .collect();
+        assert_eq!(dirs, expected);
+        assert_eq!(dirs.len(), 4, "SPEC §8.1 names four, not eight");
+        assert!(!dirs.contains(&"population".to_string()));
+    }
+
+    /// A user-facing create is still born PUBLIC and unclaimed whichever
+    /// profile it is in — the profile argument must not have wandered into the
+    /// tier or affiliation position.
+    #[test]
+    fn choosing_a_profile_does_not_change_how_the_base_is_classified() {
+        let (_dir, svc) = svc();
+        svc.create_base_in("pub-kb", "P", None, KbFormat::Biookf)
+            .unwrap();
+        assert!(!crate::knowledge::tier::is_private(svc.root(), "pub-kb"));
+        assert_eq!(
+            crate::knowledge::tier::affiliation(svc.root(), "pub-kb")
+                .owners()
+                .map(|o| o.len()),
+            Some(0),
+            "a user-facing create claims no institution"
+        );
     }
 
     #[test]
@@ -3657,6 +4081,44 @@ mod tests {
             .unwrap();
     }
 
+    /// The generation-2 `schema.md`: the file every base on disk carries. Kept
+    /// here rather than in production, because no code path writes it any more
+    /// — a new base is scaffolded at generation 3 — and a `const` reachable only
+    /// from tests is dead code in a real build.
+    const GENERATION_2_SCHEMA: &str = include_str!("schema_default.md");
+
+    /// Put a freshly created base into the state every base on disk is in:
+    /// generation-2 *content*, stamped 1 because `create_base` used to hardcode
+    /// the number. It is no longer enough to seed only the stamp — a base
+    /// created today carries the OKF schema, which the 1 -> 2 step would
+    /// genuinely rewrite.
+    fn seed_generation_2_content_stamped_1(svc: &KnowledgeService, kb_id: &str) {
+        let kb = svc.root().join(kb_id);
+        std::fs::write(kb.join("schema.md"), GENERATION_2_SCHEMA).unwrap();
+        let mut m = manifest::load(&kb).unwrap();
+        m.schema_version = 1;
+        manifest::save(&kb, &m).unwrap();
+        GitRepo::open(&kb)
+            .unwrap()
+            .commit_all(ChangeKind::Manual, "seed generation-2 schema", None)
+            .unwrap();
+    }
+
+    /// The claim `SCHEMA_CROSSREF_RULES`'s own comment makes ("kept in sync with
+    /// the equivalent block in `schema_default.md`"), turned into a check. The
+    /// two texts are not byte-identical and never were, so what is asserted is
+    /// the property the ladder actually depends on: the generation-2 file is
+    /// already at generation 2, so the 1 -> 2 step is a no-op over it.
+    #[test]
+    fn the_generation_2_schema_is_already_at_generation_2() {
+        assert_eq!(
+            with_crossref_rules(GENERATION_2_SCHEMA.to_string()),
+            GENERATION_2_SCHEMA,
+            "the ladder would append a second copy of the rules block to every \
+             base on disk"
+        );
+    }
+
     #[test]
     fn migrate_schema_appends_cross_reference_rules_when_missing() {
         let (_dir, svc) = svc();
@@ -3695,9 +4157,7 @@ mod tests {
         let (_dir, svc) = svc();
         svc.create_base("k", "K", None).unwrap();
         let kb = svc.root().join("k");
-        let mut m = manifest::load(&kb).unwrap();
-        m.schema_version = 1;
-        manifest::save(&kb, &m).unwrap();
+        seed_generation_2_content_stamped_1(&svc, "k");
         let original = std::fs::read_to_string(kb.join("schema.md")).unwrap();
         let repo = GitRepo::open(&kb).unwrap();
         let before = repo.log(10).unwrap().len();
@@ -3715,9 +4175,15 @@ mod tests {
         );
         assert_eq!(
             manifest::load(&kb).unwrap().schema_version,
-            CURRENT_SCHEMA_VERSION,
+            AUTOMATIC_SCHEMA_CEILING,
             "the stamp must move even when the content did not, or the base \
              re-enters the ladder on every macro call forever"
+        );
+        assert_eq!(
+            manifest::load(&kb).unwrap().profile(),
+            None,
+            "…and it must stop at the ceiling: stamping this base 3 would \
+             declare a `[[wiki]]`-linked, `kind:`-typed base OKF"
         );
         assert_eq!(
             repo.log(10).unwrap().len(),
@@ -3753,7 +4219,7 @@ mod tests {
         assert!(!svc.migrate_schema_if_needed("k").unwrap());
         assert_eq!(
             manifest::load(&kb).unwrap().schema_version,
-            CURRENT_SCHEMA_VERSION
+            AUTOMATIC_SCHEMA_CEILING
         );
         assert!(std::fs::read_to_string(kb.join("schema.md"))
             .unwrap()
@@ -3777,26 +4243,38 @@ mod tests {
         );
     }
 
+    /// A base created today is at generation 3, which is *ahead* of the ladder,
+    /// not merely level with it. The ladder must leave it alone — and in
+    /// particular must not append the `[[wiki]]`-link rules block to an OKF
+    /// schema, which is what a ceiling of `CURRENT_SCHEMA_VERSION` would do to
+    /// the first base someone hand-edited the stamp on.
     #[test]
-    fn migrate_schema_is_noop_when_already_present() {
+    fn migrate_schema_leaves_a_base_that_is_ahead_of_the_ladder_alone() {
         let (_dir, svc) = svc();
-        svc.create_base("k", "K", None).unwrap();
+        let m = svc.create_base("k", "K", None).unwrap();
         let kb = svc.root().join("k");
+        assert_eq!(m.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(m.schema_version > AUTOMATIC_SCHEMA_CEILING);
 
-        // create_base already writes the current DEFAULT_SCHEMA, which
-        // contains the cross-reference rules section.
         let original = std::fs::read_to_string(kb.join("schema.md")).unwrap();
-        assert!(original.contains("Cross-reference rules"));
+        assert!(
+            !original.contains("Cross-reference rules"),
+            "an OKF schema must not carry the legacy wiki-link rules"
+        );
         let repo = GitRepo::open(&kb).unwrap();
         let before = repo.log(10).unwrap().len();
 
         let migrated = svc.migrate_schema_if_needed("k").unwrap();
-        assert!(!migrated, "already-migrated KB should be a no-op");
+        assert!(!migrated, "a base ahead of the ladder is a no-op");
 
         let after_schema = std::fs::read_to_string(kb.join("schema.md")).unwrap();
         assert_eq!(after_schema, original, "schema bytes unchanged");
-        let after = repo.log(10).unwrap().len();
-        assert_eq!(after, before, "no new commit");
+        assert_eq!(repo.log(10).unwrap().len(), before, "no new commit");
+        assert_eq!(
+            manifest::load(&kb).unwrap().schema_version,
+            CURRENT_SCHEMA_VERSION,
+            "and the stamp was not walked BACK to the ceiling"
+        );
     }
 
     #[test]

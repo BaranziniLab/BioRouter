@@ -621,6 +621,7 @@ async fn the_master_toggle_governs_every_gate_in_both_directions() {
             "omop",
             "OMOP",
             None,
+            biorouter_mcp::knowledge::types::KbFormat::default(),
             /* caller_is_private */ true,
             // DR-26's axis is not what this row is about; `Unstated` is the
             // restrictive value and adds no owner, so the tier assertions below

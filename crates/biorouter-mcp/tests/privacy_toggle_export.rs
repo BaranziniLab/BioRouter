@@ -73,6 +73,7 @@ async fn the_forced_export_location_follows_the_master_toggle() {
             "omop",
             "OMOP",
             None,
+            biorouter_mcp::knowledge::types::KbFormat::default(),
             /* caller_is_private */ true,
             // DR-26's axis is not what this test is about, and `Unstated` adds
             // no owner — so the forced-export-location assertions below are

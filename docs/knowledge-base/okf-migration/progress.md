@@ -15,7 +15,7 @@
 | 1 | BioOKF profile module (28 types / 35 predicates) | **DONE** — 6 files, 3,576 lines, 66 tests | **PASSED** |
 | 1.5 | Seams (7 behaviour-preserving mitigations) | **DONE** — 473 tests | **PASSED** (adversarial, mutation-tested) |
 | 2 | Graph derivation: typed nodes + edges, three link forms | IN PROGRESS | — |
-| 3 | Store, manifest, service, legacy migration | IN PROGRESS | — |
+| 3 | Store, manifest, service; legacy bases untouched | **DONE** — 6 files + 2 schema templates, 523 tests | committee gate NOT yet run |
 | 4 | MCP tool surface + skills | NOT STARTED | — |
 | 5 | Sub-agent macros (profile-aware) | NOT STARTED | — |
 | 6 | HTTP routes + OpenAPI + TS client | NOT STARTED | — |
@@ -31,6 +31,8 @@ Captured before any change, so a later "pre + N" assertion has something true to
 | `cargo test -p biorouter-mcp --lib knowledge::` (baseline, before any OKF work) | 283 | 2026-08-19 |
 | `cargo test -p biorouter-mcp --lib knowledge::` (after Stages 0+1) | **446** = 283 + 97 + 66 | 2026-08-19 |
 | `cargo test -p biorouter-mcp --lib knowledge::` (after Stage 1.5) | **473** | 2026-08-19 |
+| `cargo test -p biorouter-mcp --lib knowledge::` (after Stage 2) | **496** | 2026-08-19 |
+| `cargo test -p biorouter-mcp --lib knowledge::` (after Stage 3) | **523** | 2026-08-19 |
 | `cargo test -p biorouter-mcp --lib knowledge::okf` | 97 | 2026-08-19 |
 | `cargo test -p biorouter-mcp --lib knowledge::biookf` | 66 | 2026-08-19 |
 | `cargo test -p biorouter-mcp --lib` (whole crate lib) | 1217 passed, 7 pre-existing ignores | 2026-08-19 |
@@ -81,3 +83,26 @@ Captured before any change, so a later "pre + N" assertion has something true to
   tested only normal trichromacy, so it would have shipped green. Node type also had no redundant
   channel, with ~82% of nodes unlabelled at the default zoom. Fixed with seven family *shapes*
   plus CVD simulation in the guard.
+
+### 2026-08-19 (Stage 3)
+- **Stage 3 landed.** `Manifest` gains `format` / `okf_version` / `biookf_version`, all
+  `#[serde(default)]` (DR-12); `create_base_as` takes a `KbFormat` and scaffolds the matching tree,
+  `schema.md`, `index.md` and `log.md`; `log::append` writes OKF §9's `## YYYY-MM-DD` groups instead
+  of the Karpathy `## [date] kind | summary` heading it had been writing since the subsystem was
+  built. `knowledge::` 496 → 523.
+- **The schema generation is 3, and the automatic ladder stops at 2.** Reaching generation 3 means
+  rewriting a base's *pages*, which is the format migration DR-17 refuses on an unauthenticated path
+  and DR-22 defers; `AUTOMATIC_SCHEMA_CEILING < CURRENT_SCHEMA_VERSION` is asserted in a `const`
+  block so bumping one number without the other fails the build rather than a test.
+- **`Manifest::profile()` is the accessor, not `Manifest::format`.** The field defaults to `okf` on
+  every `manifest.yaml` on disk, so a check written against it alone treats every legacy base as
+  already-OKF — DR-6's trap, reached from the reader instead of the writer. `profile()` folds the
+  generation in and answers `None` for a legacy base.
+- **An unknown `format` word reads as plain OKF rather than failing the load.** `list_bases` still
+  drops a base whose manifest will not parse, so a strict enum would have put DR-12's persisted-data-loss
+  cascade one typo away; every profile is OKF plus constraints, so reading an unknown one as plain OKF
+  loses constraints and never content.
+- **Verified by mutation**: 16 deliberate defects applied one at a time — including numbering OKF
+  generation 2, raising the ladder ceiling, dropping `serde(default)` from `format`, emitting
+  `biookf_version` into `index.md`, emitting the revision unquoted, reverting the log heading, and
+  scaffolding outside `knowledge/` — and every one was caught by the test that should catch it.
