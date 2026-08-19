@@ -17,6 +17,12 @@ log.transports.console.level = app?.isPackaged ? false : 'debug';
 // async writes keep the event loop free.
 log.transports.file.sync = false;
 
+// The tradeoff, stated plainly: async writes go through a queue that drains on
+// the event loop, so a HARD crash (SIGKILL, a native crash) can lose the last few
+// lines. A normal quit does not — the fatal-startup-error path in main.ts was
+// measured reaching disk. Blocking the window on every one of ~180 lines per
+// update check to protect against the hard-crash case is the worse trade.
+//
 // A log line is never worth blocking on, but it is also never worth crashing on:
 // a full disk or a read-only userData dir would otherwise surface as an
 // unhandled rejection from a fire-and-forget write.
