@@ -186,6 +186,12 @@ export function LintDrawer({ open, onOpenChange }: Props) {
     <Sheet open={open} onOpenChange={onOpenChange}>
       <SheetContent
         side="right"
+        // The header is a title plus the run control, and the line under it is a
+        // run of live counts — neither is a description, so this takes Radix's
+        // own explicit opt-out rather than invent copy for the accessibility
+        // tree alone. Matches `ChangeLogDrawer`; see `ui/sheet.tsx` for why the
+        // primitive cannot default it.
+        aria-describedby={undefined}
         className="flex w-knowledge-rail-detail flex-col gap-0 p-0 sm:max-w-knowledge-rail-detail"
         data-testid="knowledge-lint-drawer"
       >

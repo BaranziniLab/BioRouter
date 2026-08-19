@@ -183,3 +183,25 @@ describe('LintDrawer', () => {
     expect(mocks.start).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * ⚠ **Asserted here AND in a real browser.** `src/test/setup.ts` replaces
+ * `console.warn` with a `vi.fn()`, so Radix's *"Missing `Description`"* message
+ * is swallowed by the suite rather than absent from it — this drawer warned on
+ * every open while every test below stayed green. The mock is read back
+ * deliberately; the DOM attribute is asserted as the thing that actually matters.
+ */
+describe('LintDrawer — the description contract', () => {
+  it('leaves Radix no aria-describedby to dangle', () => {
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    expect(screen.getByTestId('knowledge-lint-drawer').hasAttribute('aria-describedby')).toBe(
+      false
+    );
+    expect(
+      vi
+        .mocked(console.warn)
+        .mock.calls.some((call) => String(call[0]).includes('Missing `Description`'))
+    ).toBe(false);
+  });
+});
