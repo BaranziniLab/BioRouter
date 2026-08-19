@@ -56,8 +56,8 @@ use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
 
 use crate::agents::extension_manager::ExtensionManager;
 use crate::config::BioRouterMode;
-use crate::conversation::Conversation;
 use crate::conversation::message::ToolRequest;
+use crate::conversation::Conversation;
 use crate::privacy::CallCapability;
 use crate::session::session_manager::Session;
 use crate::tool_inspection::ToolInspectionManager;
@@ -292,10 +292,7 @@ tokio::task_local! {
 
 /// The bridge URL for the current turn, if the agent established one.
 pub fn active_bridge_url() -> Option<String> {
-    ACTIVE_BRIDGE_URL
-        .try_with(|url| url.clone())
-        .ok()
-        .flatten()
+    ACTIVE_BRIDGE_URL.try_with(|url| url.clone()).ok().flatten()
 }
 
 #[cfg(test)]
@@ -314,7 +311,14 @@ mod tests {
     fn only_the_coding_agent_providers_use_the_bridge() {
         assert!(provider_uses_bridge("claude_code"));
         assert!(provider_uses_bridge("codex"));
-        for other in ["anthropic", "openai", "llamacpp", "ollama", "versa_azure", ""] {
+        for other in [
+            "anthropic",
+            "openai",
+            "llamacpp",
+            "ollama",
+            "versa_azure",
+            "",
+        ] {
             assert!(
                 !provider_uses_bridge(other),
                 "{other} receives its tools in the request and needs no grant"
@@ -368,9 +372,10 @@ mod tests {
     #[tokio::test]
     async fn the_url_is_visible_inside_the_scope_and_not_outside() {
         let scoped = ACTIVE_BRIDGE_URL
-            .scope(Some("http://127.0.0.1:1/tool_bridge/abc".to_string()), async {
-                active_bridge_url()
-            })
+            .scope(
+                Some("http://127.0.0.1:1/tool_bridge/abc".to_string()),
+                async { active_bridge_url() },
+            )
             .await;
         assert_eq!(
             scoped.as_deref(),

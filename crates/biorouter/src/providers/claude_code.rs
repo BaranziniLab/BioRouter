@@ -65,12 +65,8 @@ use rmcp::model::{Role, Tool};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
-use super::base::{
-    ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage,
-};
-use super::coding_agent::{
-    self, bridge, discovery, env as agent_env, transcript, CodingAgentKind,
-};
+use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
+use super::coding_agent::{self, bridge, discovery, env as agent_env, transcript, CodingAgentKind};
 use super::errors::ProviderError;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
@@ -216,6 +212,24 @@ impl ClaudeCodeProvider {
         if !model.is_empty() {
             args.push("--model".into());
             args.push(model.to_string());
+        }
+
+        // BR-63: the turn's reasoning effort. `--effort` takes
+        // `low|medium|high|xhigh|max` (verified against `claude` 2.1.235), and
+        // `provider_effort()` yields the same low/high pair the OpenAI-family
+        // formats send, so `/effort` means one thing across providers.
+        //
+        // ⚠ `Normal` and `None` must emit **no flag at all**, which is why this
+        // reads the `Option` rather than matching all three arms: `Normal` is
+        // documented as a strict no-op, so passing `--effort medium` would
+        // override whatever the model itself defaults to — for every user who
+        // never touched `/effort`, since `Normal` is the default.
+        if let Some(effort) = model_config
+            .reasoning_effort
+            .and_then(|effort| effort.provider_effort())
+        {
+            args.push("--effort".into());
+            args.push(effort.to_string());
         }
 
         args
@@ -407,8 +421,7 @@ impl ClaudeCodeProvider {
                             .map(str::to_string);
                     }
                     Some("api_retry") => {
-                        retry_category =
-                            v.get("error").and_then(Value::as_str).map(str::to_string);
+                        retry_category = v.get("error").and_then(Value::as_str).map(str::to_string);
                     }
                     _ => {}
                 },
@@ -619,15 +632,14 @@ impl Provider for ClaudeCodeProvider {
         if !availability.auth.is_subscription() {
             return Err(coding_agent::unavailable_error(KIND, &availability));
         }
-        Ok(Some(
-            known_models().into_iter().map(|m| m.name).collect(),
-        ))
+        Ok(Some(known_models().into_iter().map(|m| m.name).collect()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agents::effort::ReasoningEffort;
 
     fn provider() -> ClaudeCodeProvider {
         ClaudeCodeProvider {
@@ -643,13 +655,20 @@ mod tests {
     /// `--strict-mcp-config` it connects the user's own MCP servers.
     #[test]
     fn the_isolation_flags_are_always_present() {
-        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json", None);
-
-        let i = args.iter().position(|a| a == "--setting-sources").expect(
-            "--setting-sources is required: without it a -p run executes the cwd's hooks",
+        let args = provider().base_args(
+            &ModelConfig::new("claude-sonnet-4-6").unwrap(),
+            "SYS",
+            "json",
+            None,
         );
+
+        let i = args
+            .iter()
+            .position(|a| a == "--setting-sources")
+            .expect("--setting-sources is required: without it a -p run executes the cwd's hooks");
         assert_eq!(
-            args[i + 1], "",
+            args[i + 1],
+            "",
             "--setting-sources must be given an empty value to load no sources"
         );
         assert!(
@@ -661,7 +680,11 @@ mod tests {
             .iter()
             .position(|a| a == "--tools")
             .expect("--tools is required so the child's own Read/Edit/Bash stay off");
-        assert_eq!(args[t + 1], "", "--tools must be empty to disable all built-ins");
+        assert_eq!(
+            args[t + 1],
+            "",
+            "--tools must be empty to disable all built-ins"
+        );
     }
 
     /// `--mcp-config` is **variadic**, so nothing that follows it may be a bare
@@ -710,7 +733,12 @@ mod tests {
     /// silently defeat the entire provider.
     #[test]
     fn bare_mode_is_never_requested() {
-        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json", None);
+        let args = provider().base_args(
+            &ModelConfig::new("claude-sonnet-4-6").unwrap(),
+            "SYS",
+            "json",
+            None,
+        );
         assert!(
             !args.iter().any(|a| a == "--bare"),
             "--bare never reads OAuth credentials and must not be passed"
@@ -721,10 +749,89 @@ mod tests {
     /// is both correct and a 16x token saving.
     #[test]
     fn the_system_prompt_replaces_rather_than_appends() {
-        let args = provider().base_args(&ModelConfig::new("claude-sonnet-4-6").unwrap(), "SYS", "json", None);
+        let args = provider().base_args(
+            &ModelConfig::new("claude-sonnet-4-6").unwrap(),
+            "SYS",
+            "json",
+            None,
+        );
         let i = args.iter().position(|a| a == "--system-prompt").unwrap();
         assert_eq!(args[i + 1], "SYS");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+    }
+
+    /// `/effort quick|deep` has to reach the child, or the setting is a silent
+    /// no-op on this provider. The CLI's own vocabulary is
+    /// `low|medium|high|xhigh|max` (`claude --help`, 2.1.235), and the two ends
+    /// Biorouter pins are the same `low`/`high` the OpenAI-family formats send.
+    #[test]
+    fn quick_and_deep_pin_the_cli_effort_level() {
+        for (effort, expected) in [
+            (ReasoningEffort::Quick, "low"),
+            (ReasoningEffort::Deep, "high"),
+        ] {
+            let m = ModelConfig::new("claude-sonnet-4-6")
+                .unwrap()
+                .with_reasoning_effort(Some(effort));
+            let args = provider().base_args(&m, "SYS", "json", None);
+            let i = args
+                .iter()
+                .position(|a| a == "--effort")
+                .unwrap_or_else(|| panic!("{effort:?} must reach the CLI as --effort"));
+            assert_eq!(
+                args[i + 1],
+                expected,
+                "{effort:?} maps to --effort {expected}"
+            );
+        }
+    }
+
+    /// The assertion that matters: `Normal` is documented as a strict no-op, and
+    /// it is the default every user who never typed `/effort` is on. Emitting
+    /// `--effort medium` for it would quietly override whatever depth the model
+    /// itself defaults to on every single call.
+    #[test]
+    fn the_default_effort_sends_no_flag_at_all() {
+        for effort in [None, Some(ReasoningEffort::Normal)] {
+            let m = ModelConfig::new("claude-sonnet-4-6")
+                .unwrap()
+                .with_reasoning_effort(effort);
+            let args = provider().base_args(&m, "SYS", "json", None);
+            assert!(
+                !args.iter().any(|a| a == "--effort"),
+                "{effort:?} must leave the model's own default in place, but sent: {args:?}"
+            );
+            // …and no level leaked in as a bare positional either.
+            for level in ["low", "medium", "high", "xhigh", "max"] {
+                assert!(
+                    !args.iter().any(|a| a == level),
+                    "{effort:?} must not put `{level}` in argv"
+                );
+            }
+        }
+    }
+
+    /// `--effort <level>` sits after the variadic `--mcp-config`, so it is
+    /// subject to the same trap as everything else there: a bare `low` would be
+    /// eaten as a second config path. Asserted separately because the invariant
+    /// test above builds its args without an effort and so cannot see this.
+    #[test]
+    fn the_effort_flag_survives_the_variadic_mcp_config_flag() {
+        let m = ModelConfig::new("claude-sonnet-4-6")
+            .unwrap()
+            .with_reasoning_effort(Some(ReasoningEffort::Deep));
+        let path = std::path::Path::new("/tmp/bridge.json");
+        let args = provider().base_args(&m, "SYS", "json", Some(path));
+
+        let i = args.iter().position(|a| a == "--mcp-config").unwrap();
+        assert_eq!(args[i + 1], path.to_string_lossy());
+        for later in &args[i + 2..] {
+            assert!(
+                later.starts_with("--") || is_flag_value(&args, later),
+                "`{later}` follows the variadic --mcp-config and would be eaten as a \
+                 second config path"
+            );
+        }
     }
 
     #[test]
@@ -739,7 +846,11 @@ mod tests {
             .zip(stream.iter())
             .filter(|(a, b)| a != b)
             .collect();
-        assert_eq!(differences.len(), 1, "only --output-format's value may differ");
+        assert_eq!(
+            differences.len(),
+            1,
+            "only --output-format's value may differ"
+        );
     }
 
     /// An `apiKeySource` other than "none" means the run would be billed to a
@@ -857,7 +968,12 @@ mod tests {
     #[test]
     fn stderr_reaches_the_error_when_there_is_no_result() {
         let err = provider()
-            .parse_result_object("claude-sonnet-4-6", &[], "claude: command failed spectacularly", exit_ok())
+            .parse_result_object(
+                "claude-sonnet-4-6",
+                &[],
+                "claude: command failed spectacularly",
+                exit_ok(),
+            )
             .expect_err("no result frame is a failure");
         assert!(
             err.to_string().contains("command failed spectacularly"),
@@ -868,7 +984,10 @@ mod tests {
     #[test]
     fn metadata_is_public_and_not_locally_computed() {
         let m = ClaudeCodeProvider::metadata();
-        assert_eq!(m.name, "claude_code", "the underscore is what pricing keys on");
+        assert_eq!(
+            m.name, "claude_code",
+            "the underscore is what pricing keys on"
+        );
         assert_eq!(m.display_name, "Claude Agent");
         assert_eq!(m.tier, crate::privacy::ProviderTier::Public);
         assert!(

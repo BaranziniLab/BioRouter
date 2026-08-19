@@ -91,9 +91,9 @@ impl AppServer {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
 
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| ProviderError::ExecutionError(format!("could not start app server: {e}")))?;
+        let mut child = cmd.spawn().map_err(|e| {
+            ProviderError::ExecutionError(format!("could not start app server: {e}"))
+        })?;
 
         let stdin = child
             .stdin
@@ -245,11 +245,7 @@ fn spawn_reader(
     });
 }
 
-async fn dispatch(
-    value: Value,
-    pending: &Pending,
-    tx: &mpsc::UnboundedSender<Inbound>,
-) {
+async fn dispatch(value: Value, pending: &Pending, tx: &mpsc::UnboundedSender<Inbound>) {
     let method = value.get("method").and_then(Value::as_str);
     let id = value.get("id");
 
@@ -432,7 +428,9 @@ for line in sys.stdin:
 "#;
         let mut cmd = Command::new("python3");
         cmd.arg("-c").arg(script);
-        let server = AppServer::spawn(cmd).await.expect("fake server should start");
+        let server = AppServer::spawn(cmd)
+            .await
+            .expect("fake server should start");
 
         let init = server.request("initialize", json!({})).await.unwrap();
         assert_eq!(init["codexHome"], "/tmp");
@@ -447,7 +445,10 @@ for line in sys.stdin:
                 match msg {
                     Inbound::Request { id, method, .. } => {
                         assert_eq!(method, "item/tool/requestUserInput");
-                        server.respond(&id, json!({"decision": "yes"})).await.unwrap();
+                        server
+                            .respond(&id, json!({"decision": "yes"}))
+                            .await
+                            .unwrap();
                     }
                     Inbound::Notification { method, params } => {
                         if method == "turn/completed" {

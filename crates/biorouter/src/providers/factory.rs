@@ -76,7 +76,8 @@ fn register_builtin_providers(registry: &mut ProviderRegistry) {
     // `preferred: false`: these drive another vendor's installed CLI on the
     // user's own subscription, which is a different kind of thing from a direct
     // metered endpoint and should not be offered beside one by default.
-    registry.register::<ClaudeCodeProvider, _>(|m| Box::pin(ClaudeCodeProvider::from_env(m)), false);
+    registry
+        .register::<ClaudeCodeProvider, _>(|m| Box::pin(ClaudeCodeProvider::from_env(m)), false);
     registry.register::<CodexProvider, _>(|m| Box::pin(CodexProvider::from_env(m)), false);
     registry.register::<DatabricksProvider, _>(|m| Box::pin(DatabricksProvider::from_env(m)), true);
     registry

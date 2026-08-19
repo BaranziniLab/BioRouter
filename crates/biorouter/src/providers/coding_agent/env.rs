@@ -226,7 +226,9 @@ mod tests {
             .collect();
         for removed in ["BIOROUTER_SERVER__SECRET_KEY", "ANTHROPIC_API_KEY"] {
             assert_eq!(
-                envs.iter().find(|(k, _)| k == removed).map(|(_, v)| v.clone()),
+                envs.iter()
+                    .find(|(k, _)| k == removed)
+                    .map(|(_, v)| v.clone()),
                 Some(None),
                 "{removed} must not reach a coding-agent child"
             );

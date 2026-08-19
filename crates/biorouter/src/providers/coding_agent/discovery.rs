@@ -287,7 +287,10 @@ async fn run_probe(exe: &Path, args: &[&str]) -> Option<std::process::Output> {
             None
         }
         Err(_) => {
-            tracing::warn!("coding-agent probe {:?} timed out after {PROBE_TIMEOUT:?}", exe);
+            tracing::warn!(
+                "coding-agent probe {:?} timed out after {PROBE_TIMEOUT:?}",
+                exe
+            );
             None
         }
     }
@@ -296,7 +299,10 @@ async fn run_probe(exe: &Path, args: &[&str]) -> Option<std::process::Output> {
 async fn probe_version(exe: &Path) -> Option<String> {
     let out = run_probe(exe, &["--version"]).await?;
     let text = String::from_utf8_lossy(&out.stdout);
-    text.lines().next().map(|l| l.trim().to_string()).filter(|l| !l.is_empty())
+    text.lines()
+        .next()
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty())
 }
 
 /// `claude auth status` emits JSON on stdout by default (there is a `--text`
@@ -449,7 +455,10 @@ mod tests {
             CodingAgentKind::ClaudeCode,
             Some(dir.path().join("absent").to_str().unwrap()),
         );
-        assert!(missing.is_none(), "a pinned path that does not exist is not a fallback");
+        assert!(
+            missing.is_none(),
+            "a pinned path that does not exist is not a fallback"
+        );
     }
 
     /// An empty or whitespace config value falls back to the default name rather

@@ -43,10 +43,9 @@ use serde_json::{json, Value};
 
 use super::base::{ConfigKey, ModelInfo, Provider, ProviderMetadata, ProviderUsage, Usage};
 use super::coding_agent::appserver::{AppServer, Inbound};
-use super::coding_agent::{
-    self, bridge, discovery, env as agent_env, transcript, CodingAgentKind,
-};
+use super::coding_agent::{self, bridge, discovery, env as agent_env, transcript, CodingAgentKind};
 use super::errors::ProviderError;
+use crate::agents::effort::ReasoningEffort;
 use crate::config::search_path::SearchPaths;
 use crate::conversation::message::{Message, MessageContent};
 use crate::model::ModelConfig;
@@ -163,6 +162,37 @@ impl CodexProvider {
         params
     }
 
+    /// `turn/start` parameters.
+    ///
+    /// BR-63's reasoning effort belongs **here** and nowhere else: `thread/start`
+    /// has no `effort` field at all (`codex app-server generate-json-schema`),
+    /// so a provider that only shapes the thread leaves `/effort` a silent no-op.
+    ///
+    /// The schema types `effort` as `ReasoningEffort`, which it declares as an
+    /// open non-empty string — "a reasoning effort value advertised by the
+    /// model" — rather than a closed enum, so the accepted set is per-model and
+    /// read from `model/list`. Measured against codex-cli 0.147.0, every model
+    /// it lists advertises `low` and `high`; `xhigh` is on all of them too,
+    /// `max`/`ultra` only on some. Biorouter therefore sends the same
+    /// `low`/`high` pair `provider_effort()` gives every other provider, which
+    /// is the subset no model can reject.
+    ///
+    /// ⚠ `Normal` and `None` must omit the key entirely. `Normal` is documented
+    /// as a strict no-op and is the default, so sending `"medium"` for it would
+    /// override each model's own `defaultReasoningEffort` — which is not
+    /// uniformly medium (gpt-5.6-sol defaults to `low`, gpt-5.3-codex-spark to
+    /// `high`) — on every turn of every user who never touched `/effort`.
+    fn turn_params(thread_id: &str, prompt: &str, effort: Option<ReasoningEffort>) -> Value {
+        let mut params = json!({
+            "threadId": thread_id,
+            "input": [{ "type": "text", "text": prompt }],
+        });
+        if let Some(level) = effort.and_then(|effort| effort.provider_effort()) {
+            params["effort"] = json!(level);
+        }
+        params
+    }
+
     /// Answer a server-originated request.
     ///
     /// Anything that would let the child act on the machine is refused. The child
@@ -241,7 +271,7 @@ impl CodexProvider {
     /// Drive one complete turn: handshake, thread, turn, then pump until done.
     async fn run_turn(
         &self,
-        model: &str,
+        model: &ModelConfig,
         system: &str,
         prompt: &str,
     ) -> Result<TurnOutcome, ProviderError> {
@@ -256,7 +286,7 @@ impl CodexProvider {
     async fn turn_on(
         &self,
         server: &AppServer,
-        model: &str,
+        model: &ModelConfig,
         system: &str,
         prompt: &str,
     ) -> Result<TurnOutcome, ProviderError> {
@@ -280,7 +310,12 @@ impl CodexProvider {
         let thread = server
             .request(
                 "thread/start",
-                Self::thread_params(system, &cwd, model, bridge::active_bridge_url().as_deref()),
+                Self::thread_params(
+                    system,
+                    &cwd,
+                    &model.model_name,
+                    bridge::active_bridge_url().as_deref(),
+                ),
             )
             .await?;
         let thread_id = thread
@@ -298,20 +333,19 @@ impl CodexProvider {
         // notifications, so the pump has to run alongside it rather than after it.
         let start = server.request(
             "turn/start",
-            json!({ "threadId": thread_id, "input": [{ "type": "text", "text": prompt }] }),
+            Self::turn_params(&thread_id, prompt, model.reasoning_effort),
         );
         let pump = Self::pump(server);
 
-        let (started, outcome) = tokio::time::timeout(TURN_TIMEOUT, async {
-            tokio::join!(start, pump)
-        })
-        .await
-        .map_err(|_| {
-            ProviderError::ExecutionError(format!(
-                "the Codex turn did not finish within {}s and was stopped",
-                TURN_TIMEOUT.as_secs()
-            ))
-        })?;
+        let (started, outcome) =
+            tokio::time::timeout(TURN_TIMEOUT, async { tokio::join!(start, pump) })
+                .await
+                .map_err(|_| {
+                    ProviderError::ExecutionError(format!(
+                        "the Codex turn did not finish within {}s and was stopped",
+                        TURN_TIMEOUT.as_secs()
+                    ))
+                })?;
         started?;
         outcome
     }
@@ -424,9 +458,7 @@ impl Provider for CodexProvider {
             ProviderError::RequestFailed("there is no user message for Codex to answer".to_string())
         })?;
 
-        let outcome = self
-            .run_turn(&model_config.model_name, system, &prompt)
-            .await?;
+        let outcome = self.run_turn(model_config, system, &prompt).await?;
 
         if outcome.text.is_empty() {
             let detail = outcome
@@ -472,8 +504,14 @@ mod tests {
     #[test]
     fn thread_params_are_locked_down() {
         let p = CodexProvider::thread_params("SYSTEM", "/tmp/work", "gpt-5.5", None);
-        assert_eq!(p["sandbox"], "read-only", "the child must not be able to write");
-        assert_eq!(p["ephemeral"], true, "Codex must not persist its own transcript");
+        assert_eq!(
+            p["sandbox"], "read-only",
+            "the child must not be able to write"
+        );
+        assert_eq!(
+            p["ephemeral"], true,
+            "Codex must not persist its own transcript"
+        );
         assert_eq!(p["approvalPolicy"], "never");
         assert_eq!(
             p["baseInstructions"], "SYSTEM",
@@ -518,6 +556,55 @@ mod tests {
         assert_eq!(with["config"]["tools"]["web_search"], false);
     }
 
+    /// The turn's prompt and thread id are always sent — the effort rides
+    /// alongside them and must not displace either.
+    #[test]
+    fn turn_params_always_carry_the_thread_and_the_prompt() {
+        let p = CodexProvider::turn_params("th_1", "why?", Some(ReasoningEffort::Deep));
+        assert_eq!(p["threadId"], "th_1");
+        assert_eq!(p["input"][0]["type"], "text");
+        assert_eq!(p["input"][0]["text"], "why?");
+    }
+
+    /// `/effort quick|deep` has to arrive on `turn/start`, or it is a silent
+    /// no-op: `thread/start` declares no `effort` field at all, so shaping the
+    /// thread cannot carry it. The two values are the `low`/`high` pair every
+    /// model in `model/list` advertises (codex-cli 0.147.0).
+    #[test]
+    fn quick_and_deep_pin_the_turn_effort() {
+        for (effort, expected) in [
+            (ReasoningEffort::Quick, "low"),
+            (ReasoningEffort::Deep, "high"),
+        ] {
+            let p = CodexProvider::turn_params("th_1", "hi", Some(effort));
+            assert_eq!(
+                p["effort"], expected,
+                "{effort:?} must reach the app server as effort={expected}"
+            );
+        }
+    }
+
+    /// The assertion that matters. `Normal` is a strict no-op and is the default
+    /// every user who never typed `/effort` is on, so the key must be **absent**
+    /// rather than set to "medium" — each model carries its own
+    /// `defaultReasoningEffort` (low for gpt-5.6-sol, high for
+    /// gpt-5.3-codex-spark, medium for gpt-5.5) and sending a level would
+    /// override it on every turn.
+    #[test]
+    fn the_default_effort_omits_the_field_entirely() {
+        for effort in [None, Some(ReasoningEffort::Normal)] {
+            let p = CodexProvider::turn_params("th_1", "hi", effort);
+            // `Value::get` yields `Some(Null)` for a present-but-null key, so
+            // this rejects `"effort": null` as well as `"effort": "medium"`.
+            // That matters because the schema types the field as nullable, which
+            // makes an explicit null look harmless and is still a value sent.
+            assert!(
+                p.get("effort").is_none(),
+                "{effort:?} must leave the model's own default in place, but sent: {p}"
+            );
+        }
+    }
+
     /// Every approval that would let the child act on the machine is refused;
     /// elicitation — how a Biorouter-served MCP tool call is cleared — is accepted.
     #[test]
@@ -557,8 +644,14 @@ mod tests {
     fn a_captured_turn_sequence_yields_text_and_usage() {
         let mut outcome = TurnOutcome::default();
         let frames = [
-            ("item/completed", json!({"item":{"id":"i0","type":"userMessage"}})),
-            ("item/completed", json!({"item":{"id":"i1","type":"reasoning"}})),
+            (
+                "item/completed",
+                json!({"item":{"id":"i0","type":"userMessage"}}),
+            ),
+            (
+                "item/completed",
+                json!({"item":{"id":"i1","type":"reasoning"}}),
+            ),
             (
                 "item/completed",
                 json!({"item":{"id":"i2","type":"mcpToolCall","server":"biorouter",
@@ -618,7 +711,10 @@ mod tests {
             "error",
             &json!({"message":"config warning: feature under development"}),
         );
-        assert!(!ended, "an advisory error precedes turn.started and is not fatal");
+        assert!(
+            !ended,
+            "an advisory error precedes turn.started and is not fatal"
+        );
         assert!(outcome.failure.is_some());
 
         // …and a later real answer still lands.
@@ -653,7 +749,10 @@ mod tests {
         assert_eq!(m.name, "codex");
         assert_eq!(m.display_name, "Codex");
         assert_eq!(m.tier, crate::privacy::ProviderTier::Public);
-        assert!(!m.runs_locally, "the subprocess is local but the inference is not");
+        assert!(
+            !m.runs_locally,
+            "the subprocess is local but the inference is not"
+        );
         assert_eq!(m.config_keys.len(), 1);
         assert_eq!(m.config_keys[0].name, "CODEX_COMMAND");
         assert!(m.config_keys[0].required);

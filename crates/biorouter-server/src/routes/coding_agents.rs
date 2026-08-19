@@ -78,7 +78,10 @@ mod tests {
             .iter()
             .map(|a| a["providerId"].as_str().unwrap_or_default())
             .collect();
-        assert!(ids.contains(&"claude_code") && ids.contains(&"codex"), "{ids:?}");
+        assert!(
+            ids.contains(&"claude_code") && ids.contains(&"codex"),
+            "{ids:?}"
+        );
 
         for agent in agents {
             // The card switches on this, so it must always be present and tagged.
@@ -88,7 +91,10 @@ mod tests {
             );
             // The two remediation strings are what the card renders; an empty one
             // would leave the user with nothing to do.
-            assert!(!agent["loginCommand"].as_str().unwrap_or_default().is_empty());
+            assert!(!agent["loginCommand"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty());
             assert!(!agent["installHint"].as_str().unwrap_or_default().is_empty());
         }
     }
@@ -101,7 +107,13 @@ mod tests {
         let agents = discovery::probe_all().await;
         let body = serde_json::to_string(&CodingAgentStatusResponse { agents }).unwrap();
         let lowered = body.to_lowercase();
-        for forbidden in ["access_token", "refresh_token", "id_token", "bearer", "api_key"] {
+        for forbidden in [
+            "access_token",
+            "refresh_token",
+            "id_token",
+            "bearer",
+            "api_key",
+        ] {
             assert!(
                 !lowered.contains(forbidden),
                 "the status response must never carry `{forbidden}`: {body}"

@@ -50,7 +50,9 @@ fn render_content(content: &MessageContent) -> Option<String> {
         }
         MessageContent::Thinking(_) | MessageContent::RedactedThinking(_) => None,
         MessageContent::Image(i) => Some(format!("[image omitted: {}]", i.mime_type)),
-        MessageContent::ToolRequest(r) => Some(format!("[called tool: {}]", r.to_readable_string())),
+        MessageContent::ToolRequest(r) => {
+            Some(format!("[called tool: {}]", r.to_readable_string()))
+        }
         MessageContent::ToolResponse(r) => Some(match &r.tool_result {
             Ok(result) => {
                 let body = result
@@ -59,7 +61,10 @@ fn render_content(content: &MessageContent) -> Option<String> {
                     .filter_map(|c| c.as_text().map(|t| t.text.as_str()))
                     .collect::<Vec<_>>()
                     .join("\n");
-                format!("[tool result: {}]", truncate(body.trim(), TOOL_RESULT_CHAR_BUDGET))
+                format!(
+                    "[tool result: {}]",
+                    truncate(body.trim(), TOOL_RESULT_CHAR_BUDGET)
+                )
             }
             Err(e) => format!("[tool error: {e}]"),
         }),
@@ -189,7 +194,9 @@ mod tests {
         assert!(out.contains("Assistant: Noted."));
         assert!(out.trim_end().ends_with("Which gene did I name?"));
         // The live instruction must not be inside the history block.
-        let close = out.find(HISTORY_CLOSE).expect("the history block is closed");
+        let close = out
+            .find(HISTORY_CLOSE)
+            .expect("the history block is closed");
         let (before, after) = out.split_at(close);
         assert!(after.contains("Which gene did I name?"));
         assert!(!before.contains("Which gene did I name?"));
