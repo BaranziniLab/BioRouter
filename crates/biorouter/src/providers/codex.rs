@@ -150,11 +150,16 @@ impl CodexProvider {
         // is the eventual replacement — but the installed Codex declares the
         // DynamicToolSpec types without any request that accepts them, so it is not
         // reachable yet.
+        // Codex's own built-in tools cannot be switched off the way Claude Code's
+        // can (`tools.exec=false` was tried and does not remove `exec`; only the
+        // sandbox constrains it). Its web tool CAN be removed, and is: a child
+        // reaching the network on its own account is egress Biorouter never saw,
+        // and Biorouter has its own web tools behind its own gates.
+        let mut config = json!({ "tools": { "web_search": false } });
         if let Some(url) = bridge_url {
-            params["config"] = json!({
-                "mcp_servers": { "biorouter": { "url": url } }
-            });
+            config["mcp_servers"] = json!({ "biorouter": { "url": url } });
         }
+        params["config"] = config;
         params
     }
 
@@ -504,9 +509,13 @@ mod tests {
 
         let without = CodexProvider::thread_params("S", "/tmp", "gpt-5.5", None);
         assert!(
-            without.get("config").is_none(),
-            "no bridge must mean no config key, not an empty server map"
+            without["config"].get("mcp_servers").is_none(),
+            "no bridge must mean no server map"
         );
+        // …but the web tool is disabled either way: that is not part of the
+        // bridge, it is a standing restriction on the child.
+        assert_eq!(without["config"]["tools"]["web_search"], false);
+        assert_eq!(with["config"]["tools"]["web_search"], false);
     }
 
     /// Every approval that would let the child act on the machine is refused;

@@ -4827,13 +4827,40 @@ impl Agent {
         // before it runs rather than re-read while it runs.
         let capability = crate::privacy::CallCapability::sample(&self.provider).await;
 
+        // Advertise only what the bridge can actually execute.
+        //
+        // `tools` is not just the extension surface — `prepare_tools` deliberately
+        // includes the platform, frontend, subagent and final-output tools so the
+        // risk registry grades them. Those are dispatched by the branches at the
+        // top of `dispatch_tool_call`, NOT by the `ExtensionManager` the grant
+        // holds, so offering them over the bridge would advertise tools that then
+        // fail to resolve — the child would burn a turn calling something that was
+        // never going to work, and the failure would look like a broken tool
+        // rather than a missing one.
+        //
+        // Filtering here rather than in the grant because `is_frontend_tool` is
+        // per-agent state the grant has no access to.
+        let mut bridged = Vec::with_capacity(tools.len());
+        for tool in tools {
+            let name = tool.name.as_ref();
+            let dispatched_elsewhere = is_spawn_tool_call(name)
+                || name == crate::agents::platform_tools::PLATFORM_MANAGE_SCHEDULE_TOOL_NAME
+                || name == crate::agents::platform_tools::PLATFORM_INGEST_CONVERSATION_TOOL_NAME
+                || name == crate::agents::platform_tools::PLATFORM_READ_SESSION_BLOB_TOOL_NAME
+                || name == crate::agents::final_output_tool::FINAL_OUTPUT_TOOL_NAME
+                || self.is_frontend_tool(name).await;
+            if !dispatched_elsewhere {
+                bridged.push(tool.clone());
+            }
+        }
+
         coding_agent_bridge::issue(coding_agent_bridge::BridgeGrant::new(
             session.clone(),
             self.config.biorouter_mode,
             Arc::clone(&self.extension_manager),
             Arc::clone(&self.tool_inspection_manager),
             capability,
-            tools.to_vec(),
+            bridged,
             conversation.clone(),
         ))
     }
