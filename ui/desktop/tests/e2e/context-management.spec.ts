@@ -99,7 +99,7 @@ test.describe('Context Management E2E Tests', () => {
     // Verify compaction loading state
     const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
     await expect(loadingBioRouter).toBeVisible();
-    await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
+    await expect(loadingBioRouter).toContainText('biorouter is compacting the chat...');
     
     // Wait for compaction to complete
     await page.waitForSelector('[data-testid="loading-biorouter"]', { state: 'hidden', timeout: 30000 });
@@ -252,7 +252,7 @@ test.describe('Context Management E2E Tests', () => {
     // Verify loading state immediately after clicking compact
     const loadingBioRouter = page.locator('[data-testid="loading-biorouter"]');
     await expect(loadingBioRouter).toBeVisible();
-    await expect(loadingBioRouter).toContainText('biorouter is compacting the conversation...');
+    await expect(loadingBioRouter).toContainText('biorouter is compacting the chat...');
     
     // Verify chat input is disabled during compaction
     const submitButton = page.locator('[data-testid="submit-button"]');

@@ -19,11 +19,11 @@ pub struct CommandDef {
 static COMMANDS: &[CommandDef] = &[
     CommandDef {
         name: "compact",
-        description: "Compact the conversation history",
+        description: "Compact the chat history",
     },
     CommandDef {
         name: "clear",
-        description: "Clear the conversation history",
+        description: "Clear the chat history",
     },
     CommandDef {
         name: "goal",
@@ -149,7 +149,7 @@ impl Agent {
             // instead of silently doing nothing.
             return Ok(Some(Message::assistant().with_system_notification(
                 SystemNotificationType::InlineMessage,
-                "Compaction skipped: this conversation changed while it was being \
+                "Compaction skipped: this chat changed while it was being \
                  summarized, so compacting now would discard the new messages. \
                  Run /compact again.",
             )));
@@ -231,7 +231,7 @@ impl Agent {
 
         Ok(Some(Message::assistant().with_system_notification(
             SystemNotificationType::InlineMessage,
-            "Conversation cleared",
+            "Chat cleared",
         )))
     }
 
