@@ -157,6 +157,31 @@ impl CodexProvider {
         let mut config = json!({ "tools": { "web_search": false } });
         if let Some(url) = bridge_url {
             config["mcp_servers"] = json!({ "biorouter": { "url": url } });
+            // ⚠ Tell the model which set of tools actually works, because the two
+            // it can see are not equally usable and the broken pair looks more
+            // familiar.
+            //
+            // Codex's own `exec` and `apply_patch` cannot be removed (only the
+            // sandbox constrains them), so a Codex child sees its built-ins AND
+            // Biorouter's bridged tools. Observed in the running app: asked to fix
+            // a file, it reached for `apply_patch`, hit the read-only sandbox, and
+            // reported "this session's filesystem is read-only" — never trying
+            // `developer__text_editor`, which would have worked, because the bridge
+            // executes in Biorouter's process rather than inside Codex's sandbox.
+            // It had diagnosed the bug correctly and still could not apply it.
+            //
+            // `developerInstructions` rather than appending to `baseInstructions`:
+            // the base prompt is Biorouter's and is shared with every other
+            // provider, while this is operational guidance about one child's tool
+            // surface. Claude Code needs no equivalent because `--tools ""` removes
+            // its built-ins outright, leaving nothing to choose wrongly between.
+            params["developerInstructions"] = json!(
+                "Your own built-in file and shell tools run in a read-only sandbox and cannot \
+                 change anything on disk. Do not use them to read or edit files, and do not \
+                 report the filesystem as read-only. Use the `biorouter` MCP tools instead — \
+                 they run outside that sandbox, and they are how you read files, edit files and \
+                 run commands here."
+            );
         }
         params["config"] = config;
         params
@@ -625,6 +650,34 @@ mod tests {
             CodexProvider::turn_params("t", "hi", Some(ReasoningEffort::Deep), "gpt-5.6-sol");
         assert_eq!(short["effort"], "xhigh");
         assert_eq!(tall["effort"], "max");
+    }
+
+    /// The child is told which of its two tool surfaces actually works.
+    ///
+    /// Without this it reaches for its own `apply_patch`, hits the read-only
+    /// sandbox and reports the filesystem as read-only — observed in the running
+    /// app on a task it had already diagnosed correctly. Only sent when there is a
+    /// bridge, because without one the advice would point at tools that are not
+    /// there.
+    #[test]
+    fn a_bridged_child_is_steered_away_from_its_crippled_built_ins() {
+        let with =
+            CodexProvider::thread_params("S", "/tmp", "gpt-5.5", Some("http://x/tool_bridge/n"));
+        let advice = with["developerInstructions"].as_str().unwrap_or_default();
+        assert!(
+            advice.contains("biorouter"),
+            "it must name the tools that work: {advice}"
+        );
+        assert!(
+            advice.contains("read-only"),
+            "and explain why its own are not usable: {advice}"
+        );
+
+        let without = CodexProvider::thread_params("S", "/tmp", "gpt-5.5", None);
+        assert!(
+            without.get("developerInstructions").is_none(),
+            "with no bridge there are no Biorouter tools to point at"
+        );
     }
 
     /// Every approval that would let the child act on the machine is refused;
