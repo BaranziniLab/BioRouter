@@ -338,7 +338,11 @@ async fn compact_messages_with_window(
             .map(|(_, msg)| msg.clone())
             .collect();
 
-        let (summary_message, summarization_usage) = do_compact(provider, &to_summarize).await?;
+        let reasoning_free = crate::conversation::without_bedrock_reasoning(
+            &Conversation::new_unvalidated(to_summarize),
+        );
+        let (summary_message, summarization_usage) =
+            do_compact(provider, reasoning_free.messages()).await?;
 
         let mut final_messages: Vec<Message> = Vec::with_capacity(messages.len() + 4);
 
@@ -468,7 +472,11 @@ async fn compact_messages_with_window(
         (None, false)
     };
 
-    let (summary_message, summarization_usage) = do_compact(provider, &messages_to_compact).await?;
+    let reasoning_free = crate::conversation::without_bedrock_reasoning(
+        &Conversation::new_unvalidated(messages_to_compact),
+    );
+    let (summary_message, summarization_usage) =
+        do_compact(provider, reasoning_free.messages()).await?;
 
     // Create the final message list with updated visibility metadata:
     // 1. Original messages become user_visible but not agent_visible
@@ -856,9 +864,10 @@ pub async fn run_eager_compaction(
     let (session, basis) = session_manager
         .snapshot_for_rewrite(&session_config.id)
         .await?;
-    let Some(conversation) = session.conversation.clone() else {
+    let Some(stored_conversation) = session.conversation.clone() else {
         return Ok(EagerCompactionOutcome::NotNeeded);
     };
+    let conversation = crate::conversation::without_bedrock_reasoning(&stored_conversation);
 
     // Re-check the threshold against fresh, provider-reported usage. On the happy
     // path `session.total_tokens` was just written by the completed turn, so no
@@ -876,13 +885,19 @@ pub async fn run_eager_compaction(
     }
 
     on_before_compact();
-    let (compacted, usage) = compact_messages(provider.as_ref(), &conversation, false).await?;
+    let (compacted, usage) =
+        compact_messages(provider.as_ref(), &stored_conversation, false).await?;
 
     // Swap under the store's own freshness guard: anything a concurrent turn
     // appended while we summarized is carried over instead of being clobbered,
     // and a snapshot whose basis moved is refused.
     let (outcome, _stored) = session_manager
-        .replace_conversation_preserving_tail(&session_config.id, &compacted, basis, &conversation)
+        .replace_conversation_preserving_tail(
+            &session_config.id,
+            &compacted,
+            basis,
+            &stored_conversation,
+        )
         .await?;
     if !outcome.stored() {
         debug!(
@@ -1512,6 +1527,36 @@ mod tests {
 
         let _ = Conversation::new(agent_conversation)
             .expect("compaction should produce a valid conversation");
+    }
+
+    #[tokio::test]
+    async fn compaction_provider_projection_omits_bedrock_reasoning_but_keeps_transcript() {
+        let provider = MockProvider::new(Message::assistant().with_text("<mock summary>"), 100_000);
+        let conversation = Conversation::new_unvalidated(vec![
+            Message::user().with_text("summarize this"),
+            Message::assistant()
+                .with_thinking("private reasoning secret", "private signature secret")
+                .with_redacted_thinking("encrypted reasoning secret")
+                .with_text("ordinary answer remains"),
+        ]);
+
+        let (compacted, _usage) = compact_messages(&provider, &conversation, true)
+            .await
+            .unwrap();
+
+        let payload = provider.last_summarizer_payload();
+        assert!(!payload.contains("private reasoning secret"));
+        assert!(!payload.contains("private signature secret"));
+        assert!(!payload.contains("encrypted reasoning secret"));
+        assert!(payload.contains("ordinary answer remains"));
+
+        assert!(compacted.iter().flat_map(|message| &message.content).any(
+            |content| matches!(content, MessageContent::Thinking(thinking) if thinking.signature == "private signature secret")
+        ));
+        assert!(compacted
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|content| matches!(content, MessageContent::RedactedThinking(redacted) if redacted.data == "encrypted reasoning secret")));
     }
 
     /// BR-71: `MessageProvenance` documents itself as "never suppressible", and

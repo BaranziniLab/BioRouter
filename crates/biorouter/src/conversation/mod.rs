@@ -26,6 +26,37 @@ pub use normalize::{ConversationNormalizer, SharedNormalizer};
 #[derive(Debug, Clone, PartialEq)]
 pub struct Conversation(Arc<Vec<Message>>);
 
+pub(crate) fn without_bedrock_reasoning(conversation: &Conversation) -> Conversation {
+    Conversation::new_unvalidated(
+        conversation
+            .iter()
+            .cloned()
+            .filter_map(|mut message| {
+                let had_bedrock_reasoning = message.content.iter().any(|content| {
+                    matches!(
+                        content,
+                        MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+                    )
+                });
+                message.content.retain(|content| {
+                    let is_reasoning = matches!(
+                        content,
+                        MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+                    );
+                    // A tool request the provider emitted but we could not parse was
+                    // only ever coherent alongside the reasoning that authored it.
+                    // Dropping the reasoning without it would leave an orphan the
+                    // model cannot account for.
+                    let is_orphaned_malformed_request = had_bedrock_reasoning
+                        && matches!(content, MessageContent::ToolRequest(request) if request.tool_call.is_err());
+                    !(is_reasoning || is_orphaned_malformed_request)
+                });
+                (!message.content.is_empty()).then_some(message)
+            })
+            .collect::<Vec<_>>(),
+    )
+}
+
 impl<'schema> ToSchema<'schema> for Conversation {
     fn schema() -> (
         &'schema str,
@@ -112,6 +143,35 @@ impl Conversation {
         } else {
             messages.push(message);
         }
+    }
+
+    /// Append provider-authored blocks to an earlier message with the same id,
+    /// even when tool-result messages have since been appended. Streaming
+    /// Bedrock can expose one signed assistant response as reasoning followed
+    /// by several tool blocks; the original assistant grouping is covered by
+    /// the reasoning signature and must be reconstructed independently of the
+    /// tool-execution batching setting.
+    pub(crate) fn append_content_to_message_id(
+        &mut self,
+        id: &str,
+        content: &[MessageContent],
+    ) -> bool {
+        let Some(message) = self
+            .messages_mut()
+            .iter_mut()
+            .find(|message| message.id.as_deref() == Some(id))
+        else {
+            return false;
+        };
+        for next in content.iter().cloned() {
+            match (message.content.last_mut(), next) {
+                (Some(MessageContent::Text(existing)), MessageContent::Text(next)) => {
+                    existing.text.push_str(&next.text);
+                }
+                (_, next) => message.content.push(next),
+            }
+        }
+        true
     }
 
     pub fn last(&self) -> Option<&Message> {
@@ -315,7 +375,7 @@ fn run_passes<const N: usize>(
 }
 
 fn merge_text_content_in_message(mut msg: Message) -> Message {
-    if msg.role != Role::Assistant {
+    if msg.role != Role::Assistant || has_signed_reasoning(&msg) {
         return msg;
     }
     msg.content = msg
@@ -358,7 +418,7 @@ fn trim_assistant_text_whitespace(messages: Vec<Message>) -> (Vec<Message>, Vec<
     let fixed_messages = messages
         .into_iter()
         .map(|mut message| {
-            if message.role == Role::Assistant {
+            if message.role == Role::Assistant && !has_signed_reasoning(&message) {
                 for content in &mut message.content {
                     if let MessageContent::Text(text) = content {
                         let trimmed = text.text.trim_end();
@@ -403,6 +463,7 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut pending_tool_requests: HashSet<String> = HashSet::new();
 
     for message in &mut messages {
+        let signed_reasoning = has_signed_reasoning(message);
         let mut content_to_remove = Vec::new();
 
         match message.role {
@@ -444,18 +505,22 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
                 for (idx, content) in message.content.iter().enumerate() {
                     match content {
                         MessageContent::ToolResponse(resp) => {
-                            content_to_remove.push(idx);
-                            issues.push(format!(
-                                "Removed tool response '{}' from assistant message",
-                                resp.id
-                            ));
+                            if !signed_reasoning {
+                                content_to_remove.push(idx);
+                                issues.push(format!(
+                                    "Removed tool response '{}' from assistant message",
+                                    resp.id
+                                ));
+                            }
                         }
                         MessageContent::FrontendToolRequest(req) => {
-                            content_to_remove.push(idx);
-                            issues.push(format!(
-                                "Removed frontend tool request '{}' from assistant message",
-                                req.id
-                            ));
+                            if !signed_reasoning {
+                                content_to_remove.push(idx);
+                                issues.push(format!(
+                                    "Removed frontend tool request '{}' from assistant message",
+                                    req.id
+                                ));
+                            }
                         }
                         MessageContent::ToolRequest(req) => {
                             pending_tool_requests.insert(req.id.clone());
@@ -472,7 +537,7 @@ fn fix_tool_calling(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     }
 
     for message in &mut messages {
-        if message.role == Role::Assistant {
+        if message.role == Role::Assistant && !has_signed_reasoning(message) {
             let mut content_to_remove = Vec::new();
             for (idx, content) in message.content.iter().enumerate() {
                 if let MessageContent::ToolRequest(req) = content {
@@ -535,6 +600,18 @@ fn is_provenance_boundary(last: &Message, next: &Message) -> bool {
     last.metadata.provenance != next.metadata.provenance
 }
 
+/// Signed/redacted reasoning authenticates the provider-authored assistant
+/// message in its original block shape. Any formatter-independent cleanup that
+/// trims text, merges blocks/messages, or rewrites tool requests invalidates
+/// that signature when the message is replayed to Bedrock.
+pub(crate) fn has_signed_reasoning(message: &Message) -> bool {
+    message.content.iter().any(|content| match content {
+        MessageContent::Thinking(thinking) => !thinking.signature.is_empty(),
+        MessageContent::RedactedThinking(_) => true,
+        _ => false,
+    })
+}
+
 pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut issues = Vec::new();
     let mut merged_messages: Vec<Message> = Vec::new();
@@ -546,6 +623,8 @@ pub fn merge_consecutive_messages(messages: Vec<Message>) -> (Vec<Message>, Vec<
                 && !is_pin_boundary(last)
                 && !is_pin_boundary(&message)
                 && !is_provenance_boundary(last, &message)
+                && !has_signed_reasoning(last)
+                && !has_signed_reasoning(&message)
             {
                 last.content.extend(message.content);
                 issues.push(format!("Merged consecutive {} messages", effective));
@@ -580,14 +659,14 @@ fn fix_lead_trail(mut messages: Vec<Message>) -> (Vec<Message>, Vec<String>) {
     let mut issues = Vec::new();
 
     if let Some(first) = messages.first() {
-        if first.role == Role::Assistant {
+        if first.role == Role::Assistant && !has_signed_reasoning(first) {
             messages.remove(0);
             issues.push("Removed leading assistant message".to_string());
         }
     }
 
     if let Some(last) = messages.last() {
-        if last.role == Role::Assistant {
+        if last.role == Role::Assistant && !has_signed_reasoning(last) {
             messages.pop();
             issues.push("Removed trailing assistant message".to_string());
         }
@@ -642,9 +721,11 @@ pub fn debug_conversation_fix(
 
 #[cfg(test)]
 mod tests {
-    use crate::conversation::message::{Message, MessageProvenance, ProvenanceKind};
+    use crate::conversation::message::{
+        Message, MessageContent, MessageProvenance, ProvenanceKind,
+    };
     use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
-    use rmcp::model::{CallToolRequestParams, Role};
+    use rmcp::model::{CallToolRequestParams, CallToolResult, Role};
     use rmcp::object;
 
     #[test]
@@ -761,7 +842,7 @@ mod tests {
                         meta: None,
                     }),
                 ), // Wrong role
-            Message::assistant().with_thinking("Let me think", "sig"),
+            Message::assistant().with_thinking("Let me think", ""),
             Message::user()
                 .with_tool_request(
                     "bad_req",
@@ -1552,12 +1633,10 @@ mod tests {
     /// own exclusion list, which would default every future content variant to
     /// "boundary" and drift from what compaction actually honours.
     ///
-    /// A thinking block is the case that proves the delegation: it is bound to
-    /// the assistant turn that produced it, so it is never pin-eligible, so a
-    /// marker on it must not block the merge that keeps thinking and the rest of
-    /// the turn in ONE assistant message (which is what Anthropic requires).
+    /// A signed thinking block is never pin-eligible, but its provider-authored
+    /// message shape is still immutable while it is in an active Bedrock chain.
     #[test]
-    fn a_marker_on_non_preservable_content_still_merges() {
+    fn a_marker_on_signed_non_preservable_content_does_not_merge_the_message() {
         let messages = vec![
             Message::user().with_text("go"),
             Message::assistant()
@@ -1571,12 +1650,12 @@ mod tests {
         let (fixed, issues) = fix_conversation(Conversation::new_unvalidated(messages));
 
         assert!(
-            issues
+            !issues
                 .iter()
                 .any(|i| i.contains("Merged consecutive assistant")),
-            "a marker that can never be honoured must not block the merge: {issues:?}"
+            "signed assistant content must remain in its provider-authored message: {issues:?}"
         );
-        assert_eq!(fixed.len(), 3, "{:#?}", fixed.messages());
+        assert_eq!(fixed.len(), 4, "{:#?}", fixed.messages());
     }
 
     #[test]
@@ -1636,5 +1715,84 @@ mod tests {
 
         assert_eq!(fixed_messages[5].as_concat_text(), "Non-vis C");
         assert!(!fixed_messages[5].metadata.agent_visible);
+    }
+
+    #[test]
+    fn signed_assistant_edges_are_never_deleted_or_trimmed() {
+        let leading = Message::assistant()
+            .with_thinking("private reasoning", "signature-a")
+            .with_text("answer with trailing space  ");
+        let trailing = Message::assistant()
+            .with_redacted_thinking("opaque-bytes")
+            .with_text("final trailing tab\t");
+        let leading_bytes = serde_json::to_vec(&leading).unwrap();
+        let trailing_bytes = serde_json::to_vec(&trailing).unwrap();
+
+        let (fixed, _) = fix_conversation(Conversation::new_unvalidated(vec![
+            leading,
+            Message::user().with_text("next"),
+            trailing,
+        ]));
+
+        assert_eq!(fixed.len(), 3);
+        assert_eq!(
+            serde_json::to_vec(&fixed.messages()[0]).unwrap(),
+            leading_bytes
+        );
+        assert_eq!(
+            serde_json::to_vec(&fixed.messages()[2]).unwrap(),
+            trailing_bytes
+        );
+    }
+
+    #[test]
+    fn signed_multi_tool_assistant_is_byte_exact_through_normalization() {
+        let signed = Message::assistant()
+            .with_thinking("reasoning", "signature")
+            .with_text("keep whitespace  ")
+            .with_tool_request(
+                "tool-a",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "shell".into(),
+                    arguments: Some(object!({"command": 7})),
+                    meta: None,
+                }),
+            )
+            .with_tool_request(
+                "tool-b",
+                Ok(CallToolRequestParams {
+                    task: None,
+                    name: "shell".into(),
+                    arguments: Some(object!({"command": "pwd"})),
+                    meta: None,
+                }),
+            );
+        let signed_bytes = serde_json::to_vec(&signed).unwrap();
+        let result = || CallToolResult {
+            content: Vec::new(),
+            structured_content: None,
+            is_error: Some(false),
+            meta: None,
+        };
+        let (fixed, _) = fix_conversation(Conversation::new_unvalidated(vec![
+            signed,
+            Message::user().with_tool_response("tool-a", Ok(result())),
+            Message::user().with_tool_response("tool-b", Ok(result())),
+            Message::user().with_text("continue"),
+        ]));
+
+        assert_eq!(
+            serde_json::to_vec(&fixed.messages()[0]).unwrap(),
+            signed_bytes
+        );
+        assert_eq!(
+            fixed.messages()[1]
+                .content
+                .iter()
+                .filter(|content| matches!(content, MessageContent::ToolResponse(_)))
+                .count(),
+            2
+        );
     }
 }
