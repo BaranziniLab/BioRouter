@@ -91,6 +91,7 @@ import {
   updateTrayMenu,
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
+import { startMainThreadWatchdog } from './utils/mainThreadWatchdog';
 import {
   STARTUP_UPDATER_SETUP_DELAY_MS,
   STARTUP_DEPENDENCY_CHECK_DELAY_MS,
@@ -4871,6 +4872,11 @@ async function appMain() {
   } else {
     log.info('[Main] Skipping window creation in appMain - open-url already handled launch');
   }
+
+  // Watch for the class of bug this whole area was fixed for (#88): anything
+  // that blocks the main thread now says so in the log instead of being visible
+  // only as "the app feels stuck".
+  startMainThreadWatchdog();
 
   // Background startup work — deliberately staggered.
   //
