@@ -66,6 +66,12 @@ export const configLabels: Record<string, string> = {
   // snowflake
   SNOWFLAKE_HOST: 'Snowflake Host',
   SNOWFLAKE_TOKEN: 'Snowflake Token',
+
+  // claude agent (drives the installed claude CLI)
+  CLAUDE_CODE_COMMAND: 'Claude CLI Command',
+
+  // codex (drives the installed codex CLI)
+  CODEX_COMMAND: 'Codex CLI Command',
 };
 
 export const providerPrefixes: Record<string, string[]> = {
@@ -82,6 +88,8 @@ export const providerPrefixes: Record<string, string[]> = {
   azure_openai: ['AZURE_'],
   gcp_vertex_ai: ['GCP_'],
   snowflake: ['SNOWFLAKE_'],
+  claude_code: ['CLAUDE_CODE_'],
+  codex: ['CODEX_'],
 };
 
 export const getUiNames = (key: string): string => {

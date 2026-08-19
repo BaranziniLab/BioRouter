@@ -25,10 +25,21 @@ pub fn configure_command_no_window(command: &mut Command) {
 /// the agent loop.
 ///
 /// Callers today are hook commands (which run on agent activity), the llama.cpp
-/// sidecar, the Azure auth helper and the retry probe. It used to matter most
-/// for the CLI-agent providers, which spawned another vendor's coding agent and
-/// were therefore the highest-privilege children the daemon created; those
-/// modules are gone, but the rule they motivated applies to every child here.
+/// sidecar, the Azure auth helper, the retry probe, and the CLI-agent providers
+/// `claude_code` and `codex`. It matters most for those last two: they spawn
+/// another vendor's coding agent — itself an agent with a shell — and are
+/// therefore the highest-privilege children the daemon creates, so an inherited
+/// secret key there is the worst case this strip exists to prevent.
+///
+/// Those two providers apply a second, different scrub on top of this one.
+/// [`crate::providers::coding_agent::env::configure_subscription_child`] removes
+/// the *user's* inference credentials, so the run stays on the subscription the
+/// user's CLI is signed in to instead of being silently rerouted onto a metered
+/// API account, whereas this function removes the *daemon's* credentials and
+/// deliberately keeps the user's. The two policies are complementary and both
+/// are needed, which is why that function applies its own scrub and then calls
+/// this one, so that the ordering rule below still holds for a coding-agent
+/// child.
 ///
 /// Call this **last**, after every other `env`/`envs` call on the command: the
 /// strip and `env` write to the same map, so a later `env` would re-admit a

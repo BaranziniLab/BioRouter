@@ -9,6 +9,8 @@ pub mod base;
 #[cfg(feature = "aws-providers")]
 pub mod bedrock;
 pub mod canonical;
+pub mod claude_code;
+pub mod codex;
 pub mod coding_agent;
 pub mod databricks;
 pub mod embedding;

@@ -4,6 +4,8 @@ use super::{
     anthropic::AnthropicProvider,
     azure::AzureProvider,
     base::{Provider, ProviderMetadata},
+    claude_code::ClaudeCodeProvider,
+    codex::CodexProvider,
     databricks::DatabricksProvider,
     gcpvertexai::GcpVertexAIProvider,
     githubcopilot::GithubCopilotProvider,
@@ -71,6 +73,11 @@ fn register_builtin_providers(registry: &mut ProviderRegistry) {
         |m| Box::pin(VersaBedrockProvider::from_env(m)),
         false,
     );
+    // `preferred: false`: these drive another vendor's installed CLI on the
+    // user's own subscription, which is a different kind of thing from a direct
+    // metered endpoint and should not be offered beside one by default.
+    registry.register::<ClaudeCodeProvider, _>(|m| Box::pin(ClaudeCodeProvider::from_env(m)), false);
+    registry.register::<CodexProvider, _>(|m| Box::pin(CodexProvider::from_env(m)), false);
     registry.register::<DatabricksProvider, _>(|m| Box::pin(DatabricksProvider::from_env(m)), true);
     registry
         .register::<GcpVertexAIProvider, _>(|m| Box::pin(GcpVertexAIProvider::from_env(m)), false);
@@ -289,6 +296,17 @@ pub(crate) mod tests {
                 "azure_openai",
                 "public: a large cloud, whatever endpoint it is pointed at",
             ),
+            (
+                "claude_code",
+                "public: hosted by an AI company. The `claude` CLI runs locally but the \
+                 inference does not, so this is NOT Local — that value is the most permissive \
+                 in the model and would hand a public round-trip the private-extension grant",
+            ),
+            (
+                "codex",
+                "public: hosted by an AI company. Same reasoning as claude_code — a local \
+                 subprocess is not local inference",
+            ),
             ("databricks", "public: a large cloud"),
             ("gcp_vertex_ai", "public: a large cloud"),
             ("github_copilot", "public: hosted by a software company"),
@@ -369,6 +387,17 @@ pub(crate) mod tests {
                 "public: a large cloud. ⚠ azure.rs ships the UCSF gateway as \
                  AZURE_OPENAI_ENDPOINT's default, so this one *looks* institutional \
                  and is not; only versa_azure carries the agreement",
+            ),
+            (
+                "claude_code",
+                "public: a subprocess wrapper around the user's own `claude` CLI; the \
+                 transcript still leaves the machine for Anthropic, and a consumer \
+                 subscription carries no BAA to receive clinical data",
+            ),
+            (
+                "codex",
+                "public: a subprocess wrapper around the user's own `codex` CLI; the \
+                 transcript still leaves the machine for OpenAI",
             ),
             ("databricks", "public: general commercial endpoint"),
             ("gcp_vertex_ai", "public: general commercial endpoint"),

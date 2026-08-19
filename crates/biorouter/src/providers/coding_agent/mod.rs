@@ -51,6 +51,7 @@
 //! tools, over MCP, executed by BioRouter's dispatcher — so every existing gate
 //! still fires on them. See [`super::coding_agent::bridge`] once that lands.
 
+pub mod appserver;
 pub mod discovery;
 pub mod env;
 pub mod transcript;

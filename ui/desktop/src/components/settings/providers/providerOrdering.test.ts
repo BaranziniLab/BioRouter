@@ -82,10 +82,11 @@ describe('getOrderedProviderGroups', () => {
 
   it('hides nothing: every provider the daemon serves reaches a group', () => {
     // This replaced a hide-list test for `codex` / `cursor-agent` / `claude-code`.
-    // Those provider modules are gone, so the daemon cannot serve them and the
-    // filter had nothing left to do. What must not come back is a renderer-side
-    // list of names: a provider absent from this grid should be absent because
-    // the daemon did not send it.
+    // Two of those names are back — the daemon serves `claude_code` and `codex`
+    // deliberately now — and the assertion is written this way precisely so that
+    // it keeps holding: what must not come back is a renderer-side list of
+    // names, so a provider absent from this grid is absent because the daemon
+    // did not send it, never because this module recognised it.
     const groups = getOrderedProviderGroups([
       provider('openai'),
       provider('ollama', PRIVATE_LOCAL),
@@ -96,6 +97,29 @@ describe('getOrderedProviderGroups', () => {
       'ollama',
       'openai',
       'versa_azure',
+    ]);
+  });
+
+  it('sorts the CLI-wrapper providers into commercial, behind the direct ones', () => {
+    // `claude_code` and `codex` drive a CLI the user already has installed, on
+    // their own subscription — a distinct kind of thing from a direct cloud
+    // account, so they rank after the direct vendors instead of falling to the
+    // 999 default, where localeCompare alone would have put `claude_code` ahead
+    // of `openai`. The daemon declares both public, which is the only reason
+    // they are in this group at all.
+    const groups = getOrderedProviderGroups([
+      provider('codex', {}, 'Codex'),
+      provider('openai'),
+      provider('claude_code', {}, 'Claude Agent'),
+      provider('anthropic'),
+    ]);
+
+    expect(groups[2]?.key).toBe('commercial');
+    expect(groups[2]?.providers.map((item) => item.name)).toEqual([
+      'anthropic',
+      'openai',
+      'claude_code',
+      'codex',
     ]);
   });
 });
