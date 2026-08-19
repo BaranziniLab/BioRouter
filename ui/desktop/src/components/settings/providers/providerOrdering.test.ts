@@ -110,7 +110,7 @@ describe('getOrderedProviderGroups', () => {
     const groups = getOrderedProviderGroups([
       provider('codex', {}, 'Codex'),
       provider('openai'),
-      provider('claude_code', {}, 'Claude Agent'),
+      provider('claude_code', {}, 'Claude Code'),
       provider('anthropic'),
     ]);
 

@@ -2,7 +2,7 @@
 
 This folder documents the two providers that run inference on the user's **own vendor
 subscription** by driving a coding-agent CLI the user already installed and signed in to:
-`claude_code`, shown as **Claude Agent**, and `codex`, shown as **Codex**. They are unlike
+`claude_code`, shown as **Claude Code**, and `codex`, shown as **Codex**. They are unlike
 every other provider in the tree — there is no base URL and no API key, BioRouter never sees
 or handles a credential, and the child process is a complete agent of its own whose tools
 have to be switched off and replaced. That combination raises questions no other provider

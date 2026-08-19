@@ -55,14 +55,21 @@ impl CodingAgentKind {
 
     /// The user-facing name.
     ///
-    /// ⚠ Not "Claude Code". Anthropic's Agent SDK branding guidelines permit
-    /// "Claude Agent", "Claude", or "<product> Powered by Claude", and expressly
-    /// do **not** permit "Claude Code" or "Claude Code Agent" as a third-party
-    /// product label. The provider id above stays `claude_code` because pricing
-    /// keys off it; only the label changes.
+    /// ⚠ **A known deviation from Anthropic's branding guidelines, made
+    /// deliberately.** Those guidelines (Agent SDK overview, "Branding
+    /// guidelines") permit "Claude Agent", "Claude", or "<product> Powered by
+    /// Claude", and list "Claude Code" and "Claude Code Agent" as *not permitted*
+    /// for a third-party product label. This shipped as "Claude Agent" first for
+    /// exactly that reason and was changed to "Claude Code" on the maintainer's
+    /// instruction, because it is what users of this tool actually call it and the
+    /// indirection cost them more than the guideline saves.
+    ///
+    /// Recorded here rather than argued again: whoever revisits this should know
+    /// it was a decision and not an oversight, and that reverting it is a
+    /// one-line change plus the tests that name the string.
     pub const fn display_name(self) -> &'static str {
         match self {
-            Self::ClaudeCode => "Claude Agent",
+            Self::ClaudeCode => "Claude Code",
             Self::Codex => "Codex",
         }
     }
@@ -427,17 +434,20 @@ mod tests {
         assert_eq!(CodingAgentKind::Codex.provider_id(), "codex");
     }
 
-    /// Anthropic's branding guidelines forbid "Claude Code" as a third-party
-    /// product label. This asserts the label, and asserts the *absence* of the
-    /// forbidden string, so a well-meaning "clarification" fails here.
+    /// The label is "Claude Code", a knowing deviation from Anthropic's branding
+    /// guidelines — see [`CodingAgentKind::display_name`] for why. Pinned so the
+    /// string cannot drift back and forth silently: it has already changed once,
+    /// and either value is a decision rather than a default.
+    ///
+    /// The provider **id** is asserted separately above and must stay
+    /// `claude_code` whatever the label says, because pricing keys on it.
     #[test]
-    fn claude_display_name_obeys_the_branding_guidelines() {
-        let label = CodingAgentKind::ClaudeCode.display_name();
-        assert_eq!(label, "Claude Agent");
-        assert!(
-            !label.contains("Claude Code"),
-            "'Claude Code' is not a permitted third-party product label"
-        );
+    fn the_claude_label_is_the_one_that_was_chosen() {
+        assert_eq!(CodingAgentKind::ClaudeCode.display_name(), "Claude Code");
+        assert_eq!(CodingAgentKind::Codex.display_name(), "Codex");
+        // The label and the id are independent; a rename of one must not silently
+        // become a rename of the other.
+        assert_eq!(CodingAgentKind::ClaudeCode.provider_id(), "claude_code");
     }
 
     /// A pinned path is taken verbatim rather than looked up, which is the only

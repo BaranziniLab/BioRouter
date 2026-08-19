@@ -17,10 +17,10 @@ compliance boundary is on [the compliance page](compliance.md).
 
 ## The two providers
 
-| | Claude Agent | Codex |
+| | Claude Code | Codex |
 | --- | --- | --- |
 | Registry id | `claude_code` | `codex` |
-| Display name | **Claude Agent** | **Codex** |
+| Display name | **Claude Code** | **Codex** |
 | Executable | `claude` | `codex` |
 | Config key naming the executable | `CLAUDE_CODE_COMMAND` | `CODEX_COMMAND` |
 | Surface driven | `claude -p` (headless) | `codex app-server` (JSON-RPC over stdio) |
@@ -31,13 +31,17 @@ compliance boundary is on [the compliance page](compliance.md).
 | Privacy tier | `Public`, not `runs_locally` | `Public`, not `runs_locally` |
 | Turn timeout | 30 minutes | 30 minutes |
 
-> **Why "Claude Agent" and not "Claude Code".** Anthropic's Agent SDK branding guidelines permit
-> "Claude Agent", "Claude", or "*product* Powered by Claude", and expressly do **not** permit
-> "Claude Code" or "Claude Code Agent" as a third-party product label. Only the label changed:
-> the registry id stays `claude_code` because BioRouter's pricing table keys on it, and a rename
-> there would re-open the fabricated-pricing bug described under
-> [usage accounting](#usage-accounting-for-a-turn-that-billed-no-tokens). The forbidden string is
-> asserted against by a unit test, so a well-meaning "clarification" fails the build.
+> **A note on the name.** The provider is shown as **Claude Code**, which is a deliberate deviation
+> from Anthropic's Agent SDK branding guidelines: those permit "Claude Agent", "Claude", or
+> "*product* Powered by Claude", and list "Claude Code" and "Claude Code Agent" as not permitted for
+> a third-party product label. BioRouter shipped it as "Claude Agent" first for exactly that reason
+> and changed it on the maintainer's instruction, because it is what users of this tool actually
+> call it. It is recorded here so a future reader knows it was a decision rather than an oversight.
+>
+> Only the label changed. The registry id stays `claude_code` because BioRouter's pricing table keys
+> on it, and a rename there would re-open the fabricated-pricing bug described under
+> [usage accounting](#usage-accounting-for-a-turn-that-billed-no-tokens). Both the label and the id
+> are pinned by unit tests, so neither drifts silently.
 
 The model lists are advertised as concrete ids rather than the CLIs' `sonnet`/`opus` aliases.
 An alias has no entry in `MODEL_CONTEXT_WINDOWS`, so it would silently take the 128k default and
@@ -51,7 +55,7 @@ not on this page.
 
 BioRouter reads neither. It asks each CLI what state the CLI believes it is in.
 
-| | Claude Agent | Codex |
+| | Claude Code | Codex |
 | --- | --- | --- |
 | Credential store on macOS | The **Keychain**, service `Claude Code-credentials` | `~/.codex/auth.json` |
 | Credential store elsewhere | `~/.claude/.credentials.json` (Linux and Windows only) | `~/.codex/auth.json` |
@@ -98,7 +102,7 @@ that execs a sibling native binary.
 
 ## What each provider actually runs
 
-### Claude Agent: `claude -p`
+### Claude Code: `claude -p`
 
 BioRouter drives the CLI rather than `@anthropic-ai/claude-agent-sdk`, and that is a decision
 rather than an omission. Anthropic's headless documentation states that it covers using the Agent
@@ -219,7 +223,7 @@ for a run that billed a subscription. `pricing::blocks_fallback_pricing` lists `
 The two vendors report token counts under different conventions, and BioRouter's four buckets
 must not overlap:
 
-- **Claude Agent** reports the Anthropic shape, where `input_tokens` already excludes both cache
+- **Claude Code** reports the Anthropic shape, where `input_tokens` already excludes both cache
   buckets — exactly BioRouter's invariant, so nothing is subtracted.
 - **Codex** follows OpenAI's convention, where `input_tokens` is the whole prompt count and
   `cached_input_tokens` is a cached *subset* of it. The cached part is subtracted out, otherwise
@@ -246,7 +250,7 @@ Both CLIs expose a taller reasoning scale than the API providers do —
 `ReasoningEffort::provider_effort()` helper, which stops at `high` because `high` is the top of the
 *API* scale. They climb their own ladder instead:
 
-| BioRouter `/effort` | Claude Agent | Codex |
+| BioRouter `/effort` | Claude Code | Codex |
 | --- | --- | --- |
 | `quick` | `low` | `low` |
 | *default* | `high` | `high` |

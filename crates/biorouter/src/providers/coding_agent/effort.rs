@@ -9,7 +9,7 @@
 //! on `high` would leave two rungs unused and make "deep" mean *less* here than the
 //! word implies. These providers therefore climb their own ladder:
 //!
-//! | BioRouter | Claude Agent | Codex |
+//! | BioRouter | Claude Code | Codex |
 //! |---|---|---|
 //! | `Quick` | `low` | `low` |
 //! | `Normal` (and unset) | `high` | `high` |
@@ -68,7 +68,7 @@ const CODEX_MODELS_WITH_MAX: &[&str] = &[
     "codex-auto-review",
 ];
 
-/// The `--effort` value for a Claude Agent turn. Always emits: see the module
+/// The `--effort` value for a Claude Code turn. Always emits: see the module
 /// header on why the middle rung is not silence here.
 pub fn claude_effort(effort: Option<ReasoningEffort>) -> &'static str {
     match effort {

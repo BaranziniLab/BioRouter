@@ -1,6 +1,6 @@
 # Installing and signing in
 
-> **What this is.** How to get **Claude Agent** or **Codex** working in BioRouter: install the
+> **What this is.** How to get **Claude Code** or **Codex** working in BioRouter: install the
 > vendor CLI, sign in by running the vendor's own command yourself, and read the four states the
 > settings card can report. Also covers the escape hatch for a binary BioRouter cannot find.
 > **Status:** Current.
@@ -19,7 +19,7 @@ preference.
 Run whichever you want, in your own terminal:
 
 ```bash
-# Claude Agent — the `claude` CLI
+# Claude Code — the `claude` CLI
 curl -fsSL https://claude.ai/install.sh | bash
 
 # Codex — the `codex` CLI (needs Node.js)
@@ -41,7 +41,7 @@ Sign in with the **subscription** you want to use — a Claude Pro/Max plan, or 
 commands open the vendor's own browser flow. When it finishes, the credential is stored by the
 vendor's CLI, where only that CLI reads it:
 
-| | Claude Agent | Codex |
+| | Claude Code | Codex |
 | --- | --- | --- |
 | macOS | The Keychain, service `Claude Code-credentials` | `~/.codex/auth.json` |
 | Linux and Windows | `~/.claude/.credentials.json` | `~/.codex/auth.json` |
@@ -51,7 +51,7 @@ vendor's CLI, where only that CLI reads it:
 
 ## Step 3 — pick the provider in BioRouter
 
-Choose **Claude Agent** or **Codex** in the model picker or in provider settings, exactly as you
+Choose **Claude Code** or **Codex** in the model picker or in provider settings, exactly as you
 would any other provider. There is no key to enter. The only setting either provider has is the
 name or path of its executable, which defaults to `claude` and `codex` respectively.
 
@@ -103,7 +103,7 @@ use **nvm, volta, bun or asdf**, pin the full path:
 
 | Provider | Config key | Default |
 | --- | --- | --- |
-| Claude Agent | `CLAUDE_CODE_COMMAND` | `claude` |
+| Claude Code | `CLAUDE_CODE_COMMAND` | `claude` |
 | Codex | `CODEX_COMMAND` | `codex` |
 
 Set it in provider settings, or in

@@ -76,7 +76,7 @@ article [Agent SDK usage changes](https://support.claude.com/en/articles/1503654
 > from your subscription's usage limits.
 
 The same notice states that the previously announced monthly credit is not available. Practically:
-a long BioRouter turn on the Claude Agent provider consumes the user's ordinary plan allowance, and
+a long BioRouter turn on the Claude Code provider consumes the user's ordinary plan allowance, and
 heavy use will hit the plan's limits like any other use. Do not plan capacity around the paused
 credit, and re-check the article before assuming this paragraph is still current.
 
@@ -112,7 +112,7 @@ it is what the privacy bind gate reads.
 
 > **Warning — the gate is enforcement, not a guarantee.** Privacy tiers have a master switch, and
 > turning them off removes the *enforcement*, not the exposure: with the feature disabled nothing
-> stops a user binding Claude Agent to a chat that has touched clinical data. The gate is also a
+> stops a user binding Claude Code to a chat that has touched clinical data. The gate is also a
 > **safety** boundary rather than a security one — it prevents mistakes, and it does not pretend to
 > withstand a determined path, because the filesystem is open to any chat with a shell. The rule
 > above ("no PHI") is therefore a rule you follow, with a gate that catches the ordinary way of
@@ -157,7 +157,7 @@ readers to OpenAI's terms of use and to their own legal counsel. Several subsequ
 questions in the same thread received no authoritative clarification.
 
 So: the licence question is settled, and the subscription-terms question is not. BioRouter therefore
-applies the **same hands-off posture** to Codex as to Claude Agent — no login flow, no credential
+applies the **same hands-off posture** to Codex as to Claude Code — no login flow, no credential
 handling, no proxying, honest client identification — and treats the position as unresolved rather
 than as permitted-by-silence. If a first-party OpenAI clause becomes readable, update this section
 rather than inferring one.

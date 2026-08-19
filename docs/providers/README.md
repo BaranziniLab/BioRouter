@@ -35,7 +35,7 @@ checks can be compared line for line.
 
 - **[`coding-agents/`](coding-agents/README.md)** — the two providers that run inference on
   the user's **own vendor subscription** by driving a coding-agent CLI the user installed and
-  signed in to: `claude_code` (shown as **Claude Agent**) and `codex` (**Codex**). They share
+  signed in to: `claude_code` (shown as **Claude Code**) and `codex` (**Codex**). They share
   a mechanism rather than just a vendor, which is why they are documented together: no API
   key, no base URL, a credential BioRouter never touches, and a child process that is itself
   a complete agent whose own tools must be switched off and replaced over MCP. The folder has

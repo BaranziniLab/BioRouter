@@ -45,7 +45,7 @@ be able to reach.
 | BioRouter's system prompt, replacing it | 1,527 |
 | Codex's own default preamble | ~15,000 |
 
-A 16x reduction on Claude Agent, from one flag. This is why `--system-prompt` **replaces** rather
+A 16x reduction on Claude Code, from one flag. This is why `--system-prompt` **replaces** rather
 than `--append-system-prompt` adding to the default, and why Codex's `baseInstructions` is set at
 `thread/start` — see
 [the flags that are not optional](child-agent-isolation.md#the-system-prompt-is-replaced-not-appended).
@@ -104,7 +104,7 @@ consumption, and a `stream()` implementation runs *inside* the scope — so it c
 spawn the child exactly as `complete()` does. The one real rule is that the URL must be captured at
 construction time, never read from inside a poll.
 
-What is genuinely left is the parsing. For Claude Agent most of it already exists: the CLI's
+What is genuinely left is the parsing. For Claude Code most of it already exists: the CLI's
 `--output-format stream-json` emits raw Anthropic frames inside a `stream_event` envelope, so
 unwrapping the envelope and feeding `providers::formats::anthropic::response_to_streaming_message`
 reuses the decoder the Anthropic provider already uses — and the argument builder already takes the
@@ -121,7 +121,7 @@ ignores. Cancellation would want wiring at the same time.
 | A card stuck on "indeterminate" | The probe ran but could not be understood — malformed `claude auth status` output, an `auth.json` with no `auth_mode`, or an expired refresh token behind a well-formed file. The reason is on the card. |
 | The child says it cannot do something and asks you to approve it | A bridged tool call routed to `needs_approval`, which is [refused rather than parked](tool-bridge.md#a-call-needing-approval-is-refused-not-parked). |
 | The child has no tools at all | No bridge was established — typically a CLI process with no HTTP server. The turn still answers from the conversation; this is deliberate degradation, not an error. |
-| An empty response with nothing in the logs | For Codex, the app server exited before a terminal frame; the error carries a bounded tail of the child's stderr. For Claude Agent, stderr is drained concurrently and included in the failure. |
+| An empty response with nothing in the logs | For Codex, the app server exited before a terminal frame; the error carries a bounded tail of the child's stderr. For Claude Code, stderr is drained concurrently and included in the failure. |
 | A turn that stops at 30 minutes | The turn ceiling. The child is killed rather than left holding the session. |
 
 ## Related documentation

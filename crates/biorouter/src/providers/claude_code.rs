@@ -1,4 +1,4 @@
-//! The **Claude Agent** provider: drives the user's own `claude` CLI on the
+//! The **Claude Code** provider: drives the user's own `claude` CLI on the
 //! user's own Claude subscription.
 //!
 //! # Why the CLI and not the Agent SDK
@@ -559,8 +559,8 @@ impl Provider for ClaudeCodeProvider {
             KIND.provider_id(),
             KIND.display_name(),
             "Uses the Claude subscription you are already signed in to, through your own \
-             installed `claude` command. No API key. Requires Claude Code to be installed and \
-             signed in.",
+             installed `claude` command. No API key. Requires Anthropic's Claude Code CLI to be \
+             installed and signed in.",
             CLAUDE_CODE_DEFAULT_MODEL,
             known_models(),
             CLAUDE_CODE_DOC_URL,
@@ -1003,6 +1003,29 @@ mod tests {
         );
     }
 
+    /// The label is "Claude Code" and the description names the CLI the user has
+    /// to install. Both are pinned because both are decisions.
+    ///
+    /// The label deviates from Anthropic's branding guidelines knowingly — see
+    /// `CodingAgentKind::display_name` for the reasoning. What is asserted here is
+    /// only that the two strings stay deliberate: the label is the product name the
+    /// maintainer chose, and the description still attributes the dependency to
+    /// Anthropic so a reader can tell what to install and whose it is.
+    #[test]
+    fn the_label_and_the_named_dependency_are_both_deliberate() {
+        let m = ClaudeCodeProvider::metadata();
+        assert_eq!(m.display_name, "Claude Code");
+        assert!(
+            m.description.contains("Claude Code CLI"),
+            "the description must name the tool the user installs: {}",
+            m.description
+        );
+        assert!(
+            m.description.contains("Anthropic"),
+            "…and attribute it, so it reads as a dependency rather than as our own product"
+        );
+    }
+
     #[test]
     fn metadata_is_public_and_not_locally_computed() {
         let m = ClaudeCodeProvider::metadata();
@@ -1010,7 +1033,6 @@ mod tests {
             m.name, "claude_code",
             "the underscore is what pricing keys on"
         );
-        assert_eq!(m.display_name, "Claude Agent");
         assert_eq!(m.tier, crate::privacy::ProviderTier::Public);
         assert!(
             !m.runs_locally,

@@ -114,7 +114,7 @@ path, as an unguessable single-turn nonce that both CLIs transmit by constructio
 How the URL reaches each CLI:
 
 ```json
-// Claude Agent: written to a 0600 temp file, passed as --mcp-config
+// Claude Code: written to a 0600 temp file, passed as --mcp-config
 { "mcpServers": { "biorouter": { "type": "http", "url": "<bridge url>" } } }
 ```
 
@@ -123,12 +123,12 @@ How the URL reaches each CLI:
 { "mcp_servers": { "biorouter": { "url": "<bridge url>" } } }
 ```
 
-Claude Agent's configuration is a **file**, not an inline JSON string, even though the CLI accepts
+Claude Code's configuration is a **file**, not an inline JSON string, even though the CLI accepts
 both: the URL carries the turn's capability and `argv` is readable by any process running as the
 same user. `NamedTempFile` creates it 0600, and the handle is deliberately bound for the whole run —
 dropping it deletes the file, and a child that started a moment later would find no configuration.
 
-Claude Agent's invocation also gains `--permission-mode bypassPermissions` when a bridge is
+Claude Code's invocation also gains `--permission-mode bypassPermissions` when a bridge is
 present. That looks alarming and is correct here: with the built-ins off, the only tools that exist
 are BioRouter's, and each one is inspected and permission-checked on BioRouter's side of the bridge
 before it runs. Leaving the child to prompt instead would stall the turn, since a `-p` session has
@@ -173,7 +173,7 @@ lives to the end of that loop iteration, which outlasts stream consumption.
 | --- | --- |
 | Grants, leases, the nonce, the task-local | [`crates/biorouter/src/providers/coding_agent/bridge.rs`](../../../crates/biorouter/src/providers/coding_agent/bridge.rs) |
 | The HTTP/JSON-RPC endpoint | [`crates/biorouter-server/src/routes/tool_bridge.rs`](../../../crates/biorouter-server/src/routes/tool_bridge.rs) |
-| Handing the URL to Claude Agent | [`crates/biorouter/src/providers/claude_code.rs`](../../../crates/biorouter/src/providers/claude_code.rs) |
+| Handing the URL to Claude Code | [`crates/biorouter/src/providers/claude_code.rs`](../../../crates/biorouter/src/providers/claude_code.rs) |
 | Handing the URL to Codex | [`crates/biorouter/src/providers/codex.rs`](../../../crates/biorouter/src/providers/codex.rs) |
 
 On the Codex side, `dynamicTools` would remove the HTTP hop entirely and is the eventual

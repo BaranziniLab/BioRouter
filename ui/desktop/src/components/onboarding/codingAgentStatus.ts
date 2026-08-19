@@ -45,7 +45,7 @@ export interface CodingAgentAvailability {
   kind: CodingAgentKind;
   /** `"claude_code"` | `"codex"` — the `BIOROUTER_PROVIDER` value. */
   providerId: string;
-  /** `"Claude Agent"` | `"Codex"`. Never rendered from a literal here. */
+  /** `"Claude Code"` | `"Codex"`. Never rendered from a literal here. */
   displayName: string;
   /** Absolute path of the resolved binary, or null when nothing was found. */
   path?: string | null;

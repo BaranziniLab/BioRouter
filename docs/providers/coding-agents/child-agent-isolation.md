@@ -16,7 +16,7 @@ BioRouter's controls. What the child gets instead is BioRouter's own tools, over
 [the tool bridge](tool-bridge.md), executed by BioRouter's dispatcher where every existing gate
 still fires.
 
-## Claude Agent: the arguments, and which ones are load-bearing
+## Claude Code: the arguments, and which ones are load-bearing
 
 Every invocation is `claude -p` with the following. Only the output format varies between call
 paths, and a unit test pins that it is the only axis that varies.
@@ -122,7 +122,7 @@ is no.
 Isolation is not a sandbox, and this section is the honest statement of the boundary.
 
 - **The child runs as the user**, in the session's working directory, with the user's `PATH`
-  (augmented) and `HOME`. Read-only for Codex by configuration; for Claude Agent the built-ins are
+  (augmented) and `HOME`. Read-only for Codex by configuration; for Claude Code the built-ins are
   off rather than the process being confined.
 - **It has network access**, because it must reach its vendor to do inference at all.
 - **It has whatever BioRouter's tools can do**, which is the intended surface, gated as described in

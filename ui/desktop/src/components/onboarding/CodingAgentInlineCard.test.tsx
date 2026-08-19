@@ -43,7 +43,7 @@ const claude = (auth: CodingAgentAuth, over: Partial<CodingAgentAvailability> = 
   ({
     kind: 'claude_code',
     providerId: 'claude_code',
-    displayName: 'Claude Agent',
+    displayName: 'Claude Code',
     path: null,
     version: null,
     auth,
@@ -80,7 +80,7 @@ describe('CodingAgentInlineCard', () => {
     expect(await screen.findByTestId('coding-agent-row-claude_code')).toBeInTheDocument();
     expect(screen.getByTestId('coding-agent-row-codex')).toBeInTheDocument();
     // Display names come from the wire, never from a literal in the component.
-    expect(screen.getByText('Claude Agent')).toBeInTheDocument();
+    expect(screen.getByText('Claude Code')).toBeInTheDocument();
     expect(screen.getByText('Codex')).toBeInTheDocument();
   });
 
