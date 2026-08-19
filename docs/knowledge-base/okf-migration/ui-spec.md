@@ -3,7 +3,10 @@
 > **What this is.** The normative design for BioRouter's Knowledge section after the OKF migration:
 > every surface, every token, and the complete graph visual specification. It is the binding output
 > of [Stage 7](stages.md) and the thing implementation is checked against.
-> **Status:** Current (binding for Stage 7; not yet implemented).
+> **Status:** Under review — drafted, committee in progress, **not yet binding**. Three reviewers
+> (design-system fidelity, accessibility with measured contrast, implementation feasibility) are
+> reading it now; their findings land before any of it is implemented. Do not treat a value here as
+> settled until this line says Current.
 > **Audience:** Contributors working on the Knowledge subsystem and on the desktop design system.
 
 The Knowledge section is the one place in BioRouter where the app draws a *data* surface — a canvas
