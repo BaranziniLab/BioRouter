@@ -38,10 +38,12 @@ use biorouter::providers::coding_agent::bridge;
 /// The MCP protocol version this endpoint speaks.
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
-pub fn routes(state: std::sync::Arc<crate::state::AppState>) -> Router {
-    Router::new()
-        .route("/tool_bridge/{nonce}", post(handle))
-        .with_state(state)
+/// Takes no `AppState`, and that is deliberate rather than an oversight: the grant
+/// registry is process-global because the handler runs on a different task from the
+/// turn that issued the grant, so there is nothing session-shaped for this route to
+/// be given. Being state-free is also what lets a live test serve the real route.
+pub fn routes() -> Router {
+    Router::new().route("/tool_bridge/{nonce}", post(handle))
 }
 
 /// One JSON-RPC message from the child.

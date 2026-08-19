@@ -37,6 +37,12 @@ Different providers have fundamentally different data handling policies:
   stronger privacy protections than personal API accounts.
 - **Local models** (bundled Llama Server, Ollama) — data is processed entirely on your own
   device. Nothing is transmitted to any external service.
+- **Subscription-billed coding agents** (Claude Agent, Codex) — a vendor CLI on your own machine
+  runs the turn on your own consumer subscription. The subprocess is local but the **inference is
+  not**: it happens at Anthropic or OpenAI, on a plan that carries **no BAA and no zero-data-
+  retention agreement**. Treat these as commercial cloud APIs with weaker paperwork, never as
+  local models — **no PHI**. Both are `Public`, so the bind gate refuses them to a private chat.
+  See [coding-agent providers](../providers/coding-agents/compliance.md).
 
 ## What a non-private model can reach
 
@@ -251,6 +257,9 @@ Information Commons.
 - [Choosing a model provider](../getting-started/choosing-a-model-provider.md) — the full
   provider inventory, including the institutional `versa_azure` / `versa_bedrock` providers and
   the bundled Llama Server.
+- [Coding-agent providers — compliance](../providers/coding-agents/compliance.md) — why a
+  subscription-billed Claude Agent or Codex turn is not covered by any BAA, and the bind gate that
+  keeps it away from a private chat.
 - [Privacy tiers](privacy-tiers.md) — the design behind the enforcement described above: how models,
   chats, extensions and knowledge bases acquire a tier, and where each guardrail sits.
 - [Privacy tiers — what happens to your existing chats](privacy-tiers-migration.md) — which of the

@@ -19,6 +19,7 @@ vi.mock('react-router-dom', () => ({
 vi.mock('./onboarding/LlamaServerInlineCard', () => ({ default: () => null }));
 vi.mock('./onboarding/OllamaInlineCard', () => ({ default: () => null }));
 vi.mock('./onboarding/InstitutionalSetupCard', () => ({ default: () => null }));
+vi.mock('./onboarding/CodingAgentInlineCard', () => ({ default: () => null }));
 vi.mock('./onboarding/CommercialSetupCard', () => ({
   default: ({ onSuccess }: { onSuccess: (setup: unknown) => Promise<void> }) => (
     <button

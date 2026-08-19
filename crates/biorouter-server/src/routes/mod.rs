@@ -163,7 +163,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         // No secret-key gate: the path carries a single-turn capability nonce, and
         // Codex sends no Authorization header at all, so a header scheme would
         // authenticate one client and not the other. See the module header.
-        .merge(tool_bridge::routes(state.clone()))
+        .merge(tool_bridge::routes())
         .merge(tunnel::routes(state.clone()))
         .merge(mcp_ui_proxy::routes())
         .merge(mcp_app_proxy::routes(secret_key.clone()))

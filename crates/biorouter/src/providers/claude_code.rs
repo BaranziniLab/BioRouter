@@ -665,6 +665,48 @@ mod tests {
         assert_eq!(args[t + 1], "", "--tools must be empty to disable all built-ins");
     }
 
+    /// `--mcp-config` is **variadic**, so nothing that follows it may be a bare
+    /// positional: the CLI would swallow it as a second config path and die with
+    /// "MCP config file not found: <that argument>". This is not hypothetical — it
+    /// is exactly how the live bridge test failed first time.
+    ///
+    /// Two things keep the provider safe, and both are asserted: the prompt is
+    /// never in argv at all (it goes on stdin), and whatever follows `--mcp-config`
+    /// is either its own value or another flag.
+    #[test]
+    fn nothing_positional_can_follow_the_variadic_mcp_config_flag() {
+        let p = provider();
+        let m = ModelConfig::new("claude-sonnet-4-6").unwrap();
+        let path = std::path::Path::new("/tmp/bridge.json");
+        let args = p.base_args(&m, "SYS", "json", Some(path));
+
+        let i = args
+            .iter()
+            .position(|a| a == "--mcp-config")
+            .expect("the bridge config should be passed");
+        assert_eq!(args[i + 1], path.to_string_lossy(), "its value comes first");
+        // Everything after the value must be a flag, never a positional.
+        for later in &args[i + 2..] {
+            assert!(
+                later.starts_with("--") || is_flag_value(&args, later),
+                "`{later}` follows the variadic --mcp-config and would be eaten as a \
+                 second config path"
+            );
+        }
+
+        // And the prompt is never an argv element in the first place.
+        assert!(
+            !args.iter().any(|a| a.contains("SYS") && a != "SYS"),
+            "the prompt must travel on stdin, not argv"
+        );
+    }
+
+    /// True when `value` occupies the slot immediately after a `--flag`.
+    fn is_flag_value(args: &[String], value: &String) -> bool {
+        args.windows(2)
+            .any(|w| w[0].starts_with("--") && &w[1] == value)
+    }
+
     /// `--bare` never reads OAuth credentials or the keychain, so passing it would
     /// silently defeat the entire provider.
     #[test]

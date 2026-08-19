@@ -19,6 +19,7 @@ Two kinds of document live here, and the difference matters more than any other 
 |---|---|
 | Install BioRouter and run a first task | [biorouter in 5 minutes](getting-started/quickstart.md) — or [Installation and setup](getting-started/installation.md) for the thorough path with institutional providers |
 | Pick an LLM provider and model | [Choosing a model provider](getting-started/choosing-a-model-provider.md) |
+| Use a Claude or ChatGPT subscription you already pay for, instead of an API key | [Coding-agent providers](providers/coding-agents/README.md) — read [its compliance page](providers/coding-agents/compliance.md) before any research data goes near one |
 | Look up a command or flag | [biorouter CLI command reference](cli/command-reference.md) |
 | Change a setting | [Configuration file reference](configuration/config-file-reference.md) for `config.yaml`, [Environment variables](configuration/environment-variables.md) for per-invocation overrides |
 | Decide how much autonomy the agent gets | [Permission modes](security/permission-modes.md) |
@@ -41,7 +42,7 @@ Two kinds of document live here, and the difference matters more than any other 
 | [extensions](extensions/README.md) | How BioRouter is extended — MCP extensions, platform extensions and skills — with a reference page for each built-in extension, plus an open investigation into Slack posting that has not been built. |
 | [integrations](integrations/README.md) | The opposite direction from `extensions/`: adapters that let another application host a Biorouter agent, starting with the `@Biorouter` persona for JupyterLab's Jupyter AI chat. |
 | [knowledge-base](knowledge-base/README.md) | The live working documents for the personal, LLM-maintained wiki: surveys of the ingestion pipeline and plans for extending it. |
-| [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. |
+| [providers](providers/README.md) | Maintainer-facing integration references for individual LLM providers: registry wiring, credential contracts, selection surfaces and verification commands. Includes [coding-agent providers](providers/coding-agents/README.md) — the two that run on the user's own Claude or ChatGPT subscription by driving a vendor CLI, with their tool bridge, child-isolation flags and the vendor-terms and PHI compliance position. |
 | [security](security/README.md) | Agent autonomy, admin-imposed managed policy, credential storage, which providers are acceptable for patient and other sensitive data, and the institutional affiliation check behind cross-institution warnings. |
 | [workflows](workflows/README.md) | Reusable workflow files that package instructions, extensions and model settings into one shareable session, plus the built-in cron scheduler. |
 | [cli](cli/README.md) | The `biorouter` command-line surface: subcommands and flags, the interactive terminal UI, and the manual QA script that verifies both. |

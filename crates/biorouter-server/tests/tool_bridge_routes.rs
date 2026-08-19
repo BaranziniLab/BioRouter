@@ -173,3 +173,197 @@ async fn a_trailing_slash_on_the_base_does_not_double_the_separator() {
         lease.url()
     );
 }
+
+// ---------------------------------------------------------------------------
+// Live end-to-end, against the real vendor CLI. `--ignored`, because it needs
+// `claude` installed and signed in to a subscription, and it spends the user's
+// own plan quota.
+//
+//   cargo test -p biorouter-server --test tool_bridge_routes -- --ignored --nocapture
+//
+// This is the only test that proves the whole path rather than a layer of it: the
+// real router serving the real registry, reached by the real Claude Code over
+// HTTP, discovering Biorouter's tool set. Every other assertion in this file would
+// still pass if the two halves never spoke.
+// ---------------------------------------------------------------------------
+
+/// Serve the real bridge route on an ephemeral port and publish it, so anything
+/// that asks for a grant gets a URL that actually resolves.
+async fn serve_real_bridge() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("a loopback port");
+    let addr = listener.local_addr().expect("a bound address");
+    let app = biorouter_server::routes::tool_bridge::routes();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    let base = format!("http://{addr}");
+    bridge::publish_base_url(base.clone());
+    base
+}
+
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `claude` CLI installed and signed in; spends the user's own plan quota"]
+async fn the_real_claude_cli_discovers_biorouters_tools_over_the_bridge() {
+    serve_real_bridge().await;
+    let lease = bridge::issue(grant().await).expect("the base URL is published");
+
+    // Point the CLI at the bridge exactly the way the provider does.
+    let config = serde_json::json!({
+        "mcpServers": { "biorouter": { "type": "http", "url": lease.url() } }
+    });
+    let dir = tempfile::tempdir().expect("a temp dir");
+    let config_path = dir.path().join("mcp.json");
+    std::fs::write(&config_path, config.to_string()).expect("write the bridge config");
+
+    let mut child = tokio::process::Command::new("claude")
+        .args([
+            "-p",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--model",
+            "haiku",
+            "--tools",
+            "",
+            "--setting-sources",
+            "",
+            "--strict-mcp-config",
+            "--permission-mode",
+            "bypassPermissions",
+            "--no-session-persistence",
+            "--system-prompt",
+            "You are Biorouter.",
+        ])
+        .arg("--mcp-config")
+        .arg(&config_path)
+        // ⚠ The prompt goes on STDIN, not as a trailing positional, and that is not
+        // a style choice. `--mcp-config` is variadic ("space-separated"), so a
+        // positional prompt after it is swallowed as a second config path and the
+        // run dies with "MCP config file not found: <your prompt>". The provider
+        // writes the prompt to stdin for the same reason (plus argv length limits),
+        // so doing it here keeps this a faithful reproduction.
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .env_remove("ANTHROPIC_API_KEY")
+        .spawn()
+        .expect("the claude CLI runs");
+
+    {
+        use tokio::io::AsyncWriteExt;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        stdin
+            .write_all(b"List the tool names you have been given, and nothing else.")
+            .await
+            .expect("write the prompt");
+        stdin.shutdown().await.expect("close stdin");
+    }
+    let output = child.wait_with_output().await.expect("the CLI finishes");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let init = stdout
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["type"] == "system" && v["subtype"] == "init")
+        .unwrap_or_else(|| {
+            panic!(
+                "no system/init frame; stdout was:\n{stdout}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+
+    // The bridge connected...
+    let servers = init["mcp_servers"].as_array().cloned().unwrap_or_default();
+    assert!(
+        servers
+            .iter()
+            .any(|s| s["name"] == "biorouter" && s["status"] == "connected"),
+        "the bridge should be connected: {init}"
+    );
+    assert!(
+        init["mcp_server_errors"].is_null(),
+        "the bridge reported a config error: {init}"
+    );
+
+    // ...and served Biorouter's tool set, which the CLI re-prefixes as
+    // `mcp__<server>__<tool>`.
+    let tools = init["tools"].as_array().cloned().unwrap_or_default();
+    assert!(
+        tools
+            .iter()
+            .any(|t| t.as_str().unwrap_or_default()
+                == "mcp__biorouter__spokeagent__query_knowledge_graph"),
+        "the grant's tool should have reached the model: {tools:?}"
+    );
+
+    // The run must be on the subscription, not on a key. This is the assertion the
+    // whole feature rests on, so it is made here too rather than only in the unit
+    // tests, where the value is a fixture.
+    assert_eq!(
+        init["apiKeySource"], "none",
+        "the live run must be subscription-billed: {init}"
+    );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+#[ignore = "needs the `codex` CLI installed and signed in; spends the user's own plan quota"]
+async fn the_real_codex_provider_reaches_biorouters_tools_over_the_bridge() {
+    use biorouter::model::ModelConfig;
+    use biorouter::providers::base::Provider;
+    use biorouter::providers::codex::CodexProvider;
+    use biorouter::conversation::message::Message;
+
+    serve_real_bridge().await;
+    let lease = bridge::issue(grant().await).expect("the base URL is published");
+
+    // Drive the PROVIDER, not the CLI directly. `codex exec` cannot answer an
+    // approval request, so an MCP tool call there fails with "user cancelled MCP
+    // tool call" unless the sandbox is opened up wholesale — which is the entire
+    // reason the provider speaks `codex app-server` instead. Testing `exec` here
+    // would be testing a surface we deliberately do not use, and it would fail for
+    // a reason that has nothing to do with the bridge.
+    let provider = CodexProvider::from_env(ModelConfig::new("gpt-5.5").expect("a known model"))
+        .await
+        .expect("the codex CLI is installed");
+
+    let messages = vec![Message::user().with_text(
+        "Call the spokeagent__query_knowledge_graph tool with cypher='MATCH (n) RETURN n LIMIT 1'. \
+         Then report, in one line, the exact text the tool returned.",
+    )];
+
+    let outcome = bridge::ACTIVE_BRIDGE_URL
+        .scope(
+            Some(lease.url().to_string()),
+            provider.complete(
+                "You are Biorouter. Use the tools you are given.",
+                &messages,
+                &[],
+            ),
+        )
+        .await;
+
+    match outcome {
+        Ok((message, usage)) => {
+            let text = message.as_concat_text();
+            // The grant's ExtensionManager holds no real extension, so the call is
+            // refused by the gate stack rather than executed — and that refusal is
+            // the proof: it can only have come from Biorouter's side of the bridge.
+            // A child that never reached the bridge would report a missing tool
+            // instead.
+            assert!(
+                text.contains("spokeagent__query_knowledge_graph"),
+                "the model should have reached Biorouter's tool; it said: {text}"
+            );
+            assert_eq!(
+                usage.provider.as_deref(),
+                Some("codex"),
+                "the usage row must be attributed to this provider"
+            );
+        }
+        Err(e) => panic!("the codex turn failed: {e}"),
+    }
+}
