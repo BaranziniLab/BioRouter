@@ -8,6 +8,8 @@ import {
   ExtensionLoadingStatus,
 } from './components/GroupedExtensionLoadingToast';
 import { getInitialWorkingDir } from './utils/workingDir';
+import { launchDependencyDebugSession } from './utils/launchDependencyDebug';
+import type { DependencyFailure } from './utils/dependencyDebugPrompt';
 
 export interface ToastServiceOptions {
   silent?: boolean;
@@ -278,6 +280,17 @@ type ToastErrorProps = {
   msg: string;
   traceback?: string;
   recoverHints?: string;
+  /**
+   * An install or prerequisite failure. Adds "Debug with Biorouter", which opens
+   * a NEW window briefed with the failure and this machine's environment.
+   *
+   * Distinct from `recoverHints` on purpose: that one hands a hint to the CURRENT
+   * view via `startNewSession`, which is right for an extension that failed to
+   * load in the chat you are looking at. A failed install is usually background
+   * work interrupting something else, so it gets its own window instead of
+   * replacing what the user was doing.
+   */
+  debugFailure?: Omit<DependencyFailure, 'environment' | 'error'>;
 };
 
 function ToastErrorContent({
@@ -285,6 +298,7 @@ function ToastErrorContent({
   msg,
   traceback,
   recoverHints,
+  debugFailure,
 }: Omit<ToastErrorProps, 'setView'>) {
   const setView = useNavigation();
   const showRecovery = recoverHints && setView;
@@ -302,8 +316,17 @@ function ToastErrorContent({
   // Actions sit BELOW the message in the shared primitive's action row, so they
   // can never crowd or slide under the close ×.
   const actions =
-    showRecovery || traceback ? (
+    showRecovery || traceback || debugFailure ? (
       <>
+        {debugFailure && (
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => void launchDependencyDebugSession({ ...debugFailure, error: msg })}
+          >
+            Debug with Biorouter
+          </Button>
+        )}
         {showRecovery && (
           <Button
             size="sm"
@@ -332,13 +355,19 @@ function ToastErrorContent({
   );
 }
 
-export function toastError({ title, msg, traceback, recoverHints }: ToastErrorProps) {
+export function toastError({ title, msg, traceback, recoverHints, debugFailure }: ToastErrorProps) {
   // An error toast carries actions whenever there is something to copy or a
   // recovery path to offer — and a toast with actions is not click-to-dismiss,
   // because the click that misses the button must not destroy the button.
-  const hasActions = Boolean(traceback || recoverHints);
+  const hasActions = Boolean(traceback || recoverHints || debugFailure);
   return toast.error(
-    <ToastErrorContent title={title} msg={msg} traceback={traceback} recoverHints={recoverHints} />,
+    <ToastErrorContent
+      title={title}
+      msg={msg}
+      traceback={traceback}
+      recoverHints={recoverHints}
+      debugFailure={debugFailure}
+    />,
     {
       ...commonToastOptions,
       icon: false,

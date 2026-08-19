@@ -29,7 +29,7 @@ import fsSync from 'node:fs';
 import started from 'electron-squirrel-startup';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn, spawnSync, type ChildProcess } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import AdmZip from 'adm-zip';
 import { safeExtractZip, safeZipEntryTarget } from './utils/safeZip';
 import 'dotenv/config';
@@ -91,12 +91,20 @@ import {
   updateTrayMenu,
 } from './utils/autoUpdater';
 import { UPDATES_ENABLED } from './updates';
+import { startMainThreadWatchdog } from './utils/mainThreadWatchdog';
+import {
+  STARTUP_UPDATER_SETUP_DELAY_MS,
+  STARTUP_DEPENDENCY_CHECK_DELAY_MS,
+  STARTUP_EXTENSION_CHECK_DELAY_MS,
+} from './utils/startupSchedule';
 import './utils/workflowHash';
 import { parseWorkflowDeeplink, type WorkflowDeeplinkData } from './utils/workflowDeeplink';
 import {
   registerDependencyIpcHandlers,
   setupDependencyChecker,
   triggerDependencyCheck,
+  invalidateDependencyCache,
+  runProbe,
   SPAWN_ENV,
 } from './utils/dependencyChecker';
 import { runExtensionUpdateCheck, scheduleExtensionUpdateCheck } from './utils/extensionUpdater';
@@ -3492,18 +3500,13 @@ ipcMain.handle(
       const zip = new AdmZip(filePath);
       safeExtractZip(zip, installDir);
 
-      // Pre-build the virtual environment
-      const uvResult = spawnSync('uv', ['sync'], {
-        cwd: installDir,
-        encoding: 'utf8',
-        timeout: UV_SYNC_TIMEOUT_MS,
-        env: SPAWN_ENV,
-      });
+      // Pre-build the virtual environment.
+      // Async, not spawnSync: UV_SYNC_TIMEOUT_MS is ten minutes, and a
+      // synchronous child here froze the entire app for the whole build (#88).
+      const uvResult = await runProbe('uv', ['sync'], UV_SYNC_TIMEOUT_MS, { cwd: installDir });
 
-      if (uvResult.status !== 0) {
-        const timedOut =
-          (uvResult.error as (Error & { code?: string }) | undefined)?.code === 'ETIMEDOUT';
-        if (timedOut) {
+      if (!uvResult.ok) {
+        if (uvResult.timedOut) {
           throw new Error(
             `uv sync timed out after ${UV_SYNC_TIMEOUT_MS / 60_000} minutes. ` +
               'A dependency may be compiling from source on a slow connection or machine. ' +
@@ -3512,10 +3515,10 @@ ipcMain.handle(
           );
         }
         const detail =
-          uvResult.error?.message ||
           uvResult.stderr ||
           uvResult.stdout ||
-          `exited with status ${uvResult.status}`;
+          uvResult.error ||
+          `exited with status ${uvResult.code}`;
         const hint = uvSyncHint(detail);
         throw new Error(`uv sync failed: ${detail}${hint ? `\n\nHint: ${hint}` : ''}`);
       }
@@ -3716,19 +3719,14 @@ function handleBrxtFileOpen(filePath: string) {
 // Run `<binary> --version` and return the parsed dotted version, or null if it
 // can't be determined (missing binary, broken symlink, non-zero exit). The CLI
 // prints just the version (e.g. " 1.85.0") thanks to its empty display name.
-function cliVersionOf(binary: string): string | null {
-  try {
-    const res = spawnSync(binary, ['--version'], {
-      encoding: 'utf8',
-      env: SPAWN_ENV,
-      timeout: 10_000,
-    });
-    if (res.status !== 0) return null;
-    const m = (res.stdout || res.stderr || '').match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)/);
-    return m ? m[1] : null;
-  } catch {
-    return null;
-  }
+async function cliVersionOf(binary: string): Promise<string | null> {
+  // Async, not spawnSync: `cli:status` is invoked from the renderer on every
+  // launch, and a synchronous child here froze the main thread for as long as
+  // the binary took to answer (see #88).
+  const res = await runProbe(binary, ['--version'], 10_000);
+  if (!res.ok) return null;
+  const m = (res.stdout || res.stderr || '').match(/(\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.]+)?)/);
+  return m ? m[1] : null;
 }
 
 // True if dotted version `a` is strictly older than `b` (segment-wise numeric;
@@ -3969,21 +3967,19 @@ function registerCliInstallHandlers() {
       log.warn('[cli:status] bundled CLI not found:', (e as Error).message);
       bundled = null;
     }
-    const probe = spawnSync(process.platform === 'win32' ? 'where' : 'which', ['biorouter'], {
-      encoding: 'utf8',
-      env: SPAWN_ENV,
-      shell: process.platform === 'win32',
-    });
+    const probe = await runProbe(process.platform === 'win32' ? 'where' : 'which', ['biorouter']);
     const pathLocation =
-      probe.status === 0 && (probe.stdout || '').trim().length > 0
-        ? (probe.stdout || '').trim().split(/\r?\n/)[0].trim()
-        : null;
+      probe.ok && probe.stdout.trim().length > 0 ? probe.stdout.trim().split(/\r?\n/)[0].trim() : null;
 
-    const bundledVersion = bundled ? cliVersionOf(bundled) : null;
-    // Resolve the on-PATH binary's version. A dangling symlink / broken binary
-    // yields null here even though `which` found a name — treat that as "not
-    // really installed" so the user is still offered the install.
-    const pathVersion = pathLocation ? cliVersionOf('biorouter') : null;
+    // Both version probes are independent subprocesses — resolve them together
+    // rather than paying for one and then the other.
+    const [bundledVersion, pathVersion] = await Promise.all([
+      bundled ? cliVersionOf(bundled) : Promise.resolve(null),
+      // Resolve the on-PATH binary's version. A dangling symlink / broken binary
+      // yields null here even though `which` found a name — treat that as "not
+      // really installed" so the user is still offered the install.
+      pathLocation ? cliVersionOf('biorouter') : Promise.resolve(null),
+    ]);
     const onPath = pathVersion !== null;
 
     const needsUpdate =
@@ -4190,7 +4186,7 @@ function registerCliInstallHandlers() {
         // Escape for the AppleScript string literal: backslashes first, then
         // double quotes.
         const asLiteral = doScript.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-        const res = spawnSync(
+        const res = await runProbe(
           'osascript',
           [
             '-e',
@@ -4198,9 +4194,9 @@ function registerCliInstallHandlers() {
             '-e',
             'tell application "Terminal" to activate',
           ],
-          { encoding: 'utf8', env: SPAWN_ENV, timeout: 15_000 }
+          15_000
         );
-        if (res.status !== 0) {
+        if (!res.ok) {
           return { success: false, error: (res.stderr || 'Failed to open Terminal').trim() };
         }
         return { success: true };
@@ -4234,8 +4230,8 @@ function registerCliInstallHandlers() {
         ['xterm', ['-e', 'biorouter']],
       ];
       for (const [term, args] of candidates) {
-        const found = spawnSync('which', [term], { encoding: 'utf8', env: SPAWN_ENV });
-        if (found.status === 0 && (found.stdout || '').trim()) {
+        const found = await runProbe('which', [term]);
+        if (found.ok && found.stdout.trim()) {
           const child = spawn(term, args, {
             env: SPAWN_ENV,
             detached: true,
@@ -4263,17 +4259,17 @@ function registerCliInstallHandlers() {
     } catch (e) {
       return { success: false, error: `Bundled CLI not found: ${(e as Error).message}` };
     }
-    const res = spawnSync(cli, ['setup-path'], {
-      encoding: 'utf8',
-      env: SPAWN_ENV,
-      timeout: 60_000,
-    });
-    if (res.status === 0) {
-      return { success: true, output: (res.stdout || '').trim() };
+    const res = await runProbe(cli, ['setup-path'], 60_000);
+    if (res.ok) {
+      // The CLI just changed what's on PATH; a stale cached probe would report
+      // the pre-install state back to the modal's verification step.
+      invalidateDependencyCache();
+      return { success: true, output: res.stdout.trim() };
     }
     return {
       success: false,
-      error: (res.stderr || res.stdout || `setup-path exited with ${res.status}`).trim(),
+      error: (res.stderr || res.stdout || `setup-path exited with ${res.code}`).trim(),
+      command: `${cli} setup-path`,
     };
   });
 }
@@ -4877,7 +4873,25 @@ async function appMain() {
     log.info('[Main] Skipping window creation in appMain - open-url already handled launch');
   }
 
-  // Setup auto-updater AFTER window is created and displayed (with delay to avoid blocking)
+  // Watch for the class of bug this whole area was fixed for (#88): anything
+  // that blocks the main thread now says so in the log instead of being visible
+  // only as "the app feels stuck".
+  startMainThreadWatchdog();
+
+  // Background startup work — deliberately staggered.
+  //
+  // These three subsystems all used to fire into the same few seconds while the
+  // renderer was still doing its first meaningful paint (#88). Their probes are
+  // no longer synchronous, so they cannot freeze the main thread any more, but
+  // they still compete for CPU, disk and network with the window the user is
+  // trying to use. The gaps below keep them out of each other's way, and out of
+  // the renderer's way, in a fixed order:
+  //
+  //   T+2s   auto-updater setup      (its own first network check lands at T+7s)
+  //   T+6s   dependency check        (spawns `biorouter doctor`, ~3.5 s of work)
+  //   T+15s  extension update check  (GitHub API per extension, then `uv sync`)
+  //
+  // Raising a delay is safe. Lowering one puts work back into the paint window.
   setTimeout(() => {
     if (shouldSetupUpdater()) {
       log.info('Setting up auto-updater after window creation...');
@@ -4887,13 +4901,11 @@ async function appMain() {
         log.error('Error setting up auto-updater:', error);
       }
     }
-  }, 2000); // 2 second delay after window is shown
+  }, STARTUP_UPDATER_SETUP_DELAY_MS);
 
-  // Dependency check: runs 4s after window is ready (see dependencyChecker.ts)
-  setupDependencyChecker();
+  setupDependencyChecker(STARTUP_DEPENDENCY_CHECK_DELAY_MS);
 
-  // Extension update check: runs 8s after window is ready (see extensionUpdater.ts)
-  scheduleExtensionUpdateCheck();
+  scheduleExtensionUpdateCheck(STARTUP_EXTENSION_CHECK_DELAY_MS);
 
   // Setup macOS dock menu
   if (process.platform === 'darwin') {
@@ -5671,6 +5683,12 @@ app.whenReady().then(async () => {
     }
     await appMain();
   } catch (error) {
+    // Log BEFORE the dialog. `showErrorBox` is modal and blocks the main thread
+    // until someone dismisses it, so on a headless or automated launch the only
+    // record of a fatal startup error was a box nobody could see and no log line
+    // at all — the failure looked like a silent hang.
+    log.error('[Main] Fatal error during startup:', error);
+    if (error instanceof Error && error.stack) log.error(error.stack);
     dialog.showErrorBox('Biorouter Error', `Failed to create main window: ${error}`);
     app.quit();
   }

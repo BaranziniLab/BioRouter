@@ -1429,6 +1429,11 @@ enum Command {
         /// Skip the (networked) self-update check
         #[arg(long = "no-update")]
         no_update: bool,
+        /// Hand a failing prerequisite to Biorouter: opens a session briefed with
+        /// the dependency, this machine's environment and what to verify. Pass a
+        /// name (`--fix uv`), or bare to take the first missing required one.
+        #[arg(long = "fix", value_name = "DEPENDENCY", num_args = 0..=1, default_missing_value = "")]
+        fix: Option<String>,
     },
 
     /// Install the `biorouter` command onto your PATH
@@ -2281,6 +2286,108 @@ async fn handle_term_subcommand(command: TermCommand) -> Result<()> {
     }
 }
 
+/// `biorouter doctor --fix [DEP]` — the terminal half of the desktop's
+/// "Debug with Biorouter" button.
+///
+/// The briefing is built by `biorouter::system::debug_prompt`, the same function
+/// the rest of the app uses, and handed to a normal interactive session as its
+/// opening message. Nothing about the session is special: it has the shell, and
+/// the user can steer it. What it saves is the twenty questions the agent would
+/// otherwise have to ask about which command failed and on what machine.
+async fn handle_doctor_fix(dep: String) -> Result<()> {
+    let deps = biorouter::system::check_all();
+
+    let chosen = if dep.is_empty() {
+        // Bare `--fix`: the first missing required prerequisite, then any missing
+        // optional one. Nothing missing is a success, not an error.
+        deps.iter()
+            .find(|d| d.required && !d.installed)
+            .or_else(|| deps.iter().find(|d| !d.installed))
+            .cloned()
+    } else {
+        match biorouter::system::status_of(&dep) {
+            Some(status) => Some(status),
+            // Not one of Biorouter's tracked prerequisites — `docker`, `jq`,
+            // `shellcheck` and friends are all things a setup script can die on,
+            // and refusing to help with them would make the hint those scripts
+            // print a lie. Synthesize a status so the session still gets a
+            // briefing that names the tool and this machine.
+            None => {
+                let known: Vec<&str> = deps.iter().map(|d| d.name.as_str()).collect();
+                println!(
+                    "`{dep}` is not one of Biorouter's tracked prerequisites ({}), \
+                     so there is no install command on file for it. Starting a session anyway.",
+                    known.join(", ")
+                );
+                Some(biorouter::system::DependencyStatus {
+                    name: dep.clone(),
+                    display_name: dep.clone(),
+                    installed: false,
+                    version: None,
+                    required: false,
+                    purpose: "Required by a Biorouter setup or build script".to_string(),
+                    doc_url: String::new(),
+                    install_command: None,
+                    requires_sudo: false,
+                    download_url: None,
+                })
+            }
+        }
+    };
+
+    let Some(status) = chosen else {
+        println!("All prerequisites are present — nothing to fix.");
+        return Ok(());
+    };
+
+    if status.installed {
+        println!(
+            concat!(
+                "{} is already detected ({}). Starting a session anyway so you can ",
+                "describe what is going wrong."
+            ),
+            status.display_name,
+            status.version.as_deref().unwrap_or("version unknown")
+        );
+    }
+
+    let prompt = biorouter::system::debug_prompt(&biorouter::system::DependencyFailure {
+        status: &status,
+        output: None,
+        error: None,
+    });
+
+    if !Config::global().exists() {
+        anyhow::bail!(concat!(
+            "Biorouter is not configured yet, so there is no model to debug with. ",
+            "Run `biorouter configure` first."
+        ));
+    }
+
+    let session_id = get_or_create_session_id(None, false, false, None, None).await?;
+    let mut session = build_session(SessionBuilderConfig {
+        session_id,
+        resume: false,
+        no_session: false,
+        extensions: Vec::new(),
+        streamable_http_extensions: Vec::new(),
+        builtins: Vec::new(),
+        workflow: None,
+        additional_system_prompt: None,
+        provider: None,
+        model: None,
+        debug: false,
+        max_tool_repetitions: None,
+        max_turns: None,
+        scheduled_job_id: None,
+        interactive: true,
+        quiet: false,
+        output_format: "text".to_string(),
+    })
+    .await;
+    session.interactive(Some(prompt)).await
+}
+
 async fn handle_default_session() -> Result<()> {
     if !Config::global().exists() {
         return handle_configure().await;
@@ -2389,9 +2496,14 @@ pub async fn cli() -> anyhow::Result<()> {
             by_model,
             json,
         }) => crate::commands::usage::handle_usage(from, to, by_model, json).await,
-        Some(Command::Doctor { format, no_update }) => {
-            crate::commands::doctor::handle_doctor(&format, !no_update).await
-        }
+        Some(Command::Doctor {
+            format,
+            no_update,
+            fix,
+        }) => match fix {
+            Some(dep) => handle_doctor_fix(dep).await,
+            None => crate::commands::doctor::handle_doctor(&format, !no_update).await,
+        },
         Some(Command::SetupPath {}) => crate::commands::doctor::handle_setup_path().await,
         Some(Command::Bench { cmd }) => handle_bench_command(cmd).await,
         Some(Command::Workflow { command }) => handle_workflow_subcommand(command),

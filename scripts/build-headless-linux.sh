@@ -20,10 +20,15 @@ HOST_GID="$(id -g)"
 
 log() { printf '\033[1;36m[headless]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[headless] %s\033[0m\n' "$*" >&2; exit 1; }
+BR_HINT_LABEL="headless"
+# shellcheck source=scripts/lib/dependency-hint.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/dependency-hint.sh"
 
-command -v docker >/dev/null 2>&1 || die "docker is required"
-docker info >/dev/null 2>&1 || die "docker daemon is not running"
-command -v npm >/dev/null 2>&1 || die "npm is required for the browser bundle"
+
+br_require_command docker "The Linux backend is cross-compiled inside a container."
+docker info >/dev/null 2>&1 || br_dependency_die docker "docker daemon is not running" \
+  "The docker CLI is installed but cannot reach a daemon. Start Docker Desktop (or dockerd) and retry."
+br_require_command npm "Needed for the browser bundle. Activate hermit first: source bin/activate-hermit"
 
 cd "$ROOT"
 mkdir -p "$OUT/bin"

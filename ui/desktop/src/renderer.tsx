@@ -188,7 +188,14 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
       removeListener: () => {},
       removeAllListeners: () => {},
       platform: 'linux',
-      createChatWindow: () => {},
+      // Headless/browser mode has no second window to open, but a seeded chat is
+      // still the whole point of the call — the caller wants the agent working on
+      // this message. Route it into THIS tab rather than silently dropping it,
+      // which is what a `() => {}` stub did.
+      createChatWindow: (query?: string) => {
+        if (!query) return;
+        window.dispatchEvent(new CustomEvent('biorouter:open-seeded-chat', { detail: query }));
+      },
       createDivergedChatWindow: () => {},
       closeWindow: () => {},
       directoryChooser: async () => {
@@ -375,7 +382,18 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
         height: window.innerHeight,
       }),
       checkForOllama: async () => false,
-      cliStatus: async () => ({ installed: false }),
+      // Must match the CliStatus shape the dependency modal reads; the old
+      // `{ installed: false }` had no field in common with it, so every check
+      // against it was a read of `undefined`.
+      cliStatus: async () => ({
+        bundled: null,
+        onPath: false,
+        pathLocation: null,
+        bundledVersion: null,
+        pathVersion: null,
+        needsUpdate: false,
+        brokenOnPath: false,
+      }),
       installCli: async () => ({ success: false }),
       launchCli: async () => ({ success: false }),
       createTerminalSession: async () => ({
@@ -442,6 +460,14 @@ if (needsHeadlessElectron || typeof window.appConfig === 'undefined') {
         },
       fetchRegistry: async (url: string) => fetch(url).then((response) => response.json()),
       installDependency: async () => ({ success: false, error: 'Not available in browser mode' }),
+      // Absent from this stub entirely until now, so the dependency modal's calls
+      // rejected rather than degrading. Empty list = "nothing to report", which is
+      // the honest answer for a server the browser cannot probe.
+      checkDependencies: async () => [],
+      // No background extension updater in browser mode; the app shell listens
+      // for this unconditionally, so the channel must at least exist.
+      onExtensionUpdateEvent: () => {},
+      dependencyEnvironment: async () => ({ platform: 'linux' }),
       launchApp: async (url: string) => window.open(url, '_blank', 'noopener,noreferrer'),
     };
   }

@@ -6,6 +6,7 @@ import { useNavigation } from '../../hooks/useNavigation';
 import { Sidebar, SidebarInset, SidebarProvider, useSidebar } from '../ui/sidebar';
 import { getInitialWorkingDir } from '../../utils/workingDir';
 import DependencySetupModal from '../DependencySetupModal';
+import ExtensionUpdateReporter from '../ExtensionUpdateReporter';
 import {
   getTitlebarControlReserve,
   TitlebarControls,
@@ -195,6 +196,7 @@ export const AppLayout: React.FC = () => {
     <SidebarProvider>
       <AppLayoutContent />
       <DependencySetupModal />
+      <ExtensionUpdateReporter />
     </SidebarProvider>
   );
 };

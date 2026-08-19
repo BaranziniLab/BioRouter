@@ -1,7 +1,14 @@
 //! Shared system-prerequisite checks and CLI installation — the single source
-//! of truth used by both the terminal (`biorouter doctor` / `setup-path`) and,
-//! via the server route, the desktop app's dependency setup. Define a
-//! prerequisite once in [`specs`] and every front-end picks it up.
+//! of truth used by both the terminal (`biorouter doctor` / `setup-path`) and
+//! the desktop app's dependency setup. Define a prerequisite once in [`specs`]
+//! and every front-end picks it up.
+//!
+//! How the desktop reads it: there is **no** server route for this. The Electron
+//! main process shells out to the bundled CLI — `biorouter doctor --format json
+//! --no-update` — and maps the snake_case JSON onto its own camelCase type
+//! (`ui/desktop/src/utils/dependencyChecker.ts`). It keeps a native probe
+//! fallback for dev builds where the bundled CLI is absent, which is the one
+//! place the catalog is duplicated.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -589,5 +596,220 @@ mod tests {
     fn status_of_rust_resolves() {
         // Should return a status (installed or not) rather than None.
         assert!(status_of("rust").is_some());
+    }
+}
+
+// ── debugging a failed prerequisite ──────────────────────────────────────────
+
+/// Everything a fresh Biorouter session needs to diagnose a failed install.
+///
+/// The desktop app has the same idea in TypeScript
+/// (`ui/desktop/src/utils/dependencyDebugPrompt.ts`); this is the terminal's
+/// copy, so `biorouter doctor --fix <dep>` opens a session with the same
+/// briefing the desktop's "Debug with Biorouter" button produces. Keeping the
+/// two in step is a docs-level obligation, not a compile-time one — they render
+/// for different front ends and neither can import the other.
+pub struct DependencyFailure<'a> {
+    pub status: &'a DependencyStatus,
+    /// Combined stdout/stderr, when an install was actually attempted.
+    pub output: Option<&'a str>,
+    /// The error the user was shown, when there is one.
+    pub error: Option<&'a str>,
+}
+
+/// Captured output can be enormous (a `uv sync` compiling from source). The tail
+/// is where the failure is, so keep the tail.
+const MAX_OUTPUT_CHARS: usize = 4_000;
+
+fn truncate_tail(output: &str) -> String {
+    let trimmed = output.trim_end();
+    // Count characters, not bytes — slicing a multi-byte boundary would panic.
+    let total = trimmed.chars().count();
+    if total <= MAX_OUTPUT_CHARS + 64 {
+        return trimmed.to_string();
+    }
+    let kept: String = trimmed
+        .chars()
+        .skip(total - MAX_OUTPUT_CHARS)
+        .collect::<String>();
+    format!(
+        "…[{} earlier characters omitted]…\n{}",
+        total - MAX_OUTPUT_CHARS,
+        kept
+    )
+}
+
+/// Pick a fence long enough that a fence inside `body` cannot end it early.
+fn fence(body: &str) -> String {
+    let longest = body
+        .split(|c| c != '`')
+        .map(|run| run.len())
+        .max()
+        .unwrap_or(0);
+    let delim = "`".repeat(std::cmp::max(3, longest + 1));
+    format!("{delim}\n{body}\n{delim}")
+}
+
+/// Build the opening message for a session that is meant to fix a prerequisite.
+///
+/// Structure is fixed on purpose: goal, what failed, the evidence, the machine,
+/// then the rules — evidence above rules so a model that skims still reads the
+/// error.
+pub fn debug_prompt(failure: &DependencyFailure<'_>) -> String {
+    let d = failure.status;
+    let mut out = String::new();
+
+    out.push_str(&format!(
+        "I am trying to install **{}**, a required system dependency for Biorouter, \
+         and it is not working. Please diagnose why and fix it on this machine.\n\n",
+        d.display_name
+    ));
+
+    out.push_str("## What failed\n\n");
+    out.push_str(&format!(
+        "- What failed: {} (`{}`)\n",
+        d.display_name, d.name
+    ));
+    out.push_str(&format!("- What Biorouter needs it for: {}\n", d.purpose));
+    out.push_str(&format!(
+        "- Currently detected as: {}\n",
+        if d.installed {
+            d.version.as_deref().unwrap_or("installed")
+        } else {
+            "not installed"
+        }
+    ));
+    if let Some(cmd) = &d.install_command {
+        out.push_str(&format!("- Install command Biorouter suggests: `{cmd}`\n"));
+    }
+    if d.requires_sudo {
+        out.push_str("- This install normally needs administrator privileges.\n");
+    }
+    if !d.doc_url.is_empty() {
+        out.push_str(&format!("- Official install page: {}\n", d.doc_url));
+    }
+    if let Some(err) = failure.error {
+        out.push_str(&format!("- Error reported: {err}\n"));
+    }
+
+    if let Some(output) = failure.output.filter(|o| !o.trim().is_empty()) {
+        out.push_str(&format!(
+            "\n## Output from the failed command\n\n{}\n",
+            fence(&truncate_tail(output))
+        ));
+    }
+
+    out.push_str("\n## This machine\n\n");
+    out.push_str(&format!(
+        "- Platform: {} ({})\n",
+        std::env::consts::OS,
+        std::env::consts::ARCH
+    ));
+    out.push_str(&format!(
+        "- Biorouter version: {}\n",
+        env!("CARGO_PKG_VERSION")
+    ));
+    if let Ok(path) = std::env::var("PATH") {
+        out.push_str(&format!(
+            "- PATH this shell searches:\n{}\n",
+            fence(&path.replace([':', ';'], "\n"))
+        ));
+    }
+
+    out.push_str(&format!(
+        "\n## What I need from you\n\n\
+         1. Work out the actual cause — not the most common cause.\n\
+         2. Fix it using the shell. Prefer the least invasive fix that works.\n\
+         3. Verify by running `{} --version` yourself and show me the result.\n\
+         4. Tell me in plain language what was wrong and what you changed.\n\n\
+         Rules:\n\
+         - Ask me first before anything needing `sudo`, anything that removes or downgrades \
+         software I did not ask about, or anything that edits my shell profile.\n\
+         - If the fix needs me to do something by hand, say so and give me the exact steps.\n\
+         - If it turns out to be installed already and merely not on PATH, say that — the fix \
+         is the PATH, not another install.\n",
+        d.name
+    ));
+
+    out
+}
+
+#[cfg(test)]
+mod debug_prompt_tests {
+    use super::*;
+
+    fn status(name: &str) -> DependencyStatus {
+        DependencyStatus {
+            name: name.to_string(),
+            display_name: format!("{name} (test)"),
+            installed: false,
+            version: None,
+            required: true,
+            purpose: "test purpose".to_string(),
+            doc_url: "https://example.invalid".to_string(),
+            install_command: Some("brew install thing".to_string()),
+            requires_sudo: false,
+            download_url: None,
+        }
+    }
+
+    #[test]
+    fn carries_the_evidence_and_the_rules() {
+        let s = status("uv");
+        let p = debug_prompt(&DependencyFailure {
+            status: &s,
+            output: Some("curl: (6) Could not resolve host"),
+            error: Some("exit code 6"),
+        });
+        assert!(p.contains("uv (test)"));
+        assert!(p.contains("brew install thing"));
+        assert!(p.contains("Could not resolve host"));
+        assert!(p.contains("uv --version"));
+        assert!(p.contains("Ask me first"));
+        // Evidence must precede instructions.
+        assert!(
+            p.find("Could not resolve host").unwrap() < p.find("What I need from you").unwrap()
+        );
+    }
+
+    #[test]
+    fn output_containing_a_fence_cannot_break_out() {
+        let s = status("uv");
+        let p = debug_prompt(&DependencyFailure {
+            status: &s,
+            output: Some("before\n```\ninner\n```\nafter"),
+            error: None,
+        });
+        assert!(p.contains("````"));
+    }
+
+    #[test]
+    fn truncation_keeps_the_tail_and_never_grows_the_input() {
+        let long = format!("{}THE_ACTUAL_ERROR", "x".repeat(MAX_OUTPUT_CHARS * 2));
+        let t = truncate_tail(&long);
+        assert!(t.contains("THE_ACTUAL_ERROR"));
+        assert!(t.chars().count() < long.chars().count());
+
+        let just_over = "z".repeat(MAX_OUTPUT_CHARS + 16);
+        assert!(truncate_tail(&just_over).chars().count() <= just_over.chars().count());
+    }
+
+    #[test]
+    fn multibyte_output_does_not_panic() {
+        let long = "é".repeat(MAX_OUTPUT_CHARS * 2);
+        let t = truncate_tail(&long);
+        assert!(t.contains("earlier characters omitted"));
+    }
+
+    #[test]
+    fn works_with_nothing_but_a_status() {
+        let s = status("git");
+        let p = debug_prompt(&DependencyFailure {
+            status: &s,
+            output: None,
+            error: None,
+        });
+        assert!(p.contains("git --version"));
+        assert!(!p.contains("Output from the failed command"));
     }
 }

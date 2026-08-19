@@ -604,6 +604,18 @@ export function AppInner() {
     return window.electron.on('set-initial-message', handleSetInitialMessage);
   }, [navigate]);
 
+  // Headless/browser mode has no second window, so `createChatWindow` re-enters
+  // here as a DOM event instead (see renderer.tsx). Same delivery path, same
+  // auto-submit — the difference is only that it lands in this tab.
+  useEffect(() => {
+    const handleSeededChat = (event: Event) => {
+      const message = (event as CustomEvent<string>).detail;
+      if (message) void deliverLauncherMessage(navigate, message);
+    };
+    window.addEventListener('biorouter:open-seeded-chat', handleSeededChat);
+    return () => window.removeEventListener('biorouter:open-seeded-chat', handleSeededChat);
+  }, [navigate]);
+
   if (fatalError) {
     return <ErrorUI error={errorMessage(fatalError)} />;
   }

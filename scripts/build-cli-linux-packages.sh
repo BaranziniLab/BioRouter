@@ -28,9 +28,14 @@ NFPM_IMAGE="goreleaser/nfpm:latest"
 
 log() { printf '\033[1;36m[cli-pkg]\033[0m %s\n' "$*"; }
 die() { printf '\033[1;31m[cli-pkg] %s\033[0m\n' "$*" >&2; exit 1; }
+BR_HINT_LABEL="cli-pkg"
+# shellcheck source=scripts/lib/dependency-hint.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/dependency-hint.sh"
 
-command -v docker >/dev/null 2>&1 || die "docker is required"
-docker info >/dev/null 2>&1 || die "docker daemon is not running"
+
+br_require_command docker "The deb and rpm are built inside a container."
+docker info >/dev/null 2>&1 || br_dependency_die docker "docker daemon is not running" \
+  "The docker CLI is installed but cannot reach a daemon. Start Docker Desktop (or dockerd) and retry."
 [ -f "$REL/biorouter" ]  || die "missing $REL/biorouter — run: scripts/release.sh backends $VERSION"
 [ -f "$REL/biorouterd" ] || die "missing $REL/biorouterd — run: scripts/release.sh backends $VERSION"
 
