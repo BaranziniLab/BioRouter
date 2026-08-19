@@ -54,6 +54,25 @@ Existing 283 tests untouched and green.
 **Gate:** the vocabulary matches `SCHEMA.md` exactly — asserted by a test that parses the spec's own
 tables out of a checked-in fixture, so a spec bump fails loudly instead of silently diverging.
 
+## Stage 1.5 — Seams (must land before Stage 2)
+
+The risk review found that several later stages trip a landmine that is cheap to defuse *first* and
+expensive to diagnose *after*. Each item here is a small, **behaviour-preserving** change whose whole
+purpose is to make the next stage safe. None of them changes the page format.
+
+| # | Change | Defuses |
+| --- | --- | --- |
+| S-a | Graph-cache envelope `version`; `read_cache` returns `Ok(None)` on parse failure or version mismatch; retire the scaffold-node self-heal predicate | DR-13 — otherwise every existing base 404s its graph forever, or silently serves typeless nodes forever |
+| S-b | `#[serde(default)]` on every `Manifest` field including `schema_version`; `list_bases` surfaces an unreadable manifest instead of dropping it | DR-12 — otherwise the first visibility toggle **persists** a cleared `.active-kb` |
+| S-c | One shared `[[…]]` parser + resolver; `query` and `lint` call it; a test drives all three consumers over one corpus and asserts they agree | DR-14 — they already disagree today, and extending the grammar corrupts the other two |
+| S-d | `complete` sentinel dispatches sibling tool calls before returning | DR-15 — batched typed writes would be silently discarded and misreported as "wrote no knowledge pages" |
+| S-e | `valid_page(type, title, body)` fixture helper; existing fixtures moved onto it | DR-19 — otherwise a validating writer turns ~20 privacy tests red for reasons unrelated to privacy |
+| S-f | `make_schema` emits real JSON Schema (enums, descriptions, nesting) | DR-16 — a closed vocabulary is otherwise unenforceable and un-declarable to the model |
+| S-g | `schema.md` migration keyed off `Manifest.schema_version`, called from all three macros, error no longer swallowed | DR-12/DR-16 — the substring fingerprint reports "already migrated" for every base that exists |
+
+**Gate:** every one of the 283 `knowledge::` tests still passes, the new equivalence test for S-c
+passes, and a v1 `manifest.yaml` with no `format` key still loads. Nothing user-visible changed.
+
 ## Stage 2 — Graph derivation
 
 Rewrite `graph.rs` to emit typed nodes and edges:
