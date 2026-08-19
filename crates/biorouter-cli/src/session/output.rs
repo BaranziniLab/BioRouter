@@ -1012,13 +1012,13 @@ pub fn render_extension_error(name: &str, error: &str) {
 pub fn render_diverge_success(new_session_id: &str) {
     println!();
     println!(
-        "  {} conversation into a new window (session {})",
+        "  {} chat into a new window (session ID {})",
         style("diverged"),
         style(new_session_id).cyan()
     );
     println!(
         "  {}",
-        style("the original conversation is unchanged, keep chatting here").dim()
+        style("the original chat is unchanged, keep chatting here").dim()
     );
     println!();
 }
@@ -1026,7 +1026,7 @@ pub fn render_diverge_success(new_session_id: &str) {
 pub fn render_diverge_open_failed(new_session_id: &str, url: &str, error: &str) {
     println!();
     println!(
-        "  {} the diverged session ({}) but couldn't open a window",
+        "  {} the diverged chat (session ID {}) but couldn't open a window",
         style("created").yellow(),
         style(new_session_id).cyan()
     );
@@ -1418,11 +1418,11 @@ pub fn display_session_info(
     privacy: biorouter::privacy::SessionClassification,
 ) {
     let headline = if resume {
-        "resuming session"
+        "resuming chat"
     } else if session_id.is_none() {
         "running without session"
     } else {
-        "starting session"
+        "starting chat"
     };
 
     // Helper to print one aligned `label   value` row under the headline.

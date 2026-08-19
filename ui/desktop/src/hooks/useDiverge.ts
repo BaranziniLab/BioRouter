@@ -83,11 +83,11 @@ export function useDiverge(): UseDivergeResult {
         // The backend resolves and LOCKS the canonical branch name (e.g.
         // "Foo (branch 1)") and hands it back here. Thread it into the new
         // window so the branch's tab is born with the real name instead of the
-        // "New Session" placeholder — which is what made the tab name and the
+        // "New chat" placeholder — which is what made the tab name and the
         // Recents name disagree for a diverged session.
         const branchName = response.data?.name;
         if (!newSessionId) {
-          throw new Error('Diverge did not return a new session id');
+          throw new Error('Branch did not return a new session ID');
         }
 
         // The branch is a brand-new session created purely over HTTP; it fires

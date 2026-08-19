@@ -43,6 +43,7 @@ function makeSession(index: number, referenceTime = now): SessionSummary {
     updated_at: updatedAt,
     working_dir: `/workspace/project-${index}`,
     message_count: index,
+    user_set_name: false,
   };
 }
 
@@ -157,9 +158,9 @@ describe('RecentChats', () => {
     // chat is already open is the reducer's business (it dedupes), not the row's.
     //
     // The row hands over the NAME it is already rendering, so the tab opens
-    // titled instead of showing "New Session" until BaseChat has fetched the
+    // titled instead of showing "New chat" until BaseChat has fetched the
     // session. The row is the only place that knows this without a round-trip.
-    expect(onOpen).toHaveBeenCalledWith('session-0', 'Chat 0');
+    expect(onOpen).toHaveBeenCalledWith('session-0', 'Chat 0', false);
 
     // Double click is not a distinct gesture any more: it is two opens of the
     // same chat, which the reducer collapses to an activate.
@@ -174,6 +175,18 @@ describe('RecentChats', () => {
     expect(summary).toHaveTextContent('Last worked');
     expect(summary).toHaveTextContent('0 messages');
     expect(summary).toHaveTextContent(currentDateLabel);
+  });
+
+  it('preserves a user-chosen title that matches the legacy placeholder', () => {
+    const onOpen = vi.fn();
+    renderRecentChats({
+      sessions: [{ ...makeSession(0), name: 'New Session', user_set_name: true }],
+      onOpen,
+    });
+
+    fireEvent.click(screen.getByTestId('recent-chat-session-0'));
+
+    expect(onOpen).toHaveBeenCalledWith('session-0', 'New Session', true);
   });
 
   it('truncates an overlong row title while preserving the full hover summary', async () => {

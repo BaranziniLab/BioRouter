@@ -203,7 +203,7 @@ const THINKING_MESSAGES: &[&str] = &[
     "Processing context clues",
     "Scanning memory circuits",
     "Building response chains",
-    "Analyzing conversation flow",
+    "Analyzing chat flow",
     "Processing temporal data",
     "Exploring concept spaces",
     "Processing memory streams",

@@ -1,6 +1,6 @@
 # Usage tips
 
-> **What this is.** A collection of short, independent tips for working with biorouter day to day — prompting, model choice, context and session hygiene, extensions, safety, cost, and workflows.
+> **What this is.** A collection of short, independent tips for working with biorouter day to day — prompting, model choice, context and chat hygiene, extensions, safety, cost, and workflows.
 > **Status:** Current.
 > **Audience:** end users
 
@@ -32,15 +32,15 @@ Your experience with biorouter is shaped by your choice of LLM, as it handles al
 
 Use [lead/worker mode](../configuration/environment-variables.md#leadworker-model-configuration) to have biorouter use a "lead" model for early planning before handing the task to a lower-cost "worker" model for execution.
 
-## Managing context and sessions
+## Managing context and chats
 
-### Keep sessions short
+### Keep chats short
 
-LLMs have context windows, which are limits on how much conversation history they can retain. Once exceeded, they may forget earlier parts of the conversation. Monitor your token usage and [start new sessions](managing-sessions.md) as needed.
+LLMs have context windows, which limit how much chat history they can retain. Once exceeded, they may forget earlier parts of the chat. Monitor your token usage and [start new chats](managing-sessions.md) as needed.
 
-### Use Quick Launcher for faster session starts
+### Use Quick Launcher for faster chat starts
 
-Press `Cmd+Option+Shift+G` (macOS) or `Ctrl+Alt+Shift+G` (Windows/Linux) and send a prompt to start a new session instantly.
+Press `Cmd+Option+Shift+G` (macOS) or `Ctrl+Alt+Shift+G` (Windows/Linux) and send a prompt to start a new chat instantly.
 
 ### Teach biorouter your preferences
 
@@ -62,7 +62,7 @@ biorouter's capabilities are extensible. As an [MCP](https://modelcontextprotoco
 
 ### Set up starter templates
 
-You can turn a successful session into a reusable "[workflow](../workflows/creating-and-sharing-workflows.md)" to share with others or use again later — no need to start from scratch.
+You can turn a successful chat into a reusable "[workflow](../workflows/creating-and-sharing-workflows.md)" to share with others or use again later — no need to start from scratch.
 
 ### Make workflows safe to re-run
 

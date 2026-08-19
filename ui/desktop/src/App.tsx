@@ -129,7 +129,7 @@ const PairRouteContent = ({ setChat }: { setChat: (chat: ChatType) => void }) =>
   // No tabs → Home (issue #38). When the whole layout is empty and no cargo is
   // en route to becoming a tab (deep link, Hub submit, sidebar new-chat,
   // workflow, mid-flight session creation, pending Cmd+T), /pair is a dead-end
-  // "New Session" pane — redirect to the Hub instead. All gates live in the
+  // "New chat" pane — redirect to the Hub instead. All gates live in the
   // hook; isCreatingSession is the only piece that is component state here.
   useEmptyPairRedirect(isCreatingSession);
 

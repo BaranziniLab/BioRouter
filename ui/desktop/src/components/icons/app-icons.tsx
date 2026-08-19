@@ -310,7 +310,7 @@ export const Sliders = light(_Sliders);
 export const SlidersHorizontal = light(_SlidersHorizontal);
 export const Sparkles = light(_Sparkles);
 // Opening a *new window* — the ⧉ mark the cohesion spec draws for the titlebar
-// control (two offset windows). Deliberately not `Plus` (that is New Session),
+// control (two offset windows). Deliberately not `Plus` (that is New chat),
 // not `AppWindow` (that is the Applications route), and not `Copy`, whose
 // geometry the spec's drawing actually matches but which already means copy.
 /** "Open in a new window" — a second window appearing beside the first.

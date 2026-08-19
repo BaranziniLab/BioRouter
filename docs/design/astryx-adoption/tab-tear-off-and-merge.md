@@ -443,7 +443,7 @@ So nothing about tab-opening needs building. What is missing is **discoverabilit
 
 ### The refinement worth taking, and why it is separable
 
-The row click loses the session's name. `useChatGroupsUrlSync` reads a `title` hint from route state (`:103-124`) precisely so a tab opens already named instead of flashing the "New Session" placeholder until `BaseChat` finishes loading; `AppSidebar.handleOpenChat` (`:194-203`) passes it, and `SessionsView.handleSelectSession` does not. The list row is the one caller that also holds `session.user_set_name`, which the sidebar cannot supply and which the URL sync already accepts (`:123`).
+The row click loses the session's name. `useChatGroupsUrlSync` reads a `title` hint from route state (`:103-124`) precisely so a tab opens already named instead of flashing the "New chat" placeholder until `BaseChat` finishes loading; `AppSidebar.handleOpenChat` passes both the summary title and `user_set_name`, while `SessionsView.handleSelectSession` does not. The URL sync accepts both fields and the loaded session still corrects them authoritatively.
 
 **Decision.** Ship the plain menu item first, since it needs no signature change. Widening `onSelectSession` to `(sessionId, hint?: { title, userSetName })` is a separate, optional follow-up that removes the name flash for this surface — worth doing, not worth blocking on.
 

@@ -118,7 +118,7 @@ export default function PrivacyPanel() {
         >
           <strong>Privacy tiers are off.</strong> Nothing on this machine is separating private
           chats, extensions or knowledge bases from public models, and Biorouter is not recording
-          which conversations touch private material. Every badge in the app reads{' '}
+          which chats touch private material. Every badge in the app reads{' '}
           <em>enforcement off</em> while this is the case.
         </div>
       )}
@@ -241,7 +241,7 @@ export default function PrivacyPanel() {
         >
           <p className="text-sm text-text-default">
             This turns off <strong>every</strong> privacy guardrail on this machine, for every
-            conversation.
+            chat.
           </p>
           {/* ⚠ The shell clause moved OUT of this list, and that is the point.
               Everything here is a consequence of turning the switch off, so

@@ -99,7 +99,7 @@ const DEFAULT_REPETITION_SOFT_WARN: u32 = 3;
 /// `BIOROUTER_REPETITION_HARD_STOP`. Set below the soft threshold to disable the
 /// soft stage entirely.
 const DEFAULT_REPETITION_HARD_STOP: u32 = 5;
-const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation...";
+const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the chat...";
 /// Max consecutive auto-continues for a turn the provider cut off by the output
 /// length limit (`finish_reason == "length"`) with no tool call. Bounded so a
 /// pathological "always truncates, never progresses" stream can't loop forever;
@@ -5217,7 +5217,7 @@ impl Agent {
                             yield AgentEvent::Message(
                                 Message::assistant().with_system_notification(
                                     SystemNotificationType::InlineMessage,
-                                    "Compaction skipped: this conversation changed while it was \
+                                    "Compaction skipped: this chat changed while it was \
                                      being summarized. Continuing with the full history.",
                                 )
                             );
@@ -5260,7 +5260,7 @@ impl Agent {
                     Err(e) => {
                         yield AgentEvent::Message(
                             Message::assistant().with_text(
-                                format!("Ran into this error trying to compact: {e}.\n\nPlease try again or create a new session")
+                                format!("Ran into this error trying to compact: {e}.\n\nPlease try again or create a new chat")
                             )
                         );
                         return;
@@ -6630,7 +6630,7 @@ impl Agent {
                                 yield AgentEvent::Message(
                                     Message::assistant().with_system_notification(
                                         SystemNotificationType::InlineMessage,
-                                        "Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new session."
+                                        "Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new chat."
                                     )
                                 );
                                 break;
@@ -6639,7 +6639,7 @@ impl Agent {
                             yield AgentEvent::Message(
                                 Message::assistant().with_system_notification(
                                     SystemNotificationType::InlineMessage,
-                                    "Context limit reached. Compacting to continue conversation...",
+                                    "Context limit reached. Compacting to continue the chat...",
                                 )
                             );
                             yield AgentEvent::Message(
@@ -7305,7 +7305,7 @@ impl Agent {
             // The SSE consumer can `break` early (e.g. on client disconnect /
             // cancellation) before that final poll, in which case the stream future
             // is dropped and this tail never executes — leaving the session stuck on
-            // "New Session". The rename is now driven by the consumer instead, via
+            // "New chat". The rename is now driven by the consumer instead, via
             // `maybe_rename_session`, which is guaranteed to run after the reply loop
             // ends regardless of how it ended. See routes/reply.rs and routes/apps.rs.
         }))
@@ -7316,7 +7316,7 @@ impl Agent {
     /// Consumers of `reply()` call this once the stream loop exits (normal end,
     /// error, or cancellation). Unlike a tail appended to the lazy reply stream,
     /// this always runs, so a session with a real exchange is never left as the
-    /// "New Session" placeholder. `maybe_update_name` is itself idempotent and
+    /// "New chat" placeholder. `maybe_update_name` is itself idempotent and
     /// guarded (it skips user-named sessions and stops after the first few
     /// exchanges), so calling it once per reply is cheap and correct.
     pub async fn maybe_rename_session(&self, session_id: &str) {
@@ -8001,6 +8001,14 @@ mod tests {
     use super::*;
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
+
+    #[test]
+    fn compaction_notice_uses_user_facing_chat_terminology() {
+        assert_eq!(
+            COMPACTION_THINKING_TEXT,
+            "biorouter is compacting the chat..."
+        );
+    }
 
     /// Extract the elicitation id from a queued request message.
     fn queued_elicitation_id(messages: &[Message]) -> Option<String> {

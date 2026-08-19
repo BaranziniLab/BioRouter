@@ -13,7 +13,7 @@ export interface UrlOpenRequest {
    * on the row you just clicked, so the name is in hand at nav time. Without
    * this the tab was born with the placeholder and only got its real name once
    * BaseChat had fetched the session and fired onSessionUpdate — a visible
-   * "New Session" flash on every history click, for a name we already had.
+   * "New chat" flash on every history click, for a name we already had.
    *
    * Optional, and NOT a replacement for the late rename: a deep link, a fresh
    * chat, or an external nav has no name to pass, and a session renamed later
@@ -110,7 +110,7 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
     // A fresh window (a diverge branch opens one) has no react-router
     // location.state, so its canonical title rides the URL instead. Prefer
     // in-app nav state when present, fall back to the URL param — a diverged tab
-    // is then born with its real branch name rather than the "New Session"
+    // is then born with its real branch name rather than the "New chat"
     // placeholder, matching what Recents shows. The name is backend-resolved and
     // locked, so it is user-set.
     const urlTitle = searchParams.get('resumeSessionTitle') || undefined;
@@ -133,7 +133,7 @@ export function useChatGroupsUrlSync({ activeSessionId, onOpen }: UrlSyncArgs): 
     justOpenedRef.current = null;
 
     if (!activeSessionId) {
-      // The mirror covers the EMPTY case too (R1-01): when a New Session tab
+      // The mirror covers the EMPTY case too (R1-01): when a New chat tab
       // (sidebar button, strip "+", Cmd+T) takes focus, a lingering
       // ?resumeSessionId= points at a chat that is no longer active — the
       // sidebar Recents highlight reads exactly that param, so it kept the

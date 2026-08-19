@@ -1308,7 +1308,7 @@ pub async fn configure_lead_worker_dialog() -> anyhow::Result<()> {
         ));
     } else {
         let _ = cliclack::log::info(
-            "Lead/worker mode runs a stronger lead model for the first turns of a session, then switches to your default (worker) model.",
+            "Lead/worker mode runs a stronger lead model for the first turns of a chat, then switches to your default (worker) model.",
         );
     }
 

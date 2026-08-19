@@ -54,11 +54,11 @@ Turn structured data into self-contained, interactive HTML figures rendered inli
 
 Ask for a tool and the agent builds a small **Biorouter app**: a TypeScript front-end wired to its own per-app agent. It doesn't just answer inside the app — it drives it, rendering panels, charts and graphs into the running page and asking you questions mid-task. A finished app can be exported as a directly runnable bundle. Agent Drafter is a built-in extension, on by default. See the [Apps SDK reference](docs/apps-sdk/sdk-reference.md).
 
-### Run several conversations at once
+### Run several chats at once
 
-- **Workspace control** — lay work out across tabs, panes and windows: a second conversation for the QC pass while the first writes the methods, each with its own working directory, extensions and history.
-- **Delegate to subagents** — hand a job to a child conversation you can read, steer and stop, with the parent waiting on it properly instead of polling.
-- **Reconfigure another conversation from this one** — hand a chat a skill or an extension, behind a confirmation card.
+- **Workspace control** — lay work out across tabs, panes and windows: a second chat for the QC pass while the first writes the methods, each with its own working directory, extensions and history.
+- **Delegate to subagents** — hand a job to a child chat you can read, steer and stop, with the parent waiting on it properly instead of polling.
+- **Reconfigure another chat from this one** — hand a chat a skill or an extension, behind a confirmation card.
 
 Two gates: the full surface is an **opt-in extension** (Extensions → **Workspace Control**, or `biorouter configure` → Toggle Extensions → `workspace`), and delegation is offered only in the **Completely Autonomous** permission mode. See [Workspace control](docs/agent-loop/workspace-control.md).
 
@@ -72,7 +72,7 @@ Two gates: the full surface is an **opt-in extension** (Extensions → **Workspa
 - **Scheduling** — run workflows and agent automations on a **cron schedule**, unattended.
 - **Skills** — teach Biorouter your lab's reusable instruction sets and best practices; built-in authoring skills (`develop-biorouter-extension`, `develop-biorouter-skill`) help you create your own.
 - **Lifecycle hooks** — fire custom commands at `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SessionEnd` for logging, policy, and automation.
-- **Agent goals & ACP** — agents track goals across a session, and the Agent Communication Protocol enables multi-agent orchestration.
+- **Agent goals & ACP** — agents track goals across a chat, and the Agent Communication Protocol enables multi-agent orchestration.
 
 ### Three surfaces, one core
 
@@ -133,7 +133,7 @@ Throughout, a **private model** means one your institution hosts (**Versa API Az
 
 **Which institution, not just how sensitive.** HIPAA compliance is established per data flow and does **not** transfer between institutions, so "both ends are private" is not enough. UCSF's Versa reaching UCSF's OMOP or CDW connector is the approved arrangement and passes quietly. The same model reaching *another* site's private connector is a mismatch: Biorouter flags it, and depending on your setting you can accept it deliberately (recorded) or have it refused outright. A **local** model is the exception that reaches everything private — nothing is disclosed to anyone, so there is no agreement to be outside of.
 
-**What a public model is mechanically stopped from doing.** It cannot obtain another chat's private content — not through chat recall, not by ingesting another conversation, not through the Workspace Control tools, and not by reading a knowledge base marked private; a refusal says so instead of quietly returning less. It cannot **see, call or attach** the clinical connectors: they are filtered out of its tool list, a call is refused rather than prompted, and attaching one to a public chat is declined with no "approve anyway" — not even for you at the keyboard. And it cannot promote itself into private capability: it cannot spawn a subagent on a private model to fetch private material on its behalf, and raising a chat's tier is a user action rather than something the agent does for itself.
+**What a public model is mechanically stopped from doing.** It cannot obtain another chat's private content — not through chat recall, not by ingesting another chat, not through the Workspace Control tools, and not by reading a knowledge base marked private; a refusal says so instead of quietly returning less. It cannot **see, call or attach** the clinical connectors: they are filtered out of its tool list, a call is refused rather than prompted, and attaching one to a public chat is declined with no "approve anyway" — not even for you at the keyboard. And it cannot promote itself into private capability: it cannot spawn a subagent on a private model to fetch private material on its behalf, and raising a chat's tier is a user action rather than something the agent does for itself.
 
 ⚠ **What is not stopped.** **There is no general filesystem barrier in v1.** A public model that you have given shell access can read ordinary files on this computer — including files an earlier private chat wrote outside Biorouter's own storage, and the session database at `~/.config/biorouter/sessions/sessions.db`, which is not encrypted. And a connector's private mark is not tamper-proof: **two file edits** (renaming its entry in `config.yaml` and deleting `extension-provenance.json`) untag it, after which a public model can query it like any other tool. Nothing rebuilds, nothing reinstalls. That last one is a difference in kind, not degree — it is live access to clinical data from a public model, the one thing this system is otherwise good at refusing. Treat all of this as protection against forgetting which model you are on, not against an agent following instructions hidden in a document it was asked to read. These are the gaps you are most likely to meet, not the complete list; [the full accounting](docs/security/data-privacy-and-phi.md#the-provider-guidance-on-this-page-is-now-enforced) names the rest, including the Workspace Control write paths.
 
@@ -160,7 +160,7 @@ Full documentation lives at [biorouter.ucsf.edu/docs](https://biorouter.ucsf.edu
 | [Workflows](docs/workflows/README.md) | Creating and sharing automated workflows |
 | [Schedulers](docs/workflows/scheduled-jobs.md) | Running workflows on a schedule |
 | [Hooks](docs/agent-loop/hooks/hooks-reference.md) | Lifecycle hooks for logging, policy, and automation |
-| [Workspace Control](docs/agent-loop/workspace-control.md) | Running several conversations at once and delegating to subagents |
+| [Workspace Control](docs/agent-loop/workspace-control.md) | Running several chats at once and delegating to subagents |
 | [Permission modes](docs/security/permission-modes.md) | The four autonomy modes and how to switch them |
 | [Managed enterprise policy](docs/security/managed-policy.md) | Admin-owned policy that overrides user config for permissions and hooks |
 | [Secret Storage](docs/security/secret-storage.md) | How credentials are kept in your OS keychain |

@@ -365,7 +365,7 @@ async fn get_or_create_session_id(
             if let Some(latest) = sessions.first() {
                 Ok(Some(latest.id.clone()))
             } else {
-                eprintln!("No previous session to resume; starting a new session.");
+                eprintln!("No previous chat to resume; starting a new chat.");
                 refuse_unconfigured_before_creating_a_row(provider, model)?;
                 let session = session_manager
                     .create_session(
@@ -406,7 +406,7 @@ async fn get_or_create_session_id(
                 return Ok(Some(existing.id));
             }
             eprintln!(
-                "No existing session named '{name}' to resume; starting a new session with that name."
+                "No existing chat named '{name}' to resume; starting a new chat with that name."
             );
         }
 
@@ -567,7 +567,7 @@ enum SessionCommand {
     },
     #[command(
         about = "Attach to a running session: render where it is, follow it live, and steer it",
-        long_about = "Joins a session that is running RIGHT NOW. Prints the conversation \
+        long_about = "Joins a session that is running RIGHT NOW. Prints the chat \
                       so far, then follows it live; anything you type is delivered to the \
                       running turn (or starts one). Use `session --resume` instead for a \
                       finished transcript. Resuming a live session opens a second agent \
@@ -621,7 +621,7 @@ enum SessionCommand {
     },
     #[command(
         about = "Diverge a saved session into a new one, preserving full history",
-        long_about = "Branch a stored conversation into a brand-new session. The original is left untouched. Prints the new session id to stdout (resume it with `biorouter session --resume --session-id <ID>`)."
+        long_about = "Branch a stored chat into a brand-new session. The original is left untouched. Prints the new session id to stdout (resume it with `biorouter session --resume --session-id <ID>`)."
     )]
     Diverge {
         #[command(flatten)]

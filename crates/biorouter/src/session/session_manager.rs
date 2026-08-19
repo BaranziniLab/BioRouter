@@ -183,6 +183,8 @@ impl std::str::FromStr for SessionType {
 static SESSION_STORAGE: LazyLock<Arc<SessionStorage>> =
     LazyLock::new(|| Arc::new(SessionStorage::new(Paths::data_dir())));
 
+pub const DEFAULT_SESSION_NAME: &str = "New chat";
+
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Session {
     pub id: String,
@@ -262,6 +264,8 @@ pub struct SessionSummary {
     pub id: String,
     pub working_dir: String,
     pub name: String,
+    #[serde(default)]
+    pub user_set_name: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub message_count: i64,
@@ -2107,7 +2111,7 @@ impl SessionManager {
     /// Naming:
     /// - `custom_name` (when non-blank) is used verbatim.
     /// - Otherwise the name is `"{base} (branch {N})"`, where `base` is the
-    ///   parent's name (a placeholder like "New Session" is replaced with a
+    ///   parent's name (a placeholder like "New chat" is replaced with a
     ///   title derived from the conversation) with any existing `(branch K)`
     ///   suffix stripped, and `N` is the next free index across that family.
     ///
@@ -2232,10 +2236,10 @@ impl SessionManager {
         // Whether the session is still on a placeholder title. A session that
         // already has a real, content-derived name should stop regenerating it
         // after the first few turns (no churn); a session still showing the
-        // "New Session" placeholder must keep getting a chance to be named on
+        // "New chat" placeholder must keep getting a chance to be named on
         // every turn, no matter how long it grows — otherwise an early naming
         // miss (e.g. an interrupted or errored first turn) leaves it stuck on
-        // "New Session" forever once it crosses the message-count threshold.
+        // "New chat" forever once it crosses the message-count threshold.
         let still_default = is_default_session_name(&session.name);
 
         let conversation = session
@@ -2264,7 +2268,7 @@ impl SessionManager {
         // best-effort: if the provider errors (rate limit, auth, model issue)
         // or hands back an empty/whitespace string, fall back to a
         // deterministic title derived from the first user message so a session
-        // is NEVER left as "New Session" after a real exchange.
+        // is NEVER left as "New chat" after a real exchange.
         let name = match provider.generate_session_name(&conversation).await {
             Ok(name) if !name.trim().is_empty() => name,
             Ok(_) => {
@@ -2295,7 +2299,7 @@ impl SessionManager {
 
     /// Derive a short, deterministic session title from the first user message.
     /// Used as a fallback when the LLM-based namer is unavailable so a session
-    /// with a real exchange never stays as the "New Session" placeholder.
+    /// with a real exchange never stays as the "New chat" placeholder.
     fn fallback_session_name(conversation: &Conversation) -> String {
         let first_user_text = conversation
             .messages()
@@ -2409,8 +2413,8 @@ impl Session {
     }
 }
 
-/// True when `name` is a placeholder title (empty, "New Session", "CLI
-/// Session", "New session N", "Session N") rather than a meaningful name —
+/// True when `name` is a placeholder title (empty, "New chat", legacy "New
+/// Session", "CLI Session", "New session N", or "Session N") rather than a meaningful name —
 /// mirrors the frontend `isDefaultSessionName`. Used so a diverged branch
 /// doesn't inherit a useless placeholder.
 pub(crate) fn is_default_session_name(name: &str) -> bool {
@@ -2418,7 +2422,10 @@ pub(crate) fn is_default_session_name(name: &str) -> bool {
     if n.is_empty() {
         return true;
     }
-    if n.eq_ignore_ascii_case("New Session") || n.eq_ignore_ascii_case("CLI Session") {
+    if n.eq_ignore_ascii_case(DEFAULT_SESSION_NAME)
+        || n.eq_ignore_ascii_case("New Session")
+        || n.eq_ignore_ascii_case("CLI Session")
+    {
         return true;
     }
     // "New session <N>" or "Session <N>" (trailing digits).
@@ -2431,6 +2438,14 @@ pub(crate) fn is_default_session_name(name: &str) -> bool {
         }
     }
     false
+}
+
+fn canonical_session_name(name: String, user_set_name: bool) -> String {
+    if !user_set_name && is_default_session_name(&name) {
+        DEFAULT_SESSION_NAME.to_string()
+    } else {
+        name
+    }
 }
 
 /// Strip a trailing `" (branch <digits>)"` from a name so branching a branch
@@ -2610,10 +2625,14 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for SessionSummary {
     fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         use sqlx::Row;
 
+        let user_set_name = row.try_get("user_set_name").unwrap_or(false);
+        let name = canonical_session_name(row.try_get("name")?, user_set_name);
+
         Ok(SessionSummary {
             id: row.try_get("id")?,
             working_dir: row.try_get("working_dir")?,
-            name: row.try_get("name")?,
+            name,
+            user_set_name,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
             message_count: row.try_get("message_count")?,
@@ -2641,7 +2660,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
         let model_config_json: Option<String> = row.try_get("model_config_json").ok().flatten();
         let model_config = model_config_json.and_then(|json| serde_json::from_str(&json).ok());
 
-        let name: String = {
+        let stored_name: String = {
             let name_val: String = row.try_get("name").unwrap_or_default();
             if !name_val.is_empty() {
                 name_val
@@ -2651,6 +2670,7 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Session {
         };
 
         let user_set_name = row.try_get("user_set_name").unwrap_or(false);
+        let name = canonical_session_name(stored_name, user_set_name);
 
         let session_type_str: String = row
             .try_get("session_type")
@@ -5964,6 +5984,7 @@ impl SessionStorage {
             SELECT s.id,
                    s.working_dir,
                    COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') AS name,
+                   s.user_set_name,
                    s.created_at,
                    s.updated_at,
                    s.parent_session_id,
@@ -6825,7 +6846,7 @@ impl SessionStorage {
     /// `N` is the next free index across that base's branch family.
     async fn compute_branch_name(&self, original: &Session) -> Result<String> {
         let stripped = strip_branch_suffix(&original.name);
-        let base = if is_default_session_name(stripped) {
+        let base = if !original.user_set_name && is_default_session_name(stripped) {
             let derived = original
                 .conversation
                 .as_ref()
@@ -10948,6 +10969,7 @@ mod tests {
     fn test_is_default_session_name() {
         assert!(is_default_session_name(""));
         assert!(is_default_session_name("   "));
+        assert!(is_default_session_name("New chat"));
         assert!(is_default_session_name("New Session"));
         assert!(is_default_session_name("new session"));
         assert!(is_default_session_name("CLI Session"));
@@ -10955,6 +10977,18 @@ mod tests {
         assert!(is_default_session_name("Session 12"));
         assert!(!is_default_session_name("Glycolysis explained"));
         assert!(!is_default_session_name("Session about sessions"));
+    }
+
+    #[test]
+    fn default_name_canonicalization_respects_an_explicit_user_name() {
+        assert_eq!(
+            canonical_session_name("New Session".to_string(), false),
+            DEFAULT_SESSION_NAME
+        );
+        assert_eq!(
+            canonical_session_name("New Session".to_string(), true),
+            "New Session"
+        );
     }
 
     #[tokio::test]
@@ -11101,13 +11135,96 @@ mod tests {
         .unwrap();
 
         let branch = sm.diverge_session(&session.id, None, None).await.unwrap();
-        // Name derives from the first user message, not "New Session".
+        // Name derives from the first user message, not "New chat".
         assert!(
             branch.name.starts_with("Explain the citric acid cycle"),
             "unexpected branch name: {}",
             branch.name
         );
         assert!(branch.name.ends_with("(branch 1)"));
+    }
+
+    #[tokio::test]
+    async fn test_diverge_preserves_a_user_named_new_session() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                PathBuf::from("/tmp/user-named-new-session"),
+                DEFAULT_SESSION_NAME.to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.update(&session.id)
+            .user_provided_name("New Session")
+            .apply()
+            .await
+            .unwrap();
+        sm.add_message(&session.id, &umsg(10, "Keep my chosen title"))
+            .await
+            .unwrap();
+
+        let branch = sm.diverge_session(&session.id, None, None).await.unwrap();
+
+        assert_eq!(branch.name, "New Session (branch 1)");
+    }
+
+    #[tokio::test]
+    async fn session_summaries_distinguish_legacy_defaults_from_user_names() {
+        let temp_dir = TempDir::new().unwrap();
+        let sm = SessionManager::new(temp_dir.path().to_path_buf());
+        let session = sm
+            .create_session(
+                temp_dir.path().to_path_buf(),
+                "New Session".to_string(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+        sm.add_message(&session.id, &umsg(10, "hello"))
+            .await
+            .unwrap();
+
+        let summary = sm
+            .list_session_summaries(10, 0, false, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == session.id)
+            .unwrap();
+        assert_eq!(summary.name, DEFAULT_SESSION_NAME);
+        assert!(!summary.user_set_name);
+
+        sm.update(&session.id)
+            .user_provided_name("New Session")
+            .apply()
+            .await
+            .unwrap();
+        let summary = sm
+            .list_session_summaries(10, 0, false, false)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|candidate| candidate.id == session.id)
+            .unwrap();
+        assert_eq!(summary.name, "New Session");
+        assert!(summary.user_set_name);
+    }
+
+    #[test]
+    fn legacy_session_summary_json_defaults_user_set_name_to_false() {
+        let summary: SessionSummary = serde_json::from_value(serde_json::json!({
+            "id": "legacy",
+            "working_dir": "/tmp",
+            "name": "New Session",
+            "created_at": "2026-08-18T00:00:00Z",
+            "updated_at": "2026-08-18T00:00:00Z",
+            "message_count": 1
+        }))
+        .unwrap();
+
+        assert!(!summary.user_set_name);
     }
 
     #[tokio::test]

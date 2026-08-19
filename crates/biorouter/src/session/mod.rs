@@ -14,5 +14,5 @@ pub use extension_data::{
 pub use session_manager::{
     ActivityWindow, DailyActivity, ModelUsageRow, Session, SessionInsights, SessionManager,
     SessionSummary, SessionType, SessionUpdateBuilder, UsageGroup, UsageReportRow, UsageSummary,
-    UsageTotals, WorkingDirUpdate,
+    UsageTotals, WorkingDirUpdate, DEFAULT_SESSION_NAME,
 };

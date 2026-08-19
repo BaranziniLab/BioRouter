@@ -5,7 +5,7 @@ export type ToolResponseMessageContent = ToolResponse & { type: 'toolResponse' }
 export type NotificationEvent = Extract<MessageEvent, { type: 'Notification' }>;
 
 // Compaction response message - must match backend constant
-const COMPACTION_THINKING_TEXT = 'biorouter is compacting the conversation...';
+const COMPACTION_THINKING_TEXT = 'biorouter is compacting the chat...';
 
 export type UserAttachment = { path: string; kind: 'image' };
 

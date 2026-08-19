@@ -689,7 +689,7 @@ impl CliSession {
     async fn handle_rename(&self, name: String) -> Result<()> {
         let name = name.trim();
         if name.is_empty() {
-            output::render_error("A session name cannot be empty.");
+            output::render_error("A chat name cannot be empty.");
             return Ok(());
         }
         match self
@@ -702,11 +702,11 @@ impl CliSession {
             .await
         {
             Ok(()) => output::render_text(
-                &format!("Renamed this session to \"{name}\""),
+                &format!("Renamed this chat to \"{name}\""),
                 Some(output::ACCENT),
                 false,
             ),
-            Err(e) => output::render_error(&format!("Couldn't rename session: {e}")),
+            Err(e) => output::render_error(&format!("Couldn't rename chat: {e}")),
         }
         Ok(())
     }
@@ -748,7 +748,7 @@ impl CliSession {
         let new_session = manager
             .diverge_session(&self.session_id, name, None)
             .await
-            .map_err(|e| anyhow::anyhow!("Failed to diverge session: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to branch chat: {}", e))?;
 
         let url = build_diverge_deeplink(&new_session.id, &new_session.working_dir);
         let open_error = opener(&url).err().map(|e| e.to_string());
@@ -997,7 +997,8 @@ impl CliSession {
     }
 
     async fn handle_compact(&mut self) -> Result<()> {
-        let prompt = "Are you sure you want to compact this conversation? This will condense the message history.";
+        let prompt =
+            "Are you sure you want to compact this chat? This will condense the message history.";
         let should_summarize = match cliclack::confirm(prompt).initial_value(true).interact() {
             Ok(choice) => choice,
             Err(e) => {
@@ -1483,7 +1484,7 @@ impl CliSession {
                                 output::render_error(
                                     "The error above was an exception we were not able to handle.\n\
                                     These errors are often related to connection or authentication\n\
-                                    We've removed the conversation up to the most recent user message\n\
+                                    We've removed the chat up to the most recent user message\n\
                                     - depending on the error you may be able to continue",
                                 );
                             }
@@ -1706,7 +1707,7 @@ impl CliSession {
         // Print session restored message
         println!(
             "\n{} {} messages loaded into context.",
-            console::style("Session restored:").green().bold(),
+            console::style("Chat restored:").green().bold(),
             console::style(self.messages.len()).green()
         );
 

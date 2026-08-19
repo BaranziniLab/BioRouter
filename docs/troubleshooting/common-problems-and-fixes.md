@@ -41,16 +41,16 @@ If biorouter is heading in the wrong direction or gets stuck, you can interrupt 
 
 ### Stuck in a loop or unresponsive
 
-In rare cases, biorouter may enter a "doom spiral" or become unresponsive during a long session. This is often resolved by ending the current session, and starting a new session.
+In rare cases, biorouter may enter a "doom spiral" or become unresponsive during a long chat. This is often resolved by ending the current chat and starting a new chat.
 
 1. Hold down `Ctrl+C` to cancel.
-2. Start a new session:
+2. Start a new chat:
 
    ```sh
    biorouter session
    ```
 
-> **Note.** For particularly large or complex tasks, break them into smaller sessions.
+> **Note.** For particularly large or complex tasks, break them into smaller chats.
 
 ### Preventing long-running commands
 

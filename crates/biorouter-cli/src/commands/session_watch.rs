@@ -334,7 +334,7 @@ pub(crate) fn render_frame(frame: &serde_json::Value) -> Option<String> {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("?")
         )),
-        "UpdateConversation" => Some("[snapshot] conversation resynced".to_string()),
+        "UpdateConversation" => Some("[snapshot] chat resynced".to_string()),
         "ModelChange" => Some(format!(
             "[model] {}",
             frame
@@ -1927,7 +1927,7 @@ mod tests {
         // Task 20's watch is unchanged: a MID-STREAM resync stays one line.
         assert_eq!(
             render_frame(&frame).as_deref(),
-            Some("[snapshot] conversation resynced")
+            Some("[snapshot] chat resynced")
         );
     }
 
@@ -1963,7 +1963,7 @@ mod tests {
         let second = stream_frame_lines(&snapshot, Render::JoinThenLines, &mut joined);
         assert_eq!(
             second,
-            vec!["[snapshot] conversation resynced".to_string()],
+            vec!["[snapshot] chat resynced".to_string()],
             "a later resync is one line, not a second transcript"
         );
 
@@ -1971,7 +1971,7 @@ mod tests {
         let mut never_joins = false;
         assert_eq!(
             stream_frame_lines(&snapshot, Render::Lines, &mut never_joins),
-            vec!["[snapshot] conversation resynced".to_string()]
+            vec!["[snapshot] chat resynced".to_string()]
         );
         assert!(!never_joins, "Render::Lines has no join to latch");
 

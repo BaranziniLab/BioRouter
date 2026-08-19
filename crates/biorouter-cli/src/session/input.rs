@@ -248,7 +248,7 @@ fn print_help() {
 
     // (command, description) pairs rendered as an aligned two-column table.
     let commands: &[(&str, &str)] = &[
-        ("/exit, /quit", "Exit the session"),
+        ("/exit, /quit", "Exit the chat"),
         ("/t", "Toggle Light / Dark / Ansi theme"),
         ("/t <name>", "Set theme directly (light, dark, ansi)"),
         ("/r", "Toggle full (untruncated) tool output"),
@@ -269,17 +269,14 @@ fn print_help() {
             "Enter plan mode, then optionally act on the plan",
         ),
         ("/endplan", "Exit plan mode, return to normal mode"),
-        (
-            "/workflow [file.yaml]",
-            "Save the conversation as a workflow",
-        ),
-        ("/compact", "Compact the conversation to reclaim context"),
+        ("/workflow [file.yaml]", "Save the chat as a workflow"),
+        ("/compact", "Compact the chat to reclaim context"),
         ("/clear", "Clear the current chat history"),
         (
             "/diverge [name]",
-            "Branch this conversation into a new Biorouter window (keeps full history)",
+            "Branch this chat into a new Biorouter window (keeps full history)",
         ),
-        ("/rename <name>", "Rename the current session"),
+        ("/rename <name>", "Rename the current chat"),
         (
             "/goal <condition>",
             "Keep working until the condition is met (/goal clear to stop)",

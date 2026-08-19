@@ -520,7 +520,7 @@ async fn prepare_turn(
 
 /// Best-effort LLM session rename — always spawned, unlike a tail on the lazy
 /// reply stream which an early `break` in [`drive_stream`] would skip, leaving
-/// the session stuck on "New Session".
+/// the session stuck on "New chat".
 fn spawn_session_rename(agent: &Arc<biorouter::agents::Agent>, session_id: &str) {
     let agent_for_rename = agent.clone();
     let session_id_for_rename = session_id.to_string();

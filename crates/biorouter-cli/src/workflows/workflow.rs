@@ -98,7 +98,7 @@ pub fn collect_missing_secrets(requirements: &[SecretRequirement]) -> Result<()>
 
         if !value.trim().is_empty() {
             if let Err(e) = config.set_secret(&req.key, &value) {
-                println!("⚠️  Failed to store secret in secure storage: {}. Secret available for this session only.", e);
+                println!("⚠️  Failed to store secret in secure storage: {}. Secret available for this run only.", e);
                 println!(
                     "   Consider setting {} as an environment variable for future use.",
                     req.key

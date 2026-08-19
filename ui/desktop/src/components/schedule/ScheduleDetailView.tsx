@@ -108,7 +108,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
       if (newSessionId === 'CANCELLED') {
         toastSuccess({ title: 'Job stopped', msg: 'The job was stopped while starting up.' });
       } else {
-        toastSuccess({ title: 'Schedule triggered', msg: `New session: ${newSessionId}` });
+        toastSuccess({ title: 'Schedule triggered', msg: `New chat session ID: ${newSessionId}` });
       }
       await fetchSessions(scheduleId);
       await fetchSchedule(scheduleId);
@@ -175,7 +175,7 @@ const ScheduleDetailView: React.FC<ScheduleDetailViewProps> = ({ scheduleId, onN
           : 'Unknown';
         toastSuccess({
           title: 'Job inspection',
-          msg: `Session: ${result.sessionId}\nRunning for: ${duration}`,
+          msg: `Session ID: ${result.sessionId}\nRunning for: ${duration}`,
         });
       } else {
         toastSuccess({ title: 'Job inspection', msg: 'No detailed information available' });

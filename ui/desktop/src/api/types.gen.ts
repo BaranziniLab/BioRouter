@@ -2251,6 +2251,7 @@ export type SessionSummary = {
      */
     session_type?: string | null;
     updated_at: string;
+    user_set_name?: boolean;
     working_dir: string;
 };
 

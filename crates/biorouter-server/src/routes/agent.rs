@@ -461,7 +461,7 @@ async fn start_agent(
     // state into the UI and made it hard for the frontend to recognize a name
     // as still being the default. Whether this session has been named is now
     // tracked exclusively via `user_set_name` plus a name-vs-default check.
-    let name = "New Session".to_string();
+    let name = biorouter::session::DEFAULT_SESSION_NAME.to_string();
 
     let manager = state.session_manager();
 

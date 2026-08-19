@@ -601,7 +601,7 @@ class ChatStreamController {
   getRunningEntry(): RunningChatEntry {
     return {
       sessionId: this.sessionId,
-      title: this.snapshot.session?.name || this.lastSubmittedTitle || 'New Session',
+      title: this.snapshot.session?.name || this.lastSubmittedTitle || 'New chat',
       chatState: this.snapshot.chatState,
       startedAt: this.lastInteractionTime,
     };

@@ -461,7 +461,7 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
    * `announceSessionName`, and BaseChat only announces on an explicit RENAME —
    * nothing announces when a session merely LOADS. So a tab opened from the
    * sidebar or a deep link kept its creation-time placeholder and sat there
-   * reading "New Session" while document.title showed the real name. Caught by
+   * reading "New chat" while document.title showed the real name. Caught by
    * driving the app; jsdom could not have shown it, because it needs a session
    * to actually load.
    */

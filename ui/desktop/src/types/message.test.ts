@@ -1,5 +1,30 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { createUserMessage } from './message';
+import type { Message } from '../api';
+import { createUserMessage, getCompactingMessage } from './message';
+
+function compactionNotice(text: string): Message {
+  return {
+    role: 'assistant',
+    content: [
+      {
+        type: 'systemNotification',
+        notificationType: 'thinkingMessage',
+        msg: text,
+      },
+    ],
+  } as Message;
+}
+
+describe('getCompactingMessage', () => {
+  it('recognizes the canonical chat notice and rejects the legacy conversation copy', () => {
+    expect(getCompactingMessage(compactionNotice('biorouter is compacting the chat...'))).toBe(
+      'biorouter is compacting the chat...'
+    );
+    expect(
+      getCompactingMessage(compactionNotice('biorouter is compacting the conversation...'))
+    ).toBeUndefined();
+  });
+});
 
 describe('createUserMessage', () => {
   beforeEach(() => {
