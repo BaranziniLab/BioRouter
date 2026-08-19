@@ -15,9 +15,9 @@ use aws_sdk_bedrockruntime::operation::converse_stream::ConverseStreamOutput as 
 
 use super::base::MessageStream;
 use super::formats::bedrock::{
-    bedrock_message_stream, classify_bedrock_converse_error,
-    classify_bedrock_converse_stream_error, from_bedrock_message, from_bedrock_usage,
-    to_bedrock_message, to_bedrock_tool_config,
+    bedrock_blocking_inference_config, bedrock_inference_config, bedrock_message_stream,
+    classify_bedrock_converse_error, classify_bedrock_converse_stream_error, from_bedrock_message,
+    from_bedrock_usage, map_bedrock_stop_reason, to_bedrock_message, to_bedrock_tool_config,
 };
 
 pub const VERSA_BEDROCK_DOC_LINK: &str = "http://biorouter.ucsf.edu/docs";
@@ -195,17 +195,19 @@ impl VersaBedrockProvider {
 
     async fn converse(
         &self,
+        model_config: &ModelConfig,
         system: &str,
         messages: &[Message],
         tools: &[Tool],
-    ) -> Result<(bedrock::Message, Option<bedrock::TokenUsage>), ProviderError> {
-        let model_name = &self.model.model_name;
+    ) -> Result<(bedrock::Message, Option<bedrock::TokenUsage>, String), ProviderError> {
+        let model_name = &model_config.model_name;
 
         let mut request = self
             .client
             .converse()
             .system(bedrock::SystemContentBlock::Text(system.to_string()))
             .model_id(model_name.to_string())
+            .inference_config(bedrock_blocking_inference_config(model_config))
             .set_messages(Some(
                 messages
                     .iter()
@@ -223,8 +225,11 @@ impl VersaBedrockProvider {
             .await
             .map_err(classify_bedrock_converse_error)?;
 
+        let finish_reason = map_bedrock_stop_reason(&response.stop_reason);
         match response.output {
-            Some(bedrock::ConverseOutput::Message(message)) => Ok((message, response.usage)),
+            Some(bedrock::ConverseOutput::Message(message)) => {
+                Ok((message, response.usage, finish_reason))
+            }
             _ => Err(ProviderError::RequestFailed(
                 "No output from Bedrock".to_string(),
             )),
@@ -236,7 +241,7 @@ impl VersaBedrockProvider {
     /// blocking paths cannot drift in what they send.
     async fn converse_stream(
         &self,
-        model_name: &str,
+        model_config: &ModelConfig,
         system: &str,
         messages: &[Message],
         tools: &[Tool],
@@ -245,7 +250,8 @@ impl VersaBedrockProvider {
             .client
             .converse_stream()
             .system(bedrock::SystemContentBlock::Text(system.to_string()))
-            .model_id(model_name.to_string())
+            .model_id(model_config.model_name.clone())
+            .inference_config(bedrock_inference_config(model_config))
             .set_messages(Some(
                 messages
                     .iter()
@@ -348,8 +354,8 @@ impl Provider for VersaBedrockProvider {
         });
         let mut log = RequestLog::start(&self.model, &debug_payload)?;
 
-        let (bedrock_message, bedrock_usage) = self
-            .with_retry(|| self.converse(system, messages, tools))
+        let (bedrock_message, bedrock_usage, finish_reason) = self
+            .with_retry(|| self.converse(model_config, system, messages, tools))
             .await
             .inspect_err(|e| {
                 let _ = log.error(e);
@@ -367,7 +373,8 @@ impl Provider for VersaBedrockProvider {
             Some(&usage),
         )?;
 
-        let provider_usage = ProviderUsage::new(model_name.to_string(), usage);
+        let mut provider_usage = ProviderUsage::new(model_name.to_string(), usage);
+        provider_usage.finish_reason = Some(finish_reason);
         Ok((message, provider_usage))
     }
 
@@ -394,7 +401,7 @@ impl Provider for VersaBedrockProvider {
         let mut log = RequestLog::start(&self.model, &debug_payload)?;
 
         let response = self
-            .with_retry(|| self.converse_stream(&model_name, system, messages, tools))
+            .with_retry(|| self.converse_stream(&self.model, system, messages, tools))
             .await
             .inspect_err(|e| {
                 let _ = log.error(e);
@@ -411,6 +418,7 @@ impl Provider for VersaBedrockProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use aws_smithy_http_client::test_util::capture_request;
 
     /// A provider wired the way `from_env` builds one, minus the credential and
     /// global-config lookups — `from_env` needs UCSF-issued secrets, so it
@@ -439,6 +447,116 @@ mod tests {
             name: "versa_bedrock".to_string(),
             resolved_endpoint: endpoint.to_string(),
         }
+    }
+
+    async fn capturing_provider() -> (
+        VersaBedrockProvider,
+        aws_smithy_http_client::test_util::CaptureRequestReceiver,
+    ) {
+        let (http_client, captured) = capture_request(None);
+        let endpoint = "https://versa-bedrock.invalid";
+        let sdk_config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+            .credentials_provider(Credentials::new(
+                "test-access-key",
+                "test-secret-key",
+                None,
+                None,
+                "VersaBedrockWireTest",
+            ))
+            .region(aws_config::Region::new(VERSA_BEDROCK_DEFAULT_REGION))
+            .endpoint_url(endpoint)
+            .http_client(http_client)
+            .load()
+            .await;
+        (
+            VersaBedrockProvider {
+                client: Client::new(&sdk_config),
+                model: ModelConfig::new_or_fail(VERSA_BEDROCK_DEFAULT_MODEL),
+                retry_config: RetryConfig::default(),
+                name: "versa_bedrock".to_string(),
+                resolved_endpoint: endpoint.to_string(),
+            },
+            captured,
+        )
+    }
+
+    fn assert_inference_wire(
+        captured: aws_smithy_http_client::test_util::CaptureRequestReceiver,
+        expected_tokens: i64,
+        expected_temperature: Option<f64>,
+    ) {
+        let request = captured.expect_request();
+        let body = request.body().bytes().expect("buffered request body");
+        let json: serde_json::Value = serde_json::from_slice(body).expect("JSON request body");
+        assert_eq!(json["inferenceConfig"]["maxTokens"], expected_tokens);
+        assert_eq!(
+            json["inferenceConfig"]["temperature"],
+            expected_temperature.map_or(serde_json::Value::Null, serde_json::Value::from)
+        );
+    }
+
+    #[tokio::test]
+    async fn converse_sends_configured_inference_fields_on_the_wire() {
+        let (provider, captured) = capturing_provider().await;
+        let config = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-4-6")
+            .with_max_tokens(Some(34_567))
+            .with_temperature(Some(0.25));
+        let _ = provider
+            .converse(
+                &config,
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await;
+        assert_inference_wire(captured, 21_333, Some(0.25));
+    }
+
+    #[tokio::test]
+    async fn converse_uses_transport_safe_default_on_the_wire() {
+        let (provider, captured) = capturing_provider().await;
+        let config = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-4-6");
+        let _ = provider
+            .converse(
+                &config,
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await;
+        assert_inference_wire(captured, 21_333, None);
+    }
+
+    #[tokio::test]
+    async fn converse_stream_sends_configured_inference_fields_on_the_wire() {
+        let (provider, captured) = capturing_provider().await;
+        let config = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-4-6")
+            .with_max_tokens(Some(45_678))
+            .with_temperature(Some(0.5));
+        let _ = provider
+            .converse_stream(
+                &config,
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await;
+        assert_inference_wire(captured, 45_678, Some(0.5));
+    }
+
+    #[tokio::test]
+    async fn converse_stream_keeps_large_model_default_on_the_wire() {
+        let (provider, captured) = capturing_provider().await;
+        let config = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-4-6");
+        let _ = provider
+            .converse_stream(
+                &config,
+                "system",
+                &[Message::user().with_text("hello")],
+                &[],
+            )
+            .await;
+        assert_inference_wire(captured, 64_000, None);
     }
 
     /// Task 5 rule 2, **wired** — not just the predicate behind it.

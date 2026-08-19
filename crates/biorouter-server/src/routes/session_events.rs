@@ -379,6 +379,35 @@ mod tests {
         assert_eq!(json["messages"][1]["userVisible"], false);
     }
 
+    #[test]
+    fn output_recovery_exhaustion_maps_to_a_typed_non_retryable_sse_error() {
+        use biorouter::agents::TurnAbortCode;
+
+        let mut token_state = Default::default();
+        let mapped = map_bus_event(
+            SessionBusEvent::Agent(AgentEvent::TurnAborted {
+                code: TurnAbortCode::OutputRecoveryExhausted {
+                    continuations: 12,
+                    zero_progress: false,
+                },
+                message: "Automatic continuation stopped after 12 attempts.".into(),
+            }),
+            &mut token_state,
+        )
+        .expect("terminal abort maps to an SSE error frame");
+
+        let json = serde_json::to_value(mapped).unwrap();
+        assert_eq!(json["type"], "Error");
+        assert_eq!(json["code"], "output_recovery_exhausted");
+        assert_eq!(json["scope"], "inference");
+        assert_eq!(json["retryable"], false);
+        assert_eq!(
+            json["error"],
+            "Automatic continuation stopped after 12 attempts."
+        );
+        assert!(json.get("provider_kind").is_none());
+    }
+
     /// Reconciliation #9: every `TurnErrorScope` variant survives the string
     /// round trip through the bus, and an unknown one degrades instead of
     /// panicking. All FOUR variants — `Provider` is the one the desktop's

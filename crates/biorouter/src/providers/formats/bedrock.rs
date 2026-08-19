@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use crate::mcp_utils::ToolResult;
@@ -24,7 +24,133 @@ use super::super::base::{tool_call_batching_enabled, Usage};
 use super::super::errors::ProviderError;
 use super::audience;
 use crate::conversation::message::{Message, MessageContent};
+use crate::model::ModelConfig;
 use crate::providers::utils::RequestLog;
+
+/// Conservative output ceiling used when a Bedrock model has no BioRouter
+/// override. Current Claude 4.5+ models support at least 64K output, while an
+/// unlisted/non-Claude model keeps the broadly supported 4K fallback.
+pub const BEDROCK_CLAUDE_DEFAULT_MAX_TOKENS: i32 = 64_000;
+pub const BEDROCK_GENERIC_DEFAULT_MAX_TOKENS: i32 = 4_096;
+pub const BEDROCK_BLOCKING_MAX_TOKENS: i32 = 21_333;
+
+/// One inference policy for Amazon Bedrock and the Versa proxy, shared by both
+/// Converse and ConverseStream. Keeping this as a typed SDK value makes it
+/// impossible for the four callers to disagree about the field names or
+/// defaults.
+pub fn bedrock_inference_config(model_config: &ModelConfig) -> bedrock::InferenceConfiguration {
+    bedrock_inference_config_with_limit(model_config, None)
+}
+
+pub fn bedrock_blocking_inference_config(
+    model_config: &ModelConfig,
+) -> bedrock::InferenceConfiguration {
+    bedrock_inference_config_with_limit(model_config, Some(BEDROCK_BLOCKING_MAX_TOKENS))
+}
+
+/// Bound a *default* output allowance by the room compaction leaves for it.
+///
+/// Bedrock rejects a request whose `input + maxTokens` exceeds the model's
+/// context window — "input length and max_tokens exceed context limit: 196395 +
+/// 64000 > 204698". Auto-compaction does not fire until input reaches
+/// [`DEFAULT_COMPACTION_THRESHOLD`] of the window, so a fixed 64,000 allowance
+/// opens a band on every 200K-context model (Haiku 4.5, Sonnet 4.5, Opus 4.5)
+/// where input is past `context - 64_000` but not yet past the compaction
+/// trigger: every request in that band 400s on a turn the agent believed was in
+/// budget. It recovers — `looks_like_context_overflow` classifies it and
+/// compacts — but at the cost of a wasted round trip each time.
+///
+/// Keeping the allowance inside the post-threshold headroom closes the band by
+/// construction. The floor is the conservative default, so this can never ask
+/// for less than the provider would have applied with the field omitted.
+fn bounded_by_context_window(max_tokens: i32, context_limit: usize) -> i32 {
+    let headroom =
+        (context_limit as f64 * (1.0 - crate::context_mgmt::DEFAULT_COMPACTION_THRESHOLD)) as i32;
+    max_tokens.min(headroom.max(BEDROCK_GENERIC_DEFAULT_MAX_TOKENS))
+}
+
+fn bedrock_inference_config_with_limit(
+    model_config: &ModelConfig,
+    transport_limit: Option<i32>,
+) -> bedrock::InferenceConfiguration {
+    let max_tokens = model_config
+        .max_tokens
+        .filter(|tokens| *tokens > 0)
+        .unwrap_or_else(|| {
+            // Our own default is bounded by the headroom compaction guarantees.
+            // An explicitly configured value is the caller's decision and is left
+            // alone.
+            bounded_by_context_window(
+                bedrock_default_max_tokens(&model_config.model_name),
+                model_config.context_limit(),
+            )
+        });
+    let max_tokens = transport_limit.map_or(max_tokens, |limit| max_tokens.min(limit));
+    let mut builder = bedrock::InferenceConfiguration::builder().max_tokens(max_tokens);
+
+    // Sonnet 5 and the other adaptive-only Claude families reject sampling
+    // parameters. Older Claude and non-Claude Bedrock models may receive the
+    // configured temperature unchanged.
+    if !bedrock_uses_adaptive_thinking(&model_config.model_name) {
+        builder = builder.set_temperature(model_config.temperature);
+    }
+    builder.build()
+}
+
+fn bedrock_default_max_tokens(model_name: &str) -> i32 {
+    const CLAUDE_64K_FAMILIES: &[&str] = &[
+        "claude-opus-4-5",
+        "claude-opus-4.5",
+        "claude-opus-4-6",
+        "claude-opus-4.6",
+        "claude-opus-4-7",
+        "claude-opus-4.7",
+        "claude-opus-4-8",
+        "claude-opus-4.8",
+        "claude-sonnet-4-5",
+        "claude-sonnet-4.5",
+        "claude-sonnet-4-6",
+        "claude-sonnet-4.6",
+        "claude-sonnet-4-7",
+        "claude-sonnet-4.7",
+        "claude-sonnet-4-8",
+        "claude-sonnet-4.8",
+        "claude-haiku-4-5",
+        "claude-haiku-4.5",
+        "claude-haiku-4-6",
+        "claude-haiku-4.6",
+        "claude-haiku-4-7",
+        "claude-haiku-4.7",
+        "claude-haiku-4-8",
+        "claude-haiku-4.8",
+        "claude-opus-5",
+        "claude-sonnet-5",
+        "claude-haiku-5",
+        "claude-fable-5",
+        "claude-mythos-5",
+    ];
+    let lower = model_name.to_ascii_lowercase();
+    if lower.contains("claude-3-haiku") {
+        4_096
+    } else if lower.contains("claude-opus-4-0") || lower.contains("claude-opus-4-1") {
+        32_000
+    } else if CLAUDE_64K_FAMILIES
+        .iter()
+        .any(|family| lower.contains(family))
+    {
+        BEDROCK_CLAUDE_DEFAULT_MAX_TOKENS
+    } else {
+        BEDROCK_GENERIC_DEFAULT_MAX_TOKENS
+    }
+}
+
+fn bedrock_uses_adaptive_thinking(model_name: &str) -> bool {
+    const ADAPTIVE_ONLY: &[&str] = &[
+        "opus-5", "sonnet-5", "fable-5", "mythos-5", "opus-4-7", "opus-4.7", "opus-4-8", "opus-4.8",
+    ];
+    let lower = model_name.to_ascii_lowercase();
+    ADAPTIVE_ONLY.iter().any(|pattern| lower.contains(pattern))
+}
 
 pub fn to_bedrock_message(message: &Message) -> Result<bedrock::Message> {
     bedrock::Message::builder()
@@ -52,13 +178,23 @@ pub fn to_bedrock_message_content(content: &MessageContent) -> Result<bedrock::C
         MessageContent::Image(image) => {
             bedrock::ContentBlock::Image(to_bedrock_image(&image.data, &image.mime_type)?)
         }
-        MessageContent::Thinking(_) => {
-            // Thinking blocks are not supported in Bedrock - skip
-            bedrock::ContentBlock::Text("".to_string())
+        MessageContent::Thinking(thinking) => {
+            bedrock::ContentBlock::ReasoningContent(bedrock::ReasoningContentBlock::ReasoningText(
+                bedrock::ReasoningTextBlock::builder()
+                    .text(thinking.thinking.clone())
+                    .set_signature(
+                        (!thinking.signature.is_empty()).then(|| thinking.signature.clone()),
+                    )
+                    .build()?,
+            ))
         }
-        MessageContent::RedactedThinking(_) => {
-            // Redacted thinking blocks are not supported in Bedrock - skip
-            bedrock::ContentBlock::Text("".to_string())
+        MessageContent::RedactedThinking(redacted) => {
+            let bytes = base64::prelude::BASE64_STANDARD
+                .decode(&redacted.data)
+                .map_err(|e| anyhow!("Invalid base64 Bedrock redacted reasoning block: {e}"))?;
+            bedrock::ContentBlock::ReasoningContent(
+                bedrock::ReasoningContentBlock::RedactedContent(aws_smithy_types::Blob::new(bytes)),
+            )
         }
         MessageContent::SystemNotification(_) => {
             bail!("SystemNotification should not get passed to the provider")
@@ -335,6 +471,20 @@ pub fn from_bedrock_content_block(block: &bedrock::ContentBlock) -> Result<Messa
                     })
             },
         ),
+        bedrock::ContentBlock::ReasoningContent(reasoning) => match reasoning {
+            bedrock::ReasoningContentBlock::ReasoningText(reasoning_text) => {
+                MessageContent::thinking(
+                    reasoning_text.text.clone(),
+                    reasoning_text.signature.clone().unwrap_or_default(),
+                )
+            }
+            bedrock::ReasoningContentBlock::RedactedContent(redacted) => {
+                MessageContent::redacted_thinking(
+                    base64::prelude::BASE64_STANDARD.encode(redacted.as_ref()),
+                )
+            }
+            _ => bail!("Unsupported reasoning content block from Bedrock"),
+        },
         _ => bail!("Unsupported content block type from Bedrock"),
     })
 }
@@ -817,7 +967,7 @@ pub fn classify_bedrock_stream_event_error<R: std::fmt::Debug + Send + Sync + 's
 /// string. In particular `model_context_window_exceeded` — which means the
 /// **input** did not fit — must NOT become `"length"`, or the agent would try to
 /// continue a turn that can never make progress.
-fn map_bedrock_stop_reason(reason: &bedrock::StopReason) -> String {
+pub fn map_bedrock_stop_reason(reason: &bedrock::StopReason) -> String {
     match reason {
         bedrock::StopReason::EndTurn | bedrock::StopReason::StopSequence => "stop".to_string(),
         bedrock::StopReason::MaxTokens => "length".to_string(),
@@ -866,13 +1016,10 @@ struct ToolUseAccumulator {
 /// several tool_use blocks decodes correctly even if the service interleaves
 /// their deltas.
 ///
-/// # Reasoning / thinking content
-///
-/// `reasoningContent` deltas are **deliberately discarded** — see
-/// [`BedrockStreamDecoder::on_event`].
 pub struct BedrockStreamDecoder {
     model_name: String,
     tool_blocks: HashMap<i32, ToolUseAccumulator>,
+    reasoning_blocks: HashMap<i32, ReasoningAccumulator>,
     /// Latest usage reported by the `metadata` event.
     usage: Option<Usage>,
     /// Mapped `stopReason` from the `messageStop` event.
@@ -899,6 +1046,19 @@ pub struct BedrockStreamDecoder {
     /// batched message must follow the response's canonical block order — not
     /// stop order — for dispatch and persistence.
     pending_tool_contents: Vec<(i32, MessageContent)>,
+    /// Completed non-tool blocks that could not yet be emitted because a lower
+    /// content-block index was still open. This is what preserves canonical
+    /// response order when the service interleaves block events.
+    ordered_contents: BTreeMap<i32, Vec<MessageContent>>,
+    closed_blocks: HashSet<i32>,
+    next_content_index: i32,
+}
+
+#[derive(Default)]
+struct ReasoningAccumulator {
+    text: String,
+    signature: String,
+    redacted: Vec<u8>,
 }
 
 /// One item of the decoded stream: a partial message and/or a usage snapshot.
@@ -912,12 +1072,16 @@ impl BedrockStreamDecoder {
         Self {
             model_name: model_name.into(),
             tool_blocks: HashMap::new(),
+            reasoning_blocks: HashMap::new(),
             usage: None,
             finish_reason: None,
             saw_message_stop: false,
             message_id: uuid::Uuid::new_v4().to_string(),
             batch_tool_calls: tool_call_batching_enabled(),
             pending_tool_contents: Vec::new(),
+            ordered_contents: BTreeMap::new(),
+            closed_blocks: HashSet::new(),
+            next_content_index: 0,
         }
     }
 
@@ -970,6 +1134,110 @@ impl BedrockStreamDecoder {
     }
 
     /// Feed one SDK event, returning zero or more stream items to yield.
+    /// One `contentBlockDelta`. Split out of [`Self::on_event`] purely to keep
+    /// that dispatcher readable; the behaviour is unchanged.
+    fn on_content_block_delta(
+        &mut self,
+        delta_event: &bedrock::ContentBlockDeltaEvent,
+    ) -> Vec<BedrockStreamItem> {
+        match delta_event.delta.as_ref() {
+            // The whole point of the change: text is yielded the moment
+            // it arrives.
+            Some(bedrock::ContentBlockDelta::Text(text)) => {
+                if text.is_empty() {
+                    Vec::new()
+                } else if delta_event.content_block_index == self.next_content_index
+                    && !self
+                        .ordered_contents
+                        .contains_key(&delta_event.content_block_index)
+                {
+                    vec![(
+                        Some(self.assistant_message(MessageContent::text(text))),
+                        None,
+                    )]
+                } else {
+                    self.push_ordered_content(
+                        delta_event.content_block_index,
+                        MessageContent::text(text),
+                    );
+                    Vec::new()
+                }
+            }
+            Some(bedrock::ContentBlockDelta::ToolUse(tool_delta)) => {
+                if let Some(acc) = self.tool_blocks.get_mut(&delta_event.content_block_index) {
+                    acc.input.push_str(&tool_delta.input);
+                } else {
+                    tracing::debug!(
+                        index = delta_event.content_block_index,
+                        "Bedrock toolUse delta for an unknown content block index; dropping"
+                    );
+                }
+                Vec::new()
+            }
+            Some(bedrock::ContentBlockDelta::ReasoningContent(reasoning)) => {
+                let acc = self
+                    .reasoning_blocks
+                    .entry(delta_event.content_block_index)
+                    .or_default();
+                match reasoning {
+                    bedrock::ReasoningContentBlockDelta::Text(text) => acc.text.push_str(text),
+                    bedrock::ReasoningContentBlockDelta::Signature(signature) => {
+                        acc.signature.push_str(signature)
+                    }
+                    bedrock::ReasoningContentBlockDelta::RedactedContent(redacted) => {
+                        acc.redacted.extend_from_slice(redacted.as_ref())
+                    }
+                    _ => {}
+                }
+                Vec::new()
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// One `contentBlockStop`. Split out of [`Self::on_event`] for the same
+    /// reason.
+    fn on_content_block_stop(
+        &mut self,
+        stop: &bedrock::ContentBlockStopEvent,
+    ) -> Vec<BedrockStreamItem> {
+        let mut items = match self.tool_blocks.remove(&stop.content_block_index) {
+            Some(acc) => {
+                let content = self.finish_tool_content(acc);
+                if self.batch_tool_calls {
+                    // §6.2b: defer — flushed as ONE message at
+                    // `messageStop` (or `finish()`), so a multi-tool
+                    // turn dispatches in parallel and never persists
+                    // two assistant rows sharing this decoder's id.
+                    self.pending_tool_contents
+                        .push((stop.content_block_index, content));
+                    Vec::new()
+                } else {
+                    self.push_ordered_content(stop.content_block_index, content);
+                    Vec::new()
+                }
+            }
+            None => {
+                if let Some(acc) = self.reasoning_blocks.remove(&stop.content_block_index) {
+                    for content in Self::finish_reasoning_content(acc) {
+                        self.push_ordered_content(stop.content_block_index, content);
+                    }
+                }
+                Vec::new()
+            }
+        };
+        self.closed_blocks.insert(stop.content_block_index);
+        if !(self.batch_tool_calls
+            && self
+                .pending_tool_contents
+                .iter()
+                .any(|(index, _)| *index == stop.content_block_index))
+        {
+            items.extend(self.flush_ready_contents());
+        }
+        items
+    }
+
     pub fn on_event(&mut self, event: &bedrock::ConverseStreamOutput) -> Vec<BedrockStreamItem> {
         match event {
             // Role announcement only; nothing to surface.
@@ -993,67 +1261,11 @@ impl BedrockStreamDecoder {
             }
 
             bedrock::ConverseStreamOutput::ContentBlockDelta(delta_event) => {
-                match delta_event.delta.as_ref() {
-                    // The whole point of the change: text is yielded the moment
-                    // it arrives.
-                    Some(bedrock::ContentBlockDelta::Text(text)) => {
-                        if text.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![(
-                                Some(self.assistant_message(MessageContent::text(text))),
-                                None,
-                            )]
-                        }
-                    }
-                    Some(bedrock::ContentBlockDelta::ToolUse(tool_delta)) => {
-                        if let Some(acc) =
-                            self.tool_blocks.get_mut(&delta_event.content_block_index)
-                        {
-                            acc.input.push_str(&tool_delta.input);
-                        } else {
-                            tracing::debug!(
-                                index = delta_event.content_block_index,
-                                "Bedrock toolUse delta for an unknown content block index; dropping"
-                            );
-                        }
-                        Vec::new()
-                    }
-                    // Extended-thinking output. Deliberately DISCARDED, not
-                    // decoded — see the module note below. Decoding it would be
-                    // actively harmful: `to_bedrock_message_content` maps
-                    // `MessageContent::Thinking` to an EMPTY TEXT BLOCK, so a
-                    // decoded thinking block would be replayed to Anthropic
-                    // stripped of its signature, which Anthropic rejects. The
-                    // blocking path does not decode thinking either (
-                    // `from_bedrock_content_block` has no reasoning arm), so
-                    // discarding keeps the two paths identical. Nothing is lost
-                    // today because neither provider requests extended thinking
-                    // (no `additional_model_request_fields` thinking budget is
-                    // ever set), so these events do not occur in practice.
-                    Some(bedrock::ContentBlockDelta::ReasoningContent(_)) => Vec::new(),
-                    _ => Vec::new(),
-                }
+                self.on_content_block_delta(delta_event)
             }
 
             bedrock::ConverseStreamOutput::ContentBlockStop(stop) => {
-                match self.tool_blocks.remove(&stop.content_block_index) {
-                    Some(acc) => {
-                        let content = self.finish_tool_content(acc);
-                        if self.batch_tool_calls {
-                            // §6.2b: defer — flushed as ONE message at
-                            // `messageStop` (or `finish()`), so a multi-tool
-                            // turn dispatches in parallel and never persists
-                            // two assistant rows sharing this decoder's id.
-                            self.pending_tool_contents
-                                .push((stop.content_block_index, content));
-                            Vec::new()
-                        } else {
-                            vec![(Some(self.assistant_message(content)), None)]
-                        }
-                    }
-                    None => Vec::new(),
-                }
+                self.on_content_block_stop(stop)
             }
 
             bedrock::ConverseStreamOutput::MessageStop(stop) => {
@@ -1063,7 +1275,8 @@ impl BedrockStreamDecoder {
                 // that will arrive already has. Flush the batch here, riding the
                 // SAME stream item as the usage snapshot — agent.rs reads
                 // (message, usage) in one match arm.
-                vec![(self.flush_pending_tools(), Some(self.usage_snapshot()))]
+                let message = self.flush_all_pending_contents();
+                vec![(message, Some(self.usage_snapshot()))]
             }
 
             bedrock::ConverseStreamOutput::Metadata(meta) => match meta.usage.as_ref() {
@@ -1090,16 +1303,74 @@ impl BedrockStreamDecoder {
     /// stop-arrival order, and with interleaved blocks a later block can close
     /// first. Request order is load-bearing downstream — Anthropic 400s a
     /// tool-result batch whose order doesn't match the request order.
-    fn flush_pending_tools(&mut self) -> Option<Message> {
-        if self.pending_tool_contents.is_empty() {
-            return None;
+    fn push_ordered_content(&mut self, index: i32, content: MessageContent) {
+        let contents = self.ordered_contents.entry(index).or_default();
+        match (contents.last_mut(), content) {
+            (Some(MessageContent::Text(existing)), MessageContent::Text(next)) => {
+                existing.text.push_str(&next.text);
+            }
+            (_, content) => contents.push(content),
         }
-        let mut pending = std::mem::take(&mut self.pending_tool_contents);
-        pending.sort_by_key(|(index, _)| *index);
-        let contents = pending.into_iter().map(|(_, content)| content).collect();
-        let mut message = Message::new(Role::Assistant, Utc::now().timestamp(), contents);
-        message.id = Some(self.message_id.clone());
-        Some(message)
+    }
+
+    fn flush_ready_contents(&mut self) -> Vec<BedrockStreamItem> {
+        let mut items = Vec::new();
+        while self.closed_blocks.contains(&self.next_content_index) {
+            if self.batch_tool_calls
+                && self
+                    .pending_tool_contents
+                    .iter()
+                    .any(|(index, _)| *index == self.next_content_index)
+            {
+                break;
+            }
+            self.closed_blocks.remove(&self.next_content_index);
+            if let Some(contents) = self.ordered_contents.remove(&self.next_content_index) {
+                if !contents.is_empty() {
+                    let mut message =
+                        Message::new(Role::Assistant, Utc::now().timestamp(), contents);
+                    message.id = Some(self.message_id.clone());
+                    items.push((Some(message), None));
+                }
+            }
+            self.next_content_index += 1;
+        }
+        items
+    }
+
+    fn flush_all_pending_contents(&mut self) -> Option<Message> {
+        for (index, content) in std::mem::take(&mut self.pending_tool_contents) {
+            self.push_ordered_content(index, content);
+        }
+        let contents = std::mem::take(&mut self.ordered_contents)
+            .into_values()
+            .flatten()
+            .collect::<Vec<_>>();
+        self.closed_blocks.clear();
+        if contents.is_empty() {
+            None
+        } else {
+            let mut message = Message::new(Role::Assistant, Utc::now().timestamp(), contents);
+            message.id = Some(self.message_id.clone());
+            Some(message)
+        }
+    }
+
+    fn finish_reasoning_content(acc: ReasoningAccumulator) -> Vec<MessageContent> {
+        if !acc.redacted.is_empty() {
+            if !acc.text.is_empty() || !acc.signature.is_empty() {
+                tracing::warn!(
+                    "Bedrock reasoning block mixed redacted and plaintext deltas; preserving the redacted block"
+                );
+            }
+            vec![MessageContent::redacted_thinking(
+                base64::prelude::BASE64_STANDARD.encode(acc.redacted),
+            )]
+        } else if !acc.text.is_empty() || !acc.signature.is_empty() {
+            vec![MessageContent::thinking(acc.text, acc.signature)]
+        } else {
+            Vec::new()
+        }
     }
 
     /// Turn a completed tool-use block into a tool request content.
@@ -1163,7 +1434,7 @@ impl BedrockStreamDecoder {
         // flushed as one batched message — otherwise a whole multi-tool turn
         // would silently vanish. A no-op in the common path (`messageStop`
         // already drained the buffer).
-        if let Some(batched) = self.flush_pending_tools() {
+        if let Some(batched) = self.flush_all_pending_contents() {
             items.push((Some(batched), None));
         }
 
@@ -2086,18 +2357,69 @@ mod bedrock_stream_tests {
 
     // ---- reasoning content ---------------------------------------------------
 
-    /// Documented decision: reasoning deltas are discarded, not decoded. See the
-    /// note in `on_event` — `to_bedrock_message_content` cannot round-trip a
-    /// thinking block with its signature, and replaying one without a signature
-    /// is rejected by Anthropic.
     #[test]
-    fn reasoning_content_deltas_are_discarded_not_decoded() {
+    fn reasoning_deltas_close_as_signed_blocks_in_index_order_with_one_response_id() {
         let mut decoder = BedrockStreamDecoder::new("m");
+        let reasoning = |index, text: &str| {
+            ConverseStreamOutput::ContentBlockDelta(
+                ContentBlockDeltaEvent::builder()
+                    .content_block_index(index)
+                    .delta(ContentBlockDelta::ReasoningContent(
+                        ReasoningContentBlockDelta::Text(text.to_string()),
+                    ))
+                    .build()
+                    .unwrap(),
+            )
+        };
+        let signature = |index, signature: &str| {
+            ConverseStreamOutput::ContentBlockDelta(
+                ContentBlockDeltaEvent::builder()
+                    .content_block_index(index)
+                    .delta(ContentBlockDelta::ReasoningContent(
+                        ReasoningContentBlockDelta::Signature(signature.to_string()),
+                    ))
+                    .build()
+                    .unwrap(),
+            )
+        };
+
+        // Block 1 closes before block 0. The decoder must wait and emit them in
+        // canonical index order, with complete text+signature pairs.
+        let items = drain(
+            &mut decoder,
+            &[
+                reasoning(1, "second"),
+                signature(1, "sig-2"),
+                block_stop(1),
+                reasoning(0, "first"),
+                signature(0, "sig-1"),
+                block_stop(0),
+            ],
+        );
+        let messages = items
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .collect::<Vec<_>>();
+        assert_eq!(messages.len(), 2);
+        let thinking = messages
+            .iter()
+            .map(|message| message.content[0].as_thinking().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(thinking[0].thinking, "first");
+        assert_eq!(thinking[0].signature, "sig-1");
+        assert_eq!(thinking[1].thinking, "second");
+        assert_eq!(thinking[1].signature, "sig-2");
+        assert!(messages.iter().all(|message| message.id == messages[0].id));
+    }
+
+    #[test]
+    fn batched_tool_block_never_lets_later_text_overtake_it() {
+        let mut decoder = BedrockStreamDecoder::with_batching("m", true);
         let reasoning = ConverseStreamOutput::ContentBlockDelta(
             ContentBlockDeltaEvent::builder()
                 .content_block_index(0)
                 .delta(ContentBlockDelta::ReasoningContent(
-                    ReasoningContentBlockDelta::Text("thinking out loud".to_string()),
+                    ReasoningContentBlockDelta::Text("think".to_string()),
                 ))
                 .build()
                 .unwrap(),
@@ -2111,13 +2433,79 @@ mod bedrock_stream_tests {
                 .build()
                 .unwrap(),
         );
-
         let items = drain(
             &mut decoder,
-            &[reasoning, signature, block_stop(0), text_delta(1, "answer")],
+            &[
+                reasoning,
+                signature,
+                block_stop(0),
+                tool_start(1, "tool-1", "shell"),
+                tool_delta(1, r#"{"command":"pwd"}"#),
+                block_stop(1),
+                text_delta(2, "after tool"),
+                block_stop(2),
+                message_stop(StopReason::ToolUse),
+            ],
         );
-        assert_eq!(texts(&items), vec!["answer"]);
-        assert!(tool_requests(&items).is_empty());
+        let flattened = items
+            .iter()
+            .filter_map(|(message, _)| message.as_ref())
+            .flat_map(|message| message.content.iter())
+            .collect::<Vec<_>>();
+        assert_eq!(flattened.len(), 3);
+        assert!(matches!(flattened[0], MessageContent::Thinking(_)));
+        assert!(matches!(flattened[1], MessageContent::ToolRequest(_)));
+        assert!(matches!(flattened[2], MessageContent::Text(_)));
+    }
+
+    #[test]
+    fn a_text_block_stays_buffered_after_a_lower_index_unblocks_it() {
+        let mut decoder = BedrockStreamDecoder::with_batching("m", false);
+        let items = drain(
+            &mut decoder,
+            &[
+                text_delta(1, "A"),
+                text_delta(0, "zero"),
+                block_stop(0),
+                text_delta(1, "B"),
+                block_stop(1),
+            ],
+        );
+        assert_eq!(texts(&items).join(""), "zeroAB");
+    }
+
+    #[test]
+    fn redacted_reasoning_delta_round_trips_its_exact_bytes() {
+        let mut decoder = BedrockStreamDecoder::new("m");
+        let bytes = b"opaque\0reasoning";
+        let delta = ConverseStreamOutput::ContentBlockDelta(
+            ContentBlockDeltaEvent::builder()
+                .content_block_index(0)
+                .delta(ContentBlockDelta::ReasoningContent(
+                    ReasoningContentBlockDelta::RedactedContent(aws_smithy_types::Blob::new(bytes)),
+                ))
+                .build()
+                .unwrap(),
+        );
+        let items = drain(&mut decoder, &[delta, block_stop(0)]);
+        let content = items[0].0.as_ref().unwrap().content[0].clone();
+        let MessageContent::RedactedThinking(redacted) = &content else {
+            panic!("expected redacted reasoning");
+        };
+        assert_eq!(
+            base64::prelude::BASE64_STANDARD
+                .decode(&redacted.data)
+                .unwrap(),
+            bytes
+        );
+        let block = to_bedrock_message_content(&content).unwrap();
+        let bedrock::ContentBlock::ReasoningContent(
+            bedrock::ReasoningContentBlock::RedactedContent(replayed),
+        ) = block
+        else {
+            panic!("expected Bedrock redacted reasoning");
+        };
+        assert_eq!(replayed.as_ref(), bytes);
     }
 
     /// A toolUse delta whose block was never opened (should not happen, but the
@@ -2337,6 +2725,147 @@ mod tests {
 
     // Base64 encoded 1x1 PNG image for testing
     const TEST_IMAGE_BASE64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==";
+
+    #[test]
+    fn inference_config_honors_override_and_uses_model_safe_defaults() {
+        let configured = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-4-6")
+            .with_max_tokens(Some(12_345))
+            .with_temperature(Some(0.25));
+        let inference = bedrock_inference_config(&configured);
+        assert_eq!(inference.max_tokens(), Some(12_345));
+        assert_eq!(inference.temperature(), Some(0.25));
+
+        let sonnet_five = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-5")
+            .with_max_tokens(None)
+            .with_temperature(Some(0.25));
+        let inference = bedrock_inference_config(&sonnet_five);
+        assert_eq!(
+            inference.max_tokens(),
+            Some(BEDROCK_CLAUDE_DEFAULT_MAX_TOKENS)
+        );
+        assert_eq!(
+            inference.temperature(),
+            None,
+            "adaptive-only Claude models reject sampling parameters"
+        );
+
+        let unlisted = ModelConfig::new_or_fail("vendor.unknown-model").with_max_tokens(None);
+        assert_eq!(
+            bedrock_inference_config(&unlisted).max_tokens(),
+            Some(BEDROCK_GENERIC_DEFAULT_MAX_TOKENS)
+        );
+
+        let unlisted_claude_three =
+            ModelConfig::new_or_fail("us.anthropic.claude-3-sonnet-20240229-v1:0")
+                .with_max_tokens(None);
+        assert_eq!(
+            bedrock_inference_config(&unlisted_claude_three).max_tokens(),
+            Some(BEDROCK_GENERIC_DEFAULT_MAX_TOKENS)
+        );
+    }
+
+    /// The 64,000 default must not exceed what compaction leaves room for.
+    ///
+    /// Bedrock rejects `input + maxTokens > context`. Compaction does not fire
+    /// until input reaches 80% of the window, so on a 200K model a flat 64,000
+    /// allowance makes every request between 136K and 160K of input fail on a
+    /// turn the agent believed was in budget. On a 1M model there is room and
+    /// the default must be left alone — a clamp that fired everywhere would
+    /// quietly reinstate the truncation this whole change exists to fix.
+    #[test]
+    fn the_default_output_allowance_fits_the_context_window() {
+        let wide = ModelConfig::new_or_fail("us.anthropic.claude-sonnet-5").with_max_tokens(None);
+        assert_eq!(wide.context_limit(), 1_000_000);
+        assert_eq!(
+            bedrock_inference_config(&wide).max_tokens(),
+            Some(BEDROCK_CLAUDE_DEFAULT_MAX_TOKENS),
+            "a 1M window has room for the full default"
+        );
+
+        let narrow =
+            ModelConfig::new_or_fail("us.anthropic.claude-haiku-4-5").with_max_tokens(None);
+        assert_eq!(narrow.context_limit(), 200_000);
+        let allowance = bedrock_inference_config(&narrow)
+            .max_tokens()
+            .expect("an allowance is always set");
+        assert!(
+            allowance < BEDROCK_CLAUDE_DEFAULT_MAX_TOKENS,
+            "a 200K window cannot carry the full 64,000 default"
+        );
+        // The invariant, stated as the thing that actually matters: the largest
+        // input compaction will ever allow, plus the allowance, still fits.
+        let compaction_trigger = (narrow.context_limit() as f64
+            * crate::context_mgmt::DEFAULT_COMPACTION_THRESHOLD)
+            as i32;
+        assert!(
+            compaction_trigger + allowance <= narrow.context_limit() as i32,
+            "input at the compaction trigger ({compaction_trigger}) plus the \
+             allowance ({allowance}) must fit in {}",
+            narrow.context_limit()
+        );
+
+        // An explicitly configured value is the caller's decision, not ours.
+        let configured =
+            ModelConfig::new_or_fail("us.anthropic.claude-haiku-4-5").with_max_tokens(Some(64_000));
+        assert_eq!(
+            bedrock_inference_config(&configured).max_tokens(),
+            Some(64_000),
+            "an explicit max_tokens is never silently rewritten"
+        );
+
+        // The floor: never ask for less than the provider applied when the
+        // field was omitted, however small the window.
+        assert_eq!(
+            bounded_by_context_window(BEDROCK_GENERIC_DEFAULT_MAX_TOKENS, 8_192),
+            BEDROCK_GENERIC_DEFAULT_MAX_TOKENS
+        );
+    }
+
+    #[test]
+    fn blocking_reasoning_text_signature_and_redaction_round_trip_losslessly() {
+        let redacted_bytes = b"opaque\0bedrock";
+        let bedrock_message = bedrock::Message::builder()
+            .role(bedrock::ConversationRole::Assistant)
+            .content(bedrock::ContentBlock::ReasoningContent(
+                bedrock::ReasoningContentBlock::ReasoningText(
+                    bedrock::ReasoningTextBlock::builder()
+                        .text("private reasoning")
+                        .signature("signed-token")
+                        .build()
+                        .unwrap(),
+                ),
+            ))
+            .content(bedrock::ContentBlock::ReasoningContent(
+                bedrock::ReasoningContentBlock::RedactedContent(aws_smithy_types::Blob::new(
+                    redacted_bytes,
+                )),
+            ))
+            .content(bedrock::ContentBlock::Text("answer".to_string()))
+            .build()
+            .unwrap();
+
+        let decoded = from_bedrock_message(&bedrock_message).unwrap();
+        let replayed = to_bedrock_message(&decoded).unwrap();
+        assert_eq!(replayed.content().len(), 3);
+
+        let bedrock::ContentBlock::ReasoningContent(bedrock::ReasoningContentBlock::ReasoningText(
+            thinking,
+        )) = &replayed.content()[0]
+        else {
+            panic!("expected signed reasoning text first");
+        };
+        assert_eq!(thinking.text(), "private reasoning");
+        assert_eq!(thinking.signature(), Some("signed-token"));
+
+        let bedrock::ContentBlock::ReasoningContent(
+            bedrock::ReasoningContentBlock::RedactedContent(redacted),
+        ) = &replayed.content()[1]
+        else {
+            panic!("expected redacted reasoning second");
+        };
+        assert_eq!(redacted.as_ref(), redacted_bytes);
+        assert_eq!(replayed.content()[2].as_text().unwrap(), "answer");
+    }
 
     #[test]
     fn from_bedrock_usage_maps_cache_write_to_creation_and_keeps_disjoint() {

@@ -849,6 +849,8 @@ pub(crate) fn classify_abort(
         TurnAbortCode::SessionStore => (TurnErrorScope::Session, false, None),
         TurnAbortCode::ToolLoop { .. } => (TurnErrorScope::Inference, false, None),
         TurnAbortCode::WorkerTimeout { .. } => (TurnErrorScope::Inference, true, None),
+        TurnAbortCode::OutputRecoveryExhausted { .. } => (TurnErrorScope::Inference, false, None),
+        TurnAbortCode::SignedReplayInvalidated => (TurnErrorScope::Inference, false, None),
     }
 }
 

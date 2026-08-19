@@ -39,6 +39,16 @@ pub enum TurnAbortCode {
     ToolLoop { tool: String },
     /// A worker profile consulted by the main agent never answered (Wave 4).
     WorkerTimeout { agent: String, elapsed_s: u64 },
+    /// Automatic output-length recovery spent its per-reply budget. Partial
+    /// assistant output remains persisted and visible.
+    OutputRecoveryExhausted {
+        continuations: u32,
+        zero_progress: bool,
+    },
+    /// A Bedrock reasoning signature can no longer be replayed against the
+    /// exact provider-visible history it authenticated. No provider call was
+    /// attempted because sending a changed prefix is guaranteed to fail.
+    SignedReplayInvalidated,
 }
 
 impl TurnAbortCode {
@@ -49,6 +59,8 @@ impl TurnAbortCode {
             Self::SessionStore => "session_store_failure",
             Self::ToolLoop { .. } => "tool_loop",
             Self::WorkerTimeout { .. } => "worker_timeout",
+            Self::OutputRecoveryExhausted { .. } => "output_recovery_exhausted",
+            Self::SignedReplayInvalidated => "signed_replay_invalidated",
         }
     }
 
@@ -64,6 +76,8 @@ impl TurnAbortCode {
             Self::SessionStore => exit::SESSION_STORE,
             Self::ToolLoop { .. } => exit::TOOL_LOOP,
             Self::WorkerTimeout { .. } => exit::WORKER_TIMEOUT,
+            Self::OutputRecoveryExhausted { .. } => exit::OUTPUT_RECOVERY_EXHAUSTED,
+            Self::SignedReplayInvalidated => exit::SIGNED_REPLAY_INVALIDATED,
         }
     }
 }
@@ -129,6 +143,10 @@ pub mod exit {
     pub const WORKER_TIMEOUT: u8 = 77;
     /// The session store (SQLite) failed while persisting the turn (#31/#41).
     pub const SESSION_STORE: u8 = 78;
+    /// The provider repeatedly filled its output allowance without completing.
+    pub const OUTPUT_RECOVERY_EXHAUSTED: u8 = 79;
+    /// Signed provider reasoning cannot be replayed without mutation.
+    pub const SIGNED_REPLAY_INVALIDATED: u8 = 80;
 }
 
 #[cfg(test)]
@@ -206,6 +224,11 @@ mod tests {
                 agent: "fine_mapper".into(),
                 elapsed_s: 120,
             },
+            TurnAbortCode::OutputRecoveryExhausted {
+                continuations: 12,
+                zero_progress: false,
+            },
+            TurnAbortCode::SignedReplayInvalidated,
         ] {
             assert_ne!(code.exit_code(), exit::OK, "{code:?} must not exit 0");
             assert!(!code.wire_code().is_empty());

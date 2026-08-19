@@ -78,12 +78,21 @@ struct RaceProvider {
     /// BR-66 absorbs it and persists its hint as a model-only row the user is
     /// deliberately never shown.
     server_error_on: Vec<usize>,
+    /// Whether a `tools_on` reply signs its reasoning. A NON-EMPTY signature is
+    /// what `has_signed_reasoning` keys on, and it selects a different storage
+    /// path in the reply loop: signed replies are rebuilt into one canonical
+    /// assistant row (the signature authenticates that exact block list), while
+    /// unsigned ones keep the historical split into several rows. Default
+    /// **false**, so a test opts in to the signed path deliberately rather than
+    /// drifting onto it because a fixture happened to carry a signature.
+    sign_reasoning: bool,
     /// Zero-based *summarizer* call indices that fail outright. Models the
     /// provider going away between a first summarization and its retry.
     fail_summarization_on: Vec<usize>,
     context_limit: usize,
     /// Message texts the provider saw on each main-loop call.
     seen: Mutex<Vec<Vec<String>>>,
+    seen_reasoning: Mutex<Vec<bool>>,
     /// #51: the summarizer carries the history it is asked to condense in the
     /// SYSTEM prompt, so this is how a test asserts what did — and did not —
     /// reach it.
@@ -104,9 +113,11 @@ impl RaceProvider {
             notes_during_main_call: Vec::new(),
             tools_on: Vec::new(),
             server_error_on: Vec::new(),
+            sign_reasoning: false,
             fail_summarization_on: Vec::new(),
             context_limit: 200_000,
             seen: Mutex::new(Vec::new()),
+            seen_reasoning: Mutex::new(Vec::new()),
             summarizer_payloads: Mutex::new(Vec::new()),
         }
     }
@@ -142,6 +153,13 @@ impl RaceProvider {
     /// #59: answer this main call with thinking + two tool calls.
     fn tools_on(mut self, call: usize) -> Self {
         self.tools_on.push(call);
+        self
+    }
+
+    /// Sign the reasoning on `tools_on` replies, selecting the signed-provider
+    /// storage path (Bedrock extended thinking, Anthropic direct, Snowflake).
+    fn sign_reasoning(mut self) -> Self {
+        self.sign_reasoning = true;
         self
     }
 
@@ -269,6 +287,17 @@ impl Provider for RaceProvider {
                 })
                 .collect(),
         );
+        self.seen_reasoning.lock().unwrap().push(
+            messages
+                .iter()
+                .flat_map(|message| &message.content)
+                .any(|content| {
+                    matches!(
+                        content,
+                        MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+                    )
+                }),
+        );
 
         for (call, text) in &self.notes_during_main_call {
             if *call == n {
@@ -294,7 +323,10 @@ impl Provider for RaceProvider {
 
         if self.tools_on.contains(&n) {
             let mut reply = Message::assistant()
-                .with_thinking("weighing two options", "sig-mock")
+                .with_thinking(
+                    "weighing two options",
+                    if self.sign_reasoning { "sig-mock" } else { "" },
+                )
                 .with_text("Calling two tools.");
             for i in 0..2 {
                 reply = reply.with_tool_request(
@@ -545,6 +577,58 @@ async fn overflow_recovery_persists_when_nothing_else_wrote() {
         history_replaced_texts(&events).is_some(),
         "HistoryReplaced must be emitted when the store really was replaced"
     );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn overflow_retry_omits_historical_reasoning_but_durable_compaction_keeps_it() {
+    let (h, provider) = harness(|p| p.overflow_on(&[0])).await;
+    h.session_manager
+        .add_message(
+            &h.session_id,
+            &Message::assistant()
+                .with_thinking("historical private reasoning", "historical-signature")
+                .with_redacted_thinking("historical-redacted-bytes")
+                .with_text("historical visible answer"),
+        )
+        .await
+        .unwrap();
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+
+    assert_eq!(provider.main_call_count(), 2);
+    assert_eq!(
+        *provider.seen_reasoning.lock().unwrap(),
+        vec![false, false],
+        "neither the initial new-user call nor its immediate overflow retry may receive historical Bedrock reasoning"
+    );
+    let stored = h
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap();
+    assert!(stored.iter().flat_map(|message| &message.content).any(
+        |content| matches!(content, MessageContent::Thinking(value) if value.signature == "historical-signature")
+    ));
+    assert!(stored
+        .iter()
+        .flat_map(|message| &message.content)
+        .any(|content| matches!(content, MessageContent::RedactedThinking(value) if value.data == "historical-redacted-bytes")));
+    let replaced = events
+        .iter()
+        .find_map(|event| match event {
+            AgentEvent::HistoryReplaced(conversation) => Some(conversation),
+            _ => None,
+        })
+        .expect("persisted overflow compaction emits raw replacement history");
+    assert!(replaced.iter().flat_map(|message| &message.content).any(
+        |content| matches!(content, MessageContent::Thinking(value) if value.signature == "historical-signature")
+    ));
+    assert!(replaced
+        .iter()
+        .flat_map(|message| &message.content)
+        .any(|content| matches!(content, MessageContent::RedactedThinking(value) if value.data == "historical-redacted-bytes")));
 }
 
 // ── F4: two overflows in one turn ────────────────────────────────────────────
@@ -2275,6 +2359,147 @@ async fn a_published_user_visible_row_is_not_an_instruction_to_draw() {
              {published:#?}"
         );
     }
+}
+
+/// The signed-provider counterpart to
+/// `a_published_user_visible_row_is_not_an_instruction_to_draw`.
+///
+/// When a provider signs its reasoning — Bedrock extended thinking, Anthropic
+/// direct, Snowflake — the signature authenticates the exact assistant block
+/// list it emitted, so the reply loop must rebuild that grouping into ONE row
+/// instead of splitting it. Splitting mutates the signed prefix and the next
+/// request is rejected.
+///
+/// The protection the split-path test guards has to survive that change: those
+/// `ToolRequest` blocks ARE the assistant half of the transcript when the
+/// session is re-read from disk. If a future change drops them, re-splits them,
+/// or hides them behind `user_visible: false` so the flag can be read as "draw
+/// this", a reloaded chat shows tool results answering nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_signed_reply_keeps_the_assistant_side_of_its_tool_calls_in_one_row() {
+    let (h, provider) = harness(|p| p.tools_on(0).sign_reasoning()).await;
+
+    let events = h.run_turn(USER_PROMPT).await.unwrap();
+    assert_eq!(provider.main_call_count(), 2);
+
+    let published: std::collections::HashMap<String, bool> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::MessagesPersisted(rows) => Some(rows),
+            _ => None,
+        })
+        .flatten()
+        .map(|p| (p.id.clone(), p.user_visible))
+        .collect();
+    let stored = h
+        .session_manager
+        .get_session(&h.session_id, true)
+        .await
+        .unwrap()
+        .conversation
+        .unwrap();
+
+    // 1. Exactly one stored assistant row carries the signature, and the client
+    //    was streamed that same id.
+    let signed_rows: Vec<&Message> = stored
+        .messages()
+        .iter()
+        .filter(|m| m.role == rmcp::model::Role::Assistant)
+        .filter(|m| {
+            m.content
+                .iter()
+                .any(|c| matches!(c, MessageContent::Thinking(t) if t.signature == "sig-mock"))
+        })
+        .collect();
+    assert_eq!(
+        signed_rows.len(),
+        1,
+        "a signed reply must be rebuilt into exactly one assistant row; \
+         splitting it mutates the block list the signature covers.\nstored: {:#?}",
+        stored_ids(&h).await
+    );
+    let signed = signed_rows[0];
+    let signed_id = signed.id.clone().expect("a stored row is always named");
+    let streamed_ids: std::collections::HashSet<String> = events
+        .iter()
+        .filter_map(|ev| match ev {
+            AgentEvent::Message(m) => m.id.clone(),
+            _ => None,
+        })
+        .collect();
+    assert!(streamed_ids.contains(&signed_id));
+
+    // 2. Canonical order, asserted positionally — a set would not catch a
+    //    reordering, and reordering is what the signature actually forbids.
+    let kinds: Vec<&str> = signed
+        .content
+        .iter()
+        .map(|c| match c {
+            MessageContent::Text(_) => "Text",
+            MessageContent::ToolRequest(_) => "ToolRequest",
+            MessageContent::Thinking(_) => "Thinking",
+            MessageContent::RedactedThinking(_) => "RedactedThinking",
+            _ => "Other",
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        vec!["Thinking", "Text", "ToolRequest", "ToolRequest"],
+        "signed content must keep the provider's own order"
+    );
+
+    // 3. Visible in the store AND published as visible — which is why the flag
+    //    still cannot mean "draw this".
+    assert!(signed.is_user_visible());
+    assert_eq!(published.get(&signed_id), Some(&true));
+
+    // 4. The load-bearing anti-erasure assertion: both requests survive on the
+    //    assistant side, however many rows that side occupies.
+    let assistant_requests: usize = stored
+        .messages()
+        .iter()
+        .filter(|m| m.role == rmcp::model::Role::Assistant)
+        .flat_map(|m| &m.content)
+        .filter(|c| matches!(c, MessageContent::ToolRequest(_)))
+        .count();
+    assert_eq!(
+        assistant_requests, 2,
+        "both tool requests must remain on the assistant side of a re-read \
+         session, or the stored tool responses answer nothing"
+    );
+
+    // 5. Every request is answered by a stored response.
+    let request_ids: std::collections::HashSet<String> = signed
+        .content
+        .iter()
+        .filter_map(|c| match c {
+            MessageContent::ToolRequest(request) => Some(request.id.clone()),
+            _ => None,
+        })
+        .collect();
+    let response_ids: std::collections::HashSet<String> = stored
+        .messages()
+        .iter()
+        .flat_map(|m| &m.content)
+        .filter_map(|c| match c {
+            MessageContent::ToolResponse(response) => Some(response.id.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        request_ids.is_subset(&response_ids),
+        "unanswered signed tool requests: {:#?}",
+        request_ids.difference(&response_ids).collect::<Vec<_>>()
+    );
+
+    // 6. The #59 net still holds: nothing is stored that the client was never named.
+    let unpublished: Vec<String> = stored
+        .messages()
+        .iter()
+        .filter_map(|m| m.id.clone())
+        .filter(|id| !published.contains_key(id))
+        .collect();
+    assert!(unpublished.is_empty(), "unpublished rows: {unpublished:#?}");
 }
 
 // ── #59 ordering: content first, then the frame that names it ────────────────

@@ -46,7 +46,9 @@ use crate::conversation::message::{
     SystemNotificationType, TokenState, ToolRequest,
 };
 use crate::conversation::tool_result_serde::call_tool_result;
-use crate::conversation::{debug_conversation_fix, fix_conversation, Conversation};
+use crate::conversation::{
+    debug_conversation_fix, fix_conversation, has_signed_reasoning, Conversation,
+};
 use crate::managed::ManagedPolicy;
 use crate::mcp_utils::ToolResult;
 use crate::observability::loop_safety::{self, LoopSafetyEvent, LoopSafetyKind};
@@ -100,14 +102,111 @@ const DEFAULT_REPETITION_SOFT_WARN: u32 = 3;
 /// soft stage entirely.
 const DEFAULT_REPETITION_HARD_STOP: u32 = 5;
 const COMPACTION_THINKING_TEXT: &str = "biorouter is compacting the conversation...";
-/// Max consecutive auto-continues for a turn the provider cut off by the output
-/// length limit (`finish_reason == "length"`) with no tool call. Bounded so a
-/// pathological "always truncates, never progresses" stream can't loop forever;
-/// any tool call resets the streak. Also globally bounded by `max_turns`.
+/// Total auto-continues available to one user reply when the provider ends a
+/// response with `finish_reason == "length"`. This never resets inside the
+/// reply: a tool call, malformed call, or provider retry cannot replenish it.
 const MAX_TRUNCATION_CONTINUATIONS: u32 = 12;
+/// A reasoning-only or otherwise empty truncation has a tighter budget. These
+/// are counted cumulatively across the reply as well, so alternating empty
+/// output with tools cannot turn the general cap into another continuation
+/// storm.
+const MAX_ZERO_PROGRESS_TRUNCATION_CONTINUATIONS: u32 = 3;
 /// Injected when auto-continuing a length-truncated turn, so the model resumes
 /// instead of the agent ending the turn on a half-finished response.
 const TRUNCATION_CONTINUATION_MESSAGE: &str = "Your previous response was cut off because it reached the output length limit (finish_reason=\"length\"). Continue exactly where you left off, and do not repeat what you already wrote.";
+fn canonicalize_signed_replay_suffix(messages: &[Message]) -> Conversation {
+    let mut grouped = Vec::<Message>::new();
+    for message in messages.iter().cloned() {
+        if message.role == rmcp::model::Role::User {
+            if let Some(previous) = grouped
+                .last_mut()
+                .filter(|previous| previous.role == rmcp::model::Role::User)
+            {
+                previous.content.extend(message.content);
+                continue;
+            }
+        }
+        grouped.push(message);
+    }
+    Conversation::new_unvalidated(grouped)
+}
+
+fn continues_bedrock_assistant_construction(messages: &[Message]) -> bool {
+    let continues_with_tool_results = messages.iter().any(|message| {
+        message
+            .content
+            .iter()
+            .any(|content| matches!(content, MessageContent::ToolResponse(_)))
+    });
+    let continues_after_hidden_length = messages.iter().any(|message| {
+        message.role == rmcp::model::Role::User
+            && !message.is_user_visible()
+            && message.is_agent_visible()
+            && message.as_concat_text() == TRUNCATION_CONTINUATION_MESSAGE
+    });
+    continues_with_tool_results || continues_after_hidden_length
+}
+
+#[derive(Default)]
+struct TruncationRecoveryBudget {
+    continuations: u32,
+    zero_progress_continuations: u32,
+}
+
+enum TruncationRecoveryAction {
+    Continue,
+    Exhausted { zero_progress: bool },
+}
+
+impl TruncationRecoveryBudget {
+    fn observe(&mut self, made_user_visible_progress: bool) -> TruncationRecoveryAction {
+        if self.continuations >= MAX_TRUNCATION_CONTINUATIONS {
+            return TruncationRecoveryAction::Exhausted {
+                zero_progress: false,
+            };
+        }
+        if !made_user_visible_progress
+            && self.zero_progress_continuations >= MAX_ZERO_PROGRESS_TRUNCATION_CONTINUATIONS
+        {
+            return TruncationRecoveryAction::Exhausted {
+                zero_progress: true,
+            };
+        }
+
+        self.continuations += 1;
+        if !made_user_visible_progress {
+            self.zero_progress_continuations += 1;
+        }
+        TruncationRecoveryAction::Continue
+    }
+}
+
+/// Whether this response continues a provider-**signed** assistant turn — it
+/// either carries the signature itself, or an earlier chunk stored under the
+/// same id does.
+///
+/// Only such a turn may be folded back into one row. A reasoning signature
+/// authenticates the exact block list the provider emitted, so that grouping has
+/// to be reconstructed before anything is appended after it. Every other
+/// provider must keep `Conversation::push` semantics, which merge only an
+/// *adjacent* same-id row: folding across an intervening tool-result row would
+/// persist the model's post-tool prose *before* the result it describes.
+fn continues_signed_turn(response: &Message, pending: &Conversation) -> bool {
+    has_signed_reasoning(response)
+        || response.id.as_ref().is_some_and(|response_id| {
+            pending.messages().iter().any(|message| {
+                message.id.as_ref() == Some(response_id) && has_signed_reasoning(message)
+            })
+        })
+}
+
+fn message_has_user_visible_progress(message: &Message) -> bool {
+    message.content.iter().any(|content| match content {
+        MessageContent::Text(text) => !text.text.trim().is_empty(),
+        MessageContent::Image(_) => true,
+        _ => false,
+    })
+}
 
 /// The message id to stamp on the assistant-side messages the loop rebuilds for
 /// a reply that requested tools (the preserved thinking block and the tool
@@ -613,38 +712,18 @@ impl RewriteBasis {
         &self.known
     }
 
-    /// Everything the turn has seen at or since this basis: the durable seed
-    /// plus the live conversation the rewrite is replacing.
-    ///
-    /// The store reads only message ids out of `known`, and it must not mistake
-    /// a row the turn already saw for another writer's append. `live` alone is
-    /// not enough: the normalizer drops and merges messages at turn start, so a
-    /// row the seed carried can be missing from `live` and would then be
-    /// "recovered" verbatim onto the tail of its own summary. Borrowed — no
-    /// copy — in the overwhelmingly common case where `live` already names
-    /// everything the seed did.
-    fn known_with<'a>(&'a self, live: &'a Conversation) -> std::borrow::Cow<'a, Conversation> {
-        let live_ids: HashSet<&str> = live
-            .messages()
-            .iter()
-            .filter_map(|m| m.id.as_deref())
-            .collect();
-        let mut extra = self
+    fn raw_with_new_durable_messages(&self, live: &Conversation) -> Conversation {
+        let mut seen_ids = self
             .known
-            .messages()
             .iter()
-            .filter(|m| m.id.as_deref().is_none_or(|id| !live_ids.contains(id)))
-            .peekable();
-        if extra.peek().is_none() {
-            return std::borrow::Cow::Borrowed(live);
-        }
-        let merged: Vec<Message> = live
-            .messages()
-            .iter()
-            .cloned()
-            .chain(extra.cloned())
-            .collect();
-        std::borrow::Cow::Owned(Conversation::new_unvalidated(merged))
+            .filter_map(|message| message.id.clone())
+            .collect::<HashSet<_>>();
+        let mut messages = self.known.messages().clone();
+        messages.extend(live.iter().filter_map(|message| {
+            let id = message.id.as_ref()?;
+            seen_ids.insert(id.clone()).then(|| message.clone())
+        }));
+        Conversation::new_unvalidated(messages)
     }
 }
 
@@ -766,6 +845,923 @@ pub struct ToolCategorizeResult {
     pub frontend_requests: Vec<ToolRequest>,
     pub remaining_requests: Vec<ToolRequest>,
     pub filtered_response: Message,
+}
+
+/// The per-batch lookup tables one round of tool calls needs, built in one
+/// place by [`build_tool_request_maps`] and destructured straight back into the
+/// locals the reply loop reads.
+///
+/// This exists for stack, not for tidiness. `reply_internal` returns a single
+/// ~2000-line `try_stream!` generator, and at `opt-level = 0` every temporary
+/// in a generator body gets its own slot in that generator's `poll` frame with
+/// no reuse between them. A subagent reply nests another whole copy of the
+/// frame underneath the parent's, so the frame is what decides how deep
+/// delegation can go before the thread's stack is gone (issue #87: three
+/// children were enough). Every yield-free block that moves out of the
+/// generator and into a function of its own gets a frame that is only live
+/// while it runs. Please do not inline these back.
+struct ToolBatchMaps {
+    tool_response_messages: Vec<Arc<Mutex<Message>>>,
+    request_to_response_map: HashMap<String, Arc<Mutex<Message>>>,
+    request_metadata: HashMap<String, Option<ProviderMetadata>>,
+    request_to_original_tool_call: HashMap<String, CallToolRequestParams>,
+    request_to_executed_tool_call: HashMap<String, CallToolRequestParams>,
+    request_to_tool_name: HashMap<String, String>,
+}
+
+/// Build the per-batch tool lookup tables and the response slots they index.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn build_tool_request_maps(
+    response: &Message,
+    frontend_requests: &[ToolRequest],
+    remaining_requests: &[ToolRequest],
+) -> ToolBatchMaps {
+    let num_tool_requests = frontend_requests.len() + remaining_requests.len();
+    let tool_response_messages: Vec<Arc<Mutex<Message>>> = (0..num_tool_requests)
+        .map(|_| {
+            Arc::new(Mutex::new(
+                Message::user().with_id(format!("msg_{}", Uuid::new_v4())),
+            ))
+        })
+        .collect();
+
+    let mut request_to_response_map = HashMap::new();
+    let mut request_metadata: HashMap<String, Option<ProviderMetadata>> = HashMap::new();
+    let request_to_original_tool_call = response
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            MessageContent::ToolRequest(request) => request
+                .tool_call
+                .as_ref()
+                .ok()
+                .map(|tool_call| (request.id.clone(), tool_call.clone())),
+            _ => None,
+        })
+        .collect::<HashMap<_, _>>();
+    let mut request_to_executed_tool_call = HashMap::new();
+    // The tool that produced each result, for the untrusted-data frame's
+    // provenance attribute. Built here rather than looked up later because this
+    // is the one place the request and its id are together; a malformed request
+    // has no name, and the frame says `unknown` rather than being skipped.
+    let mut request_to_tool_name: HashMap<String, String> = HashMap::new();
+    for (idx, request) in frontend_requests
+        .iter()
+        .chain(remaining_requests.iter())
+        .enumerate()
+    {
+        request_to_response_map.insert(request.id.clone(), tool_response_messages[idx].clone());
+        request_metadata.insert(request.id.clone(), request.metadata.clone());
+        if let Ok(tool_call) = &request.tool_call {
+            request_to_tool_name.insert(request.id.clone(), tool_call.name.to_string());
+            request_to_executed_tool_call.insert(request.id.clone(), tool_call.clone());
+        }
+    }
+
+    ToolBatchMaps {
+        tool_response_messages,
+        request_to_response_map,
+        request_metadata,
+        request_to_original_tool_call,
+        request_to_executed_tool_call,
+        request_to_tool_name,
+    }
+}
+
+/// Stamp `biorouterToolExecution` onto a frontend tool's response when the
+/// arguments that actually ran differ from the ones the provider authored.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+async fn note_tool_argument_rewrite(
+    request_id: &str,
+    request_to_original_tool_call: &HashMap<String, CallToolRequestParams>,
+    request_to_executed_tool_call: &HashMap<String, CallToolRequestParams>,
+    request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+) {
+    let (Some(original), Some(executed), Some(response_slot)) = (
+        request_to_original_tool_call.get(request_id),
+        request_to_executed_tool_call.get(request_id),
+        request_to_response_map.get(request_id),
+    ) else {
+        return;
+    };
+    let original_value = serde_json::to_value(original).ok();
+    let executed_value = serde_json::to_value(executed).ok();
+    if original_value == executed_value {
+        return;
+    }
+    let mut response = response_slot.lock().await;
+    for content in &mut response.content {
+        let MessageContent::ToolResponse(tool_response) = content else {
+            continue;
+        };
+        let audit = serde_json::json!({
+            "providerAuthored": original_value,
+            "actuallyExecuted": executed_value,
+        });
+        match &mut tool_response.tool_result {
+            Ok(result) => {
+                let meta = result.meta.get_or_insert_with(rmcp::model::Meta::new);
+                meta.0.insert("biorouterToolExecution".to_string(), audit);
+            }
+            Err(error) => {
+                let mut data = match error.data.take() {
+                    Some(Value::Object(data)) => data,
+                    Some(data) => {
+                        serde_json::Map::from_iter([("providerErrorData".to_string(), data)])
+                    }
+                    None => serde_json::Map::new(),
+                };
+                data.insert("biorouterToolExecution".to_string(), audit);
+                error.data = Some(Value::Object(data));
+            }
+        }
+    }
+}
+
+/// Everything one reply loop resolves from config exactly once, before its first
+/// iteration.
+///
+/// Each of these reads the filesystem, so they are resolved once per reply
+/// rather than per turn or per tool result. They live in a struct the generator
+/// destructures because a `from_config()` call materialises its result in the
+/// caller's frame first — and in the `reply_internal` generator that frame is
+/// the one issue #87 is about. See [`ToolBatchMaps`].
+struct ReplyLoopPolicy {
+    /// BR-63: the effort-scaled exploration budget — `quick` halves it (never
+    /// below a usable floor, never above what the user configured), `deep`
+    /// doubles it, `normal` leaves it exactly as configured.
+    max_turns: u32,
+    /// Cumulative tool calls one reply may dispatch, across all iterations, so
+    /// parallel fan-out cannot run unbounded while `turns_taken` stays under
+    /// `max_turns`.
+    max_tool_calls: u32,
+    tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode,
+    /// BR-51: the tool-error taxonomy policy.
+    tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig,
+    /// BR-47: the auto post-edit diagnostics policy.
+    post_edit_diag_config: crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig,
+    /// BR-50: the optional self-critique / reflection policy. Default OFF; when
+    /// a user opts in it re-reads an ordinary answer for correctness before it
+    /// is returned, using the goal-judge LLM primitive.
+    self_critique_config: crate::agents::self_critique::SelfCritiqueConfig,
+    /// BR-48: the optional deterministic done-ness gate. Default OFF; when a
+    /// user opts in it re-runs their `SuccessCheck`s before the turn may finish
+    /// and keeps the agent working on the failures.
+    done_gate_config: crate::agents::done_gate::DoneGateConfig,
+    /// BR-32: the /goal stall detector, generalized to ordinary chat.
+    stall_config: crate::agents::stall::StallCheckConfig,
+    /// BR-66: the general mistake streak — consecutive failed tool calls of
+    /// *any* kind (BR-31 only sees one tool failing one way), plus the
+    /// recoverable-provider-error counter that decides whether a failed model
+    /// call ends the turn or earns one more attempt with a hint.
+    mistake_config: crate::agents::mistakes::MistakeConfig,
+    /// BR-35: the per-reply wall-clock / token / dollar ceiling. `max_turns` and
+    /// `max_tool_calls` bound how many *steps* a reply takes, which is not a
+    /// bound on time or money — 429 backoff (~2 min/call) compounds inside a
+    /// single step, and one step can re-bill a 200k-token context. Inert (and
+    /// free) unless a limit is configured; a limit set on the session wins
+    /// per-axis over the global config.
+    budget: BudgetTracker,
+}
+
+/// Resolve [`ReplyLoopPolicy`] for one reply.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn resolve_reply_loop_policy(
+    effort: ReasoningEffort,
+    session_config: &SessionConfig,
+) -> ReplyLoopPolicy {
+    ReplyLoopPolicy {
+        max_turns: effort.scale_turns(
+            session_config
+                .max_turns
+                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
+                .unwrap_or(DEFAULT_MAX_TURNS),
+        ),
+        max_tool_calls: effort.scale_tool_calls(
+            session_config
+                .max_tool_calls
+                .or_else(|| Config::global().get_param("BIOROUTER_MAX_TOOL_CALLS").ok())
+                .unwrap_or(DEFAULT_MAX_TOOL_CALLS),
+        ),
+        tool_output_guardrail: crate::guardrails::tool_output::ToolOutputGuardrailMode::from_config(
+        ),
+        tool_error_taxonomy: crate::agents::tool_errors::ToolErrorTaxonomyConfig::from_config(),
+        post_edit_diag_config:
+            crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config(),
+        self_critique_config: crate::agents::self_critique::SelfCritiqueConfig::from_config(),
+        done_gate_config: crate::agents::done_gate::DoneGateConfig::from_config(),
+        stall_config: crate::agents::stall::StallCheckConfig::from_config(Config::global()),
+        mistake_config: crate::agents::mistakes::MistakeConfig::from_config(Config::global()),
+        budget: BudgetTracker::new(ReplyBudget::resolve(
+            session_config.budget,
+            Config::global(),
+        )),
+    }
+}
+
+/// Emit one loop-safety event.
+///
+/// A function rather than the builder chain at each of the reply loop's fifteen
+/// call sites: every intermediate `LoopSafetyEvent` in a chain is its own slot
+/// in the `reply_internal` generator's `poll` frame (issue #87). See
+/// [`ToolBatchMaps`].
+fn emit_loop_safety(
+    kind: LoopSafetyKind,
+    session_id: &str,
+    count: u32,
+    limit: Option<u32>,
+    axis: Option<&str>,
+) {
+    let mut event = LoopSafetyEvent::new(kind).session(session_id).count(count);
+    if let Some(limit) = limit {
+        event = event.limit(limit);
+    }
+    loop_safety::emit(event.maybe_axis(axis));
+}
+
+/// The Pre/PostToolUse hook context staged by the inspector and the permission
+/// gate: the inline notices to surface, and the single model-visible context row
+/// they add up to.
+///
+/// BR-19: both sites stage their `additionalContext` / `systemMessage` because
+/// neither return channel can carry them — both used to read only the decision
+/// and drop the rest. Drained once both have run: messages surface as inline
+/// notices, context reaches the model with the same untrusted framing (BR-26) as
+/// the SessionStart / UserPromptSubmit path.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn staged_tool_hook_context(
+    staged: Vec<crate::hooks::StagedToolHook>,
+) -> (Vec<Message>, Option<Message>) {
+    let mut notices = Vec::new();
+    let mut hook_contexts: Vec<String> = Vec::new();
+    for entry in staged {
+        for msg in entry.system_messages {
+            notices.push(
+                Message::assistant()
+                    .with_system_notification(SystemNotificationType::InlineMessage, msg)
+                    .user_only(),
+            );
+        }
+        hook_contexts.extend(entry.additional_context);
+    }
+    (notices, hook_context_message(&hook_contexts))
+}
+
+/// The one model-visible row a batch of hook `additionalContext` strings becomes,
+/// under BR-26's untrusted framing. `None` when nothing was staged.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn hook_context_message(hook_contexts: &[String]) -> Option<Message> {
+    if hook_contexts.is_empty() {
+        return None;
+    }
+    Some(
+        Message::user()
+            .with_text(crate::hooks::outcome::frame_hook_context(
+                &hook_contexts.join("\n\n"),
+            ))
+            .with_visibility(false, true),
+    )
+}
+
+/// A user-visible inline system notice.
+///
+/// Named constructors rather than builder chains at the call site: in the
+/// `reply_internal` generator every intermediate `Message` in a chain is its own
+/// 128-byte slot in that generator's `poll` frame (issue #87), so a three-call
+/// chain costs three where one call costs one. Please build these through the
+/// constructors rather than re-inlining the chains. See [`ToolBatchMaps`].
+fn inline_notice<S: Into<String>>(text: S) -> Message {
+    Message::assistant().with_system_notification(SystemNotificationType::InlineMessage, text)
+}
+
+/// [`inline_notice`], hidden from the model.
+fn inline_notice_user_only<S: Into<String>>(text: S) -> Message {
+    inline_notice(text).user_only()
+}
+
+/// The transient "thinking" notice shown while a compaction runs.
+fn thinking_notice<S: Into<String>>(text: S) -> Message {
+    Message::assistant().with_system_notification(SystemNotificationType::ThinkingMessage, text)
+}
+
+/// A plain assistant message carrying `text`.
+fn assistant_text<S: Into<String>>(text: S) -> Message {
+    Message::assistant().with_text(text)
+}
+
+/// A user-role row the model sees but the transcript does not show.
+fn model_only_user_text<S: Into<String>>(text: S) -> Message {
+    Message::user().with_text(text).with_visibility(false, true)
+}
+
+/// [`model_only_user_text`] under a freshly minted message id.
+fn model_only_user_text_with_new_id<S: Into<String>>(text: S) -> Message {
+    Message::user()
+        .with_id(format!("msg_{}", Uuid::new_v4()))
+        .with_text(text)
+        .with_visibility(false, true)
+}
+
+/// Persist one loop iteration's messages and hand them back carrying the uids
+/// the store actually used.
+///
+/// #41: duplicate ids are re-minted before the write — a decoder that reused one
+/// id across several yielded messages would otherwise fail the
+/// `UNIQUE(session_id, msg_uid)` index and kill the turn. Each row then adopts
+/// the EFFECTIVE uid it was persisted under: on a collision the store re-mints,
+/// and the in-memory conversation must carry the same id as the row, or the next
+/// persist of that message duplicates it under a stale id.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+async fn persist_iteration_messages(
+    session_manager: &SessionManager,
+    session_id: &str,
+    messages_to_add: Conversation,
+) -> Result<Vec<Message>> {
+    let mut messages_to_add = remint_duplicate_message_ids(messages_to_add).into_messages();
+    for msg in &mut messages_to_add {
+        let effective_uid = session_manager.add_message(session_id, msg).await?;
+        if msg.id.as_deref() != Some(effective_uid.as_str()) {
+            msg.id = Some(effective_uid);
+        }
+    }
+    Ok(messages_to_add)
+}
+
+/// The message one queued soft interrupt becomes.
+///
+/// Frames ONLY agent-originated steers. The drain loop this feeds is SHARED
+/// with the human's own typed soft interrupt, which `queue_soft_interrupt`
+/// enqueues with `provenance: None` — framing that unconditionally would wrap
+/// the user's own words in an untrusted envelope and tell the model to discount
+/// them.
+///
+/// The inner match is EXHAUSTIVE over `ProvenanceKind` on purpose, and must stay
+/// that way. `ProvenanceKind` is not `#[non_exhaustive]`, so a `_` catch-all
+/// here would let a variant added later fall silently into the *unframed* arm —
+/// putting cross-session agent text into this session's context without the
+/// untrusted envelope, which is the exact prompt-injection vector
+/// `frame_workspace_injection` exists to close. Exhaustiveness makes a new
+/// variant a compile error and forces an explicit framing decision.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn soft_interrupt_message(queued: QueuedInterrupt) -> Message {
+    let QueuedInterrupt { text, provenance } = queued;
+    let body = match &provenance {
+        Some(p) => match p.kind {
+            ProvenanceKind::AgentInjection => {
+                crate::conversation::message::frame_workspace_injection(
+                    p.from_session_name.as_deref(),
+                    &text,
+                )
+            }
+            // The human typed this into the subagent's own tab, or it is a
+            // spawn-context record this session authored — neither is another
+            // agent's text, so neither is framed.
+            ProvenanceKind::UserDirect | ProvenanceKind::SpawnContext => text,
+        },
+        // Unstamped: the human's own typed soft interrupt.
+        None => text,
+    };
+    let mut m = Message::user().with_text(body);
+    if let Some(p) = provenance {
+        m = m.with_provenance(p);
+    }
+    m
+}
+
+/// Persist a model-only steering row (a stall nudge, a budget wrap-up, a
+/// done-gate or self-critique instruction, Stop-hook feedback) and hand back the
+/// row plus the `#59` / `#66 SHAPE 2` frame naming it — a row the user is
+/// deliberately not shown, named so a client can still account for it.
+///
+/// The caller yields the frame and folds the row into its conversation, so the
+/// order at each call site is unchanged.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+async fn persist_steering_message(
+    session_manager: &SessionManager,
+    session_id: &str,
+    text: String,
+) -> Result<(Message, Option<AgentEvent>)> {
+    let mut steer = Message::user().with_text(text).with_visibility(false, true);
+    session_manager
+        .add_message_adopting_uid(session_id, &mut steer)
+        .await?;
+    let published = named_but_never_yielded(std::slice::from_ref(&steer), NeverYielded::ModelOnly);
+    Ok((steer, published))
+}
+
+/// The ids of this signed turn's tool requests that have an executable
+/// counterpart and a response slot, in the provider-authored order the signed
+/// assistant block fixes.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn signed_turn_paired_response_ids(
+    response: &Message,
+    frontend_requests: &[ToolRequest],
+    remaining_requests: &[ToolRequest],
+    request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+) -> Vec<String> {
+    response
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            MessageContent::ToolRequest(request) => Some(request),
+            _ => None,
+        })
+        .filter(|original| {
+            let Some(executed) = frontend_requests
+                .iter()
+                .chain(remaining_requests.iter())
+                .find(|request| request.id == original.id)
+            else {
+                return false;
+            };
+            executed.tool_call.is_ok() && request_to_response_map.contains_key(&original.id)
+        })
+        .map(|original| original.id.clone())
+        .collect()
+}
+
+/// The assistant-side rows an *unsigned* provider's turn is persisted as: the
+/// thinking row (if the reply carried any), then one `tool_use` row per
+/// executable request paired with the index of its response slot.
+///
+/// Providers without signed assistant content keep the established transcript
+/// shape — the normalized executable request is paired immediately with its
+/// result — so the ids are minted here in exactly the order the caller pushes
+/// them.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn unsigned_turn_assistant_rows(
+    response: &Message,
+    frontend_requests: &[ToolRequest],
+    remaining_requests: &[ToolRequest],
+) -> (Option<Message>, Vec<(usize, String, Message)>) {
+    let mut assistant_turn_id = Some(assistant_turn_message_id(response));
+    let mut next_assistant_id = move || {
+        assistant_turn_id
+            .take()
+            .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
+    };
+
+    let thinking_content: Vec<MessageContent> = response
+        .content
+        .iter()
+        .filter(|content| {
+            matches!(
+                content,
+                MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)
+            )
+        })
+        .cloned()
+        .collect();
+    let thinking_row = (!thinking_content.is_empty()).then(|| {
+        Message::new(response.role.clone(), response.created, thinking_content)
+            .with_id(next_assistant_id())
+    });
+
+    let mut tool_rows = Vec::new();
+    for (idx, request) in frontend_requests
+        .iter()
+        .chain(remaining_requests.iter())
+        .enumerate()
+    {
+        if request.tool_call.is_ok() {
+            tool_rows.push((
+                idx,
+                request.id.clone(),
+                Message::assistant()
+                    .with_id(next_assistant_id())
+                    .with_tool_request_with_metadata(
+                        request.id.clone(),
+                        request.tool_call.clone(),
+                        request.metadata.as_ref(),
+                        request.tool_meta.clone(),
+                    ),
+            ));
+        }
+    }
+    (thinking_row, tool_rows)
+}
+
+/// Append the model-only rows this tool batch staged: BR-47's post-edit syntax
+/// diagnostics (placed right after the tool responses for the edits they
+/// describe), the Pre/PostToolUse hook context, and the BR-29/30/31 loop-guard
+/// warnings. All model-visible only — corrective plumbing the user does not need
+/// in the transcript.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn push_staged_batch_rows(
+    messages_to_add: &mut Conversation,
+    pending_post_edit_diagnostics: Option<String>,
+    pending_pre_tool_hook_context: Option<Message>,
+    pending_post_tool_hook_context: Option<Message>,
+    loop_warnings: &[String],
+) {
+    if let Some(diagnostics_text) = pending_post_edit_diagnostics {
+        messages_to_add.push(
+            Message::user()
+                .with_id(format!("msg_{}", Uuid::new_v4()))
+                .with_text(diagnostics_text)
+                .with_visibility(false, true),
+        );
+    }
+    if let Some(context_message) = pending_pre_tool_hook_context {
+        messages_to_add.push(context_message);
+    }
+    if let Some(context_message) = pending_post_tool_hook_context {
+        messages_to_add.push(context_message);
+    }
+    // Soft stage (BR-29/30/31): the repeated — or repeatedly failing — call
+    // *ran*; nudge the model right after its result so it changes approach
+    // before the hard stop fires.
+    if !loop_warnings.is_empty() {
+        tracing::info!(
+            warnings = loop_warnings.len(),
+            "Injecting loop-guard soft warning"
+        );
+        messages_to_add.push(
+            Message::user()
+                .with_id(format!("msg_{}", Uuid::new_v4()))
+                .with_text(crate::tool_inspection::frame_loop_warnings(loop_warnings))
+                .with_visibility(false, true),
+        );
+    }
+}
+
+/// The terminal notice for a reply whose output-length continuations ran out.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn truncation_exhausted_notice(
+    zero_progress: bool,
+    ever_made_user_visible_progress: bool,
+    continuations: u32,
+) -> String {
+    if zero_progress && !ever_made_user_visible_progress {
+        format!(
+            "The model repeatedly reached its output limit without producing a user-visible answer, so BioRouter stopped automatic continuation after {continuations} attempts. No partial answer was available to preserve. You can retry or ask me to continue in a new message."
+        )
+    } else {
+        format!(
+            "The model repeatedly reached its output limit across this reply, so BioRouter stopped automatic continuation after {continuations} attempts. The partial response above has been preserved. You can ask me to continue in a new message."
+        )
+    }
+}
+
+/// Run the PostToolUse / PostToolUseFailure hooks for one completed tool batch
+/// and return each one's aggregate, in dispatch order.
+///
+/// Awaited (rather than fired and forgotten) so the injected context lands
+/// before the next provider call, and (BR-19) so the decision can be honored —
+/// a `block` turns the result into corrective feedback instead of being
+/// computed and thrown away. The caller applies the block, bounded by
+/// `POST_TOOL_HOOK_BLOCK_CAP` so a hook that always blocks cannot wedge the
+/// turn.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+async fn dispatch_post_tool_hooks(
+    hooks: Arc<crate::hooks::HooksManager>,
+    session_id: &str,
+    working_dir: &std::path::Path,
+    post_tool_results: Vec<(String, Option<Value>, Option<String>)>,
+    remaining_requests: &[ToolRequest],
+) -> Vec<(String, String, crate::hooks::HookAggregate)> {
+    let mut post_futures = Vec::new();
+    for (request_id, response_value, error_text) in post_tool_results {
+        let Some(request) = remaining_requests.iter().find(|r| r.id == request_id) else {
+            continue;
+        };
+        let Ok(tool_call) = &request.tool_call else {
+            continue;
+        };
+        let tool_name = tool_call.name.to_string();
+        let event = if error_text.is_some() {
+            crate::hooks::HookEvent::PostToolUseFailure
+        } else {
+            crate::hooks::HookEvent::PostToolUse
+        };
+        if !hooks.has_hooks(event, Some(&tool_name), working_dir).await {
+            continue;
+        }
+        let mut payload =
+            crate::hooks::HookPayload::new(event, session_id, working_dir.to_string_lossy());
+        payload.tool_name = Some(tool_name.clone());
+        payload.tool_input = Some(
+            tool_call
+                .arguments
+                .clone()
+                .map(Value::Object)
+                .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
+        );
+        payload.tool_response = response_value;
+        payload.error = error_text;
+        let hooks = Arc::clone(&hooks);
+        let working_dir = working_dir.to_path_buf();
+        post_futures.push(async move {
+            let aggregate = hooks
+                .dispatch(event, Some(&tool_name), &payload, &working_dir)
+                .await;
+            (request_id, tool_name, aggregate)
+        });
+    }
+    if post_futures.is_empty() {
+        return Vec::new();
+    }
+    futures::future::join_all(post_futures).await
+}
+
+/// The terminal abort a repetition-policy denial produces, if this batch has one.
+///
+/// `RepetitionInspector` is the sole policy authority; `TurnToolGuard` only
+/// converts its exact-request `Deny` into a terminal event and has no
+/// independent counter or threshold.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn repetition_denial_abort(
+    inspection_results: &[InspectionResult],
+    permission_check_result: &PermissionCheckResult,
+    turn_guard: &mut super::turn_guard::TurnToolGuard,
+) -> Option<(TurnAbortCode, String)> {
+    let (result, request) = inspection_results
+        .iter()
+        .filter(|result| {
+            result.inspector_name == crate::tool_monitor::REPETITION_INSPECTOR_NAME
+                && result.action == InspectionAction::Deny
+        })
+        .find_map(|result| {
+            permission_check_result
+                .denied
+                .iter()
+                .find(|request| request.id == result.tool_request_id)
+                .map(|request| (result, request))
+        })?;
+    let code = turn_guard.enforce_denial(request)?;
+    warn!(
+        tool_request_id = %request.id,
+        "repetition policy denied a tool signature; terminating this user turn"
+    );
+    Some((code, result.reason.clone()))
+}
+
+/// PAR-04: give every tool a cancel abandoned an explicit "cancelled" result.
+///
+/// The batch loop breaks the instant the token trips, abandoning every tool
+/// that had not yet returned. Their response slots are still the empty
+/// placeholders allocated up front, and the post-batch persistence loop writes
+/// a `tool_use` for each request unconditionally — so without this backfill a
+/// cancelled batch persists `tool_use` blocks with no matching `tool_result`,
+/// which every provider rejects when the session is replayed.
+///
+/// A slot that already holds a response (the tools that finished before the
+/// cancel) is left untouched, so no completed result is overwritten. Covers
+/// frontend tools too: the persistence loop writes a `tool_use` for those as
+/// well, and a cancel can land while one is still awaiting its client reply.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+async fn backfill_cancelled_tool_responses(
+    frontend_requests: &[ToolRequest],
+    remaining_requests: &[ToolRequest],
+    request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+) {
+    for request in frontend_requests.iter().chain(remaining_requests.iter()) {
+        let Some(response_msg) = request_to_response_map.get(&request.id) else {
+            continue;
+        };
+        let mut response = response_msg.lock().await;
+        let already_answered = response.content.iter().any(|c| {
+            matches!(
+                c,
+                MessageContent::ToolResponse(r)
+                    if r.id == request.id
+            )
+        });
+        if already_answered {
+            continue;
+        }
+        *response = response.clone().with_tool_response_with_metadata(
+            request.id.clone(),
+            Ok(CallToolResult {
+                content: vec![Content::text(
+                    super::tool_execution::CANCELLED_MID_RUN_RESPONSE,
+                )],
+                structured_content: None,
+                is_error: Some(true),
+                meta: None,
+            }),
+            request.metadata.as_ref(),
+        );
+    }
+}
+
+/// BR-47: re-parse every file this tool batch wrote and return the ones whose
+/// syntax is now broken.
+///
+/// A successful `text_editor` write is re-parsed with the developer analyzer's
+/// tree-sitter grammars; any ERROR / MISSING nodes become agent-visible
+/// corrective context, so the model fixes broken syntax in the same turn
+/// instead of only discovering it if it happens to run tests. Runs off the
+/// still-owned `post_tool_results`, before the PostToolUse hooks consume it.
+///
+/// `None` when the batch wrote nothing — which is NOT the same as an empty
+/// `Some`: a batch that edited files and found them all clean still has to spend
+/// a [`post_edit_reflection_text`] call, because that is what restores the
+/// reflection budget.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn post_edit_file_diagnostics(
+    post_tool_results: &[(String, Option<Value>, Option<String>)],
+    remaining_requests: &[ToolRequest],
+    working_dir: &std::path::Path,
+    analyzer: &mut Option<biorouter_mcp::developer::analyze::CodeAnalyzer>,
+) -> Option<Vec<crate::agents::post_edit_diagnostics::FileDiagnostics>> {
+    use crate::agents::post_edit_diagnostics as ped;
+    // (display path, resolved path) for each successful write.
+    let mut edited: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for (request_id, _response_value, error_text) in post_tool_results {
+        if error_text.is_some() {
+            // The write itself failed; there is nothing valid on disk to parse.
+            continue;
+        }
+        let Some(request) = remaining_requests.iter().find(|r| &r.id == request_id) else {
+            continue;
+        };
+        let Some(resolved) = ped::edited_path_from_request(request, working_dir) else {
+            continue;
+        };
+        // Show the model the path it actually sent, when readable.
+        let display = request
+            .tool_call
+            .as_ref()
+            .ok()
+            .and_then(|tc| tc.arguments.as_ref())
+            .and_then(|a| a.get("path").or_else(|| a.get("file_path")))
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| resolved.display().to_string());
+        edited.push((display, resolved));
+    }
+    if edited.is_empty() {
+        return None;
+    }
+    let analyzer =
+        analyzer.get_or_insert_with(biorouter_mcp::developer::analyze::CodeAnalyzer::new);
+    let mut files: Vec<ped::FileDiagnostics> = Vec::new();
+    // Dedup by resolved path: a file written twice in one batch is reported
+    // once, on its final on-disk state.
+    let mut seen = std::collections::HashSet::new();
+    for (display, resolved) in edited {
+        if !seen.insert(resolved.clone()) {
+            continue;
+        }
+        let diags = analyzer.diagnose_file(&resolved);
+        if diags.is_empty() {
+            continue;
+        }
+        files.push(ped::FileDiagnostics {
+            path: display,
+            lines: diags.iter().map(|d| d.render()).collect(),
+        });
+    }
+    Some(files)
+}
+
+/// BR-47: spend one post-edit reflection on `files`, returning the framed
+/// diagnostics to inject (if any).
+///
+/// Bounded by a per-reply reflection counter so a file that never parses clean
+/// cannot wedge the turn — the built-in twin of the BR-19 PostToolUse block cap.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn post_edit_reflection_text(
+    session_id: &str,
+    config: &crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig,
+    files: &[crate::agents::post_edit_diagnostics::FileDiagnostics],
+    reflections: &mut u32,
+) -> Option<String> {
+    use crate::agents::post_edit_diagnostics as ped;
+    match ped::next_reflection(!files.is_empty(), *reflections, config.max_reflections) {
+        ped::ReflectionOutcome::Reset => {
+            // Every edited file parsed clean: a genuine fix (or a clean edit)
+            // restores the budget.
+            *reflections = 0;
+            None
+        }
+        ped::ReflectionOutcome::Inject { next } => {
+            *reflections = next;
+            let total: usize = files.iter().map(|f| f.lines.len()).sum();
+            tracing::info!(
+                files = files.len(),
+                diagnostics = total,
+                reflection = *reflections,
+                "BR-47: injecting post-edit syntax diagnostics"
+            );
+            loop_safety::emit(
+                LoopSafetyEvent::new(LoopSafetyKind::PostEditDiagnostics)
+                    .session(session_id)
+                    .count(*reflections),
+            );
+            // Held, not pushed: it must land after the tool response for the
+            // edit it describes.
+            Some(ped::frame_post_edit_diagnostics(files))
+        }
+        ped::ReflectionOutcome::Capped => {
+            // Deliver the result as-is so the turn is not wedged on a file that
+            // never parses clean.
+            tracing::info!(
+                cap = config.max_reflections,
+                "BR-47: post-edit diagnostics reflection cap reached; not injecting again this reply"
+            );
+            None
+        }
+    }
+}
+
+/// Fold one loop iteration's persisted messages into the running conversation
+/// and update the signed Bedrock replay context.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+fn fold_iteration_into_conversation(
+    conversation: &mut Conversation,
+    signed_replay_context: &mut Option<Conversation>,
+    conversation_with_moim: &Conversation,
+    messages_to_add: Vec<Message>,
+    did_retry_reset_this_iteration: bool,
+    signed_replay_invalidated_this_iteration: bool,
+) {
+    let continues_signed_construction = continues_bedrock_assistant_construction(&messages_to_add);
+    let replay_messages = canonicalize_signed_replay_suffix(&messages_to_add);
+    let response_has_signed_reasoning = replay_messages.iter().any(has_signed_reasoning);
+    if !did_retry_reset_this_iteration {
+        conversation.extend(messages_to_add);
+    }
+    if signed_replay_invalidated_this_iteration
+        || did_retry_reset_this_iteration
+        || (!continues_signed_construction && response_has_signed_reasoning)
+        || (signed_replay_context.is_some() && !continues_signed_construction)
+    {
+        if signed_replay_context.is_some() || response_has_signed_reasoning {
+            let stripped = crate::conversation::without_bedrock_reasoning(conversation);
+            *conversation = stripped;
+        }
+        *signed_replay_context = None;
+    } else if continues_signed_construction
+        && (signed_replay_context.is_some() || response_has_signed_reasoning)
+    {
+        signed_replay_context
+            .get_or_insert_with(|| conversation_with_moim.clone())
+            .extend(replay_messages);
+    }
+}
+
+/// Fill the response slots of every tool call in a batch that a chat-mode turn
+/// declines to run.
+///
+/// Split out of the `reply_internal` generator to keep its `poll` frame small —
+/// see [`ToolBatchMaps`].
+async fn skip_tool_requests_for_chat_mode(
+    remaining_requests: &[ToolRequest],
+    request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+) {
+    for request in remaining_requests {
+        if let Some(response_msg) = request_to_response_map.get(&request.id) {
+            let mut response = response_msg.lock().await;
+            *response = response.clone().with_tool_response_with_metadata(
+                request.id.clone(),
+                Ok(CallToolResult {
+                    content: vec![Content::text(CHAT_MODE_TOOL_SKIPPED_RESPONSE)],
+                    structured_content: None,
+                    is_error: Some(false),
+                    meta: None,
+                }),
+                request.metadata.as_ref(),
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
@@ -2810,6 +3806,8 @@ impl Agent {
         enable_extension_request_ids: &[String],
         request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
         request_to_tool_name: &HashMap<String, String>,
+        request_to_original_tool_call: &HashMap<String, CallToolRequestParams>,
+        request_to_executed_tool_call: &HashMap<String, CallToolRequestParams>,
         request_metadata: &HashMap<String, Option<ProviderMetadata>>,
         all_install_successful: &mut bool,
         post_tool_results: &mut Vec<(String, Option<Value>, Option<String>)>,
@@ -2818,6 +3816,24 @@ impl Agent {
     ) {
         let _phase = super::phase_timing::Phase::start("agent.integrate_tool_result");
         let output = call_tool_result::validate(output);
+        let output_was_err = output.is_err();
+        let execution_audit = if let (Some(original), Some(executed)) = (
+            request_to_original_tool_call.get(&request_id),
+            request_to_executed_tool_call.get(&request_id),
+        ) {
+            let original = serde_json::to_value(original).ok();
+            let executed = serde_json::to_value(executed).ok();
+            if original != executed {
+                Some(serde_json::json!({
+                    "providerAuthored": original,
+                    "actuallyExecuted": executed,
+                }))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
 
         // Frame tool output as untrusted data before it re-enters the model
         // context, and scan it for injection markers + PII/PHI. The frame is
@@ -2838,8 +3854,27 @@ impl Agent {
         // (so the GUI and a reloaded session get it) and the typed header rides
         // in the text (so the model, and the BR-31/66 detectors reading the
         // transcript back, can tell a retryable blip from a hard failure).
-        let (output, tool_error) =
+        let (mut output, tool_error) =
             crate::agents::tool_errors::annotate_tool_result(output, tool_error_taxonomy);
+        if let Some(audit) = execution_audit {
+            match &mut output {
+                Ok(result) => {
+                    let meta = result.meta.get_or_insert_with(rmcp::model::Meta::new);
+                    meta.0.insert("biorouterToolExecution".to_string(), audit);
+                }
+                Err(error) => {
+                    let mut data = match error.data.take() {
+                        Some(Value::Object(data)) => data,
+                        Some(data) => {
+                            serde_json::Map::from_iter([("providerErrorData".to_string(), data)])
+                        }
+                        None => serde_json::Map::new(),
+                    };
+                    data.insert("biorouterToolExecution".to_string(), audit);
+                    error.data = Some(Value::Object(data));
+                }
+            }
+        }
         if let Some(error) = &tool_error {
             debug!(
                 request_id = %request_id,
@@ -2849,7 +3884,7 @@ impl Agent {
             );
         }
 
-        if enable_extension_request_ids.contains(&request_id) && output.is_err() {
+        if enable_extension_request_ids.contains(&request_id) && output_was_err {
             *all_install_successful = false;
         }
         {
@@ -2953,22 +3988,21 @@ impl Agent {
             if tool_response.id != request_id {
                 continue;
             }
-            let mut items = match &tool_response.tool_result {
-                Ok(result) => result.content.clone(),
-                Err(e) => vec![Content::text(e.to_string())],
-            };
-            items.push(Content::text(format!(
+            let feedback = format!(
                 "A PostToolUse hook blocked this result for `{tool_name}`.\n\n\
                  Hook feedback: {reason}\n\n\
                  The tool already ran, so its side effects stand. Address the feedback \
                  before continuing; do not simply retry the identical call."
-            )));
-            tool_response.tool_result = Ok(CallToolResult {
-                content: items,
-                structured_content: None,
-                is_error: Some(true),
-                meta: None,
-            });
+            );
+            match &mut tool_response.tool_result {
+                Ok(result) => {
+                    result.content.push(Content::text(feedback));
+                    result.is_error = Some(true);
+                }
+                Err(error) => {
+                    error.message = format!("{}\n\n{feedback}", error.message).into();
+                }
+            }
         }
     }
 
@@ -3069,10 +4103,14 @@ impl Agent {
     ) -> Result<OverflowCompactionSwap> {
         let session_manager = self.config.session_manager.clone();
         let mut usages = Vec::new();
+        let raw_conversation = basis.raw_with_new_durable_messages(conversation);
 
-        let (compacted, usage) =
-            compact_messages_with_recovery(self.provider().await?.as_ref(), conversation, recovery)
-                .await?;
+        let (compacted, usage) = compact_messages_with_recovery(
+            self.provider().await?.as_ref(),
+            &raw_conversation,
+            recovery,
+        )
+        .await?;
         usages.push(usage);
 
         let first_attempt = session_manager
@@ -3080,7 +4118,7 @@ impl Agent {
                 session_id,
                 &compacted,
                 basis.revision,
-                &basis.known_with(conversation),
+                &raw_conversation,
             )
             .await;
         // The summarization above is BILLED — the provider charged for it the
@@ -5076,7 +6114,8 @@ impl Agent {
         // [`RewriteBasis`]).
         let (session, mut rewrite_basis) =
             RewriteBasis::read_with_session(&session_manager, &session_config.id).await?;
-        let conversation = rewrite_basis.known().clone();
+        let stored_conversation = rewrite_basis.known().clone();
+        let conversation = crate::conversation::without_bedrock_reasoning(rewrite_basis.known());
 
         // BR-12: this synchronous check is the *fallback*. In the common case
         // the previous turn's `maybe_spawn_eager_compaction` already compacted in
@@ -5113,14 +6152,14 @@ impl Agent {
         )
         .await?;
 
-        let conversation_to_compact = conversation.clone();
+        let conversation_to_compact = stored_conversation.clone();
 
         Ok(Box::pin(async_stream::try_stream! {
             if let Some(published) = prestream_published {
                 yield published;
             }
             let final_conversation = if !needs_auto_compact {
-                conversation
+                stored_conversation
             } else {
                 let config = Config::global();
                 let threshold = config
@@ -5134,17 +6173,11 @@ impl Agent {
                 );
 
                 yield AgentEvent::Message(
-                    Message::assistant().with_system_notification(
-                        SystemNotificationType::InlineMessage,
-                        inline_msg,
-                    )
+                    inline_notice(inline_msg,)
                 );
 
                 yield AgentEvent::Message(
-                    Message::assistant().with_system_notification(
-                        SystemNotificationType::ThinkingMessage,
-                        COMPACTION_THINKING_TEXT,
-                    )
+                    thinking_notice(COMPACTION_THINKING_TEXT,)
                 );
 
                 self.fire_compaction_hook(
@@ -5157,37 +6190,15 @@ impl Agent {
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
                 match compact_messages(self.provider().await?.as_ref(), &conversation_to_compact, false).await {
                     Ok((compacted_conversation, summarization_usage)) => {
-                        // Swap under the store's freshness guard: a message another
-                        // writer appended while the summarizer ran is carried over
-                        // rather than deleted, and the conversation that actually
-                        // landed is what the turn (and the client) continues from.
-                        let (outcome, stored_conversation) = session_manager
-                            .replace_conversation_preserving_tail(
-                                &session_config.id,
-                                &compacted_conversation,
-                                rewrite_basis.revision,
-                                rewrite_basis.known(),
-                            )
-                            .await?;
-
-                        // Re-pair the basis the moment the rewrite returns,
-                        // before anything is yielded. A landed rewrite renumbered
-                        // every row and a declined one means the store moved under
-                        // us; either way the reply loop below must inherit a
-                        // revision and a history read TOGETHER, not a revision
-                        // read after the view it is meant to describe.
-                        let latest_conversation = self.reseed_basis(
+                        // The swap and the basis re-pairing are one step, and both
+                        // happen before anything is yielded; see
+                        // `land_auto_compaction` for why.
+                        let (outcome, latest_conversation) = self.land_auto_compaction(
                             &session_config.id,
+                            &conversation_to_compact,
+                            &compacted_conversation,
                             &mut rewrite_basis,
-                            if outcome.stored() {
-                                stored_conversation
-                            } else {
-                                // Nothing was written, so the rewrite handed back
-                                // its own `replacement`. The pre-compaction view
-                                // is the honest fallback if the re-read fails.
-                                conversation_to_compact.clone()
-                            },
-                        ).await;
+                        ).await?;
 
                         if !outcome.stored() {
                             // The basis was truncated or rewritten under us (a
@@ -5215,10 +6226,9 @@ impl Agent {
                             ).await?;
                             // No PostCompact: nothing was compacted.
                             yield AgentEvent::Message(
-                                Message::assistant().with_system_notification(
-                                    SystemNotificationType::InlineMessage,
+                                inline_notice(
                                     "Compaction skipped: this conversation changed while it was \
-                                     being summarized. Continuing with the full history.",
+                                    being summarized. Continuing with the full history.",
                                 )
                             );
                             // Continue on the fresh history the re-pair above read
@@ -5248,10 +6258,7 @@ impl Agent {
                         yield AgentEvent::HistoryReplaced(latest_conversation.clone());
 
                         yield AgentEvent::Message(
-                            Message::assistant().with_system_notification(
-                                SystemNotificationType::InlineMessage,
-                                "Compaction complete",
-                            )
+                            inline_notice("Compaction complete",)
                         );
 
                         latest_conversation
@@ -5259,9 +6266,7 @@ impl Agent {
                     }
                     Err(e) => {
                         yield AgentEvent::Message(
-                            Message::assistant().with_text(
-                                format!("Ran into this error trying to compact: {e}.\n\nPlease try again or create a new session")
-                            )
+                            assistant_text(format!("Ran into this error trying to compact: {e}.\n\nPlease try again or create a new session"))
                         );
                         return;
                     }
@@ -5275,6 +6280,194 @@ impl Agent {
         }))
     }
 
+    /// Land one auto-compaction: swap the summarized history in under the store's
+    /// freshness guard, then re-pair the rewrite basis with the history it
+    /// describes.
+    ///
+    /// The swap runs under the guard so a message another writer appended while
+    /// the summarizer ran is carried over rather than deleted, and the
+    /// conversation that actually landed is what the turn (and the client)
+    /// continues from. The basis is re-paired the moment the rewrite returns,
+    /// before anything is yielded: a landed rewrite renumbered every row, and a
+    /// declined one means the store moved under us — either way the reply loop
+    /// must inherit a revision and a history read TOGETHER, not a revision read
+    /// after the view it is meant to describe.
+    ///
+    /// Split out of the `reply` generator to keep its `poll` frame small — see
+    /// [`ToolBatchMaps`].
+    async fn land_auto_compaction(
+        &self,
+        session_id: &str,
+        conversation_to_compact: &Conversation,
+        compacted_conversation: &Conversation,
+        rewrite_basis: &mut RewriteBasis,
+    ) -> Result<(
+        crate::session::session_manager::ReplaceOutcome,
+        Conversation,
+    )> {
+        let (outcome, stored_conversation) = self
+            .config
+            .session_manager
+            .replace_conversation_preserving_tail(
+                session_id,
+                compacted_conversation,
+                rewrite_basis.revision,
+                rewrite_basis.known(),
+            )
+            .await?;
+        let latest_conversation = self
+            .reseed_basis(
+                session_id,
+                rewrite_basis,
+                if outcome.stored() {
+                    stored_conversation
+                } else {
+                    // Nothing was written, so the rewrite handed back its own
+                    // `replacement`. The pre-compaction view is the honest fallback
+                    // if the re-read fails.
+                    conversation_to_compact.clone()
+                },
+            )
+            .await;
+        Ok((outcome, latest_conversation))
+    }
+
+    /// BR-31 + BR-66: the soft-stage nudges a finished tool batch earns.
+    ///
+    /// BR-31 speaks when *one* tool has failed *the same way* N times in a row —
+    /// nudging the model here, with the failing result still in front of it,
+    /// rather than waiting for it to burn another call; the hard stop for a
+    /// streak that survives the nudges is enforced by the repetition inspector on
+    /// the next call. BR-66 covers the shape BR-31 cannot see: a run of
+    /// *different* tools failing in *different* ways, the ordinary shape of an
+    /// agent that has lost the thread. Every failed call of any kind (malformed
+    /// calls included) is counted and, at the cap, the model is made to stop and
+    /// re-plan. Warn-only: a mixed run of failures is not proof the next call is
+    /// doomed, so nothing is blocked.
+    ///
+    /// Split out of the `reply_internal` generator to keep its `poll` frame small
+    /// — see [`ToolBatchMaps`].
+    #[allow(clippy::too_many_arguments)]
+    async fn extend_batch_nudges(
+        &self,
+        session_id: &str,
+        conversation: &Conversation,
+        remaining_requests: &[ToolRequest],
+        permission_check_result: &PermissionCheckResult,
+        request_to_response_map: &HashMap<String, Arc<Mutex<Message>>>,
+        mistake_config: &crate::agents::mistakes::MistakeConfig,
+        mistakes: &mut crate::agents::mistakes::MistakeTracker,
+        loop_warnings: &mut Vec<String>,
+    ) {
+        loop_warnings.extend(
+            self.failure_loop_nudges(
+                conversation.messages(),
+                remaining_requests,
+                request_to_response_map,
+            )
+            .await,
+        );
+        let outcomes = self
+            .mistake_outcomes(
+                remaining_requests,
+                permission_check_result,
+                request_to_response_map,
+            )
+            .await;
+        if let Some(nudge) = mistakes.observe_tool_outcomes(mistake_config, &outcomes) {
+            tracing::info!(
+                streak = mistakes.streak(),
+                "Injecting mistake-streak reflect-and-replan nudge"
+            );
+            emit_loop_safety(
+                LoopSafetyKind::MistakeStreakNudge,
+                session_id,
+                mistakes.streak(),
+                None,
+                None,
+            );
+            loop_warnings.push(nudge);
+        }
+    }
+
+    /// The model-visible instruction and the user-visible notice a blocked Stop
+    /// hook produces.
+    ///
+    /// For goal loops the block is accounted against the goal's own
+    /// iteration/stall budget (which, unlike the generic Stop-hook cap, does not
+    /// reset when tools run). On give-up the goal is cleared and the agent
+    /// delivers a best-effort answer instead of looping forever.
+    ///
+    /// Split out of the `reply_internal` generator to keep its `poll` frame small
+    /// — see [`ToolBatchMaps`].
+    async fn stop_hook_block_feedback(
+        &self,
+        session_id: &str,
+        reason: &str,
+        has_active_goal: bool,
+    ) -> (String, String) {
+        let goal_outcome = if has_active_goal {
+            self.record_goal_block(session_id, reason).await
+        } else {
+            None
+        };
+        match goal_outcome {
+            Some(crate::agents::goal::GoalOutcome::GiveUp { attempts, stalled }) => {
+                self.clear_goal(session_id).await;
+                let why = if stalled {
+                    "it stopped making progress"
+                } else {
+                    "it hit the attempt limit"
+                };
+                (
+                    crate::agents::goal::giveup_instruction(reason),
+                    format!(
+                        "🎯 Goal stopped after {attempts} attempt(s): {why}. \
+                         Wrapping up with a best-effort answer; refine with a \
+                         narrower /goal if needed."
+                    ),
+                )
+            }
+            _ => (
+                format!("Stop hook feedback: {reason}"),
+                format!("Stop hook blocked completion: {reason}"),
+            ),
+        }
+    }
+
+    /// Bill one overflow-recovery compaction's provider round-trips to both the
+    /// reply budget and the session gauge.
+    ///
+    /// BR-35: a summarization round-trip inside the reply is spend like any
+    /// other, so it is billed to the budget too, not just the session gauge —
+    /// and that holds for a round-trip whose result was discarded, because the
+    /// provider charged for it. Only the attempt that actually landed replaced
+    /// the context; marking a discarded one as a compaction would reset the live
+    /// gauge to the summary's size over a history that never shrank.
+    ///
+    /// Split out of the `reply_internal` generator to keep its `poll` frame small
+    /// — see [`ToolBatchMaps`].
+    async fn bill_overflow_compaction(
+        &self,
+        session_config: &SessionConfig,
+        swap: &OverflowCompactionSwap,
+        budget: &mut BudgetTracker,
+    ) -> Result<()> {
+        let persisted = swap.stored.is_some();
+        let last = swap.usages.len().saturating_sub(1);
+        for (i, usage) in swap.usages.iter().enumerate() {
+            self.record_budget_usage(budget, usage).await;
+            self.update_session_metrics(
+                session_config,
+                usage,
+                persisted && i == last,
+                &uuid::Uuid::new_v4().to_string(),
+            )
+            .await?;
+        }
+        Ok(())
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn reply_internal(
         &self,
@@ -5284,8 +6477,14 @@ impl Agent {
         session: Session,
         cancel_token: Option<CancellationToken>,
     ) -> Result<BoxStream<'_, Result<AgentEvent>>> {
+        let session_manager = self.config.session_manager.clone();
+        let provider_conversation = crate::conversation::without_bedrock_reasoning(&conversation);
         let context = self
-            .prepare_reply_context(&session_config.id, conversation, &session.working_dir)
+            .prepare_reply_context(
+                &session_config.id,
+                provider_conversation,
+                &session.working_dir,
+            )
             .await?;
         let ReplyContext {
             mut conversation,
@@ -5297,8 +6496,6 @@ impl Agent {
         } = context;
         let reply_span = tracing::Span::current();
         self.reset_retry_attempts().await;
-
-        let session_manager = self.config.session_manager.clone();
 
         // Freshness basis for this turn's overflow-recovery compactions.
         //
@@ -5348,43 +6545,31 @@ impl Agent {
             // deny decision.
             let mut turn_guard = super::turn_guard::TurnToolGuard::new();
             let mut turns_taken = 0u32;
-            // BR-63: the effort scales the exploration budget — `quick` halves it
-            // (never below a usable floor, never above what the user configured),
-            // `deep` doubles it, `normal` leaves it exactly as configured.
-            let max_turns = effort.scale_turns(
-                session_config
-                    .max_turns
-                    .or_else(|| Config::global().get_param("BIOROUTER_MAX_TURNS").ok())
-                    .unwrap_or(DEFAULT_MAX_TURNS),
-            );
             // Cumulative tool calls dispatched this reply, across all iterations,
             // bounded by `max_tool_calls` so parallel fan-out can't run unbounded
             // even while `turns_taken` stays under `max_turns`.
             let mut tool_calls_taken = 0u32;
-            let max_tool_calls = effort.scale_tool_calls(
-                session_config
-                    .max_tool_calls
-                    .or_else(|| Config::global().get_param("BIOROUTER_MAX_TOOL_CALLS").ok())
-                    .unwrap_or(DEFAULT_MAX_TOOL_CALLS),
-            );
             let mut compaction_attempts = 0;
-            // Consecutive auto-continues of a length-truncated turn; reset on any
-            // tool call (real progress). Bounds the continue-on-truncation guard.
-            let mut truncation_continuations = 0u32;
-            // Resolve the tool-output guardrail policy once per reply (config
-            // reads touch the filesystem, so we avoid doing it per tool result).
-            let tool_output_guardrail =
-                crate::guardrails::tool_output::ToolOutputGuardrailMode::from_config();
-            // BR-51: the tool-error taxonomy policy, resolved once for the same
-            // reason (a config read touches the filesystem).
-            let tool_error_taxonomy =
-                crate::agents::tool_errors::ToolErrorTaxonomyConfig::from_config();
-            // BR-47: the auto post-edit diagnostics policy, resolved once per
-            // reply (config read touches the filesystem). The tree-sitter analyzer
-            // that runs the actual check is built lazily, only if a `text_editor`
-            // write actually lands while the feature is active.
-            let post_edit_diag_config =
-                crate::agents::post_edit_diagnostics::PostEditDiagnosticsConfig::from_config();
+            let mut truncation_recovery = TruncationRecoveryBudget::default();
+            let mut ever_made_user_visible_progress = false;
+            // Everything this reply reads from config, resolved once — see
+            // `ReplyLoopPolicy` for what each field is and why the resolution is
+            // not written out here.
+            let ReplyLoopPolicy {
+                max_turns,
+                max_tool_calls,
+                tool_output_guardrail,
+                tool_error_taxonomy,
+                post_edit_diag_config,
+                self_critique_config,
+                done_gate_config,
+                stall_config,
+                mistake_config,
+                mut budget,
+            } = resolve_reply_loop_policy(effort, &session_config);
+            // The tree-sitter analyzer BR-47 runs its check with is built lazily,
+            // only if a `text_editor` write actually lands while the feature is
+            // active.
             let mut post_edit_analyzer: Option<
                 biorouter_mcp::developer::analyze::CodeAnalyzer,
             > = None;
@@ -5394,58 +6579,38 @@ impl Agent {
             // to 0 whenever an edited file comes back clean, so a genuine fix
             // restores the budget.
             let mut post_edit_reflections: u32 = 0;
-            // BR-50: the optional self-critique / reflection policy, resolved once
-            // per reply (config read touches the filesystem). Default OFF; when a
-            // user opts in it re-reads an ordinary answer for correctness before
-            // it is returned, using the goal-judge LLM primitive.
-            let self_critique_config =
-                crate::agents::self_critique::SelfCritiqueConfig::from_config();
             // BR-50: corrective passes the critique has requested this reply,
             // bounded by `self_critique_config.max_passes` so a stubborn answer
             // cannot spin. Reply-scoped, like `post_edit_reflections`.
             let mut self_critique_passes: u32 = 0;
-            // BR-48: the optional deterministic done-ness gate, resolved once per
-            // reply (config read touches the filesystem). Default OFF; when a user
-            // opts in it re-runs their `SuccessCheck`s before the turn may finish
-            // and keeps the agent working on the failures. `done_gate_iterations`
-            // is the per-reply corrective-attempt counter — it does NOT reset on
-            // tool calls (mirroring the /goal iteration budget), so a check that
+            // BR-48: the per-reply corrective-attempt counter — it does NOT reset
+            // on tool calls (mirroring the /goal iteration budget), so a check that
             // never goes green cannot loop past the cap.
-            let done_gate_config =
-                crate::agents::done_gate::DoneGateConfig::from_config();
             let mut done_gate_iterations: u32 = 0;
-            // BR-32: the /goal stall detector, generalized to ordinary chat. Both
-            // resolved once per reply (config reads hit the filesystem).
-            let stall_config = crate::agents::stall::StallCheckConfig::from_config(Config::global());
             let mut stall_watch = crate::agents::stall::StallWatch::default();
-            // BR-66: the general mistake streak — consecutive failed tool calls of
-            // *any* kind (BR-31 only sees one tool failing one way), plus the
-            // recoverable-provider-error counter that decides whether a failed
-            // model call ends the turn or earns one more attempt with a hint.
-            // Reply-scoped, like the stall tracker, so a streak can never leak
-            // across turns.
-            let mistake_config = crate::agents::mistakes::MistakeConfig::from_config(Config::global());
             let mut mistakes = crate::agents::mistakes::MistakeTracker::default();
             // Set once the stall check has told the model to wrap up: the action
             // count by which this turn must be over, so a model that ignores the
             // give-up instruction and keeps calling tools cannot spin all the way
             // to `max_turns`.
             let mut stall_deadline: Option<u32> = None;
-            // BR-35: the per-reply wall-clock / token / dollar ceiling. `max_turns`
-            // and `max_tool_calls` bound how many *steps* a reply takes, which is
-            // not a bound on time or money — 429 backoff (~2 min/call) compounds
-            // inside a single step, and one step can re-bill a 200k-token context.
-            // Inert (and free) unless a limit is configured; a limit set on the
-            // session wins per-axis over the global config.
             let reply_started = std::time::Instant::now();
-            let mut budget = BudgetTracker::new(
-                ReplyBudget::resolve(session_config.budget, Config::global()),
-            );
             // Set once the budget is spent and the model has been told to wrap up:
             // the action count by which this reply must be over, mirroring
             // `stall_deadline`, so a model that keeps calling tools anyway cannot
             // spend the budget twice over.
             let mut budget_deadline: Option<u32> = None;
+            // A signed Bedrock assistant construction may span several provider
+            // calls while tools run or a length-truncated answer continues. Pin
+            // one provider instance and one exact provider-visible context for
+            // that reply. A later `reply()` starts with an ordinary user block,
+            // omits historical reasoning from its provider projection, and
+            // rebuilds fresh MOIM/resource context.
+            let reply_provider = match &turn_provider {
+                Some(provider) => Arc::clone(provider),
+                None => self.provider().await?,
+            };
+            let mut signed_replay_context: Option<Conversation> = None;
 
             // #69: this run of the loop is now the turn that soft interrupts are
             // accepted *into*. Opening here — where the loop actually starts, not
@@ -5459,10 +6624,12 @@ impl Agent {
                 if is_token_cancelled(&cancel_token) {
                     // BR-67: a cancelled turn and a completed turn look identical
                     // in the logs otherwise.
-                    loop_safety::emit(
-                        LoopSafetyEvent::new(LoopSafetyKind::Cancelled)
-                            .session(&session_config.id)
-                            .count(turns_taken),
+                    emit_loop_safety(
+                        LoopSafetyKind::Cancelled,
+                        &session_config.id,
+                        turns_taken,
+                        None,
+                        None,
                     );
                     break;
                 }
@@ -5470,7 +6637,7 @@ impl Agent {
                 if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
                     if final_output_tool.final_output.is_some() {
                         let final_event = AgentEvent::Message(
-                            Message::assistant().with_text(final_output_tool.final_output.clone().unwrap())
+                            assistant_text(final_output_tool.final_output.clone().unwrap())
                         );
                         yield final_event;
                         break;
@@ -5483,30 +6650,36 @@ impl Agent {
                 // budget-exhaustion stop is distinguishable from a normal completion.
                 tracing::debug!("agent action {}/{} this turn", turns_taken, max_turns);
                 if turns_taken > max_turns {
-                    loop_safety::emit(
-                        LoopSafetyEvent::new(LoopSafetyKind::TurnLimitStop)
-                            .session(&session_config.id)
-                            .count(turns_taken)
-                            .limit(max_turns),
+                    emit_loop_safety(
+                        LoopSafetyKind::TurnLimitStop,
+                        &session_config.id,
+                        turns_taken,
+                        Some(max_turns),
+                        None,
                     );
                     yield AgentEvent::Message(
-                        Message::assistant().with_text(format!(
-                            "I've reached my action limit for this turn ({max_turns} actions without user input), so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_turns` / `BIOROUTER_MAX_TURNS`.)"
-                        ))
+                        assistant_text(
+                            format!(
+                                "I've reached my action limit for this turn ({max_turns} actions without user input), so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_turns` / `BIOROUTER_MAX_TURNS`.)"
+                            )
+                        )
                     );
                     break;
                 }
                 if tool_calls_taken > max_tool_calls {
-                    loop_safety::emit(
-                        LoopSafetyEvent::new(LoopSafetyKind::ToolCallLimitStop)
-                            .session(&session_config.id)
-                            .count(tool_calls_taken)
-                            .limit(max_tool_calls),
+                    emit_loop_safety(
+                        LoopSafetyKind::ToolCallLimitStop,
+                        &session_config.id,
+                        tool_calls_taken,
+                        Some(max_tool_calls),
+                        None,
                     );
                     yield AgentEvent::Message(
-                        Message::assistant().with_text(format!(
-                            "I've made {tool_calls_taken} tool calls this turn, past my per-turn limit of {max_tool_calls}, so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_tool_calls` / `BIOROUTER_MAX_TOOL_CALLS`.)"
-                        ))
+                        assistant_text(
+                            format!(
+                                "I've made {tool_calls_taken} tool calls this turn, past my per-turn limit of {max_tool_calls}, so I'm stopping here rather than because the task is necessarily complete. Would you like me to continue? (raise the cap with `max_tool_calls` / `BIOROUTER_MAX_TOOL_CALLS`.)"
+                            )
+                        )
                     );
                     break;
                 }
@@ -5521,13 +6694,15 @@ impl Agent {
                     warn!("stall give-up ignored; ending the turn at action {turns_taken}");
                     // BR-67: the judge's `reason` is model prose about the user's
                     // work — the event carries the action count only.
-                    loop_safety::emit(
-                        LoopSafetyEvent::new(LoopSafetyKind::StallStop)
-                            .session(&session_config.id)
-                            .count(turns_taken),
+                    emit_loop_safety(
+                        LoopSafetyKind::StallStop,
+                        &session_config.id,
+                        turns_taken,
+                        None,
+                        None,
                     );
                     yield AgentEvent::Message(
-                        Message::assistant().with_text(crate::agents::stall::stopped_message(&reason))
+                        assistant_text(crate::agents::stall::stopped_message(&reason))
                     );
                     break;
                 }
@@ -5541,15 +6716,15 @@ impl Agent {
                         tokens = snapshot.tokens,
                         "reply budget wrap-up ignored; ending the turn at action {turns_taken}"
                     );
-                    loop_safety::emit(
-                        LoopSafetyEvent::new(LoopSafetyKind::BudgetStop)
-                            .session(&session_config.id)
-                            .count(turns_taken)
-                            .maybe_axis(snapshot.axis),
+                    emit_loop_safety(
+                        LoopSafetyKind::BudgetStop,
+                        &session_config.id,
+                        turns_taken,
+                        None,
+                        snapshot.axis,
                     );
                     yield AgentEvent::Message(
-                        Message::assistant()
-                            .with_text(crate::agents::budget::stopped_message(&snapshot))
+                        assistant_text(crate::agents::budget::stopped_message(&snapshot))
                     );
                     break;
                 }
@@ -5559,50 +6734,19 @@ impl Agent {
                 // the next provider call) so the model incorporates them without a
                 // cancel-and-resend round trip that discards in-flight work.
                 for queued in self.drain_soft_interrupts() {
-                    let QueuedInterrupt { text, provenance } = queued;
-                    // Frame ONLY agent-originated steers. This drain loop is
-                    // SHARED with the human's own typed soft interrupt, which
-                    // `queue_soft_interrupt` enqueues with `provenance: None` —
-                    // framing that unconditionally would wrap the user's own
-                    // words in an untrusted envelope and tell the model to
-                    // discount them.
-                    //
-                    // The inner match is EXHAUSTIVE over `ProvenanceKind` on
-                    // purpose, and must stay that way. `ProvenanceKind` is not
-                    // `#[non_exhaustive]`, so a `_` catch-all here would let a
-                    // variant added later fall silently into the *unframed* arm
-                    // — putting cross-session agent text into this session's
-                    // context without the untrusted envelope, which is the exact
-                    // prompt-injection vector `frame_workspace_injection` exists
-                    // to close. Exhaustiveness makes a new variant a compile
-                    // error and forces an explicit framing decision.
-                    let body = match &provenance {
-                        Some(p) => match p.kind {
-                            ProvenanceKind::AgentInjection => {
-                                crate::conversation::message::frame_workspace_injection(
-                                    p.from_session_name.as_deref(),
-                                    &text,
-                                )
-                            }
-                            // The human typed this into the subagent's own tab,
-                            // or it is a spawn-context record this session
-                            // authored — neither is another agent's text, so
-                            // neither is framed.
-                            ProvenanceKind::UserDirect | ProvenanceKind::SpawnContext => text,
-                        },
-                        // Unstamped: the human's own typed soft interrupt.
-                        None => text,
-                    };
-                    let mut m = Message::user().with_text(body);
-                    if let Some(p) = provenance {
-                        m = m.with_provenance(p);
-                    }
+                    // The framing decision (and why it is not applied to the
+                    // human's own steer) lives on `soft_interrupt_message`.
+                    let mut m = soft_interrupt_message(queued);
                     // #41: adopt the minted uid — the retained/yielded copy
                     // must carry the same id as the stored row, or its next
                     // persist duplicates it instead of replaying.
                     session_manager
                         .add_message_adopting_uid(&session_config.id, &mut m)
                         .await?;
+                    if signed_replay_context.take().is_some() {
+                        conversation =
+                            crate::conversation::without_bedrock_reasoning(&conversation);
+                    }
                     conversation.push(m.clone());
                     yield AgentEvent::Message(m);
                 }
@@ -5621,36 +6765,35 @@ impl Agent {
                     StallAction::Proceed => {}
                     StallAction::Nudge { reason } => {
                         info!(actions = turns_taken, "stall check flagged a loop; nudging the model");
-                        loop_safety::emit(
-                            LoopSafetyEvent::new(LoopSafetyKind::StallNudge)
-                                .session(&session_config.id)
-                                .count(turns_taken),
+                        emit_loop_safety(
+                            LoopSafetyKind::StallNudge,
+                            &session_config.id,
+                            turns_taken,
+                            None,
+                            None,
                         );
-                        let mut nudge = Message::user()
-                            .with_text(crate::agents::stall::nudge_instruction(&reason, turns_taken))
-                            .with_visibility(false, true);
-                        session_manager
-                            .add_message_adopting_uid(&session_config.id, &mut nudge)
-                            .await?;
                         // #59 / #66 SHAPE 2: a row the user is deliberately not
                         // shown, named so a client can still account for it.
-                        if let Some(published) = named_but_never_yielded(
-                            std::slice::from_ref(&nudge),
-                            NeverYielded::ModelOnly,
-                        ) {
+                        let (nudge, published) = persist_steering_message(
+                            &session_manager,
+                            &session_config.id,
+                            crate::agents::stall::nudge_instruction(&reason, turns_taken),
+                        ).await?;
+                        if let Some(published) = published {
                             yield published;
+                        }
+                        if signed_replay_context.take().is_some() {
+                            conversation =
+                                crate::conversation::without_bedrock_reasoning(&conversation);
                         }
                         conversation.push(nudge);
                         yield AgentEvent::Message(
-                            Message::assistant()
-                                .with_system_notification(
-                                    SystemNotificationType::InlineMessage,
-                                    format!(
-                                        "⏳ Progress check: {}",
-                                        crate::agents::stall::ellipsize(&reason, 200)
-                                    ),
-                                )
-                                .user_only(),
+                            inline_notice_user_only(
+                                format!(
+                                    "⏳ Progress check: {}",
+                                    crate::agents::stall::ellipsize(&reason, 200)
+                                ),
+                            ),
                         );
                     }
                     StallAction::GiveUp { reason, flags, stalled } => {
@@ -5663,28 +6806,29 @@ impl Agent {
                         // `flags` (how many progress checks flagged this turn) is
                         // the count that tripped the give-up; the reason prose
                         // stays out of the trace.
-                        loop_safety::emit(
-                            LoopSafetyEvent::new(LoopSafetyKind::StallGiveUp)
-                                .session(&session_config.id)
-                                .count(flags)
-                                .limit(stall_config.max_flags),
+                        emit_loop_safety(
+                            LoopSafetyKind::StallGiveUp,
+                            &session_config.id,
+                            flags,
+                            Some(stall_config.max_flags),
+                            None,
                         );
                         // The model gets a short grace window to write its wrap-up;
                         // after that the turn ends whether or not it complied.
                         stall_deadline =
                             Some(turns_taken + crate::agents::stall::STALL_WRAPUP_GRACE);
-                        let mut wrapup = Message::user()
-                            .with_text(crate::agents::stall::giveup_instruction(&reason))
-                            .with_visibility(false, true);
-                        session_manager
-                            .add_message_adopting_uid(&session_config.id, &mut wrapup)
-                            .await?;
                         // #66 SHAPE 2: model-only, like the nudge above.
-                        if let Some(published) = named_but_never_yielded(
-                            std::slice::from_ref(&wrapup),
-                            NeverYielded::ModelOnly,
-                        ) {
+                        let (wrapup, published) = persist_steering_message(
+                            &session_manager,
+                            &session_config.id,
+                            crate::agents::stall::giveup_instruction(&reason),
+                        ).await?;
+                        if let Some(published) = published {
                             yield published;
+                        }
+                        if signed_replay_context.take().is_some() {
+                            conversation =
+                                crate::conversation::without_bedrock_reasoning(&conversation);
                         }
                         conversation.push(wrapup);
                         let why = if stalled {
@@ -5693,15 +6837,12 @@ impl Agent {
                             "no progress across several checks"
                         };
                         yield AgentEvent::Message(
-                            Message::assistant()
-                                .with_system_notification(
-                                    SystemNotificationType::InlineMessage,
-                                    format!(
-                                        "⏳ Stopped looping after {flags} progress check(s): {why}. \
-                                         Wrapping up with a best-effort answer."
-                                    ),
-                                )
-                                .user_only(),
+                            inline_notice_user_only(
+                                format!(
+                                    "⏳ Stopped looping after {flags} progress check(s): {why}. \
+                                     Wrapping up with a best-effort answer."
+                                ),
+                            ),
                         );
                     }
                 }
@@ -5720,19 +6861,15 @@ impl Agent {
                             axis = snapshot.axis,
                             "reply budget is running low"
                         );
-                        loop_safety::emit(
-                            LoopSafetyEvent::new(LoopSafetyKind::BudgetWarn)
-                                .session(&session_config.id)
-                                .count(turns_taken)
-                                .maybe_axis(snapshot.axis),
+                        emit_loop_safety(
+                            LoopSafetyKind::BudgetWarn,
+                            &session_config.id,
+                            turns_taken,
+                            None,
+                            snapshot.axis,
                         );
                         yield AgentEvent::Message(
-                            Message::assistant()
-                                .with_system_notification(
-                                    SystemNotificationType::InlineMessage,
-                                    crate::agents::budget::progress_note(&snapshot),
-                                )
-                                .user_only(),
+                            inline_notice_user_only(crate::agents::budget::progress_note(&snapshot),),
                         );
                     }
                     BudgetAction::Exceeded(snapshot) => {
@@ -5742,11 +6879,12 @@ impl Agent {
                             axis = snapshot.axis,
                             "reply budget spent; asking for a wrap-up"
                         );
-                        loop_safety::emit(
-                            LoopSafetyEvent::new(LoopSafetyKind::BudgetExceeded)
-                                .session(&session_config.id)
-                                .count(turns_taken)
-                                .maybe_axis(snapshot.axis),
+                        emit_loop_safety(
+                            LoopSafetyKind::BudgetExceeded,
+                            &session_config.id,
+                            turns_taken,
+                            None,
+                            snapshot.axis,
                         );
                         // Graceful: the model is told the budget is spent (and how
                         // many tokens it has left) and gets a short grace window to
@@ -5755,45 +6893,44 @@ impl Agent {
                         budget_deadline = Some(
                             turns_taken + crate::agents::budget::BUDGET_WRAPUP_GRACE,
                         );
-                        let mut wrapup = Message::user()
-                            .with_text(crate::agents::budget::wrapup_instruction(&snapshot))
-                            .with_visibility(false, true);
-                        session_manager
-                            .add_message_adopting_uid(&session_config.id, &mut wrapup)
-                            .await?;
                         // #66 SHAPE 2: model-only, like the stall wrap-up above.
-                        if let Some(published) = named_but_never_yielded(
-                            std::slice::from_ref(&wrapup),
-                            NeverYielded::ModelOnly,
-                        ) {
+                        let (wrapup, published) = persist_steering_message(
+                            &session_manager,
+                            &session_config.id,
+                            crate::agents::budget::wrapup_instruction(&snapshot),
+                        ).await?;
+                        if let Some(published) = published {
                             yield published;
+                        }
+                        if signed_replay_context.take().is_some() {
+                            conversation =
+                                crate::conversation::without_bedrock_reasoning(&conversation);
                         }
                         conversation.push(wrapup);
                         yield AgentEvent::Message(
-                            Message::assistant()
-                                .with_system_notification(
-                                    SystemNotificationType::InlineMessage,
-                                    format!(
-                                        "⏳ Budget reached ({}). Wrapping up with what I have.",
-                                        snapshot.describe()
-                                    ),
-                                )
-                                .user_only(),
+                            inline_notice_user_only(
+                                format!(
+                                    "⏳ Budget reached ({}). Wrapping up with what I have.",
+                                    snapshot.describe()
+                                ),
+                            ),
                         );
                     }
                 }
 
-                let conversation_with_moim = self
-                    .assemble_turn_context(&session_config.id, &conversation, &working_dir)
-                    .await;
-
-                // BR-63: the effort-stamped provider for this turn, or the
-                // session's provider when the effort is the default (unchanged
-                // behaviour, and it picks up a mid-session model switch).
-                let iteration_provider = match &turn_provider {
-                    Some(provider) => Arc::clone(provider),
-                    None => self.provider().await?,
+                let conversation_with_moim = match signed_replay_context.as_ref() {
+                    Some(replay) => replay.clone(),
+                    None => {
+                        self.assemble_turn_context(
+                            &session_config.id,
+                            &conversation,
+                            &working_dir,
+                        )
+                        .await
+                    }
                 };
+
+                let iteration_provider = Arc::clone(&reply_provider);
                 let usage_event_key = uuid::Uuid::new_v4().to_string();
                 let mut stream = Self::stream_response_from_provider(
                     iteration_provider,
@@ -5806,7 +6943,9 @@ impl Agent {
                 let mut no_tools_called = true;
                 let mut messages_to_add = Conversation::default();
                 let mut tools_updated = false;
+                let mut signed_replay_invalidated_this_iteration = false;
                 let mut did_recovery_compact_this_iteration = false;
+                let mut did_retry_reset_this_iteration = false;
                 // BR-66: set when a recoverable provider error was absorbed and a
                 // hint pushed into `messages_to_add`; the turn continues instead of
                 // ending on the error.
@@ -5814,6 +6953,11 @@ impl Agent {
                 // finish_reason of this turn's response (from the provider usage),
                 // used below to auto-continue a length-truncated turn.
                 let mut last_finish_reason: Option<String> = None;
+                // Visible partial output is genuine progress for the tighter
+                // zero-progress budget. Signed thinking alone is deliberately
+                // not: it is needed for model continuity, but gives the user no
+                // partial answer to read.
+                let mut made_user_visible_progress = false;
                 // The turn's usage, recorded ONCE when the stream ends.
                 //
                 // It used to be written on every usage-bearing chunk, which (a) lost
@@ -5883,6 +7027,9 @@ impl Agent {
                             }
 
                             if let Some(response) = response {
+                                made_user_visible_progress |=
+                                    message_has_user_visible_progress(&response);
+                                ever_made_user_visible_progress |= made_user_visible_progress;
                                 // #59: name the reply BEFORE it is yielded, so the
                                 // copy the client sees carries the id the row it
                                 // becomes is stored under. A provider that stamps
@@ -5909,7 +7056,17 @@ impl Agent {
 
                                 let num_tool_requests = frontend_requests.len() + remaining_requests.len();
                                 if num_tool_requests == 0 {
-                                    messages_to_add.push(response.clone());
+                                    let merged_into_signed_turn =
+                                        continues_signed_turn(&response, &messages_to_add)
+                                            && response.id.as_deref().is_some_and(|response_id| {
+                                                messages_to_add.append_content_to_message_id(
+                                                    response_id,
+                                                    &response.content,
+                                                )
+                                            });
+                                    if !merged_into_signed_turn {
+                                        messages_to_add.push(response.clone());
+                                    }
                                     continue;
                                 }
                                 // Count every tool call this reply requests; the
@@ -5917,28 +7074,21 @@ impl Agent {
                                 // at the top of the next iteration.
                                 tool_calls_taken = tool_calls_taken.saturating_add(num_tool_requests as u32);
 
-                                let tool_response_messages: Vec<Arc<Mutex<Message>>> = (0..num_tool_requests)
-                                    .map(|_| Arc::new(Mutex::new(Message::user().with_id(
-                                        format!("msg_{}", Uuid::new_v4())
-                                    ))))
-                                    .collect();
-
-                                let mut request_to_response_map = HashMap::new();
-                                let mut request_metadata: HashMap<String, Option<ProviderMetadata>> = HashMap::new();
-                                // The tool that produced each result, for the
-                                // untrusted-data frame's provenance attribute.
-                                // Built here rather than looked up later because
-                                // this is the one place the request and its id are
-                                // together; a malformed request has no name, and the
-                                // frame says `unknown` rather than being skipped.
-                                let mut request_to_tool_name: HashMap<String, String> = HashMap::new();
-                                for (idx, request) in frontend_requests.iter().chain(remaining_requests.iter()).enumerate() {
-                                    request_to_response_map.insert(request.id.clone(), tool_response_messages[idx].clone());
-                                    request_metadata.insert(request.id.clone(), request.metadata.clone());
-                                    if let Ok(tool_call) = &request.tool_call {
-                                        request_to_tool_name.insert(request.id.clone(), tool_call.name.to_string());
-                                    }
-                                }
+                                // Built in `build_tool_request_maps` rather than
+                                // here so this generator's `poll` frame does not
+                                // carry the map-building temporaries (issue #87).
+                                let ToolBatchMaps {
+                                    tool_response_messages,
+                                    request_to_response_map,
+                                    request_metadata,
+                                    request_to_original_tool_call,
+                                    mut request_to_executed_tool_call,
+                                    request_to_tool_name,
+                                } = build_tool_request_maps(
+                                    &response,
+                                    &frontend_requests,
+                                    &remaining_requests,
+                                );
 
                                 for (idx, request) in frontend_requests.iter().enumerate() {
                                     let mut frontend_tool_stream = self.handle_frontend_tool_request(
@@ -5949,6 +7099,12 @@ impl Agent {
                                     while let Some(msg) = frontend_tool_stream.try_next().await? {
                                         yield AgentEvent::Message(msg);
                                     }
+                                    note_tool_argument_rewrite(
+                                        &request.id,
+                                        &request_to_original_tool_call,
+                                        &request_to_executed_tool_call,
+                                        &request_to_response_map,
+                                    ).await;
                                 }
                                 // Soft-stage advisories injected after this batch's tool
                                 // results so the model can break the loop itself before the
@@ -5962,6 +7118,8 @@ impl Agent {
                                 // transcript reads "you edited X (tool response), then the
                                 // syntax check on X found ...".
                                 let mut pending_post_edit_diagnostics: Option<String> = None;
+                                let mut pending_pre_tool_hook_context: Option<Message> = None;
+                                let mut pending_post_tool_hook_context: Option<Message> = None;
 
                                 // §6.2c: ids whose tool response was already streamed to the
                                 // transcript the moment it completed (in the execution loop
@@ -5978,21 +7136,10 @@ impl Agent {
 
                                 if biorouter_mode == BioRouterMode::Chat {
                                     // Skip all remaining tool calls in chat mode
-                                    for request in remaining_requests.iter() {
-                                        if let Some(response_msg) = request_to_response_map.get(&request.id) {
-                                            let mut response = response_msg.lock().await;
-                                            *response = response.clone().with_tool_response_with_metadata(
-                                                request.id.clone(),
-                                                Ok(CallToolResult {
-                                                    content: vec![Content::text(CHAT_MODE_TOOL_SKIPPED_RESPONSE)],
-                                                    structured_content: None,
-                                                    is_error: Some(false),
-                                                    meta: None,
-                                                }),
-                                                request.metadata.as_ref(),
-                                            );
-                                        }
-                                    }
+                                    skip_tool_requests_for_chat_mode(
+                                        &remaining_requests,
+                                        &request_to_response_map,
+                                    ).await;
                                 } else {
                                     let (
                                         inspection_results,
@@ -6007,35 +7154,20 @@ impl Agent {
                                         &request_to_response_map,
                                         cancel_token.clone(),
                                     ).await?;
+                                    for request in &remaining_requests {
+                                        if let Ok(tool_call) = &request.tool_call {
+                                            request_to_executed_tool_call
+                                                .insert(request.id.clone(), tool_call.clone());
+                                        }
+                                    }
                                     loop_warnings = crate::tool_inspection::collect_warning_reasons(&inspection_results);
 
-                                    // RepetitionInspector is the sole policy authority.
-                                    // TurnToolGuard only converts its exact-request Deny
-                                    // into a terminal event; it has no independent counter
-                                    // or threshold.
-                                    if let Some((result, request)) = inspection_results
-                                        .iter()
-                                        .filter(|result| {
-                                            result.inspector_name
-                                                == crate::tool_monitor::REPETITION_INSPECTOR_NAME
-                                                && result.action == InspectionAction::Deny
-                                        })
-                                        .find_map(|result| {
-                                            permission_check_result
-                                                .denied
-                                                .iter()
-                                                .find(|request| request.id == result.tool_request_id)
-                                                .map(|request| (result, request))
-                                        })
-                                    {
-                                        if let Some(code) = turn_guard.enforce_denial(request) {
-                                            warn!(
-                                                tool_request_id = %request.id,
-                                                "repetition policy denied a tool signature; terminating this user turn"
-                                            );
-                                            pending_turn_abort =
-                                                Some((code, result.reason.clone()));
-                                        }
+                                    if let Some(abort) = repetition_denial_abort(
+                                        &inspection_results,
+                                        &permission_check_result,
+                                        &mut turn_guard,
+                                    ) {
+                                        pending_turn_abort = Some(abort);
                                     }
 
                                     let tool_futures_arc = Arc::new(Mutex::new(tool_futures));
@@ -6067,29 +7199,14 @@ impl Agent {
                                     // model with the same untrusted framing (BR-26) as the
                                     // SessionStart / UserPromptSubmit path.
                                     {
-                                        let staged = self.hooks_manager.drain_tool_hook_context(&session.id);
-                                        let mut hook_contexts: Vec<String> = Vec::new();
-                                        for entry in staged {
-                                            for msg in entry.system_messages {
-                                                yield AgentEvent::Message(
-                                                    Message::assistant()
-                                                        .with_system_notification(
-                                                            SystemNotificationType::InlineMessage,
-                                                            msg,
-                                                        )
-                                                        .user_only(),
-                                                );
-                                            }
-                                            hook_contexts.extend(entry.additional_context);
+                                        let (notices, context) = staged_tool_hook_context(
+                                            self.hooks_manager.drain_tool_hook_context(&session.id),
+                                        );
+                                        for notice in notices {
+                                            yield AgentEvent::Message(notice);
                                         }
-                                        if !hook_contexts.is_empty() {
-                                            messages_to_add.push(
-                                                Message::user()
-                                                    .with_text(crate::hooks::outcome::frame_hook_context(
-                                                        &hook_contexts.join("\n\n"),
-                                                    ))
-                                                    .with_visibility(false, true),
-                                            );
+                                        if context.is_some() {
+                                            pending_pre_tool_hook_context = context;
                                         }
                                     }
 
@@ -6167,6 +7284,8 @@ impl Agent {
                                                     &enable_extension_request_ids,
                                                     &request_to_response_map,
                                                     &request_to_tool_name,
+                                                    &request_to_original_tool_call,
+                                                    &request_to_executed_tool_call,
                                                     &request_metadata,
                                                     &mut all_install_successful,
                                                     &mut post_tool_results,
@@ -6201,253 +7320,73 @@ impl Agent {
                                         }
                                     }
 
-                                    // PAR-04: cancellation breaks the loop above the
-                                    // instant the token trips, abandoning every tool that
-                                    // had not yet returned. Their response slots are still
-                                    // the empty placeholders allocated up front, and the
-                                    // post-batch persistence loop below writes a `tool_use`
-                                    // for each request unconditionally — so without this
-                                    // backfill a cancelled batch persists `tool_use` blocks
-                                    // with no matching `tool_result`, which every provider
-                                    // rejects when the session is replayed.
-                                    //
-                                    // Fill every still-empty slot with an explicit
-                                    // "cancelled" result, exactly as chat mode does for the
-                                    // calls it skips. A slot that already holds a response
-                                    // (the tools that finished before the cancel) is left
-                                    // untouched, so no completed result is overwritten.
-                                    // Covers frontend tools too: the persistence loop below
-                                    // writes a `tool_use` for those as well, and a cancel can
-                                    // land while one is still awaiting its client reply.
+                                    // PAR-04: fill every still-empty slot with an
+                                    // explicit "cancelled" result, exactly as chat
+                                    // mode does for the calls it skips. The reasoning
+                                    // lives on `backfill_cancelled_tool_responses`.
                                     if is_token_cancelled(&cancel_token) {
-                                        for request in frontend_requests.iter().chain(remaining_requests.iter()) {
-                                            let Some(response_msg) =
-                                                request_to_response_map.get(&request.id)
-                                            else {
-                                                continue;
-                                            };
-                                            let mut response = response_msg.lock().await;
-                                            let already_answered = response.content.iter().any(|c| {
-                                                matches!(
-                                                    c,
-                                                    MessageContent::ToolResponse(r)
-                                                        if r.id == request.id
-                                                )
-                                            });
-                                            if already_answered {
-                                                continue;
-                                            }
-                                            *response = response.clone().with_tool_response_with_metadata(
-                                                request.id.clone(),
-                                                Ok(CallToolResult {
-                                                    content: vec![Content::text(
-                                                        super::tool_execution::CANCELLED_MID_RUN_RESPONSE,
-                                                    )],
-                                                    structured_content: None,
-                                                    is_error: Some(true),
-                                                    meta: None,
-                                                }),
-                                                request.metadata.as_ref(),
-                                            );
-                                        }
+                                        backfill_cancelled_tool_responses(
+                                            &frontend_requests,
+                                            &remaining_requests,
+                                            &request_to_response_map,
+                                        ).await;
                                     }
 
-                                    // BR-47: auto post-edit diagnostics. A successful
-                                    // `text_editor` write is re-parsed with the developer
-                                    // analyzer's tree-sitter grammars; any ERROR / MISSING
-                                    // nodes become agent-visible corrective context, so the
-                                    // model fixes broken syntax in the same turn instead of
-                                    // only discovering it if it happens to run tests. Bounded
-                                    // by a per-reply reflection counter so a file that never
-                                    // parses clean cannot wedge the turn — the built-in twin
-                                    // of the BR-19 PostToolUse block cap below. Runs off the
-                                    // still-owned `post_tool_results`, before the PostToolUse
-                                    // hooks consume it.
+                                    // BR-47: auto post-edit diagnostics. The collection
+                                    // pass and the reflection accounting live in
+                                    // `post_edit_file_diagnostics` /
+                                    // `post_edit_reflection_text` so this generator's
+                                    // `poll` frame does not carry either (issue #87).
                                     if post_edit_diag_config.is_active() {
-                                        use crate::agents::post_edit_diagnostics as ped;
-                                        // (display path, resolved path) for each successful write.
-                                        let mut edited: Vec<(String, std::path::PathBuf)> = Vec::new();
-                                        for (request_id, _response_value, error_text) in &post_tool_results {
-                                            if error_text.is_some() {
-                                                // The write itself failed; there is nothing valid
-                                                // on disk to parse.
-                                                continue;
-                                            }
-                                            let Some(request) = remaining_requests.iter().find(|r| &r.id == request_id) else { continue };
-                                            let Some(resolved) = ped::edited_path_from_request(request, &session.working_dir) else { continue };
-                                            // Show the model the path it actually sent, when readable.
-                                            let display = request
-                                                .tool_call
-                                                .as_ref()
-                                                .ok()
-                                                .and_then(|tc| tc.arguments.as_ref())
-                                                .and_then(|a| a.get("path").or_else(|| a.get("file_path")))
-                                                .and_then(|v| v.as_str())
-                                                .map(str::to_string)
-                                                .unwrap_or_else(|| resolved.display().to_string());
-                                            edited.push((display, resolved));
-                                        }
-                                        if !edited.is_empty() {
-                                            let analyzer = post_edit_analyzer.get_or_insert_with(
-                                                biorouter_mcp::developer::analyze::CodeAnalyzer::new,
-                                            );
-                                            let mut files: Vec<ped::FileDiagnostics> = Vec::new();
-                                            // Dedup by resolved path: a file written twice in one
-                                            // batch is reported once, on its final on-disk state.
-                                            let mut seen = std::collections::HashSet::new();
-                                            for (display, resolved) in edited {
-                                                if !seen.insert(resolved.clone()) {
-                                                    continue;
-                                                }
-                                                let diags = analyzer.diagnose_file(&resolved);
-                                                if diags.is_empty() {
-                                                    continue;
-                                                }
-                                                files.push(ped::FileDiagnostics {
-                                                    path: display,
-                                                    lines: diags.iter().map(|d| d.render()).collect(),
-                                                });
-                                            }
-                                            match ped::next_reflection(
-                                                !files.is_empty(),
-                                                post_edit_reflections,
-                                                post_edit_diag_config.max_reflections,
-                                            ) {
-                                                ped::ReflectionOutcome::Reset => {
-                                                    // Every edited file parsed clean: a genuine
-                                                    // fix (or a clean edit) restores the budget.
-                                                    post_edit_reflections = 0;
-                                                }
-                                                ped::ReflectionOutcome::Inject { next } => {
-                                                    post_edit_reflections = next;
-                                                    let total: usize = files.iter().map(|f| f.lines.len()).sum();
-                                                    tracing::info!(
-                                                        files = files.len(),
-                                                        diagnostics = total,
-                                                        reflection = post_edit_reflections,
-                                                        "BR-47: injecting post-edit syntax diagnostics"
-                                                    );
-                                                    loop_safety::emit(
-                                                        LoopSafetyEvent::new(LoopSafetyKind::PostEditDiagnostics)
-                                                            .session(&session_config.id)
-                                                            .count(post_edit_reflections),
-                                                    );
-                                                    // Held, not pushed: it must land after the
-                                                    // tool response for the edit it describes.
-                                                    pending_post_edit_diagnostics =
-                                                        Some(ped::frame_post_edit_diagnostics(&files));
-                                                }
-                                                ped::ReflectionOutcome::Capped => {
-                                                    // Deliver the result as-is so the turn is not
-                                                    // wedged on a file that never parses clean.
-                                                    tracing::info!(
-                                                        cap = post_edit_diag_config.max_reflections,
-                                                        "BR-47: post-edit diagnostics reflection cap reached; not injecting again this reply"
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-
-                                    // BR-31: the results are in. If a tool has now failed the
-                                    // same way N times in a row, nudge the model here — with
-                                    // the failing result still in front of it — rather than
-                                    // waiting for it to burn another call. The hard stop for
-                                    // a streak that survives the nudges is enforced by the
-                                    // repetition inspector on the next call.
-                                    loop_warnings.extend(
-                                        self.failure_loop_nudges(
-                                            conversation.messages(),
+                                        if let Some(files) = post_edit_file_diagnostics(
+                                            &post_tool_results,
                                             &remaining_requests,
-                                            &request_to_response_map,
-                                        ).await,
-                                    );
-
-                                    // BR-66: the general streak. BR-31 above only speaks when
-                                    // *one* tool has failed *the same way* N times; a run of
-                                    // different tools failing in different ways — the ordinary
-                                    // shape of an agent that has lost the thread — is invisible
-                                    // to it. Count every failed call of any kind (malformed
-                                    // calls included) and, at the cap, make the model stop and
-                                    // re-plan. Warn-only: a mixed run of failures is not proof
-                                    // the next call is doomed, so nothing is blocked.
-                                    if let Some(nudge) = mistakes.observe_tool_outcomes(
-                                        &mistake_config,
-                                        &self.mistake_outcomes(
-                                            &remaining_requests,
-                                            &permission_check_result,
-                                            &request_to_response_map,
-                                        ).await,
-                                    ) {
-                                        tracing::info!(
-                                            streak = mistakes.streak(),
-                                            "Injecting mistake-streak reflect-and-replan nudge"
-                                        );
-                                        loop_safety::emit(
-                                            LoopSafetyEvent::new(LoopSafetyKind::MistakeStreakNudge)
-                                                .session(&session_config.id)
-                                                .count(mistakes.streak()),
-                                        );
-                                        loop_warnings.push(nudge);
-                                    }
-
-                                    // PostToolUse / PostToolUseFailure hooks: awaited so their
-                                    // injected context lands before the next provider call, and
-                                    // (BR-19) their decision is now honored — a `block` turns the
-                                    // result into corrective feedback instead of being computed
-                                    // and thrown away. Bounded by POST_TOOL_HOOK_BLOCK_CAP so a
-                                    // hook that always blocks cannot wedge the turn.
-                                    {
-                                        let hooks = self.hooks_manager();
-                                        let mut post_futures = Vec::new();
-                                        for (request_id, response_value, error_text) in post_tool_results {
-                                            let Some(request) = remaining_requests.iter().find(|r| r.id == request_id) else { continue };
-                                            let Ok(tool_call) = &request.tool_call else { continue };
-                                            let tool_name = tool_call.name.to_string();
-                                            let event = if error_text.is_some() {
-                                                crate::hooks::HookEvent::PostToolUseFailure
-                                            } else {
-                                                crate::hooks::HookEvent::PostToolUse
-                                            };
-                                            if !hooks.has_hooks(event, Some(&tool_name), &session.working_dir).await {
-                                                continue;
-                                            }
-                                            let mut payload = crate::hooks::HookPayload::new(
-                                                event,
+                                            &session.working_dir,
+                                            &mut post_edit_analyzer,
+                                        ) {
+                                            pending_post_edit_diagnostics = post_edit_reflection_text(
                                                 &session_config.id,
-                                                session.working_dir.to_string_lossy(),
+                                                &post_edit_diag_config,
+                                                &files,
+                                                &mut post_edit_reflections,
                                             );
-                                            payload.tool_name = Some(tool_name.clone());
-                                            payload.tool_input = Some(
-                                                tool_call
-                                                    .arguments
-                                                    .clone()
-                                                    .map(Value::Object)
-                                                    .unwrap_or_else(|| Value::Object(serde_json::Map::new())),
-                                            );
-                                            payload.tool_response = response_value;
-                                            payload.error = error_text;
-                                            let hooks = Arc::clone(&hooks);
-                                            let working_dir = session.working_dir.clone();
-                                            post_futures.push(async move {
-                                                let aggregate = hooks
-                                                    .dispatch(event, Some(&tool_name), &payload, &working_dir)
-                                                    .await;
-                                                (request_id, tool_name, aggregate)
-                                            });
                                         }
-                                        if !post_futures.is_empty() {
+                                    }
+
+                                    // BR-31 + BR-66: the results are in; see
+                                    // `extend_batch_nudges` for what each streak
+                                    // detector says and why neither blocks.
+                                    self.extend_batch_nudges(
+                                        &session_config.id,
+                                        &conversation,
+                                        &remaining_requests,
+                                        &permission_check_result,
+                                        &request_to_response_map,
+                                        &mistake_config,
+                                        &mut mistakes,
+                                        &mut loop_warnings,
+                                    ).await;
+
+                                    // PostToolUse / PostToolUseFailure hooks. The
+                                    // dispatch itself lives in
+                                    // `dispatch_post_tool_hooks` so this generator's
+                                    // `poll` frame does not carry it (issue #87);
+                                    // only the yielding half is left here.
+                                    {
+                                        let hook_outcomes = dispatch_post_tool_hooks(
+                                            self.hooks_manager(),
+                                            &session_config.id,
+                                            &session.working_dir,
+                                            post_tool_results,
+                                            &remaining_requests,
+                                        ).await;
+                                        if !hook_outcomes.is_empty() {
                                             let mut hook_contexts: Vec<String> = Vec::new();
                                             let mut blocked_any = false;
-                                            for (request_id, tool_name, aggregate) in futures::future::join_all(post_futures).await {
+                                            for (request_id, tool_name, aggregate) in hook_outcomes {
                                                 for msg in &aggregate.system_messages {
                                                     yield AgentEvent::Message(
-                                                        Message::assistant()
-                                                            .with_system_notification(
-                                                                SystemNotificationType::InlineMessage,
-                                                                msg.clone(),
-                                                            )
-                                                            .user_only(),
+                                                        inline_notice_user_only(msg.clone(),),
                                                     );
                                                 }
                                                 if let Some(reason) = aggregate.deny_reason() {
@@ -6460,24 +7399,16 @@ impl Agent {
                                                             &request_to_response_map,
                                                         ).await;
                                                         yield AgentEvent::Message(
-                                                            Message::assistant()
-                                                                .with_system_notification(
-                                                                    SystemNotificationType::InlineMessage,
-                                                                    format!("Hook blocked the result of {tool_name}: {reason}"),
-                                                                )
-                                                                .user_only(),
+                                                            inline_notice_user_only(format!("Hook blocked the result of {tool_name}: {reason}"),),
                                                         );
                                                     } else {
                                                         yield AgentEvent::Message(
-                                                            Message::assistant()
-                                                                .with_system_notification(
-                                                                    SystemNotificationType::InlineMessage,
-                                                                    format!(
-                                                                        "A PostToolUse hook has blocked {tool_name} {} times; delivering the result anyway.",
-                                                                        crate::hooks::POST_TOOL_HOOK_BLOCK_CAP
-                                                                    ),
-                                                                )
-                                                                .user_only(),
+                                                            inline_notice_user_only(
+                                                                format!(
+                                                                    "A PostToolUse hook has blocked {tool_name} {} times; delivering the result anyway.",
+                                                                    crate::hooks::POST_TOOL_HOOK_BLOCK_CAP
+                                                                ),
+                                                            ),
                                                         );
                                                     }
                                                 }
@@ -6488,13 +7419,10 @@ impl Agent {
                                             if !blocked_any {
                                                 self.hooks_manager.reset_post_tool_blocks(&session.id).await;
                                             }
-                                            if !hook_contexts.is_empty() {
-                                                let context_message = Message::user()
-                                                    .with_text(crate::hooks::outcome::frame_hook_context(
-                                                        &hook_contexts.join("\n\n"),
-                                                    ))
-                                                    .with_visibility(false, true);
-                                                messages_to_add.push(context_message);
+                                            if let Some(context_message) =
+                                                hook_context_message(&hook_contexts)
+                                            {
+                                                pending_post_tool_hook_context = Some(context_message);
                                             }
                                         }
                                     }
@@ -6512,102 +7440,104 @@ impl Agent {
                                     }
                                 }
 
-                                // The provider's own id for this reply, so the
-                                // rebuilt thinking + tool_use messages merge back
-                                // into one assistant message via Conversation::push.
-                                // See `assistant_turn_message_id`.
-                                //
-                                // Consumed exactly ONCE, by whichever rebuilt
-                                // assistant message comes first. Every later one
-                                // gets a fresh uuid: a tool response (a user
-                                // message) is pushed between consecutive tool
-                                // requests, so they cannot merge anyway, and
-                                // reusing the id would persist two rows with the
-                                // same msg_uid — which the session store rejects
-                                // outright (UNIQUE session_id, msg_uid).
-                                let mut assistant_turn_id = Some(assistant_turn_message_id(&response));
-                                let mut next_assistant_id = move || {
-                                    assistant_turn_id
-                                        .take()
-                                        .unwrap_or_else(|| format!("msg_{}", Uuid::new_v4()))
-                                };
+                                let signed_provider_turn =
+                                    continues_signed_turn(&response, &messages_to_add);
 
-                                // Preserve thinking content from the original response
-                                // Gemini (and other thinking models) require thinking to be echoed back.
-                                // RedactedThinking counts too: Anthropic accepts it as the
-                                // leading block of a tool-bearing assistant message, and
-                                // dropping it breaks replay exactly like dropping Thinking.
-                                let thinking_content: Vec<MessageContent> = response.content.iter()
-                                    .filter(|c| matches!(c, MessageContent::Thinking(_) | MessageContent::RedactedThinking(_)))
-                                    .cloned()
-                                    .collect();
-                                if !thinking_content.is_empty() {
-                                    let thinking_msg = Message::new(
-                                        response.role.clone(),
-                                        response.created,
-                                        thinking_content,
-                                    ).with_id(next_assistant_id());
-                                    messages_to_add.push(thinking_msg);
-                                }
+                                if signed_provider_turn {
+                                    // A Bedrock reasoning signature authenticates
+                                    // the provider-authored assistant block list,
+                                    // including original tool arguments and order.
+                                    // Execution uses the separate categorized /
+                                    // coerced / hook-rewritten ToolRequest values;
+                                    // persistence must keep this immutable copy.
+                                    // On streaming Bedrock responses the earlier
+                                    // reasoning chunk shares this id, so
+                                    // Conversation::push reconstructs the one
+                                    // signed assistant message before any tool
+                                    // result is appended.
+                                    let merged = response.id.as_deref().is_some_and(|response_id| {
+                                        messages_to_add.append_content_to_message_id(
+                                            response_id,
+                                            &response.content,
+                                        )
+                                    });
+                                    if !merged {
+                                        messages_to_add.push(response.clone());
+                                    }
 
-                                for (idx, request) in frontend_requests.iter().chain(remaining_requests.iter()).enumerate() {
-                                    if request.tool_call.is_ok() {
-                                        let request_msg = Message::assistant()
-                                            .with_id(next_assistant_id())
-                                            .with_tool_request_with_metadata(
-                                                request.id.clone(),
-                                                request.tool_call.clone(),
-                                                request.metadata.as_ref(),
-                                                request.tool_meta.clone(),
-                                            );
-                                        messages_to_add.push(request_msg);
-                                        let final_response = tool_response_messages[idx]
-                                                                .lock().await.clone();
-                                        // §6.2c: the execution loop already streamed this response
-                                        // in completion order; only yield here for responses NOT
-                                        // emitted there (frontend tools, chat-mode skips, or the
-                                        // whole batch when streaming is disabled). Persistence is
-                                        // unconditional and stays in REQUEST order (invariant
-                                        // §6.5-2) — the assistant tool_use pushed just above pairs
-                                        // with the response pushed just below.
-                                        if !emitted_response_ids.contains(&request.id) {
+                                    if response.content.iter().any(|content| {
+                                        matches!(
+                                            content,
+                                            MessageContent::ToolRequest(request)
+                                                if request.tool_call.is_err()
+                                        )
+                                    }) {
+                                        signed_replay_invalidated_this_iteration = true;
+                                        let terminal = "The model ended a signed tool request before its arguments could be preserved safely. BioRouter did not execute the incomplete call and will not send a mutated signed history back to the model. Start a new chat or retry from before this response.".to_string();
+                                        let message = named(assistant_text(&terminal));
+                                        yield AgentEvent::Message(message.clone());
+                                        messages_to_add.push(message);
+                                        pending_turn_abort = Some((
+                                            TurnAbortCode::SignedReplayInvalidated,
+                                            terminal,
+                                        ));
+                                    }
+
+                                    // The pairing itself is `signed_turn_paired_response_ids`,
+                                    // so this generator's `poll` frame does not carry it
+                                    // (issue #87); only the yielding half is left here.
+                                    for original_id in signed_turn_paired_response_ids(
+                                        &response,
+                                        &frontend_requests,
+                                        &remaining_requests,
+                                        &request_to_response_map,
+                                    ) {
+                                        let Some(response_slot) =
+                                            request_to_response_map.get(&original_id)
+                                        else {
+                                            continue;
+                                        };
+                                        let final_response = response_slot.lock().await.clone();
+                                        if !emitted_response_ids.contains(&original_id) {
+                                            yield AgentEvent::Message(final_response.clone());
+                                        }
+                                        messages_to_add.push(final_response);
+                                    }
+                                } else {
+                                    // The rows themselves are built by
+                                    // `unsigned_turn_assistant_rows` (which is also
+                                    // where the transcript-shape reasoning lives), so
+                                    // this generator's `poll` frame does not carry the
+                                    // construction (issue #87).
+                                    let (thinking_row, tool_rows) = unsigned_turn_assistant_rows(
+                                        &response,
+                                        &frontend_requests,
+                                        &remaining_requests,
+                                    );
+                                    if let Some(thinking_row) = thinking_row {
+                                        messages_to_add.push(thinking_row);
+                                    }
+                                    for (idx, request_id, assistant_row) in tool_rows {
+                                        messages_to_add.push(assistant_row);
+                                        let final_response =
+                                            tool_response_messages[idx].lock().await.clone();
+                                        if !emitted_response_ids.contains(&request_id) {
                                             yield AgentEvent::Message(final_response.clone());
                                         }
                                         messages_to_add.push(final_response);
                                     }
                                 }
 
-                                // BR-47: the post-edit syntax diagnostics for this batch,
-                                // injected here so they sit right after the tool responses
-                                // for the edits they describe. Model-visible only — like the
-                                // loop-guard nudges, this is corrective plumbing the user
-                                // does not need in the transcript.
-                                if let Some(diagnostics_text) = pending_post_edit_diagnostics.take() {
-                                    messages_to_add.push(
-                                        Message::user()
-                                            .with_id(format!("msg_{}", Uuid::new_v4()))
-                                            .with_text(diagnostics_text)
-                                            .with_visibility(false, true),
-                                    );
-                                }
-
-                                // Soft stage (BR-29/30/31): the repeated — or repeatedly
-                                // failing — call *ran*; nudge the model right after its
-                                // result so it changes approach before the hard stop fires.
-                                // Model-visible only — this is loop-safety plumbing, not
-                                // something the user needs in the transcript.
-                                if !loop_warnings.is_empty() {
-                                    tracing::info!(
-                                        warnings = loop_warnings.len(),
-                                        "Injecting loop-guard soft warning"
-                                    );
-                                    messages_to_add.push(
-                                        Message::user()
-                                            .with_id(format!("msg_{}", Uuid::new_v4()))
-                                            .with_text(crate::tool_inspection::frame_loop_warnings(&loop_warnings))
-                                            .with_visibility(false, true),
-                                    );
-                                }
+                                // The model-only rows this batch staged; see
+                                // `push_staged_batch_rows` for what each one is and
+                                // why it lands here rather than earlier.
+                                push_staged_batch_rows(
+                                    &mut messages_to_add,
+                                    pending_post_edit_diagnostics.take(),
+                                    pending_pre_tool_hook_context.take(),
+                                    pending_post_tool_hook_context.take(),
+                                    &loop_warnings,
+                                );
 
                                 no_tools_called = false;
                                 if pending_turn_abort.is_some() {
@@ -6616,6 +7546,18 @@ impl Agent {
                             }
                         }
                         Err(ProviderError::ContextLengthExceeded(_)) => {
+                            if signed_replay_context.is_some() {
+                                signed_replay_invalidated_this_iteration = true;
+                                let terminal = "This chat exceeded the model context window after signed reasoning had been recorded. BioRouter cannot compact or rewrite the authenticated history safely, so it stopped without retrying the model. Start a new chat with the relevant context.".to_string();
+                                let message = named(assistant_text(&terminal));
+                                yield AgentEvent::Message(message.clone());
+                                messages_to_add.push(message);
+                                pending_turn_abort = Some((
+                                    TurnAbortCode::SignedReplayInvalidated,
+                                    terminal,
+                                ));
+                                break;
+                            }
                             compaction_attempts += 1;
 
                             // BR-13: progressive context-overflow fallback. Instead of a
@@ -6628,25 +7570,16 @@ impl Agent {
                             let Some(recovery) = overflow_recovery_for_attempt(compaction_attempts) else {
                                 error!("Context limit exceeded after progressive compaction fallbacks - prompt too large");
                                 yield AgentEvent::Message(
-                                    Message::assistant().with_system_notification(
-                                        SystemNotificationType::InlineMessage,
-                                        "Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new session."
-                                    )
+                                    inline_notice("Unable to continue: Context limit still exceeded after compaction. Try using a shorter message, a model with a larger context window, or start a new session.")
                                 );
                                 break;
                             };
 
                             yield AgentEvent::Message(
-                                Message::assistant().with_system_notification(
-                                    SystemNotificationType::InlineMessage,
-                                    "Context limit reached. Compacting to continue conversation...",
-                                )
+                                inline_notice("Context limit reached. Compacting to continue conversation...",)
                             );
                             yield AgentEvent::Message(
-                                Message::assistant().with_system_notification(
-                                    SystemNotificationType::ThinkingMessage,
-                                    COMPACTION_THINKING_TEXT,
-                                )
+                                thinking_notice(COMPACTION_THINKING_TEXT,)
                             );
 
                             self.fire_compaction_hook(
@@ -6663,26 +7596,13 @@ impl Agent {
                                 recovery,
                             ).await {
                                 Ok(swap) => {
-                                    let persisted = swap.stored.is_some();
-                                    let last = swap.usages.len().saturating_sub(1);
-                                    for (i, usage) in swap.usages.iter().enumerate() {
-                                        // BR-35: a summarization round-trip inside the
-                                        // reply is spend like any other — bill it to the
-                                        // budget too, not just the session gauge. That
-                                        // holds for a round-trip whose result was
-                                        // discarded: the provider charged for it.
-                                        self.record_budget_usage(&mut budget, usage).await;
-                                        // Only the attempt that actually landed replaced
-                                        // the context; marking a discarded one as a
-                                        // compaction would reset the live gauge to the
-                                        // summary's size over a history that never shrank.
-                                        self.update_session_metrics(
-                                            &session_config,
-                                            usage,
-                                            persisted && i == last,
-                                            &uuid::Uuid::new_v4().to_string(),
-                                        ).await?;
-                                    }
+                                    // BR-35: the round-trips this compaction spent are
+                                    // billed by `bill_overflow_compaction`.
+                                    self.bill_overflow_compaction(
+                                        &session_config,
+                                        &swap,
+                                        &mut budget,
+                                    ).await?;
 
                                     did_recovery_compact_this_iteration = true;
                                     // PostCompact pairs with the PreCompact above on both
@@ -6712,8 +7632,8 @@ impl Agent {
                                             // let an append landing in between be counted
                                             // by the watermark yet be unknown to the next
                                             // swap, which then deleted it.
-                                            conversation = stored;
-                                            yield AgentEvent::HistoryReplaced(conversation.clone());
+                                            yield AgentEvent::HistoryReplaced(stored.clone());
+                                            conversation = crate::conversation::without_bedrock_reasoning(&stored);
                                         }
                                         None => {
                                             // Twice declined. Do NOT clobber: keep going
@@ -6726,7 +7646,7 @@ impl Agent {
                                                  continuing in memory with the stored history intact",
                                                 session_config.id
                                             );
-                                            conversation = swap.compacted;
+                                            conversation = crate::conversation::without_bedrock_reasoning(&swap.compacted);
                                         }
                                     }
                                     break;
@@ -6753,40 +7673,39 @@ impl Agent {
                                     );
                                     // BR-67: retries are a loop-safety decision too —
                                     // the error text itself never enters the trace.
-                                    loop_safety::emit(
-                                        LoopSafetyEvent::new(LoopSafetyKind::ProviderErrorRecover)
-                                            .session(&session_config.id)
-                                            .count(attempt)
-                                            .limit(limit),
+                                    emit_loop_safety(
+                                        LoopSafetyKind::ProviderErrorRecover,
+                                        &session_config.id,
+                                        attempt,
+                                        Some(limit),
+                                        None,
                                     );
                                     yield AgentEvent::Message(
-                                        Message::assistant().with_system_notification(
-                                            SystemNotificationType::InlineMessage,
-                                            format!("Model call failed: {provider_err}. Retrying ({attempt}/{limit})…"),
-                                        )
+                                        inline_notice(format!("Model call failed: {provider_err}. Retrying ({attempt}/{limit})…"),)
                                     );
                                     // Model-visible only: the hint is loop plumbing, and
                                     // the user already has the notification above.
                                     messages_to_add.push(
-                                        Message::user()
-                                            .with_id(format!("msg_{}", Uuid::new_v4()))
-                                            .with_text(crate::tool_inspection::frame_loop_warnings(
+                                        model_only_user_text_with_new_id(
+                                            crate::tool_inspection::frame_loop_warnings(
                                                 std::slice::from_ref(&notice),
-                                            ))
-                                            .with_visibility(false, true),
+                                            )
+                                        ),
                                     );
                                     did_recover_provider_error_this_iteration = true;
                                     break;
                                 }
                                 crate::agents::mistakes::ProviderErrorAction::Stop { notice } => {
-                                    loop_safety::emit(
-                                        LoopSafetyEvent::new(LoopSafetyKind::ProviderErrorStop)
-                                            .session(&session_config.id)
-                                            .count(mistakes.provider_errors()),
+                                    emit_loop_safety(
+                                        LoopSafetyKind::ProviderErrorStop,
+                                        &session_config.id,
+                                        mistakes.provider_errors(),
+                                        None,
+                                        None,
                                     );
                                     // #59: named before the yield, persisted under
                                     // the same id below.
-                                    let message = named(Message::assistant().with_text(notice));
+                                    let message = named(assistant_text(notice));
                                     yield AgentEvent::Message(message.clone());
                                     messages_to_add.push(message);
                                     pending_turn_abort = Some((
@@ -6831,46 +7750,78 @@ impl Agent {
                 if pending_turn_abort.is_some() {
                     // The typed failure is emitted after this iteration's messages
                     // and usage have been persisted below.
+                } else if last_finish_reason.as_deref() == Some("length") {
+                        // The provider cut the response off at the output-length
+                        // limit (not a natural stop) and the model called no tool,
+                        // so the turn is genuinely unfinished. Auto-continue it
+                        // instead of ending on a half-written response. The
+                        // budget belongs to the whole reply and is never reset by
+                        // intervening tool calls or retries.
+                        // (Distinct from "the model chose to stop mid-task" — that
+                        // is left to the Stop-hook / goal system, not a hard-coded
+                        // loop injection; see the note near the top of this file.)
+                        match truncation_recovery.observe(made_user_visible_progress) {
+                            TruncationRecoveryAction::Continue => {
+                                warn!(
+                                    "Response truncated by output-length limit (finish_reason=\"length\"); auto-continuing ({}/{}, zero-progress {}/{})",
+                                    truncation_recovery.continuations,
+                                    MAX_TRUNCATION_CONTINUATIONS,
+                                    truncation_recovery.zero_progress_continuations,
+                                    MAX_ZERO_PROGRESS_TRUNCATION_CONTINUATIONS
+                                );
+                                // Internal loop plumbing: persisted and visible
+                                // to the model, but never emitted as a user-authored
+                                // chat row. MessagesPersisted still publishes its
+                                // id and userVisible=false for edit accounting.
+                                messages_to_add.push(named(
+                                    model_only_user_text(TRUNCATION_CONTINUATION_MESSAGE),
+                                ));
+                            }
+                            TruncationRecoveryAction::Exhausted { zero_progress } => {
+                                let terminal = truncation_exhausted_notice(
+                                    zero_progress,
+                                    ever_made_user_visible_progress,
+                                    truncation_recovery.continuations,
+                                );
+                                let message = named(assistant_text(&terminal));
+                                yield AgentEvent::Message(message.clone());
+                                messages_to_add.push(message);
+                                pending_turn_abort = Some((
+                                    TurnAbortCode::OutputRecoveryExhausted {
+                                        continuations: truncation_recovery.continuations,
+                                        zero_progress,
+                                    },
+                                    terminal,
+                                ));
+                            }
+                        }
                 } else if no_tools_called {
                     // Observability: a turn that ends without a tool call is either a
-                    // natural completion ("stop"), a length-truncation ("length"), or
-                    // an unreported end (None). Logged so "done" vs "cut off" is
-                    // distinguishable in the logs (and to scope continue-on-truncation).
+                    // natural completion ("stop") or an unreported end (None).
                     info!(
                         "turn ended with no tool call; finish_reason={:?}",
                         last_finish_reason
                     );
-                    if last_finish_reason.as_deref() == Some("length")
-                        && truncation_continuations < MAX_TRUNCATION_CONTINUATIONS
-                    {
-                        // The provider cut the response off at the output-length
-                        // limit (not a natural stop) and the model called no tool,
-                        // so the turn is genuinely unfinished. Auto-continue it
-                        // instead of ending on a half-written response. Bounded by
-                        // the streak cap (reset on any tool call) and by max_turns.
-                        // (Distinct from "the model chose to stop mid-task" — that
-                        // is left to the Stop-hook / goal system, not a hard-coded
-                        // loop injection; see the note near the top of this file.)
-                        truncation_continuations += 1;
-                        warn!(
-                            "Response truncated by output-length limit (finish_reason=\"length\"); auto-continuing ({}/{})",
-                            truncation_continuations, MAX_TRUNCATION_CONTINUATIONS
-                        );
-                        // #59: named before the yield, persisted under the same id.
-                        let message = named(Message::user().with_text(TRUNCATION_CONTINUATION_MESSAGE));
-                        messages_to_add.push(message.clone());
-                        yield AgentEvent::Message(message);
-                    } else if let Some(final_output_tool) = self.final_output_tool.lock().await.as_ref() {
-                        if final_output_tool.final_output.is_none() {
-                            warn!("Final output tool has not been called yet. Continuing agent loop.");
-                            let message = named(Message::user().with_text(FINAL_OUTPUT_CONTINUATION_MESSAGE));
-                            messages_to_add.push(message.clone());
-                            yield AgentEvent::Message(message);
-                        } else {
-                            let message = named(Message::assistant().with_text(final_output_tool.final_output.clone().unwrap()));
-                            messages_to_add.push(message.clone());
-                            yield AgentEvent::Message(message);
-                            exit_chat = true;
+                    let final_output_state = self
+                        .final_output_tool
+                        .lock()
+                        .await
+                        .as_ref()
+                        .map(|tool| tool.final_output.clone());
+                    if let Some(final_output) = final_output_state {
+                        match final_output {
+                            None => {
+                                warn!("Final output tool has not been called yet. Continuing agent loop.");
+                                let message = named(Message::user().with_text(FINAL_OUTPUT_CONTINUATION_MESSAGE));
+                                messages_to_add.push(message.clone());
+                                yield AgentEvent::Message(message);
+                            }
+                            Some(final_output) => {
+                                let message = named(assistant_text(final_output));
+                                messages_to_add.push(message.clone());
+                                yield AgentEvent::Message(message);
+                                exit_chat = true;
+                            }
                         }
                     } else if did_recovery_compact_this_iteration {
                         // Avoid setting exit_chat; continue from last user message in the conversation
@@ -6887,6 +7838,7 @@ impl Agent {
                             Ok(should_retry) => {
                                 if should_retry {
                                     info!("Retry logic triggered, restarting agent loop");
+                                    did_retry_reset_this_iteration = true;
                                 } else {
                                     exit_chat = true;
                                 }
@@ -6894,9 +7846,7 @@ impl Agent {
                             Err(e) => {
                                 error!("Retry logic failed: {}", e);
                                 yield AgentEvent::Message(
-                                    Message::assistant().with_text(
-                                        format!("Retry logic encountered an error: {}", e)
-                                    )
+                                    assistant_text(format!("Retry logic encountered an error: {}", e))
                                 );
                                 exit_chat = true;
                             }
@@ -6904,21 +7854,13 @@ impl Agent {
                     }
                 }
 
-                // #41: re-mint any duplicate ids before persisting — a decoder
-                // that reused one id across several yielded messages would
-                // otherwise fail the UNIQUE(session_id, msg_uid) index here
-                // and kill the turn.
-                let mut messages_to_add = remint_duplicate_message_ids(messages_to_add).into_messages();
-                for msg in &mut messages_to_add {
-                    // Adopt the EFFECTIVE uid the store persisted under: on a
-                    // collision it re-mints, and the in-memory conversation
-                    // must carry the same id as the row — otherwise the next
-                    // persist of this message duplicates it under a stale id.
-                    let effective_uid = session_manager.add_message(&session_config.id, msg).await?;
-                    if msg.id.as_deref() != Some(effective_uid.as_str()) {
-                        msg.id = Some(effective_uid);
-                    }
-                }
+                // #41 / the uid adoption both live on
+                // `persist_iteration_messages`.
+                let messages_to_add = persist_iteration_messages(
+                    &session_manager,
+                    &session_config.id,
+                    messages_to_add,
+                ).await?;
                 // #59: this iteration's rows are durable — publish the uids they
                 // actually took. This is the one site that closes the gaps a
                 // yielded copy structurally cannot: a re-mint on collision, the
@@ -6936,7 +7878,21 @@ impl Agent {
                 if let Some(published) = named_after_earlier_yield(messages_to_add.iter()) {
                     yield published;
                 }
-                conversation.extend(messages_to_add);
+                fold_iteration_into_conversation(
+                    &mut conversation,
+                    &mut signed_replay_context,
+                    &conversation_with_moim,
+                    messages_to_add,
+                    did_retry_reset_this_iteration,
+                    signed_replay_invalidated_this_iteration,
+                );
+                if exit_chat
+                    && pending_turn_abort.is_none()
+                    && signed_replay_context.is_some()
+                {
+                    conversation = crate::conversation::without_bedrock_reasoning(&conversation);
+                    signed_replay_context = None;
+                }
 
                 // BR-28: turn boundary — join the observe-only hooks fired during
                 // this iteration (Notification on a permission prompt, Pre/PostCompact
@@ -6948,10 +7904,9 @@ impl Agent {
                 }
 
                 if !no_tools_called {
-                    // Tools ran this iteration: any Stop-hook block streak is over,
-                    // and the turn made real progress, so reset the auto-continue streaks.
+                    // Tools ran this iteration: any Stop-hook block streak is over.
+                    // Output-recovery budgets intentionally do not reset here.
                     self.hooks_manager.reset_stop_blocks(&session_config.id).await;
-                    truncation_continuations = 0;
 
                     // BR-43: post-step snapshot of the (possibly mutated) work-tree.
                     // Coarse: any tool-running iteration, relying on the shadow
@@ -7043,26 +7998,21 @@ impl Agent {
                         if !failures.is_empty() {
                             if done_gate_iterations < done_gate_config.max_iterations {
                                 done_gate_iterations += 1;
-                                loop_safety::emit(
-                                    LoopSafetyEvent::new(LoopSafetyKind::DoneGateBlock)
-                                        .session(&session_config.id)
-                                        .count(done_gate_iterations)
-                                        .limit(done_gate_config.max_iterations),
+                                emit_loop_safety(
+                                    LoopSafetyKind::DoneGateBlock,
+                                    &session_config.id,
+                                    done_gate_iterations,
+                                    Some(done_gate_config.max_iterations),
+                                    None,
                                 );
-                                let mut feedback = Message::user()
-                                    .with_text(crate::agents::done_gate::gate_instruction(
-                                        &failures,
-                                    ))
-                                    .with_visibility(false, true);
-                                session_manager
-                                    .add_message_adopting_uid(&session_config.id, &mut feedback)
-                                    .await?;
                                 // #59 / #66 SHAPE 2: hidden from the user, named
                                 // for the client.
-                                if let Some(published) = named_but_never_yielded(
-                                    std::slice::from_ref(&feedback),
-                                    NeverYielded::ModelOnly,
-                                ) {
+                                let (feedback, published) = persist_steering_message(
+                                    &session_manager,
+                                    &session_config.id,
+                                    crate::agents::done_gate::gate_instruction(&failures),
+                                ).await?;
+                                if let Some(published) = published {
                                     yield published;
                                 }
                                 conversation.push(feedback);
@@ -7082,22 +8032,20 @@ impl Agent {
                                 // Budget spent with checks still red: let the turn
                                 // finish rather than wedge, but tell the user it is
                                 // on unmet conditions.
-                                loop_safety::emit(
-                                    LoopSafetyEvent::new(LoopSafetyKind::DoneGateGiveUp)
-                                        .session(&session_config.id)
-                                        .count(done_gate_iterations)
-                                        .limit(done_gate_config.max_iterations),
+                                emit_loop_safety(
+                                    LoopSafetyKind::DoneGateGiveUp,
+                                    &session_config.id,
+                                    done_gate_iterations,
+                                    Some(done_gate_config.max_iterations),
+                                    None,
                                 );
                                 yield AgentEvent::Message(
-                                    Message::assistant()
-                                        .with_system_notification(
-                                            SystemNotificationType::InlineMessage,
-                                            crate::agents::done_gate::giveup_notice(
-                                                done_gate_iterations,
-                                                &failures,
-                                            ),
-                                        )
-                                        .user_only(),
+                                    inline_notice_user_only(
+                                        crate::agents::done_gate::giveup_notice(
+                                            done_gate_iterations,
+                                            &failures,
+                                        ),
+                                    ),
                                 );
                             }
                         }
@@ -7119,25 +8067,21 @@ impl Agent {
                     {
                         if let Some(reason) = self.run_self_critique(&conversation).await {
                             self_critique_passes += 1;
-                            loop_safety::emit(
-                                LoopSafetyEvent::new(LoopSafetyKind::SelfCritiqueRevise)
-                                    .session(&session_config.id)
-                                    .count(self_critique_passes),
+                            emit_loop_safety(
+                                LoopSafetyKind::SelfCritiqueRevise,
+                                &session_config.id,
+                                self_critique_passes,
+                                None,
+                                None,
                             );
-                            let mut feedback = Message::user()
-                                .with_text(
-                                    crate::agents::self_critique::revise_instruction(&reason),
-                                )
-                                .with_visibility(false, true);
-                            session_manager
-                                .add_message_adopting_uid(&session_config.id, &mut feedback)
-                                .await?;
                             // #59 / #66 SHAPE 2: hidden from the user, named for
                             // the client.
-                            if let Some(published) = named_but_never_yielded(
-                                std::slice::from_ref(&feedback),
-                                NeverYielded::ModelOnly,
-                            ) {
+                            let (feedback, published) = persist_steering_message(
+                                &session_manager,
+                                &session_config.id,
+                                crate::agents::self_critique::revise_instruction(&reason),
+                            ).await?;
+                            if let Some(published) = published {
                                 yield published;
                             }
                             conversation.push(feedback);
@@ -7162,15 +8106,12 @@ impl Agent {
                             if let Some(goal) = active_goal {
                                 self.clear_goal(&session_config.id).await;
                                 yield AgentEvent::Message(
-                                    Message::assistant()
-                                        .with_system_notification(
-                                            SystemNotificationType::InlineMessage,
-                                            format!(
-                                                "🎯 Goal met and cleared: {}",
-                                                crate::agents::goal::ellipsize(&goal.condition, 200)
-                                            ),
-                                        )
-                                        .user_only(),
+                                    inline_notice_user_only(
+                                        format!(
+                                            "🎯 Goal met and cleared: {}",
+                                            crate::agents::goal::ellipsize(&goal.condition, 200)
+                                        ),
+                                    ),
                                 );
                             }
                             break;
@@ -7182,76 +8123,38 @@ impl Agent {
                                 ""
                             };
                             yield AgentEvent::Message(
-                                Message::assistant()
-                                    .with_system_notification(
-                                        SystemNotificationType::InlineMessage,
-                                        format!(
-                                            "Stop hook block limit ({}) reached; finishing anyway.{}",
-                                            crate::hooks::STOP_HOOK_BLOCK_CAP,
-                                            goal_hint
-                                        ),
-                                    )
-                                    .user_only(),
+                                inline_notice_user_only(
+                                    format!(
+                                        "Stop hook block limit ({}) reached; finishing anyway.{}",
+                                        crate::hooks::STOP_HOOK_BLOCK_CAP,
+                                        goal_hint
+                                    ),
+                                ),
                             );
                             break;
                         }
                         crate::hooks::StopHookVerdict::Blocked { reason } => {
-                            // For goal loops, account the block against the goal's
-                            // own iteration/stall budget (which, unlike the generic
-                            // Stop-hook cap, does not reset when tools run). On
-                            // give-up, clear the goal and have the agent deliver a
-                            // best-effort answer instead of looping forever.
-                            let goal_outcome = if active_goal.is_some() {
-                                self.record_goal_block(&session_config.id, &reason).await
-                            } else {
-                                None
-                            };
+                            // The goal-budget accounting lives on
+                            // `stop_hook_block_feedback`.
+                            let (feedback_text, notice) = self.stop_hook_block_feedback(
+                                &session_config.id,
+                                &reason,
+                                active_goal.is_some(),
+                            ).await;
 
-                            let (feedback_text, notice) = match goal_outcome {
-                                Some(crate::agents::goal::GoalOutcome::GiveUp { attempts, stalled }) => {
-                                    self.clear_goal(&session_config.id).await;
-                                    let why = if stalled {
-                                        "it stopped making progress"
-                                    } else {
-                                        "it hit the attempt limit"
-                                    };
-                                    (
-                                        crate::agents::goal::giveup_instruction(&reason),
-                                        format!(
-                                            "🎯 Goal stopped after {attempts} attempt(s): {why}. \
-                                             Wrapping up with a best-effort answer; refine with a \
-                                             narrower /goal if needed."
-                                        ),
-                                    )
-                                }
-                                _ => (
-                                    format!("Stop hook feedback: {reason}"),
-                                    format!("Stop hook blocked completion: {reason}"),
-                                ),
-                            };
-
-                            let mut feedback = Message::user()
-                                .with_text(feedback_text)
-                                .with_visibility(false, true);
-                            session_manager
-                                .add_message_adopting_uid(&session_config.id, &mut feedback)
-                                .await?;
                             // #59 / #66 SHAPE 2: hidden from the user, named for
                             // the client.
-                            if let Some(published) = named_but_never_yielded(
-                                std::slice::from_ref(&feedback),
-                                NeverYielded::ModelOnly,
-                            ) {
+                            let (feedback, published) = persist_steering_message(
+                                &session_manager,
+                                &session_config.id,
+                                feedback_text,
+                            ).await?;
+                            if let Some(published) = published {
                                 yield published;
                             }
                             conversation.push(feedback);
                             yield AgentEvent::Message(
-                                Message::assistant()
-                                    .with_system_notification(
-                                        SystemNotificationType::InlineMessage,
-                                        notice,
-                                    )
-                                    .user_only(),
+                                inline_notice_user_only(notice,),
                             );
                             // Keep looping: the model sees the feedback next turn.
                             // After a give-up the goal is cleared, so the next stop
@@ -8002,6 +8905,48 @@ mod tests {
     use crate::permission::{Permission, PermissionConfirmation};
     use crate::workflow::Response;
 
+    /// The merge that rebuilds a signed reply into one row must fire ONLY for a
+    /// signed turn. It is named `merged_into_signed_turn` at the call site, and
+    /// for a while that was the only thing making it signed-specific — the
+    /// predicate was missing, so it ran for every provider.
+    ///
+    /// That is not cosmetic. `Conversation::push` merges only an *adjacent*
+    /// same-id row; this one merges by id anywhere in the pending list. With
+    /// tool-call batching off, an unsigned provider emits `[ToolRequest]` and
+    /// then `[Text]` under one id, with the tool RESULT row appended between
+    /// them — so an ungated merge folds the model's post-tool prose into the row
+    /// *before* the result it describes, and the transcript reads backwards.
+    #[test]
+    fn the_signed_rebuild_merge_does_not_capture_unsigned_providers() {
+        let signed = Message::assistant()
+            .with_id("m1")
+            .with_thinking("weighing it", "sig");
+        let unsigned = Message::assistant()
+            .with_id("m1")
+            .with_thinking("weighing it", "");
+
+        // An unsigned continuation of an unsigned row: must NOT merge.
+        let pending = Conversation::new_unvalidated(vec![unsigned.clone()]);
+        let continuation = Message::assistant().with_id("m1").with_text("the answer");
+        assert!(!continues_signed_turn(&continuation, &pending));
+
+        // The same continuation after a SIGNED row under that id: must merge,
+        // because the signature covers the grouping and it has to be rebuilt.
+        let pending = Conversation::new_unvalidated(vec![signed.clone()]);
+        assert!(continues_signed_turn(&continuation, &pending));
+
+        // A response that carries the signature itself qualifies on its own.
+        let empty = Conversation::new_unvalidated(vec![]);
+        assert!(continues_signed_turn(&signed, &empty));
+        assert!(!continues_signed_turn(&unsigned, &empty));
+
+        // Redacted thinking counts as signed even with no signature string.
+        let redacted = Message::assistant()
+            .with_id("m2")
+            .with_redacted_thinking("bytes");
+        assert!(continues_signed_turn(&redacted, &empty));
+    }
+
     /// Extract the elicitation id from a queued request message.
     fn queued_elicitation_id(messages: &[Message]) -> Option<String> {
         use crate::conversation::message::ActionRequiredData;
@@ -8014,6 +8959,81 @@ mod tests {
                 _ => None,
             })
         })
+    }
+
+    #[tokio::test]
+    async fn rewritten_tool_error_keeps_code_data_and_audit_through_post_hook_block() {
+        let agent = Agent::new();
+        let request_id = "rewritten-error".to_string();
+        let response = Arc::new(Mutex::new(Message::user().with_id("response")));
+        let response_map = HashMap::from([(request_id.clone(), response.clone())]);
+        let original = CallToolRequestParams {
+            task: None,
+            meta: None,
+            name: "developer__shell".into(),
+            arguments: Some(object!({"command": "original"})),
+        };
+        let executed = CallToolRequestParams {
+            task: None,
+            meta: None,
+            name: "developer__shell".into(),
+            arguments: Some(object!({"command": "rewritten"})),
+        };
+        let mut install_ok = true;
+        let mut post_results = Vec::new();
+        agent
+            .integrate_tool_result(
+                request_id.clone(),
+                Err(ErrorData::new(
+                    ErrorCode::INVALID_PARAMS,
+                    "original failure",
+                    None,
+                )),
+                &[],
+                &response_map,
+                &HashMap::from([(request_id.clone(), "developer__shell".to_string())]),
+                &HashMap::from([(request_id.clone(), original)]),
+                &HashMap::from([(request_id.clone(), executed)]),
+                &HashMap::from([(request_id.clone(), None)]),
+                &mut install_ok,
+                &mut post_results,
+                crate::guardrails::tool_output::ToolOutputGuardrailMode::Off,
+                crate::agents::tool_errors::ToolErrorTaxonomyConfig::default(),
+            )
+            .await;
+        agent
+            .apply_post_tool_block(
+                &request_id,
+                "developer__shell",
+                "blocked after execution",
+                &response_map,
+            )
+            .await;
+
+        let response = response.lock().await;
+        let MessageContent::ToolResponse(tool_response) = &response.content[0] else {
+            panic!("expected tool response");
+        };
+        let error = tool_response
+            .tool_result
+            .as_ref()
+            .expect_err("post-hook block must preserve the Err variant");
+        assert_eq!(error.code, ErrorCode::INVALID_PARAMS);
+        assert!(error.message.contains("original failure"));
+        assert!(error.message.contains("blocked after execution"));
+        let data = error.data.as_ref().unwrap();
+        assert_eq!(
+            data[crate::agents::tool_errors::ENVELOPE_KEY]["kind"],
+            "invalid_args"
+        );
+        assert_eq!(
+            data["biorouterToolExecution"]["providerAuthored"]["arguments"]["command"],
+            "original"
+        );
+        assert_eq!(
+            data["biorouterToolExecution"]["actuallyExecuted"]["arguments"]["command"],
+            "rewritten"
+        );
     }
 
     /// #40: an elicitation request must preempt a tool batch whose only tool
@@ -9941,24 +10961,8 @@ mod tests {
 
 /// BR-32: the reply loop's stall-check seam — when it runs, when it stays silent,
 /// and who owns stall detection when a `/goal` is set.
-/// #51: the seed half of [`RewriteBasis::known_with`], which nothing else
-/// covers.
-///
-/// The union is load-bearing and its failure mode is silent. `known` is what
-/// the store reads message ids out of to tell another writer's append from the
-/// turn's own history: a row ABOVE the watermark whose id `known` does not name
-/// is treated as foreign and carried over verbatim. Because the basis is seeded
-/// EARLY, a row that landed between `snapshot_for_rewrite`'s two reads sits
-/// above the watermark AND inside the seed — so if the turn-start normalizer
-/// then merged or dropped it from the live conversation, passing `live` alone
-/// would have the store "recover" it onto the tail of the very summary that
-/// already contains it. A duplicate, not a loss, but wrong.
-///
-/// That window is two adjacent database reads wide, so no end-to-end test can
-/// hit it on demand — which is exactly why the union needs pinning here. It was
-/// verified to be untested: replacing `&basis.known_with(conversation)` with a
-/// bare `conversation` left all 24 freshness, 9 stress and 462 `agents::` tests
-/// green.
+/// Overflow compaction must use the raw durable prefix, not the provider-only
+/// projection that omits historical Bedrock reasoning.
 #[cfg(test)]
 mod rewrite_basis_tests {
     use super::*;
@@ -9985,56 +10989,28 @@ mod rewrite_basis_tests {
         (dir, sm, id, basis)
     }
 
-    fn ids(conversation: &Conversation) -> Vec<String> {
-        conversation
-            .messages()
-            .iter()
-            .filter_map(|m| m.id.clone())
-            .collect()
-    }
-
     #[tokio::test]
-    async fn known_with_still_names_a_message_the_normalizer_dropped() {
-        let (_dir, _sm, _id, basis) = seeded(&["one", "two", "three"]).await;
-        let seed_ids = ids(basis.known());
-        assert_eq!(seed_ids.len(), 3, "the seed must carry all three ids");
+    async fn raw_overflow_input_keeps_signed_seed_and_appends_only_new_durable_rows() {
+        let (_dir, _sm, _id, seed) = seeded(&[]).await;
+        let mut signed = Message::assistant()
+            .with_thinking("durable reasoning", "durable signature")
+            .with_text("durable text  ");
+        signed.id = Some("signed-row".to_string());
+        let basis = RewriteBasis {
+            known: Conversation::new_unvalidated(vec![signed.clone()]),
+            revision: seed.revision,
+        };
 
-        // Stand in for the turn-start normalizer merging the middle message
-        // away: the live conversation no longer names it.
-        let live = Conversation::new_unvalidated(
-            basis
-                .known()
-                .messages()
-                .iter()
-                .filter(|m| m.id.as_deref() != Some(seed_ids[1].as_str()))
-                .cloned()
-                .collect::<Vec<Message>>(),
-        );
-        assert!(
-            !ids(&live).contains(&seed_ids[1]),
-            "the fixture must actually drop a message, or this proves nothing"
-        );
+        let mut filtered_same_row = Message::assistant().with_text("durable text");
+        filtered_same_row.id = Some("signed-row".to_string());
+        let mut new_durable = Message::user().with_text("new durable result");
+        new_durable.id = Some("new-row".to_string());
+        let ephemeral = Message::user().with_text("ephemeral resource context");
+        let live =
+            Conversation::new_unvalidated(vec![filtered_same_row, new_durable.clone(), ephemeral]);
 
-        let known = basis.known_with(&live);
-        let named = ids(&known);
-        for seed_id in &seed_ids {
-            assert!(
-                named.contains(seed_id),
-                "known_with must name every id the seed carried; {seed_id} is missing, so the \
-                 store would treat that row as another writer's append and recover it verbatim \
-                 onto the tail of its own summary; named: {named:?}"
-            );
-        }
-    }
-
-    #[tokio::test]
-    async fn known_with_borrows_when_the_live_view_already_names_everything() {
-        let (_dir, _sm, _id, basis) = seeded(&["one", "two"]).await;
-        let live = basis.known().clone();
-        assert!(
-            matches!(basis.known_with(&live), std::borrow::Cow::Borrowed(_)),
-            "the common case must not copy the transcript"
-        );
+        let raw = basis.raw_with_new_durable_messages(&live);
+        assert_eq!(raw.messages(), &[signed, new_durable]);
     }
 }
 

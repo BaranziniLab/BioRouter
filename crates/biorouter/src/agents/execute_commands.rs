@@ -98,9 +98,10 @@ impl Agent {
         let session_id = session_config.id.as_str();
         let manager = self.config.session_manager.clone();
         let (session, basis) = manager.snapshot_for_rewrite(session_id).await?;
-        let conversation = session
+        let stored_conversation = session
             .conversation
             .ok_or_else(|| anyhow!("Session has no conversation"))?;
+        let conversation = stored_conversation.clone();
 
         self.fire_compaction_hook(
             crate::hooks::HookEvent::PreCompact,
@@ -126,7 +127,7 @@ impl Agent {
                 session_id,
                 &compacted_conversation,
                 basis,
-                &conversation,
+                &stored_conversation,
             )
             .await?;
 
