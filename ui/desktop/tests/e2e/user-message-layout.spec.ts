@@ -4,6 +4,11 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import path from 'node:path';
 
+/** Budget for a graceful Electron shutdown before the process is taken down by signal. */
+const GRACEFUL_SHUTDOWN_MS = 15_000;
+/** Budget for each termination signal to land before escalating. */
+const SIGNAL_TIMEOUT_MS = 5_000;
+
 let electronApp: ElectronApplication;
 let page: Page;
 let server: ChildProcess;
@@ -39,6 +44,63 @@ async function waitForFixture(url: string): Promise<void> {
   throw lastError;
 }
 
+/** Awaits `work` for at most `ms`. Never rejects: teardown reports failures, it does not throw them. */
+function settleWithin(work: Promise<unknown>, ms: number): Promise<'settled' | 'timeout'> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('timeout'), ms);
+    const done = () => {
+      clearTimeout(timer);
+      resolve('settled');
+    };
+    work.then(done, done);
+  });
+}
+
+/**
+ * SIGTERM then SIGKILL, aimed at the process *group* so helper children go too (Electron's
+ * renderer/GPU helpers, Vite's esbuild service). Both children are spawned detached, so they
+ * lead their own group and the negative pid can never reach this worker. Never throws.
+ */
+async function terminate(child: ChildProcess | undefined, label: string): Promise<void> {
+  const pid = child?.pid;
+  if (!child || !pid || child.exitCode !== null || child.signalCode !== null) return;
+  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
+  for (const signal of ['SIGTERM', 'SIGKILL'] as const) {
+    try {
+      if (process.platform === 'win32') child.kill(signal);
+      else process.kill(-pid, signal);
+    } catch {
+      try {
+        child.kill(signal);
+      } catch {
+        return; // already gone
+      }
+    }
+    if ((await settleWithin(exited, SIGNAL_TIMEOUT_MS)) === 'settled') return;
+  }
+  console.warn(`[user-message-layout] ${label} (pid ${pid}) survived SIGKILL`);
+}
+
+/**
+ * Playwright's Electron close handler evaluates `app.quit()` and then waits on the process exit
+ * with no timeout of its own, so an app that declines to quit hangs the hook and fails a run whose
+ * assertions all passed. Give the graceful path a budget, then kill the process — which also
+ * settles the pending close(), since Playwright resolves it off the process exit event.
+ */
+async function shutdownElectron(app: ElectronApplication | undefined): Promise<void> {
+  if (!app) return;
+  let child: ChildProcess | undefined;
+  try {
+    child = app.process();
+  } catch {
+    child = undefined;
+  }
+  if ((await settleWithin(app.close(), GRACEFUL_SHUTDOWN_MS)) === 'timeout') {
+    console.warn('[user-message-layout] electronApp.close() stalled; killing the app');
+    await terminate(child, 'electron app');
+  }
+}
+
 test.beforeAll(async () => {
   const desktopRoot = path.join(__dirname, '../..');
   const port = await availablePort();
@@ -55,8 +117,11 @@ test.beforeAll(async () => {
       String(port),
       '--strictPort',
     ],
-    { cwd: desktopRoot, stdio: 'pipe' }
+    { cwd: desktopRoot, stdio: 'pipe', detached: process.platform !== 'win32' }
   );
+  // Nothing reads these, and a full pipe would block Vite mid-shutdown.
+  server.stdout?.resume();
+  server.stderr?.resume();
   await waitForFixture(fixtureUrl);
   electronApp = await electron.launch({
     args: [path.join(__dirname, 'user-message-layout.main.cjs')],
@@ -71,8 +136,13 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await electronApp?.close();
-  server?.kill('SIGTERM');
+  // Both processes come down even if the first shutdown misbehaves: a leaked Electron or Vite
+  // would outlive the run, and a shutdown failure is worth logging, not worth failing on.
+  try {
+    await shutdownElectron(electronApp);
+  } finally {
+    await terminate(server, 'vite dev server');
+  }
 });
 
 type BubbleGeometry = {
