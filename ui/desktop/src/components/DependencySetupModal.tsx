@@ -41,6 +41,20 @@ export default function DependencySetupModal() {
     }
   };
 
+  // If this modal goes away mid-batch, the push events stop arriving and every
+  // waiter still parked would never settle — leaving "Install all"'s loop
+  // suspended forever on a component that no longer exists. Release them.
+  useEffect(() => {
+    const waiters = installWaiters.current;
+    return () => {
+      Object.keys(waiters).forEach((dep) => {
+        const resolve = waiters[dep];
+        delete waiters[dep];
+        resolve();
+      });
+    };
+  }, []);
+
   // Biorouter CLI install state (the bundled `biorouter` onto PATH).
   type CliStatus = {
     bundled: string | null;
