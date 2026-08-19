@@ -251,26 +251,26 @@ export class GitHubUpdater {
           }
           downloadedSize += value.length;
 
-        // Report progress - only when percentage changes by at least 1%
-        if (totalSize > 0 && onProgress) {
-          const percent = Math.round((downloadedSize / totalSize) * 100);
+          // Report progress - only when percentage changes by at least 1%
+          if (totalSize > 0 && onProgress) {
+            const percent = Math.round((downloadedSize / totalSize) * 100);
 
-          // Only report if percent changed (throttles from hundreds/sec to ~100 total)
-          if (percent !== lastReportedPercent) {
-            onProgress(percent);
-            lastReportedPercent = percent;
+            // Only report if percent changed (throttles from hundreds/sec to ~100 total)
+            if (percent !== lastReportedPercent) {
+              onProgress(percent);
+              lastReportedPercent = percent;
 
-            // Log at 10% intervals for debugging
-            if (percent % 10 === 0 && percent !== lastLoggedPercent) {
-              const elapsed = Date.now() - downloadStartTime;
-              const speed = downloadedSize / (elapsed / 1000) / 1024; // KB/s
-              log.info(
-                `GitHubUpdater: Download progress ${percent}% (${(downloadedSize / 1024 / 1024).toFixed(2)}/${(totalSize / 1024 / 1024).toFixed(2)} MB) @ ${speed.toFixed(0)} KB/s`
-              );
-              lastLoggedPercent = percent;
+              // Log at 10% intervals for debugging
+              if (percent % 10 === 0 && percent !== lastLoggedPercent) {
+                const elapsed = Date.now() - downloadStartTime;
+                const speed = downloadedSize / (elapsed / 1000) / 1024; // KB/s
+                log.info(
+                  `GitHubUpdater: Download progress ${percent}% (${(downloadedSize / 1024 / 1024).toFixed(2)}/${(totalSize / 1024 / 1024).toFixed(2)} MB) @ ${speed.toFixed(0)} KB/s`
+                );
+                lastLoggedPercent = percent;
+              }
             }
           }
-        }
 
           // Warn if no progress for 30 seconds
           const now = Date.now();

@@ -580,10 +580,7 @@ export function setupAutoUpdater(tray?: Tray) {
         }
       } catch (fallbackError) {
         log.error('GitHub fallback also failed:', fallbackError);
-        sendStatusToWindow(
-          'error',
-          'Unable to check for updates. Check your internet connection.'
-        );
+        sendStatusToWindow('error', 'Unable to check for updates. Check your internet connection.');
       }
     } else {
       sendStatusToWindow('error', err.message);

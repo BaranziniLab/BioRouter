@@ -50,7 +50,7 @@ export function classifyTick(
   };
 }
 
-let timer: NodeJS.Timeout | null = null;
+let timer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Start watching. Idempotent.
@@ -88,7 +88,7 @@ export function startMainThreadWatchdog(onStall?: (report: StallReport) => void)
   }, TICK_MS);
 
   // Never hold the process open on this probe alone.
-  timer.unref?.();
+  (timer as { unref?: () => void }).unref?.();
   return stopMainThreadWatchdog;
 }
 

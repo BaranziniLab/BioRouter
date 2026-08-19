@@ -248,7 +248,10 @@ async function applyUpdate(
 
     if (!uvResult.ok) {
       const detail =
-        uvResult.stderr || uvResult.stdout || uvResult.error || `exited with status ${uvResult.code}`;
+        uvResult.stderr ||
+        uvResult.stdout ||
+        uvResult.error ||
+        `exited with status ${uvResult.code}`;
       throw new Error(`uv sync failed: ${detail}`);
     }
 
