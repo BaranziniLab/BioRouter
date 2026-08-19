@@ -127,6 +127,7 @@ pub mod session_events;
 pub mod session_reach;
 pub mod setup;
 pub mod status;
+pub mod coding_agents;
 pub mod tool_bridge;
 pub mod tunnel;
 pub mod usage;
@@ -156,6 +157,7 @@ pub fn configure(state: Arc<crate::state::AppState>, secret_key: String) -> Rout
         .merge(usage::routes(state.clone()))
         .merge(schedule::routes(state.clone()))
         .merge(setup::routes(state.clone()))
+        .merge(coding_agents::routes(state.clone()))
         .merge(llamacpp::routes(state.clone()))
         .merge(memory::routes(state.clone()))
         // No secret-key gate: the path carries a single-turn capability nonce, and

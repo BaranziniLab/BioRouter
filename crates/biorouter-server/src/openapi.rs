@@ -351,7 +351,12 @@ impl utoipa::Modify for ApiKeySecurity {
             SecurityScheme::ApiKey(ApiKey::Header(ApiKeyValue::with_description(
                 "X-Secret-Key",
                 "The daemon's secret key. Biorouter's server is loopback-only and \
-                 authenticates every route except /status with this header.",
+                 authenticates every route with this header except two: /status, and \
+                 /tool_bridge/{nonce}, which is not part of this API at all. The bridge \
+                 is an MCP endpoint a coding-agent child process calls, its path carries \
+                 a single-turn capability nonce instead of a header (Codex sends no \
+                 Authorization header), and it is deliberately absent from this spec \
+                 because no Biorouter client should ever call it.",
             ))),
         );
     }
@@ -455,6 +460,7 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::workflow::workflow_to_yaml,
         super::routes::setup::start_openrouter_setup,
         super::routes::setup::start_tetrate_setup,
+        super::routes::coding_agents::coding_agents_status,
         super::routes::llamacpp::llamacpp_status,
         super::routes::llamacpp::llamacpp_ensure,
         super::routes::llamacpp::llamacpp_warmup,
@@ -719,6 +725,10 @@ impl utoipa::Modify for ApiKeySecurity {
         super::routes::agent::RestartAgentResponse,
         biorouter::agents::ExtensionLoadResult,
         super::routes::setup::SetupResponse,
+        super::routes::coding_agents::CodingAgentStatusResponse,
+        biorouter::providers::coding_agent::discovery::AgentAvailability,
+        biorouter::providers::coding_agent::discovery::AuthState,
+        biorouter::providers::coding_agent::discovery::CodingAgentKind,
         super::routes::llamacpp::LlamaCppModel,
         super::routes::llamacpp::LlamaCppSuitability,
         super::routes::llamacpp::LlamaCppStatusResponse,
