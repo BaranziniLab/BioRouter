@@ -218,14 +218,39 @@ impl BridgeGrant {
     ///
     /// The policy itself is not restated here — `Auto ⇒ relaxed` is read off the
     /// grant's own `mode`, the same field the inspectors below are handed, so the
-    /// jail and the inspection can never disagree about which mode this call is
-    /// running under. Sensitive-path writes stay gated by the `SensitiveOpsInspector`
-    /// in that inspection pass either way.
+    /// value written is this call's own mode and not a second opinion about it.
+    /// Sensitive-path writes stay gated by the `SensitiveOpsInspector` in that
+    /// inspection pass either way.
     ///
     /// It runs before the inspectors rather than immediately before dispatch, for
     /// the same reason the agent's does: a refused call has still touched a global
     /// that the *next* call reads, and leaving that write until after a refusal
     /// would make the flag's value depend on whether the previous call was allowed.
+    ///
+    /// # What this does NOT establish
+    ///
+    /// ⚠ **Correct at the instant it is written, not for the duration of the
+    /// call.** An earlier version of this note claimed the jail and the
+    /// inspection "can never disagree about which mode this call is running
+    /// under", and that is false: the flag is one process-global atomic shared by
+    /// every session, and between this write and the dispatch below the call
+    /// awaits through `inspect_tools` — which executes the user's PreToolUse
+    /// hooks as real `sh -c` commands — and through `collect_hook_rewrites`. Any
+    /// concurrent writer inside that window (another bridged call in another
+    /// session, or `Agent::inspect_and_gate_tool_requests` on an ordinary turn)
+    /// flips it, and an Approve-mode session's `text_editor` write can still run
+    /// with the jail down.
+    ///
+    /// The agent's own path has exactly the same window, so this is a residual of
+    /// the flag's design rather than something the bridge introduced — but the
+    /// bridge does make it *bigger*, and honesty about that is the point of this
+    /// paragraph: the agent writes once per batch of the model's tool calls,
+    /// while this writes once per bridged tool call, which for co-resident
+    /// sessions is a materially higher collision rate. Closing it properly means
+    /// making the jail per-call state rather than a process global — the
+    /// `CallCapability` treatment, applied to a second global — and that is a
+    /// change to `biorouter_mcp`'s developer server, not to this file. Not doing
+    /// it here is deliberate; not writing it down was the defect.
     fn sync_path_jail(&self) {
         biorouter_mcp::set_path_jail_relaxed(self.mode == BioRouterMode::Auto);
     }
@@ -935,18 +960,26 @@ mod tests {
     /// path ran it. A test that called the helper would have passed against the
     /// broken code the moment the helper existed.
     ///
-    /// The two orders are both asserted from a *hostile* starting value, so the
-    /// test cannot pass by the flag already happening to hold the answer.
+    /// Every starting value here is *hostile* — the flag is left holding the
+    /// opposite of the answer before each call — so the test cannot pass by the
+    /// flag already happening to hold it.
+    ///
+    /// All four `BioRouterMode` variants, not the three that are interesting.
+    /// `SmartApprove` was missing and its absence was invisible: the policy is
+    /// `Auto ⇒ relaxed`, so a mode nobody enumerates is a mode nobody notices
+    /// moving to the other side of it, and a `matches!` widened to include it
+    /// would take the jail down for a mode whose whole purpose is to ask.
     #[tokio::test]
     async fn a_bridged_call_sets_the_path_jail_from_its_own_mode() {
-        // `PATH_JAIL_RELAXED` is process-global, so the two grants below have to
-        // take turns; a `tokio::test` gives each its own runtime but not its own
+        // `PATH_JAIL_RELAXED` is process-global, so the grants below have to take
+        // turns; a `tokio::test` gives each its own runtime but not its own
         // process.
         let _guard = path_jail_lock().await;
 
         for (mode, expected) in [
             (BioRouterMode::Auto, true),
             (BioRouterMode::Approve, false),
+            (BioRouterMode::SmartApprove, false),
             (BioRouterMode::Chat, false),
         ] {
             // Leave the flag holding the opposite of the answer, the way a
