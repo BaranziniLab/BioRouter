@@ -42,7 +42,7 @@ describe('DiagnosticsModal', () => {
     // Default: the daemon confirms whatever the caller seeded, so the existing
     // prop-driven assertions keep meaning what they did before the modal
     // started reading for itself.
-    getSessionMock.mockResolvedValue({ data: {} } as unknown as ReturnType<typeof getSession>);
+    getSessionMock.mockResolvedValue({ data: {} } as unknown as Awaited<ReturnType<typeof getSession>>);
   });
 
   it('generates and saves the archive through the native diagnostics IPC', async () => {
@@ -170,7 +170,7 @@ describe('DiagnosticsModal', () => {
   it('warns when the daemon says private even though the prop is a stale public', async () => {
     getSessionMock.mockResolvedValue({
       data: { privacy_tier: 'private' },
-    } as unknown as ReturnType<typeof getSession>);
+    } as unknown as Awaited<ReturnType<typeof getSession>>);
 
     render(
       <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="public" />
