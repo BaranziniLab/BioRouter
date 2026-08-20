@@ -67,7 +67,10 @@ describe('ExternalBackendSection', () => {
     fireEvent.blur(secret);
 
     await waitFor(() => expect(saveSettings).toHaveBeenCalled());
-    const written = saveSettings.mock.calls.at(-1)?.[0] as {
+    // Index rather than `.at(-1)`: this project's tsc lib target does not
+    // declare `Array.prototype.at`, and `npm run typecheck` is what CI runs.
+    const calls = saveSettings.mock.calls;
+    const written = calls[calls.length - 1][0] as {
       externalBiorouterd: { userActionKey?: string; secret?: string };
     };
     expect(written.externalBiorouterd.secret).toBe('a-new-secret');
