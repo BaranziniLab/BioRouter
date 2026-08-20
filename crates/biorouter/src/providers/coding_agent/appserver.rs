@@ -411,6 +411,17 @@ mod tests {
     /// End-to-end against a scripted fake server, so the framing and the
     /// bidirectional ordering are exercised for real: our request, its request
     /// back to us, our answer, then its response to our original.
+    // ⚠ `cfg(unix)`: this test drives a fake app server written in Python over
+    // stdio, and CI installs no Python on Windows (there is no `setup-python`
+    // step in `.github/workflows/rust.yml`). On Windows `python3` resolves to
+    // the Store's App Execution Alias or to nothing, the child never answers,
+    // and `AppServer::request` — which by design has no timeout of its own, see
+    // its doc comment — awaits its oneshot forever. That does not fail the job,
+    // it HANGS it: `test (windows-latest)` ran 120+ minutes against a ~20 minute
+    // norm until the runner's ceiling, on every head carrying this code. The
+    // transport semantics under test are not platform-specific; the fake server
+    // is.
+    #[cfg(unix)]
     #[tokio::test]
     async fn drives_a_fake_server_including_a_server_originated_request() {
         let script = r#"
@@ -480,6 +491,17 @@ for line in sys.stdin:
 
     /// A child that dies mid-request must fail it, not hang, and must surface its
     /// stderr — the diagnostic is the only thing the user can act on.
+    // ⚠ `cfg(unix)`: this test drives a fake app server written in Python over
+    // stdio, and CI installs no Python on Windows (there is no `setup-python`
+    // step in `.github/workflows/rust.yml`). On Windows `python3` resolves to
+    // the Store's App Execution Alias or to nothing, the child never answers,
+    // and `AppServer::request` — which by design has no timeout of its own, see
+    // its doc comment — awaits its oneshot forever. That does not fail the job,
+    // it HANGS it: `test (windows-latest)` ran 120+ minutes against a ~20 minute
+    // norm until the runner's ceiling, on every head carrying this code. The
+    // transport semantics under test are not platform-specific; the fake server
+    // is.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_dead_child_fails_in_flight_requests_with_its_stderr() {
         let mut cmd = Command::new("python3");

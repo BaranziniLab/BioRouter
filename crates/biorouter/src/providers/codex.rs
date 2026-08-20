@@ -766,6 +766,17 @@ mod tests {
     /// Authentication error" and "`thread/start` was never reached" are the same
     /// observation from two sides, and the second is what proves the refusal
     /// costs no tokens.
+    // ⚠ `cfg(unix)`: this test drives a fake app server written in Python over
+    // stdio, and CI installs no Python on Windows (there is no `setup-python`
+    // step in `.github/workflows/rust.yml`). On Windows `python3` resolves to
+    // the Store's App Execution Alias or to nothing, the child never answers,
+    // and `AppServer::request` — which by design has no timeout of its own, see
+    // its doc comment — awaits its oneshot forever. That does not fail the job,
+    // it HANGS it: `test (windows-latest)` ran 120+ minutes against a ~20 minute
+    // norm until the runner's ceiling, on every head carrying this code. The
+    // transport semantics under test are not platform-specific; the fake server
+    // is.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_metered_codex_is_refused_before_the_prompt_is_sent() {
         let server = fake_app_server(r#"{"type":"apiKey"}"#).await;
@@ -806,6 +817,17 @@ mod tests {
     /// Without this the test above is satisfied by a check that refuses
     /// everything, which would break the provider for every correctly signed-in
     /// user while looking like a passing suite.
+    // ⚠ `cfg(unix)`: this test drives a fake app server written in Python over
+    // stdio, and CI installs no Python on Windows (there is no `setup-python`
+    // step in `.github/workflows/rust.yml`). On Windows `python3` resolves to
+    // the Store's App Execution Alias or to nothing, the child never answers,
+    // and `AppServer::request` — which by design has no timeout of its own, see
+    // its doc comment — awaits its oneshot forever. That does not fail the job,
+    // it HANGS it: `test (windows-latest)` ran 120+ minutes against a ~20 minute
+    // norm until the runner's ceiling, on every head carrying this code. The
+    // transport semantics under test are not platform-specific; the fake server
+    // is.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_subscription_codex_still_runs_its_turn() {
         let server = fake_app_server(r#"{"type":"chatgpt","planType":"pro"}"#).await;
@@ -843,6 +865,17 @@ mod tests {
     ///
     /// The outer budget is three times the inner one, so removing the `timeout`
     /// from `assert_subscription` fails here instead of hanging the suite.
+    // ⚠ `cfg(unix)`: this test drives a fake app server written in Python over
+    // stdio, and CI installs no Python on Windows (there is no `setup-python`
+    // step in `.github/workflows/rust.yml`). On Windows `python3` resolves to
+    // the Store's App Execution Alias or to nothing, the child never answers,
+    // and `AppServer::request` — which by design has no timeout of its own, see
+    // its doc comment — awaits its oneshot forever. That does not fail the job,
+    // it HANGS it: `test (windows-latest)` ran 120+ minutes against a ~20 minute
+    // norm until the runner's ceiling, on every head carrying this code. The
+    // transport semantics under test are not platform-specific; the fake server
+    // is.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
     async fn an_app_server_that_ignores_account_read_does_not_hang_the_turn() {
         let server = silent_app_server().await;
@@ -867,6 +900,7 @@ mod tests {
 
     /// A stand-in for an app server that answers what it knows and silently
     /// ignores what it does not — i.e. any build predating `account/read`.
+    #[cfg(unix)]
     async fn silent_app_server() -> AppServer {
         let script = r#"
 import sys, json
@@ -905,6 +939,7 @@ for line in sys.stdin:
     /// `test/reachedThreadStart`, which is the only way to observe from outside
     /// that the refusal happened *before* the prompt went anywhere rather than
     /// after.
+    #[cfg(unix)]
     async fn fake_app_server(account: &str) -> AppServer {
         let script = format!(
             r#"
