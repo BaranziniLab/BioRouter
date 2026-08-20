@@ -178,7 +178,37 @@ cmd_linux-backend() {
      cp -f /cross-target/x86_64-unknown-linux-gnu/release/biorouter \
            /cross-target/x86_64-unknown-linux-gnu/release/biorouterd \
            /usr/src/myapp/target/x86_64-unknown-linux-gnu/release/"
+  assert_glibc_floor
   log "linux backend compiled"
+}
+
+# The Linux baseline is Debian 11 / Ubuntu 22.04 / RHEL-Rocky 9, i.e. glibc 2.31.
+#
+# ⚠ NOTHING ELSE ENFORCES THIS, despite CLAUDE.md having said the cli-linux smoke
+# test does. It cannot: those containers are `debian:bookworm` (glibc 2.36) and
+# `rockylinux:9` (glibc 2.34), so a floor raised from 2.31 to 2.34 passes every
+# smoke test in this repo and breaks only on the user's older machine. Measured
+# 2026-08-20. The check is a symbol-table read, so it needs no container and runs
+# in milliseconds.
+GLIBC_MAX="2.31"
+assert_glibc_floor() {
+  local bin found=""
+  for bin in "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" \
+             "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter"; do
+    [ -f "$bin" ] || continue
+    local worst
+    worst="$(strings -a "$bin" 2>/dev/null | grep -oE 'GLIBC_2\.[0-9]+' \
+             | sort -t. -k2 -n | tail -1)"
+    [ -n "$worst" ] || continue
+    found="yes"
+    local want="${worst#GLIBC_}"
+    # numeric compare on the minor, since 2.9 must not sort above 2.31
+    if [ "${want#2.}" -gt "${GLIBC_MAX#2.}" ]; then
+      die "$(basename "$bin") needs $worst but the Linux baseline is GLIBC_$GLIBC_MAX (Debian 11 / Ubuntu 22.04 / Rocky 9). The cross image pin (LINUX_RUST_IMG) has probably moved. No smoke test in this repo can catch this — they all run on newer glibc."
+    fi
+  done
+  [ -n "$found" ] || die "could not read a GLIBC symbol from either linux binary — the floor was NOT checked"
+  log "glibc floor ok (<= GLIBC_$GLIBC_MAX)"
 }
 
 run_cross_release() { # <cross function> <target volume> <cargo command> <post command>
@@ -258,7 +288,9 @@ cmd_windows() {
   cp -f "$WR/biorouterd.exe" "$WR/biorouter.exe" "$WR"/*.dll "$DESK/src/bin/"
   log "packaging Windows zip"
   ( cd "$DESK" && npm run bundle:windows )
-  log "windows zip: $DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
+  local zip="$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
+  [ -f "$zip" ] || die "windows reported success but produced no zip at $zip"
+  log "windows zip: $zip"
 }
 
 # ── linux packaging (fully dockerized; run LAST — corrupts node_modules) ───────
