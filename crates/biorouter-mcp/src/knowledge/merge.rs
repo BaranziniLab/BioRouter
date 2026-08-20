@@ -75,14 +75,20 @@
 //! its sub-agent is taught from), and the third is a record of what happened to
 //! **this** base — the source's history belongs to the source. What the merge
 //! adds to `log.md` is one entry saying a merge happened.
+//!
+//! ⚠ That the profile does not travel is exactly why [`assert_profiles_merge`]
+//! has to run: the destination's `manifest.yaml` keeps saying what it always
+//! said, and every conformance rule in the subsystem is then applied to the
+//! carried pages under *its* profile rather than the one they were written to.
 
 use crate::knowledge::{
     caller::KbCaller,
     git::{GitRepo, Txn},
     links::{self, identity_key, link_key},
+    manifest,
     okf::{frontmatter, model::ConceptDoc, model::Page},
     raw as raw_store, store,
-    types::ChangeKind,
+    types::{ChangeKind, KbFormat},
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -527,12 +533,116 @@ struct Renames {
     raw_ids: BTreeMap<String, String>,
 }
 
+// ────────────────────────────────────────────────────────────────────────────
+// Profile compatibility
+// ────────────────────────────────────────────────────────────────────────────
+
+/// Refuse a merge whose two bases are written in profiles that do not compose.
+///
+/// # The failure this closes
+///
+/// The barrier, the canonical-collision check and the writable-path check all
+/// ask about *this* merge; none of them asks whether the two bases speak the
+/// same language. And the merge deliberately leaves `manifest.yaml` and
+/// `schema.md` alone (see the module header), so carrying a legacy base's
+/// `title`/`kind` pages into a base whose manifest declares `format: biookf`
+/// leaves the destination declaring a profile its own contents do not meet:
+/// `validate::validate_page` and the lint macro read the *destination's*
+/// profile and run BioOKF's rule set over every carried page, `okf::check_source`
+/// reports `okf.type.missing` on each of them, and the sub-agent is taught a
+/// contract half the base violates. There is no undo — the merge's own rollback
+/// is a git transaction that a *successful* merge does not take, and
+/// `POST /restore` restores a whole tree rather than the pages one merge added.
+///
+/// # What "compatible" means here, and why it is not symmetric
+///
+/// [`KbFormat`]'s own doc states the containment: "BioOKF only adds constraints,
+/// so a BioOKF bundle is always a valid OKF bundle". Conformance is therefore a
+/// one-way relation, and the rule that follows from it is *the destination's
+/// rules must already be satisfied by the source's pages*:
+///
+/// | source → destination | verdict | why |
+/// | --- | --- | --- |
+/// | BioOKF → BioOKF, OKF → OKF | allowed | one rule set, both sides |
+/// | **BioOKF → OKF** | allowed | the carried pages meet a stricter contract than the one they will be checked against; the destination loses constraints on those pages, never conformance |
+/// | **OKF → BioOKF** | refused | a plain-OKF page states no BioOKF node type, no per-edge provenance triplet, no `raw_source` anchor — the destination's contract, applied to pages that were never written to it |
+/// | legacy → anything, anything → legacy | refused | legacy is not "less strict OKF" but a *different* vocabulary (`title`/`kind` frontmatter, `[[wiki]]` links). Neither direction is a subset of the other, and DR-17/DR-22 keep the format migration that would make one off every automatic path |
+/// | legacy → legacy | allowed | one generation, and no format rules run on either side |
+///
+/// The asymmetry is the whole content of the check: refusing both directions
+/// would forbid the one merge that is provably safe, and allowing both would be
+/// the bug.
+///
+/// # Reading the profile
+///
+/// Through [`crate::knowledge::types::Manifest::profile`], never through
+/// `Manifest::format` — DR-6's trap is that the field defaults to `Okf` on every
+/// `manifest.yaml` written before the OKF generation, so a check written against
+/// it would read every legacy base as plain OKF and wave through exactly the
+/// merge this function exists to refuse.
+///
+/// A manifest that cannot be read at all resolves to legacy (`None`), the same
+/// reading `macros::lint::format_diagnostics` takes: a base whose generation we
+/// could not establish must not be *assumed* current, and treating it as legacy
+/// keeps a hand-built or damaged base mergeable only with another one of its
+/// kind.
+fn assert_profiles_merge(dst_root: &Path, src_root: &Path, src_kb_id: &str) -> Result<()> {
+    let profile_of = |root: &Path| manifest::load(root).ok().and_then(|m| m.profile());
+    let dst = profile_of(dst_root);
+    let src = profile_of(src_root);
+    if profiles_compose(dst, src) {
+        return Ok(());
+    }
+    let word = |p: Option<KbFormat>| match p {
+        Some(f) => f.as_str(),
+        // Not "unknown" and not "okf": the user's base really is written in the
+        // pre-OKF shape, and naming it that is what makes the refusal
+        // actionable rather than mysterious.
+        None => "legacy (pre-OKF)",
+    };
+    anyhow::bail!(
+        "cannot merge '{src_kb_id}': it is written in the {} format and this base is {}. \
+         Nothing was read from either base and nothing was written. A merge carries pages but \
+         never the manifest or the schema, so the carried pages would be checked against this \
+         base's format forever, with no undo. Merging in the other direction, or exporting the \
+         source with `.brkb` and keeping it as its own base, are the two paths that do not \
+         break a base's conformance.",
+        word(src),
+        word(dst),
+    );
+}
+
+/// The relation [`assert_profiles_merge`] documents, as a pure function so every
+/// corner of the table can be driven by a test rather than reached through two
+/// bases on disk.
+fn profiles_compose(destination: Option<KbFormat>, source: Option<KbFormat>) -> bool {
+    match (destination, source) {
+        // Legacy composes with legacy and with nothing else — in EITHER
+        // direction. See the table above.
+        (None, None) => true,
+        (None, Some(_)) | (Some(_), None) => false,
+        // An OKF destination checks its pages against OKF's rules, which a
+        // BioOKF page satisfies by construction.
+        (Some(KbFormat::Okf), Some(_)) => true,
+        // A BioOKF destination checks its pages against BioOKF's, which a plain
+        // OKF page does not.
+        (Some(KbFormat::Biookf), Some(f)) => f.is_biookf(),
+    }
+}
+
 /// Compute the whole merge without writing anything.
 ///
 /// The one entry point for both the dry run and the merge, so "the preview
 /// describes the operation that will run" is a property of the code rather than
 /// a promise in a doc comment.
 pub fn plan(dst_root: &Path, src_root: &Path, src_kb_id: &str) -> Result<MergePlan> {
+    // FIRST, before a page of either base is read. Two reasons it lives here
+    // rather than in `apply`: `apply` is not on the dry run's path, and the
+    // route's `dry_run` defaults to **true** — so a check placed there would let
+    // the preview describe, page by page, a merge that must never happen, and
+    // "the preview describes the operation that will run" is the property this
+    // function exists to hold.
+    assert_profiles_merge(dst_root, src_root, src_kb_id)?;
     let snapshot = snapshot(dst_root)?;
     let raw = plan_raw(dst_root, src_root, src_kb_id)?;
     let (mut pages, identifiers_renamed, paths_renamed) =

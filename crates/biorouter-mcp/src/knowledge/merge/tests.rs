@@ -1367,3 +1367,155 @@ async fn a_second_merge_from_the_same_base_lists_under_that_bases_own_heading() 
         "a page was listed twice:\n{index}"
     );
 }
+
+// ── the profile gate ────────────────────────────────────────────────────────
+
+/// A base in an explicit profile, at the OKF generation.
+fn base_in(svc: &KnowledgeService, id: &str, format: crate::knowledge::types::KbFormat) -> PathBuf {
+    svc.create_base_in(id, id, None, format).unwrap();
+    svc.root().join(id)
+}
+
+/// A **legacy** base: created at the current generation and then stamped back to
+/// the one below it, which is what `Manifest::profile` reads to answer `None`.
+///
+/// Written this way rather than by hand-building a directory because the merge
+/// reads a great deal more of a base than its manifest — a fixture missing the
+/// git repo or the scaffold would fail for a reason that has nothing to do with
+/// the gate under test, and would keep failing after the gate was removed.
+fn legacy_base(svc: &KnowledgeService, id: &str) -> PathBuf {
+    let root = base(svc, id);
+    let mut m = crate::knowledge::manifest::load(&root).unwrap();
+    m.schema_version = crate::knowledge::types::AUTOMATIC_SCHEMA_CEILING;
+    crate::knowledge::manifest::save(&root, &m).unwrap();
+    assert!(
+        crate::knowledge::manifest::load(&root)
+            .unwrap()
+            .is_legacy_format(),
+        "the fixture did not produce a legacy base"
+    );
+    root
+}
+
+/// The table in [`super::assert_profiles_merge`], driven at every corner.
+///
+/// A pure-function test beside the on-disk ones for the reason
+/// `session_reach::refuse_unless_reachable` gives for the same shape: the
+/// on-disk tests can only afford to visit two or three cells, and the cell a
+/// future edit gets wrong is whichever one nobody wrote a base for.
+#[test]
+fn the_profile_table_allows_exactly_the_directions_that_preserve_conformance() {
+    use crate::knowledge::types::KbFormat::{Biookf, Okf};
+    // (destination, source, allowed)
+    let table = [
+        (None, None, true),
+        (Some(Okf), Some(Okf), true),
+        (Some(Biookf), Some(Biookf), true),
+        // The one asymmetric cell: a BioOKF bundle is a valid OKF bundle, so it
+        // may go down the ladder and never up it.
+        (Some(Okf), Some(Biookf), true),
+        (Some(Biookf), Some(Okf), false),
+        // Legacy is a different vocabulary, not a looser OKF, so neither
+        // direction composes.
+        (Some(Okf), None, false),
+        (Some(Biookf), None, false),
+        (None, Some(Okf), false),
+        (None, Some(Biookf), false),
+    ];
+    for (destination, source, allowed) in table {
+        assert_eq!(
+            super::profiles_compose(destination, source),
+            allowed,
+            "merging {source:?} into {destination:?}"
+        );
+    }
+}
+
+/// The defect: a legacy base's `title`/`kind` pages carried into a base whose
+/// manifest declares `format: biookf`, where every BioOKF rule is then applied
+/// to them with no undo.
+///
+/// The dry run is asserted first and for the same weight as the merge, because
+/// `POST /bases/{id}/merge` defaults `dry_run` to **true** — a gate that only
+/// fired on the apply would let the preview walk the user through, page by page,
+/// an operation that must never happen.
+#[tokio::test]
+async fn a_legacy_base_is_refused_a_merge_into_a_biookf_base_in_both_modes() {
+    let (_dir, svc) = service();
+    let dst = base_in(&svc, "dst", crate::knowledge::types::KbFormat::Biookf);
+    let src = legacy_base(&svc, "src");
+    put_page(
+        &src,
+        "knowledge/notes/hrv.md",
+        "---\ntitle: HRV\nkind: note\n---\n\nbody\n",
+    );
+
+    let before = fingerprint(&dst);
+    let src_before = fingerprint(&src);
+    for dry_run in [true, false] {
+        let err = svc
+            .merge_bases("dst", "src", &MergeAuthority::User(&user()), dry_run)
+            .await
+            .expect_err("an incompatible merge was allowed");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("legacy (pre-OKF)") && msg.contains("biookf"),
+            "the refusal must name both profiles (dry_run={dry_run}): {msg}"
+        );
+    }
+    assert_eq!(
+        fingerprint(&dst),
+        before,
+        "the refused merge still wrote to the destination"
+    );
+    assert_eq!(
+        fingerprint(&src),
+        src_before,
+        "the refused merge wrote to the source, which is only ever read"
+    );
+}
+
+/// The other refused direction, and the one a user is most likely to try: a
+/// general-purpose base merged into a biomedical one. A plain-OKF page states no
+/// BioOKF node type and no per-edge provenance triplet, so the destination's own
+/// contract would be broken by pages that were never written to it.
+#[tokio::test]
+async fn an_okf_base_is_refused_a_merge_into_a_biookf_base() {
+    let (_dir, svc) = service();
+    base_in(&svc, "dst", crate::knowledge::types::KbFormat::Biookf);
+    let src = base_in(&svc, "src", crate::knowledge::types::KbFormat::Okf);
+    put_page(&src, "knowledge/concept/a.md", &page("Concept", "A", "b"));
+
+    let err = svc
+        .merge_bases("dst", "src", &MergeAuthority::User(&user()), true)
+        .await
+        .expect_err("OKF into BioOKF was allowed");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("okf") && msg.contains("biookf"),
+        "the refusal must name both profiles: {msg}"
+    );
+}
+
+/// …and the direction that is safe stays open. Refusing this one would be the
+/// opposite failure — a user with a BioOKF base and a general one told to keep
+/// two graphs forever, for a merge whose carried pages already satisfy every
+/// rule the destination will check them against.
+#[tokio::test]
+async fn a_biookf_base_merges_into_an_okf_base() {
+    let (_dir, svc) = service();
+    let dst = base_in(&svc, "dst", crate::knowledge::types::KbFormat::Okf);
+    let src = base_in(&svc, "src", crate::knowledge::types::KbFormat::Biookf);
+    put_page(
+        &src,
+        "knowledge/molecule/il-6.md",
+        &page("Molecule", "IL-6", "b"),
+    );
+
+    let report = svc
+        .merge_bases("dst", "src", &MergeAuthority::User(&user()), false)
+        .await
+        .expect("BioOKF into OKF is the subset direction and must be allowed");
+    assert_eq!(report.pages_carried.len(), 1);
+    assert!(dst.join("knowledge/molecule/il-6.md").exists());
+}
