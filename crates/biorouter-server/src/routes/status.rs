@@ -114,15 +114,53 @@ async fn diagnostics(
 /// `SESSION_REACH_NO_KEY` ends "This control is unavailable on this daemon; use
 /// the desktop app", and every daemon that reaches it is one where there is no
 /// desktop app to use: `just run-server`, a hand-run `biorouterd agent`, a
-/// systemd unit, a container, headless Linux. So the person who most needs to
-/// file a bug — the one whose chat is private, on a box with no GUI — was told
-/// to do something impossible, and had no second sentence to fall back on.
+/// systemd unit, a container, headless Linux. So a support bundle for a private
+/// chat on such a box was refused with advice that cannot be followed there, and
+/// there was no second sentence to fall back on.
 ///
 /// There is a path, and it needs neither the daemon nor a key:
 /// `biorouter session diagnostics --session-id <id>` calls the same
 /// `generate_diagnostics` this handler does, against the session store on disk,
 /// with no reach gate in front of it. Naming it turns a dead end into a
 /// one-line instruction.
+///
+/// ## ⚠ OPERATOR DECISION OUTSTANDING — who is actually reading this
+///
+/// The paragraph above used to say the reader is "the person whose chat is
+/// private, on a box with no GUI". That is who the sentence is *for*; it is not
+/// established to be who reaches this arm, and the difference matters enough to
+/// be written down rather than assumed:
+///
+/// * The desktop app always installs a user-action key, so the GUI never reaches
+///   the keyless arm at all. The generated client has a `diagnostics` binding
+///   (`ui/desktop/src/api/sdk.gen.ts`) and — measured — **no call site** in the
+///   renderer or the main process, which save the bundle over IPC instead.
+/// * So the callers that do arrive here are `curl`, scripts, and agents.
+///
+/// And `SESSION_OUT_OF_REACH` next door is deliberately worded to foreclose a
+/// retry — "Do not retry as you are… no setting, hook or permission mode changes
+/// it", pinned by a test in `session_reach.rs` — precisely because these bodies
+/// are read by models. A refusal that hands the reader a working command is the
+/// opposite move on the adjacent arm.
+///
+/// Under this project's own model the capability is unchanged: the CLI path is
+/// ungated by design, the session store is an ordinary directory, and privacy
+/// here is a barrier against *mistakes*, not against a determined path. So this
+/// converts a stop sign into a signpost without moving the wall. Two mitigations
+/// are in place and a third question is open:
+///
+/// 1. The sentence is addressed to the human and asks the reader to *ask* them,
+///    in the same register `SESSION_OUT_OF_REACH` uses ("stop and ask the user").
+///    An agent that reads and obeys it stops, exactly as on the other arm.
+/// 2. It is said only on the keyless arm, which separates credential states of
+///    the **caller** — a fact the caller already knows — and never states of a
+///    session.
+/// 3. **Open, and for a human to settle:** whether a keyless daemon should say
+///    this at all, or whether the dead end is the intended behaviour of a daemon
+///    deliberately started without a way to verify a person. Gating it behind an
+///    explicit opt-in, or dropping it and documenting the CLI in the headless
+///    guide instead, are the two alternatives. Do not treat the presence of this
+///    code as that decision having been made.
 ///
 /// ## Why the constant itself is left alone
 ///
@@ -151,12 +189,23 @@ fn refusal_body(
     if refusal.message != crate::routes::session_reach::SESSION_REACH_NO_KEY {
         return refusal.message.to_string();
     }
+    // ⚠ Addressed to the person at the keyboard, and phrased as something to ASK
+    // them for — deliberately, and in the same register `SESSION_OUT_OF_REACH`
+    // uses when it ends "stop and ask the user to open it for you". The readers
+    // that reach the keyless arm are scripts and agents (the desktop app always
+    // installs a user-action key, so the GUI never gets here), so a body written
+    // as an instruction to the *caller* would read to a model as a sanctioned way
+    // around the gate it was just refused by. "Ask the person… to run" is a stop
+    // for an agent and a working answer for a human, which is the only shape that
+    // serves both readers of one string. See this function's OPERATOR DECISION
+    // note before rewording it.
     format!(
-        "{}\n\nFor this bundle there is a way that does not need the desktop app: on the machine \
-         running this daemon, in a terminal, run\n\n    biorouter session diagnostics \
-         --session-id {}\n\nIt reads the session store on disk directly — no daemon, no \
-         user-action key — so it works for a private chat and writes the same zip this route \
-         would have returned.",
+        "{}\n\nFor this bundle there is a way that does not need the desktop app. Ask the person \
+         at the keyboard to run this in a terminal on the machine running this daemon:\n\n    \
+         biorouter session diagnostics --session-id {}\n\nIt reads the session store on disk \
+         directly — no daemon, no user-action key — so it works for a private chat and writes \
+         the same zip this route would have returned. Do not retry this request as you are; it \
+         will be refused again.",
         refusal.message,
         quoted_session_id(session_id),
     )
@@ -260,6 +309,35 @@ mod tests {
         assert!(
             body.contains("biorouter session diagnostics --session-id 20250921_143022"),
             "the refusal does not name the command that works on this machine: {body}"
+        );
+    }
+
+    /// ⚠ The mitigation the OPERATOR DECISION note rests on, as an assertion
+    /// rather than a comment.
+    ///
+    /// The callers that reach the keyless arm are scripts and agents — the
+    /// desktop app always installs a user-action key, and the generated
+    /// `diagnostics` client has no call site in the renderer or the main process
+    /// — so this body is read by a model far more often than by a person. The
+    /// arm next door, `SESSION_OUT_OF_REACH`, is worded to foreclose a retry for
+    /// exactly that reason. Handing a model a working command instead would be
+    /// the opposite move on the adjacent arm, so the hint is addressed to the
+    /// **person at the keyboard**, asks the reader to *ask* them, and repeats the
+    /// no-retry instruction. A rewording that drops any of the three should fail
+    /// here and be argued for, not slip through as a tidy-up.
+    #[test]
+    fn the_offline_hint_is_addressed_to_the_human_and_still_forecloses_a_retry() {
+        let body = refusal_body(refusal(SESSION_REACH_NO_KEY), "20250921_143022");
+        assert!(
+            body.contains("Ask the person at the keyboard to run"),
+            "the hint reads as an instruction to the caller rather than a request \
+             to the user, which to a model is a sanctioned way around the gate it \
+             was just refused by: {body}"
+        );
+        assert!(
+            body.contains("Do not retry this request as you are"),
+            "the keyless arm dropped the no-retry instruction that the \
+             out-of-reach arm beside it is pinned to: {body}"
         );
     }
 
