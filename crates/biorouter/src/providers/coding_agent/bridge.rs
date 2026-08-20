@@ -662,6 +662,17 @@ mod tests {
     /// Asserted through [`BridgeGrant::dispatch_cancel_token`] because that is
     /// the exact value the dispatch site passes; a test that only cancelled a
     /// token it had built itself would pass against a grant that ignores it.
+    ///
+    /// ⚠ This one covers the *accessor* and nothing else, and on its own it is
+    /// not evidence that the fix works: restoring the original inline
+    /// `CancellationToken::new()` at the dispatch site (`call()`, immediately
+    /// below `apply_vault`) leaves it — and every other test in this file —
+    /// green, because nothing here reaches `dispatch_tool_call`. That is why
+    /// [`cancelling_the_turn_reaps_a_tool_a_bridged_call_started`] exists and
+    /// why it drives a real process through `call()`. Keep both: this one names
+    /// the value, that one proves the wiring, and only the pair distinguishes
+    /// "the field round-trips" from "the field is what the tool is dispatched
+    /// with".
     #[tokio::test]
     async fn the_turns_cancel_reaches_a_bridged_tool() {
         let turn = CancellationToken::new();
@@ -689,6 +700,135 @@ mod tests {
     async fn a_turn_with_no_token_still_dispatches() {
         let grant = grant_cancelled_by(None);
         assert!(!grant.dispatch_cancel_token().is_cancelled());
+    }
+
+    /// The wiring, end to end: cancelling the turn reaps a process tree a
+    /// **bridged** `developer__shell` started.
+    ///
+    /// The test above asserts that the grant's `Option<CancellationToken>` comes
+    /// back out of the accessor. That is not the defect. The defect was an inline
+    /// `CancellationToken::new()` at the *dispatch site*, and an accessor test
+    /// cannot see it: the accessor can be perfect while `call()` hands
+    /// `dispatch_tool_call` a token nobody holds. So this drives a real call
+    /// through `call()` — real inspectors, real approval, the real in-process
+    /// `developer` extension — and measures the only thing that distinguishes the
+    /// two: whether a running process dies.
+    ///
+    /// The command is issue #72's own repro shape, copied from
+    /// `tests/nested_shell_cancellation.rs`: it forks a **grandchild** that sleeps
+    /// and then touches `survived`, touches `started` so the test knows the tree
+    /// is up, and `wait`s. The grandchild is the point — killing only the direct
+    /// child reparents it to init and it runs to completion, so `survived` is a
+    /// durable trace of an orphan rather than of a slow shutdown. A dispatch site
+    /// that mints its own token leaves the turn's `cancel()` pulling on nothing,
+    /// the tree is never reaped, and `survived` appears.
+    ///
+    /// Unix only, for the `sh -c` command and the process-group kill it is testing.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn cancelling_the_turn_reaps_a_tool_a_bridged_call_started() {
+        use std::time::Duration;
+
+        /// How long the orphan sleeps before leaving its trace. Long enough that a
+        /// reaped tree cannot possibly reach it, short enough to keep this quick.
+        const SURVIVE_AFTER: Duration = Duration::from_secs(4);
+
+        let _guard = path_jail_lock().await;
+
+        let dir = tempfile::tempdir().expect("a temp dir");
+        let started = dir.path().join("started");
+        let survived = dir.path().join("survived");
+        let command = format!(
+            "sh -c 'sleep {}; touch \"{}\"' & touch \"{}\"; wait",
+            SURVIVE_AFTER.as_secs(),
+            survived.display(),
+            started.display(),
+        );
+
+        let extensions = Arc::new(ExtensionManager::new(
+            Arc::new(tokio::sync::Mutex::new(None)),
+            Arc::new(crate::session::SessionManager::new(
+                dir.path().to_path_buf(),
+            )),
+        ));
+        extensions
+            .add_extension(crate::agents::extension::ExtensionConfig::Builtin {
+                name: "developer".to_string(),
+                description: "developer".to_string(),
+                display_name: Some("Developer".to_string()),
+                timeout: Some(300),
+                bundled: Some(true),
+                available_tools: vec![],
+            })
+            .await
+            .expect("the developer extension loads in-process");
+
+        let turn = CancellationToken::new();
+        let hooks = no_hooks();
+        let grant = Arc::new(BridgeGrant::new(
+            Session::default(),
+            // Auto, so the permission inspector approves and this test measures
+            // cancellation rather than the approval flow.
+            BioRouterMode::Auto,
+            extensions,
+            Arc::new(inspections_with(&hooks, false)),
+            CallCapability::public_enforced(),
+            vec![],
+            Conversation::new_unvalidated(vec![]),
+            Some(turn.clone()),
+            hooks,
+            None,
+        ));
+
+        let call = CallToolRequestParams {
+            name: "developer__shell".to_string().into(),
+            arguments: Some(
+                serde_json::json!({ "command": command })
+                    .as_object()
+                    .expect("an object")
+                    .clone(),
+            ),
+            meta: None,
+            task: None,
+        };
+        let running = tokio::spawn({
+            let grant = Arc::clone(&grant);
+            async move { grant.call(call).await }
+        });
+
+        // Wait for the tree to actually be up; asserting on a command that never
+        // started would prove nothing either way.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        while tokio::time::Instant::now() < deadline && !started.exists() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        assert!(
+            started.exists(),
+            "the bridged shell command never started; the test proves nothing"
+        );
+
+        turn.cancel();
+
+        // Give the orphan every chance to surface: wait past its own sleep.
+        tokio::time::sleep(SURVIVE_AFTER + Duration::from_secs(3)).await;
+
+        assert!(
+            !survived.exists(),
+            "cancelling the turn left a descendant of a BRIDGED tool call running: \
+             it woke up after the turn ended and wrote {}. The turn's token is not \
+             reaching `dispatch_tool_call` — a token constructed at the dispatch \
+             site is held by nobody and never fires, so the user pressing stop \
+             tears down the child agent and leaves its shell command detached.",
+            survived.display()
+        );
+
+        // A cancel that hangs is its own bug, and one that never returns would
+        // otherwise read here as a pass.
+        let ended = tokio::time::timeout(Duration::from_secs(10), running).await;
+        assert!(
+            ended.is_ok(),
+            "the cancelled bridged call never returned to the child"
+        );
     }
 
     /// A bridged call jails `text_editor` by ITS OWN session's mode.
