@@ -75,6 +75,42 @@ describe('CodingAgentInlineCard', () => {
     respondWith(claude({ state: 'not_installed' }), codex({ state: 'not_installed' }));
   });
 
+  /**
+   * ⚠ **A successful connect must re-enable the buttons.**
+   *
+   * `connect` sets `connectingProviderId` on entry and used to clear it only in
+   * the catch arm, on the reasoning that a success hands off and never comes
+   * back. It does come back: `ProviderGuard` opens the Choose Model modal
+   * BESIDE the still-mounted onboarding tree rather than unmounting it, and
+   * closing that modal without picking a model returns the user to this card.
+   *
+   * Both buttons are `disabled={connectingProviderId !== null}` and `connect`
+   * early-returns while it is set, so the card wedged: "Connecting…" forever on
+   * the one they clicked, greyed out on the other, no re-check path that resets
+   * it. And because the config write already happened, relaunching skips
+   * onboarding rather than offering a second chance.
+   */
+  it('re-enables both agents after a successful connect, since the card stays mounted', async () => {
+    respondWith(
+      claude({ state: 'signed_in_subscription' }),
+      codex({ state: 'signed_in_subscription' })
+    );
+    const onSuccess = vi.fn();
+    render(<CodingAgentInlineCard onSuccess={onSuccess} />);
+
+    const use = await screen.findByRole('button', { name: /Use Claude Code/i });
+    fireEvent.click(use);
+
+    await waitFor(() => expect(onSuccess).toHaveBeenCalledWith('claude_code'));
+
+    // The user closes the model modal without choosing; this card never
+    // unmounted, so both buttons have to be usable again.
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /Use Claude Code/i })).toBeEnabled()
+    );
+    expect(screen.getByRole('button', { name: /Use Codex/i })).toBeEnabled();
+  });
+
   it('renders a row for every agent the daemon reports', async () => {
     render(<CodingAgentInlineCard onSuccess={vi.fn()} />);
     expect(await screen.findByTestId('coding-agent-row-claude_code')).toBeInTheDocument();

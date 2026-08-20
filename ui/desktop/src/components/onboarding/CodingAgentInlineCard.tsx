@@ -206,12 +206,26 @@ export default function CodingAgentInlineCard({ onSuccess }: CodingAgentInlineCa
         });
         onSuccess(agent.providerId);
       } catch (error) {
-        if (mountedRef.current) setConnectingProviderId(null);
         toastService.error({
           title: 'Could not select this provider',
           msg: `Failed to save ${key}: ${error instanceof Error ? error.message : String(error)}`,
           traceback: error instanceof Error ? error.stack || '' : '',
         });
+      } finally {
+        // ⚠ `finally`, so SUCCESS clears it too.
+        //
+        // This used to clear only in the catch arm, on the reasoning that a
+        // successful connect hands off and never comes back. It does come back:
+        // `ProviderGuard` opens the Choose Model modal BESIDE the still-mounted
+        // onboarding tree rather than unmounting it, and closing that modal
+        // without picking a model returns the user to a card whose button still
+        // reads "Connecting…" and is disabled - along with the other agent's,
+        // since both are `disabled={connectingProviderId !== null}` and
+        // `connect` early-returns while it is set. Nothing in the card resets
+        // it, so neither coding agent can be chosen again for the rest of the
+        // run, and the config write has already happened so a relaunch skips
+        // onboarding entirely.
+        if (mountedRef.current) setConnectingProviderId(null);
       }
     },
     [connectingProviderId, onSuccess, upsert]
