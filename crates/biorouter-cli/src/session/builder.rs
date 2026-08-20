@@ -491,13 +491,27 @@ async fn close_ephemeral_store_with_manager(
 /// 40 attempts served the first well and the second not at all: 2 s total,
 /// and it went red on windows-latest while two sibling tests doing the
 /// identical thing passed in the same run — which is what a budget slightly
-/// too short looks like, and why the fix is a longer tail rather than a
-/// different mechanism. Doubling from 25 ms to a 500 ms ceiling reaches the
-/// first retry twice as fast as the flat pause did AND spends ~17.8 s over
-/// the same bounded 40 attempts.
-const STORE_REMOVAL_ATTEMPTS: u32 = 40;
+/// too short looks like — though the diagnosis was WRONG, and the correction is
+/// worth reading before touching these numbers again.
+///
+/// ⚠ **The budget was never the bug, and a big one costs more than it looks.**
+/// Raising it to ~17.8 s did not fix Windows: the diagnostic showed a removal
+/// attempted after the whole budget still failing with os error 32. The real
+/// defect was that the wait ran ON the runtime thread — see
+/// `close_ephemeral_store_with_manager`, which now uses `spawn_blocking`.
+///
+/// Meanwhile the long budget did real damage. Many tests in this binary take
+/// ONE process-global `env_lock`, and a test that spends the whole budget holds
+/// it the entire time, so every other test queues behind it. A local run went
+/// from about forty seconds to over an hour with all sixteen threads parked,
+/// and `privacy_tier` alone measured 17.49 s — one budget, exactly.
+///
+/// So: modest again. Doubling from 25 ms to a 200 ms ceiling spends ~3.6 s over
+/// 20 attempts, still reaches the first retry twice as fast as the original flat
+/// pause, and no longer holds a global lock for the better part of a minute.
+const STORE_REMOVAL_ATTEMPTS: u32 = 20;
 const STORE_REMOVAL_FIRST_PAUSE: std::time::Duration = std::time::Duration::from_millis(25);
-const STORE_REMOVAL_MAX_PAUSE: std::time::Duration = std::time::Duration::from_millis(500);
+const STORE_REMOVAL_MAX_PAUSE: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// The pause before retry number `attempt` (1-based): double the last one,
 /// stopping at [`STORE_REMOVAL_MAX_PAUSE`].
@@ -1462,11 +1476,28 @@ mod tests {
             "the backoff must reach its ceiling rather than growing without bound"
         );
 
+        // ⚠ Bounded on BOTH sides, and the upper bound is the one with a story.
+        //
+        // A previous pass raised this budget to ~17.8 s believing the Windows
+        // failure was a wait that was too short. It was not — the wait was
+        // running on the runtime thread — and the oversized budget did its own
+        // damage: many tests in this binary take one process-global `env_lock`,
+        // so a test that spends the whole budget holds it throughout and every
+        // other test queues behind it. A local run went from about forty seconds
+        // to over an hour with all sixteen threads parked.
+        //
+        // So the ceiling is a real requirement, not tidiness. Anyone raising it
+        // is re-buying that hour.
         let total: std::time::Duration = waits.iter().sum();
         assert!(
-            total >= std::time::Duration::from_secs(15),
-            "the budget must outlast a handle that takes seconds to close; the flat 2 s \
-             it replaced did not, and went red on windows-latest. Got {total:?}"
+            total >= std::time::Duration::from_secs(3),
+            "the budget must still outlast a handle that is merely slow to release. Got {total:?}"
+        );
+        assert!(
+            total <= std::time::Duration::from_secs(5),
+            "the budget is held under a process-global lock while it runs, so a long one \
+             serialises the whole test binary behind it. If a handle needs more than this, \
+             the answer is not more waiting - it is finding what is holding it. Got {total:?}"
         );
     }
 
