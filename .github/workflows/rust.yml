@@ -6,8 +6,10 @@ name: Rust
 #                    recipe (scripts/cross-env.sh)? This is the PR gate.
 #   * test         — does the platform BEHAVIOUR work on real kernels (macOS
 #                    Seatbelt, Linux Landlock, Windows PowerShell + taskkill)?
-# A nightly job runs the full cross BUILD (link errors + glibc floor), which a
-# `cargo check` cannot see.
+# A nightly job runs the full cross BUILD — link errors, the glibc floor, and
+# the shipped packages' runtime-library contract — none of which a `cargo check`
+# can see, because a check never links and so never emits a NEEDED entry or a
+# symbol version.
 
 on:
   pull_request:
@@ -15,9 +17,30 @@ on:
     branches: [main]
   schedule:
     - cron: "0 7 * * *"   # nightly: the expensive full cross-BUILD + glibc floor
+  # A schedule-only job is a job nobody can check. cross-build-nightly has run
+  # 36 times since 2026-07-15 — its entire existence — for 33 failures and 3
+  # cancellations and not one green. Part of why that stood for a month is that
+  # there was no way to ASK it a question: you could read the log the morning
+  # after, change something, and then wait a day to learn whether the change
+  # helped. Manual dispatch turns a 24-hour edit loop into a 20-minute one. It
+  # runs every job in this file, the nightly included; the three PR-gate jobs
+  # are cheap next to the cross build and their signal is never unwelcome. Read
+  # cross-build-nightly's OWN conclusion rather than the run's, though — the
+  # matrix carries whatever is red on main at the time (windows-latest was, the
+  # day this was written), and that says nothing about the cross build.
+  workflow_dispatch:
 
+# Keyed by event as well as ref, and the event half is load-bearing. `github.ref`
+# for the nightly is refs/heads/main — the SAME group a push to main lands in —
+# so with cancel-in-progress a morning merge silently killed the night's cross
+# build. Three scheduled runs died that way (2026-08-01, 08-07, 08-09) and were
+# indistinguishable in the run list from a real failure. Adding manual dispatch
+# would have made it worse: pressing the button on main would cancel whatever
+# push-triggered gate was in flight. Separating by event keeps the behaviour that
+# was actually wanted — a newer push supersedes an older push on the same ref —
+# without letting three unrelated kinds of run compete for one slot.
 concurrency:
-  group: rust-${{ github.ref }}
+  group: rust-${{ github.ref }}-${{ github.event_name }}
   cancel-in-progress: true
 
 env:
@@ -159,7 +182,10 @@ jobs:
   # ── 4. Nightly: the FULL cross BUILD. `check` cannot catch link errors
   #      (aws-lc-sys / winpthread) or glibc symbol-version regressions.
   cross-build-nightly:
-    if: github.event_name == 'schedule'
+    # The three jobs above are gated `!= 'schedule'`, so they pick up
+    # workflow_dispatch on their own; this one has to name it, or the button
+    # would run everything EXCEPT the job it was added for.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -171,7 +197,54 @@ jobs:
           cross_windows "cargo build --release --bin biorouterd --bin biorouter" "" "$WIN_DLL_STAGE"
       - name: Assert the glibc floor (2.31 / bullseye) is not raised
         run: ./scripts/check-glibc-floor.sh
-      - name: Boot the Linux binary on the oldest supported distro
+
+      # The glibc floor check covers the libraries the binaries need from libc.
+      # This covers the ones they need from everywhere ELSE — today exactly one,
+      # libxcb.so.1 — and asserts that the packages we ship name it, so apt/dnf
+      # put it on the box before the binary ever runs. See the script's header;
+      # the short version is that a new system dependency is invisible to every
+      # other gate in this file and surfaces as exit 127 on a user's machine.
+      - name: The shipped binaries' runtime deps are declared by the shipped packages
+        id: runtime-deps
         run: |
-          docker run --rm -v "$PWD":/w debian:bullseye \
+          set -euo pipefail
+          ./scripts/check-linux-runtime-deps.sh
+          echo "deb_packages=$(./scripts/check-linux-runtime-deps.sh --print-deb-packages)" >> "$GITHUB_OUTPUT"
+
+      # This step used to `docker run` the bare ELF out of target/ in a stock
+      # debian:bullseye, and had therefore failed EVERY night since it was
+      # written — ~40 consecutive red runs, never once green. The failure was
+      # real and reproducible and meant nothing: `biorouter` links libxcb.so.1
+      # (arboard's clipboard, xcap's screen capture), the base image ships no
+      # X11 libraries at all, so the loader aborted before `main`. It was
+      # reporting a catastrophe that no user can reach, because no user runs the
+      # naked binary — they install biorouter-cli_*.deb or the .rpm, and those
+      # DECLARE libxcb1/libxcb, so the package manager installs it as a matter
+      # of course. Measured on a clean debian:bullseye and a clean rockylinux:9:
+      # both packages install and both binaries report their version.
+      #
+      # What the step proves now is the thing that was worth proving all along:
+      # that the declared dependency set is SUFFICIENT. It installs exactly the
+      # packages the shipped specs name — derived from the ELF by the guard
+      # above rather than hardcoded here, so the list cannot go stale in one
+      # place while moving in the other — and nothing else. If a future crate
+      # adds a system library, the guard above fails first and names the fix; if
+      # the declared set were merely incomplete, this boot fails and says so.
+      # Both binaries are booted: they ship together and link the same set, and
+      # only `biorouter` was ever being checked.
+      #
+      # bullseye is the floor pin (GLIBC_FLOOR / LINUX_RUST_IMG in
+      # scripts/cross-env.sh). Its apt mirrors are what make the install step
+      # work; when Debian 11 finally leaves them, this image moves forward
+      # together with that pin, not on its own.
+      - name: Boot both Linux binaries on the oldest supported distro
+        env:
+          DEB_PACKAGES: ${{ steps.runtime-deps.outputs.deb_packages }}
+        run: |
+          set -euo pipefail
+          docker run --rm -e DEB_PACKAGES -v "$PWD":/w debian:bullseye sh -euxc '
+            apt-get update -q
+            apt-get install -y --no-install-recommends $DEB_PACKAGES
             /w/target/x86_64-unknown-linux-gnu/release/biorouter --version
+            /w/target/x86_64-unknown-linux-gnu/release/biorouterd --version
+          '

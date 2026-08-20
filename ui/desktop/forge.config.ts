@@ -188,7 +188,19 @@ module.exports = {
           prefix: '/opt',
           // Runtime deps of the bundled llama-server (Llama Server provider):
           // OpenSSL 3 and OpenMP. Implies Debian 12+ / Ubuntu 22.04+.
-          depends: ['libssl3', 'libgomp1'],
+          //
+          // libxcb1 is a dep of the bundled `biorouter`/`biorouterd` themselves,
+          // not of llama-server: both carry libxcb.so.1 as a DT_NEEDED entry
+          // (arboard's clipboard and xcap's screen capture), so the loader
+          // refuses to start them without it. It has always been installed here
+          // anyway, but only INCIDENTALLY — electron-installer-debian's own
+          // defaults ask for libgtk-3-0, which drags libxcb1 in transitively.
+          // Naming it makes the requirement ours instead of a side effect of a
+          // dependency we do not control, and the array is merged with those
+          // Electron defaults rather than replacing them, so this is additive.
+          // scripts/check-linux-runtime-deps.sh asserts it stays in step with
+          // what the binaries actually link.
+          depends: ['libssl3', 'libgomp1', 'libxcb1'],
         },
       },
     },
@@ -206,7 +218,9 @@ module.exports = {
           icon: 'src/images/icon.png',
           prefix: '/opt',
           // openssl-libs ships libssl.so.3 on EL9+/Fedora; libgomp for llama-server.
-          requires: ['openssl-libs', 'libgomp'],
+          // libxcb is the RPM spelling of the deb's libxcb1 — see the maker-deb
+          // comment above for why the bundled binaries need it.
+          requires: ['openssl-libs', 'libgomp', 'libxcb'],
           fpm: ['--rpm-rpmbuild-define', '_build_id_links none'],
         },
       },
