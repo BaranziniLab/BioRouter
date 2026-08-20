@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { AlertTriangle, Download, Github, Loader2 } from '../icons/app-icons';
 import { Button } from './button';
 import { toastError, toastSuccess } from '../../toasts';
-import { diagnostics, systemInfo } from '../../api';
+import { diagnostics, getSession, systemInfo } from '../../api';
 import { userActionHeaders } from '../../utils/userAction';
 import {
   Dialog,
@@ -31,6 +31,15 @@ interface DiagnosticsModalProps {
    *
    * Absent means "not known yet", which reads the same as public: a warning
    * that appears on every chat is one nobody reads by the third time.
+   *
+   * ⚠ This is a SEED, not the answer. It comes from the session `useChatStream`
+   * loaded when the chat opened, and the classification is a ratchet that fires
+   * DURING a turn — so on the chat where the warning matters most (a new chat
+   * that just became private by talking to a private model) this prop is still
+   * the pre-ratchet value and says "public". That is exactly how the warning
+   * came to be missing on a live private chat while `Diagnostics.test.tsx`,
+   * which passes the tier in directly, stayed green: the test proves the
+   * component, and nothing proved the wiring. The read below is the answer.
    */
   privacyTier?: string;
 }
@@ -41,7 +50,37 @@ export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
   sessionId,
   privacyTier,
 }) => {
-  const isPrivateChat = privacyTier === 'private';
+  // Opening this dialog is itself a user gesture, so the proof-of-user read the
+  // tier gate requires (issue #56 Task 58) is one we are entitled to make here.
+  // Seeded from the prop so the warning is right on the first paint whenever the
+  // caller already knew, and corrected the moment the daemon answers.
+  const [liveTier, setLiveTier] = useState<string | undefined>(privacyTier);
+
+  useEffect(() => {
+    if (!isOpen || !sessionId) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await getSession({
+          path: { session_id: sessionId },
+          headers: await userActionHeaders(),
+        });
+        if (!cancelled && response.data?.privacy_tier) {
+          setLiveTier(response.data.privacy_tier);
+        }
+      } catch (error) {
+        // Leave the seed in place. A failed read must not manufacture a claim in
+        // either direction: inventing "private" puts a false statement in front
+        // of the user, and forcing "public" hides the warning this exists for.
+        console.error('[Diagnostics] Failed to read the session privacy tier:', error);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isOpen, sessionId]);
+
+  const isPrivateChat = liveTier === 'private';
   const [isDownloading, setIsDownloading] = useState(false);
   const [isFilingBug, setIsFilingBug] = useState(false);
 

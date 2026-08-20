@@ -1,12 +1,13 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { diagnostics } from '../../api';
+import { diagnostics, getSession } from '../../api';
 import { toastError, toastSuccess } from '../../toasts';
 import { userActionHeaders } from '../../utils/userAction';
 import { DiagnosticsModal } from './Diagnostics';
 
 vi.mock('../../api', () => ({
   diagnostics: vi.fn(),
+  getSession: vi.fn(),
   systemInfo: vi.fn(),
 }));
 
@@ -20,6 +21,7 @@ vi.mock('../../utils/userAction', () => ({
 }));
 
 const diagnosticsMock = vi.mocked(diagnostics);
+const getSessionMock = vi.mocked(getSession);
 const toastErrorMock = vi.mocked(toastError);
 const toastSuccessMock = vi.mocked(toastSuccess);
 const userActionHeadersMock = vi.mocked(userActionHeaders);
@@ -37,6 +39,10 @@ describe('DiagnosticsModal', () => {
     (window as unknown as { electron: unknown }).electron = { saveDiagnosticsBundle };
     userActionHeadersMock.mockResolvedValue({ 'X-User-Action': 'proof-of-user' });
     diagnosticsMock.mockResolvedValue(diagnosticsResponse() as never);
+    // Default: the daemon confirms whatever the caller seeded, so the existing
+    // prop-driven assertions keep meaning what they did before the modal
+    // started reading for itself.
+    getSessionMock.mockResolvedValue({ data: {} } as unknown as ReturnType<typeof getSession>);
   });
 
   it('generates and saves the archive through the native diagnostics IPC', async () => {
@@ -143,6 +149,50 @@ describe('DiagnosticsModal', () => {
     await waitFor(() => {
       expect(saveDiagnosticsBundle).toHaveBeenCalledWith('20260716_27', expect.any(ArrayBuffer));
     });
+  });
+
+  /**
+   * ⚠ REGRESSION (found in the running app, not by a test). Every assertion
+   * above hands the tier in as a prop, so all of them passed while the warning
+   * was missing from every real private chat.
+   *
+   * `privacyTier` reaches this modal from the session `useChatStream` loaded
+   * when the chat OPENED, and the classification ratchets to private DURING a
+   * turn. So the case that matters most — a fresh chat that just became private
+   * by talking to a private model — arrives here still carrying the pre-ratchet
+   * value. The composer's chip was right beside it saying "Private chat",
+   * because ChatInput re-reads the tier after each turn; this modal did not.
+   *
+   * The fix is that the modal asks the daemon itself when it opens. This test
+   * is that fix's negative control: it hands in the STALE prop and requires the
+   * warning anyway.
+   */
+  it('warns when the daemon says private even though the prop is a stale public', async () => {
+    getSessionMock.mockResolvedValue({
+      data: { privacy_tier: 'private' },
+    } as unknown as ReturnType<typeof getSession>);
+
+    render(
+      <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="public" />
+    );
+
+    const warning = await screen.findByTestId('diagnostics-private-warning');
+    expect(warning).toBeVisible();
+    expect(warning.textContent).toContain('This chat is private.');
+  });
+
+  it('keeps the seeded tier when the daemon read fails, inventing nothing', async () => {
+    getSessionMock.mockRejectedValue(new Error('refused'));
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    render(
+      <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="private" />
+    );
+    // A failed read must not erase a warning the caller already justified...
+    expect(screen.getByTestId('diagnostics-private-warning')).toBeVisible();
+    await waitFor(() => expect(error).toHaveBeenCalled());
+    expect(screen.getByTestId('diagnostics-private-warning')).toBeVisible();
+    error.mockRestore();
   });
 
   it('does not warn on a chat that is not private', () => {
