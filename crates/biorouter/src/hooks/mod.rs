@@ -716,10 +716,7 @@ impl HooksManager {
         let mut taken = Vec::new();
         let mut kept = VecDeque::with_capacity(entries.len());
         while let Some(entry) = entries.pop_front() {
-            if request_ids
-                .iter()
-                .any(|want| *want == entry.tool_request_id)
-            {
+            if request_ids.contains(&entry.tool_request_id) {
                 taken.push(entry);
             } else {
                 kept.push_back(entry);
