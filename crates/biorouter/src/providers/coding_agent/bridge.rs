@@ -887,7 +887,7 @@ mod tests {
             BioRouterMode::Auto,
             extensions,
             Arc::new(inspections_with(&hooks, false)),
-            CallCapability::public_enforced(),
+            test_capability(),
             vec![],
             Conversation::new_unvalidated(vec![]),
             Some(turn.clone()),
@@ -1430,7 +1430,7 @@ mod tests {
                 BioRouterMode::Auto,
                 Arc::clone(&self.extensions),
                 Arc::new(inspections),
-                CallCapability::public_enforced(),
+                test_capability(),
                 vec![],
                 Conversation::new_unvalidated(vec![]),
                 None,
@@ -1597,6 +1597,30 @@ mod tests {
         LOCK.lock().await
     }
 
+    /// The privacy capability every grant in this module is built with — the
+    /// most restrictive pair the type can express, never a permissive one
+    /// invented for a test's convenience.
+    ///
+    /// ⚠ **Call this rather than `CallCapability::public_enforced()` directly**,
+    /// and the reason is a gate rather than a style preference.
+    /// `tests/privacy_capability.rs` runs a repo-wide grep census over every site
+    /// that decides how far a caller reaches, deliberately line-wise so that it
+    /// cannot tell a `#[cfg(test)]` block from production — a filter that could
+    /// would blind it to production too. It therefore counts this file's test
+    /// helpers, and its documented row for this file says "one, and it is a test
+    /// helper". Four inline spellings had accumulated here against that row,
+    /// which is why `cargo test -p biorouter --test privacy_capability` was RED
+    /// while every other gate on this branch was green.
+    ///
+    /// Funnelling them through one named function keeps the census's number
+    /// stable as tests are added, without weakening it in the slightest: a
+    /// genuinely new decider in this file — or a new test that inlines the
+    /// constructor instead of calling this — still moves the count off 1 and
+    /// still fires.
+    fn test_capability() -> CallCapability {
+        CallCapability::public_enforced()
+    }
+
     fn dummy_grant() -> BridgeGrant {
         grant_cancelled_by(None)
     }
@@ -1610,7 +1634,7 @@ mod tests {
                 Arc::new(crate::session::SessionManager::instance()),
             )),
             Arc::new(ToolInspectionManager::new()),
-            CallCapability::public_enforced(),
+            test_capability(),
             vec![],
             Conversation::new_unvalidated(vec![]),
             None,
@@ -1639,7 +1663,7 @@ mod tests {
                 Arc::new(crate::session::SessionManager::instance()),
             )),
             Arc::new(ToolInspectionManager::new()),
-            CallCapability::public_enforced(),
+            test_capability(),
             vec![],
             Conversation::new_unvalidated(vec![]),
             cancel,
