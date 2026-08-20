@@ -64,7 +64,7 @@ pub fn derive(kb_root: &Path) -> Result<Graph> {
     // `stale_after` can never disagree because the clock ticked between them.
     let today = chrono::Utc::now().date_naive();
     let mut nodes: Vec<GraphNode> = pages.iter().map(|p| node_for(p, today)).collect();
-    apply_source_credibility(kb_root, &mut nodes)?;
+    apply_source_credibility(kb_root, &pages, &mut nodes)?;
 
     let index = NodeIndex::build(&pages);
     let mut collector = EdgeCollector::default();
@@ -259,12 +259,53 @@ fn node_for(p: &LoadedPage, today: NaiveDate) -> GraphNode {
 }
 
 /// Source nodes inherit credibility from `raw/<id>/meta.yaml`.
-fn apply_source_credibility(kb_root: &Path, nodes: &mut [GraphNode]) -> Result<()> {
+///
+/// ⚠ **Matched by the page's own `raw_source` anchor first, and only then by a
+/// path.** This used to look for `knowledge/sources/<id>.md` and nothing else,
+/// which is the pre-OKF layout and the one layout no base created by this build
+/// uses: OKF scaffolds the SINGULAR `knowledge/source/`, and BioOKF writes a
+/// typed directory per source kind (`knowledge/publication/`,
+/// `knowledge/study/`, …). So on every base the OKF work introduced, no node
+/// ever matched, `credibility_tier` and `retracted` stayed unset, and a
+/// knowledge base citing a retracted paper drew identically to one that did
+/// not — while lint's provenance pass, which reads `raw/<id>/meta.yaml`
+/// directly, flagged it. Two surfaces disagreeing about the same paper.
+///
+/// The anchor is the fix rather than a longer list of paths: a source page
+/// carries `raw_source: [raw/<id>/source.md]`, which says which raw source it
+/// is *for*, so it keeps working whatever a future profile calls its
+/// directories. `biookf::lint` already resolved credibility this way; this
+/// reuses its helpers rather than restating them, because `raw_source_id`'s job
+/// is to confine a model-written frontmatter string to a single path segment
+/// and a second copy of that is a second thing to get wrong.
+///
+/// The legacy path stays as a fallback: bases created before the OKF work do
+/// use it, and they are exactly the ones with no `raw_source` key to read.
+fn apply_source_credibility(
+    kb_root: &Path,
+    pages: &[LoadedPage],
+    nodes: &mut [GraphNode],
+) -> Result<()> {
+    // `nodes` is built by mapping over `pages` in order, so the index is shared.
+    let mut by_raw_id: HashMap<String, usize> = HashMap::new();
+    for (i, page) in pages.iter().enumerate() {
+        for entry in crate::knowledge::biookf::lint::raw_source(&page.doc) {
+            if let Some(id) = crate::knowledge::biookf::lint::raw_source_id(&entry) {
+                by_raw_id.entry(id.to_string()).or_insert(i);
+            }
+        }
+    }
+
     for src in raw::list_sources(kb_root)? {
-        let logical = format!("knowledge/sources/{}.md", src.id);
-        if let Some(n) = nodes.iter_mut().find(|n| n.path == logical) {
-            n.credibility_tier = Some(src.credibility.tier);
-            n.retracted = src.credibility.retracted;
+        let target = by_raw_id.get(&src.id).copied().or_else(|| {
+            let legacy = format!("knowledge/sources/{}.md", src.id);
+            nodes.iter().position(|n| n.path == legacy)
+        });
+        if let Some(i) = target {
+            if let Some(n) = nodes.get_mut(i) {
+                n.credibility_tier = Some(src.credibility.tier);
+                n.retracted = src.credibility.retracted;
+            }
         }
     }
     Ok(())
@@ -1431,6 +1472,87 @@ mod tests {
             bundle_links(&kb).unwrap().unresolved.is_empty(),
             "{:?}",
             bundle_links(&kb).unwrap().unresolved
+        );
+    }
+
+    /// ⚠ **The typed layouts, which is every base this build creates.**
+    ///
+    /// `source_retracted_flag_propagates_to_graph_node` below hand-writes
+    /// `knowledge/sources/<id>.md` — the PRE-OKF layout, and the one layout no
+    /// base created by this build uses. OKF scaffolds the singular
+    /// `knowledge/source/`; BioOKF writes a typed directory per source kind.
+    /// So the deriver's hardcoded `knowledge/sources/` match found nothing on
+    /// any base the OKF work introduced: `credibility_tier` and `retracted`
+    /// stayed unset, a base citing a retracted paper drew exactly like one that
+    /// did not, and lint flagged the same paper from `raw/<id>/meta.yaml`. The
+    /// suite stayed green because the only fixture used the legacy path.
+    ///
+    /// The match is now the page's own `raw_source` anchor, so this asserts the
+    /// typed spelling and the legacy test below asserts the fallback.
+    #[test]
+    fn a_typed_source_page_still_inherits_its_retraction() {
+        // ⚠ A const, not an inline literal with `\` continuations. rustfmt
+        // reflows a long literal and the leading whitespace it adds turns
+        // `raw_source:` into a continuation of the `identifier` VALUE rather
+        // than a key of its own - silently, and the test then fails against a
+        // correct implementation.
+        const TYPED_SOURCE_PAGE: &str = "---\ntype: Publication\nidentifier: Retracted Paper\nraw_source: [raw/retracted-paper/source.md]\n---\nbody";
+
+        use crate::knowledge::raw::write_raw;
+        use crate::knowledge::types::{Credibility, CredibilityTier, SourceMeta};
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("k", "K", None).unwrap();
+        let kb = dir.path().join("k");
+
+        let meta = |id: &str, retracted: bool| SourceMeta {
+            id: id.into(),
+            title: format!("Title {id}"),
+            url: Some("https://example.org/x".into()),
+            ingested_at: chrono::Utc::now(),
+            sha256: "abc".into(),
+            mime: "text/html".into(),
+            original_filename: Some("x.html".into()),
+            credibility: Credibility {
+                tier: CredibilityTier::PeerReviewed,
+                confidence: 0.9,
+                publisher: None,
+                venue: None,
+                doi: None,
+                retracted,
+                reasoning: "test".into(),
+                classifier_version: 1,
+            },
+        };
+        write_raw(&kb, None, None, "# r\n", meta("retracted-paper", true)).unwrap();
+
+        // BioOKF's layout: a typed directory, and the anchor back to the raw
+        // source. Nothing here is at `knowledge/sources/`.
+        write_page(
+            &kb,
+            "knowledge/publication/retracted-paper.md",
+            TYPED_SOURCE_PAGE,
+            "add r",
+            None,
+        )
+        .unwrap();
+
+        let g = derive(&kb).unwrap();
+        let node = g
+            .nodes
+            .iter()
+            .find(|n| n.path == "knowledge/publication/retracted-paper.md")
+            .expect("the typed source page must be a node");
+        assert!(
+            node.retracted,
+            "a typed source page must inherit its retraction; without it the graph and \
+             lint disagree about the same paper"
+        );
+        assert_eq!(
+            node.credibility_tier,
+            Some(CredibilityTier::PeerReviewed),
+            "and its credibility tier, which is what the ring renders from"
         );
     }
 

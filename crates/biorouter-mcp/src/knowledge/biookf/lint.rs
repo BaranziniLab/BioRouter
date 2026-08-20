@@ -369,7 +369,7 @@ fn check_source_anchor(ctx: &mut Ctx<'_>, doc: &ConceptDoc) {
 /// `raw_source` is a §7.1 BioOKF key that OKF's model does not name, so it lives
 /// in the preserved-unknown-keys mapping. Read leniently — a producer writing a
 /// bare string instead of a list is §11-tolerable and common.
-fn raw_source(doc: &ConceptDoc) -> Vec<String> {
+pub(crate) fn raw_source(doc: &ConceptDoc) -> Vec<String> {
     let Some(value) = doc
         .extra
         .get(serde_yaml::Value::String("raw_source".into()))
@@ -858,7 +858,7 @@ fn credibility_of(
 /// and only when it is a plain directory name. BioOKF reaches the same place
 /// through an explicit `confine_to_bundle`; taking one segment means there is
 /// nothing to confine.
-fn raw_source_id(entry: &str) -> Option<&str> {
+pub(crate) fn raw_source_id(entry: &str) -> Option<&str> {
     let id = entry.strip_prefix("raw/")?.split('/').next()?;
     let plain = !id.is_empty() && id != "." && id != ".." && !id.contains('\\');
     plain.then_some(id)
