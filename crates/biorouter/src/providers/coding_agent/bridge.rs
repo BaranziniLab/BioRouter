@@ -248,12 +248,35 @@ impl BridgeGrant {
     /// `Agent::inspect_and_gate_tool_requests`' sequence rather than a shortened
     /// version of it — see [`Self::collect_hook_rewrites`] for why the second
     /// inspection pass is not optional.
+    ///
+    /// The request id is minted **here**, above the work, rather than inside it,
+    /// because it is this call's name in the `HooksManager`'s per-session staging
+    /// buffer and two separate steps need it: taking this call's rewrite without
+    /// taking a concurrent sibling's, and clearing this call's staged context
+    /// afterwards. Every exit from [`Self::dispatch_one`] goes through the drain
+    /// below, refusals included — a call that was denied still ran the user's
+    /// PreToolUse hooks and still staged whatever they returned.
     pub async fn call(&self, call: CallToolRequestParams) -> Result<CallToolResult, String> {
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let outcome = self.dispatch_one(request_id.clone(), call).await;
+        self.discard_staged_hook_context(&request_id);
+        outcome
+    }
+
+    /// The body of one bridged call, from the path jail to the tool's result.
+    ///
+    /// Split out of [`Self::call`] only so that the staged-context drain there
+    /// cannot be skipped by any of this function's several early returns.
+    async fn dispatch_one(
+        &self,
+        request_id: String,
+        call: CallToolRequestParams,
+    ) -> Result<CallToolResult, String> {
         self.sync_path_jail();
 
         let name = call.name.to_string();
         let mut requests = vec![ToolRequest {
-            id: uuid::Uuid::new_v4().to_string(),
+            id: request_id,
             tool_call: Ok(call),
             metadata: None,
             tool_meta: None,
@@ -390,12 +413,30 @@ impl BridgeGrant {
     /// approximated, because a notice spliced into an arbitrary tool's result
     /// would arrive as part of the data for every caller that parses one. What
     /// the child gets is the honest execution of the rewritten call.
+    ///
+    /// ⚠ The take is scoped to **this call's own request ids**, and that is not a
+    /// tidiness point. The staging buffer is keyed by session, and the agent's
+    /// session-wide `take_tool_input_rewrites` is safe for the agent only because
+    /// `Agent::inspect_and_gate_tool_requests` holds the model's entire batch of
+    /// requests when it calls it. The bridge holds exactly one request and is
+    /// concurrent — `handle` in `routes/tool_bridge.rs` is a plain axum handler
+    /// with no serialization, and both child CLIs issue parallel `tools/call`. So
+    /// a session-wide take here is theft: with N bridged calls in flight for one
+    /// session, whichever reached this line first would drain all N staged
+    /// rewrites, apply the one keyed on its own uuid, and discard the other N-1 —
+    /// leaving those calls to dispatch the arguments their hooks had asked to
+    /// replace. A hook that sandboxes or redacts a command would then do nothing,
+    /// intermittently, with no error and nothing in the transcript to show for
+    /// it. Every single-call test in this file passes against that.
     async fn collect_hook_rewrites(
         &self,
         requests: &mut [ToolRequest],
         inspections: &mut Vec<crate::tool_inspection::InspectionResult>,
     ) -> anyhow::Result<()> {
-        let rewrites = self.hooks.take_tool_input_rewrites(&self.session.id);
+        let ids: Vec<String> = requests.iter().map(|r| r.id.clone()).collect();
+        let rewrites = self
+            .hooks
+            .take_tool_input_rewrites_for(&self.session.id, &ids);
         if rewrites.is_empty() || crate::hooks::apply_tool_input_rewrites(requests, &rewrites) == 0
         {
             return Ok(());
@@ -415,6 +456,55 @@ impl BridgeGrant {
             .retain(|result| result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME);
         inspections.append(&mut revalidated);
         Ok(())
+    }
+
+    /// BR-19: drop this call's staged hook context, because there is nowhere on
+    /// this path to deliver it.
+    ///
+    /// A PreToolUse or PermissionRequest hook can return `additionalContext` and
+    /// `systemMessage` alongside its decision. On the agent's path those are
+    /// staged by the inspector and collected at the turn's injection point
+    /// (`drain_tool_hook_context`, `agent.rs`), which splices the context into the
+    /// model's next message and surfaces the system messages to the user. Neither
+    /// destination exists here: the model that made this call lives in another
+    /// process with its own context, and the only surface reaching it is the tool
+    /// result — which, exactly as with `rewrite_notice` above, must stay data
+    /// rather than become a channel for out-of-band prose that every caller
+    /// parsing a result would then receive.
+    ///
+    /// So the honest thing is to drop it, and dropping it deliberately is a
+    /// **fix**, not the absence of one. Leaving it staged is worse than either
+    /// delivering it or discarding it: the per-session buffer keeps it until the
+    /// session next runs an ordinary agent turn, which then drains it and injects
+    /// context about a coding-agent tool call that finished minutes ago into an
+    /// unrelated turn's transcript — a hook's `systemMessage` surfacing against
+    /// the wrong request, attributed to the wrong model. And the buffer is capped
+    /// at `MAX_STAGED_TOOL_HOOKS`, so a long bridged turn that never drains starts
+    /// evicting its own oldest entries, which is how a rewrite goes missing on a
+    /// path that otherwise looks correct.
+    ///
+    /// Scoped to this call's request id for the same reason the take above is: a
+    /// session-wide drain would take entries a concurrent sibling call has staged
+    /// and still needs. Logged at debug so an operator chasing "my hook's
+    /// additionalContext never appeared under `codex`" finds the answer rather
+    /// than silence.
+    fn discard_staged_hook_context(&self, request_id: &str) {
+        let dropped = self
+            .hooks
+            .drain_tool_hook_context_for(&self.session.id, &[request_id.to_string()]);
+        for staged in dropped {
+            if staged.additional_context.is_empty() && staged.system_messages.is_empty() {
+                continue;
+            }
+            tracing::debug!(
+                tool = %staged.tool_name,
+                context = staged.additional_context.len(),
+                messages = staged.system_messages.len(),
+                "a hook returned context for a bridged tool call; the child agent's \
+                 model is in another process and has no channel to receive it, so it \
+                 was dropped rather than left to leak into a later turn"
+            );
+        }
     }
 }
 
@@ -972,6 +1062,201 @@ mod tests {
         );
     }
 
+    /// A bridged call must not take a rewrite that belongs to another call.
+    ///
+    /// The staging buffer is keyed by *session*, not by call, and the bridge is
+    /// the one caller that handles requests one at a time while others for the
+    /// same session are in flight (`routes/tool_bridge.rs`'s `handle` is a plain
+    /// axum handler with no serialization, and both child CLIs issue parallel
+    /// `tools/call`). A session-wide take is therefore theft, and its symptom is
+    /// somebody *else's* hook silently doing nothing.
+    ///
+    /// Written as an assertion about what is LEFT rather than as a race, because
+    /// the failure is a race and a race is not a test. The pre-staged entry
+    /// stands in for a sibling call that ran its hooks a moment earlier and has
+    /// not yet reached `collect_hook_rewrites`; if this call drains it, that
+    /// sibling will dispatch its un-rewritten arguments.
+    #[tokio::test]
+    async fn a_bridged_call_leaves_another_calls_rewrite_staged() {
+        let _guard = path_jail_lock().await;
+        let fixture = GeneFixture::new().await;
+
+        let hooks = hooks_rewriting_query_to("17");
+        // A sibling bridged call, mid-flight: its PreToolUse hook has already run
+        // and staged a rewrite against ITS request id, which nothing in this call
+        // has ever seen.
+        let sibling = "a-concurrent-bridged-call".to_string();
+        hooks.stage_tool_hook(
+            &Session::default().id,
+            crate::hooks::StagedToolHook {
+                event: crate::hooks::HookEvent::PreToolUse,
+                tool_request_id: sibling.clone(),
+                tool_name: "datasql__data_query".to_string(),
+                updated_input: Some(query_args("17")),
+                additional_context: vec![],
+                system_messages: vec![],
+            },
+        );
+
+        let grant = fixture.grant(inspections_with(&hooks, false), Arc::clone(&hooks));
+        let result = grant
+            .call(fixture.query_for("7"))
+            .await
+            .expect("the rewritten query is a valid one");
+
+        // This call still got its own rewrite — the scoping must not have broken
+        // the thing it is scoping.
+        let text = serde_json::to_string(&result).expect("a serialisable result");
+        assert!(
+            text.contains("TP53"),
+            "this call's own hook rewrite must still apply: {text}"
+        );
+
+        let left = hooks.take_tool_input_rewrites(&Session::default().id);
+        assert!(
+            left.contains_key(&sibling),
+            "a bridged call drained a rewrite staged by a different in-flight call \
+             and then discarded it, because it is keyed on a request id this call \
+             never minted. That sibling will now dispatch the arguments its \
+             PreToolUse hook asked to replace — a hook that sandboxes or redacts a \
+             command doing nothing, nondeterministically, with no error anywhere. \
+             What was left staged: {left:?}"
+        );
+    }
+
+    /// The same defect as the race it actually is: several bridged calls in one
+    /// session at once, every one of which must run its own hook's rewrite.
+    ///
+    /// This is what happens in production — a child CLI issuing parallel
+    /// `tools/call` against one grant — and it is kept alongside the
+    /// deterministic test above rather than instead of it, because the two say
+    /// different things: that one says the buffer is shared wrong, this one says
+    /// the sharing is reachable from the outside.
+    ///
+    /// ⚠ It **holds the interleaving still**, with a barrier inspector registered
+    /// after the hook inspector, and that is not a way of faking a failure. Left
+    /// to chance this test passes against the broken code almost every time, for
+    /// a reason worth writing down: `HookInspector` is registered last (in
+    /// `inspections_with` here, and at `agent.rs`'s "runs last" comment in
+    /// production), so a call's staging and its take are separated only by a
+    /// return through three frames with no yield point in between. The window is
+    /// sub-microsecond, the hook's own `sh -c` is milliseconds, and six tasks
+    /// therefore almost never collide. A green run there would be measuring the
+    /// registration order, not the correctness of the take — and registration
+    /// order is a comment, not an invariant. The barrier releases all six calls
+    /// at the one instant the defect needs: every rewrite staged, none yet taken.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_bridged_calls_each_run_their_own_rewrite() {
+        const CALLS: usize = 6;
+
+        let _guard = path_jail_lock().await;
+        let fixture = GeneFixture::new().await;
+
+        let hooks = hooks_rewriting_query_to("17");
+        let mut inspections = inspections_with(&hooks, false);
+        inspections.add_inspector(Box::new(BarrierInspector::new(CALLS)));
+        let grant = Arc::new(fixture.grant(inspections, Arc::clone(&hooks)));
+
+        let calls: Vec<_> = (0..CALLS)
+            .map(|_| {
+                let grant = Arc::clone(&grant);
+                let call = fixture.query_for("7");
+                tokio::spawn(async move { grant.call(call).await })
+            })
+            .collect();
+
+        for (i, call) in calls.into_iter().enumerate() {
+            let result = call
+                .await
+                .expect("the call task ran")
+                .expect("the rewritten query is a valid one");
+            let text = serde_json::to_string(&result).expect("a serialisable result");
+            assert!(
+                text.contains("TP53") && !text.contains("CFTR"),
+                "concurrent bridged call {i} ran the model's original chromosome-7 \
+                 query: a sibling call drained its staged rewrite before it could \
+                 collect it, so the user's PreToolUse hook silently did nothing on \
+                 this one call. got: {text}"
+            );
+        }
+    }
+
+    /// A bridged call does not leave its hook context staged for a later turn.
+    ///
+    /// There is nowhere on this path to deliver a hook's `additionalContext` or
+    /// `systemMessage` — the model that made the call is in another process — so
+    /// the bridge drops them. Dropping them is the fix; the defect was leaving
+    /// them, because the buffer is per-session and the next ordinary agent turn
+    /// drains it, injecting context about a coding-agent tool call that finished
+    /// minutes ago into an unrelated turn's transcript. (At
+    /// `MAX_STAGED_TOOL_HOOKS` entries it also starts evicting its own oldest,
+    /// which is how a *rewrite* goes missing on a path that otherwise looks fine.)
+    ///
+    /// Asserted through `drain_tool_hook_context`, i.e. from exactly where the
+    /// later turn would read it.
+    #[tokio::test]
+    async fn a_bridged_call_leaves_no_hook_context_for_a_later_turn() {
+        let _guard = path_jail_lock().await;
+        let fixture = GeneFixture::new().await;
+
+        let hooks = hooks_returning(
+            "datasql__data_query",
+            &serde_json::json!({ "additionalContext": "the cohort is de-identified" }),
+        );
+        let grant = fixture.grant(inspections_with(&hooks, false), Arc::clone(&hooks));
+
+        grant
+            .call(fixture.query_for("7"))
+            .await
+            .expect("a valid query");
+
+        let leftover = hooks.drain_tool_hook_context(&Session::default().id);
+        assert!(
+            leftover.is_empty(),
+            "a bridged call left {} staged hook effect(s) behind. Nothing on this \
+             path delivers them, so they sit in the per-session buffer until the \
+             session next runs an ordinary agent turn — which drains them and \
+             injects context about somebody else's finished tool call into its own \
+             transcript: {leftover:?}",
+            leftover.len()
+        );
+    }
+
+    /// A sibling call's staged context survives too — the drain is scoped for the
+    /// same reason the take is.
+    #[tokio::test]
+    async fn a_bridged_call_leaves_another_calls_hook_context_staged() {
+        let _guard = path_jail_lock().await;
+        let fixture = GeneFixture::new().await;
+
+        let hooks = no_hooks();
+        let sibling = "a-concurrent-bridged-call".to_string();
+        hooks.stage_tool_hook(
+            &Session::default().id,
+            crate::hooks::StagedToolHook {
+                event: crate::hooks::HookEvent::PreToolUse,
+                tool_request_id: sibling.clone(),
+                tool_name: "datasql__data_query".to_string(),
+                updated_input: None,
+                additional_context: vec!["belongs to another call".to_string()],
+                system_messages: vec![],
+            },
+        );
+
+        let grant = fixture.grant(inspections_with(&hooks, false), Arc::clone(&hooks));
+        grant
+            .call(fixture.query_for("7"))
+            .await
+            .expect("a valid query");
+
+        let left = hooks.drain_tool_hook_context(&Session::default().id);
+        assert!(
+            left.iter().any(|s| s.tool_request_id == sibling),
+            "a bridged call dropped a staged effect belonging to a different \
+             in-flight call: {left:?}"
+        );
+    }
+
     /// BRSDK: a `{{vault:NAME}}` in a bridged call is resolved before it runs.
     ///
     /// The placeholder is put where the *answer* depends on it — inside the
@@ -1160,26 +1445,88 @@ mod tests {
     }
 
     fn hooks_rewriting_query_to(chrom: &str) -> Arc<crate::hooks::HooksManager> {
-        hooks_rewriting(
+        hooks_returning(
             "datasql__data_query",
             &serde_json::json!({ "updatedInput": query_args(chrom) }),
         )
     }
 
     fn hooks_rewriting_shell_to(command: &str) -> Arc<crate::hooks::HooksManager> {
-        hooks_rewriting(
+        hooks_returning(
             "developer__shell",
             &serde_json::json!({ "updatedInput": { "command": command } }),
         )
     }
 
-    /// A `HooksManager` holding one PreToolUse hook that prints a
-    /// `hookSpecificOutput` rewrite for `matcher`.
+    /// An inspector that decides nothing and parks every call until `n` of them
+    /// have arrived.
+    ///
+    /// Registered *after* the hook inspector, so each call has already staged its
+    /// PreToolUse rewrite when it parks. Releasing all of them together produces,
+    /// on purpose and every run, the one interleaving a session-wide
+    /// `take_tool_input_rewrites` mishandles: N rewrites staged for one session,
+    /// N callers about to take, each entitled to exactly one of them.
+    ///
+    /// It exists because the alternative is a test whose verdict depends on the
+    /// scheduler. The interleaving it forces is reachable in production without
+    /// any help — the bridge's HTTP handler has no serialization and both child
+    /// CLIs issue parallel `tools/call` — it is simply rare enough at this
+    /// inspector ordering that chance would report "fixed" against broken code.
+    ///
+    /// It parks the **first** pass only. `collect_hook_rewrites` re-inspects a
+    /// call whose arguments a hook rewrote, and that second pass excludes only
+    /// the hook inspector — so a barrier that parked every pass would be waiting
+    /// for a quorum that depends on how many calls got a rewrite, which is
+    /// precisely the quantity under test. Against the broken code exactly one
+    /// call re-inspects, and the test would hang instead of failing.
+    struct BarrierInspector {
+        barrier: tokio::sync::Barrier,
+        released: std::sync::atomic::AtomicBool,
+    }
+
+    impl BarrierInspector {
+        fn new(parties: usize) -> Self {
+            Self {
+                barrier: tokio::sync::Barrier::new(parties),
+                released: std::sync::atomic::AtomicBool::new(false),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl crate::tool_inspection::ToolInspector for BarrierInspector {
+        fn name(&self) -> &'static str {
+            "test-barrier"
+        }
+
+        async fn inspect(
+            &self,
+            _tool_requests: &[ToolRequest],
+            _messages: &[crate::conversation::message::Message],
+            _biorouter_mode: BioRouterMode,
+            _session: &Session,
+        ) -> anyhow::Result<Vec<crate::tool_inspection::InspectionResult>> {
+            use std::sync::atomic::Ordering;
+            if !self.released.load(Ordering::SeqCst) {
+                self.barrier.wait().await;
+                self.released.store(true, Ordering::SeqCst);
+            }
+            Ok(vec![])
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    /// A `HooksManager` holding one PreToolUse hook that prints the given
+    /// `hookSpecificOutput` for `matcher` — a rewrite, some `additionalContext`,
+    /// or anything else that block carries.
     ///
     /// A real shell command rather than a stub, because the staging happens
     /// inside the manager as a side effect of the hook *running*; a fake that
     /// staged directly would test the assertion rather than the path.
-    fn hooks_rewriting(
+    fn hooks_returning(
         matcher: &str,
         hook_specific_output: &serde_json::Value,
     ) -> Arc<crate::hooks::HooksManager> {
