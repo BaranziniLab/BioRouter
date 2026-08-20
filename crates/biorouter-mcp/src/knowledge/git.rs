@@ -304,7 +304,82 @@ impl GitRepo {
         self.inner
             .find_branch(&txn.branch, git2::BranchType::Local)?
             .delete()?;
+        self.repair_graph_cache_after_checkout();
         Ok(())
+    }
+
+    /// Re-derive `graph-cache.json` from whatever pages the checkout just left
+    /// on disk.
+    ///
+    /// ## The defect
+    ///
+    /// The cache is a **tracked** file — the scaffolded `.gitignore` covers
+    /// `raw/*/original.*`, `.crossref-cache/` and `write.lock`, and nothing
+    /// else — and every rebuild in the subsystem runs *after* the commit that
+    /// motivated it (`store::write_page` commits, then the service rebuilds).
+    /// So the copy in `HEAD` is permanently one write behind the pages in
+    /// `HEAD`. The force checkout above restores tracked files, faithfully, and
+    /// that is precisely the problem: it installs a cache describing a base
+    /// that is one page smaller than the one now on disk.
+    ///
+    /// Nothing downstream can recover from that, because a stale cache is a
+    /// *valid* one. DR-13 has `read_cache` answer `Ok(None)` for a cache that is
+    /// absent, unreadable, malformed or of an unknown version, and `get_graph`
+    /// re-derives on that answer — but a well-formed cache from the previous
+    /// commit passes every one of those checks and is served. The user's newest
+    /// pages disappear from the Knowledge view and from `GET /graph` while
+    /// sitting on disk, and the trigger is a *failed* operation, which is
+    /// exactly when nobody goes looking for silent data loss.
+    ///
+    /// ## Why here and not at the twelve call sites
+    ///
+    /// `abort_txn` is called from ingest, query, lint, merge and `kb_abort_txn`,
+    /// always as `let _ = repo.abort_txn(&txn)` on an error path. A repair
+    /// bolted onto each of those is a repair the thirteenth caller will not
+    /// have, and error paths are the ones least likely to be exercised. The
+    /// checkout is what invalidates the cache, so the repair belongs beside the
+    /// checkout.
+    ///
+    /// ## Why re-derive rather than preserve, or untrack
+    ///
+    /// Preserving the working copy across the checkout would be wrong whenever
+    /// the transaction rebuilt the cache itself (ingest does): the preserved
+    /// copy would then describe pages the abort just rolled back. Deriving from
+    /// the pages that survived is the only answer that is right in both cases.
+    ///
+    /// Untracking the file — the other candidate fix — would stop git clobbering
+    /// it, and `.brkb` export walks the working tree rather than the git history
+    /// so a bundle would still carry it. But it only helps bases created
+    /// *after* the change: `.gitignore` does not untrack what is already
+    /// tracked, so every base on disk would keep the bug until something
+    /// rewrote its index, and that something would be an automatic write to
+    /// every knowledge base on the machine to fix a derived file. Not worth it.
+    ///
+    /// ## Failures are absorbed, and downgraded to "no cache"
+    ///
+    /// This returns nothing and the abort does not fail on it. The rollback the
+    /// caller asked for has already happened and is the part that matters, and
+    /// every caller discards the `Result` anyway. But a failed rebuild must not
+    /// leave the stale file in place, or the silent-loss bug survives its own
+    /// fix — so on any failure the file is removed, which is the one state DR-13
+    /// guarantees `get_graph` repairs by re-deriving.
+    fn repair_graph_cache_after_checkout(&self) {
+        let Some(kb_root) = self.inner.workdir().map(Path::to_path_buf) else {
+            // A bare repo has no pages to derive from. Not reachable for a
+            // knowledge base, and not worth an error if it ever is.
+            return;
+        };
+        let rebuilt = crate::knowledge::graph::derive(&kb_root)
+            .and_then(|graph| crate::knowledge::graph::write_cache(&kb_root, &graph));
+        if let Err(e) = rebuilt {
+            let stale = crate::knowledge::graph::cache_path(&kb_root);
+            tracing::warn!(
+                "knowledge: could not rebuild the graph cache at {} after aborting a \
+                 transaction, removing it so the next read re-derives: {e:#}",
+                stale.display()
+            );
+            let _ = std::fs::remove_file(&stale);
+        }
     }
 }
 
@@ -486,6 +561,91 @@ mod tests {
         assert!(
             !dir.path().join("doom.md").exists(),
             "working tree restored"
+        );
+    }
+
+    /// Aborting must not silently delete the newest pages **from the graph**.
+    ///
+    /// The bug this pins is entirely invisible from git's own point of view, and
+    /// [`txn_abort_leaves_main_untouched`] above is green throughout it: the
+    /// abort restores the tracked files exactly as it promises, and
+    /// `graph-cache.json` is one of them. The trouble is what the committed copy
+    /// of that file *says*. Every rebuild runs after the commit that motivated
+    /// it, so the copy in `HEAD` is permanently one write behind the pages in
+    /// `HEAD`, and a force checkout therefore installs a cache that is missing
+    /// the last committed page. `read_cache` cannot save the reader — a stale
+    /// cache is a perfectly valid one, so it is served rather than re-derived,
+    /// and the page vanishes from the Knowledge view while sitting on disk.
+    ///
+    /// So the assertion is deliberately about the **cache's contents** and not
+    /// about the file's existence or its mtime: every wrong implementation
+    /// leaves a file there.
+    ///
+    /// The fixture goes through `KnowledgeService` rather than writing a repo by
+    /// hand because the staleness is a property of the *order* production writes
+    /// happen in — page, commit, then rebuild — and a hand-built cache would be
+    /// whatever the test author decided to put in it.
+    #[test]
+    fn aborting_a_transaction_leaves_the_graph_cache_describing_the_pages_on_disk() {
+        use crate::knowledge::{graph, service::KnowledgeService, store};
+
+        let cached_paths = |kb: &Path| -> Vec<String> {
+            let mut paths: Vec<String> = graph::read_cache(kb)
+                .expect("reading the cache is not an error")
+                .expect("a base that has been rebuilt has a cache")
+                .nodes
+                .iter()
+                .map(|n| n.path.clone())
+                .collect();
+            paths.sort();
+            paths
+        };
+        let page = |identifier: &str| {
+            format!("---\ntype: Concept\nidentifier: {identifier}\n---\n\nbody\n")
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("kb", "kb", None).unwrap();
+        let kb = svc.root().join("kb");
+
+        // A committed page, with the rebuild after the commit — the order every
+        // production write takes, and the whole reason the committed cache lags.
+        store::write_page(&kb, "knowledge/concept/a.md", &page("A"), "add A", None).unwrap();
+        svc.rebuild_graph_cache("kb").unwrap();
+        assert!(
+            cached_paths(&kb).contains(&"knowledge/concept/a.md".to_string()),
+            "the fixture never got A into the cache"
+        );
+
+        // A transaction that writes a page and is then abandoned — a sub-agent
+        // that ran out of steps, a provider that died, a merge that failed its
+        // canonical check.
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("doomed").unwrap();
+        store::write_page(
+            &kb,
+            "knowledge/concept/b.md",
+            &page("B"),
+            "add B",
+            Some(&txn.branch),
+        )
+        .unwrap();
+        svc.rebuild_graph_cache("kb").unwrap();
+        repo.abort_txn(&txn).unwrap();
+
+        assert!(
+            kb.join("knowledge/concept/a.md").exists(),
+            "the abort deleted a committed page from disk"
+        );
+        assert!(
+            !kb.join("knowledge/concept/b.md").exists(),
+            "the abort left the transaction's page behind"
+        );
+        assert_eq!(
+            cached_paths(&kb),
+            vec!["knowledge/concept/a.md".to_string()],
+            "the graph after the abort does not describe the pages on disk"
         );
     }
 

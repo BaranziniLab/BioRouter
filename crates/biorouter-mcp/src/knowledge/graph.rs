@@ -886,10 +886,22 @@ struct CacheEnvelope<G> {
     graph: G,
 }
 
-pub fn write_cache(kb_root: &Path, graph: &Graph) -> Result<()> {
-    let path = kb_root
+/// Where a base's cache lives, spelled once.
+///
+/// It was spelled four times — twice here and twice in this module's tests —
+/// which was survivable while this file was the only one that touched the file.
+/// It stopped being so when `git::abort_txn` gained a reason to *delete* a cache
+/// it could not rebuild: a fifth hand-written copy of the path in another module
+/// is one that a rename would leave pointing at nothing, silently, on the error
+/// path of an error path.
+pub(crate) fn cache_path(kb_root: &Path) -> std::path::PathBuf {
+    kb_root
         .join(".biorouter-knowledge")
-        .join("graph-cache.json");
+        .join("graph-cache.json")
+}
+
+pub fn write_cache(kb_root: &Path, graph: &Graph) -> Result<()> {
+    let path = cache_path(kb_root);
     std::fs::create_dir_all(path.parent().unwrap())?;
     let envelope = CacheEnvelope {
         version: CACHE_VERSION,
@@ -914,9 +926,7 @@ pub fn write_cache(kb_root: &Path, graph: &Graph) -> Result<()> {
 /// it is where a future durable-read error would go, and dropping it would churn
 /// every call site for no gain.
 pub fn read_cache(kb_root: &Path) -> Result<Option<Graph>> {
-    let path = kb_root
-        .join(".biorouter-knowledge")
-        .join("graph-cache.json");
+    let path = cache_path(kb_root);
     if !path.exists() {
         return Ok(None);
     }
@@ -1159,7 +1169,7 @@ mod tests {
     /// Write whatever bytes over the cache file, bypassing [`write_cache`] —
     /// the only way to express "a file an older build left behind".
     fn overwrite_cache_file(kb: &std::path::Path, bytes: &str) {
-        let path = kb.join(".biorouter-knowledge").join("graph-cache.json");
+        let path = cache_path(kb);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, bytes).unwrap();
     }
@@ -1268,8 +1278,7 @@ mod tests {
         // file and not this source has to be able to tell what it is.
         let (_d, kb) = build_sample();
         write_cache(&kb, &derive(&kb).unwrap()).unwrap();
-        let raw = std::fs::read_to_string(kb.join(".biorouter-knowledge").join("graph-cache.json"))
-            .unwrap();
+        let raw = std::fs::read_to_string(cache_path(&kb)).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
         assert_eq!(v["version"], serde_json::json!(CACHE_VERSION));
         assert!(v["graph"]["nodes"].is_array(), "got: {raw}");
