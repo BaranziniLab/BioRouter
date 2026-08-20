@@ -32,10 +32,47 @@ const STARTUP_PATH_MODULES = [
   'utils/autoUpdater.ts',
   'utils/githubUpdater.ts',
   'utils/updateCheckSchedule.ts',
+  // ⚠ Added after the fact: `ensureWinShims()` is awaited from `appMain()`
+  // BEFORE the first window exists, and it held an `fs.cpSync` of the ~120 MB
+  // bundled MinGit tree. It was on the startup path from the day it was
+  // written and this list never named it.
+  'utils/winShims.ts',
 ];
 
 // `spawnSync` et al. block the event loop until the child exits.
 const BLOCKING_SPAWN = /\b(spawnSync|execSync|execFileSync)\s*\(/;
+
+// ⚠ **Bulk synchronous FILESYSTEM calls, which #88's guard did not cover.**
+//
+// The original defect was a synchronous spawn, so this file banned spawns. But
+// `fs.cpSync` of the bundled MinGit tree - thousands of files, ~120 MB, every
+// write scanned by Defender on a Windows first run - parked the main thread
+// before the first window existed, and passed every assertion here.
+//
+// Only the APIs that are recursive by intent are listed. `existsSync` and
+// `statSync` are single stats, they appear throughout legitimately, and banning
+// them would make this guard noise that people learn to widen.
+const BLOCKING_BULK_FS = /\b(cpSync|rmSync|rmdirSync)\s*\(/;
+
+/**
+ * The bulk-filesystem check runs over every startup module EXCEPT `main.ts`.
+ *
+ * ⚠ **This is a real gap, stated rather than hidden.** `main.ts` is not a
+ * startup module - it is the whole main process, including every
+ * `ipcMain.handle` in the app. `brxt:uninstall` legitimately calls
+ * `fsSync.rmSync` on a directory the user asked to delete, long after the
+ * window exists. Scanning the file wholesale reports that as a startup
+ * blocker, and a guard that cries wolf on correct code is one somebody widens
+ * or deletes.
+ *
+ * The cost: a bulk synchronous copy added directly to `appMain()` would not be
+ * caught here. Nothing in the file's structure separates its startup path from
+ * its handlers - `appMain()` sits BELOW the IPC registrations, so position
+ * cannot be used either. The modules below are focused enough that a recursive
+ * synchronous call anywhere in them is suspicious, which is what makes the
+ * check meaningful for them and not for `main.ts`.
+ */
+const BULK_FS_MODULES = STARTUP_PATH_MODULES.filter((m) => m !== 'main.ts');
 
 function sourceOf(rel: string): string {
   return readFileSync(path.join(SRC, rel), 'utf8');
@@ -60,6 +97,24 @@ describe('startup path never blocks the main thread', () => {
         `${rel} reintroduces a blocking spawn on the Electron main thread (#88). ` +
           `Use runProbe() from utils/dependencyChecker, or child_process.spawn.\n` +
           offenders.map((o) => `  line ${o.n}: ${o.line}`).join('\n')
+      ).toEqual([]);
+    });
+
+  }
+
+  for (const rel of BULK_FS_MODULES) {
+    it(`${rel} contains no bulk synchronous filesystem call`, () => {
+      const code = stripComments(sourceOf(rel));
+      const offenders = code
+        .split('\n')
+        .map((line, i) => ({ line: line.trim(), n: i + 1 }))
+        .filter(({ line }) => BLOCKING_BULK_FS.test(line));
+
+      expect(
+        offenders,
+        `${rel} blocks the Electron main thread with a recursive filesystem call (#88). ` +
+          `A 120 MB copy freezes the app exactly as a synchronous spawn does; use the ` +
+          `fs.promises equivalent.\n` + offenders.map((o) => `  line ${o.n}: ${o.line}`).join('\n')
       ).toEqual([]);
     });
   }

@@ -72,9 +72,26 @@ async function ensureBundledGit(srcBinDir: string, localAppData: string): Promis
   }
 
   // Only copy once per install; Biorouter updates overwrite by deleting and re-copying.
-  if (!fs.existsSync(gitExe)) {
+  //
+  // ⚠ **Asynchronous, and that is issue #88 rather than a style preference.**
+  // This ran as `fs.cpSync(...)`: a synchronous recursive copy of the bundled
+  // MinGit tree, which is ~120 MB across thousands of files, with Defender
+  // scanning every write on a Windows first run. `ensureWinShims()` is awaited
+  // from `appMain()` BEFORE `createNewWindow`, so the main thread was parked
+  // for seconds to tens of seconds with no window on screen at all - the same
+  // report that produced #88, on the worst part of the path, and neither the
+  // watchdog nor `startupBlocking.test.ts` could see it. That test only banned
+  // synchronous CHILD-PROCESS calls, because #88 was about probes; a bulk
+  // filesystem copy blocks the loop just as hard.
+  let installed = true;
+  try {
+    await fs.promises.access(gitExe);
+  } catch {
+    installed = false;
+  }
+  if (!installed) {
     log.info('Installing bundled git fallback...');
-    fs.cpSync(srcGitDir, dstGitDir, { recursive: true, force: true });
+    await fs.promises.cp(srcGitDir, dstGitDir, { recursive: true, force: true });
     log.info(`Bundled git installed to ${dstGitDir}`);
   }
 
