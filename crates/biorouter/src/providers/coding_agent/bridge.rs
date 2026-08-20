@@ -155,6 +155,41 @@ impl BridgeGrant {
         self.cancel.clone().unwrap_or_default()
     }
 
+    /// Point the developer server's `text_editor` path jail at **this grant's**
+    /// mode, before anything is dispatched.
+    ///
+    /// `biorouter_mcp::set_path_jail_relaxed` is a process-global atomic with a
+    /// single production setter: the top of `Agent::inspect_and_gate_tool_requests`,
+    /// which the agent runs before every batch of *its own* model's tool calls.
+    /// A coding-agent turn produces no such batch — the child runs its own loop
+    /// and its tool calls arrive here over MCP instead — so that line never runs
+    /// for a bridged turn, and until now nothing on this path ran in its place.
+    ///
+    /// What that left behind is a jail set by whatever ran **last** anywhere in
+    /// the process. Both directions are wrong and neither is visible from the
+    /// tool's error: an Auto-mode Codex turn following an Approve-mode chat has
+    /// its writes to `/tmp` rejected as being outside the working directory (the
+    /// exact false rejection the 2026-07-19 tool-errors audit found and the Auto
+    /// relaxation exists to prevent), while an Approve-mode bridged turn
+    /// following an Auto-mode chat writes wherever it likes with the jail down.
+    /// In a fresh daemon that has only ever served a bridged provider the flag is
+    /// still at its `false` initial value, so the first symptom users meet is the
+    /// first of those two.
+    ///
+    /// The policy itself is not restated here — `Auto ⇒ relaxed` is read off the
+    /// grant's own `mode`, the same field the inspectors below are handed, so the
+    /// jail and the inspection can never disagree about which mode this call is
+    /// running under. Sensitive-path writes stay gated by the `SensitiveOpsInspector`
+    /// in that inspection pass either way.
+    ///
+    /// It runs before the inspectors rather than immediately before dispatch, for
+    /// the same reason the agent's does: a refused call has still touched a global
+    /// that the *next* call reads, and leaving that write until after a refusal
+    /// would make the flag's value depend on whether the previous call was allowed.
+    fn sync_path_jail(&self) {
+        biorouter_mcp::set_path_jail_relaxed(self.mode == BioRouterMode::Auto);
+    }
+
     /// Run one bridged tool call through the full gate stack.
     ///
     /// The inspector pass is the reason this is not a thin proxy onto
@@ -169,6 +204,8 @@ impl BridgeGrant {
     /// the turn until the timeout; refusing tells the child's model to ask the
     /// user in words. Refusing is also the fail-safe direction.
     pub async fn call(&self, call: CallToolRequestParams) -> Result<CallToolResult, String> {
+        self.sync_path_jail();
+
         let name = call.name.to_string();
         let requests = vec![ToolRequest {
             id: uuid::Uuid::new_v4().to_string(),
@@ -434,6 +471,10 @@ mod tests {
     /// other test in this file would still pass.
     #[tokio::test]
     async fn a_grant_with_no_permission_inspector_refuses_rather_than_allows() {
+        // `call()` writes the process-global path jail on its way in, so this
+        // shares the lock with the test that asserts on that flag even though it
+        // asserts nothing about it itself.
+        let _guard = path_jail_lock();
         let grant = dummy_grant();
         let call = CallToolRequestParams {
             name: "developer__shell".to_string().into(),
@@ -494,8 +535,91 @@ mod tests {
         assert!(!grant.dispatch_cancel_token().is_cancelled());
     }
 
+    /// A bridged call jails `text_editor` by ITS OWN session's mode.
+    ///
+    /// The flag is a process-global atomic whose one production setter sits at the
+    /// top of the agent's own inspection batch, and a coding-agent turn never
+    /// reaches that line — the child runs its own loop. So before this, a bridged
+    /// call ran under whatever the previous session in the process had left, in
+    /// either direction: an Auto-mode Codex turn rejecting a legitimate `/tmp`
+    /// write, or an Approve-mode one writing anywhere with the jail down.
+    ///
+    /// Driven through `call()` rather than through `sync_path_jail()` directly,
+    /// because the defect was never in the policy — it was that nothing on this
+    /// path ran it. A test that called the helper would have passed against the
+    /// broken code the moment the helper existed.
+    ///
+    /// The two orders are both asserted from a *hostile* starting value, so the
+    /// test cannot pass by the flag already happening to hold the answer.
+    #[tokio::test]
+    async fn a_bridged_call_sets_the_path_jail_from_its_own_mode() {
+        // `PATH_JAIL_RELAXED` is process-global, so the two grants below have to
+        // take turns; a `tokio::test` gives each its own runtime but not its own
+        // process.
+        let _guard = path_jail_lock();
+
+        for (mode, expected) in [
+            (BioRouterMode::Auto, true),
+            (BioRouterMode::Approve, false),
+            (BioRouterMode::Chat, false),
+        ] {
+            // Leave the flag holding the opposite of the answer, the way a
+            // previous session of the other mode would have.
+            biorouter_mcp::set_path_jail_relaxed(!expected);
+
+            let grant = grant_in_mode(mode);
+            // The call itself is refused (no permission inspector is configured),
+            // which is deliberate: the jail must be pointed at this session before
+            // any decision is taken, so that a refusal cannot leave the next call
+            // reading a mode that is not its own.
+            let _ = grant
+                .call(CallToolRequestParams {
+                    name: "developer__text_editor".to_string().into(),
+                    arguments: None,
+                    meta: None,
+                    task: None,
+                })
+                .await;
+
+            assert_eq!(
+                biorouter_mcp::path_jail_relaxed(),
+                expected,
+                "a bridged call in {mode:?} must set the jail itself; leaving it \
+                 unset means the last session in the process decides whether this \
+                 one may write outside its working directory"
+            );
+        }
+
+        biorouter_mcp::set_path_jail_relaxed(false);
+    }
+
+    /// Serializes every test in this module that touches the process-global path
+    /// jail. Poison is recovered rather than propagated: the guarded value is a
+    /// `()` and a panicking test leaves no half-updated invariant behind, so
+    /// refusing to run the next test would only convert one failure into two.
+    fn path_jail_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     fn dummy_grant() -> BridgeGrant {
         grant_cancelled_by(None)
+    }
+
+    fn grant_in_mode(mode: BioRouterMode) -> BridgeGrant {
+        BridgeGrant::new(
+            Session::default(),
+            mode,
+            Arc::new(ExtensionManager::new(
+                Arc::new(tokio::sync::Mutex::new(None)),
+                Arc::new(crate::session::SessionManager::instance()),
+            )),
+            Arc::new(ToolInspectionManager::new()),
+            CallCapability::public_enforced(),
+            vec![],
+            Conversation::new_unvalidated(vec![]),
+            None,
+        )
     }
 
     fn grant_cancelled_by(cancel: Option<CancellationToken>) -> BridgeGrant {
