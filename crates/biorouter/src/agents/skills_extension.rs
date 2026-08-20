@@ -53,12 +53,17 @@ pub static BUILTIN_SKILLS: &[(&str, &str)] = &[
 /// distinction (they trigger on a task, they are not always-on self-knowledge)
 /// and is why they can live here honestly rather than as a workaround.
 ///
-/// The consequence to know about, and the Stage 7 item it leaves: the desktop's
-/// own `BUILTIN_SKILL_NAMES` does not list these, so the Skills pane shows them
-/// with a Delete control. Deleting one lasts until the next startup, when the
-/// seeder rewrites it — the same behaviour every shipped skill has always had if
-/// its folder is removed, surfaced by a button that should not be there. Adding
-/// them to the two TypeScript lists is the fix, in the stage that owns the UI.
+/// ⚠ **`BUILTIN_SKILL_NAMES` lists these; `CONTEXTS` must not.** That asymmetry
+/// is the whole point of the split, and it mirrors the two functions below:
+/// `context_skill_names()` is BUILTIN_SKILLS + soul, and `is_builtin_skill_name()`
+/// is over `shipped_skills()`, which includes these four.
+///
+/// It was not always so. These shipped without being in either TypeScript list,
+/// so the Skills pane offered a Delete control on a seeded skill: the delete
+/// succeeded, the toast said so, and the next startup rewrote the folder. A
+/// button that reports success and silently reverts is worse than no button.
+/// `contexts.test.ts` could not catch it either — it sliced only the array
+/// above, so the census was blind to exactly the names it needed to see.
 pub static KNOWLEDGE_SKILLS: &[(&str, &str)] = &[
     (
         "knowledge-choose-a-format",

@@ -126,12 +126,42 @@ describe('the built-in skill list, across all three copies', () => {
     return [...bundled, soulMatch![1]].sort();
   };
 
-  it('CONTEXTS names exactly what Rust ships', () => {
+  /**
+   * Every skill Biorouter SEEDS, which is a larger set than the Contexts.
+   *
+   * ⚠ The two lists answer different questions, and asserting both against
+   * `rustNames()` was wrong in a way that could not fail. Rust says it with two
+   * functions: `context_skill_names()` (BUILTIN_SKILLS + soul) is what the
+   * Settings toggles mirror, and `is_builtin_skill_name()` is over
+   * `shipped_skills()` — BUILTIN_SKILLS ++ KNOWLEDGE_SKILLS — which is what
+   * hiding Delete and showing the Built-in badge must mirror.
+   *
+   * Because this helper sliced only `BUILTIN_SKILLS`, the four knowledge skills
+   * were invisible to it: the census could not see the drift it exists to
+   * catch, and the Skills pane offered a working Delete on a seeded skill.
+   */
+  const shippedNames = () => {
+    const root = join(__dirname, '..', '..', '..', '..', '..', '..', 'crates', 'biorouter', 'src');
+    const skills = readFileSync(join(root, 'agents', 'skills_extension.rs'), 'utf8');
+    const block = skills.slice(
+      skills.indexOf('KNOWLEDGE_SKILLS'),
+      skills.indexOf('];', skills.indexOf('KNOWLEDGE_SKILLS'))
+    );
+    const knowledge = [...block.matchAll(/"([a-z0-9-]+)",\s*\n?\s*include_str!/g)].map(
+      (m) => m[1]
+    );
+    expect(knowledge.length, 'KNOWLEDGE_SKILLS not found in skills_extension.rs').toBeGreaterThan(
+      0
+    );
+    return [...rustNames(), ...knowledge].sort();
+  };
+
+  it('CONTEXTS names exactly what Rust offers as a Context', () => {
     expect([...CONTEXT_IDS].sort()).toEqual(rustNames());
   });
 
-  it('skillUtils agrees with Rust too', async () => {
+  it('skillUtils names every skill Rust SEEDS, not only the Contexts', async () => {
     const { BUILTIN_SKILL_NAMES } = await import('../../skills/skillUtils');
-    expect([...BUILTIN_SKILL_NAMES].sort()).toEqual(rustNames());
+    expect([...BUILTIN_SKILL_NAMES].sort()).toEqual(shippedNames());
   });
 });

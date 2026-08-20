@@ -28,6 +28,22 @@ export const BUILTIN_SKILL_NAMES = [
   'develop-biorouter-extension',
   'develop-biorouter-skill',
   'update-soul',
+  // ⚠ Shipped, but NOT Contexts — so they belong here and not in `CONTEXTS`.
+  //
+  // Rust draws the same line with two functions: `context_skill_names()`
+  // (BUILTIN_SKILLS + soul) is what the Settings toggles mirror, while
+  // `is_builtin_skill_name()` is over `shipped_skills()`, which also includes
+  // KNOWLEDGE_SKILLS. This list mirrors the SECOND one, because its job is to
+  // hide Delete and show the Built-in badge.
+  //
+  // Without them the Skills pane offered a Delete control on a seeded skill:
+  // the delete succeeded, the toast said so, and the next startup rewrote the
+  // folder. A button that reports success and silently reverts is worse than
+  // no button.
+  'knowledge-choose-a-format',
+  'knowledge-ingest-okf',
+  'knowledge-ingest-biookf',
+  'knowledge-lint',
 ];
 
 export function isBuiltinSkill(name: string): boolean {
