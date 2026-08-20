@@ -16,7 +16,10 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle } from '../../ui/sheet';
 import { useModelAndProvider } from '../../ModelAndProviderContext';
 import { useKnowledge } from '../KnowledgeContext';
 import { useIngestStream } from '../hooks/useIngestStream';
-import { resolveIngestModel } from '../IngestPanel/resolveIngestModel';
+import {
+  ingestModelBlockedByProvider,
+  resolveIngestModel,
+} from '../IngestPanel/resolveIngestModel';
 
 /**
  * Running the base's lint, and reading what it found (ui-spec §4.11).
@@ -111,6 +114,29 @@ export function LintDrawer({ open, onOpenChange }: Props) {
 
   const model = useMemo(
     () => resolveIngestModel(primaryKb?.default_model, currentProvider, currentModel),
+    [primaryKb?.default_model, currentProvider, currentModel]
+  );
+
+  /**
+   * Why `model` is null, when it is — and the reason this drawer has to ask.
+   *
+   * ⚠ **This surface is the SECOND consumer of `resolveIngestModel`.** The
+   * resolver was taught to refuse `claude_code` / `codex`, because both reach
+   * `complete_with_model` with `tools` dropped and a macro run against one
+   * narrates its calls as prose and writes nothing. That made it return `null`
+   * for a configuration that is entirely correct, and this drawer read `null`
+   * the only way it knew how: as "the user has not set a model up". A user whose
+   * only provider is a coding agent therefore had the run control permanently
+   * disabled and was told to choose a model in the Sources rail — which is
+   * exactly the picker that same exclusion emptied for them. A loop with no way
+   * out, and the false verdict `ingestModelBlockedByProvider` exists to prevent.
+   *
+   * The refusal itself stands: a check that reads every page through a model
+   * that receives no tools finishes having read nothing, and dispatching it
+   * would only cost the user a full run. What changes is what we say about it.
+   */
+  const modelBlockedByProvider = useMemo(
+    () => ingestModelBlockedByProvider(primaryKb?.default_model, currentProvider, currentModel),
     [primaryKb?.default_model, currentProvider, currentModel]
   );
 
@@ -244,14 +270,30 @@ export function LintDrawer({ open, onOpenChange }: Props) {
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {!model && (
-            <EmptyState
-              compact
-              icon={AlertCircle}
-              title="No model is configured"
-              description="A check reads the base with a model. Choose one in the Sources rail and try again."
-            />
-          )}
+          {/* Two different reasons for one null, and only the second is a gap
+              in the user's setup. Sending a coding-agent user to the Sources
+              rail is the dead end described above: that picker lists nothing
+              for them, so the instruction cannot be followed. Settings is the
+              move that actually ends the situation, and it is named without a
+              button because reaching `useNavigate` from this component would
+              make it un-renderable outside a router — every test in
+              `LintDrawer.test.tsx` renders it bare. */}
+          {!model &&
+            (modelBlockedByProvider ? (
+              <EmptyState
+                compact
+                icon={AlertCircle}
+                title="This model can’t run a check"
+                description="A check reads the base through a model, and the one configured here only receives tools inside a chat — the run would finish having read nothing. Add a provider that can make tool calls in Settings, then try again. This model still works in chat."
+              />
+            ) : (
+              <EmptyState
+                compact
+                icon={AlertCircle}
+                title="No model is configured"
+                description="A check reads the base with a model. Choose one in the Sources rail and try again."
+              />
+            ))}
 
           {model && running && (
             <div

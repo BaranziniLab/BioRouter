@@ -21,12 +21,19 @@ const mocks = vi.hoisted(() => ({
     finalResult: null as unknown,
     error: undefined as string | undefined,
   },
+  // Settable, because the provider bound to the composer is the input that
+  // decides whether this drawer can run at all — see the provider-exclusion
+  // block at the bottom of this file.
+  modelAndProvider: {
+    currentProvider: 'anthropic' as string | null,
+    currentModel: 'claude' as string | null,
+  },
 }));
 
 vi.mock('../KnowledgeContext', () => ({ useKnowledge: () => mocks.knowledge }));
 
 vi.mock('../../ModelAndProviderContext', () => ({
-  useModelAndProvider: () => ({ currentProvider: 'anthropic', currentModel: 'claude' }),
+  useModelAndProvider: () => mocks.modelAndProvider,
 }));
 
 vi.mock('../hooks/useIngestStream', () => ({
@@ -81,6 +88,7 @@ beforeEach(() => {
     primaryKb: { id: 'kb-1', name: 'Notes', default_model: null },
   };
   mocks.stream = { events: [], status: 'done', finalResult: REPORT, error: undefined };
+  mocks.modelAndProvider = { currentProvider: 'anthropic', currentModel: 'claude' };
 });
 
 describe('LintDrawer', () => {
@@ -203,5 +211,68 @@ describe('LintDrawer — the description contract', () => {
         .mocked(console.warn)
         .mock.calls.some((call) => String(call[0]).includes('Missing `Description`'))
     ).toBe(false);
+  });
+});
+
+/**
+ * ⚠ **This drawer is the SECOND consumer of `resolveIngestModel`**, and that is
+ * the whole reason these tests exist.
+ *
+ * When the resolver learned to refuse `claude_code` / `codex` (they reach
+ * `complete_with_model` with `tools` dropped, so a macro run narrates its calls
+ * and writes nothing), it started returning `null` for a configuration that is
+ * correct and working. This surface read `null` as "the user has not set a model
+ * up" — so a user whose only provider is a coding agent had the run control
+ * permanently disabled and was told to choose a model in the Sources rail, which
+ * is precisely the picker the same change emptied for them. A loop with no exit.
+ *
+ * The obstacle is real and the drawer must stay disabled; what it may not do is
+ * misname it.
+ */
+describe('LintDrawer — a model the check cannot drive', () => {
+  beforeEach(() => {
+    mocks.stream = { events: [], status: 'idle', finalResult: null, error: undefined };
+  });
+
+  it('names the real obstacle instead of blaming the configuration', () => {
+    mocks.modelAndProvider = { currentProvider: 'claude_code', currentModel: 'opus-5' };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    // "No model is configured" is false — there is one, it is bound to the chat
+    // composer, and it works there.
+    expect(screen.queryByRole('heading', { name: 'No model is configured' })).toBeNull();
+    expect(
+      screen.getByRole('heading', { name: /can’t run a check|cannot run a check/i })
+    ).toBeInTheDocument();
+  });
+
+  it('does not send the user to a picker that has nothing to offer them', () => {
+    mocks.modelAndProvider = { currentProvider: 'codex', currentModel: 'gpt-5.4-codex' };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    // The Sources rail's model picker filters these providers out, so for this
+    // user it is empty. Sending them there is the dead end, not the fix.
+    expect(screen.queryByText(/Sources rail/i)).toBeNull();
+  });
+
+  it('still refuses to dispatch a run it knows will read nothing', async () => {
+    mocks.modelAndProvider = { currentProvider: 'claude_code', currentModel: 'opus-5' };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    expect(mocks.start).not.toHaveBeenCalled();
+    const run = screen.getByTestId('knowledge-lint-run');
+    expect(run).toBeDisabled();
+    await userEvent.click(run);
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  it('keeps saying "no model" when there genuinely is none', () => {
+    mocks.modelAndProvider = { currentProvider: null, currentModel: null };
+    render(<LintDrawer open onOpenChange={() => undefined} />);
+
+    // The correction must be surgical: a blanket rewrite of this empty state
+    // would start telling a user with no provider at all that their model is
+    // merely the wrong kind.
+    expect(screen.getByRole('heading', { name: 'No model is configured' })).toBeInTheDocument();
   });
 });
