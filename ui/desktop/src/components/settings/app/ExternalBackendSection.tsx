@@ -8,6 +8,23 @@ interface ExternalBiorouterdConfig {
   enabled: boolean;
   url: string;
   secret: string;
+  /**
+   * The proof-of-user key (issue #56, DR-16), matching what the external daemon
+   * was launched with.
+   *
+   * ⚠ Without it, an external backend cannot reach its own private chats AT
+   * ALL. `main.ts` reads exactly this field for `getUserActionKey`, and the
+   * daemon compares `sha256` of what arrives against the digest handed to it on
+   * stdin at launch. With no key here the renderer sends nothing, every private
+   * chat is refused, and the refusal says "use the desktop app" to somebody who
+   * IS using the desktop app.
+   *
+   * It was read by `main.ts` and settable nowhere. Worse, this component's own
+   * shape did not carry it, and `saveConfig` writes the whole object, so a
+   * hand-edited `settings.json` lost the key the next time anyone touched the
+   * URL or the switch.
+   */
+  userActionKey: string;
 }
 
 interface Settings {
@@ -18,6 +35,7 @@ const DEFAULT_CONFIG: ExternalBiorouterdConfig = {
   enabled: false,
   url: '',
   secret: '',
+  userActionKey: '',
 };
 
 function parseConfig(
@@ -27,6 +45,7 @@ function parseConfig(
     enabled: partial?.enabled ?? DEFAULT_CONFIG.enabled,
     url: partial?.url ?? DEFAULT_CONFIG.url,
     secret: partial?.secret ?? DEFAULT_CONFIG.secret,
+    userActionKey: partial?.userActionKey ?? DEFAULT_CONFIG.userActionKey,
   };
 }
 
@@ -164,6 +183,26 @@ export default function ExternalBackendSection() {
                 />
                 <p className="text-xs text-text-muted">
                   The secret key configured on the biorouterd server (BIOROUTER_SERVER__SECRET_KEY)
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="external-user-action-key" className="text-text-default text-xs">
+                  User Action Key
+                </label>
+                <Input
+                  id="external-user-action-key"
+                  type="password"
+                  placeholder="Enter the key the server was started with"
+                  value={config.userActionKey}
+                  onChange={(e) => updateField('userActionKey', e.target.value)}
+                  onBlur={() => saveConfig(config)}
+                  disabled={isSaving}
+                />
+                <p className="text-xs text-text-muted">
+                  Proves a request came from you rather than from the model. The server is given
+                  the SHA-256 of this key on stdin when it starts. Without it, private chats cannot
+                  be opened, branched, or reported through this backend.
                 </p>
               </div>
 
