@@ -326,14 +326,28 @@ const REGISTRY: &[Guard] = &[
             },
             Site {
                 file: "crates/biorouter-server/src/routes/status.rs",
-                counts: c(1, 1, 0),
+                counts: c(1, 3, 0),
                 kind: SiteKind::Guard,
                 what: "`GET /diagnostics/{id}`, whose zip carries `session.json` straight from \
                        `export_session` (the third spelling of the same transcript) plus \
                        this session's log files, which carry its prompts. It was the one \
                        session-addressing route in the tree with ZERO `session_reach` calls \
                        after the first sweep, and this census could not see that: a file with \
-                       no mention of a guard is indistinguishable from a file that needs none",
+                       no mention of a guard is indistinguishable from a file that needs none. \
+                       The 3 refs are the module qualifier three times over. One is the \
+                       ordinary one every row above carries: the `session_reach::session_reach(…)` \
+                       call names the module and the function on the same line. The other TWO \
+                       are in `refusal_body`, the handler-local helper that specialises the \
+                       refusal on the keyless arm — it takes a `session_reach::SessionOutOfReach` \
+                       and compares against `session_reach::SESSION_REACH_NO_KEY` to tell that \
+                       arm from the out-of-reach one, so that a headless daemon is told to run \
+                       `biorouter session diagnostics` instead of to use a desktop app it does \
+                       not have. Both name a TYPE and a CONSTANT that live beside the gate; \
+                       NEITHER is a second decision. That is the distinction this row exists to \
+                       record: `calls` stayed at 1 because the route still asks the gate exactly \
+                       once and still refuses on exactly its answer, and only the *wording* of \
+                       the refusal became route-specific. If `calls` ever moves off 1 here, that \
+                       is a real change of the reach decision and not a rewording",
             },
             Site {
                 file: SESSION_REACH,

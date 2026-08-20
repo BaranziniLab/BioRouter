@@ -8,6 +8,7 @@ use crate::knowledge::{
     git::{GitRepo, Txn},
     graph, manifest, okf, paths, raw,
     service::KnowledgeService,
+    source_anchor,
     store::{logical_path, split_frontmatter},
     subagent::{
         events::{DoneReason, SubAgentEvent},
@@ -21,7 +22,10 @@ use crate::knowledge::{
 };
 use anyhow::{Context, Result};
 use chrono::Utc;
-use std::{collections::HashMap, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    path::Path,
+};
 
 // ---------------------------------------------------------------------------
 // LintReport
@@ -130,6 +134,12 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
         .map(|(path, _)| path.clone())
         .collect();
 
+    // Which pages are source pages, and which raw source each one is for. Both
+    // rules below used to answer that from the `knowledge/sources/` path alone,
+    // which is a layout no base created by this build uses — see
+    // [`SourcePages`].
+    let sources = SourcePages::of(&pages);
+
     // ---- Stale sources: raw/ sources >90 days without inbound links ----
     let ninety_days = chrono::Duration::days(90);
     let now = Utc::now();
@@ -138,12 +148,14 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
         for meta in metas {
             let age = now.signed_duration_since(meta.ingested_at);
             if age > ninety_days {
-                // Check for any inbound reference by source-id or source page path.
-                let source_page = format!("knowledge/sources/{}.md", meta.id);
-                let has_inbound = inbound
-                    .get(&source_page)
-                    .map(|s| !s.is_empty())
-                    .unwrap_or(false);
+                // Does anything link to the page (or pages) that stand for this
+                // raw source? A source cited by half the base is not stale
+                // however long ago it was ingested, and this rule reported
+                // exactly that as stale on every OKF and BioOKF base.
+                let has_inbound = sources
+                    .pages_for(&meta.id)
+                    .iter()
+                    .any(|path| inbound.get(path).is_some_and(|s| !s.is_empty()));
                 if !has_inbound {
                     stale_sources.push(meta.id.clone());
                 }
@@ -161,7 +173,7 @@ pub fn scan(kb_root: &Path) -> Result<LintReport> {
     // is why a target the graph draws an edge to can no longer appear here.
     let mut missing_concept_pages: Vec<String> = Vec::new();
     for (src_path, target) in &links.unresolved {
-        if src_path.starts_with("knowledge/sources/") && !missing_concept_pages.contains(target) {
+        if sources.is_source_page(src_path) && !missing_concept_pages.contains(target) {
             missing_concept_pages.push(target.clone());
         }
     }
@@ -321,6 +333,96 @@ fn collect_pages(base: &Path, dir: &Path, out: &mut HashMap<String, String>) -> 
         }
     }
     Ok(())
+}
+
+/// Which pages in a bundle are **source pages**, and which raw source each one
+/// stands for — one index, built once per scan, over
+/// [`source_anchor`](crate::knowledge::source_anchor).
+///
+/// ⚠ **The recognition itself is NOT here.** It lives in `source_anchor`
+/// because `graph::apply_source_credibility` asks the same question and has to
+/// get the same answer: the two used to answer it from two copies of the literal
+/// string `knowledge/sources/`, and when the first repair fixed one copy the
+/// other kept silently attaching no credibility at all. That module's header
+/// carries the full signal table and the reasoning; what is left here is the
+/// bundle-shaped index the two lint rules read.
+///
+/// The rules this feeds, and how each one failed while the recognition was a
+/// path prefix:
+///
+/// * `stale_sources` looked up inbound links at a path that does not exist, got
+///   "no such key" and read it as "nothing links here", so **every** raw source
+///   older than 90 days was reported stale no matter how heavily cited — a
+///   hygiene report telling the user to prune the papers their base is built on.
+/// * `missing_concept_pages` filtered its candidates on the same prefix, matched
+///   nothing, and was therefore unconditionally empty — which reads exactly like
+///   a clean base, because a rule that fires on nothing looks identical to a rule
+///   with nothing to report.
+struct SourcePages {
+    /// raw source id → the logical paths of the pages that stand for it.
+    ///
+    /// A `Vec` rather than one path, because two pages may legitimately stand
+    /// for one ingested document (a publication node and a study node over the
+    /// same PDF). Picking one of them arbitrarily would make "is this source
+    /// cited?" depend on which page a `HashMap` happened to hand back first.
+    by_raw_id: HashMap<String, Vec<String>>,
+    /// Every page that is a source page at all, by any of `source_anchor`'s
+    /// signals.
+    paths: HashSet<String>,
+}
+
+impl SourcePages {
+    fn of(pages: &HashMap<String, String>) -> Self {
+        let mut by_raw_id: HashMap<String, Vec<String>> = HashMap::new();
+        let mut paths: HashSet<String> = HashSet::new();
+        // Sorted, because `HashMap` iteration order is random and the `Vec`s
+        // below become part of a report the user diffs against the last one.
+        let mut sorted: Vec<(&String, &String)> = pages.iter().collect();
+        sorted.sort_by(|a, b| a.0.cmp(b.0));
+        for (path, body) in sorted {
+            let Ok(page) = okf::Page::parse(body) else {
+                // DR-7: an unparseable page is not a reason to fail the scan, and
+                // the OKF layer reports the parse failure itself. It can still be
+                // a source page by its path, which is the one signal that needs
+                // no frontmatter — and on a pre-OKF base that is the only signal
+                // there was ever going to be.
+                if source_anchor::is_source_dir(path) {
+                    paths.insert(path.clone());
+                }
+                continue;
+            };
+            if source_anchor::is_source_page(path, &page.doc) {
+                paths.insert(path.clone());
+            }
+            for id in source_anchor::raw_ids_stood_for(path, &page.doc) {
+                by_raw_id.entry(id).or_default().push(path.clone());
+            }
+        }
+        Self { by_raw_id, paths }
+    }
+
+    /// The pages standing for one raw source, or — for a base whose source pages
+    /// carry no anchor at all — the pre-OKF path it would have lived at.
+    ///
+    /// The fallback is `or_else` rather than a union, matching
+    /// `apply_source_credibility`: a base has one layout or the other, and
+    /// checking both would let a legacy path that happens to exist speak for a
+    /// source some *other* page already stands for.
+    fn pages_for(&self, raw_id: &str) -> Vec<String> {
+        self.by_raw_id.get(raw_id).cloned().unwrap_or_else(|| {
+            // ⚠ BOTH spellings. OKF's source directory is the SINGULAR
+            // `knowledge/source/`; only the pre-OKF layout used the plural. This
+            // was plural-only, so on the format this build actually creates a
+            // source page with no `raw_source` anchor matched nothing — and
+            // `schema_okf.md` only asks the model to "create the source's own
+            // page", so a page without that anchor is ordinary, not malformed.
+            crate::knowledge::graph::source_page_candidates(raw_id).to_vec()
+        })
+    }
+
+    fn is_source_page(&self, path: &str) -> bool {
+        self.paths.contains(path)
+    }
 }
 
 /// Returns true for pages directly under `knowledge/` (no subdirectory).
@@ -1398,6 +1500,243 @@ mod tests {
         assert!(
             crate::knowledge::tier::is_private(&root, "k"),
             "the lint macro did not raise at its entry"
+        );
+    }
+
+    // ---- the source-page layout --------------------------------------------
+
+    /// A raw source with an `ingested_at` far enough back to trip the 90-day
+    /// rule, and a credibility block the classifier never wrote.
+    fn write_old_source(kb_root: &Path, source_id: &str, days_ago: i64) {
+        let meta = crate::knowledge::types::SourceMeta {
+            id: source_id.to_string(),
+            title: source_id.to_string(),
+            url: None,
+            ingested_at: Utc::now() - chrono::Duration::days(days_ago),
+            sha256: "0".into(),
+            mime: "text/markdown".into(),
+            original_filename: None,
+            credibility: crate::knowledge::types::Credibility {
+                tier: crate::knowledge::types::CredibilityTier::PeerReviewed,
+                confidence: 0.9,
+                publisher: None,
+                venue: None,
+                doi: None,
+                retracted: false,
+                reasoning: "fixture".into(),
+                classifier_version: 1,
+            },
+        };
+        let dir = kb_root.join("raw").join(source_id);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("meta.yaml"), serde_yaml::to_string(&meta).unwrap()).unwrap();
+    }
+
+    /// A source page written where BioOKF actually puts one, anchored to its
+    /// raw source.
+    fn anchored_source_page(id: &str, raw_id: &str) -> String {
+        format!(
+            "---\ntype: Publication\nidentifier: {id}\n\
+             raw_source: [raw/{raw_id}/source.md]\n---\n\n# {id}\n"
+        )
+    }
+
+    /// The defect: a heavily cited paper reported as stale because the rule
+    /// looked for its page at `knowledge/sources/<id>.md`, which is the pre-OKF
+    /// layout and the one layout no base created by this build uses.
+    ///
+    /// `chen-2020` is cited by a disease page through a typed edge, so nothing
+    /// about it is stale but its ingest date. `orphan-2019` is the control, and
+    /// it is what stops "no stale sources" being the answer a rule that simply
+    /// stopped firing would also give.
+    #[test]
+    fn a_cited_source_is_not_stale_when_its_page_lives_where_okf_puts_it() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write_old_source(&kb, "chen-2020", 200);
+        write_old_source(&kb, "orphan-2019", 400);
+        write(
+            &kb,
+            "knowledge/publication/chen-2020.md",
+            &anchored_source_page("Chen 2020", "chen-2020"),
+        );
+        write(
+            &kb,
+            "knowledge/publication/nobody-cites-me.md",
+            &anchored_source_page("Nobody 2019", "orphan-2019"),
+        );
+        write(
+            &kb,
+            "knowledge/disease/covid-19.md",
+            &typed_page("Disease", "COVID-19", &[("reported_in", "Chen 2020")]),
+        );
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(
+            report.stale_sources,
+            vec!["orphan-2019".to_string()],
+            "a source cited by a typed edge was reported stale, and only the \
+             genuinely unreferenced one should be"
+        );
+    }
+
+    /// The other half of the same layout bug, failing in the opposite direction:
+    /// the rule filtered its candidates on the `knowledge/sources/` prefix, so on
+    /// a base whose source pages live anywhere else it matched nothing and was
+    /// unconditionally empty — which reads exactly like a clean base.
+    ///
+    /// `COVID-19` has a page and `Long COVID` does not, so a rule that resolved
+    /// differently from the graph would show up as either name appearing in the
+    /// wrong list rather than as a missing assertion.
+    #[test]
+    fn a_source_page_outside_the_legacy_directory_still_reports_its_missing_citations() {
+        let (_dir, svc) = svc_in(KbFormat::Biookf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/disease/covid-19.md",
+            &typed_page("Disease", "COVID-19", &[]),
+        );
+        write(
+            &kb,
+            "knowledge/publication/chen-2020.md",
+            &format!(
+                "---\ntype: Publication\nidentifier: Chen 2020\n\
+                 raw_source: [raw/chen-2020/source.md]\nedges:\n\
+                 {}{}---\n\n# Chen 2020\n",
+                "  - predicate: mentions\n    object: COVID-19\n    \
+                 knowledge_level: knowledge_assertion\n    agent_type: manual_agent\n    \
+                 primary_source: Chen 2020\n",
+                "  - predicate: mentions\n    object: Long COVID\n    \
+                 knowledge_level: knowledge_assertion\n    agent_type: manual_agent\n    \
+                 primary_source: Chen 2020\n",
+            ),
+        );
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(
+            report.missing_concept_pages,
+            vec!["Long COVID".to_string()],
+            "the cited concept with no page, and only it"
+        );
+    }
+
+    // ---- …and the same two rules on a PLAIN OKF base ------------------------
+    //
+    // ⚠ The two tests above are `svc_in(KbFormat::Biookf)`, and the first repair
+    // of these rules passed both while leaving plain OKF — which is what
+    // `create_base` produces by default — exactly as broken as it found it. Both
+    // signals that repair read are absent there: `raw_source` is a BioOKF-only
+    // key whose only two writers are gated on `KbFormat::is_biookf`, and OKF's
+    // source directory is the SINGULAR `knowledge/source/` while the fallback
+    // matched the pre-OKF plural. A format the fix does not exercise is a format
+    // the fix does not cover.
+
+    /// An OKF source page, stating its provenance the way `schema_okf.md`'s page
+    /// contract does: a `sources:` list whose `resource` points into `raw/`.
+    /// There is no `raw_source` key here and there cannot be one.
+    fn okf_source_page(identifier: &str, raw_id: &str, links: &[&str]) -> String {
+        let body: String = links
+            .iter()
+            .map(|target| format!("- [[{target}]]\n"))
+            .collect();
+        format!(
+            "---\ntype: Source\nidentifier: {identifier}\ntitle: {identifier}\n\
+             sources:\n  - id: {raw_id}\n    resource: raw/{raw_id}/source.md\n---\n\n\
+             # {identifier}\n\n{body}"
+        )
+    }
+
+    /// The half of the defect that reports a false positive, on the format the
+    /// first repair missed. `chen-2020` is linked from a concept page, so the
+    /// only thing stale about it is its ingest date; `orphan-2019` is the
+    /// control, and it is what stops "no stale sources" — the answer a rule that
+    /// simply stopped firing would also give — from passing.
+    #[test]
+    fn a_cited_source_on_a_plain_okf_base_is_not_stale() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        write_old_source(&kb, "chen-2020", 200);
+        write_old_source(&kb, "orphan-2019", 400);
+        write(
+            &kb,
+            "knowledge/source/chen-2020.md",
+            &okf_source_page("Chen 2020", "chen-2020", &[]),
+        );
+        write(
+            &kb,
+            "knowledge/source/nobody-cites-me.md",
+            &okf_source_page("Nobody 2019", "orphan-2019", &[]),
+        );
+        write(
+            &kb,
+            "knowledge/concept/covid-19.md",
+            "---\ntype: Concept\nidentifier: COVID-19\ntitle: COVID-19\n---\n\n\
+             # COVID-19\n\nReported in [[Chen 2020]].\n",
+        );
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(
+            report.stale_sources,
+            vec!["orphan-2019".to_string()],
+            "on an OKF base the source page carries no `raw_source` and lives in \
+             the SINGULAR directory, so both of the first repair's signals miss \
+             it and a cited paper is still reported stale"
+        );
+    }
+
+    /// The half that reports nothing at all, on the same format. `COVID-19` has
+    /// a page and `Long COVID` does not, so a rule resolving differently from the
+    /// graph shows up as either name landing in the wrong list rather than as a
+    /// missing assertion.
+    #[test]
+    fn an_okf_source_page_still_reports_its_missing_citations() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/concept/covid-19.md",
+            "---\ntype: Concept\nidentifier: COVID-19\ntitle: COVID-19\n---\n\n# COVID-19\n",
+        );
+        write(
+            &kb,
+            "knowledge/source/chen-2020.md",
+            &okf_source_page("Chen 2020", "chen-2020", &["COVID-19", "Long COVID"]),
+        );
+
+        let report = scan(&kb).unwrap();
+        assert_eq!(
+            report.missing_concept_pages,
+            vec!["Long COVID".to_string()],
+            "the cited concept with no page, and only it"
+        );
+    }
+
+    /// ⚠ The restriction that makes the rule above safe, asserted where it
+    /// bites. `schema_okf.md`'s ingest workflow step 4 tells the model to record
+    /// the source in `sources` on **every concept page it touches**, so if
+    /// `sources[]` were read as "this is a source page", every concept page in
+    /// the base would become one — and `missing_concept_pages` would report every
+    /// unresolved link anywhere in the bundle instead of the citations a source
+    /// makes.
+    #[test]
+    fn a_concept_page_citing_a_source_does_not_turn_the_whole_base_into_source_pages() {
+        let (_dir, svc) = svc_in(KbFormat::Okf);
+        let kb = svc.root().join("k");
+        write(
+            &kb,
+            "knowledge/concept/covid-19.md",
+            "---\ntype: Concept\nidentifier: COVID-19\ntitle: COVID-19\n\
+             sources:\n  - id: chen-2020\n    resource: raw/chen-2020/source.md\n---\n\n\
+             # COVID-19\n\nSee [[Some Concept With No Page]].\n",
+        );
+
+        let report = scan(&kb).unwrap();
+        assert!(
+            report.missing_concept_pages.is_empty(),
+            "a concept page merely citing a source is not a source page, so its \
+             unresolved links are not missing CONCEPT pages: {:?}",
+            report.missing_concept_pages
         );
     }
 }
