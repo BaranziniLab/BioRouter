@@ -605,12 +605,54 @@ impl HooksManager {
         entry.push_back(staged);
     }
 
-    /// BR-19: take the input rewrites staged for `session_id`, as
+    /// BR-19: take **every** input rewrite staged for `session_id`, as
     /// `tool_request_id -> new arguments`. Destructive for the rewrite only —
     /// the staged context/system messages stay queued for
     /// [`Self::drain_tool_hook_context`] at the turn's injection point, which
     /// runs later (after the permission gate has staged its own).
+    ///
+    /// ⚠ "Every" is safe for the agent loop and **not** safe for a per-call
+    /// caller. `Agent::inspect_and_gate_tool_requests` holds the whole batch of
+    /// the model's tool requests at once, so a session-wide take is a take of
+    /// exactly its own requests. A caller that handles one request at a time
+    /// while others are in flight for the same session — the coding-agent tool
+    /// bridge, which serves parallel `tools/call`s over HTTP with no
+    /// serialization — would drain its siblings' rewrites, apply the one keyed on
+    /// its own request id, and drop the rest on the floor: the hooks ran, the
+    /// user believes their sandboxing applied, and the untouched arguments
+    /// executed. Those callers must use [`Self::take_tool_input_rewrites_for`].
     pub fn take_tool_input_rewrites(&self, session_id: &str) -> HashMap<String, serde_json::Value> {
+        self.take_staged_rewrites(session_id, |_| true)
+    }
+
+    /// BR-19: take only the rewrites keyed on `request_ids`, leaving every other
+    /// entry staged for whoever owns it.
+    ///
+    /// This is [`Self::take_tool_input_rewrites`] narrowed to the requests the
+    /// caller is actually about to dispatch, and it exists because the staging
+    /// buffer is keyed by *session*, not by call. One session can have several
+    /// tool calls in flight at once whenever something other than the agent loop
+    /// is driving them, and then a session-wide take is theft: the first caller
+    /// to reach it removes the rewrites its siblings staged microseconds earlier
+    /// and cannot apply them (they are keyed on request ids it has never seen),
+    /// so those calls dispatch un-rewritten. Nondeterministically, and with no
+    /// error anywhere — which is the same silent failure the rewrite plumbing
+    /// exists to prevent, only harder to see.
+    pub fn take_tool_input_rewrites_for(
+        &self,
+        session_id: &str,
+        request_ids: &[String],
+    ) -> HashMap<String, serde_json::Value> {
+        self.take_staged_rewrites(session_id, |id| request_ids.iter().any(|want| want == id))
+    }
+
+    /// Shared body of the two takes above: remove `updated_input` from the staged
+    /// entries whose `tool_request_id` the caller wants, leave the rest alone.
+    fn take_staged_rewrites(
+        &self,
+        session_id: &str,
+        wanted: impl Fn(&str) -> bool,
+    ) -> HashMap<String, serde_json::Value> {
         let mut buffer = self
             .staged_tool_hooks
             .lock()
@@ -620,6 +662,9 @@ impl HooksManager {
         };
         let mut rewrites = HashMap::new();
         for entry in entries.iter_mut() {
+            if !wanted(&entry.tool_request_id) {
+                continue;
+            }
             if let Some(input) = entry.updated_input.take() {
                 rewrites.insert(entry.tool_request_id.clone(), input);
             }
@@ -627,9 +672,13 @@ impl HooksManager {
         rewrites
     }
 
-    /// BR-19: drain the staged tool-path hook effects for `session_id` so the
-    /// turn can inject their `additionalContext` (as framed hook context) and
+    /// BR-19: drain **all** the staged tool-path hook effects for `session_id` so
+    /// the turn can inject their `additionalContext` (as framed hook context) and
     /// surface their `systemMessage`s.
+    ///
+    /// Session-wide for the same reason [`Self::take_tool_input_rewrites`] is,
+    /// and unsafe for a per-call caller for the same reason; see
+    /// [`Self::drain_tool_hook_context_for`].
     pub fn drain_tool_hook_context(&self, session_id: &str) -> Vec<StagedToolHook> {
         let mut buffer = self
             .staged_tool_hooks
@@ -639,6 +688,49 @@ impl HooksManager {
             .remove(session_id)
             .map(|entries| entries.into_iter().collect())
             .unwrap_or_default()
+    }
+
+    /// BR-19: drain only the staged effects belonging to `request_ids`.
+    ///
+    /// The counterpart of [`Self::take_tool_input_rewrites_for`], for a caller
+    /// that finishes one tool call at a time. Two things go wrong if such a
+    /// caller never drains at all: its own entries sit in the per-session buffer
+    /// until the session next runs an *agent* turn, which then injects context
+    /// about somebody else's long-finished tool call into its own transcript; and
+    /// at [`MAX_STAGED_TOOL_HOOKS`] entries the buffer starts dropping its oldest,
+    /// so a long-running bridged turn can silently evict staged effects. Draining
+    /// session-wide instead would fix the leak and reintroduce the theft, taking
+    /// entries a concurrent sibling call still needs.
+    pub fn drain_tool_hook_context_for(
+        &self,
+        session_id: &str,
+        request_ids: &[String],
+    ) -> Vec<StagedToolHook> {
+        let mut buffer = self
+            .staged_tool_hooks
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(entries) = buffer.get_mut(session_id) else {
+            return Vec::new();
+        };
+        let mut taken = Vec::new();
+        let mut kept = VecDeque::with_capacity(entries.len());
+        while let Some(entry) = entries.pop_front() {
+            if request_ids.contains(&entry.tool_request_id) {
+                taken.push(entry);
+            } else {
+                kept.push_back(entry);
+            }
+        }
+        if kept.is_empty() {
+            // Keep the map from accumulating an empty deque per session that has
+            // ever staged anything; `clear_staged_tool_hooks` relies on absence
+            // and presence meaning the same thing here.
+            buffer.remove(session_id);
+        } else {
+            *entries = kept;
+        }
+        taken
     }
 
     /// BR-19: drop any tool-path hook effects still staged for `session_id`
@@ -1548,6 +1640,80 @@ Notification:
         manager.stage_tool_hook("s2", staged(None));
         assert_eq!(manager.drain_tool_hook_context("s1").len(), 1);
         assert_eq!(manager.drain_tool_hook_context("s2").len(), 1);
+    }
+
+    /// The staging buffer is keyed by session, so a caller that handles one tool
+    /// call at a time while its siblings are in flight must be able to take only
+    /// its own.
+    ///
+    /// The agent loop can use the session-wide take because it holds the model's
+    /// whole batch of requests when it calls it. The coding-agent tool bridge
+    /// cannot: it serves one request per HTTP handler with no serialization, and
+    /// a session-wide take there removes rewrites keyed on request ids it has
+    /// never seen and cannot apply — so those calls dispatch the arguments their
+    /// PreToolUse hooks asked to replace, and nothing anywhere reports it.
+    #[test]
+    fn a_scoped_take_leaves_another_callers_rewrite_staged() {
+        let manager = manager_with_yaml("{}");
+        let mut mine = staged(Some(serde_json::json!({"path": "./mine"})));
+        mine.tool_request_id = "mine".to_string();
+        let mut theirs = staged(Some(serde_json::json!({"path": "./theirs"})));
+        theirs.tool_request_id = "theirs".to_string();
+        manager.stage_tool_hook("s1", mine);
+        manager.stage_tool_hook("s1", theirs);
+
+        let taken = manager.take_tool_input_rewrites_for("s1", &["mine".to_string()]);
+        assert_eq!(taken.len(), 1, "only this caller's rewrite: {taken:?}");
+        assert_eq!(
+            taken.get("mine"),
+            Some(&serde_json::json!({"path": "./mine"}))
+        );
+
+        let left = manager.take_tool_input_rewrites("s1");
+        assert_eq!(
+            left.get("theirs"),
+            Some(&serde_json::json!({"path": "./theirs"})),
+            "the other caller's rewrite must still be there for it to collect: {left:?}"
+        );
+    }
+
+    /// The same scoping for the context drain, and for the same reason — a caller
+    /// clearing up after its own call must not clear up after somebody else's.
+    #[test]
+    fn a_scoped_drain_leaves_another_callers_context_staged() {
+        let manager = manager_with_yaml("{}");
+        let mut mine = staged(None);
+        mine.tool_request_id = "mine".to_string();
+        let mut theirs = staged(None);
+        theirs.tool_request_id = "theirs".to_string();
+        manager.stage_tool_hook("s1", mine);
+        manager.stage_tool_hook("s1", theirs);
+
+        let drained = manager.drain_tool_hook_context_for("s1", &["mine".to_string()]);
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].tool_request_id, "mine");
+
+        let left = manager.drain_tool_hook_context("s1");
+        assert_eq!(left.len(), 1, "the sibling's entry must survive: {left:?}");
+        assert_eq!(left[0].tool_request_id, "theirs");
+    }
+
+    /// Draining the last entry removes the session's deque rather than leaving an
+    /// empty one behind, so "no entries" and "no session" stay the same state.
+    #[test]
+    fn a_scoped_drain_of_everything_leaves_no_empty_session_entry() {
+        let manager = manager_with_yaml("{}");
+        manager.stage_tool_hook("s1", staged(None));
+        assert_eq!(
+            manager
+                .drain_tool_hook_context_for("s1", &["call_1".to_string()])
+                .len(),
+            1
+        );
+        assert!(manager.drain_tool_hook_context("s1").is_empty());
+        assert!(manager
+            .drain_tool_hook_context_for("s1", &["call_1".to_string()])
+            .is_empty());
     }
 
     /// A turn cancelled between staging and the drain must not grow the buffer

@@ -59,6 +59,23 @@ pub const CODEX_DOC_URL: &str = "https://developers.openai.com/codex/cli";
 /// wedged child held its session open indefinitely.
 const TURN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// How long the turn will wait for the app server to say which account it bills.
+///
+/// `AppServer::request` has no timeout of its own — it awaits its oneshot until
+/// the child's stdout closes — which is right for `thread/start`, whose answer
+/// legitimately takes as long as the model does, and wrong for this. The check
+/// is documented as fail-open ("a failed request is not a failed check"), and
+/// that only holds for an app server that *answers* an unknown method with a
+/// JSON-RPC error. One that silently ignores it never resolves, and the turn
+/// hangs on its very first round trip with no error, no output and nothing to
+/// time it out — the same shape as the Versa/Bedrock freeze already in this
+/// repo's history, which is why the mitigation is here rather than filed.
+///
+/// Ten seconds because the answer is local: the app server reads its own auth
+/// state and replies. Anything approaching this is already a broken install, and
+/// exceeding it lands in the same fail-open branch a rejected method does.
+const ACCOUNT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Each window must match what `MODEL_CONTEXT_WINDOWS` declares, because
 /// `tests/context_windows.rs` compares the two.
 fn known_models() -> Vec<ModelInfo> {
@@ -107,7 +124,7 @@ pub struct CodexProvider {
 }
 
 /// What one turn produced.
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct TurnOutcome {
     text: Vec<String>,
     usage: Option<Usage>,
@@ -253,6 +270,107 @@ impl CodexProvider {
         })
     }
 
+    /// Refuse to continue if the run is not actually on the ChatGPT subscription.
+    ///
+    /// The sibling `ClaudeCodeProvider` has done this on every turn since it
+    /// landed, off the `apiKeySource` field in Claude Code's `system/init` frame,
+    /// and the reason is the same one here: `agent_env::configure_subscription_child`
+    /// strips API credentials out of the child's environment, so reaching a
+    /// metered mode is already a defect — but a defect that bills the user's
+    /// OpenAI account instead of the subscription they chose, silently and on
+    /// every turn until someone reads an invoice. Codex had no equivalent. The
+    /// only place `auth_mode` was read was `discovery::probe_codex_auth`, which
+    /// feeds the settings card and never runs during a turn, so a `codex` in
+    /// api-key mode was simply metered.
+    ///
+    /// The truth is available on the turn path: the app server answers
+    /// `account/read` with `{"account": {"type": "chatgpt" | "apiKey" |
+    /// "amazonBedrock", …}}` (measured against codex-cli 0.147.0, which returned
+    /// the live `chatgpt` account on this machine). That is one extra JSON-RPC
+    /// round trip on the connection the turn is already holding, taken before
+    /// `thread/start`, so a refused turn costs no tokens at all.
+    ///
+    /// Deliberately NOT read from `~/.codex/auth.json` the way discovery does: the
+    /// file is what the app server *would* load, but the running process is what
+    /// actually bills. `CODEX_HOME`, a login that happened after the file was
+    /// read, and an install that authenticates some other way all separate the
+    /// two, and this check exists precisely for the case where something outside
+    /// Biorouter's expectations is supplying credentials.
+    ///
+    /// `None` is Ok, matching `ClaudeCodeProvider::assert_subscription_auth`'s
+    /// treatment of a missing `apiKeySource`. A build that does not report an
+    /// account — an older app server without `account/read`, or one whose answer
+    /// omits it — has told us nothing, and turning "nothing" into a refusal would
+    /// break every such install for a suspicion. The metered case reports itself
+    /// explicitly; it is not something we have to infer from silence.
+    fn assert_subscription_auth(account: Option<&Value>) -> Result<(), ProviderError> {
+        let kind = account
+            .filter(|a| !a.is_null())
+            .and_then(|a| a.get("type"))
+            .and_then(Value::as_str);
+        match kind {
+            None | Some("chatgpt") => Ok(()),
+            Some(other) => Err(ProviderError::Authentication(format!(
+                "This run would have been billed to your Codex `{other}` account rather than to \
+                 your ChatGPT subscription, so it was stopped.\n\nBiorouter removes API \
+                 credentials from the environment it starts `codex` in, so something outside \
+                 that environment is supplying one — most likely an `OPENAI_API_KEY` in a Codex \
+                 config file, or a `codex login --api-key` that replaced the subscription \
+                 sign-in. Run `codex login` to go back to the subscription."
+            ))),
+        }
+    }
+
+    /// Ask the live app server which account it will bill, and stop if it is not
+    /// the subscription.
+    ///
+    /// A failed *request* is not a failed check. An app server predating
+    /// `account/read` rejects the method, and a turn must not die because this
+    /// build cannot answer a question about itself — that would take a
+    /// working-but-old Codex away from the user to protect them from a billing
+    /// mode it never reported. What the response says, when there is one, is
+    /// binding; that it could not be obtained is not evidence of anything. The
+    /// asymmetry is the same one `assert_subscription_auth` applies to a missing
+    /// `account` field, and is why the failure is logged rather than swallowed
+    /// silently.
+    ///
+    /// **Not answering at all is also a failed request**, and it is the one the
+    /// fail-open argument above does not cover on its own. "The method was
+    /// rejected" is a response; "the method was ignored" is silence, and
+    /// `AppServer::request` waits on silence until the child's stdout closes —
+    /// which for a healthy-but-unfamiliar app server is never. That would hang
+    /// the turn on its first round trip, before `thread/start`, with no error and
+    /// no output: a build old enough to lack `account/read` would look like a
+    /// Biorouter that stopped working rather than a Codex that stopped answering.
+    /// [`ACCOUNT_READ_TIMEOUT`] turns that into the same fail-open branch a
+    /// rejection takes.
+    async fn assert_subscription(server: &AppServer) -> Result<(), ProviderError> {
+        let answered = tokio::time::timeout(
+            ACCOUNT_READ_TIMEOUT,
+            server.request("account/read", json!({})),
+        )
+        .await;
+        match answered {
+            Ok(Ok(response)) => Self::assert_subscription_auth(response.get("account")),
+            Ok(Err(e)) => {
+                tracing::debug!(
+                    error = %e,
+                    "codex app-server did not answer account/read; continuing without the \
+                     subscription check"
+                );
+                Ok(())
+            }
+            Err(_) => {
+                tracing::debug!(
+                    timeout_secs = ACCOUNT_READ_TIMEOUT.as_secs(),
+                    "codex app-server ignored account/read; continuing without the \
+                     subscription check rather than holding the turn open"
+                );
+                Ok(())
+            }
+        }
+    }
+
     /// Answer a server-originated request.
     ///
     /// Anything that would let the child act on the machine is refused. The child
@@ -363,6 +481,12 @@ impl CodexProvider {
             )
             .await?;
         server.notify("initialized", Value::Null).await?;
+
+        // Before `thread/start`, so a metered run is refused without sending the
+        // user's prompt anywhere or costing a token. `initialize` has to come
+        // first — the app server rejects requests before the handshake — which is
+        // the only reason this is not the very first thing the turn does.
+        Self::assert_subscription(server).await?;
 
         let cwd = std::env::current_dir()
             .map(|p| p.to_string_lossy().into_owned())
@@ -564,6 +688,236 @@ impl Provider for CodexProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a `chatgpt` account is the subscription. Everything else is metered,
+    /// and a metered run is refused rather than billed quietly.
+    ///
+    /// The three named account types are the app server's own closed set
+    /// (`GetAccountResponse` in `codex app-server generate-json-schema`), and the
+    /// unknown-string case is here because that set is the vendor's to extend: a
+    /// type this build has never heard of must not fall through to "fine".
+    #[test]
+    fn only_a_chatgpt_account_is_the_subscription() {
+        assert!(
+            CodexProvider::assert_subscription_auth(Some(&json!({"type": "chatgpt"}))).is_ok(),
+            "the ChatGPT subscription is the whole point of this provider"
+        );
+
+        for metered in ["apiKey", "amazonBedrock", "somethingNewFromOpenAI"] {
+            let err = CodexProvider::assert_subscription_auth(Some(&json!({"type": metered})))
+                .expect_err("a non-subscription account must stop the turn");
+            assert!(
+                matches!(err, ProviderError::Authentication(_)),
+                "a billing-mode refusal must be typed Authentication so the retry \
+                 layer does not retry it: {err:?}"
+            );
+            assert!(
+                err.to_string().contains(metered),
+                "the refusal must name what would have been billed: {err}"
+            );
+        }
+    }
+
+    /// No account reported is not evidence of a metered run.
+    ///
+    /// An app server predating `account/read`, or one whose answer omits the
+    /// field, has told us nothing — and turning "nothing" into a refusal would
+    /// take a working Codex away from the user over a suspicion. This mirrors
+    /// `ClaudeCodeProvider::assert_subscription_auth`, which treats a missing
+    /// `apiKeySource` the same way. The metered case announces itself.
+    #[test]
+    fn an_unreported_account_does_not_stop_the_turn() {
+        assert!(CodexProvider::assert_subscription_auth(None).is_ok());
+        assert!(CodexProvider::assert_subscription_auth(Some(&Value::Null)).is_ok());
+        assert!(CodexProvider::assert_subscription_auth(Some(&json!({}))).is_ok());
+    }
+
+    /// The check is ON THE TURN PATH, and it fires before the prompt is sent.
+    ///
+    /// This is the half that the pure tests above cannot reach and the half that
+    /// was actually missing: `auth_mode` was already readable, just only from
+    /// `discovery::probe_codex_auth`, which builds the settings card and never
+    /// runs during a turn. A correct `assert_subscription_auth` that nothing
+    /// calls bills the user exactly as much as no check at all.
+    ///
+    /// The fake app server below answers `account/read` with an `apiKey` account
+    /// and would happily complete a turn if asked. So "the turn failed with an
+    /// Authentication error" and "`thread/start` was never reached" are the same
+    /// observation from two sides, and the second is what proves the refusal
+    /// costs no tokens.
+    #[tokio::test]
+    async fn a_metered_codex_is_refused_before_the_prompt_is_sent() {
+        let server = fake_app_server(r#"{"type":"apiKey"}"#).await;
+        let provider = test_provider();
+
+        let err = provider
+            .turn_on(
+                &server,
+                &ModelConfig::new_or_fail("gpt-5.5"),
+                "SYSTEM",
+                "hello",
+            )
+            .await
+            .expect_err("a turn on an api-key Codex must not run");
+
+        assert!(
+            matches!(err, ProviderError::Authentication(_)),
+            "expected an Authentication refusal, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("apiKey"),
+            "the refusal must name the account that would have been billed: {err}"
+        );
+
+        let reached = server
+            .request("test/reachedThreadStart", json!({}))
+            .await
+            .expect("the fake server is still alive to be asked");
+        assert_eq!(
+            reached["value"], false,
+            "the prompt must not be sent to a metered account; the refusal has to \
+             happen before `thread/start`"
+        );
+    }
+
+    /// The same fake reporting a `chatgpt` account runs the turn through.
+    ///
+    /// Without this the test above is satisfied by a check that refuses
+    /// everything, which would break the provider for every correctly signed-in
+    /// user while looking like a passing suite.
+    #[tokio::test]
+    async fn a_subscription_codex_still_runs_its_turn() {
+        let server = fake_app_server(r#"{"type":"chatgpt","planType":"pro"}"#).await;
+        let provider = test_provider();
+
+        let outcome = provider
+            .turn_on(
+                &server,
+                &ModelConfig::new_or_fail("gpt-5.5"),
+                "SYSTEM",
+                "hello",
+            )
+            .await
+            .expect("a subscription turn must not be refused");
+        assert_eq!(outcome.text, vec!["hi from the fake".to_string()]);
+    }
+
+    /// An app server that ignores `account/read` must not hold the turn open.
+    ///
+    /// The check is documented as fail-open, and the argument for that only
+    /// covers a server which *answers* an unknown method with a JSON-RPC error.
+    /// Silence is the other way to fail, and `AppServer::request` waits on
+    /// silence until the child's stdout closes — so without a timeout this is not
+    /// a degraded check, it is a turn that never starts: no error, no output,
+    /// nothing to cancel it, on the very first round trip and before
+    /// `thread/start`. A build too old to know the method would present as a
+    /// Biorouter that stopped working.
+    ///
+    /// The fake below answers `initialize` and ignores everything else, which is
+    /// exactly the shape being defended against — a healthy server that simply
+    /// does not know this method. The clock is paused so the real
+    /// [`ACCOUNT_READ_TIMEOUT`] elapses in virtual time; the test therefore
+    /// exercises the production constant rather than a shortened copy of it, and
+    /// still finishes in milliseconds.
+    ///
+    /// The outer budget is three times the inner one, so removing the `timeout`
+    /// from `assert_subscription` fails here instead of hanging the suite.
+    #[tokio::test(start_paused = true)]
+    async fn an_app_server_that_ignores_account_read_does_not_hang_the_turn() {
+        let server = silent_app_server().await;
+
+        let checked = tokio::time::timeout(
+            ACCOUNT_READ_TIMEOUT * 3,
+            CodexProvider::assert_subscription(&server),
+        )
+        .await;
+
+        let verdict = checked.expect(
+            "assert_subscription never returned: an app server that ignores \
+             account/read holds the turn open forever, because AppServer::request \
+             waits on its oneshot until the child's stdout closes",
+        );
+        assert!(
+            verdict.is_ok(),
+            "a check that could not be obtained is not evidence of a metered run; \
+             a timeout must fail open exactly as a rejected method does: {verdict:?}"
+        );
+    }
+
+    /// A stand-in for an app server that answers what it knows and silently
+    /// ignores what it does not — i.e. any build predating `account/read`.
+    async fn silent_app_server() -> AppServer {
+        let script = r#"
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    if m.get("method") == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}}), flush=True)
+    # Everything else, account/read included, is read and dropped on the floor.
+"#;
+        let mut cmd = tokio::process::Command::new("python3");
+        cmd.arg("-c").arg(script);
+        AppServer::spawn(cmd)
+            .await
+            .expect("the silent app server should start")
+    }
+
+    fn test_provider() -> CodexProvider {
+        // The command is never spawned: `turn_on` is handed an already-running
+        // `AppServer`, which is the seam that makes this testable at all.
+        CodexProvider {
+            command: PathBuf::from("codex"),
+            model: ModelConfig::new_or_fail("gpt-5.5"),
+            name: KIND.provider_id().to_string(),
+        }
+    }
+
+    /// A scripted stand-in for `codex app-server` that reports `account` as the
+    /// caller asks and otherwise completes a turn normally.
+    ///
+    /// Python for the same reason `appserver.rs`'s own fake is: the protocol is
+    /// newline-delimited JSON and a real Codex would need a real subscription,
+    /// which no test can have. It also answers a synthetic
+    /// `test/reachedThreadStart`, which is the only way to observe from outside
+    /// that the refusal happened *before* the prompt went anywhere rather than
+    /// after.
+    async fn fake_app_server(account: &str) -> AppServer {
+        let script = format!(
+            r#"
+import sys, json
+reached = False
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    method = m.get("method")
+    if method == "initialize":
+        print(json.dumps({{"jsonrpc":"2.0","id":m["id"],"result":{{"codexHome":"/tmp"}}}}), flush=True)
+    elif method == "account/read":
+        print(json.dumps({{"jsonrpc":"2.0","id":m["id"],
+                           "result":{{"account":{account},"requiresOpenaiAuth":True}}}}), flush=True)
+    elif method == "thread/start":
+        reached = True
+        print(json.dumps({{"jsonrpc":"2.0","id":m["id"],"result":{{"thread":{{"id":"t-1"}}}}}}), flush=True)
+    elif method == "turn/start":
+        print(json.dumps({{"jsonrpc":"2.0","method":"item/completed",
+                           "params":{{"item":{{"type":"agentMessage","text":"hi from the fake"}}}}}}), flush=True)
+        print(json.dumps({{"jsonrpc":"2.0","method":"turn/completed","params":{{"usage":{{}}}}}}), flush=True)
+        print(json.dumps({{"jsonrpc":"2.0","id":m["id"],"result":{{}}}}), flush=True)
+    elif method == "test/reachedThreadStart":
+        print(json.dumps({{"jsonrpc":"2.0","id":m["id"],"result":{{"value":reached}}}}), flush=True)
+"#
+        );
+        let mut cmd = tokio::process::Command::new("python3");
+        cmd.arg("-c").arg(script);
+        AppServer::spawn(cmd)
+            .await
+            .expect("the fake app server should start")
+    }
 
     /// The thread is read-only, ephemeral, and carries Biorouter's instructions.
     /// Each of the four is a decision rather than a default, so each is pinned.

@@ -4808,17 +4808,34 @@ impl Agent {
     ///
     /// The returned lease revokes the grant when dropped, so it is bound in the
     /// caller for the duration of the provider call and no longer.
+    ///
+    /// `cancel_token` is the **turn's** token, threaded in rather than made in the
+    /// grant. A bridged tool call reaches `ExtensionManager::dispatch_tool_call`
+    /// the same way the agent's own does, and that function's only channel back to
+    /// the turn is the token it is handed — so a grant holding a token nobody else
+    /// owns puts every bridged tool beyond the reach of stop, of
+    /// `AppState::cancel_turn`, and of the `TurnGuard` that fires when a socket
+    /// drops. The token is in scope here for the same reason the lease is: both
+    /// belong to one iteration of the reply loop.
     async fn issue_tool_bridge(
         &self,
         session: &Session,
         conversation: &Conversation,
         tools: &[Tool],
+        cancel_token: Option<CancellationToken>,
     ) -> Option<coding_agent_bridge::BridgeLease> {
-        let name = {
+        // Asked of the bound INSTANCE, not of its name. `get_name()` on a
+        // `LeadWorkerProvider` returns the lead's name, so a name lookup here
+        // answered for the lead alone and a pair whose *worker* is a coding agent
+        // got no bridge — and the worker runs most of the turns, so the tool-less
+        // child was the ordinary case, not the corner one. `tier()` and
+        // `affiliation()` already had to be instance methods for exactly this, and
+        // `uses_tool_bridge` is the third override beside them.
+        let uses_bridge = {
             let guard = self.provider.lock().await;
-            guard.as_ref().map(|p| p.get_name().to_string())?
+            guard.as_ref().map(|p| p.uses_tool_bridge())?
         };
-        if !coding_agent_bridge::provider_uses_bridge(&name) {
+        if !uses_bridge {
             return None;
         }
 
@@ -4862,6 +4879,21 @@ impl Agent {
             capability,
             bridged,
             conversation.clone(),
+            cancel_token,
+            // BR-19: the grant runs `HookInspector` like any other inspector, so
+            // the user's PreToolUse hooks fire for a bridged call — but a hook's
+            // `updated_input` is *staged inside this manager*, not returned from
+            // the inspection, and only the manager can hand it back. Without it
+            // the bridge ran the hooks and then dispatched the arguments they
+            // asked to replace.
+            Arc::clone(&self.hooks_manager),
+            // BRSDK encryption. A snapshot, like everything else in the grant:
+            // `set_vault` runs once when an app's agent is configured, long before
+            // any turn, so there is nothing a per-call re-read could observe. A
+            // grant without it dispatched the literal `{{vault:NAME}}` string,
+            // which is not an error anywhere — it is a valid string that goes out
+            // as a header and comes back 401.
+            self.vault.lock().await.clone(),
         ))
     }
 
@@ -7023,7 +7055,12 @@ impl Agent {
                 // those providers are non-streaming, so the whole child turn happens
                 // inside the awaited call and therefore inside this scope.
                 let bridge_lease = self
-                    .issue_tool_bridge(&session, &conversation_with_moim, &tools)
+                    .issue_tool_bridge(
+                        &session,
+                        &conversation_with_moim,
+                        &tools,
+                        cancel_token.clone(),
+                    )
                     .await;
                 let bridge_url = bridge_lease.as_ref().map(|l| l.url().to_string());
                 let mut stream = coding_agent_bridge::ACTIVE_BRIDGE_URL

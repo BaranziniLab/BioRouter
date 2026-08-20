@@ -78,10 +78,21 @@ worse, could shift the run onto a metered API key.
 
 ⚠ **This is a live maintenance hazard, not a hypothetical.** `--bare` is documented as becoming the
 **default for `-p`** in a future release. Two assertions stand against that: a unit test fails if
-`--bare` ever appears in the argument list, and `assert_subscription_auth` stops any turn whose
-reported `apiKeySource` is not `none`, so the day the default flips, BioRouter fails loudly instead
-of quietly billing an API account. If you are here because turns started failing with an
-authentication error naming `apiKeyHelper` after a `claude` upgrade, that assertion is what fired.
+`--bare` ever appears in the argument list, and `ClaudeCodeProvider::assert_subscription_auth` stops
+any turn whose reported `apiKeySource` is not `none`, so the day the default flips, BioRouter fails
+loudly instead of quietly billing an API account. If you are here because turns started failing with
+an authentication error naming `apiKeyHelper` after a `claude` upgrade, that assertion is what
+fired.
+
+The Codex provider has its own half of the same assertion, and the two are not interchangeable —
+they read different credentials on different protocols, so naming only the Claude Code one describes
+half the running system. `CodexProvider::assert_subscription` asks the live app server
+`account/read` before `thread/start` and refuses anything whose account `type` is not `chatgpt`
+(`apiKey`, `amazonBedrock`, or a type this build has never heard of). Both stop the turn with a
+`ProviderError::Authentication`, which is not retried and carries its own exit code; and both fail
+**open** when the child says nothing at all, including when an app server too old to know
+`account/read` simply ignores it and the ten-second timeout expires. See
+[How the coding-agent providers work](how-it-works.md) for why silence is not treated as evidence.
 
 ### The system prompt is replaced, not appended
 

@@ -165,14 +165,20 @@ const EXPECTED: &[Site] = &[
         needle: "CallCapability::public_enforced(",
         file: "crates/biorouter/src/providers/coding_agent/bridge.rs",
         count: 1,
-        what: "NOT a production decider: `mod tests`' `dummy_grant()` helper, which \
-               builds a `BridgeGrant` for the bridge's own unit tests and gives it \
-               the most restrictive pair rather than inventing a permissive one. \
-               Counted for the same reason `privacy/grant.rs`'s test helper is — a \
-               line-wise grep cannot tell a `#[cfg(test)]` block from production, and \
-               a filter that tried would blind the census to production too. The \
-               production side of this bridge decides in `Agent::issue_tool_bridge`, \
-               which is a `sample(` row above",
+        what: "NOT a production decider: `mod tests`' `test_capability()` helper, \
+               which every `BridgeGrant` the bridge's own unit tests build takes its \
+               pair from — the most restrictive one, rather than a permissive one \
+               invented for a test's convenience. Counted for the same reason \
+               `privacy/grant.rs`'s test helper is — a line-wise grep cannot tell a \
+               `#[cfg(test)]` block from production, and a filter that tried would \
+               blind the census to production too. The production side of this \
+               bridge decides in `Agent::issue_tool_bridge`, which is a `sample(` \
+               row above. ⚠ This row read `dummy_grant()` while four inline \
+               spellings had accumulated in that file, so the census sat RED \
+               through a whole branch whose own gate list never ran this binary. \
+               The single helper is what stops it drifting that way again: a new \
+               test that inlines the constructor still moves the count off 1 and \
+               still fires here",
     },
     // ---------------------------------------------------------- DR-26's third
     // axis, asked through the free function rather than off a capability. Its

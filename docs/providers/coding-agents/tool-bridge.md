@@ -52,7 +52,11 @@ A grant is a snapshot taken when the turn starts, not a handle back to the agent
 called from inside the agent's own stack and cannot hold a reference to it, and a grant that
 outlived its turn would be a capability with no owner. The snapshot carries the session, the
 permission mode, the extension manager, the inspection manager, the conversation, the already
-filtered tool set, and the turn's privacy capability.
+filtered tool set, the turn's privacy capability, **the turn's own cancellation token**, the
+session's hooks manager, and the app's secret vault when there is one. The last three are there
+because a bridged call is a tool call: without the token nothing the child started is reachable by
+Stop, without the hooks manager a `PreToolUse` rewrite cannot be collected, and without the vault a
+`{{vault:NAME}}` reaches the tool as a literal string.
 
 | Gate | Where it applies to a bridged call |
 | --- | --- |
@@ -60,7 +64,10 @@ filtered tool set, and the turn's privacy capability.
 | Tool inspectors (command policy, sensitive ops, everything in the inspector stack) | Run on every call, against the conversation snapshot and the session's permission mode. |
 | Permission mode | The inspectors' permission decision is honoured: denied is refused, and "no decision was reached" is refused too — an absent decision must never read as approval. |
 | Privacy Gate C | `dispatch_tool_call` is the one choke point every tool call passes through, and a bridged call goes through it with the turn's `CallCapability`. |
-| `.biorouterignore`, vault, session working directory | Whatever BioRouter's dispatcher and inspectors already enforce, because BioRouter is the process executing the tool. |
+| `PreToolUse` hook rewrites | Applied and then **re-judged**. The hooks have already run inside the inspector pass, so their `updatedInput` is collected and applied, and every inspector except the hook one re-runs on the rewritten arguments — otherwise a hook would be a hole straight through the security and permission gates, which only ever saw what the child's model asked for. The rewrite is taken scoped to this call's own request id, because the staging buffer is per session and bridged calls run concurrently. |
+| `text_editor` path jail | Pointed at **this** grant's mode before anything is dispatched. The jail is a process-global atomic whose only other setter is the agent's own inspection batch, which a coding-agent turn never reaches — so without this a bridged call ran under whatever the last session in the process left behind. It is correct at the instant it is written rather than for the duration of the call; see the residual noted below. |
+| `.biorouterignore`, vault, session working directory | Whatever BioRouter's dispatcher and inspectors already enforce, because BioRouter is the process executing the tool. A `{{vault:NAME}}` in the arguments is resolved on the leaf dispatch path, after the call has been judged and immediately before it runs — the same position the agent's own path uses, so the inspectors and the user's hooks never see the decrypted secret. |
+| Cancellation | The grant carries the turn's own token and hands it to `dispatch_tool_call`. Issue #72's process-tree kill, `AppState::cancel_turn` and the websocket `TurnGuard` all reach a running tool through that one token, so a token minted at the dispatch site would leave all three pulling on nothing — the user presses Stop, the child dies, and the `developer__shell` it launched keeps running detached. |
 
 ⚠ **The inspector pass is why this is not a thin proxy onto `ExtensionManager`.**
 `POST /agent/call_tool` *is* that thin proxy, and its own comment records the cost: it bypasses the
@@ -70,6 +77,19 @@ must be inspected exactly like the parent model's.
 The privacy capability is **sampled once**, when the grant is issued, and threaded from there. A
 gate on this path asks the sampled capability rather than re-reading the master switch — a second
 read is precisely the race `CallCapability` exists to close.
+
+⚠ **Two residuals, recorded rather than implied away.** The path jail is one process-global atomic
+shared by every session, and between the write and the dispatch the call awaits through the
+inspector pass — which executes the user's `PreToolUse` hooks as real shell commands. A concurrent
+writer in that window (another bridged call in another session, or an ordinary agent turn) can flip
+it, so an Approve-mode session's write can still land with the jail down. The agent's own path has
+the identical window; what the bridge changes is the frequency, from once per batch of the model's
+tool calls to once per bridged tool call. Closing it means making the jail per-call state instead of
+a process global. Separately, a hook's `additionalContext` and `systemMessage` have **nowhere to go**
+on this path — the model that made the call lives in another process, and the tool result is data
+rather than a channel for out-of-band prose — so the bridge drops its own staged entries
+deliberately, rather than leaving them for the session's next ordinary turn to inject into an
+unrelated transcript.
 
 ## A call needing approval is refused, not parked
 

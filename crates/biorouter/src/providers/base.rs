@@ -769,6 +769,34 @@ pub trait Provider: Send + Sync {
         None
     }
 
+    /// Whether this **instance** drives a child agent that must call back in over
+    /// MCP to use Biorouter's tools.
+    ///
+    /// True for exactly `claude_code` and `codex`: they run their own loop in a
+    /// child process, so a tool list in the request reaches nothing and the only
+    /// channel that returns a tool *result* into their live turn is
+    /// `providers::coding_agent::bridge`. Every other provider receives its tools
+    /// in the request, and issuing a grant for one would leave a live capability
+    /// on every turn in the process for nobody to use.
+    ///
+    /// An **instance** method for the same reason [`Self::tier`] and
+    /// [`Self::affiliation`] are, and their doc comments carry the full argument:
+    /// `get_name()` on a composite answers for the **lead alone**. Asking the name
+    /// meant a lead/worker pair whose worker is a coding agent got no bridge —
+    /// and the worker runs most of the turns, so the tool-less child was the
+    /// common case rather than the corner one.
+    ///
+    /// DEFAULT = the name lookup, which is right for every non-composite provider
+    /// because a provider instance built from a registry id *is* that id. The
+    /// composite is the one shape where instance and name disagree, and it
+    /// overrides. Note the direction of the two defaults differs from `tier`'s and
+    /// `affiliation`'s deliberately: theirs are fail-safe *restrictions*, while a
+    /// wrong answer here costs tools rather than granting reach — the grant is
+    /// still tier-filtered, still inspected, and still one turn long.
+    fn uses_tool_bridge(&self) -> bool {
+        crate::providers::coding_agent::bridge::provider_uses_bridge(self.get_name())
+    }
+
     // Internal implementation of complete, used by complete_fast and complete
     // Providers should override this to implement their actual completion logic
     async fn complete_with_model(

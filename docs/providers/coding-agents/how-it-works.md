@@ -194,10 +194,27 @@ Two independent defences follow from that, and both are required.
    `prepare_agent_child_command`, which removes the **daemon's** own secrets — in particular
    `BIOROUTER_SERVER__SECRET_KEY`, without which the child would be a fully authenticated client
    of BioRouter's REST API.
-2. **Assert what happened.** `system/init`'s `apiKeySource` must be `none` or absent. Anything
-   else stops the turn with an authentication error naming the likely cause, an `apiKeyHelper` in
-   a Claude Code settings file, which outranks subscription sign-in. Reaching this is a real
-   defect rather than a user error, because defence 1 should have made it impossible.
+2. **Assert what happened.** Each provider asks its own child, at turn time, which account the run
+   would be billed to, and stops the turn if the answer is not the subscription. Reaching either
+   assertion is a real defect rather than a user error, because defence 1 should have made it
+   impossible — but the two failure modes are separate credentials, so both are checked.
+
+   - **Claude Code**: `system/init`'s `apiKeySource` must be `none` or absent. Anything else stops
+     the turn with an authentication error naming the likely cause, an `apiKeyHelper` in a Claude
+     Code settings file, which outranks subscription sign-in.
+   - **Codex**: one `account/read` round trip on the app-server connection the turn is already
+     holding, taken **before** `thread/start`, so a refused turn costs no tokens at all. The
+     account's `type` must be `chatgpt`; `apiKey`, `amazonBedrock` and any future type stop the
+     turn. Deliberately read from the running app server rather than from `~/.codex/auth.json` —
+     the file is what the server *would* load, but the process is what actually bills, and
+     `CODEX_HOME`, a login after the file was read, or an install authenticating some other way
+     all separate the two.
+
+   Both fail **open on silence**: a missing `apiKeySource`, a missing `account`, an app server too
+   old to know `account/read`, or one that ignores the method until a ten-second timeout expires,
+   all continue the turn. A check that could not be obtained is not evidence of a metered run, and
+   turning "nothing" into a refusal would take a working CLI away from the user over a suspicion.
+   The metered case reports itself explicitly; it is never inferred from silence.
 
 ⚠ **`configure_subscription_child` must be called LAST**, after every `.env()`, `.envs()`,
 `.arg()` and `.current_dir()` on the command. Both scrubs manipulate the same environment map

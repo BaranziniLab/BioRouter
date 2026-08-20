@@ -72,7 +72,21 @@ pub fn set_path_jail_relaxed(relaxed: bool) {
     PATH_JAIL_RELAXED.store(relaxed, std::sync::atomic::Ordering::Relaxed);
 }
 
-fn path_jail_relaxed() -> bool {
+/// Read the jail's current state.
+///
+/// `pub` only so a caller can assert that it *set* the flag. The flag is
+/// process-global with no per-session copy, which makes "who wrote it last" the
+/// only thing that decides whether a write outside the working directory is
+/// rejected — and a caller that forgets to write it fails silently, in whichever
+/// direction the previous session happened to leave it. A caller that owns a
+/// dispatch path therefore needs to be able to prove it wrote the flag, and the
+/// only alternative proof is driving a real `text_editor` write in a temp
+/// directory and reading the rejection, which measures the jail rather than the
+/// wiring under test.
+///
+/// Not a policy question: nothing should *branch* on this outside the jail check
+/// below. The policy (which mode relaxes the jail) lives in `biorouter`.
+pub fn path_jail_relaxed() -> bool {
     PATH_JAIL_RELAXED.load(std::sync::atomic::Ordering::Relaxed)
 }
 

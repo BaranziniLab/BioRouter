@@ -366,6 +366,32 @@ impl Provider for LeadWorkerProvider {
         )
     }
 
+    /// The third override that exists because `get_name()` answers for the lead.
+    ///
+    /// **Either** half, and the asymmetry with `tier`'s `least` and
+    /// `affiliation`'s union is the point rather than an inconsistency. Those two
+    /// fold *constraints*, so the pair must be no more permissive than its most
+    /// restrictive half. This folds a *need*: the bridge is the only channel by
+    /// which either child can use a Biorouter tool at all, so a half that needs
+    /// one and does not get it runs tool-less — the exact failure the bridge was
+    /// built to remove.
+    ///
+    /// Asking the active half instead was considered and rejected.
+    /// `get_active_provider` depends on the turn count and the fallback state,
+    /// both of which advance *inside* `complete_with_model`; the grant is issued
+    /// before that call and its lease dropped after it, so a bridge decided from
+    /// the pre-call state would be right only until the pair switched, and wrong
+    /// silently. Whether this turn is a lead turn is also not knowable to
+    /// `issue_tool_bridge`, which holds a `dyn Provider` and no turn counter.
+    ///
+    /// What an unused grant costs is one nonce in a process-global map for the
+    /// length of one provider call, revoked when the lease drops. What a missing
+    /// one costs is a child agent that can read nothing and change nothing, and
+    /// reports the filesystem as read-only. The trade is not close.
+    fn uses_tool_bridge(&self) -> bool {
+        self.lead_provider.uses_tool_bridge() || self.worker_provider.uses_tool_bridge()
+    }
+
     fn get_model_config(&self) -> ModelConfig {
         // Return the lead provider's model config as the default
         // In practice, this might need to be more sophisticated
@@ -554,6 +580,63 @@ mod tests {
                 ProviderUsage::new(self.name.clone(), Usage::default()),
             ))
         }
+    }
+
+    /// A pair whose WORKER is a coding agent still gets a tool bridge.
+    ///
+    /// The worker is the half that runs most of a conversation's turns — every
+    /// turn after `lead_turns` — so a pair configured `anthropic` + `codex` is a
+    /// pair that is mostly Codex. Deciding from `get_name()` asked the lead and
+    /// answered "no bridge", and the child then ran with no access to any of
+    /// Biorouter's tools: it could not read a file, could not query SPOKE, and
+    /// (measured on the Codex path) reported the filesystem as read-only.
+    ///
+    /// The two assertions below are one claim in two halves, and the second is
+    /// what makes the first mean anything: the pair must answer yes *while*
+    /// `provider_uses_bridge(get_name())` answers no. Without that line the test
+    /// would still pass against the name lookup it exists to rule out.
+    #[tokio::test]
+    async fn a_pair_gets_a_bridge_when_either_half_needs_one() {
+        let coding_agent = || {
+            Arc::new(MockProvider {
+                name: "codex".to_string(),
+                model_config: ModelConfig::new_or_fail("gpt-5.5"),
+            })
+        };
+        let plain = || {
+            Arc::new(MockProvider {
+                name: "anthropic".to_string(),
+                model_config: ModelConfig::new_or_fail("claude-opus-4"),
+            })
+        };
+
+        let worker_is_codex = LeadWorkerProvider::new(plain(), coding_agent(), Some(3));
+        assert!(
+            !crate::providers::coding_agent::bridge::provider_uses_bridge(
+                worker_is_codex.get_name()
+            ),
+            "the premise: `get_name()` on a pair is the LEAD's name, so a name \
+             lookup cannot see the worker at all"
+        );
+        assert!(
+            worker_is_codex.uses_tool_bridge(),
+            "the worker runs every turn past the lead turns; without a bridge that \
+             child agent has no way to reach a single Biorouter tool"
+        );
+
+        let lead_is_codex = LeadWorkerProvider::new(coding_agent(), plain(), Some(3));
+        assert!(
+            lead_is_codex.uses_tool_bridge(),
+            "the lead's turns need the bridge just as much"
+        );
+
+        let neither = LeadWorkerProvider::new(plain(), plain(), Some(3));
+        assert!(
+            !neither.uses_tool_bridge(),
+            "a pair of ordinary providers receives its tools in the request; a \
+             grant here would be a live capability on every turn with nothing to \
+             use it"
+        );
     }
 
     #[tokio::test]
