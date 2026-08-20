@@ -1,5 +1,5 @@
 import SplitType from 'split-type';
-import { useEffect, useRef } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 
 interface TextSplitterOptions {
   resizeCallback?: () => void;
@@ -162,7 +162,32 @@ export function useTextAnimator({ text, enabled = true }: UseTextAnimatorProps) 
   const elementRef = useRef<HTMLSpanElement>(null);
   const animator = useRef<TextAnimator | null>(null);
 
-  useEffect(() => {
+  // ⚠ `useLayoutEffect`, and NOT `useEffect`, because the first frame the user
+  // sees is the whole point of an unroll.
+  //
+  // React paints the heading with its text at full opacity; `animate()` is what
+  // hides the characters so they can arrive. Run that from `useEffect` and the
+  // browser has already painted the finished sentence before the hook gets a
+  // turn — so the arrival reads as: the answer, a blink of nothing, then the
+  // answer again, slowly. The reported symptom on opening a new window, and it
+  // was two stacked delays rather than one: a post-paint effect, and then a
+  // further 100 ms `setTimeout` "to ensure content is ready" with the finished
+  // text on screen the whole time. A layout effect runs after the DOM is
+  // committed and BEFORE the paint, so the first frame already has the
+  // characters hidden with their animations running.
+  //
+  // The 100 ms bought nothing to begin with: `TextAnimator`'s constructor
+  // splits synchronously, and this split is `['words', 'chars']` with no
+  // `lines`, so nothing here depends on a measured layout (or on a webfont
+  // having settled) the way a line split would.
+  //
+  // ⚠ Hiding belongs HERE and not in the rendered markup. A `style={{opacity:
+  // 0}}` on the span would also kill the flash, and would leave the greeting
+  // permanently invisible for anyone whose branch below returns early —
+  // `enabled: false`, or `prefers-reduced-motion` — and for anyone whose
+  // animator throws. Nothing that has to run in order for text to be *visible*
+  // should live in an effect.
+  useLayoutEffect(() => {
     if (!elementRef.current) return;
 
     // ⚠ The caller decides WHETHER, this hook decides HOW. The greeting plays
@@ -175,17 +200,11 @@ export function useTextAnimator({ text, enabled = true }: UseTextAnimatorProps) 
       return;
     }
 
-    // Create animator
     animator.current = new TextAnimator(elementRef.current);
-
-    // Small delay to ensure content is ready
-    const timeoutId = setTimeout(() => {
-      animator.current?.animate();
-    }, 100);
+    animator.current.animate();
 
     // Cleanup
     return () => {
-      window.clearTimeout(timeoutId);
       if (animator.current) {
         animator.current.reset();
       }
