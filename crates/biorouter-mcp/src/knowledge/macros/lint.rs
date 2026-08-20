@@ -495,14 +495,6 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
         args.caller_is_private,
         &args.caller_affiliation,
     )?;
-    // Issue #56, both axes in one call under one lock — see
-    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
-    // two.
-    svc.raise_tier_and_affiliation(
-        &args.kb_id,
-        args.caller_is_private,
-        &args.caller_affiliation,
-    )?;
     let kb_root = paths::kb_root(svc.root(), &args.kb_id);
 
     // Migrate a stale `schema.md` (the sub-agent's system prompt) and refresh a
@@ -512,12 +504,37 @@ pub async fn lint(svc: &KnowledgeService, args: LintArgs) -> Result<LintResult> 
     let report = scan(&kb_root)?;
 
     if !args.autofix {
+        // ⚠ RETURN BEFORE THE RATCHET, and that ordering is the whole point.
+        //
+        // The raise used to sit at this macro's entry, above this return, so a
+        // scan that writes nothing still stamped the base. That is the exact
+        // thing `server.rs` refuses to do — "a preview writes nothing and must
+        // not raise a base's tier permanently because a private chat *looked*"
+        // — which is why the MCP `kb_lint` calls `scan` directly rather than
+        // coming through here. It went unnoticed because the HTTP and CLI
+        // surfaces used to hand this macro a hardcoded `ProviderTier::Public`,
+        // making the raise a no-op; the moment they started passing the
+        // caller's real tier, a read-only lint from any private chat began
+        // permanently privatising whatever public base it was pointed at, and
+        // stamping that base with the caller's institution — an owner nothing
+        // but deleting the base can remove.
         return Ok(LintResult {
             report,
             commit_sha: None,
             fixes_applied: 0,
         });
     }
+
+    // Issue #56, both axes in one call under one lock — see
+    // `KnowledgeService::raise_tier_and_affiliation` for why they cannot be
+    // two. It belongs HERE, on the writing half: `assert_reachable` above has
+    // already decided whether this caller may READ the base, and only an
+    // autofix changes it.
+    svc.raise_tier_and_affiliation(
+        &args.kb_id,
+        args.caller_is_private,
+        &args.caller_affiliation,
+    )?;
 
     let completer = args
         .completer
@@ -1474,10 +1491,50 @@ mod tests {
 
     // ── Issue #56, Task 10B: CP2 ────────────────────────────────────────────
 
-    /// The raise runs at the macro entry, before anything is scanned or fixed —
-    /// so a lint that never reaches its autofix has still stamped the base.
+    /// The other half of the pair: an AUTOFIX does write, so it must still
+    /// ratchet. Without this, moving the raise off the entry would have traded
+    /// one defect for its mirror image — a private chat rewriting a public
+    /// base's pages and leaving it public.
     #[tokio::test]
-    async fn the_lint_macro_ratchets_at_its_entry() {
+    async fn an_autofix_still_ratchets_because_it_writes() {
+        let (dir, svc) = fresh_svc();
+        let root = dir.path().to_path_buf();
+        assert!(!crate::knowledge::tier::is_private(&root, "k"));
+
+        // No completer, so the autofix path fails immediately AFTER the raise —
+        // which is what this asserts: the stamp lands on the writing half even
+        // when the write itself does not complete.
+        let _ = lint(
+            &svc,
+            LintArgs {
+                kb_id: "k".into(),
+                caller_is_private: true,
+                caller_affiliation: Default::default(),
+                completer: None,
+                autofix: true,
+                bounds: SubAgentBounds::default(),
+                event_sink: None,
+                cancel: None,
+            },
+        )
+        .await;
+
+        assert!(
+            crate::knowledge::tier::is_private(&root, "k"),
+            "an autofix from a private caller left the base public"
+        );
+    }
+
+    /// ⚠ A READ-ONLY LINT MUST NOT RATCHET. This asserted the opposite until
+    /// 2026-08-20, and the behaviour it pinned was a live defect: because the
+    /// HTTP and CLI lint routes hand this macro the caller's real tier, a
+    /// scan run from any private-model chat permanently privatised whatever
+    /// PUBLIC base it was pointed at and stamped that base with the caller's
+    /// institution — an owner only deleting the base can remove. `server.rs`
+    /// states the rule this restores: a preview writes nothing and must not
+    /// raise a base's tier because a private chat *looked*.
+    #[tokio::test]
+    async fn a_read_only_lint_does_not_ratchet_a_public_base() {
         let (dir, svc) = fresh_svc();
         let root = dir.path().to_path_buf();
         assert!(!crate::knowledge::tier::is_private(&root, "k"));
@@ -1498,8 +1555,8 @@ mod tests {
         .await;
 
         assert!(
-            crate::knowledge::tier::is_private(&root, "k"),
-            "the lint macro did not raise at its entry"
+            !crate::knowledge::tier::is_private(&root, "k"),
+            "a read-only lint permanently privatised a public base"
         );
     }
 
