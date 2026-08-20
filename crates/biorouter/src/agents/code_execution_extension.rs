@@ -421,6 +421,46 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Build the synthetic module for one MCP server: every tool as a named export,
+/// plus the server name bound to a namespace object carrying all of them.
+///
+/// ⚠ **The server name and a tool name can be the SAME string**, and when they
+/// are, the two exports are ONE binding, not two. `Module::synthetic` collects
+/// the export names into an `FxHashSet` (boa 0.21, `module/mod.rs`), so the
+/// duplicate collapses silently, and `set_export` writes by name — so whichever
+/// of the two ran last simply overwrote the other. Writing the namespace object
+/// last therefore replaced the tool's function with a plain object, and every
+/// call form the model is told to use threw `TypeError: not a callable
+/// function`. `chatrecall` (extension key `chatrecall`, sole tool `chatrecall`)
+/// is the built-in that hits this, and because `code_execution` strips every
+/// other tool from the model's list, chat recall was 100% unreachable in the
+/// shipped default configuration — issue #93. It was silent since the initial
+/// commit because every test fixture used a server and tool with different
+/// names.
+///
+/// Two decisions follow, and neither is cosmetic:
+///
+/// 1. **On a collision the namespace export is a CALLABLE that forwards to the
+///    colliding tool.** A function is an object, so the sibling tools attach to
+///    it as properties and all four documented import forms keep working —
+///    `ns.tool()`, `ns["tool"]()`, `import { tool }`, and
+///    `import { server }; server.other()` — with one binding serving both roles.
+///    Merely dropping the server-name export would fix the first three and
+///    break the fourth. The forwarder is a *fresh* function rather than the
+///    tool's own; see the note at its construction for the two things that
+///    buys.
+///
+/// 2. **Tools are attached with `create_data_property_or_throw`, not `set`.**
+///    `set` respects the receiver's existing property attributes, and a function
+///    object has non-writable own `name`/`length` and poisoned `caller`/
+///    `arguments` accessors. Under `set`, a server that collides *and* exposes a
+///    tool called `name` silently served the function's own name string instead
+///    of the tool, and one called `caller` made the whole module fail to
+///    construct — turning a one-tool bug into a whole-extension outage.
+///    `defineProperty` semantics ignore writability and setters, so every tool
+///    name behaves identically whatever the namespace object happens to be.
+///    It also removes a live footgun: `set` returns a `bool` for "refused", and
+///    the previous code mapped only the `Err` arm and dropped that `false`.
 fn create_server_module(
     server_name: &str,
     server_tools: &[&ToolInfo],
@@ -431,11 +471,16 @@ fn create_server_module(
         .map(|t| (t.tool_name.clone(), t.full_name.clone()))
         .collect();
 
+    // De-duplicated: a tool whose name equals the server name contributes ONE
+    // export, and boa would collapse the pair anyway. Making that explicit here
+    // is what stops the collapse being invisible.
     let mut export_names: Vec<JsString> = server_tools
         .iter()
         .map(|t| js_string!(t.tool_name.as_str()))
         .collect();
-    export_names.push(js_string!(server_name));
+    if !server_tools.iter().any(|t| t.tool_name == server_name) {
+        export_names.push(js_string!(server_name));
+    }
 
     let server_name_owned = server_name.to_string();
 
@@ -443,18 +488,78 @@ fn create_server_module(
         &export_names,
         SyntheticModuleInitializer::from_copy_closure_with_captures(
             |module, (tools, server_name), context| {
-                let namespace_obj = boa_engine::JsObject::with_null_proto();
-
+                // Build every tool function first: the namespace object may have
+                // to BE one of them.
+                let mut functions = Vec::with_capacity(tools.len());
                 for (tool_name, full_name) in tools.iter() {
                     let func = create_tool_function(full_name.clone());
-                    let js_func = func.to_js_function(context.realm());
-                    module.set_export(&js_string!(tool_name.as_str()), js_func.clone().into())?;
+                    functions.push((tool_name.clone(), func.to_js_function(context.realm())));
+                }
+
+                let colliding = functions
+                    .iter()
+                    .find(|(tool_name, _)| tool_name == server_name)
+                    .map(|(_, js_func)| js_func.clone());
+
+                let namespace_obj: boa_engine::JsObject = match &colliding {
+                    // A FRESH function that forwards to the colliding tool —
+                    // not the tool's own function object.
+                    //
+                    // Both shapes are callable and both carry the siblings, so
+                    // both fix the bug. Forwarding is better on two counts, and
+                    // neither is visible from the type:
+                    //
+                    // 1. Using the tool's own function makes every sibling an
+                    //    own property OF THE TOOL. `Object.getOwnPropertyNames`
+                    //    on it then reports the whole server, which is a lie
+                    //    about a value the script also holds directly through
+                    //    `import { tool }`.
+                    // 2. It also makes the namespace hold ITSELF (`ns.x.x.x…`).
+                    //    `record_result` serialises with `JsValue::to_json`,
+                    //    whose cycle detection returns `Err`, which the `.ok()`
+                    //    there swallows — so a script that put the namespace in
+                    //    its result silently got boa's debug rendering with
+                    //    `[Cycle]` in it instead of JSON. Measured both ways.
+                    //
+                    // The wrapper costs one extra call frame on colliding
+                    // servers only, and leaves the tool's own function pristine.
+                    Some(js_func) => {
+                        let target: boa_engine::JsObject = js_func.clone().into();
+                        NativeFunction::from_copy_closure_with_captures(
+                            |this, args, target: &boa_engine::JsObject, context| {
+                                target.clone().call(this, args, context)
+                            },
+                            target,
+                        )
+                        .to_js_function(context.realm())
+                        .into()
+                    }
+                    None => boa_engine::JsObject::with_null_proto(),
+                };
+
+                for (tool_name, js_func) in &functions {
+                    // `create_data_property_or_throw`, not `set` — see the note
+                    // on this function.
                     namespace_obj
-                        .set(js_string!(tool_name.as_str()), js_func, false, context)
+                        .create_data_property_or_throw(
+                            js_string!(tool_name.as_str()),
+                            js_func.clone(),
+                            context,
+                        )
                         .map_err(|e| {
                             JsNativeError::error().with_message(format!("Failed to set prop: {e}"))
                         })?;
+
+                    // The colliding tool shares its binding with the server-name
+                    // export below, which already holds the callable namespace.
+                    // Exporting it here too would be the very overwrite this
+                    // function exists to avoid.
+                    if tool_name != server_name {
+                        module
+                            .set_export(&js_string!(tool_name.as_str()), js_func.clone().into())?;
+                    }
                 }
+
                 module.set_export(&js_string!(server_name.as_str()), namespace_obj.into())?;
 
                 Ok(())
@@ -3305,14 +3410,24 @@ mod tests {
     }
 
     fn one_tool(server: &str, tool: &str) -> Vec<ToolInfo> {
-        vec![ToolInfo {
-            server_name: server.to_string(),
-            tool_name: tool.to_string(),
-            full_name: format!("{server}__{tool}"),
-            description: "A tool".to_string(),
-            params: vec![],
-            return_type: "string".to_string(),
-        }]
+        server_tools(server, &[tool])
+    }
+
+    /// A server exposing several tools. Needed because the interesting cases for
+    /// issue #93 are about how tools on the SAME server interact with the
+    /// server-name export — a one-tool fixture cannot express them.
+    fn server_tools(server: &str, tools: &[&str]) -> Vec<ToolInfo> {
+        tools
+            .iter()
+            .map(|tool| ToolInfo {
+                server_name: server.to_string(),
+                tool_name: (*tool).to_string(),
+                full_name: format!("{server}__{tool}"),
+                description: "A tool".to_string(),
+                params: vec![],
+                return_type: "string".to_string(),
+            })
+            .collect()
     }
 
     /// An unknown module specifier must name the module that failed AND the ones
@@ -3640,6 +3755,198 @@ mod tests {
             Ok("\"function\""),
             "import form did not produce a callable tool: {result:?}"
         );
+    }
+
+    /// ⚠ Issue #93. The twin of the test above, on a server whose name EQUALS
+    /// its tool's name — the shape `chatrecall` has, and the ONLY shape that
+    /// triggers the export collision.
+    ///
+    /// The test above cannot catch it and never could: `one_tool("developer",
+    /// "shell")` gives two distinct export names, so the server-name export and
+    /// the tool export land in different bindings. Every fixture in this file
+    /// was that shape, which is why a defect present since the initial commit
+    /// went unseen until a user enabled Chat Recall.
+    #[test_case(r#"import { chatrecall } from "chatrecall"; record_result(typeof chatrecall);"#; "named")]
+    #[test_case(r#"import * as ns from "chatrecall"; record_result(typeof ns.chatrecall);"#; "namespace")]
+    #[test_case(r#"import * as ns from "chatrecall"; record_result(typeof ns["chatrecall"]);"#; "bracket")]
+    #[test_case(r#"import { chatrecall as srv } from "chatrecall"; record_result(typeof srv.chatrecall);"#; "server_named")]
+    fn every_import_form_yields_a_callable_tool_when_the_server_shares_its_name(code: &str) {
+        let tools = one_tool("chatrecall", "chatrecall");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(code, &tools, tx);
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"function\""),
+            "a server named after its own tool must still export a callable: {result:?}"
+        );
+    }
+
+    /// The shadowing is per-TOOL, not per-server: on a multi-tool server only
+    /// the colliding tool was eaten, so the failure read as "one flaky tool"
+    /// rather than "this extension is broken". Both must be callable, and the
+    /// siblings must be reachable through the colliding name as well, since that
+    /// is what the server-named import form resolves to.
+    #[test]
+    fn a_colliding_tool_does_not_shadow_its_siblings() {
+        let tools = server_tools("fetch", &["fetch", "fetch_html"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import * as ns from "fetch";
+record_result([typeof ns.fetch, typeof ns.fetch_html, typeof ns.fetch.fetch_html].join(","));"#,
+            &tools,
+            tx,
+        );
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"function,function,function\""),
+            "a colliding tool must stay callable and must still carry its siblings: {result:?}"
+        );
+    }
+
+    /// ⚠ Why the namespace properties are defined with
+    /// `create_data_property_or_throw` and not `set`.
+    ///
+    /// On a collision the namespace object IS a function, and a function has
+    /// non-writable own `name`/`length` and poisoned `caller`/`arguments`
+    /// accessors. Under `set` semantics a sibling tool called `name` silently
+    /// resolved to the function's own name STRING, and one called `caller`
+    /// made the entire module fail to construct — a whole-extension outage
+    /// caused by a tool's name. `defineProperty` ignores writability and
+    /// setters, so the tool wins in every case.
+    ///
+    /// These names are not hypothetical for a third-party MCP server, and the
+    /// cost of getting them wrong is silent (`name`) or total (`caller`).
+    #[test_case("name"; "function_own_name")]
+    #[test_case("length"; "function_own_length")]
+    #[test_case("caller"; "poisoned_caller")]
+    #[test_case("arguments"; "poisoned_arguments")]
+    #[test_case("prototype"; "function_prototype")]
+    #[test_case("constructor"; "inherited_constructor")]
+    #[test_case("toString"; "inherited_tostring")]
+    #[test_case("__proto__"; "proto_accessor")]
+    fn a_tool_named_after_a_function_property_still_wins_on_a_colliding_server(tool: &str) {
+        let tools = server_tools("srv", &["srv", tool]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let code = format!(
+            r#"import * as ns from "srv"; import {{ srv }} from "srv";
+record_result([typeof ns["{tool}"], typeof srv["{tool}"], typeof ns.srv].join(","));"#
+        );
+        let result = run_js_module(&code, &tools, tx);
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"function,function,function\""),
+            "tool `{tool}` was lost to a Function property on the namespace: {result:?}"
+        );
+    }
+
+    /// The colliding server's namespace must NOT be the tool's own function.
+    ///
+    /// Both shapes are callable, so every other test here passes either way —
+    /// this is the one that pins the choice. Reusing the tool's function makes
+    /// the sibling tools own properties OF THE TOOL, so a script that inspects
+    /// the value it imported by name is told about the whole server.
+    #[test]
+    fn a_colliding_server_does_not_pollute_the_tools_own_function() {
+        let tools = server_tools("fetch", &["fetch", "fetch_html"]);
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import { fetch_html } from "fetch"; import * as ns from "fetch";
+record_result([
+  Object.getOwnPropertyNames(ns.fetch.fetch).join("|"),
+  Object.getOwnPropertyNames(ns.fetch).join("|"),
+].join(" // "));"#,
+            &tools,
+            tx,
+        );
+
+        assert_eq!(
+            result.as_deref(),
+            Ok("\"length|name // length|name|fetch|fetch_html\""),
+            "the namespace must carry the siblings and the underlying tool must not: {result:?}"
+        );
+    }
+
+    /// A script may put the namespace in its result. That must still serialise.
+    ///
+    /// `record_result` uses `JsValue::to_json`, whose cycle detection returns
+    /// `Err`, and the `.ok()` there swallows it and falls back to boa's debug
+    /// rendering. A namespace that held itself therefore came back as
+    /// `Function { … [Cycle] }` instead of JSON — silently, and only on the
+    /// colliding path.
+    #[test]
+    fn a_colliding_namespace_still_serialises_as_json() {
+        let tools = one_tool("chatrecall", "chatrecall");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import * as ns from "chatrecall"; record_result({ held: ns.chatrecall });"#,
+            &tools,
+            tx,
+        );
+
+        let out = result.expect("the module must evaluate");
+        assert!(
+            !out.contains("Cycle"),
+            "the namespace is self-referential, so `record_result` lost JSON: {out}"
+        );
+        assert!(
+            out.starts_with('{'),
+            "expected a JSON object, got boa's debug rendering: {out}"
+        );
+    }
+
+    /// The degenerate case: the colliding name is ALSO a Function property.
+    #[test]
+    fn a_server_and_tool_both_named_name_still_export_a_callable() {
+        let tools = one_tool("name", "name");
+        let (tx, _rx) = mpsc::unbounded_channel();
+
+        let result = run_js_module(
+            r#"import * as ns from "name"; record_result(typeof ns.name);"#,
+            &tools,
+            tx,
+        );
+
+        assert_eq!(result.as_deref(), Ok("\"function\""), "got {result:?}");
+    }
+
+    /// A colliding tool must still DISPATCH under its fully-qualified MCP name.
+    /// Making the namespace object double as the function must not disturb the
+    /// `server__tool` routing `create_tool_function` closes over — otherwise the
+    /// call would reach the wrong tool, which is worse than not reaching one.
+    #[test]
+    fn a_colliding_tool_dispatches_under_its_full_mcp_name() {
+        let tools = one_tool("chatrecall", "chatrecall");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+
+        let handle = std::thread::spawn(move || {
+            run_js_module(
+                r#"import { chatrecall } from "chatrecall"; record_result(chatrecall({ query: "x" }));"#,
+                &tools,
+                tx,
+            )
+        });
+
+        let (full_name, args_json, responder) = rx.blocking_recv().expect("a tool call");
+        assert_eq!(
+            full_name, "chatrecall__chatrecall",
+            "the colliding tool must dispatch under its prefixed MCP name"
+        );
+        assert!(
+            args_json.contains("\"query\""),
+            "arguments were not forwarded: {args_json}"
+        );
+        responder.send(Ok("ok".to_string())).unwrap();
+
+        let result = handle.join().unwrap();
+        assert_eq!(result.as_deref(), Ok("\"ok\""), "got {result:?}");
     }
 
     #[test]
