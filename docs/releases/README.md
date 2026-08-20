@@ -27,7 +27,7 @@ that path.
 ## Subdirectories
 
 - [`notes/`](notes/README.md) — the published per-version release notes, running from
-  `v1.75.2` (May 2026) through `v1.88.3` (July 18, 2026); not every point release in
+  `v1.75.2` (May 2026) through `v1.89.2` (August 20, 2026); not every point release in
   that range has a note. Each states its release date, links the repository,
   summarizes the headline changes, and lists the per-platform download artifacts and
   install steps. These are frozen records of what shipped, indexed by version in the

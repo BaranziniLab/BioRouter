@@ -16,7 +16,7 @@
     "start:test-error": "BIOROUTER_TEST_ERROR=true electron-forge start",
     "package": "node scripts/fix-node-pty-permissions.mjs && electron-forge package",
     "make": "node scripts/fix-node-pty-permissions.mjs && electron-forge make",
-    "bundle:default": "node scripts/build-auth-helper.mjs && node scripts/prepare-platform-binaries.js && npm run make && (cd out/Biorouter-darwin-arm64 && ditto -c -k --sequesterRsrc --keepParent Biorouter.app Biorouter.zip) || echo 'out/Biorouter-darwin-arm64 not found; either the binary is not built or you are not on macOS'",
+    "bundle:default": "node scripts/build-auth-helper.mjs && node scripts/prepare-platform-binaries.js && npm run make && (cd out/Biorouter-darwin-arm64 && ditto -c -k --sequesterRsrc --keepParent Biorouter.app Biorouter.zip)",
     "bundle:alpha": "ALPHA=true node scripts/prepare-platform-binaries.js && ALPHA=true npm run make && (cd out/Biorouter-darwin-arm64 && ditto -c -k --sequesterRsrc --keepParent Biorouter.app Biorouter_alpha.zip) || echo 'out/Biorouter-darwin-arm64 not found; either the binary is not built or you are not on macOS'",
     "bundle:windows": "node scripts/build-main.js && ELECTRON_PLATFORM=win32 node scripts/download-mingit.js && ELECTRON_PLATFORM=win32 node scripts/prepare-platform-binaries.js && npm run make -- --platform=win32 --arch=x64",
     "bundle:intel": "ELECTRON_ARCH=x64 node scripts/build-auth-helper.mjs && ELECTRON_ARCH=x64 node scripts/prepare-platform-binaries.js && npm run make -- --arch=x64 && cd out/Biorouter-darwin-x64 && ditto -c -k --sequesterRsrc --keepParent Biorouter.app Biorouter_intel_mac.zip",

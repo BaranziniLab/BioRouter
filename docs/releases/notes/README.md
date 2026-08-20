@@ -1,7 +1,7 @@
 # Release notes
 
 This folder holds user-facing release notes, running from v1.75.2 (May 2026) to
-v1.88.3 (July 2026). Not every point release in that range has a note here — v1.85.1
+v1.89.2 (August 2026). Not every point release in that range has a note here — v1.85.1
 shipped without one. Every note opens the same way: a one-paragraph summary of what
 the release is for, then a **Downloads** table naming the exact artifact filename for
 macOS Apple Silicon, macOS Intel, Windows, and Linux. The body varies by era — most
@@ -26,7 +26,9 @@ paper trail behind a feature (design specs, implementation plans, review records
 
 | Document | What it covers |
 | -------- | -------------- |
-| [v1.89.0](v1.89.0.md) | August 7, 2026. A turn now belongs to the session rather than the HTTP request, so a reload no longer kills work in flight and reopening a conversation attaches to the turn in progress; tabs can be torn off into their own window and merged back; the desktop interface is rebuilt on one design system with Figtree as the interface face; and `session attach` lets the terminal join and steer a running session. The newest release in this folder. |
+| [v1.89.2](v1.89.2.md) | August 20, 2026. A patch by version number and a substantial one by content: more than 120 commits finishing four areas that were visibly incomplete in v1.89.1. Adds **Claude Code** and **Codex** as providers that run on the subscription you already pay for, with no API key, handing the child agent Biorouter's own tools over a private MCP bridge that Biorouter serves and polices; moves knowledge bases onto the **Open Knowledge Format** with **BioOKF** as a strict biomedical profile, typed edges and a merge; stops the desktop app freezing at launch; and lets you generate diagnostics from a private chat, with a warning about what the file holds. The newest release in this folder. |
+| [v1.89.1](v1.89.1.md) | August 19, 2026. A patch release. Fixes the AWS Bedrock failure that could burn half an hour of a session producing nothing, sizes short chat messages to their own content instead of stretching them across the window, and finishes the terminology pass so the app calls a chat a chat. |
+| [v1.89.0](v1.89.0.md) | August 7, 2026. A turn now belongs to the session rather than the HTTP request, so a reload no longer kills work in flight and reopening a conversation attaches to the turn in progress; tabs can be torn off into their own window and merged back; the desktop interface is rebuilt on one design system with Figtree as the interface face; and `session attach` lets the terminal join and steer a running session. |
 | [v1.88.6](v1.88.6.md) | July 27, 2026. A reliability and fit-and-finish release closing every open issue on the tracker — twenty-four reports spanning headless concurrency, the agent's tool surface, provider coverage, local models, and the desktop interface. The headline fixes are the ones that made parallel work unsafe: concurrent headless runs aborting with a database error, and unattended runs stalling on a permission prompt nobody could answer. |
 | [v1.88.5](v1.88.5.md) | July 21, 2026. An agent-autonomy and desktop-polish release. Introduces **Fully-Automatic mode** — broad file autonomy, stopping only for genuinely sensitive system operations — hardens the permission engine against false-positive prompts that could stall an unattended run, and lands desktop chat, tab, terminal, and artifact-preview fixes on top of the v1.88.3 interface-cohesion work. |
 | [v1.88.3](v1.88.3.md) | July 18, 2026. Completes the interface-cohesion redesign and relicenses the brand mark — the wordmark and BR icon move to Inter, an open-licensed typeface that may legally be used as a logo — and lands a cohesive desktop tab, terminal, and navigation model plus artifact-preview and permission hardening. |

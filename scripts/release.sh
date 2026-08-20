@@ -229,7 +229,13 @@ cmd_mac-arm64() {
   stage_bin "$ROOT/target/release"
   log "building + notarizing macOS arm64 dmg"
   ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:default )
-  log "arm64 dmg: $DESK/out/make/Biorouter-$v-arm64.dmg"
+  # ⚠ Assert, do not announce. `bundle:default` used to end in `|| echo …`, which
+  # turned every failure into exit 0, so this phase could not fail and printed a
+  # path for a dmg it had not built. The `||` is gone from package.json now; this
+  # check is the belt to that braces, and mirrors what cmd_linux already does.
+  local dmg="$DESK/out/make/Biorouter-$v-arm64.dmg"
+  [ -f "$dmg" ] || die "mac-arm64 reported success but produced no dmg at $dmg"
+  log "arm64 dmg: $dmg"
 }
 
 cmd_mac-intel() {
@@ -238,7 +244,9 @@ cmd_mac-intel() {
   stage_bin "$ROOT/target/x86_64-apple-darwin/release"
   log "building + notarizing macOS Intel dmg"
   ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:intel )
-  log "x64 dmg: $DESK/out/make/Biorouter-$v-x64.dmg"
+  local dmg="$DESK/out/make/Biorouter-$v-x64.dmg"
+  [ -f "$dmg" ] || die "mac-intel reported success but produced no dmg at $dmg"
+  log "x64 dmg: $dmg"
 }
 
 # ── windows packaging (host forge, Node 24) ───────────────────────────────────
@@ -370,8 +378,16 @@ cmd_mac-manifest() {
   [ -f "$armzip" ] || die "mac arm64 zip missing — run: scripts/release.sh mac-arm64 $v"
   [ -f "$x64zip" ] || die "mac x64 zip missing — run: scripts/release.sh mac-intel $v"
   log "generating latest-mac.yml for v$v"
+  # The manifest filename carries no version, so a failed or interrupted run
+  # leaves the PREVIOUS release's file sitting there — and everything downstream
+  # (verify, draft, and ultimately electron-updater) would accept it as this
+  # release's. Remove it first so a failure is visibly missing rather than
+  # quietly stale.
+  rm -f "$DESK/out/make/latest-mac.yml"
   ( cd "$DESK" && node scripts/generate-update-manifests.js \
       --version "$v" --arm64-zip "$armzip" --x64-zip "$x64zip" --out "$DESK/out/make" )
+  [ -f "$DESK/out/make/latest-mac.yml" ] \
+    || die "manifest generation reported success but wrote no latest-mac.yml"
   log "latest-mac.yml: $DESK/out/make/latest-mac.yml"
 }
 
@@ -396,6 +412,20 @@ cmd_draft() {
   local v="$1"
   local notes="$ROOT/docs/releases/notes/v$v.md"
   [ -f "$notes" ] || die "release notes missing: $notes"
+
+  # ⚠ The tag is cut from `--target main`, i.e. from what GITHUB has, not from
+  # this working tree. Nothing in this script pushes, so a release built and
+  # verified entirely from local commits would tag the PREVIOUS version's tree
+  # and ship assets that disagree with the source the tag points at. Refuse
+  # instead, and say exactly what to do.
+  git -C "$ROOT" fetch origin main --quiet 2>/dev/null || true
+  git -C "$ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null \
+    || die "HEAD is not on origin/main, so 'gh release create --target main' would tag a tree without this release. Run: git push origin main"
+  local remote_version
+  remote_version="$(git -C "$ROOT" show origin/main:Cargo.toml 2>/dev/null \
+    | perl -0ne 'print $1 if /\[workspace\.package\].*?version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s')"
+  [ "$remote_version" = "$v" ] \
+    || die "origin/main is at version '$remote_version' but this release is $v. Push the bump first: git push origin main"
   cmd_mac-manifest "$v"
   local assets=()
   while IFS= read -r asset; do
@@ -429,6 +459,11 @@ cmd_all() {
   cmd_cli-linux "$v"                                                    # headless CLI deb/rpm
   cmd_headless-linux "$v"                                                # browser-served headless Linux
   ( cd "$DESK" && npm ci >/dev/null 2>&1 )
+  # Before verify, not after: verify inspects latest-mac.yml, so generating it
+  # only inside cmd_draft left a full run checking a manifest from the PREVIOUS
+  # release. cmd_mac-manifest is idempotent, so cmd_draft's own call can stay and
+  # `draft` remains correct when run standalone.
+  cmd_mac-manifest "$v"
   cmd_verify "$v"; cmd_draft "$v"
   log "draft created; run the native Windows smoke workflow, then: scripts/release.sh publish $v"
 }
@@ -492,7 +527,13 @@ case "$CMD" in
       log "resolved '$VER' → $RESOLVED (current: $(current_version))"
     fi
     "cmd_${CMD}" "$RESOLVED"
-    [ "$CMD" = bump ] && log "later phases take this explicitly, e.g. scripts/release.sh backends $RESOLVED"
+    # ⚠ `if`, not `[ … ] && log …`. As an `&&` chain this was the case arm's LAST
+    # statement, so on `all` the false test made the whole script exit 1 after a
+    # completely successful release — and a caller checking the status would have
+    # treated a good run as a failed one.
+    if [ "$CMD" = bump ]; then
+      log "later phases take this explicitly, e.g. scripts/release.sh backends $RESOLVED"
+    fi
     ;;
   backends|linux-backend|mac-arm64|mac-intel|mac-manifest|windows|linux|cli-linux|headless-linux|verify|draft|publish)
     need_version "$VER"

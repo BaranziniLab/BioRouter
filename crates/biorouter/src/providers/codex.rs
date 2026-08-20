@@ -374,10 +374,12 @@ impl CodexProvider {
     /// Answer a server-originated request.
     ///
     /// Anything that would let the child act on the machine is refused. The child
-    /// is configured with a read-only sandbox and no tools of its own, so an
-    /// approval request here means it is reaching for authority it was not given,
-    /// and the honest answer is no. Elicitation is accepted because that is how an
-    /// MCP tool call Biorouter itself is serving gets its go-ahead — and those run
+    /// is configured with a read-only sandbox; its own `exec` and `apply_patch`
+    /// remain (they cannot be switched off — see `thread_params`), but the sandbox
+    /// is what keeps them from writing. So an approval request here means it is
+    /// reaching for authority it was not given, and the honest answer is no.
+    /// Elicitation is accepted because that is how an MCP tool call Biorouter
+    /// itself is serving gets its go-ahead — and those run
     /// in Biorouter's dispatcher, behind Biorouter's gates.
     fn decide(method: &str) -> Value {
         match method {
