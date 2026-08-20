@@ -57,7 +57,30 @@ async fn grant() -> bridge::BridgeGrant {
         CallCapability::public_enforced(),
         vec![advertised_tool()],
         Conversation::new_unvalidated(vec![]),
+        // No cancel token, no hooks, no vault: these tests are about the HTTP
+        // surface — reachability, the tool list, the lease's lifetime — and none
+        // of them dispatches anything. The three snapshots the agent hands a real
+        // grant are exercised where they act, in the bridge's own unit tests.
+        None,
+        no_hooks(),
+        None,
     )
+}
+
+/// A hooks manager with nothing configured.
+///
+/// The grant needs one because a PreToolUse hook can *rewrite* a tool call's
+/// arguments and the rewrite is staged inside the manager rather than returned
+/// from the inspection — so a grant without it would run the user's hooks and
+/// then dispatch the arguments they asked to replace. Empty here: these tests
+/// configure no hooks, so `take_tool_input_rewrites` returns nothing and the
+/// bridge's rewrite path short-circuits.
+fn no_hooks() -> Arc<biorouter::hooks::HooksManager> {
+    Arc::new(biorouter::hooks::HooksManager::with_config(
+        Default::default(),
+        false,
+        Arc::new(tokio::sync::Mutex::new(None)),
+    ))
 }
 
 /// The whole lifecycle in one test, because the assertions are sequential: a grant
@@ -455,6 +478,14 @@ async fn real_developer_grant(working_dir: &std::path::Path) -> bridge::BridgeGr
         CallCapability::public_enforced(),
         tools,
         Conversation::new_unvalidated(vec![]),
+        // A turn's cancel token would be the agent's; this grant has no turn
+        // behind it, and `None` means "never cancelled", which is what a test
+        // driving the call to completion wants. No hooks and no vault for the
+        // same reason the simpler grant above has none — nothing here configures
+        // either, and both paths short-circuit when empty.
+        None,
+        no_hooks(),
+        None,
     )
 }
 

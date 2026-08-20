@@ -135,6 +135,19 @@ pub struct BridgeGrant {
 }
 
 impl BridgeGrant {
+    /// Ten arguments, and grouping them would make this worse rather than
+    /// tidier.
+    ///
+    /// Each one is a distinct thing the agent has to remember to hand over, and
+    /// three of them (the cancel token, the hooks manager, the vault) were
+    /// discovered missing precisely by reading this list against what
+    /// `Agent::dispatch_tool_call` does. A `BridgeContext` wrapper would hide the
+    /// list behind a name and move the omission one file further from the reader
+    /// without removing a single field; the flat call site is what makes the
+    /// audit possible. The pattern (an `allow` plus a reason) is the one used at
+    /// fourteen other sites in this workspace, `Agent::inspect_and_gate_tool_requests`
+    /// among them.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session: Session,
         mode: BioRouterMode,
@@ -379,7 +392,7 @@ impl BridgeGrant {
     /// the child gets is the honest execution of the rewritten call.
     async fn collect_hook_rewrites(
         &self,
-        requests: &mut Vec<ToolRequest>,
+        requests: &mut [ToolRequest],
         inspections: &mut Vec<crate::tool_inspection::InspectionResult>,
     ) -> anyhow::Result<()> {
         let rewrites = self.hooks.take_tool_input_rewrites(&self.session.id);
@@ -617,7 +630,7 @@ mod tests {
         // `call()` writes the process-global path jail on its way in, so this
         // shares the lock with the test that asserts on that flag even though it
         // asserts nothing about it itself.
-        let _guard = path_jail_lock();
+        let _guard = path_jail_lock().await;
         let grant = dummy_grant();
         let call = CallToolRequestParams {
             name: "developer__shell".to_string().into(),
@@ -699,7 +712,7 @@ mod tests {
         // `PATH_JAIL_RELAXED` is process-global, so the two grants below have to
         // take turns; a `tokio::test` gives each its own runtime but not its own
         // process.
-        let _guard = path_jail_lock();
+        let _guard = path_jail_lock().await;
 
         for (mode, expected) in [
             (BioRouterMode::Auto, true),
@@ -752,7 +765,7 @@ mod tests {
     /// the returned rows name which arguments reached SQLite.
     #[tokio::test]
     async fn a_pretooluse_rewrite_decides_what_a_bridged_call_runs() {
-        let _guard = path_jail_lock();
+        let _guard = path_jail_lock().await;
         let fixture = GeneFixture::new().await;
 
         let hooks = hooks_rewriting_query_to("17");
@@ -791,7 +804,7 @@ mod tests {
     /// policy denial — which is why this asserts on the *reason*.
     #[tokio::test]
     async fn a_rewritten_call_is_re_judged_by_the_security_floor() {
-        let _guard = path_jail_lock();
+        let _guard = path_jail_lock().await;
         let fixture = GeneFixture::new().await;
 
         let hooks = hooks_rewriting_shell_to("rm -rf /");
@@ -830,7 +843,7 @@ mod tests {
     /// never names.
     #[tokio::test]
     async fn a_bridged_call_resolves_its_vault_references() {
-        let _guard = path_jail_lock();
+        let _guard = path_jail_lock().await;
         let fixture = GeneFixture::new().await;
 
         let hooks = no_hooks();
@@ -860,7 +873,7 @@ mod tests {
     /// (non-BRSDK) sessions are this case, and they are the overwhelming majority.
     #[tokio::test]
     async fn without_a_vault_a_placeholder_is_left_as_written() {
-        let _guard = path_jail_lock();
+        let _guard = path_jail_lock().await;
         let fixture = GeneFixture::new().await;
 
         let hooks = no_hooks();
@@ -1049,12 +1062,19 @@ mod tests {
     }
 
     /// Serializes every test in this module that touches the process-global path
-    /// jail. Poison is recovered rather than propagated: the guarded value is a
-    /// `()` and a panicking test leaves no half-updated invariant behind, so
-    /// refusing to run the next test would only convert one failure into two.
-    fn path_jail_lock() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    /// jail.
+    ///
+    /// `tokio::sync::Mutex` rather than `std::sync::Mutex`, and not as a style
+    /// preference: every holder of this guard awaits while holding it (that is
+    /// the point — the whole `call()` has to run without another test moving the
+    /// flag underneath it), and a `std` guard held across an await blocks the
+    /// runtime's worker thread. It also has no poisoning to recover from, which
+    /// is right here: the guarded value is `()`, so a panicking test leaves
+    /// nothing half-updated and refusing to run the next test would turn one
+    /// failure into two.
+    async fn path_jail_lock() -> tokio::sync::MutexGuard<'static, ()> {
+        static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+        LOCK.lock().await
     }
 
     fn dummy_grant() -> BridgeGrant {
