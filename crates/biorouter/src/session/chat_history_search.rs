@@ -269,7 +269,17 @@ impl<'a> ChatHistorySearch<'a> {
             r#"
             SELECT
                 s.id as session_id,
-                s.description as session_description,
+                -- ⚠ `sessions.description` is a DEAD legacy column: nothing in
+                -- production has written it since the title moved to
+                -- `sessions.name`, so reading it alone rendered every recall hit
+                -- as "Session:  (ID: …)" — an anonymous row the model cannot use
+                -- to decide which chat to open. This COALESCE is the same
+                -- fallback `session_manager.rs`'s summary query already uses, and
+                -- keeping `description` in it is what preserves rows written
+                -- before the rename. NO placeholder here on purpose: both
+                -- builders bind strictly positionally, so a `?` would shift every
+                -- later ordinal and mis-bind silently.
+                COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') as session_description,
                 s.working_dir as session_working_dir,
                 s.created_at as session_created_at,
                 m.role,
@@ -320,11 +330,15 @@ impl<'a> ChatHistorySearch<'a> {
         if let Some(exclude_id) = &self.exclude_session_id {
             query_builder = query_builder.bind(exclude_id);
         }
+        // ⚠ `.naive_utc()`, never the `DateTime<Utc>` itself. `messages.timestamp`
+        // is TEXT in `%F %T` form and this is a string comparison; sqlx encodes a
+        // `DateTime` as RFC3339 (`…T…+00:00`), whose 'T' sorts AFTER the space,
+        // so binding it silently drops the boundary day instead of erroring.
         if let Some(after) = self.after_date {
-            query_builder = query_builder.bind(after);
+            query_builder = query_builder.bind(after.naive_utc());
         }
         if let Some(before) = self.before_date {
-            query_builder = query_builder.bind(before);
+            query_builder = query_builder.bind(before.naive_utc());
         }
         // Issue #56 DR-26 / Task 50 Step 3. Bound HERE — after `before_date`,
         // before the limit — because the clause is appended in exactly that
@@ -349,11 +363,15 @@ impl<'a> ChatHistorySearch<'a> {
             query_builder = query_builder.bind(exclude_id);
         }
 
+        // ⚠ `.naive_utc()`, never the `DateTime<Utc>` itself. `messages.timestamp`
+        // is TEXT in `%F %T` form and this is a string comparison; sqlx encodes a
+        // `DateTime` as RFC3339 (`…T…+00:00`), whose 'T' sorts AFTER the space,
+        // so binding it silently drops the boundary day instead of erroring.
         if let Some(after) = self.after_date {
-            query_builder = query_builder.bind(after);
+            query_builder = query_builder.bind(after.naive_utc());
         }
         if let Some(before) = self.before_date {
-            query_builder = query_builder.bind(before);
+            query_builder = query_builder.bind(before.naive_utc());
         }
         // See the twin in `fetch_rows_fts`.
         if let Some((_, Some(institution))) = self.affiliation_clause() {
@@ -375,9 +393,13 @@ impl<'a> ChatHistorySearch<'a> {
     fn build_sql(&self, keywords: &[String]) -> String {
         let mut sql = String::from(
             r#"
-            SELECT 
+            SELECT
                 s.id as session_id,
-                s.description as session_description,
+                -- The twin of the COALESCE in `fetch_rows_fts`; see the note
+                -- there. The two builders must render the same title or a recall
+                -- would be named on an FTS-backed store and anonymous on the
+                -- `LIKE` fallback.
+                COALESCE(NULLIF(s.name, ''), NULLIF(s.description, ''), 'Untitled chat') as session_description,
                 s.working_dir as session_working_dir,
                 s.created_at as session_created_at,
                 m.role,
@@ -810,8 +832,16 @@ mod tests {
             .await
             .unwrap();
 
+        // ⚠ This fixture must mirror PRODUCTION's `sessions` shape, which has
+        // BOTH `name` (where the title actually lives) and the legacy, never
+        // written `description`. It used to declare `description` only, so every
+        // test here seeded a title into a column production leaves empty — which
+        // is exactly why the empty-"Session:" bug passed a green suite for as
+        // long as it existed. Seed titles into `name`; `description` is only
+        // written by the one back-compat test that needs a pre-rename row.
         sqlx::query(
-            "CREATE TABLE sessions (id TEXT PRIMARY KEY, description TEXT NOT NULL DEFAULT '', \
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', \
+             description TEXT NOT NULL DEFAULT '', \
              working_dir TEXT NOT NULL DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, \
              privacy_tier TEXT NOT NULL DEFAULT 'public')",
         )
@@ -841,7 +871,7 @@ mod tests {
             let sid = format!("s{i}");
             let ts = base - chrono::Duration::seconds(i as i64);
             sqlx::query(
-                "INSERT INTO sessions (id, description, working_dir, privacy_tier) \
+                "INSERT INTO sessions (id, name, working_dir, privacy_tier) \
                  VALUES (?, ?, ?, ?)",
             )
             .bind(&sid)

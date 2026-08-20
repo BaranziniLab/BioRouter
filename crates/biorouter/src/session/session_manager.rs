@@ -13689,8 +13689,16 @@ mod tests {
             .connect_with(opts)
             .await
             .unwrap();
+        // `name` is present because migration arm 4 adds it, and every pool the
+        // search can ever see has been through `run_migrations` (or
+        // `create_schema`) via `SessionStorage::pool`. `messages_fts` only
+        // arrives in arm 15, so a database can lack the FTS index and still have
+        // `name` — that gap is exactly what this test exercises. What it must
+        // NOT do is model a pre-arm-4 shape: this fixture used to omit `name`
+        // entirely, which is unreachable in production and quietly pinned the
+        // recall query to the dead `description` column.
         sqlx::query(
-            "CREATE TABLE sessions (id TEXT PRIMARY KEY, description TEXT DEFAULT '', working_dir TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, name TEXT DEFAULT '', description TEXT DEFAULT '', working_dir TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)",
         )
         .execute(&pool)
         .await
@@ -13701,7 +13709,7 @@ mod tests {
         .execute(&pool)
         .await
         .unwrap();
-        sqlx::query("INSERT INTO sessions (id) VALUES ('s1')")
+        sqlx::query("INSERT INTO sessions (id, name) VALUES ('s1', 'Ribosome notes')")
             .execute(&pool)
             .await
             .unwrap();
@@ -13734,6 +13742,10 @@ mod tests {
             "LIKE fallback still finds the message"
         );
         assert_eq!(res.results[0].session_id, "s1");
+        assert_eq!(
+            res.results[0].session_description, "Ribosome notes",
+            "the LIKE fallback must name the session too, not just the FTS path"
+        );
     }
 
     #[tokio::test]

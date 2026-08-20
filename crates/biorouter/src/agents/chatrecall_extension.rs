@@ -34,6 +34,45 @@ struct ChatRecallParams {
     before_date: Option<String>,
 }
 
+/// How much of one matched message SEARCH prints.
+///
+/// ⚠ Recall is a *locator*, not a transcript reader: the model gets session ids
+/// and reads the interesting one with LOAD (or `workspace_read_conversation`).
+/// Printing whole messages made the answer scale with how much the user had
+/// written rather than with how many things matched — measured at 779,488
+/// characters (~195k tokens) for one ordinary query at `limit: 50`, roughly 8x
+/// the 25k-token inline cap, which pushes the entire result into a file the
+/// model then has to go and grep. At this width a full 50-hit search stays
+/// inside the cap and remains directly readable.
+const MAX_EXCERPT_CHARS: usize = 1200;
+
+/// How much of one message LOAD prints. Wider than [`MAX_EXCERPT_CHARS`] because
+/// LOAD shows at most six messages and exists so the model can actually read
+/// them — but still bounded, because a rendered tool call includes its arguments
+/// and a `text_editor` write carries an entire file in those.
+const MAX_LOAD_MESSAGE_CHARS: usize = 4000;
+
+/// One matched message, clipped to [`MAX_EXCERPT_CHARS`] on a char boundary.
+/// The marker is load-bearing: silent truncation would let the model conclude a
+/// message does not mention something when it simply was not shown.
+fn excerpt(content: &str) -> String {
+    clip(
+        content,
+        MAX_EXCERPT_CHARS,
+        "load this session for the full message",
+    )
+}
+
+/// Clip `content` to `max` CHARACTERS (never bytes — slicing by byte offset
+/// would panic mid-codepoint on any non-ASCII transcript).
+fn clip(content: &str, max: usize, hint: &str) -> String {
+    if content.chars().count() <= max {
+        return content.to_string();
+    }
+    let clipped: String = content.chars().take(max).collect();
+    format!("{clipped}… [truncated; {hint}]")
+}
+
 pub struct ChatRecallClient {
     info: InitializeResult,
     context: PlatformExtensionContext,
@@ -211,38 +250,57 @@ impl ChatRecallClient {
                         total
                     );
 
+                    // ⚠ Render EVERY content part, not just `as_text()`.
+                    // A tool call, a tool response and a thinking block all
+                    // return `None` there, so a message that carried only tool
+                    // traffic used to print its header and an empty body —
+                    // 62% of messages in a real store. `chat_fts::searchable_parts`
+                    // is the same flattening SEARCH mode already renders and the
+                    // FTS index already stores, so the two halves of this tool
+                    // can no longer disagree about what a message says.
+                    let render = |msg: &crate::conversation::message::Message| -> String {
+                        let parts = crate::session::chat_fts::searchable_parts(&msg.content);
+                        if parts.is_empty() {
+                            "[no renderable content]".to_string()
+                        } else {
+                            clip(
+                                &parts.join("\n"),
+                                MAX_LOAD_MESSAGE_CHARS,
+                                "read this session with workspace_read_conversation for the full text",
+                            )
+                        }
+                    };
+
                     // Show first 3 messages
                     let first_count = std::cmp::min(3, total);
                     output.push_str("--- First Few Messages ---\n\n");
                     for (idx, msg) in msgs.iter().take(first_count).enumerate() {
                         output.push_str(&format!("{}. [{:?}] ", idx + 1, msg.role));
-                        for content in &msg.content {
-                            if let Some(text) = content.as_text() {
-                                output.push_str(text);
-                                output.push('\n');
-                            }
-                        }
-                        output.push('\n');
+                        output.push_str(&render(msg));
+                        output.push_str("\n\n");
                     }
 
-                    // Show last 3 messages (if different from first)
-                    if total > first_count {
+                    // Show the last few messages that the first block did not
+                    // already print.
+                    //
+                    // ⚠ `skip_count` must never fall BELOW `first_count`, or the
+                    // two blocks overlap and the same message is printed twice
+                    // under two different numbers. `total - min(3, total)` alone
+                    // does exactly that at total = 4 (repeats #2 and #3) and
+                    // total = 5 (repeats #3) — the only two sizes where the
+                    // windows meet, and 244 sessions in a real store are in that
+                    // range, which is why "it looked fine" for 3 and for 6.
+                    let skip_count = std::cmp::max(first_count, total.saturating_sub(3));
+                    if skip_count < total {
                         output.push_str("--- Last Few Messages ---\n\n");
-                        let last_count = std::cmp::min(3, total);
-                        let skip_count = total.saturating_sub(last_count);
                         for (idx, msg) in msgs.iter().skip(skip_count).enumerate() {
                             output.push_str(&format!(
                                 "{}. [{:?}] ",
                                 skip_count + idx + 1,
                                 msg.role
                             ));
-                            for content in &msg.content {
-                                if let Some(text) = content.as_text() {
-                                    output.push_str(text);
-                                    output.push('\n');
-                                }
-                            }
-                            output.push('\n');
+                            output.push_str(&render(msg));
+                            output.push_str("\n\n");
                         }
                     }
 
@@ -329,11 +387,26 @@ impl ChatRecallClient {
                     let formatted_results = if results.total_matches == 0 {
                         format!("No results found for query: '{}'", query)
                     } else {
+                        // ⚠ `total_matches` is the count of rows that came back
+                        // AFTER `LIMIT`, not the number that matched. Printing it
+                        // as "Found N" told the model N was the whole answer
+                        // whenever the search hit its cap, which is exactly when
+                        // that is least true. Say "at least" and name the lever.
+                        let capped = results.total_matches >= limit;
                         let mut output = format!(
-                            "Found {} matching message(s) across {} session(s) for query: '{}'\n\n",
+                            "Found {}{} matching message(s) across {} session(s) for query: '{}'\n{}\n",
+                            if capped { "at least " } else { "" },
                             results.total_matches,
                             results.results.len(),
-                            query
+                            query,
+                            if capped {
+                                format!(
+                                    "(the {limit}-message limit was reached, so there are more \
+                                     matches than are shown; narrow the query or raise `limit`)\n"
+                                )
+                            } else {
+                                String::new()
+                            }
                         );
                         for (idx, result) in results.results.iter().enumerate() {
                             output.push_str(&format!(
@@ -353,8 +426,7 @@ impl ChatRecallClient {
                                     idx + 1,
                                     msg_idx + 1,
                                     message.role,
-                                    message
-                                        .content
+                                    excerpt(&message.content)
                                         .lines()
                                         .map(|line| format!("   {}", line))
                                         .collect::<Vec<_>>()
@@ -387,8 +459,9 @@ impl ChatRecallClient {
             indoc! {r#"
                 Search past chat or load session summaries. Use when it is clear user expects some memory or context.
 
-                search mode (query): Use multiple keywords/synonyms. Returns messages grouped by session, ordered by recency. Supports date filters.
-                load mode (session_id): Returns first/last 3 messages of a session.
+                search mode (query): Use multiple keywords/synonyms; any of them may match. Returns messages grouped by session, best match first, each message clipped to an excerpt. `limit` caps MESSAGES, not sessions, so a broad query can return few sessions — narrow it rather than raising the limit. Date filters are inclusive of their own day.
+                load mode (session_id): Returns the first and last few messages of one session, each clipped to a long excerpt.
+                Mutually exclusive: if both are given, session_id wins and query is ignored.
             "#}
             .to_string(),
             input_schema,
