@@ -409,10 +409,15 @@ impl SourcePages {
     /// checking both would let a legacy path that happens to exist speak for a
     /// source some *other* page already stands for.
     fn pages_for(&self, raw_id: &str) -> Vec<String> {
-        self.by_raw_id
-            .get(raw_id)
-            .cloned()
-            .unwrap_or_else(|| vec![format!("knowledge/sources/{raw_id}.md")])
+        self.by_raw_id.get(raw_id).cloned().unwrap_or_else(|| {
+            // ⚠ BOTH spellings. OKF's source directory is the SINGULAR
+            // `knowledge/source/`; only the pre-OKF layout used the plural. This
+            // was plural-only, so on the format this build actually creates a
+            // source page with no `raw_source` anchor matched nothing — and
+            // `schema_okf.md` only asks the model to "create the source's own
+            // page", so a page without that anchor is ordinary, not malformed.
+            crate::knowledge::graph::source_page_candidates(raw_id).to_vec()
+        })
     }
 
     fn is_source_page(&self, path: &str) -> bool {

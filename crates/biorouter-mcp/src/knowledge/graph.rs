@@ -258,6 +258,22 @@ fn node_for(p: &LoadedPage, today: NaiveDate) -> GraphNode {
     }
 }
 
+/// Both spellings of the source directory, newest first.
+///
+/// ⚠ **OKF's is the SINGULAR `knowledge/source/`; only the pre-OKF layout used
+/// the plural.** A fallback that names one of them answers for the other's
+/// bases by accident. This one was plural-only, which is the layout no base
+/// this build creates uses, so an OKF source page carrying no `raw_source`
+/// anchor resolved to nothing at all — and `schema_okf.md` only tells the model
+/// to "create the source's own page", so a page without that anchor is an
+/// ordinary outcome rather than a malformed one.
+pub(crate) fn source_page_candidates(raw_id: &str) -> [String; 2] {
+    [
+        format!("knowledge/source/{raw_id}.md"),
+        format!("knowledge/sources/{raw_id}.md"),
+    ]
+}
+
 /// Source nodes inherit credibility from `raw/<id>/meta.yaml`.
 ///
 /// ⚠ **Which node stands for a raw source is decided by
@@ -303,8 +319,9 @@ fn apply_source_credibility(
 
     for src in raw::list_sources(kb_root)? {
         let target = by_raw_id.get(&src.id).copied().or_else(|| {
-            let legacy = format!("knowledge/sources/{}.md", src.id);
-            nodes.iter().position(|n| n.path == legacy)
+            source_page_candidates(&src.id)
+                .iter()
+                .find_map(|cand| nodes.iter().position(|n| &n.path == cand))
         });
         if let Some(i) = target {
             if let Some(n) = nodes.get_mut(i) {
@@ -1503,6 +1520,78 @@ mod tests {
     ///
     /// The match is now the page's own `raw_source` anchor, so this asserts the
     /// typed spelling and the legacy test below asserts the fallback.
+    /// ⚠ The SINGULAR `knowledge/source/`, with no `raw_source` anchor — which
+    /// is an ordinary OKF page, not a malformed one.
+    ///
+    /// `schema_okf.md` only tells the model to "create the source's own page";
+    /// the `raw_source` anchor is a BioOKF §7.1 key. So a plain-OKF base
+    /// routinely has source pages the anchor cannot match, and the fallback is
+    /// the only thing that can. It named the PLURAL `knowledge/sources/` alone —
+    /// the pre-OKF layout, the one directory no base this build creates uses —
+    /// so on the default format the credibility ring and the retracted badge
+    /// resolved to nothing at all.
+    #[test]
+    fn an_okf_source_page_with_no_anchor_still_inherits_its_retraction() {
+        use crate::knowledge::raw::write_raw;
+        use crate::knowledge::types::{Credibility, CredibilityTier, SourceMeta};
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("k", "K", None).unwrap();
+        let kb = dir.path().join("k");
+
+        write_raw(
+            &kb,
+            None,
+            None,
+            "# r\n",
+            SourceMeta {
+                id: "retracted-paper".into(),
+                title: "Title".into(),
+                url: Some("https://example.org/x".into()),
+                ingested_at: chrono::Utc::now(),
+                sha256: "abc".into(),
+                mime: "text/html".into(),
+                original_filename: Some("x.html".into()),
+                credibility: Credibility {
+                    tier: CredibilityTier::PeerReviewed,
+                    confidence: 0.9,
+                    publisher: None,
+                    venue: None,
+                    doi: None,
+                    retracted: true,
+                    reasoning: "test".into(),
+                    classifier_version: 1,
+                },
+            },
+        )
+        .unwrap();
+
+        // Singular directory, and deliberately NO `raw_source:` key.
+        const OKF_SOURCE_PAGE: &str = "---\ntype: Source\nidentifier: Retracted Paper\n---\nbody";
+        write_page(
+            &kb,
+            "knowledge/source/retracted-paper.md",
+            OKF_SOURCE_PAGE,
+            "add r",
+            None,
+        )
+        .unwrap();
+
+        let g = derive(&kb).unwrap();
+        let node = g
+            .nodes
+            .iter()
+            .find(|n| n.path == "knowledge/source/retracted-paper.md")
+            .expect("the OKF source page must be a node");
+        assert!(
+            node.retracted,
+            "an OKF source page at the singular path must inherit its retraction; the \
+             fallback named only the pre-OKF plural directory, so on the default format \
+             nothing resolved"
+        );
+    }
+
     #[test]
     fn a_typed_source_page_still_inherits_its_retraction() {
         // ⚠ A const, not an inline literal with `\` continuations. rustfmt

@@ -132,9 +132,14 @@ async fn diagnostics(
 /// be written down rather than assumed:
 ///
 /// * The desktop app always installs a user-action key, so the GUI never reaches
-///   the keyless arm at all. The generated client has a `diagnostics` binding
-///   (`ui/desktop/src/api/sdk.gen.ts`) and — measured — **no call site** in the
-///   renderer or the main process, which save the bundle over IPC instead.
+///   the keyless arm at all. ⚠ Note what that rests on, because an earlier
+///   version of this comment got it wrong and said so in the word "measured":
+///   the generated `diagnostics` binding IS called from the renderer
+///   (`ui/desktop/src/components/ui/Diagnostics.tsx`, which imports it and
+///   invokes it directly; IPC is used only to save the resulting bundle). The
+///   GUI avoids this arm not because it never calls the route, but because the
+///   call carries `userActionHeaders()` and this arm keys on the DAEMON holding
+///   no `USER_ACTION_DIGEST` at all.
 /// * So the callers that do arrive here are `curl`, scripts, and agents.
 ///
 /// And `SESSION_OUT_OF_REACH` next door is deliberately worded to foreclose a
@@ -316,9 +321,9 @@ mod tests {
     /// rather than a comment.
     ///
     /// The callers that reach the keyless arm are scripts and agents — the
-    /// desktop app always installs a user-action key, and the generated
-    /// `diagnostics` client has no call site in the renderer or the main process
-    /// — so this body is read by a model far more often than by a person. The
+    /// desktop app always installs a user-action key, so its own call (which the
+    /// renderer does make, carrying `userActionHeaders()`) never lands here —
+    /// so this body is read by a model far more often than by a person. The
     /// arm next door, `SESSION_OUT_OF_REACH`, is worded to foreclose a retry for
     /// exactly that reason. Handing a model a working command instead would be
     /// the opposite move on the adjacent arm, so the hint is addressed to the
