@@ -657,6 +657,12 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
         // a tab's mount stable across a session bind. The SAME id keys the tab's
         // terminal, so it too survives the bind and switching tabs switches it.
         tabKey={activeTab?.tabId ?? `${groupId}-empty`}
+        // No tab yet means this pane is the placeholder, and the placeholder is
+        // always replaced rather than filled: the key above changes when the
+        // real tab lands, which unmounts this whole subtree. Drawing a greeting
+        // it will throw away made a new window show one heading, drop it, and
+        // unroll a different one.
+        suppressGreeting={activeTab === undefined}
         sessionId={activeTab?.sessionId ?? ''}
         initialMessage={activeTab?.pendingInitialMessage}
         initialAttachments={activeTab?.pendingInitialAttachments}
@@ -787,6 +793,8 @@ interface ChatGroupPaneProps {
   /** Every terminal key this group can own (one per tab + the empty-tab key). */
   groupTabKeys: string[];
   tabKey: string;
+  /** See `BaseChat`'s prop: the placeholder pane skips the rotating greeting. */
+  suppressGreeting: boolean;
   sessionId: string;
   initialMessage?: string;
   initialAttachments?: import('../../types/message').UserAttachment[];
@@ -810,6 +818,7 @@ function ChatGroupPane({
   groupTabKeys,
   tabKey,
   sessionId,
+  suppressGreeting,
   initialMessage,
   initialAttachments,
   onInitialMessageConsumed,
@@ -861,6 +870,7 @@ function ChatGroupPane({
           initialAttachments={initialAttachments}
           onInitialMessageConsumed={onInitialMessageConsumed}
           suppressEmptyState={false}
+          suppressGreeting={suppressGreeting}
           renderSessionTitle={renderSessionTitle}
           onSessionUpdate={onSessionLoaded}
           // The preview panel follows the ACTIVE group. State is kept, only the

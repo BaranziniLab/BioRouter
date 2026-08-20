@@ -4465,7 +4465,20 @@ function buildApplicationMenu() {
           label: 'New Window',
           accelerator: isMac ? 'Cmd+N' : 'Ctrl+N',
           click() {
-            ipcMain.emit('create-chat-window');
+            // ⚠ Call the function, do NOT `ipcMain.emit('create-chat-window')`.
+            //
+            // `ipcMain` is a plain EventEmitter, so a bare `emit` invokes the
+            // listener with `event === undefined`. Since #78 that listener
+            // anchors the new window on `event.sender`, so the bare emit threw
+            // a TypeError inside an async listener: an unhandled rejection, no
+            // window, and nothing on screen to say why. Cmd+N did nothing at
+            // all, and the dock menu and titlebar control kept working, which
+            // is presumably why it went unnoticed.
+            //
+            // A menu click has no renderer sender to anchor on by nature, so
+            // the IPC handler is the wrong door for it. This is the same call
+            // the dock menu makes.
+            void createNewWindow(app);
           },
         },
         { type: 'separator' as const },
@@ -4948,8 +4961,13 @@ async function appMain() {
       // whichever one they last touched rather than the one that asked. The new
       // window then appeared offset from a stranger. `event.sender` names the
       // renderer that actually sent this, which is the only honest anchor.
+      // `event?.sender`, because a caller that reaches this listener without an
+      // Electron IPC event is not hypothetical: the File menu did exactly that
+      // and took Cmd+N down with it. The sender is still the only honest
+      // anchor when there IS one (#78); this just makes its absence fall
+      // through to the next candidate instead of throwing.
       const anchor =
-        BrowserWindow.fromWebContents(event.sender) ??
+        (event?.sender ? BrowserWindow.fromWebContents(event.sender) : null) ??
         BrowserWindow.getFocusedWindow() ??
         BrowserWindow.getAllWindows()[0];
       const win = await createChat(

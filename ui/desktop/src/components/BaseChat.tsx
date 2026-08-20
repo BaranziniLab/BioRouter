@@ -961,6 +961,29 @@ interface BaseChatProps {
   disableSearch?: boolean;
   showPopularTopics?: boolean;
   suppressEmptyState: boolean;
+  /**
+   * Skip the rotating greeting while keeping the rest of the empty state.
+   *
+   * For a pane that is going to be REPLACED rather than filled. A tabless
+   * `/pair` is never a resting state — `useEmptyPairRedirect` either has cargo
+   * in flight (a resume id, a parked launcher message, a workflow deeplink, a
+   * session mid-create) or navigates to Home — so its placeholder pane exists
+   * only until a real tab lands. `ChatGroupsShell` keys `BaseChat` on the tab
+   * id, so that landing unmounts the placeholder and mounts a fresh
+   * `<Greeting>`, which draws a NEW random sentence by design.
+   *
+   * The greeting unrolls over about a second, and the awaited `createSession`
+   * on those paths takes about as long. So the placeholder had time to finish
+   * its unroll before being thrown away, and the user saw a heading arrive,
+   * vanish, and a different one arrive after it. That is the same complaint
+   * the first-frame fix in `use-text-animator` addressed, arriving by a second
+   * route: one is a flash INSIDE a mount, this is a whole extra mount.
+   *
+   * Deliberately narrower than `suppressEmptyState`, which also removes the
+   * composer. The composer is the one thing that must survive here, in case the
+   * tab that was coming never arrives.
+   */
+  suppressGreeting?: boolean;
   sessionId: string;
   initialMessage?: string;
   initialAttachments?: UserAttachment[];
@@ -1038,6 +1061,7 @@ function BaseChatContent({
   initialAttachments,
   onInitialMessageConsumed,
   suppressEmptyState,
+  suppressGreeting = false,
   coherent = true,
   onRenameSession,
   onSessionUpdate,
@@ -2395,7 +2419,9 @@ function BaseChatContent({
                         spelling it out as `text-2xl font-semibold tracking-tight`
                         — the same three utilities every page title in the app was
                         writing by hand before there was a token for it. */}
-                    <Greeting key={sessionId} className={cn('text-center text-title')} />
+                    {!suppressGreeting && (
+                      <Greeting key={sessionId} className={cn('text-center text-title')} />
+                    )}
                     {renderChatInput()}
                   </div>
                 </div>
