@@ -285,6 +285,17 @@ impl GitRepo {
         self.inner.set_head(&format!("refs/heads/{main_name}"))?;
         self.inner
             .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        // ⚠ Immediately, and on this path too — see
+        // `repair_graph_cache_after_checkout`. This is the SECOND force checkout
+        // in this impl block and it clobbers the working copy of the tracked
+        // `graph-cache.json` exactly as the abort's does, with the txn branch's
+        // committed copy, which lags the txn's own pages by the same
+        // write→commit→rebuild ordering. Every macro caller happens to rebuild
+        // the cache immediately after committing, which is why nothing was red —
+        // but `kb_commit_txn` (`knowledge/server.rs`) is a model-callable tool
+        // that commits and returns, and on that path the user's newest pages
+        // vanished from the graph one function above the repair.
+        self.repair_graph_cache_after_checkout();
         // Delete txn branch.
         self.inner
             .find_branch(&txn.branch, git2::BranchType::Local)?
@@ -301,10 +312,18 @@ impl GitRepo {
         self.inner.set_head(&format!("refs/heads/{main_name}"))?;
         self.inner
             .checkout_head(Some(git2::build::CheckoutBuilder::new().force()))?;
+        // ⚠ Immediately after the checkout, and BEFORE the branch delete, which
+        // is fallible. `delete()?` returns on a branch that is already gone — a
+        // second `abort_txn` for the same txn, which the error paths this is
+        // called from can easily produce — or on a locked ref, and a repair
+        // placed after it would then be skipped, leaving in place the exact
+        // stale cache the checkout just installed. That is the state this
+        // function exists to prevent, reached on the error path of an error
+        // path, which is the least likely place anyone looks.
+        self.repair_graph_cache_after_checkout();
         self.inner
             .find_branch(&txn.branch, git2::BranchType::Local)?
             .delete()?;
-        self.repair_graph_cache_after_checkout();
         Ok(())
     }
 
@@ -340,6 +359,26 @@ impl GitRepo {
     /// checkout is what invalidates the cache, so the repair belongs beside the
     /// checkout.
     ///
+    /// ⚠ **Which means BOTH checkouts, and beside means beside.** This impl
+    /// block force-checks-out twice — `abort_txn` and `commit_txn` — and the
+    /// first version of this fix repaired only the abort. The commit path is not
+    /// benign: it installs the txn branch's committed `graph-cache.json`, which
+    /// lags the txn's own pages by exactly the write→commit→rebuild ordering
+    /// described above. Every *macro* caller happens to rebuild right after
+    /// committing (`macros/ingest.rs`, `macros/query.rs`, `service.rs`), which is
+    /// why no test was red; the model-callable `kb_commit_txn` tool does not, and
+    /// on that path the newest pages vanished from the graph one function above
+    /// the repair. So macro commits now derive the graph twice — once here and
+    /// once in the caller — and that is the deliberate trade: a redundant derive
+    /// costs a tree walk, a missing one costs the user their newest pages with no
+    /// error anywhere.
+    ///
+    /// "Beside the checkout" is also literal: the call goes immediately after
+    /// `checkout_head`, before the fallible branch delete on either path. A
+    /// `delete()?` that returns early — an already-deleted branch, a locked
+    /// ref — would otherwise skip the repair and leave the stale cache the
+    /// checkout just installed.
+    ///
     /// ## Why re-derive rather than preserve, or untrack
     ///
     /// Preserving the working copy across the checkout would be wrong whenever
@@ -357,12 +396,15 @@ impl GitRepo {
     ///
     /// ## Failures are absorbed, and downgraded to "no cache"
     ///
-    /// This returns nothing and the abort does not fail on it. The rollback the
-    /// caller asked for has already happened and is the part that matters, and
-    /// every caller discards the `Result` anyway. But a failed rebuild must not
-    /// leave the stale file in place, or the silent-loss bug survives its own
-    /// fix — so on any failure the file is removed, which is the one state DR-13
-    /// guarantees `get_graph` repairs by re-deriving.
+    /// This returns nothing, and neither the abort nor the commit fails on it.
+    /// By the time it runs, the thing the caller actually asked for has already
+    /// happened and is durable — the rollback on one path, the squash-merge
+    /// commit on the other — so failing the call now would report a *derived
+    /// file* as a failed transaction and invite a retry of work that is already
+    /// done. But a failed rebuild must not leave the stale file in place, or the
+    /// silent-loss bug survives its own fix — so on any failure the file is
+    /// removed, which is the one state DR-13 guarantees `get_graph` repairs by
+    /// re-deriving.
     fn repair_graph_cache_after_checkout(&self) {
         let Some(kb_root) = self.inner.workdir().map(Path::to_path_buf) else {
             // A bare repo has no pages to derive from. Not reachable for a
@@ -374,8 +416,8 @@ impl GitRepo {
         if let Err(e) = rebuilt {
             let stale = crate::knowledge::graph::cache_path(&kb_root);
             tracing::warn!(
-                "knowledge: could not rebuild the graph cache at {} after aborting a \
-                 transaction, removing it so the next read re-derives: {e:#}",
+                "knowledge: could not rebuild the graph cache at {} after a transaction \
+                 checkout, removing it so the next read re-derives: {e:#}",
                 stale.display()
             );
             let _ = std::fs::remove_file(&stale);
@@ -646,6 +688,152 @@ mod tests {
             cached_paths(&kb),
             vec!["knowledge/concept/a.md".to_string()],
             "the graph after the abort does not describe the pages on disk"
+        );
+    }
+
+    /// ⚠ The **other** force checkout in the same impl block, which the first
+    /// version of this repair left alone.
+    ///
+    /// `commit_txn` squash-merges the txn tree onto main and then force-checks-out
+    /// HEAD, which restores the txn branch's *committed* `graph-cache.json` — and
+    /// that copy lags by exactly the write→commit→rebuild ordering the abort test
+    /// above describes, because `store::write_page` commits the page and the
+    /// rebuild only follows. So a commit installs a cache describing a base one
+    /// page smaller than the one it just created.
+    ///
+    /// Every macro caller happens to rebuild immediately after committing
+    /// (`macros/ingest.rs`, `macros/query.rs`, `service.rs`), which is why the
+    /// suite stayed green with the repair on one path only. The
+    /// **model-callable** `kb_commit_txn` tool (`knowledge/server.rs`) commits and
+    /// returns, and this is that path: no rebuild afterwards, so the assertion
+    /// measures what `commit_txn` itself left behind.
+    #[test]
+    fn committing_a_transaction_leaves_the_graph_cache_describing_the_pages_on_disk() {
+        use crate::knowledge::{graph, service::KnowledgeService, store, types::ChangeKind};
+
+        let cached_paths = |kb: &Path| -> Vec<String> {
+            let mut paths: Vec<String> = graph::read_cache(kb)
+                .expect("reading the cache is not an error")
+                .expect("a base that has been rebuilt has a cache")
+                .nodes
+                .iter()
+                .map(|n| n.path.clone())
+                .collect();
+            paths.sort();
+            paths
+        };
+        let page = |identifier: &str| {
+            format!("---\ntype: Concept\nidentifier: {identifier}\n---\n\nbody\n")
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("kb", "kb", None).unwrap();
+        let kb = svc.root().join("kb");
+
+        store::write_page(&kb, "knowledge/concept/a.md", &page("A"), "add A", None).unwrap();
+        svc.rebuild_graph_cache("kb").unwrap();
+
+        // A transaction that writes a page and SUCCEEDS. The rebuild runs before
+        // the commit-txn, exactly as it does in production: the page is committed
+        // onto the txn branch first and the cache is rebuilt afterwards, so the
+        // branch's committed cache knows only about A.
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("real-work").unwrap();
+        store::write_page(
+            &kb,
+            "knowledge/concept/b.md",
+            &page("B"),
+            "add B",
+            Some(&txn.branch),
+        )
+        .unwrap();
+        svc.rebuild_graph_cache("kb").unwrap();
+        repo.commit_txn(&txn, ChangeKind::Manual, "add B", None)
+            .unwrap();
+
+        assert!(
+            kb.join("knowledge/concept/b.md").exists(),
+            "the commit did not keep the transaction's page"
+        );
+        assert_eq!(
+            cached_paths(&kb),
+            vec![
+                "knowledge/concept/a.md".to_string(),
+                "knowledge/concept/b.md".to_string()
+            ],
+            "the graph after a COMMIT does not describe the pages on disk — the \
+             page the transaction was opened to add is missing from it"
+        );
+    }
+
+    /// ⚠ The repair has to sit **between** the checkout and the branch delete,
+    /// not after both, and this is the case that separates the two placements.
+    ///
+    /// `abort_txn` is called from a dozen error paths as
+    /// `let _ = repo.abort_txn(&txn)`, so aborting the same transaction twice is
+    /// ordinary rather than exotic: an inner handler aborts, returns an error,
+    /// and an outer one aborts again on the way out. The second call still
+    /// force-checks-out HEAD — reinstalling the lagging committed cache over the
+    /// one the first call repaired — and *then* dies on `find_branch(...)?`,
+    /// because the branch is already gone. A repair placed after that `?` never
+    /// runs, and the base is left in exactly the state this function exists to
+    /// prevent, on the error path of an error path.
+    ///
+    /// The second abort is expected to return `Err`; that is not the defect. The
+    /// assertion is about what it left on disk.
+    #[test]
+    fn a_second_abort_that_fails_still_leaves_the_graph_cache_describing_disk() {
+        use crate::knowledge::{graph, service::KnowledgeService, store};
+
+        let cached_paths = |kb: &Path| -> Vec<String> {
+            let mut paths: Vec<String> = graph::read_cache(kb)
+                .expect("reading the cache is not an error")
+                .expect("a base that has been rebuilt has a cache")
+                .nodes
+                .iter()
+                .map(|n| n.path.clone())
+                .collect();
+            paths.sort();
+            paths
+        };
+        let page = |identifier: &str| {
+            format!("---\ntype: Concept\nidentifier: {identifier}\n---\n\nbody\n")
+        };
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base("kb", "kb", None).unwrap();
+        let kb = svc.root().join("kb");
+
+        store::write_page(&kb, "knowledge/concept/a.md", &page("A"), "add A", None).unwrap();
+        svc.rebuild_graph_cache("kb").unwrap();
+
+        let repo = GitRepo::open(&kb).unwrap();
+        let txn = repo.begin_txn("doomed").unwrap();
+        store::write_page(
+            &kb,
+            "knowledge/concept/b.md",
+            &page("B"),
+            "add B",
+            Some(&txn.branch),
+        )
+        .unwrap();
+        svc.rebuild_graph_cache("kb").unwrap();
+
+        repo.abort_txn(&txn).unwrap();
+        let second = repo.abort_txn(&txn);
+        assert!(
+            second.is_err(),
+            "the fixture is not exercising the early return: the branch was \
+             supposed to be gone by now"
+        );
+
+        assert_eq!(
+            cached_paths(&kb),
+            vec!["knowledge/concept/a.md".to_string()],
+            "the failed second abort checked out the stale cache and returned \
+             before repairing it"
         );
     }
 
