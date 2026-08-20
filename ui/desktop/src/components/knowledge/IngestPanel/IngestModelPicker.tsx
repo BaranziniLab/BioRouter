@@ -45,22 +45,42 @@ interface ProviderModelsSection extends OrderedProviderGroup {
 }
 
 /**
- * The "no configured provider has a model" state (ui-spec §4.12 #8).
+ * The empty popover (ui-spec §4.12 #8) — and it has two meanings, not one.
  *
  * ⚠ Its own component, and rendered only inside the OPEN popover, because
  * `useNavigate` throws outside a router. Hoisting the hook to the picker would
  * make the picker un-renderable in every test that does not wrap it in a
  * `MemoryRouter` — and the picker is rendered for real by `IngestPanel.test.tsx`,
  * which is one of the suites §9 says this pass must not break.
+ *
+ * ⚠ **"No models available / Configure a provider in Settings." is a verdict on
+ * the user's setup, and it is false for the excluded-only user.** They have a
+ * provider, it is configured, it is working, and it is bound to their chat
+ * composer — it simply cannot carry the tool calls a digest is made of. Left
+ * unchanged, that headline sat directly above the footer note explaining that
+ * the provider they configured is fine, so the popover was telling them both
+ * things at once in the same 256px box: go set one up, and the one you set up
+ * works. The action is the same in both branches (Settings really is the way
+ * out — they do need a second provider), so what has to change is only the
+ * claim about what is wrong.
+ *
+ * The reason is deliberately NOT repeated here. The footer note is the one
+ * place that names which providers were left out and says they still work in
+ * chat, and it renders in this branch too; saying it twice in a popover this
+ * small is how a correction turns back into noise.
  */
-function NoModelsAvailable() {
+function NoModelsAvailable({ excludedOnly }: { excludedOnly: boolean }) {
   const navigate = useNavigate();
   return (
     <EmptyState
       compact
       icon={Brain}
-      title="No models available"
-      description="Configure a provider in Settings."
+      title={excludedOnly ? 'No model here can digest' : 'No models available'}
+      description={
+        excludedOnly
+          ? 'Digesting needs a provider that can make tool calls on its own. Adding one takes a minute in Settings.'
+          : 'Configure a provider in Settings.'
+      }
       actions={
         <Button
           type="button"
@@ -274,7 +294,12 @@ export function IngestModelPicker({
           <CommandInput placeholder="Search models" aria-label="Search models" autoFocus />
           <CommandList aria-label="Knowledge models">
             {!hasModels ? (
-              <NoModelsAvailable />
+              // An empty list has two causes and they need different words.
+              // `excludedProviderLabels` is the discriminator: it is non-empty
+              // only when this picker itself removed a configured provider, so
+              // a non-empty list here means the user's setup is fine and the
+              // list is empty because of us.
+              <NoModelsAvailable excludedOnly={excludedProviderLabels.length > 0} />
             ) : visibleRows.length === 0 ? (
               <CommandEmpty>
                 <p className="text-body text-text-muted">No models match</p>

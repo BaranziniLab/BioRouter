@@ -118,19 +118,42 @@ describe('IngestModelPicker provider exclusions', () => {
     expect(screen.queryByTestId('knowledge-model-picker-excluded')).toBeNull();
   });
 
-  it('explains the absence even when nothing at all is left to offer', async () => {
+  it('does not contradict itself when nothing at all is left to offer', async () => {
     mocks.config.getProviders.mockResolvedValue([CLAUDE_CODE]);
     renderPicker();
     await openPicker();
 
-    // The worst case for the old behaviour: the one configured provider is
-    // excluded, so the picker falls to its "No models available / configure a
-    // provider in Settings" empty state — which is a verdict on a configuration
-    // that is in fact fine. The note has to survive that branch to correct it.
-    expect(await screen.findByText('No models available')).toBeInTheDocument();
+    // The worst case: the one configured provider is excluded, so the list is
+    // empty and the popover falls to its empty state. "No models available /
+    // Configure a provider in Settings." is a verdict on a configuration that
+    // is in fact fine — and it sat directly above a footer note saying so, the
+    // popover telling the user to go set up a provider and that the one they
+    // set up is working, in the same 256px box. Keeping the note was not enough;
+    // the headline above it had to stop being false.
+    expect(screen.queryByText('No models available')).toBeNull();
+    expect(screen.queryByText('Configure a provider in Settings.')).toBeNull();
+    expect(await screen.findByText('No model here can digest')).toBeInTheDocument();
+
+    // The note stays: it is the one place that says WHICH provider was left out
+    // and that it still works in chat, which the headline deliberately does not
+    // repeat.
     expect(await screen.findByTestId('knowledge-model-picker-excluded')).toHaveTextContent(
       'Claude Code'
     );
+  });
+
+  it('still says the plain thing when nothing is configured at all', async () => {
+    mocks.config.getProviders.mockResolvedValue([]);
+    renderPicker();
+    await openPicker();
+
+    // The correction has to be surgical. A blanket rewrite of the empty state
+    // would start telling a user with no provider whatsoever that their models
+    // are merely the wrong kind — which is the same class of false verdict,
+    // pointed the other way.
+    expect(await screen.findByText('No models available')).toBeInTheDocument();
+    expect(screen.getByText('Configure a provider in Settings.')).toBeInTheDocument();
+    expect(screen.queryByTestId('knowledge-model-picker-excluded')).toBeNull();
   });
 });
 
