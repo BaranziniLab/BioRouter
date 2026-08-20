@@ -455,7 +455,29 @@ async fn close_ephemeral_store_with_manager(
     if ephemeral_store_dir.is_some() {
         session_manager.close().await;
     }
-    close_ephemeral_store(ephemeral_store_dir);
+    // ⚠ **On a blocking thread, because the retry SLEEPS and this is `async`.**
+    //
+    // `close_ephemeral_store` waits the OS out with `std::thread::sleep`. Called
+    // straight from here it parks whatever thread is driving this future — and
+    // under `#[tokio::test]`, which is a CURRENT-THREAD runtime, that is the
+    // only one there is. Nothing tokio-driven can progress while we wait for a
+    // handle whose release may need exactly that, so the retry re-observes the
+    // same locked file every time and a longer budget only sleeps longer.
+    //
+    // Measured on windows-latest, and it is why the previous attempt at this bug
+    // failed: raising the budget from 2 s to ~17.8 s did not help, and the
+    // diagnostic showed a removal attempted AFTER the whole budget still failing
+    // with os error 32. A handle held for 17.8 seconds is not a slow handle.
+    //
+    // `spawn_blocking` puts the sleeping on tokio's blocking pool, which exists
+    // for precisely this, and leaves the runtime free. The generous budget stays
+    // — the two fixes address different halves, and a genuinely slow release on
+    // a loaded runner still needs waiting out.
+    //
+    // The `JoinError` is dropped deliberately: the only way this task fails is a
+    // panic inside `close_ephemeral_store`, which already swallows its own
+    // errors and warns. There is nothing a caller on an exit path could do.
+    let _ = tokio::task::spawn_blocking(move || close_ephemeral_store(ephemeral_store_dir)).await;
 }
 
 /// The budget for re-trying a store removal the OS is still refusing: how
@@ -1224,6 +1246,24 @@ mod tests {
             .split_once("\n}\n")
             .expect("could not find the end of close_ephemeral_store_with_manager");
 
+        // ⚠ **Comment lines stripped before ANY assertion below.**
+        //
+        // Every needle this test greps for is also NAMED in the prose that
+        // explains it — that is what good comments in this file look like. So a
+        // grep over the raw body is satisfied by the explanation of a line that
+        // is no longer there, and the test passes on its own documentation.
+        //
+        // Measured, not theorised: the `spawn_blocking` assertion below was
+        // added with a comment beside it that used the word, and deleting the
+        // real call left the test GREEN. A tripwire that cannot fail is worse
+        // than no tripwire, because it is counted as coverage.
+        let body: String = body
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = body.as_str();
+
         let close_pool = body.find("session_manager.close().await").expect(
             "close_ephemeral_store_with_manager no longer closes the SQLite pool, so every \
              early exit leaves the store's db + WAL/-shm handles open",
@@ -1236,6 +1276,35 @@ mod tests {
             "the pool close moved BELOW the directory removal; the store's handles are still \
              open when the directory is deleted, which fails — and leaks the \
              biorouter-no-session-* directory — on platforms that refuse to unlink open files"
+        );
+
+        // ⚠ And the removal must not run ON the runtime thread.
+        //
+        // `close_ephemeral_store` waits the OS out with `std::thread::sleep`.
+        // Called directly from this `async fn` it parks whatever thread drives
+        // the future, and under `#[tokio::test]` — a CURRENT-THREAD runtime —
+        // that is the only one. Nothing tokio-driven can progress while we wait
+        // for a handle whose release may need exactly that.
+        //
+        // This is not theoretical and it is not a style rule. It shipped:
+        // `early_exit_cleanup_closes_the_pool_before_deleting_the_store` went
+        // red on windows-latest, a first fix raised the retry budget from 2 s to
+        // ~17.8 s on the theory that the wait was too short, and it went red
+        // again — with `why_the_store_survived` reporting a removal attempted
+        // AFTER the entire budget still failing with os error 32. A handle held
+        // for 17.8 seconds is not a slow handle; it is one nothing was allowed
+        // to release.
+        //
+        // A source tripwire for the same reason the ordering above is one: the
+        // failure it prevents is only observable on a runner nobody can
+        // reproduce locally, and the realistic regression is someone "tidying"
+        // the `spawn_blocking` away because the call looks synchronous anyway.
+        assert!(
+            body.contains("spawn_blocking"),
+            "the store removal is being awaited on the runtime thread again. It sleeps, so \
+             on a current-thread runtime it parks the only thread there is and the retry \
+             re-observes the same locked file until the budget runs out. Put it back on \
+             tokio's blocking pool."
         );
     }
 
