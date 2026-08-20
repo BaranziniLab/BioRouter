@@ -1491,9 +1491,21 @@ async fn an_okf_base_is_refused_a_merge_into_a_biookf_base() {
         .await
         .expect_err("OKF into BioOKF was allowed");
     let msg = format!("{err:#}");
+    // ⚠ Matched on the whole clause, not on the two format words. `"biookf"`
+    // CONTAINS `"okf"`, so `msg.contains("okf") && msg.contains("biookf")` is
+    // satisfied by the second conjunct alone: a refusal naming `biookf` twice —
+    // or naming only the destination and never the source — passes it, and the
+    // assertion cannot tell that from the message it means to require. The
+    // clauses below also pin each format to its own SLOT, which is the half that
+    // makes the refusal actionable: "your source is X, this base is Y" is
+    // advice, and the same two words in the wrong order is not.
     assert!(
-        msg.contains("okf") && msg.contains("biookf"),
-        "the refusal must name both profiles: {msg}"
+        msg.contains("it is written in the okf format"),
+        "the refusal must name the SOURCE's profile: {msg}"
+    );
+    assert!(
+        msg.contains("this base is biookf"),
+        "the refusal must name the DESTINATION's profile: {msg}"
     );
 }
 

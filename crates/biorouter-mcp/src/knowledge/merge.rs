@@ -600,9 +600,15 @@ fn assert_profiles_merge(dst_root: &Path, src_root: &Path, src_kb_id: &str) -> R
         // actionable rather than mysterious.
         None => "legacy (pre-OKF)",
     };
+    // ⚠ The refusal says "no page was read", not "nothing was read from either
+    // base". This check itself loads both `manifest.yaml` files, and the
+    // authority barrier ran before it. The promise the reader actually needs is
+    // that their KNOWLEDGE is untouched and the merge is a no-op they can simply
+    // re-issue once the formats agree; a claim that overstates into falsehood is
+    // one a careful reader stops believing the rest of.
     anyhow::bail!(
         "cannot merge '{src_kb_id}': it is written in the {} format and this base is {}. \
-         Nothing was read from either base and nothing was written. A merge carries pages but \
+         No page was read and nothing was written. A merge carries pages but \
          never the manifest or the schema, so the carried pages would be checked against this \
          base's format forever, with no undo. Merging in the other direction, or exporting the \
          source with `.brkb` and keeping it as its own base, are the two paths that do not \
