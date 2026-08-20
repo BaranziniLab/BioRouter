@@ -1253,7 +1253,10 @@ showsCredibility(n) = n.credibility_tier != null
 ```
 
 `kind` (the pre-OKF `PageKind`: `source` / `entity` / `concept` / `hub` / `note` / `flag`) **survives
-Stage 2 unchanged and is not used by this specification for anything**. The three source types above
+Stage 2 unchanged and is not used by this specification for anything** — but note that it is not
+inert in the app. It is the untyped-node fill (`nodeMark.ts`, which reads `node_type` and falls back
+to `kind`) and the noun in an `Untitled {kind}` label (`labelText.ts`), so a change to what
+`page_kind_of` returns is visible on any node that declares no `type`. The three source types above
 are exactly the members of the Provenance family that §4.6's Source facet lists, so the facet and the
 ring now agree by construction. A source with no tier keeps the neutral separation ring — absence of
 a verdict is not a verdict.
@@ -2258,7 +2261,8 @@ touched in the same change.
 - `useIngestStream`'s SSE contract and terminal-frame handling.
 - Every `data-testid` in the section. Eight test files select on them; they survive the restyle.
 - The `.brkb` export/import path and its provenance sidecar (DR-21).
-- `PageKind` (`kind`). It survives Stage 2 and this document uses it for nothing (§5.5).
+- `PageKind` (`kind`). It survives Stage 2 and this document uses it for nothing (§5.5) — which is
+  not the same as the app using it for nothing; see §5.5 for the two places it still renders.
 
 **Deferred by DR-22, and therefore absent from this design**
 
