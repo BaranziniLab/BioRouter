@@ -39,10 +39,10 @@
 //!    `sources[].resource` paths, citation lists — none of which is an edge.
 
 use crate::knowledge::{
-    biookf::NEGATION_PREFIX,
+    biookf::{self, NEGATION_PREFIX},
     links::{self, LinkIndex},
     okf::{self, ConceptDoc, Edge as OkfEdge, LinkForm, LinkRef},
-    raw,
+    raw, source_anchor,
     store::{self, PageRef},
     types::{Graph, GraphEdge, GraphNode, PageKind, QuantitativeValue},
 };
@@ -239,7 +239,7 @@ fn node_for(p: &LoadedPage, today: NaiveDate) -> GraphNode {
         // display identity is `identifier`, kept separate so a renderer can
         // change what it shows without changing what an edge resolves against.
         label: p.page.title.clone(),
-        kind: page_kind_of(&p.page),
+        kind: page_kind_of(&p.page.path, &p.doc, &p.page.kind),
         credibility_tier: None,
         retracted: false,
         path: p.page.path.clone(),
@@ -884,7 +884,12 @@ fn non_empty(s: &str) -> Option<String> {
 /// cache carries the six old keys under names nothing reads any more *and* no
 /// degree at all, so a renderer sizing hubs by `degree` would draw every node in
 /// every pre-existing base at the same size and look like a layout bug.
-const CACHE_VERSION: u32 = 3;
+// 4: `page_kind_of` learned OKF's and BioOKF's typed vocabularies and their
+// singular directories. Every cached graph derived before that carries `Hub` for
+// every node on a modern base, and a cache is only re-derived when this number
+// moves — so without the bump a user whose base is unchanged keeps the wrong
+// kinds indefinitely, and a `.brkb` exported at 3 imports them into a 3 reader.
+const CACHE_VERSION: u32 = 4;
 
 /// The on-disk envelope, so `graph-cache.json` says what it is.
 ///
@@ -1033,17 +1038,100 @@ fn path_to_node_id(logical: &str) -> String {
         .replace('/', ":")
 }
 
-fn page_kind_of(p: &PageRef) -> PageKind {
-    match (p.kind.as_str(), p.path.as_str()) {
-        ("source", _) => PageKind::Source,
-        ("entity", _) => PageKind::Entity,
-        ("concept", _) => PageKind::Concept,
-        ("hub", _) => PageKind::Hub,
-        ("flag", _) => PageKind::Flag,
-        (_, path) if path.starts_with("knowledge/sources/") => PageKind::Source,
-        (_, path) if path.starts_with("knowledge/entities/") => PageKind::Entity,
-        (_, path) if path.starts_with("knowledge/concepts/") => PageKind::Concept,
-        (_, path) if path.starts_with("knowledge/notes/") => PageKind::Note,
+/// Classify a page for the renderer's coarse taxonomy.
+///
+/// ⚠ **Three page vocabularies reach this, and only one of them is `kind:`.**
+/// The pre-OKF schema declared `kind: entity | concept | source | note | hub`;
+/// OKF and BioOKF declare `type:` instead and never write `kind:` at all. Read
+/// only the legacy key and the four plural pre-OKF directories — which is what
+/// this did — and **every node on every base this build creates comes back
+/// `Hub`**, because nothing else matches. Measured before the fix: 5/5 nodes on
+/// an OKF base and 5/5 on a BioOKF base, against 0/4 on a pre-OKF one.
+///
+/// ⚠ **`legacy_kind` is NOT trustworthy when it reads `"note"`.**
+/// `store::list_pages` defaults the field to the literal `"note"` when a page
+/// has no `kind:` key, so on a modern base *every* page reports `"note"` and an
+/// explicit `kind: note` is indistinguishable from no kind at all. That is why
+/// there is no `"note"` arm here and why the typed branch is consulted before
+/// the remaining legacy arms: a `"note"` arm placed first would quietly
+/// misclassify every OKF and BioOKF page, which is a worse bug than the one
+/// being fixed. Legacy notes are recognised by their directory instead.
+///
+/// The source row delegates to [`source_anchor::is_source_page`] rather than
+/// naming a fifth copy of the directory list — it already unions both directory
+/// spellings, OKF's `type: Source`, BioOKF §8.1's four source types via
+/// `NodeType::is_source`, and the legacy `kind: source`.
+fn page_kind_of(path: &str, doc: &ConceptDoc, legacy_kind: &str) -> PageKind {
+    // 1. A page that says outright what it is, in the one vocabulary that has a
+    //    closed set of answers. `"note"` is deliberately absent — see above.
+    match legacy_kind {
+        "hub" => return PageKind::Hub,
+        "flag" => return PageKind::Flag,
+        _ => {}
+    }
+
+    // 2. Source, across all three generations, asked of the one helper that
+    //    already knows all three.
+    if source_anchor::is_source_page(path, doc) {
+        return PageKind::Source;
+    }
+
+    // 3. The typed vocabularies. BEFORE the remaining legacy arms, because a
+    //    modern page's `legacy_kind` is the `"note"` default rather than a claim.
+    //
+    //    Recognise, never infer: `NodeType::parse` only. `biookf::aliases::
+    //    normalize_type` returns a candidate list for some aliases and would
+    //    resolve a plain-OKF `type: Method` through a closed profile's table.
+    let declared = doc.r#type.trim();
+    if !declared.is_empty() {
+        // OKF's vocabulary is open, so these two are matched on the word rather
+        // than against a set. Case-insensitively, because OKF never validates
+        // `type` and a model writes `concept` as readily as `Concept`.
+        if declared.eq_ignore_ascii_case("note") {
+            return PageKind::Note;
+        }
+        if declared.eq_ignore_ascii_case("concept") {
+            return PageKind::Concept;
+        }
+        if let Some(t) = biookf::NodeType::parse(declared) {
+            // §5's split is structural, not cosmetic: the 20 biomedical entities
+            // are things in the world, and the 8 provenance-and-context types
+            // are how the knowledge got here. `is_source` already took its four.
+            return match t.family() {
+                biookf::Family::BiomedicalEntity => PageKind::Entity,
+                biookf::Family::ProvenanceAndContext => PageKind::Concept,
+            };
+        }
+        // A declared type nothing recognises is still a claim that this page is
+        // *about something*, which is what separates it from an unclassifiable
+        // page. Entity is the least-surprising home for an open vocabulary's
+        // unknown noun.
+        return PageKind::Entity;
+    }
+
+    // 4. The rest of the legacy key.
+    match legacy_kind {
+        "source" => return PageKind::Source,
+        "entity" => return PageKind::Entity,
+        "concept" => return PageKind::Concept,
+        _ => {}
+    }
+
+    // 5. Directory, in BOTH spellings. The plural set is pre-OKF; OKF scaffolds
+    //    the SINGULAR `concept/`, `source/`, `note/`, and BioOKF writes one
+    //    directory per node type. Path is last because the directory is derived
+    //    from the type by convention and nothing enforces the agreement.
+    let rest = path.strip_prefix("knowledge/").unwrap_or(path);
+    match rest.split('/').next().unwrap_or("") {
+        "sources" | "source" => PageKind::Source,
+        "entities" | "entity" => PageKind::Entity,
+        "concepts" | "concept" => PageKind::Concept,
+        "notes" | "note" => PageKind::Note,
+        // ⚠ Left as `Hub`, deliberately, though `Note` is what this deriver
+        // calls its least-loaded value elsewhere (see the external-node arm).
+        // Changing it would re-classify untyped pages on PRE-OKF bases, which
+        // are not the bases this fix is about; the defect was that modern pages
+        // never got past here. Worth revisiting as its own decision.
         _ => PageKind::Hub,
     }
 }
@@ -1052,6 +1140,223 @@ mod tests {
     use super::*;
     use crate::knowledge::service::KnowledgeService;
     use crate::knowledge::store::write_page;
+
+    /// Derive a base of `format`, write `pages`, and return every node's
+    /// (path, kind) so a test can assert the taxonomy rather than a count.
+    fn kinds_for(
+        format: crate::knowledge::types::KbFormat,
+        pages: &[(&str, &str)],
+    ) -> Vec<(String, PageKind)> {
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base_in("k", "K", None, format).unwrap();
+        let kb = dir.path().join("k");
+        for (path, body) in pages {
+            write_page(&kb, path, body, "add", None).unwrap();
+        }
+        let g = derive(&kb).unwrap();
+        let mut out: Vec<(String, PageKind)> =
+            g.nodes.iter().map(|n| (n.path.clone(), n.kind)).collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
+    }
+
+    fn kind_at(kinds: &[(String, PageKind)], path: &str) -> PageKind {
+        kinds
+            .iter()
+            .find(|(p, _)| p == path)
+            .unwrap_or_else(|| panic!("no node for {path}; got {kinds:?}"))
+            .1
+    }
+
+    /// ⚠ REGRESSION. Measured before the fix: 5 of 5 nodes on an OKF base came
+    /// back `Hub`, because `page_kind_of` read only the pre-OKF `kind:` key and
+    /// the four PLURAL pre-OKF directories. OKF writes `type:` and scaffolds the
+    /// SINGULAR `concept/`, `source/`, `note/`.
+    #[test]
+    fn an_okf_base_is_classified_by_its_declared_type() {
+        let kinds = kinds_for(
+            crate::knowledge::types::KbFormat::Okf,
+            &[
+                (
+                    "knowledge/concept/hrv.md",
+                    "---\ntitle: HRV\ntype: Concept\n---\nBody.",
+                ),
+                (
+                    "knowledge/source/chen-2020.md",
+                    "---\ntitle: Chen 2020\ntype: Source\n---\nBody.",
+                ),
+                (
+                    "knowledge/note/open.md",
+                    "---\ntitle: Open\ntype: Note\n---\nBody.",
+                ),
+                (
+                    "knowledge/method/measure.md",
+                    "---\ntitle: Measure\ntype: Method\n---\nBody.",
+                ),
+            ],
+        );
+
+        assert_eq!(
+            kind_at(&kinds, "knowledge/concept/hrv.md"),
+            PageKind::Concept
+        );
+        assert_eq!(
+            kind_at(&kinds, "knowledge/source/chen-2020.md"),
+            PageKind::Source
+        );
+        assert_eq!(kind_at(&kinds, "knowledge/note/open.md"), PageKind::Note);
+        // `Method` is a plain-OKF type with no BioOKF meaning; an open
+        // vocabulary's unknown noun is still a claim to be *about something*.
+        assert_eq!(
+            kind_at(&kinds, "knowledge/method/measure.md"),
+            PageKind::Entity
+        );
+
+        assert!(
+            !kinds.iter().all(|(_, k)| *k == PageKind::Hub),
+            "the whole defect was that every modern node came back Hub"
+        );
+    }
+
+    /// The BioOKF half: §5's two families decide Entity vs Concept, and §8.1's
+    /// four source types are Source. Same measured starting point — 5 of 5 Hub.
+    #[test]
+    fn a_biookf_base_is_classified_by_its_node_type_family() {
+        let kinds = kinds_for(
+            crate::knowledge::types::KbFormat::Biookf,
+            &[
+                (
+                    "knowledge/disease/covid-19.md",
+                    "---\ntitle: COVID-19\ntype: Disease\n---\nBody.",
+                ),
+                (
+                    "knowledge/molecule/il-6.md",
+                    "---\ntitle: IL-6\ntype: Molecule\n---\nBody.",
+                ),
+                (
+                    "knowledge/publication/chen-2020.md",
+                    "---\ntitle: Chen 2020\ntype: Publication\n---\nBody.",
+                ),
+                (
+                    "knowledge/dataset/cohort-a.md",
+                    "---\ntitle: Cohort A\ntype: Dataset\n---\nBody.",
+                ),
+                (
+                    "knowledge/concept/inflammation.md",
+                    "---\ntitle: Inflammation\ntype: Concept\n---\nBody.",
+                ),
+            ],
+        );
+
+        // §5.A, things in the world.
+        assert_eq!(
+            kind_at(&kinds, "knowledge/disease/covid-19.md"),
+            PageKind::Entity
+        );
+        assert_eq!(
+            kind_at(&kinds, "knowledge/molecule/il-6.md"),
+            PageKind::Entity
+        );
+        // §8.1, where the knowledge came from.
+        assert_eq!(
+            kind_at(&kinds, "knowledge/publication/chen-2020.md"),
+            PageKind::Source
+        );
+        assert_eq!(
+            kind_at(&kinds, "knowledge/dataset/cohort-a.md"),
+            PageKind::Source
+        );
+        assert_eq!(
+            kind_at(&kinds, "knowledge/concept/inflammation.md"),
+            PageKind::Concept
+        );
+    }
+
+    /// NEGATIVE CONTROL, and the reason the fix is shaped the way it is.
+    ///
+    /// `store::list_pages` defaults `kind` to the literal `"note"` when a page
+    /// declares none, so on a modern base EVERY page reports `kind: "note"`. A
+    /// classifier that trusted that field would call all four of these Note. The
+    /// assertion that they are four DIFFERENT kinds is what fails if anyone adds
+    /// a `"note"` arm ahead of the typed branch.
+    #[test]
+    fn the_note_default_in_list_pages_does_not_leak_into_the_taxonomy() {
+        let kb_pages = [
+            (
+                "knowledge/concept/a.md",
+                "---\ntitle: A\ntype: Concept\n---\nB.",
+            ),
+            (
+                "knowledge/source/b.md",
+                "---\ntitle: B\ntype: Source\n---\nB.",
+            ),
+            (
+                "knowledge/disease/c.md",
+                "---\ntitle: C\ntype: Disease\n---\nB.",
+            ),
+            ("knowledge/note/d.md", "---\ntitle: D\ntype: Note\n---\nB."),
+        ];
+        let kinds = kinds_for(crate::knowledge::types::KbFormat::Biookf, &kb_pages);
+
+        let mut distinct: Vec<PageKind> = kinds.iter().map(|(_, k)| *k).collect();
+        distinct.dedup_by(|a, b| a == b);
+        let distinct: Vec<PageKind> = distinct.iter().fold(Vec::new(), |mut acc, k| {
+            if !acc.contains(k) {
+                acc.push(*k);
+            }
+            acc
+        });
+        assert_eq!(
+            distinct.len(),
+            4,
+            "all four pages report kind=\"note\" from list_pages; the typed branch \
+             is what tells them apart. got: {kinds:?}"
+        );
+    }
+
+    /// The pre-OKF layout must be untouched by the fix — this is the shape every
+    /// base created before the format chooser has on disk.
+    #[test]
+    fn the_pre_okf_layout_still_classifies_as_it_always_did() {
+        let kinds = kinds_for(
+            crate::knowledge::types::KbFormat::Okf,
+            &[
+                (
+                    "knowledge/entities/hrv.md",
+                    "---\ntitle: HRV\nkind: entity\n---\nB.",
+                ),
+                (
+                    "knowledge/concepts/z2.md",
+                    "---\ntitle: Z2\nkind: concept\n---\nB.",
+                ),
+                (
+                    "knowledge/sources/chen.md",
+                    "---\ntitle: Chen\nkind: source\n---\nB.",
+                ),
+                (
+                    "knowledge/notes/open.md",
+                    "---\ntitle: Open\nkind: note\n---\nB.",
+                ),
+            ],
+        );
+
+        assert_eq!(
+            kind_at(&kinds, "knowledge/entities/hrv.md"),
+            PageKind::Entity
+        );
+        assert_eq!(
+            kind_at(&kinds, "knowledge/concepts/z2.md"),
+            PageKind::Concept
+        );
+        assert_eq!(
+            kind_at(&kinds, "knowledge/sources/chen.md"),
+            PageKind::Source
+        );
+        // Reached by DIRECTORY, not by `kind:` — see page_kind_of's header for
+        // why `"note"` cannot be trusted as a declaration.
+        assert_eq!(kind_at(&kinds, "knowledge/notes/open.md"), PageKind::Note);
+    }
 
     fn build_sample() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();
