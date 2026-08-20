@@ -53,6 +53,7 @@ export type ChatGroupsAction =
   | { type: 'closeTab'; tabId: ChatTabId }
   | { type: 'reorderTab'; draggedTabId: ChatTabId; targetTabId: ChatTabId }
   | { type: 'renameTab'; sessionId: string; title: string; userSetName?: boolean }
+  | { type: 'setTabCwd'; sessionId: string; cwd: string }
   | { type: 'bindSession'; tabId: ChatTabId; sessionId: string }
   | { type: 'consumePending'; tabId: ChatTabId }
   | { type: 'setActiveGroup'; groupId: ChatGroupId }
@@ -571,6 +572,39 @@ export function chatGroupsReducer(
       const [dragged] = tabs.splice(draggedIndex, 1);
       tabs.splice(targetIndex, 0, dragged);
       return withGroup(state, group.groupId, { ...group, tabs });
+    }
+
+    case 'setTabCwd': {
+      // Record the session's working directory on every tab bound to it.
+      //
+      // ⚠ **`ChatTab.cwd` had no writer at all**, which is why this exists.
+      // The field, `payloadFromTab`'s handling of it and `main.ts`'s
+      // `req.tab?.cwd` were all in place and all correct — but nothing ever
+      // SET it, so `payloadFromTab` always omitted it and a torn-off window
+      // fell through to `os.homedir()`. The torn-off chat itself was fine
+      // (`resumeSessionId` travels and the daemon re-anchors per session), so
+      // the damage was one step removed and easy to miss: every NEW chat
+      // opened in that window was created in `~` instead of the project the
+      // user tore off from.
+      //
+      // Written from the loaded SESSION rather than at the `openTab` call
+      // sites, deliberately. There are seven of those and the bug is exactly
+      // what happens when one of them forgets; keying on the session means a
+      // tab gets its directory however it was opened, and picks up a later
+      // `update_working_dir` for free.
+      let changed = false;
+      const groups: Record<ChatGroupId, ChatGroup> = {};
+      for (const [groupId, group] of Object.entries(state.groups)) {
+        let groupChanged = false;
+        const tabs = group.tabs.map((t) => {
+          if (t.sessionId !== action.sessionId || t.cwd === action.cwd) return t;
+          groupChanged = true;
+          return { ...t, cwd: action.cwd };
+        });
+        changed = changed || groupChanged;
+        groups[groupId] = groupChanged ? { ...group, tabs } : group;
+      }
+      return changed ? { ...state, groups } : state;
     }
 
     case 'renameTab': {

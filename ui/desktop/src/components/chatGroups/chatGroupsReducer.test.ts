@@ -279,6 +279,52 @@ describe('chatGroupsReducer — openTab at a position', () => {
   });
 });
 
+describe('chatGroupsReducer — the tab records its session directory', () => {
+  /**
+   * ⚠ `ChatTab.cwd` shipped with NO writer.
+   *
+   * The field existed, `payloadFromTab` handled it, and `main.ts` read
+   * `req.tab?.cwd` — all correct, all inert, because nothing ever set it. So a
+   * tear-off payload always omitted the directory and the new window fell
+   * through to `os.homedir()`. The torn-off chat itself was fine, since
+   * `resumeSessionId` travels and the daemon re-anchors per session, which is
+   * what made it hard to notice: the damage landed one step later, on every
+   * NEW chat opened in that window, which was created in `~` rather than the
+   * project the user tore off from.
+   */
+  it('records the directory on every tab bound to that session', () => {
+    const a = run(createInitialChatGroupsState(), open('s1'), open('s2'));
+    const b = chatGroupsReducer(a, { type: 'setTabCwd', sessionId: 's2', cwd: '/w/project' });
+    expect(b.groups['grp-1'].tabs[1].cwd).toBe('/w/project');
+    expect(b.groups['grp-1'].tabs[0].cwd).toBeUndefined();
+  });
+
+  it('follows a later working-directory change rather than freezing at birth', () => {
+    const a = run(createInitialChatGroupsState(), open('s1'));
+    const b = chatGroupsReducer(a, { type: 'setTabCwd', sessionId: 's1', cwd: '/w/one' });
+    const c = chatGroupsReducer(b, { type: 'setTabCwd', sessionId: 's1', cwd: '/w/two' });
+    expect(c.groups['grp-1'].tabs[0].cwd).toBe('/w/two');
+  });
+
+  it('an unchanged directory returns the SAME state object (no render churn)', () => {
+    const a = run(createInitialChatGroupsState(), open('s1'));
+    const b = chatGroupsReducer(a, { type: 'setTabCwd', sessionId: 's1', cwd: '/w' });
+    expect(chatGroupsReducer(b, { type: 'setTabCwd', sessionId: 's1', cwd: '/w' })).toBe(b);
+    expect(chatGroupsReducer(b, { type: 'setTabCwd', sessionId: 'ghost', cwd: '/w' })).toBe(b);
+  });
+
+  /**
+   * The point of writing it at all: a torn-off window can only be opened in the
+   * right directory if the payload carries one.
+   */
+  it('reaches the tear-off payload, which is the whole reason it is recorded', async () => {
+    const { payloadFromTab } = await import('./tabTearOff');
+    const a = run(createInitialChatGroupsState(), open('s1'));
+    const b = chatGroupsReducer(a, { type: 'setTabCwd', sessionId: 's1', cwd: '/w/project' });
+    expect(payloadFromTab(b.groups['grp-1'].tabs[0]).cwd).toBe('/w/project');
+  });
+});
+
 describe('chatGroupsReducer — rename mirroring', () => {
   it('mirrors a session rename into the tab title', () => {
     const a = run(createInitialChatGroupsState(), open('s1'), open('s2'));

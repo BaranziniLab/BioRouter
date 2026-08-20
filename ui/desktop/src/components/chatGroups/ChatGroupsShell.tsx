@@ -466,8 +466,22 @@ export function ChatGroupsShell({ onChatChange }: ChatGroupsShellProps) {
    * to actually load.
    */
   const handleSessionLoaded = useCallback(
-    (session: { id: string; name: string; userSetName: boolean } | null) => {
-      if (!session?.id || !session.name) return;
+    (
+      session: { id: string; name: string; userSetName: boolean; workingDir?: string } | null
+    ) => {
+      if (!session?.id) return;
+      // ⚠ Recorded BEFORE the name guard below, and separately from it.
+      //
+      // `ChatTab.cwd` had no writer, so `payloadFromTab` always omitted it and
+      // a torn-off window fell back to `os.homedir()` — every new chat opened
+      // there was created in `~` instead of the project. Folding this into the
+      // rename dispatch would inherit its `!session.name` guard and lose the
+      // directory for any session that has not been named yet, which is
+      // exactly a freshly created one.
+      if (session.workingDir) {
+        dispatch?.({ type: 'setTabCwd', sessionId: session.id, cwd: session.workingDir });
+      }
+      if (!session.name) return;
       dispatch?.({
         type: 'renameTab',
         sessionId: session.id,
@@ -801,7 +815,9 @@ interface ChatGroupPaneProps {
   onInitialMessageConsumed?: () => void;
   renderSessionTitle: () => ReactElement;
   onChatChange: (chat: ChatType) => void;
-  onSessionLoaded: (session: { id: string; name: string; userSetName: boolean } | null) => void;
+  onSessionLoaded: (
+    session: { id: string; name: string; userSetName: boolean; workingDir?: string } | null
+  ) => void;
 }
 
 /**

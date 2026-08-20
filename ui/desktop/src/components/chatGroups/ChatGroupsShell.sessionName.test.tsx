@@ -75,6 +75,66 @@ describe('ChatGroupsShell — the tab adopts the loaded session name', () => {
     });
   });
 
+  /**
+   * The same callback also carries the session's DIRECTORY, and that half had
+   * no writer at all: `ChatTab.cwd` was declared, `payloadFromTab` handled it
+   * and `main.ts` read it, but nothing ever set it. A torn-off window
+   * therefore fell back to `os.homedir()`, and every new chat opened in it was
+   * created in `~` instead of the project the user tore off from.
+   */
+  it('records the session directory on the tab, so a tear-off can carry it', () => {
+    dispatch.mockClear();
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    const onSessionUpdate = lastBaseChatProps.onSessionUpdate as (s: {
+      id: string;
+      name: string;
+      userSetName: boolean;
+      workingDir?: string;
+    }) => void;
+
+    onSessionUpdate({
+      id: 'sess-1',
+      name: 'Cohort query',
+      userSetName: false,
+      workingDir: '/Users/wgu/Desktop/project',
+    });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'setTabCwd',
+      sessionId: 'sess-1',
+      cwd: '/Users/wgu/Desktop/project',
+    });
+  });
+
+  /**
+   * ⚠ Recorded even when the session has no name yet, which is exactly a
+   * freshly created one. Folding the directory into the rename dispatch would
+   * inherit its `!session.name` guard and lose it for the case that needs it
+   * most: a brand-new chat the user immediately tears off.
+   */
+  it('records the directory for an unnamed session, which the rename guard would drop', () => {
+    dispatch.mockClear();
+    render(<ChatGroupsShell onChatChange={() => {}} />);
+    const onSessionUpdate = lastBaseChatProps.onSessionUpdate as (s: {
+      id: string;
+      name: string;
+      userSetName: boolean;
+      workingDir?: string;
+    }) => void;
+
+    onSessionUpdate({ id: 'sess-2', name: '', userSetName: false, workingDir: '/w/fresh' });
+
+    expect(dispatch).toHaveBeenCalledWith({
+      type: 'setTabCwd',
+      sessionId: 'sess-2',
+      cwd: '/w/fresh',
+    });
+    // ...and still no rename, which is the behaviour the next test pins.
+    expect(dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'renameTab', sessionId: 'sess-2' })
+    );
+  });
+
   it('ignores a null or unnamed session rather than blanking the tab', () => {
     dispatch.mockClear();
     render(<ChatGroupsShell onChatChange={() => {}} />);

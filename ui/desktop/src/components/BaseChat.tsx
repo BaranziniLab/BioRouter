@@ -998,7 +998,9 @@ interface BaseChatProps {
   /** Optional: overrides the default rename behavior (which calls biorouterd updateSessionName). */
   onRenameSession?: (newName: string) => void;
   /** Notify parent when the underlying session object changes (e.g., biorouterd renamed it). */
-  onSessionUpdate?: (session: { id: string; name: string; userSetName: boolean } | null) => void;
+  onSessionUpdate?: (
+    session: { id: string; name: string; userSetName: boolean; workingDir?: string } | null
+  ) => void;
   /** Whether this chat may resize the OS window to fit its artifact panel
    * (default true). A BaseChat is a session-scoped component, but
    * ensureArtifactPanelFits reaches for an app-scoped effect: with N chats
@@ -1930,14 +1932,21 @@ function BaseChatContent({
   const sessionUpdateId = session?.id;
   const sessionUpdateName = session?.name;
   const sessionUpdateUserSetName = session?.user_set_name;
+  // The session's directory rides along so the tab can record it. `ChatTab.cwd`
+  // had no writer, so a torn-off window fell back to `os.homedir()` and every
+  // new chat opened there was created in `~` rather than the project. It is in
+  // the dependency list as well as the body, so a later `update_working_dir`
+  // reaches the tab instead of leaving it on the directory it was born in.
+  const sessionUpdateWorkingDir = session?.working_dir;
   useEffect(() => {
     if (!sessionUpdateId || sessionUpdateName === undefined) return;
     onSessionUpdateRef.current?.({
       id: sessionUpdateId,
       name: sessionUpdateName,
       userSetName: sessionUpdateUserSetName ?? false,
+      workingDir: sessionUpdateWorkingDir,
     });
-  }, [sessionUpdateId, sessionUpdateName, sessionUpdateUserSetName]);
+  }, [sessionUpdateId, sessionUpdateName, sessionUpdateUserSetName, sessionUpdateWorkingDir]);
 
   const handleRename = async (newName: string) => {
     if (onRenameSession) {
