@@ -4824,11 +4824,18 @@ impl Agent {
         tools: &[Tool],
         cancel_token: Option<CancellationToken>,
     ) -> Option<coding_agent_bridge::BridgeLease> {
-        let name = {
+        // Asked of the bound INSTANCE, not of its name. `get_name()` on a
+        // `LeadWorkerProvider` returns the lead's name, so a name lookup here
+        // answered for the lead alone and a pair whose *worker* is a coding agent
+        // got no bridge — and the worker runs most of the turns, so the tool-less
+        // child was the ordinary case, not the corner one. `tier()` and
+        // `affiliation()` already had to be instance methods for exactly this, and
+        // `uses_tool_bridge` is the third override beside them.
+        let uses_bridge = {
             let guard = self.provider.lock().await;
-            guard.as_ref().map(|p| p.get_name().to_string())?
+            guard.as_ref().map(|p| p.uses_tool_bridge())?
         };
-        if !coding_agent_bridge::provider_uses_bridge(&name) {
+        if !uses_bridge {
             return None;
         }
 
