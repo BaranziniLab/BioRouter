@@ -45,7 +45,15 @@ strip = true
 
 # Max-optimized distribution profile: thin LTO + 16 codegen units on top of the
 # stripped release. Smallest + fastest binary; slower to compile, so it is opt-in
-# (`cargo build --profile release-dist`). `just release-binary` uses it.
+# (`cargo build --profile release-dist`).
+#
+# ⚠ NOTHING SHIPPED USES IT YET. `just release-binary` and every `cargo build`
+# in `scripts/release.sh` pass a plain `--release`, so the shipped artifacts are
+# built with `[profile.release]` above. This comment used to claim
+# `just release-binary` used this profile; it did not, and a reader planning a
+# size change would have measured the wrong profile. Wiring the release path to
+# it is a deliberate follow-up, gated on a smoke test of the notarized macOS
+# packaging.
 [profile.release-dist]
 inherits = "release"
 opt-level = 3

@@ -71,7 +71,10 @@ just generate-openapi   # Regenerate OpenAPI spec from server routes
   stripped) and adds thin LTO + 16 codegen-units for the smallest/fastest binary.
   Slower to compile, so it is opt-in. Intended as the final distribution profile;
   wiring `just release-binary`/`scripts/release.sh` to it is a safe follow-up once
-  the macOS notarized packaging path has had a smoke test.
+  the macOS notarized packaging path has had a smoke test. **Measured 2026-08-20:
+  still nothing invokes it** — `just release-binary` and all four `cargo build`
+  lines in `scripts/release.sh` pass a plain `--release`. The comment in
+  `Cargo.toml` claimed otherwise until this date; grep before believing either.
 - `quick` — `cargo build --profile quick`. opt-level 1 + max codegen-units +
   incremental, for fast iteration on optimized builds. Everyday dev still uses the
   debug `cargo build` / `cargo check`.
