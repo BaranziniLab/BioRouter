@@ -309,6 +309,117 @@ fn redact_yaml_value(value: &mut serde_yaml::Value, redact_every_leaf: bool) {
     }
 }
 
+/// The session's own log files, newest first, capped at [`LOGS_TO_KEEP`].
+///
+/// Split out of [`generate_diagnostics`] to keep that function under the
+/// `too_many_lines` baseline, and because the walk is the one part of the
+/// bundle with a moving target underneath it: `flush_request_log` rotates
+/// these files while this reads them.
+type ZipOut<'a> = ZipWriter<Cursor<&'a mut Vec<u8>>>;
+
+fn push_session_logs(
+    zip: &mut ZipOut<'_>,
+    options: FileOptions,
+    logs_dir: &std::path::Path,
+    session_id: &str,
+    notes: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let mut log_files: Vec<_> = match fs::read_dir(logs_dir) {
+        Ok(entries) => entries
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "jsonl")
+            })
+            .collect(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => {
+            notes.push(format!(
+                "logs: could not list {}: {error}",
+                logs_dir.display()
+            ));
+            Vec::new()
+        }
+    };
+
+    log_files.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
+
+    // Newest first, but only this session's logs — see
+    // `log_belongs_to_session`. `take(LOGS_TO_KEEP)` on the *unfiltered*
+    // list is what shipped other chats' prompts: the ten newest files on
+    // this machine have nothing to do with the session being reported.
+    let mut shipped = 0usize;
+    for entry in log_files.iter().rev() {
+        if shipped == LOGS_TO_KEEP {
+            break;
+        }
+        let path = entry.path();
+        // A log that rotated out from under this walk is not a reason to
+        // lose the whole report; note it and take the next one.
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                notes.push(format!("logs: could not read {}: {error}", path.display()));
+                continue;
+            }
+        };
+        if !log_belongs_to_session(&String::from_utf8_lossy(&bytes), session_id) {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy())
+            .unwrap_or_default();
+        zip.start_file(format!("logs/{}", name), options)?;
+        zip.write_all(&bytes)?;
+        shipped += 1;
+    }
+    Ok(())
+}
+
+/// Every file under `scheduled_workflows/`, each read best-effort.
+fn push_scheduled_workflows(
+    zip: &mut ZipOut<'_>,
+    options: FileOptions,
+    data_dir: &std::path::Path,
+    notes: &mut Vec<String>,
+) -> anyhow::Result<()> {
+    let scheduled_workflows_dir = data_dir.join("scheduled_workflows");
+    if scheduled_workflows_dir.exists() && scheduled_workflows_dir.is_dir() {
+        match fs::read_dir(&scheduled_workflows_dir) {
+            Ok(entries) => {
+                for entry in entries.filter_map(|entry| entry.ok()) {
+                    let path = entry.path();
+                    if !path.is_file() {
+                        continue;
+                    }
+                    let name = path
+                        .file_name()
+                        .map(|name| name.to_string_lossy())
+                        .unwrap_or_default();
+                    match fs::read(&path) {
+                        Ok(bytes) => {
+                            zip.start_file(format!("scheduled_workflows/{}", name), options)?;
+                            zip.write_all(&bytes)?;
+                        }
+                        Err(error) => notes.push(format!(
+                            "scheduled_workflows/{name}: could not read {}: {error}",
+                            path.display()
+                        )),
+                    }
+                }
+            }
+            Err(error) => notes.push(format!(
+                "scheduled_workflows: could not list {}: {error}",
+                scheduled_workflows_dir.display()
+            )),
+        }
+    }
+    Ok(())
+}
+
 pub async fn generate_diagnostics(
     session_manager: &SessionManager,
     session_id: &str,
@@ -320,58 +431,59 @@ pub async fn generate_diagnostics(
 
     let system_info = SystemInfo::collect();
 
+    // What could not be collected, and why.
+    //
+    // ⚠ **Every optional source below is best-effort, and that is the whole
+    // point of this function.** A diagnostics bundle exists so somebody can
+    // report a bug; a collector that refuses to produce one because a single
+    // file was unreadable has failed at the one job it has, and it fails
+    // hardest in exactly the situation that produces bug reports — a machine
+    // where something is already wrong.
+    //
+    // The concrete case that used to lose: `flush_request_log` rotates
+    // `llm_request.{i}.jsonl` → `{i+1}` while this walk holds paths it read
+    // from an earlier `read_dir`. A turn running in another window during the
+    // report is enough. The read then hits ENOENT, `?` propagated it, the
+    // route turned it into a bodyless 500, and the user was told only
+    // "Failed to generate diagnostics."
+    //
+    // So a failure is RECORDED rather than raised, and the notes ship inside
+    // the bundle. Silently omitting a file would be worse than failing: the
+    // person reading the report needs to know the transcript is missing, not
+    // conclude the chat was empty.
+    let mut notes: Vec<String> = Vec::new();
+
     let mut buffer = Vec::new();
     {
         let mut zip = ZipWriter::new(Cursor::new(&mut buffer));
         let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
 
-        let mut log_files: Vec<_> = match fs::read_dir(&logs_dir) {
-            Ok(entries) => entries
-                .filter_map(|entry| entry.ok())
-                .filter(|entry| {
-                    entry
-                        .path()
-                        .extension()
-                        .is_some_and(|extension| extension == "jsonl")
-                })
-                .collect(),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-            Err(error) => return Err(error.into()),
-        };
+        push_session_logs(&mut zip, options, &logs_dir, session_id, &mut notes)?;
 
-        log_files.sort_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()));
-
-        // Newest first, but only this session's logs — see
-        // `log_belongs_to_session`. `take(LOGS_TO_KEEP)` on the *unfiltered*
-        // list is what shipped other chats' prompts: the ten newest files on
-        // this machine have nothing to do with the session being reported.
-        let mut shipped = 0usize;
-        for entry in log_files.iter().rev() {
-            if shipped == LOGS_TO_KEEP {
-                break;
+        // The transcript is the most valuable thing in the bundle and still not
+        // worth failing over: logs plus system info are a usable report, and no
+        // bundle at all is not.
+        match session_manager.export_session(session_id).await {
+            Ok(session_data) => {
+                zip.start_file("session.json", options)?;
+                zip.write_all(session_data.as_bytes())?;
             }
-            let path = entry.path();
-            let bytes = fs::read(&path)?;
-            if !log_belongs_to_session(&String::from_utf8_lossy(&bytes), session_id) {
-                continue;
-            }
-            let name = path
-                .file_name()
-                .map(|name| name.to_string_lossy())
-                .unwrap_or_default();
-            zip.start_file(format!("logs/{}", name), options)?;
-            zip.write_all(&bytes)?;
-            shipped += 1;
+            Err(error) => notes.push(format!(
+                "session.json: could not export session '{session_id}': {error:#}"
+            )),
         }
 
-        let session_data = session_manager.export_session(session_id).await?;
-        zip.start_file("session.json", options)?;
-        zip.write_all(session_data.as_bytes())?;
-
         if config_path.exists() {
-            let raw = fs::read(&config_path)?;
-            zip.start_file("config.yaml", options)?;
-            zip.write_all(redact_config_yaml(&String::from_utf8_lossy(&raw)).as_bytes())?;
+            match fs::read(&config_path) {
+                Ok(raw) => {
+                    zip.start_file("config.yaml", options)?;
+                    zip.write_all(redact_config_yaml(&String::from_utf8_lossy(&raw)).as_bytes())?;
+                }
+                Err(error) => notes.push(format!(
+                    "config.yaml: could not read {}: {error}",
+                    config_path.display()
+                )),
+            }
         }
 
         zip.start_file("system.txt", options)?;
@@ -386,24 +498,32 @@ pub async fn generate_diagnostics(
 
         let schedule_json = data_dir.join("schedule.json");
         if schedule_json.exists() {
-            zip.start_file("schedule.json", options)?;
-            zip.write_all(&fs::read(&schedule_json)?)?;
+            match fs::read(&schedule_json) {
+                Ok(bytes) => {
+                    zip.start_file("schedule.json", options)?;
+                    zip.write_all(&bytes)?;
+                }
+                Err(error) => notes.push(format!(
+                    "schedule.json: could not read {}: {error}",
+                    schedule_json.display()
+                )),
+            }
         }
 
-        let scheduled_workflows_dir = data_dir.join("scheduled_workflows");
-        if scheduled_workflows_dir.exists() && scheduled_workflows_dir.is_dir() {
-            for entry in fs::read_dir(&scheduled_workflows_dir)? {
-                let entry = entry?;
-                let path = entry.path();
-                if path.is_file() {
-                    let name = path
-                        .file_name()
-                        .map(|name| name.to_string_lossy())
-                        .unwrap_or_default();
-                    zip.start_file(format!("scheduled_workflows/{}", name), options)?;
-                    zip.write_all(&fs::read(&path)?)?;
-                }
-            }
+        push_scheduled_workflows(&mut zip, options, &data_dir, &mut notes)?;
+
+        // Last, so it can report on everything above it. Absent when nothing
+        // went wrong, so its presence is itself the signal.
+        if !notes.is_empty() {
+            zip.start_file("collection-notes.txt", options)?;
+            zip.write_all(
+                format!(
+                    "Some parts of this bundle could not be collected. The rest of it is \
+                     complete and still usable for a bug report.\n\n{}\n",
+                    notes.join("\n")
+                )
+                .as_bytes(),
+            )?;
         }
 
         zip.finish()?;
@@ -439,6 +559,88 @@ mod tests {
         assert!(archive.by_name("session.json").is_ok());
         assert!(archive.by_name("system.txt").is_ok());
         assert!(archive.by_name("usage.txt").is_ok());
+    }
+
+    /// A source that cannot be read must cost that source, not the report.
+    ///
+    /// This is the whole reason the collector is best-effort. The bundle exists
+    /// so somebody can report a bug, and the machine producing one is by
+    /// definition a machine where something is already wrong. A collector that
+    /// refuses to produce anything because one file was unreadable fails at its
+    /// only job, in exactly the situation it was built for.
+    ///
+    /// The transcript is the strongest case: it is the most valuable thing in
+    /// the bundle, and still not worth failing over. A naming a session that
+    /// does not exist stands in for every way `export_session` can fail (a
+    /// store error, a corrupt row, a session deleted between the reach check
+    /// and this call), because they all arrive here as the same `Err`.
+    ///
+    /// ⚠ The note is the load-bearing half. Silently omitting `session.json`
+    /// would be WORSE than failing: whoever reads the report would conclude the
+    /// chat was empty rather than that the transcript could not be read.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_unreadable_source_costs_that_source_and_not_the_whole_bundle() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+
+        let bundle = generate_diagnostics(&sm, "no-such-session-20260820")
+            .await
+            .expect("an unreadable transcript must not lose the bundle");
+
+        let entries = bundle_entries(bundle);
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+
+        assert!(
+            names.contains(&"system.txt"),
+            "the parts that COULD be collected must still ship: {names:?}"
+        );
+        assert!(
+            !names.contains(&"session.json"),
+            "the part that could not be read must be absent rather than empty: {names:?}"
+        );
+
+        let notes = entries
+            .iter()
+            .find(|(name, _)| name == "collection-notes.txt")
+            .map(|(_, bytes)| String::from_utf8_lossy(bytes).into_owned())
+            .expect("a bundle missing a part must say which part");
+        assert!(
+            notes.contains("session.json"),
+            "the note must name what is missing, or the reader concludes the chat was empty: {notes}"
+        );
+        assert!(
+            notes.contains("no-such-session-20260820"),
+            "and name the session it could not export: {notes}"
+        );
+    }
+
+    /// ⚠ And the notes file must be ABSENT when nothing went wrong, so that its
+    /// presence is itself the signal. A notes file on every bundle is one
+    /// nobody opens.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_clean_collection_ships_no_notes_file() {
+        let temp = TempDir::new().unwrap();
+        let root = temp.path().to_string_lossy().into_owned();
+        let _guard = env_lock::lock_env([("BIOROUTER_PATH_ROOT", Some(root.as_str()))]);
+        let sm = SessionManager::new(temp.path().join("sessions"));
+        let session = sm
+            .create_session(
+                temp.path().to_path_buf(),
+                "diagnostics".into(),
+                SessionType::User,
+            )
+            .await
+            .unwrap();
+
+        let entries = bundle_entries(generate_diagnostics(&sm, &session.id).await.unwrap());
+        let names: Vec<&str> = entries.iter().map(|(name, _)| name.as_str()).collect();
+        assert!(names.contains(&"session.json"), "{names:?}");
+        assert!(
+            !names.contains(&"collection-notes.txt"),
+            "nothing failed, so nothing should be reported as having failed: {names:?}"
+        );
     }
 
     /// Read every entry of a bundle as `(name, bytes)`.

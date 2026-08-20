@@ -112,6 +112,51 @@ describe('DiagnosticsModal', () => {
     expect(screen.getByRole('dialog', { name: 'Report a Problem' })).toBeVisible();
   });
 
+  /**
+   * A private chat must still be able to produce a diagnostics bundle. Being
+   * unable to report a bug is the worst possible consequence of a chat being
+   * private: the person who most needs support is the one who cannot ask for
+   * it, and the workaround is to reproduce the problem in a public chat, which
+   * is exactly the thing they were avoiding.
+   *
+   * So the warning is a warning and nothing more. It does not disable the
+   * button, it does not gate the download behind a confirmation, and this test
+   * asserts the bundle is produced with the private warning on screen.
+   */
+  it('still generates the bundle for a private chat, and warns about the contents', async () => {
+    render(
+      <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="private" />
+    );
+
+    const warning = screen.getByTestId('diagnostics-private-warning');
+    expect(warning).toBeVisible();
+    expect(warning.textContent).toContain('This chat is private.');
+    // ⚠ The point of the sentence is what the reader must DO with the file.
+    // A warning that only says "this is private" tells them something they
+    // already know and nothing they can act on.
+    expect(warning.textContent).toMatch(/read the file before you send it/i);
+
+    const button = screen.getByRole('button', { name: 'Generate diagnostics' });
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(saveDiagnosticsBundle).toHaveBeenCalledWith('20260716_27', expect.any(ArrayBuffer));
+    });
+  });
+
+  it('does not warn on a chat that is not private', () => {
+    const { rerender } = render(
+      <DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" privacyTier="public" />
+    );
+    expect(screen.queryByTestId('diagnostics-private-warning')).toBeNull();
+
+    // An unknown tier reads as public. A warning shown on every chat is one
+    // nobody reads by the third time, which costs the private case its warning.
+    rerender(<DiagnosticsModal isOpen onClose={vi.fn()} sessionId="20260716_27" />);
+    expect(screen.queryByTestId('diagnostics-private-warning')).toBeNull();
+  });
+
   it('shows a server refusal instead of replacing it with a generic error', async () => {
     const onClose = vi.fn();
     diagnosticsMock.mockRejectedValue('The diagnostics request was refused.');

@@ -2641,6 +2641,7 @@ function BaseChatContent({
           isOpen={diagnosticsOpen}
           onClose={() => setDiagnosticsOpen(false)}
           sessionId={sessionId}
+          privacyTier={session?.privacy_tier}
         />
       )}
 

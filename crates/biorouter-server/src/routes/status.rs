@@ -77,7 +77,31 @@ async fn diagnostics(
 
             (response_headers, Body::from(zip_data)).into_response()
         }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        // ⚠ Say what went wrong, in the log AND in the body.
+        //
+        // This arm used to be `Err(_) => INTERNAL_SERVER_ERROR`: the error was
+        // dropped, nothing was logged, and the response had no body. The
+        // renderer's generated client turns an empty body into `{}`, which is
+        // neither an `Error` nor a string, so the modal fell through to its
+        // literal fallback and the user was told "Failed to generate
+        // diagnostics." That is the same sentence a refusal produced, so the
+        // one screen where a person is already trying to report a bug gave
+        // them nothing to report, and left no trace on the daemon side either.
+        //
+        // `generate_diagnostics` is best-effort now, so reaching here at all
+        // means something structural failed rather than one file being
+        // unreadable. Which is exactly the case worth naming.
+        Err(error) => {
+            tracing::error!(
+                session_id = %session_id,
+                "failed to generate the diagnostics bundle: {error:#}"
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Could not generate the diagnostics bundle: {error:#}"),
+            )
+                .into_response()
+        }
     }
 }
 pub fn routes(state: Arc<AppState>) -> Router {

@@ -17,13 +17,31 @@ interface DiagnosticsModalProps {
   isOpen: boolean;
   onClose: () => void;
   sessionId: string;
+  /**
+   * The chat's ratcheted privacy classification, used only to decide whether to
+   * add the extra warning below.
+   *
+   * ⚠ The tier, and NOT the bound provider, unlike the non-private-model
+   * disclosure gate in `BaseChat` whose comment warns against this exact field.
+   * The two ask different questions. That gate asks "where will this chat's
+   * words be sent", which is a property of the model. This asks "does the file
+   * I am about to hand the user hold private content", which is a property of
+   * what the chat has already touched, and the ratcheted tier is the only thing
+   * that answers it.
+   *
+   * Absent means "not known yet", which reads the same as public: a warning
+   * that appears on every chat is one nobody reads by the third time.
+   */
+  privacyTier?: string;
 }
 
 export const DiagnosticsModal: React.FC<DiagnosticsModalProps> = ({
   isOpen,
   onClose,
   sessionId,
+  privacyTier,
 }) => {
+  const isPrivateChat = privacyTier === 'private';
   const [isDownloading, setIsDownloading] = useState(false);
   const [isFilingBug, setIsFilingBug] = useState(false);
 
@@ -182,6 +200,16 @@ Add any other context about the problem here.
             <strong className="text-text-default">Warning:</strong> If your chat contains sensitive
             information, do not share the diagnostics file publicly.
           </p>
+          {isPrivateChat && (
+            <p
+              className="rounded-container border border-border-subtle bg-background-warning/40 px-3 py-2.5 text-text-default"
+              data-testid="diagnostics-private-warning"
+            >
+              <strong>This chat is private.</strong> The diagnostics file includes its messages and
+              its log files. Read the file before you send it to anyone, and take out anything that
+              should not leave this machine.
+            </p>
+          )}
           <p>If you file a bug, consider attaching the diagnostics report to it.</p>
         </div>
         {isDownloading && (
