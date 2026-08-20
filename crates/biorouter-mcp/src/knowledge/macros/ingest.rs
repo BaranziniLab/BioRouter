@@ -576,6 +576,39 @@ fn source_xrefs(meta: &SourceMeta) -> Vec<String> {
     out
 }
 
+/// Did the model WRITE its tool calls instead of MAKING them?
+///
+/// A model handed no tool surface still tries to do the job: it emits
+/// `<tool_call>{"name": "kb_write", …}</tool_call>` as prose, often inventing
+/// its own `<tool_response>OK</tool_response>` to continue against. The loop
+/// sees a text-only reply, records zero steps, and the failure reads as "the
+/// model refused" — which sends the reader to the prompt, the schema and the
+/// source, none of which are the problem.
+///
+/// Measured on a `claude_code` ingest: a complete, correct plan naming six
+/// pages, every call spelled out in text, and nothing written to disk. The
+/// cause is upstream and structural — `complete_with_model` on the
+/// coding-agent providers accepts `tools` and does not forward them, because
+/// their tool surface arrives over the MCP bridge that only the agent's own
+/// turn loop establishes. A macro calling the provider directly therefore gets
+/// a tool-less model, every time, silently.
+///
+/// Deliberately keyed on the REPLY and not on the provider name. It is the
+/// shape that identifies the failure, so this keeps working for any future
+/// provider that cannot carry tools on this path, and stays quiet for a model
+/// that merely chose not to call anything.
+fn narrated_its_tool_calls(final_text: &str) -> bool {
+    const CALL_MARKERS: [&str; 4] = [
+        "<tool_call>",
+        "<function_call",
+        "<invoke",
+        "\"name\": \"kb_",
+    ];
+    const TOOL_NAMES: [&str; 4] = ["kb_write", "kb_append_log", "kb_read", "kb_add_raw_source"];
+    CALL_MARKERS.iter().any(|m| final_text.contains(m))
+        && TOOL_NAMES.iter().any(|t| final_text.contains(t))
+}
+
 /// The message a digest that wrote nothing fails with.
 ///
 /// It has to answer the only question the user has — *what failed* — so it
@@ -614,6 +647,16 @@ fn no_pages_written_error(source_id: &str, result: &SubAgentResult) -> String {
              provider request failed or was cut short",
         );
     } else {
+        if result.steps_used == 0 && narrated_its_tool_calls(final_text) {
+            msg.push_str(
+                ". The model wrote its tool calls out as text instead of making them, \
+                 which is what a model does when it was handed no tools. That is a \
+                 property of the model bound to this ingest rather than of the source \
+                 or the prompt: the coding-agent providers (Claude Code, Codex) reach \
+                 Biorouter's tools over a bridge that only a chat turn sets up, so they \
+                 cannot drive a knowledge macro. Choose a different model for ingestion",
+            );
+        }
         msg.push_str(&format!(
             "; the model's last message was: {}",
             clip(final_text, 400)
@@ -1049,6 +1092,69 @@ mod tests {
             vec!["doi:10.1016/s0140-6736(21)00676-0".to_string()]
         );
         assert!(source_xrefs(&meta("An untitled note", None)).is_empty());
+    }
+
+    /// A model that was handed no tools must not be reported as a model that
+    /// refused.
+    ///
+    /// This text is taken from a real `claude_code` ingest on merged main. The
+    /// plan is correct and complete - six pages, the right types, the right
+    /// links - and every call is spelled out as prose, including invented
+    /// `<tool_response>OK</tool_response>` replies to continue against. Nothing
+    /// reached disk, and the failure quoted that prose back under "the model's
+    /// last message was", which reads as a model that would not cooperate.
+    ///
+    /// The real cause is structural and upstream: `complete_with_model` on the
+    /// coding-agent providers accepts `tools` and does not forward them, since
+    /// their tool surface arrives over a bridge that only a chat turn sets up.
+    /// A macro calling the provider directly gets a tool-less model every time.
+    /// Nobody reading the old message would find that.
+    #[test]
+    fn a_model_that_narrated_its_tool_calls_is_named_as_such() {
+        let narrated = "**Step 1 - Source page**\n<tool_call>\n{\"name\": \"kb_write\",                         \"arguments\": {\"path\": \"knowledge/source/tocilizumab.md\"}}\n                        </tool_call>\n<tool_response>\nOK\n</tool_response>";
+        assert!(
+            narrated_its_tool_calls(narrated),
+            "the shape of a narrated call must be recognised"
+        );
+
+        let result = SubAgentResult {
+            steps_used: 0,
+            reason: crate::knowledge::subagent::events::DoneReason::NoMoreToolCalls,
+            final_text: narrated.to_string(),
+            events: Vec::new(),
+        };
+        let msg = no_pages_written_error("src-1", &result);
+        assert!(
+            msg.contains("wrote its tool calls out as text"),
+            "the failure must name what actually happened: {msg}"
+        );
+        assert!(
+            msg.contains("Choose a different model for ingestion"),
+            "and what to do about it, since the Knowledge view has its own model picker: {msg}"
+        );
+    }
+
+    /// ⚠ And it must stay QUIET for a model that simply chose not to call
+    /// anything, which is a different failure with a different fix. Blaming the
+    /// provider there would send the reader to the model picker for a problem
+    /// in the source or the prompt.
+    #[test]
+    fn a_model_that_merely_declined_is_not_blamed_on_the_provider() {
+        assert!(!narrated_its_tool_calls(
+            "I could not find anything to record."
+        ));
+        let result = SubAgentResult {
+            steps_used: 0,
+            reason: crate::knowledge::subagent::events::DoneReason::NoMoreToolCalls,
+            final_text: "I could not find anything worth recording here.".to_string(),
+            events: Vec::new(),
+        };
+        let msg = no_pages_written_error("src-1", &result);
+        assert!(!msg.contains("wrote its tool calls out as text"), "{msg}");
+        assert!(
+            msg.contains("could not find anything worth recording"),
+            "{msg}"
+        );
     }
 
     /// ⚠ **The regression the seed creates.** `txn_wrote_knowledge_pages`
