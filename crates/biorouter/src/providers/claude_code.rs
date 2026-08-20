@@ -29,11 +29,20 @@
 //!
 //! * `--setting-sources ""` — without it a `-p` session **executes the hooks in
 //!   the working directory's `.claude/settings.json`**, because `-p` shows no
-//!   workspace-trust dialog. Biorouter sets the child's cwd to the session's
-//!   working directory, which may be any repository the user happens to have
-//!   open, so this is arbitrary command execution triggered by cwd alone. Tested
-//!   against a hostile fixture: without this flag the fixture's `SessionStart`
-//!   hook ran.
+//!   workspace-trust dialog. Tested against a hostile fixture: without this flag
+//!   the fixture's `SessionStart` hook ran.
+//!
+//!   ⚠ This used to say "Biorouter sets the child's cwd to the session's working
+//!   directory". It does not, and never has — nothing on this path calls
+//!   `Command::current_dir`, so the child inherits BIOROUTER's process cwd. The
+//!   sentence was written from the pre-BR-54 world, where each window ran its
+//!   own daemon; today one shared daemon starts at `os.homedir()`. The doc page
+//!   copied this comment, so both said the same wrong thing.
+//!
+//!   The flag is still load-bearing, and the CLI is why: a `-p` run started from
+//!   a hostile checkout executes that checkout's hooks. On the desktop path the
+//!   file within range is the user's own `~/.claude/settings.json` instead —
+//!   narrower than the old sentence implied, not harmless.
 //! * `--strict-mcp-config` — without it the child connects the MCP servers in the
 //!   user's own configuration. Measured: a bare run showed the developer's
 //!   personal clinical-database server as `connected` inside a child Biorouter

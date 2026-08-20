@@ -37,9 +37,20 @@ paths, and a unit test pins that it is the only axis that varies.
 ### `--setting-sources ""` — without it, a `-p` run executes the working directory's hooks
 
 Without this flag a `-p` session **executes the hooks in the working directory's
-`.claude/settings.json`**, because `-p` shows no workspace-trust dialog. BioRouter sets the child's
-current directory to the session's working directory, which may be any repository the user happens
-to have open — so this is arbitrary command execution triggered by the working directory alone.
+`.claude/settings.json`**, because `-p` shows no workspace-trust dialog.
+
+⚠ **Which directory that is, exactly** — this page claimed for a while that BioRouter sets the
+child's current directory to the session's working directory. It does not, and it never has: no
+spawn site on this path calls `Command::current_dir`, so the child inherits BioRouter's own process
+working directory. Under the desktop app that is the shared daemon's spawn cwd, `os.homedir()`
+(`ui/desktop/src/main.ts`, `dir: os.homedir()`), because since BR-54 one daemon serves every window
+and `biorouterdSingleton.ts` says outright that its spawn cwd is "only a fallback the GUI never
+relies on". Under the CLI it is the user's shell cwd, which really can be any repository they happen
+to be sitting in.
+
+The flag is load-bearing either way, and the CLI case is why: a `-p` run started from a hostile
+checkout executes that checkout's hooks. What changes is only the reach — on the desktop path the
+file within range is the user's own `~/.claude/settings.json`, not an arbitrary repository's.
 
 Tested against a hostile fixture: without the flag, the fixture's `SessionStart` hook ran.
 `--strict-mcp-config` alone did **not** stop it — the two flags cover different surfaces and
@@ -97,7 +108,7 @@ defaults, and each is pinned by a test.
 | `ephemeral` | `true` | No Codex session files. BioRouter owns the transcript, for the same reason as `--no-session-persistence` above. |
 | `baseInstructions` | BioRouter's system prompt | Replaces Codex's own preamble, which measured ~15k input tokens on a trivial prompt. |
 | `config.mcp_servers.biorouter.url` | The bridge URL, when the turn has one | The streamable-HTTP MCP form, which needs no second process. |
-| `cwd` | The process working directory | — |
+| `cwd` | The process working directory | BioRouter's own, not the session's. The `Provider` trait has no session in scope (`providers/base.rs`, `complete_with_model` takes a system prompt, messages and tools), which is the same reason the bridge URL has to travel as a task-local. |
 
 ### Every approval request is refused
 
@@ -121,8 +132,9 @@ is no.
 
 Isolation is not a sandbox, and this section is the honest statement of the boundary.
 
-- **The child runs as the user**, in the session's working directory, with the user's `PATH`
-  (augmented) and `HOME`. Read-only for Codex by configuration; for Claude Code the built-ins are
+- **The child runs as the user**, in BioRouter's own process working directory — **not** the
+  session's; see the `cwd` row above and the note under `--setting-sources ""` — with the user's
+  `PATH` (augmented) and `HOME`. Read-only for Codex by configuration; for Claude Code the built-ins are
   off rather than the process being confined.
 - **It has network access**, because it must reach its vendor to do inference at all.
 - **It has whatever BioRouter's tools can do**, which is the intended surface, gated as described in
