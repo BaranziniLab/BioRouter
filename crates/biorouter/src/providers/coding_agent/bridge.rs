@@ -119,6 +119,19 @@ pub struct BridgeGrant {
     /// including their side effects — and then dispatched the arguments the hook
     /// had asked to replace.
     hooks: Arc<crate::hooks::HooksManager>,
+    /// BRSDK encryption: the app's secret vault, or `None` for a normal session.
+    ///
+    /// A snapshot taken when the grant is issued, like every other field here —
+    /// `Agent::set_vault` is called once when an app's agent is configured, well
+    /// before any turn, so there is nothing for a per-call re-read to observe.
+    ///
+    /// A grant *without* this resolved nothing, and the failure was silent in the
+    /// worst way: a `{{vault:NAME}}` placeholder that reaches a tool is not an
+    /// error, it is a string. The tool sends it as an Authorization header, or
+    /// writes it into a config file, and the request comes back 401 — a
+    /// credential problem with no credential anywhere near it, on a path where
+    /// the same call from the same app works fine under any other provider.
+    vault: Option<Arc<crate::agents::vault_refs::VaultRefs>>,
 }
 
 impl BridgeGrant {
@@ -132,6 +145,7 @@ impl BridgeGrant {
         conversation: Conversation,
         cancel: Option<CancellationToken>,
         hooks: Arc<crate::hooks::HooksManager>,
+        vault: Option<Arc<crate::agents::vault_refs::VaultRefs>>,
     ) -> Self {
         Self {
             session,
@@ -143,6 +157,7 @@ impl BridgeGrant {
             conversation,
             cancel,
             hooks,
+            vault,
         }
     }
 
@@ -271,9 +286,10 @@ impl BridgeGrant {
         let Some(approved) = decision.approved.into_iter().next() else {
             return Err(format!("`{name}` was not approved."));
         };
-        let call = approved
+        let mut call = approved
             .tool_call
             .map_err(|e| format!("`{name}` was approved but is not a usable call: {e}"))?;
+        self.apply_vault(&mut call);
 
         let result = self
             .extensions
@@ -290,6 +306,42 @@ impl BridgeGrant {
             .result
             .await
             .map_err(|e| format!("`{name}` failed: {e}"))
+    }
+
+    /// BRSDK encryption: resolve `{{vault:NAME}}` in the call's arguments.
+    ///
+    /// Placed exactly where `Agent::dispatch_tool_call` places
+    /// `Agent::apply_vault` — on the leaf MCP-dispatch path, after the call has
+    /// been judged and immediately before it runs — and the position is the whole
+    /// design, not a detail. Earlier, the inspectors and the user's hooks would
+    /// see the decrypted secret and a `SecurityInspector` reason or a hook's
+    /// stdout could carry it out of the process. Later is not a place: the tool
+    /// has already run.
+    ///
+    /// A bridged call without this ran with the literal placeholder string. That
+    /// is worse than either working or failing, because nothing reports it: a
+    /// placeholder is a perfectly valid string, so it goes out as an
+    /// `Authorization: Bearer {{vault:API_KEY}}` header or into a config file and
+    /// comes back as a 401 from a service Biorouter never names — for an app that
+    /// works under every non-coding-agent provider.
+    ///
+    /// The grant carries a *snapshot* of the vault rather than a handle to the
+    /// agent, so this is `&self` and synchronous, unlike the agent's version
+    /// which has to take a mutex it shares with `set_vault`.
+    ///
+    /// The residual is the same one the agent's path has and is recorded there:
+    /// a tool that echoes its arguments back in its *result* can still surface
+    /// the secret. On this path the result reaches the child coding agent's model
+    /// rather than Biorouter's own — a different context, the same exposure, and
+    /// no worse, since a child that never gets the resolved call cannot do the
+    /// job at all.
+    fn apply_vault(&self, call: &mut CallToolRequestParams) {
+        let Some(vault) = self.vault.as_ref() else {
+            return;
+        };
+        if let Some(args) = call.arguments.as_mut() {
+            vault.resolve_args(args);
+        }
     }
 
     /// BR-19: apply whatever the PreToolUse hooks asked to rewrite, and re-inspect.
@@ -767,6 +819,65 @@ mod tests {
         );
     }
 
+    /// BRSDK: a `{{vault:NAME}}` in a bridged call is resolved before it runs.
+    ///
+    /// The placeholder is put where the *answer* depends on it — inside the
+    /// query's `WHERE` — because that is the only way to tell resolution from
+    /// non-resolution here. An unresolved placeholder is not an error and raises
+    /// nothing: it is a valid string that matches no chromosome, so the call
+    /// succeeds and returns nothing, which in production is a header that goes
+    /// out reading `Bearer {{vault:API_KEY}}` and a 401 from a service Biorouter
+    /// never names.
+    #[tokio::test]
+    async fn a_bridged_call_resolves_its_vault_references() {
+        let _guard = path_jail_lock();
+        let fixture = GeneFixture::new().await;
+
+        let hooks = no_hooks();
+        let vault = Arc::new(crate::agents::vault_refs::VaultRefs::new(HashMap::from([
+            ("CHROM".to_string(), "17".to_string()),
+        ])));
+        let grant = fixture.grant_with_vault(inspections_with(&hooks, false), hooks, Some(vault));
+
+        let result = grant
+            .call(fixture.query_for("{{vault:CHROM}}"))
+            .await
+            .expect("the resolved query is a valid one");
+
+        let text = serde_json::to_string(&result).expect("a serialisable result");
+        assert!(
+            text.contains("TP53"),
+            "`{{{{vault:CHROM}}}}` must have become `17` before the query ran; an \
+             unresolved placeholder matches nothing and fails silently. got: {text}"
+        );
+    }
+
+    /// The same call with no vault installed leaves the placeholder alone.
+    ///
+    /// Not symmetry for its own sake: it pins that resolution is the vault's doing
+    /// and not something the SQL layer or the argument plumbing does on its own,
+    /// which is what makes the assertion above evidence of anything. Normal
+    /// (non-BRSDK) sessions are this case, and they are the overwhelming majority.
+    #[tokio::test]
+    async fn without_a_vault_a_placeholder_is_left_as_written() {
+        let _guard = path_jail_lock();
+        let fixture = GeneFixture::new().await;
+
+        let hooks = no_hooks();
+        let grant = fixture.grant(inspections_with(&hooks, false), hooks);
+
+        let result = grant
+            .call(fixture.query_for("{{vault:CHROM}}"))
+            .await
+            .expect("a query with no matching rows is still a valid query");
+
+        let text = serde_json::to_string(&result).expect("a serialisable result");
+        assert!(
+            !text.contains("TP53") && !text.contains("CFTR"),
+            "with no vault the placeholder is a literal that matches no row: {text}"
+        );
+    }
+
     /// A sqlite database with two rows on two different chromosomes, plus the
     /// `datasql` extension serving it in-process. Two rows on distinguishable
     /// keys is the whole point: "which arguments ran" has to be readable off the
@@ -832,6 +943,15 @@ mod tests {
             inspections: ToolInspectionManager,
             hooks: Arc<crate::hooks::HooksManager>,
         ) -> BridgeGrant {
+            self.grant_with_vault(inspections, hooks, None)
+        }
+
+        fn grant_with_vault(
+            &self,
+            inspections: ToolInspectionManager,
+            hooks: Arc<crate::hooks::HooksManager>,
+            vault: Option<Arc<crate::agents::vault_refs::VaultRefs>>,
+        ) -> BridgeGrant {
             BridgeGrant::new(
                 Session::default(),
                 // Auto, so the permission inspector approves and the test measures
@@ -844,6 +964,7 @@ mod tests {
                 Conversation::new_unvalidated(vec![]),
                 None,
                 hooks,
+                vault,
             )
         }
     }
@@ -954,6 +1075,7 @@ mod tests {
             Conversation::new_unvalidated(vec![]),
             None,
             no_hooks(),
+            None,
         )
     }
 
@@ -982,6 +1104,7 @@ mod tests {
             Conversation::new_unvalidated(vec![]),
             cancel,
             no_hooks(),
+            None,
         )
     }
 }

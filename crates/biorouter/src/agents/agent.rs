@@ -4880,6 +4880,13 @@ impl Agent {
             // the bridge ran the hooks and then dispatched the arguments they
             // asked to replace.
             Arc::clone(&self.hooks_manager),
+            // BRSDK encryption. A snapshot, like everything else in the grant:
+            // `set_vault` runs once when an app's agent is configured, long before
+            // any turn, so there is nothing a per-call re-read could observe. A
+            // grant without it dispatched the literal `{{vault:NAME}}` string,
+            // which is not an error anywhere — it is a valid string that goes out
+            // as a header and comes back 401.
+            self.vault.lock().await.clone(),
         ))
     }
 
