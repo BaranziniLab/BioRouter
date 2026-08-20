@@ -177,4 +177,51 @@ mod tests {
         .to_string();
         assert!(msg.contains("never passes through Biorouter"));
     }
+
+    /// ⚠ **Both vendor children must be spawned with `kill_on_drop(true)`.**
+    ///
+    /// A cancelled turn does not unwind these providers, it DROPS them.
+    /// `drive_stream`'s hard-cancellation escape breaks out of its `select!`
+    /// while the provider call is still pending, the stream is dropped, and the
+    /// in-flight future goes with it — so `AppServer::shutdown()` and
+    /// `claude_code`'s `start_kill()` never run. `tokio::process::Child`
+    /// defaults to `kill_on_drop(false)` and DETACHES, so the vendor CLI kept
+    /// running with the user's subscription credential, burning quota on an
+    /// answer nobody would read, and on the Codex path holding its app-server
+    /// port too.
+    ///
+    /// Structural rather than behavioural, deliberately. Proving the fix by
+    /// observation means spawning a real `claude`/`codex`, cancelling
+    /// mid-answer, and asserting the pid is gone — which needs both vendor CLIs
+    /// installed and signed in, so it cannot run in CI and would therefore
+    /// never be the thing that catches a regression. What CAN be checked
+    /// everywhere is that the flag is set before the spawn it governs.
+    #[test]
+    fn every_vendor_child_is_reaped_when_its_turn_is_dropped() {
+        for (label, src) in [
+            ("claude_code.rs", include_str!("../claude_code.rs")),
+            ("coding_agent/appserver.rs", include_str!("appserver.rs")),
+        ] {
+            // Comments mention both spellings; only executable lines count.
+            let code: String = src
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let kill = code.find("kill_on_drop(true)").unwrap_or_else(|| {
+                panic!(
+                    "{label} spawns a vendor CLI without kill_on_drop(true); a cancelled turn \
+                     drops the future rather than unwinding it, so the explicit reap never runs \
+                     and the child detaches with the user's credential"
+                )
+            });
+            let spawn = code
+                .find(".spawn()")
+                .unwrap_or_else(|| panic!("{label} no longer spawns anything"));
+            assert!(
+                kill < spawn,
+                "{label} sets kill_on_drop AFTER the spawn it is meant to govern"
+            );
+        }
+    }
 }

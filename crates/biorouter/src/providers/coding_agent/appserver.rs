@@ -90,6 +90,15 @@ impl AppServer {
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        // ⚠ `kill_on_drop`, because a cancelled turn drops this future rather
+        // than unwinding it. `drive_stream`'s hard-cancellation escape breaks
+        // out of its `select!` while the provider call is still pending, the
+        // stream is dropped, and every explicit reap below is skipped. Without
+        // this the vendor CLI keeps running detached, holding the user's
+        // subscription credential and burning their quota on an answer nobody
+        // will read - and on the Codex path it also keeps the app-server port.
+        // The default is false, which is why this has to be said out loud.
+        cmd.kill_on_drop(true);
 
         let mut child = cmd.spawn().map_err(|e| {
             ProviderError::ExecutionError(format!("could not start app server: {e}"))
