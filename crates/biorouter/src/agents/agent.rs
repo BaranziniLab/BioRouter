@@ -4873,6 +4873,13 @@ impl Agent {
             bridged,
             conversation.clone(),
             cancel_token,
+            // BR-19: the grant runs `HookInspector` like any other inspector, so
+            // the user's PreToolUse hooks fire for a bridged call — but a hook's
+            // `updated_input` is *staged inside this manager*, not returned from
+            // the inspection, and only the manager can hand it back. Without it
+            // the bridge ran the hooks and then dispatched the arguments they
+            // asked to replace.
+            Arc::clone(&self.hooks_manager),
         ))
     }
 

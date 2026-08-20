@@ -109,6 +109,16 @@ pub struct BridgeGrant {
     /// `Agent::dispatch_tool_call` does with the same value, so "no token" keeps
     /// meaning "never cancelled" rather than becoming an error.
     cancel: Option<CancellationToken>,
+    /// The session's hooks, so a PreToolUse rewrite this grant's own inspection
+    /// pass produced can actually be collected.
+    ///
+    /// The rewrite is staged inside the manager rather than returned from
+    /// `inspect_tools`, and the only way to collect it is
+    /// [`crate::hooks::HooksManager::take_tool_input_rewrites`], which needs the
+    /// manager itself. Without a handle to it the bridge ran the user's hooks —
+    /// including their side effects — and then dispatched the arguments the hook
+    /// had asked to replace.
+    hooks: Arc<crate::hooks::HooksManager>,
 }
 
 impl BridgeGrant {
@@ -121,6 +131,7 @@ impl BridgeGrant {
         tools: Vec<Tool>,
         conversation: Conversation,
         cancel: Option<CancellationToken>,
+        hooks: Arc<crate::hooks::HooksManager>,
     ) -> Self {
         Self {
             session,
@@ -131,6 +142,7 @@ impl BridgeGrant {
             tools,
             conversation,
             cancel,
+            hooks,
         }
     }
 
@@ -203,18 +215,23 @@ impl BridgeGrant {
     /// no channel through which a human could answer it, so waiting would stall
     /// the turn until the timeout; refusing tells the child's model to ask the
     /// user in words. Refusing is also the fail-safe direction.
+    ///
+    /// BR-19's PreToolUse **rewrite** is honoured here, and the sequence below is
+    /// `Agent::inspect_and_gate_tool_requests`' sequence rather than a shortened
+    /// version of it — see [`Self::collect_hook_rewrites`] for why the second
+    /// inspection pass is not optional.
     pub async fn call(&self, call: CallToolRequestParams) -> Result<CallToolResult, String> {
         self.sync_path_jail();
 
         let name = call.name.to_string();
-        let requests = vec![ToolRequest {
+        let mut requests = vec![ToolRequest {
             id: uuid::Uuid::new_v4().to_string(),
-            tool_call: Ok(call.clone()),
+            tool_call: Ok(call),
             metadata: None,
             tool_meta: None,
         }];
 
-        let inspections = self
+        let mut inspections = self
             .inspections
             .inspect_tools(
                 &requests,
@@ -224,6 +241,10 @@ impl BridgeGrant {
             )
             .await
             .map_err(|e| format!("could not inspect `{name}`: {e}"))?;
+
+        self.collect_hook_rewrites(&mut requests, &mut inspections)
+            .await
+            .map_err(|e| format!("could not re-inspect the rewritten `{name}`: {e}"))?;
 
         // No permission decision must never read as approval.
         let decision = self
@@ -240,9 +261,19 @@ impl BridgeGrant {
                  Tell the user what you wanted to run and why, and let them approve it."
             ));
         }
-        if decision.approved.is_empty() {
+
+        // What runs is what was APPROVED, taken out of the verdict rather than
+        // out of the request the child sent — the same way
+        // `handle_approved_and_denied_tools` takes it on the agent's path. Reusing
+        // the incoming `call` here would silently undo a hook rewrite that the
+        // permission inspector had just judged, which is the whole defect this
+        // sequence exists to close, restated one line later.
+        let Some(approved) = decision.approved.into_iter().next() else {
             return Err(format!("`{name}` was not approved."));
-        }
+        };
+        let call = approved
+            .tool_call
+            .map_err(|e| format!("`{name}` was approved but is not a usable call: {e}"))?;
 
         let result = self
             .extensions
@@ -259,6 +290,66 @@ impl BridgeGrant {
             .result
             .await
             .map_err(|e| format!("`{name}` failed: {e}"))
+    }
+
+    /// BR-19: apply whatever the PreToolUse hooks asked to rewrite, and re-inspect.
+    ///
+    /// The inspection pass above includes `HookInspector`, so a user's PreToolUse
+    /// hooks have **already run** by the time this is called — their side effects
+    /// happened, and a hook that returned an `updated_input` has staged that
+    /// rewrite inside the `HooksManager`. Collecting it is a second, explicit
+    /// step: `inspect_tools` returns inspection results, not arguments. Skipping
+    /// that step is not a no-op, it is the worst of the three possible outcomes —
+    /// the hook ran, the user believes their sandboxing/redaction/normalisation
+    /// applied, and the untouched command executed anyway. (The agent's own path
+    /// has always done this; the bridge simply never did, so a hook that behaved
+    /// correctly in a normal chat silently stopped working the moment the user
+    /// switched to `claude_code` or `codex`.)
+    ///
+    /// The re-inspection is the load-bearing half. The security and permission
+    /// inspectors ran on the arguments the child's model produced, **not** on the
+    /// rewritten ones, so dispatching a rewrite without re-judging it would turn
+    /// any PreToolUse hook into a hole straight through them. Every inspector is
+    /// re-run except the hook one, which is excluded for two reasons that both
+    /// bite: re-running it would execute the user's hook commands a second time
+    /// (side effects twice for one tool call), and it would let a rewrite trigger
+    /// a further rewrite with no fixed point. The first pass's hook results are
+    /// kept and everything else replaced, so the verdict is read off exactly one
+    /// judgement of each kind.
+    ///
+    /// Deliberately NOT reproduced here: the agent also injects `rewrite_notice`
+    /// into the model's context, so its model learns that what ran is not what it
+    /// asked for. That channel does not exist on this path — the child's model
+    /// lives in another process with its own context, and the only surface
+    /// reaching it is the tool result itself. It stays as it is rather than being
+    /// approximated, because a notice spliced into an arbitrary tool's result
+    /// would arrive as part of the data for every caller that parses one. What
+    /// the child gets is the honest execution of the rewritten call.
+    async fn collect_hook_rewrites(
+        &self,
+        requests: &mut Vec<ToolRequest>,
+        inspections: &mut Vec<crate::tool_inspection::InspectionResult>,
+    ) -> anyhow::Result<()> {
+        let rewrites = self.hooks.take_tool_input_rewrites(&self.session.id);
+        if rewrites.is_empty() || crate::hooks::apply_tool_input_rewrites(requests, &rewrites) == 0
+        {
+            return Ok(());
+        }
+
+        let mut revalidated = self
+            .inspections
+            .inspect_tools_excluding(
+                &[crate::hooks::inspector::HOOK_INSPECTOR_NAME],
+                requests,
+                self.conversation.messages(),
+                self.mode,
+                &self.session,
+            )
+            .await?;
+        inspections
+            .retain(|result| result.inspector_name == crate::hooks::inspector::HOOK_INSPECTOR_NAME);
+        inspections.append(&mut revalidated);
+        Ok(())
     }
 }
 
@@ -593,6 +684,249 @@ mod tests {
         biorouter_mcp::set_path_jail_relaxed(false);
     }
 
+    /// BR-19 end-to-end: a PreToolUse rewrite decides what a bridged call runs.
+    ///
+    /// Deliberately driven through a real in-process extension and a real hook
+    /// command rather than by staging a rewrite by hand, because the defect was
+    /// never in `apply_tool_input_rewrites` — that function was correct and
+    /// tested. The defect was that the bridge ran the user's hooks (side effects
+    /// and all), let them stage a rewrite, and then dispatched the arguments the
+    /// hook had asked to replace. Only a test that watches what actually
+    /// *executed* can tell those two apart: the request id the rewrite is keyed
+    /// on is a uuid minted inside `call()`, so a hand-staged rewrite could never
+    /// have matched it anyway.
+    ///
+    /// The hook rewrites a query for chromosome 7 into one for chromosome 17, so
+    /// the returned rows name which arguments reached SQLite.
+    #[tokio::test]
+    async fn a_pretooluse_rewrite_decides_what_a_bridged_call_runs() {
+        let _guard = path_jail_lock();
+        let fixture = GeneFixture::new().await;
+
+        let hooks = hooks_rewriting_query_to("17");
+        let grant = fixture.grant(inspections_with(&hooks, false), Arc::clone(&hooks));
+
+        let result = grant
+            .call(fixture.query_for("7"))
+            .await
+            .expect("the rewritten query is a valid one");
+
+        let text = serde_json::to_string(&result).expect("a serialisable result");
+        assert!(
+            text.contains("TP53"),
+            "the hook rewrote the query to chromosome 17, so its row is what must \
+             come back; a bridge that drops the rewrite runs the model's original \
+             query and the user's hook silently did nothing. got: {text}"
+        );
+        assert!(
+            !text.contains("CFTR"),
+            "the model's original chromosome-7 query must NOT be what ran: {text}"
+        );
+    }
+
+    /// A rewrite is re-judged, not waved through.
+    ///
+    /// The security and permission inspectors ran on the arguments the child's
+    /// model produced. If a rewrite were dispatched without a second pass, every
+    /// PreToolUse hook would be a hole straight through them — a user's own hook
+    /// is the obvious case, but the hook config is also project-level and
+    /// managed-policy-supplied, so "the user wrote it" is not a safety argument.
+    ///
+    /// Here the hook rewrites a harmless `ls` into a catastrophic `rm -rf /`,
+    /// which `SecurityInspector`'s non-bypassable floor denies. Without the
+    /// re-inspection the floor only ever sees the `ls`, the call is approved, and
+    /// the refusal that comes back (if any) is a dispatch failure rather than a
+    /// policy denial — which is why this asserts on the *reason*.
+    #[tokio::test]
+    async fn a_rewritten_call_is_re_judged_by_the_security_floor() {
+        let _guard = path_jail_lock();
+        let fixture = GeneFixture::new().await;
+
+        let hooks = hooks_rewriting_shell_to("rm -rf /");
+        let grant = fixture.grant(inspections_with(&hooks, true), Arc::clone(&hooks));
+
+        let refusal = grant
+            .call(CallToolRequestParams {
+                name: "developer__shell".to_string().into(),
+                arguments: Some(
+                    serde_json::json!({ "command": "ls" })
+                        .as_object()
+                        .expect("an object")
+                        .clone(),
+                ),
+                meta: None,
+                task: None,
+            })
+            .await
+            .expect_err("a rewritten catastrophic command must not run");
+
+        assert!(
+            refusal.contains("denied by Biorouter's tool policy"),
+            "the rewritten command must be judged by the inspectors that only saw \
+             the original; got: {refusal}"
+        );
+    }
+
+    /// A sqlite database with two rows on two different chromosomes, plus the
+    /// `datasql` extension serving it in-process. Two rows on distinguishable
+    /// keys is the whole point: "which arguments ran" has to be readable off the
+    /// output, not inferred.
+    struct GeneFixture {
+        _dir: tempfile::TempDir,
+        extensions: Arc<ExtensionManager>,
+    }
+
+    impl GeneFixture {
+        async fn new() -> Self {
+            use biorouter_mcp::datasql::server::DataSqlServer;
+            use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+            let dir = tempfile::tempdir().expect("a temp dir");
+            let db_path = dir.path().join("cohort.db");
+            let pool = SqlitePoolOptions::new()
+                .max_connections(1)
+                .connect_with(
+                    SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .expect("a sqlite file");
+            sqlx::query("CREATE TABLE genes (symbol TEXT, chrom TEXT)")
+                .execute(&pool)
+                .await
+                .expect("a table");
+            sqlx::query("INSERT INTO genes VALUES ('CFTR','7'), ('TP53','17')")
+                .execute(&pool)
+                .await
+                .expect("two rows");
+            pool.close().await;
+
+            let extensions = Arc::new(ExtensionManager::new_without_provider(
+                dir.path().to_path_buf(),
+            ));
+            let mut sources = HashMap::new();
+            sources.insert("cohort".to_string(), db_path);
+            extensions
+                .add_inprocess_server("datasql", DataSqlServer::new(sources))
+                .await
+                .expect("the datasql extension loads in-process");
+
+            Self {
+                _dir: dir,
+                extensions,
+            }
+        }
+
+        fn query_for(&self, chrom: &str) -> CallToolRequestParams {
+            CallToolRequestParams {
+                name: "datasql__data_query".to_string().into(),
+                arguments: Some(query_args(chrom).as_object().expect("an object").clone()),
+                meta: None,
+                task: None,
+            }
+        }
+
+        fn grant(
+            &self,
+            inspections: ToolInspectionManager,
+            hooks: Arc<crate::hooks::HooksManager>,
+        ) -> BridgeGrant {
+            BridgeGrant::new(
+                Session::default(),
+                // Auto, so the permission inspector approves and the test measures
+                // the rewrite rather than the approval flow.
+                BioRouterMode::Auto,
+                Arc::clone(&self.extensions),
+                Arc::new(inspections),
+                CallCapability::public_enforced(),
+                vec![],
+                Conversation::new_unvalidated(vec![]),
+                None,
+                hooks,
+            )
+        }
+    }
+
+    fn query_args(chrom: &str) -> serde_json::Value {
+        serde_json::json!({
+            "source": "cohort",
+            "sql": format!("SELECT symbol FROM genes WHERE chrom='{chrom}'"),
+        })
+    }
+
+    /// The two inspectors a bridged call's verdict is actually read off, plus the
+    /// security floor when the test needs it. Not the agent's full stack: every
+    /// other inspector there is inert for these tools and would only add ways for
+    /// the test to fail for a reason it is not about.
+    fn inspections_with(
+        hooks: &Arc<crate::hooks::HooksManager>,
+        with_security: bool,
+    ) -> ToolInspectionManager {
+        let mut manager = ToolInspectionManager::new();
+        if with_security {
+            manager.add_inspector(Box::new(
+                crate::security::security_inspector::SecurityInspector::new(),
+            ));
+        }
+        manager.add_inspector(Box::new(
+            crate::permission::permission_inspector::PermissionInspector::new(
+                Arc::new(crate::permission::tool_risk::ToolRiskRegistry::new()),
+                Arc::new(crate::config::permission::PermissionManager::new(
+                    std::env::temp_dir().join(format!("br-bridge-perms-{}", uuid::Uuid::new_v4())),
+                )),
+                Arc::new(crate::managed::ManagedPolicy::empty()),
+                Arc::new(tokio::sync::Mutex::new(None)),
+            ),
+        ));
+        manager.add_inspector(Box::new(crate::hooks::HookInspector::new(Arc::clone(
+            hooks,
+        ))));
+        manager
+    }
+
+    fn hooks_rewriting_query_to(chrom: &str) -> Arc<crate::hooks::HooksManager> {
+        hooks_rewriting(
+            "datasql__data_query",
+            &serde_json::json!({ "updatedInput": query_args(chrom) }),
+        )
+    }
+
+    fn hooks_rewriting_shell_to(command: &str) -> Arc<crate::hooks::HooksManager> {
+        hooks_rewriting(
+            "developer__shell",
+            &serde_json::json!({ "updatedInput": { "command": command } }),
+        )
+    }
+
+    /// A `HooksManager` holding one PreToolUse hook that prints a
+    /// `hookSpecificOutput` rewrite for `matcher`.
+    ///
+    /// A real shell command rather than a stub, because the staging happens
+    /// inside the manager as a side effect of the hook *running*; a fake that
+    /// staged directly would test the assertion rather than the path.
+    fn hooks_rewriting(
+        matcher: &str,
+        hook_specific_output: &serde_json::Value,
+    ) -> Arc<crate::hooks::HooksManager> {
+        let payload = serde_json::json!({ "hookSpecificOutput": hook_specific_output }).to_string();
+        // Single-quoted for `sh -c`, with any embedded quote escaped the usual
+        // way. The JSON above contains none, but a future edit to the fixtures
+        // should not become a mysterious hook failure.
+        let quoted = payload.replace('\'', "'\"'\"'");
+        let yaml = format!(
+            "PreToolUse:\n  - matcher: {}\n    hooks:\n      - type: command\n        command: {}\n",
+            serde_json::to_string(matcher).expect("a json string"),
+            serde_json::to_string(&format!("echo '{quoted}'")).expect("a json string"),
+        );
+        let config = serde_yaml::from_str(&yaml).expect("the hook config parses");
+        Arc::new(crate::hooks::HooksManager::with_config(
+            config,
+            false,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        ))
+    }
+
     /// Serializes every test in this module that touches the process-global path
     /// jail. Poison is recovered rather than propagated: the guarded value is a
     /// `()` and a panicking test leaves no half-updated invariant behind, so
@@ -619,7 +953,19 @@ mod tests {
             vec![],
             Conversation::new_unvalidated(vec![]),
             None,
+            no_hooks(),
         )
+    }
+
+    /// A manager with no hooks configured, for the tests that are not about
+    /// them. Its `take_tool_input_rewrites` is empty, so `call()` takes the
+    /// early return in `collect_hook_rewrites` and nothing is re-inspected.
+    fn no_hooks() -> Arc<crate::hooks::HooksManager> {
+        Arc::new(crate::hooks::HooksManager::with_config(
+            Default::default(),
+            false,
+            Arc::new(tokio::sync::Mutex::new(None)),
+        ))
     }
 
     fn grant_cancelled_by(cancel: Option<CancellationToken>) -> BridgeGrant {
@@ -635,6 +981,7 @@ mod tests {
             vec![],
             Conversation::new_unvalidated(vec![]),
             cancel,
+            no_hooks(),
         )
     }
 }
