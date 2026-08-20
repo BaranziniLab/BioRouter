@@ -53,6 +53,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
 
 use rmcp::model::{CallToolRequestParams, CallToolResult, Tool};
+use tokio_util::sync::CancellationToken;
 
 use crate::agents::extension_manager::ExtensionManager;
 use crate::config::BioRouterMode;
@@ -84,6 +85,30 @@ pub struct BridgeGrant {
     tools: Vec<Tool>,
     /// Conversation snapshot the inspectors read for context.
     conversation: Conversation,
+    /// **The turn's own** cancel token, not one made here.
+    ///
+    /// Every cancellation mechanism Biorouter has reaches a running tool through
+    /// the token the agent threads down from the turn: issue #72's nested-shell
+    /// kill, `AppState::cancel_turn`, and the `TurnGuard` that fires when a
+    /// websocket drops. `ExtensionManager::dispatch_tool_call` takes the token by
+    /// value and has no other way to learn that the turn is over, so a token
+    /// constructed at the call site is a token nobody holds and nobody will ever
+    /// cancel — the tool runs to completion whatever the user does.
+    ///
+    /// That failure is *worse* on this path than on the agent's own, not merely
+    /// equal to it. A bridged call is made by a child process running its own
+    /// loop: the user pressing stop tears down the turn and the child, but a
+    /// `developer__shell` the child had already started would keep running,
+    /// detached, with nothing left to report to. So the token is threaded in from
+    /// `Agent::issue_tool_bridge`, which is called from the reply loop where the
+    /// turn's token is in scope.
+    ///
+    /// `Option`, because the agent's own token is `Option<CancellationToken>` —
+    /// a turn driven by something that never cancels (a workflow step, a test)
+    /// genuinely has none. `unwrap_or_default()` at dispatch, exactly as
+    /// `Agent::dispatch_tool_call` does with the same value, so "no token" keeps
+    /// meaning "never cancelled" rather than becoming an error.
+    cancel: Option<CancellationToken>,
 }
 
 impl BridgeGrant {
@@ -95,6 +120,7 @@ impl BridgeGrant {
         capability: CallCapability,
         tools: Vec<Tool>,
         conversation: Conversation,
+        cancel: Option<CancellationToken>,
     ) -> Self {
         Self {
             session,
@@ -104,6 +130,7 @@ impl BridgeGrant {
             capability,
             tools,
             conversation,
+            cancel,
         }
     }
 
@@ -114,6 +141,18 @@ impl BridgeGrant {
 
     pub fn session_id(&self) -> &str {
         &self.session.id
+    }
+
+    /// The token a bridged dispatch is handed.
+    ///
+    /// A named accessor rather than an inline expression at the dispatch site
+    /// because this one expression decides whether a running bridged tool is
+    /// reachable by "stop" at all, and an inline `CancellationToken::new()` there
+    /// is both the bug this replaced and completely invisible to every test — it
+    /// type-checks, it dispatches, and the tool runs. Naming it gives a test
+    /// something to hold that is the same value production uses.
+    fn dispatch_cancel_token(&self) -> CancellationToken {
+        self.cancel.clone().unwrap_or_default()
     }
 
     /// Run one bridged tool call through the full gate stack.
@@ -174,7 +213,7 @@ impl BridgeGrant {
                 &self.session.id,
                 call,
                 self.capability,
-                tokio_util::sync::CancellationToken::new(),
+                self.dispatch_cancel_token(),
             )
             .await
             .map_err(|e| format!("`{name}` failed: {e}"))?;
@@ -413,7 +452,53 @@ mod tests {
         );
     }
 
+    /// Cancelling the turn must cancel a tool the bridged child started.
+    ///
+    /// This is the whole of issue #72's kill path, `AppState::cancel_turn` and
+    /// `TurnGuard` at once: all three reach a running tool through the token the
+    /// agent threads down, and `ExtensionManager::dispatch_tool_call` takes that
+    /// token by value with no other channel back to the turn. A grant that made
+    /// its own token would satisfy the type system and leave every one of those
+    /// mechanisms with nothing to pull — the user presses stop, the child dies,
+    /// and the `developer__shell` it launched keeps running detached.
+    ///
+    /// Asserted through [`BridgeGrant::dispatch_cancel_token`] because that is
+    /// the exact value the dispatch site passes; a test that only cancelled a
+    /// token it had built itself would pass against a grant that ignores it.
+    #[tokio::test]
+    async fn the_turns_cancel_reaches_a_bridged_tool() {
+        let turn = CancellationToken::new();
+        let grant = grant_cancelled_by(Some(turn.clone()));
+
+        assert!(
+            !grant.dispatch_cancel_token().is_cancelled(),
+            "nothing has cancelled the turn yet"
+        );
+
+        turn.cancel();
+
+        assert!(
+            grant.dispatch_cancel_token().is_cancelled(),
+            "a bridged tool must be reachable by the turn's own cancel; a token \
+             constructed at the dispatch site is held by nobody and never fires"
+        );
+    }
+
+    /// A turn genuinely without a token (a workflow step, a test harness) must
+    /// still dispatch. "No token" means "never cancelled", exactly as it does in
+    /// `Agent::dispatch_tool_call`, which resolves the same `Option` the same
+    /// way — not an error, and not a refusal to run the tool.
+    #[tokio::test]
+    async fn a_turn_with_no_token_still_dispatches() {
+        let grant = grant_cancelled_by(None);
+        assert!(!grant.dispatch_cancel_token().is_cancelled());
+    }
+
     fn dummy_grant() -> BridgeGrant {
+        grant_cancelled_by(None)
+    }
+
+    fn grant_cancelled_by(cancel: Option<CancellationToken>) -> BridgeGrant {
         BridgeGrant::new(
             Session::default(),
             BioRouterMode::Auto,
@@ -425,6 +510,7 @@ mod tests {
             CallCapability::public_enforced(),
             vec![],
             Conversation::new_unvalidated(vec![]),
+            cancel,
         )
     }
 }

@@ -4808,11 +4808,21 @@ impl Agent {
     ///
     /// The returned lease revokes the grant when dropped, so it is bound in the
     /// caller for the duration of the provider call and no longer.
+    ///
+    /// `cancel_token` is the **turn's** token, threaded in rather than made in the
+    /// grant. A bridged tool call reaches `ExtensionManager::dispatch_tool_call`
+    /// the same way the agent's own does, and that function's only channel back to
+    /// the turn is the token it is handed — so a grant holding a token nobody else
+    /// owns puts every bridged tool beyond the reach of stop, of
+    /// `AppState::cancel_turn`, and of the `TurnGuard` that fires when a socket
+    /// drops. The token is in scope here for the same reason the lease is: both
+    /// belong to one iteration of the reply loop.
     async fn issue_tool_bridge(
         &self,
         session: &Session,
         conversation: &Conversation,
         tools: &[Tool],
+        cancel_token: Option<CancellationToken>,
     ) -> Option<coding_agent_bridge::BridgeLease> {
         let name = {
             let guard = self.provider.lock().await;
@@ -4862,6 +4872,7 @@ impl Agent {
             capability,
             bridged,
             conversation.clone(),
+            cancel_token,
         ))
     }
 
@@ -7023,7 +7034,12 @@ impl Agent {
                 // those providers are non-streaming, so the whole child turn happens
                 // inside the awaited call and therefore inside this scope.
                 let bridge_lease = self
-                    .issue_tool_bridge(&session, &conversation_with_moim, &tools)
+                    .issue_tool_bridge(
+                        &session,
+                        &conversation_with_moim,
+                        &tools,
+                        cancel_token.clone(),
+                    )
                     .await;
                 let bridge_url = bridge_lease.as_ref().map(|l| l.url().to_string());
                 let mut stream = coding_agent_bridge::ACTIVE_BRIDGE_URL
