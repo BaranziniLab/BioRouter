@@ -691,6 +691,65 @@ pub fn has_entry_unlocked(root: &Path, kb_id: &str) -> bool {
 
 /// Drop the entry when the base is deleted, so a later base reusing the id is
 /// classified by its own creator rather than by a base that no longer exists.
+/// Carry a base's classification across a RENAME, on all three axes.
+///
+/// ⚠ **Without this, renaming a knowledge base declassifies it.** Every map
+/// here is keyed by kb id, and `KnowledgeService::update_base` moves the
+/// directory, the registry entry, the persisted primary and the hidden-KB
+/// pointers — so a rename left the tier row stranded under the old id and the
+/// new id carrying nothing.
+///
+/// The tier itself survived that by luck rather than design: [`is_private`]
+/// reads an id it does not know, whose directory exists, as PRIVATE. The
+/// AFFILIATION did not. [`affiliation`] answers `Owners(∅)` for an unknown id,
+/// and an empty owner set is *unclaimed* rather than *nobody's*, which
+/// `affiliation::reachable` admits from every private model. So renaming a base
+/// that held one institution's data made it readable by another institution's
+/// private model, with nothing on screen to mark the change — DR-26's barrier
+/// undone by an edit to a display name. The provenance row went with it, taking
+/// the record of who set the tier and why.
+///
+/// Merges rather than overwrites when the destination already carries a row,
+/// and in the fail-safe direction on both axes: private wins over public, and
+/// the owner sets are unioned. A rename onto an occupied id should not be
+/// reachable — `update_base` refuses a target that already exists — but the
+/// alternative to merging here is silently choosing one classification over
+/// another, and this is not the place to make that choice.
+pub fn rename_unlocked(root: &Path, from: &str, to: &str) -> Result<()> {
+    if from == to {
+        return Ok(());
+    }
+    let mut store = load_for_write(root)?;
+
+    let moved_tier = store.bases.remove(from);
+    let moved_provenance = store.provenance.remove(from);
+    let moved_owners = store.affiliations.remove(from);
+    if moved_tier.is_none() && moved_provenance.is_none() && moved_owners.is_none() {
+        return Ok(());
+    }
+
+    if let Some(tier) = moved_tier {
+        // Private wins: the destination is almost always absent, and when it is
+        // not, the more restrictive answer is the only safe one.
+        let keep_private = tier == PRIVATE || store.bases.get(to).is_some_and(|t| t == PRIVATE);
+        store.bases.insert(
+            to.to_string(),
+            if keep_private { PRIVATE } else { &tier }.to_string(),
+        );
+    }
+    if let Some(provenance) = moved_provenance {
+        store.provenance.entry(to.to_string()).or_insert(provenance);
+    }
+    if let Some(owners) = moved_owners {
+        store
+            .affiliations
+            .entry(to.to_string())
+            .or_default()
+            .extend(owners);
+    }
+    save(root, &store)
+}
+
 pub fn forget_unlocked(root: &Path, kb_id: &str) -> Result<()> {
     let mut store = load_for_write(root)?;
     // Both halves, and the provenance one FIRST so the early return below cannot
@@ -1177,6 +1236,64 @@ mod tests {
             KbAffiliation::Owners(o) => o.into_iter().collect(),
             KbAffiliation::Unknown => panic!("the owners of {kb_id} were unreadable"),
         }
+    }
+
+    /// ⚠ **Renaming a knowledge base must not declassify it.**
+    ///
+    /// Every map here is keyed by kb id, and `update_base` moves the directory,
+    /// the registry, the primary pointer and the hidden-KB refs. It did not move
+    /// this store, and the damage was not where it looks. The TIER survived by
+    /// accident: `is_private` reads an unknown id whose directory exists as
+    /// private. The AFFILIATION did not — `affiliation` answers `Owners(∅)` for
+    /// an unknown id, and an empty owner set is *unclaimed*, which
+    /// `affiliation::reachable` admits from EVERY private model.
+    ///
+    /// So the assertion that matters is the owners one. A test that checked only
+    /// `is_private` would have passed against the bug.
+    #[test]
+    fn renaming_a_base_carries_its_tier_and_its_owners_with_it() {
+        let (_d, root) = tempdir_with_bases(&["omop-cohort"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_unlocked(&root, "omop-cohort", true).unwrap();
+        add_owners_unlocked(&root, "omop-cohort", ["ucsf".to_string()].into()).unwrap();
+
+        std::fs::create_dir_all(root.join("omop-cohort-2024").join("knowledge")).unwrap();
+        rename_unlocked(&root, "omop-cohort", "omop-cohort-2024").unwrap();
+
+        assert!(
+            is_private(&root, "omop-cohort-2024"),
+            "the renamed base must still be private"
+        );
+        assert_eq!(
+            owners_of(&root, "omop-cohort-2024"),
+            vec!["ucsf".to_string()],
+            "and must still be claimed by the institution whose data it holds; an empty \
+             owner set is UNCLAIMED, which every private model may reach"
+        );
+    }
+
+    /// The old id must not keep a classification the base no longer has, or a
+    /// base created later under that id inherits a history that is not its own.
+    /// This is the same reason `forget_unlocked` drops all three maps.
+    #[test]
+    fn a_rename_leaves_nothing_behind_under_the_old_id() {
+        let (_d, root) = tempdir_with_bases(&["before"]);
+        ensure_migrated_unlocked(&root).unwrap();
+        raise_unlocked(&root, "before", true).unwrap();
+        add_owners_unlocked(&root, "before", ["ucsf".to_string()].into()).unwrap();
+
+        std::fs::create_dir_all(root.join("after").join("knowledge")).unwrap();
+        rename_unlocked(&root, "before", "after").unwrap();
+        // The directory is gone in production; remove it so `is_private`'s
+        // "unknown id with a live directory reads private" rule cannot mask the
+        // question being asked.
+        std::fs::remove_dir_all(root.join("before")).unwrap();
+
+        assert!(
+            !is_private(&root, "before"),
+            "the old id must carry no tier"
+        );
+        assert!(owners_of(&root, "before").is_empty(), "and no owners");
     }
 
     /// DR-26's sentence, made executable: "a knowledge base's affiliation is the

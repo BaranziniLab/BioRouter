@@ -1306,6 +1306,17 @@ impl KnowledgeService {
                 }
                 self.rewrite_session_primary_refs_unlocked(id, Some(&target_id))?;
                 self.rewrite_hidden_refs_unlocked(id, Some(&target_id))?;
+                // ⚠ The classification is keyed by kb id too, so it has to move
+                // with everything else above. It did not, and the consequence
+                // was not the one it looks like: the TIER survived by accident
+                // (`tier::is_private` reads an unknown id whose directory
+                // exists as private), while the AFFILIATION did not — an id
+                // with no row answers `Owners(∅)`, which is *unclaimed* rather
+                // than *nobody's*, and every private model may reach it. So
+                // renaming a base holding one institution's data made it
+                // readable by another institution's private model, with nothing
+                // on screen marking the change.
+                crate::knowledge::tier::rename_unlocked(&self.root, id, &target_id)?;
             }
 
             manifest::save(&target_root, &current)?;
@@ -4182,6 +4193,63 @@ mod tests {
         let sel = svc.set_selection(None, None, PrimaryUpdate::Inherit)?;
         assert_eq!(sel.primary_kb, None);
         assert!(!crate::knowledge::paths::primary_kb_path(svc.root()).exists());
+        Ok(())
+    }
+
+    /// ⚠ **A rename must not declassify the base**, and the axis that broke is
+    /// not the one that looks fragile.
+    ///
+    /// `update_base` moves the directory, the registry, the primary pointer and
+    /// the hidden-KB refs, all keyed by kb id — and for a long time it did not
+    /// move the classification, which is keyed the same way. The TIER survived
+    /// by accident (`tier::is_private` reads an unknown id whose directory
+    /// exists as private), so a test that checked privacy alone passed. The
+    /// AFFILIATION did not: `tier::affiliation` answers `Owners(∅)` for an
+    /// unknown id, an empty owner set is *unclaimed* rather than *nobody's*, and
+    /// `affiliation::reachable` admits an unclaimed base from EVERY private
+    /// model. Renaming a base holding UCSF data made it readable by another
+    /// institution's private model, with nothing on screen marking the change.
+    ///
+    /// This is the end-to-end half; `tier::tests::renaming_a_base_carries_its_tier_and_its_owners_with_it`
+    /// pins the primitive. Both are needed: the primitive can be correct while
+    /// nothing calls it.
+    #[test]
+    fn renaming_a_base_carries_its_classification() -> anyhow::Result<()> {
+        use crate::knowledge::affiliation::KbAffiliation;
+
+        let tmp = tempfile::TempDir::new()?;
+        let svc = KnowledgeService::new(tmp.path().to_path_buf());
+        svc.create_base("omop-cohort", "OMOP cohort", None)?;
+
+        // ⚠ Set the state up through the PAIRED api the production ratchet
+        // uses, not through `tier::raise_unlocked` directly. Two reasons, and
+        // the second one caught this: a direct raise is not how any real base
+        // reaches this state, and `the_tier_ratchet_has_no_production_call_site_that_skips_the_affiliation`
+        // greps this file line-wise and cannot tell a test from production, so
+        // a bare raise here reads to it as a third production site that forgets
+        // the affiliation axis.
+        let root = tmp.path();
+        svc.raise_tier_and_affiliation(
+            "omop-cohort",
+            true,
+            &crate::knowledge::affiliation::CallerAffiliation::Institution("ucsf".to_string()),
+        )?;
+
+        let renamed = svc.update_base("omop-cohort", Some("OMOP cohort 2024"), None)?;
+        assert_eq!(renamed.id, "omop-cohort-2024");
+
+        assert!(
+            crate::knowledge::tier::is_private(root, &renamed.id),
+            "the renamed base must still be private"
+        );
+        match crate::knowledge::tier::affiliation(root, &renamed.id) {
+            KbAffiliation::Owners(owners) => assert!(
+                owners.contains("ucsf"),
+                "the renamed base must still be claimed by UCSF; an empty owner set is \
+                 UNCLAIMED, which every private model may reach. Got {owners:?}"
+            ),
+            KbAffiliation::Unknown => panic!("the renamed base's owners were unreadable"),
+        }
         Ok(())
     }
 
