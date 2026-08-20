@@ -13,6 +13,23 @@ vi.mock('../../hooks/use-text-animator', () => ({
 beforeEach(() => animate.mockClear());
 
 describe('Greeting', () => {
+  /**
+   * ⚠ The unroll splits the sentence into one element PER CHARACTER, and
+   * `split-type` emits no ARIA at all. Without a name on the heading itself, the
+   * app's only orienting heading on an empty chat is announced letter by letter
+   * - "W h a t   i n s i g h t s …" - and heading navigation is broken with it.
+   * Everyone who has not turned on reduced motion gets that on every arrival.
+   */
+  it('keeps a readable accessible name, which the per-character split destroys', () => {
+    render(<Greeting />);
+    const heading = screen.getByRole('heading');
+    const label = heading.getAttribute('aria-label');
+    expect(label).toMatch(/\?$/);
+    expect(label).toBe(heading.textContent);
+    // And the split text must be hidden, or it is read as the content anyway.
+    expect(heading.querySelector('span')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
   it('renders one of the stock sentences', () => {
     render(<Greeting />);
     expect(screen.getByRole('heading').textContent).toMatch(/\?$/);

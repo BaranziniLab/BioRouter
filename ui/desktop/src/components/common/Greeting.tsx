@@ -57,9 +57,26 @@ export function Greeting({
 
   const messageRef = useTextAnimator({ text: message, enabled: animate });
 
+  // ⚠ The accessible name lives on the `h1`, and the split text is hidden from
+  // assistive technology.
+  //
+  // `split-type` replaces the single text node with one `<div class="char">` per
+  // CHARACTER, and emits no ARIA of its own. Without this, the app's only
+  // orienting heading on an empty chat is announced letter by letter - "W h a t
+  // i n s i g h t s …" - and heading navigation and word-level review are both
+  // broken. It happens on every arrival for anyone who has not turned on
+  // reduced motion, which is the majority.
+  //
+  // `aria-label` rather than a visually-hidden duplicate: the visible text is
+  // the same string, so a second copy in the DOM would be one more thing to
+  // keep in sync for no gain. `aria-hidden` on the span is the half that
+  // matters - the label alone would not stop the character soup being read as
+  // the heading's content.
   return (
-    <h1 className={className}>
-      <span ref={messageRef}>{message}</span>
+    <h1 className={className} aria-label={message}>
+      <span ref={messageRef} aria-hidden="true">
+        {message}
+      </span>
     </h1>
   );
 }
