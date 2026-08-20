@@ -260,27 +260,29 @@ fn node_for(p: &LoadedPage, today: NaiveDate) -> GraphNode {
 
 /// Source nodes inherit credibility from `raw/<id>/meta.yaml`.
 ///
-/// ⚠ **Matched by the page's own `raw_source` anchor first, and only then by a
-/// path.** This used to look for `knowledge/sources/<id>.md` and nothing else,
-/// which is the pre-OKF layout and the one layout no base created by this build
-/// uses: OKF scaffolds the SINGULAR `knowledge/source/`, and BioOKF writes a
-/// typed directory per source kind (`knowledge/publication/`,
-/// `knowledge/study/`, …). So on every base the OKF work introduced, no node
-/// ever matched, `credibility_tier` and `retracted` stayed unset, and a
-/// knowledge base citing a retracted paper drew identically to one that did
-/// not — while lint's provenance pass, which reads `raw/<id>/meta.yaml`
-/// directly, flagged it. Two surfaces disagreeing about the same paper.
+/// ⚠ **Which node stands for a raw source is decided by
+/// [`source_anchor`](crate::knowledge::source_anchor), not here**, and it has to
+/// be shared: `macros::lint` asks the identical question for its `stale_sources`
+/// and `missing_concept_pages` rules, and the two answering it separately is how
+/// this bug lasted as long as it did.
 ///
-/// The anchor is the fix rather than a longer list of paths: a source page
-/// carries `raw_source: [raw/<id>/source.md]`, which says which raw source it
-/// is *for*, so it keeps working whatever a future profile calls its
-/// directories. `biookf::lint` already resolved credibility this way; this
-/// reuses its helpers rather than restating them, because `raw_source_id`'s job
-/// is to confine a model-written frontmatter string to a single path segment
-/// and a second copy of that is a second thing to get wrong.
+/// This used to look for `knowledge/sources/<id>.md` and nothing else, which is
+/// the pre-OKF layout and the one layout no base created by this build uses. So
+/// on every base the OKF work introduced, no node ever matched,
+/// `credibility_tier` and `retracted` stayed unset, and a knowledge base citing
+/// a retracted paper drew identically to one that did not — while lint's
+/// provenance pass, which reads `raw/<id>/meta.yaml` directly, flagged it. Two
+/// surfaces disagreeing about the same paper.
 ///
-/// The legacy path stays as a fallback: bases created before the OKF work do
-/// use it, and they are exactly the ones with no `raw_source` key to read.
+/// The first repair read BioOKF's `raw_source` anchor and kept the path as a
+/// fallback. That covered BioOKF and left **plain OKF — the default for a new
+/// base — exactly as broken as before**, because `raw_source` is a BioOKF-only
+/// key (both of its writers are gated on `KbFormat::is_biookf`) and OKF's
+/// directory is the SINGULAR `knowledge/source/`. `source_anchor` reads whichever
+/// spelling the page actually carries; its header has the table and the reasons.
+///
+/// The legacy path stays as a fallback: bases created before the OKF work do use
+/// it, and they are exactly the ones with no frontmatter anchor to read.
 fn apply_source_credibility(
     kb_root: &Path,
     pages: &[LoadedPage],
@@ -289,10 +291,13 @@ fn apply_source_credibility(
     // `nodes` is built by mapping over `pages` in order, so the index is shared.
     let mut by_raw_id: HashMap<String, usize> = HashMap::new();
     for (i, page) in pages.iter().enumerate() {
-        for entry in crate::knowledge::biookf::lint::raw_source(&page.doc) {
-            if let Some(id) = crate::knowledge::biookf::lint::raw_source_id(&entry) {
-                by_raw_id.entry(id.to_string()).or_insert(i);
-            }
+        for id in crate::knowledge::source_anchor::raw_ids_stood_for(&page.page.path, &page.doc) {
+            // `or_insert`, so the FIRST page in load order wins when two stand
+            // for one document. Unlike lint — which reports both, because "is
+            // this source cited?" is true if either is — a credibility tier can
+            // only be attached to one node, and load order is sorted by path, so
+            // the choice is at least stable between runs.
+            by_raw_id.entry(id).or_insert(i);
         }
     }
 
@@ -1557,6 +1562,98 @@ mod tests {
             node.retracted,
             "a typed source page must inherit its retraction; without it the graph and \
              lint disagree about the same paper"
+        );
+        assert_eq!(
+            node.credibility_tier,
+            Some(CredibilityTier::PeerReviewed),
+            "and its credibility tier, which is what the ring renders from"
+        );
+    }
+
+    /// ⚠ **And a PLAIN OKF base, which is what `create_base` produces by
+    /// default.** The test above is BioOKF-shaped, and the repair it was written
+    /// for read exactly two signals — the `raw_source` anchor and the pre-OKF
+    /// plural path — neither of which exists here. `raw_source` is a BioOKF-only
+    /// key (`write_concept_spec` and `materialize_source_node`, its only two
+    /// writers, are both gated on `KbFormat::is_biookf`), and OKF's directory is
+    /// the SINGULAR `knowledge/source/`. So a retracted paper on an OKF base
+    /// still drew as an ordinary node, and the pair of green tests either side of
+    /// it said the layout bug was fixed.
+    ///
+    /// OKF states provenance as a `sources:` list whose `resource` points into
+    /// `raw/` — `schema_okf.md`'s page contract — which is the spelling
+    /// `source_anchor` had to learn.
+    #[test]
+    fn an_okf_source_page_inherits_its_retraction() {
+        // ⚠ A const for the same reason the fixture above is one: rustfmt
+        // reflows a long string literal, and the leading whitespace it inserts
+        // turns a `sources:` entry into a continuation of the previous VALUE.
+        const OKF_SOURCE_PAGE: &str = "---\ntype: Source\nidentifier: Retracted Paper\ntitle: Retracted Paper\nsources:\n  - id: retracted-paper\n    resource: raw/retracted-paper/source.md\n---\nbody";
+
+        use crate::knowledge::affiliation::CallerAffiliation;
+        use crate::knowledge::raw::write_raw;
+        use crate::knowledge::types::{Credibility, CredibilityTier, KbFormat, SourceMeta};
+
+        let dir = tempfile::tempdir().unwrap();
+        let svc = KnowledgeService::new(dir.path().to_path_buf());
+        svc.create_base_as(
+            "k",
+            "K",
+            None,
+            KbFormat::Okf,
+            false,
+            &CallerAffiliation::Unstated,
+        )
+        .unwrap();
+        let kb = dir.path().join("k");
+
+        write_raw(
+            &kb,
+            None,
+            None,
+            "# r\n",
+            SourceMeta {
+                id: "retracted-paper".into(),
+                title: "Retracted Paper".into(),
+                url: Some("https://example.org/x".into()),
+                ingested_at: chrono::Utc::now(),
+                sha256: "abc".into(),
+                mime: "text/html".into(),
+                original_filename: Some("x.html".into()),
+                credibility: Credibility {
+                    tier: CredibilityTier::PeerReviewed,
+                    confidence: 0.9,
+                    publisher: None,
+                    venue: None,
+                    doi: None,
+                    retracted: true,
+                    reasoning: "test".into(),
+                    classifier_version: 1,
+                },
+            },
+        )
+        .unwrap();
+
+        // OKF's layout: the SINGULAR directory, and no `raw_source` key anywhere.
+        write_page(
+            &kb,
+            "knowledge/source/retracted-paper.md",
+            OKF_SOURCE_PAGE,
+            "add r",
+            None,
+        )
+        .unwrap();
+
+        let g = derive(&kb).unwrap();
+        let node = g
+            .nodes
+            .iter()
+            .find(|n| n.path == "knowledge/source/retracted-paper.md")
+            .expect("the OKF source page must be a node");
+        assert!(
+            node.retracted,
+            "an OKF source page must inherit its retraction; without it the graph \
+             and lint disagree about the same paper on the DEFAULT base format"
         );
         assert_eq!(
             node.credibility_tier,
