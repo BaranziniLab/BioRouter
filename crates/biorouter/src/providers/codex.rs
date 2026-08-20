@@ -59,6 +59,23 @@ pub const CODEX_DOC_URL: &str = "https://developers.openai.com/codex/cli";
 /// wedged child held its session open indefinitely.
 const TURN_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
+/// How long the turn will wait for the app server to say which account it bills.
+///
+/// `AppServer::request` has no timeout of its own — it awaits its oneshot until
+/// the child's stdout closes — which is right for `thread/start`, whose answer
+/// legitimately takes as long as the model does, and wrong for this. The check
+/// is documented as fail-open ("a failed request is not a failed check"), and
+/// that only holds for an app server that *answers* an unknown method with a
+/// JSON-RPC error. One that silently ignores it never resolves, and the turn
+/// hangs on its very first round trip with no error, no output and nothing to
+/// time it out — the same shape as the Versa/Bedrock freeze already in this
+/// repo's history, which is why the mitigation is here rather than filed.
+///
+/// Ten seconds because the answer is local: the app server reads its own auth
+/// state and replies. Anything approaching this is already a broken install, and
+/// exceeding it lands in the same fail-open branch a rejected method does.
+const ACCOUNT_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// Each window must match what `MODEL_CONTEXT_WINDOWS` declares, because
 /// `tests/context_windows.rs` compares the two.
 fn known_models() -> Vec<ModelInfo> {
@@ -316,14 +333,38 @@ impl CodexProvider {
     /// asymmetry is the same one `assert_subscription_auth` applies to a missing
     /// `account` field, and is why the failure is logged rather than swallowed
     /// silently.
+    ///
+    /// **Not answering at all is also a failed request**, and it is the one the
+    /// fail-open argument above does not cover on its own. "The method was
+    /// rejected" is a response; "the method was ignored" is silence, and
+    /// `AppServer::request` waits on silence until the child's stdout closes —
+    /// which for a healthy-but-unfamiliar app server is never. That would hang
+    /// the turn on its first round trip, before `thread/start`, with no error and
+    /// no output: a build old enough to lack `account/read` would look like a
+    /// Biorouter that stopped working rather than a Codex that stopped answering.
+    /// [`ACCOUNT_READ_TIMEOUT`] turns that into the same fail-open branch a
+    /// rejection takes.
     async fn assert_subscription(server: &AppServer) -> Result<(), ProviderError> {
-        match server.request("account/read", json!({})).await {
-            Ok(response) => Self::assert_subscription_auth(response.get("account")),
-            Err(e) => {
+        let answered = tokio::time::timeout(
+            ACCOUNT_READ_TIMEOUT,
+            server.request("account/read", json!({})),
+        )
+        .await;
+        match answered {
+            Ok(Ok(response)) => Self::assert_subscription_auth(response.get("account")),
+            Ok(Err(e)) => {
                 tracing::debug!(
                     error = %e,
                     "codex app-server did not answer account/read; continuing without the \
                      subscription check"
+                );
+                Ok(())
+            }
+            Err(_) => {
+                tracing::debug!(
+                    timeout_secs = ACCOUNT_READ_TIMEOUT.as_secs(),
+                    "codex app-server ignored account/read; continuing without the \
+                     subscription check rather than holding the turn open"
                 );
                 Ok(())
             }
@@ -759,6 +800,69 @@ mod tests {
             .await
             .expect("a subscription turn must not be refused");
         assert_eq!(outcome.text, vec!["hi from the fake".to_string()]);
+    }
+
+    /// An app server that ignores `account/read` must not hold the turn open.
+    ///
+    /// The check is documented as fail-open, and the argument for that only
+    /// covers a server which *answers* an unknown method with a JSON-RPC error.
+    /// Silence is the other way to fail, and `AppServer::request` waits on
+    /// silence until the child's stdout closes — so without a timeout this is not
+    /// a degraded check, it is a turn that never starts: no error, no output,
+    /// nothing to cancel it, on the very first round trip and before
+    /// `thread/start`. A build too old to know the method would present as a
+    /// Biorouter that stopped working.
+    ///
+    /// The fake below answers `initialize` and ignores everything else, which is
+    /// exactly the shape being defended against — a healthy server that simply
+    /// does not know this method. The clock is paused so the real
+    /// [`ACCOUNT_READ_TIMEOUT`] elapses in virtual time; the test therefore
+    /// exercises the production constant rather than a shortened copy of it, and
+    /// still finishes in milliseconds.
+    ///
+    /// The outer budget is three times the inner one, so removing the `timeout`
+    /// from `assert_subscription` fails here instead of hanging the suite.
+    #[tokio::test(start_paused = true)]
+    async fn an_app_server_that_ignores_account_read_does_not_hang_the_turn() {
+        let server = silent_app_server().await;
+
+        let checked = tokio::time::timeout(
+            ACCOUNT_READ_TIMEOUT * 3,
+            CodexProvider::assert_subscription(&server),
+        )
+        .await;
+
+        let verdict = checked.expect(
+            "assert_subscription never returned: an app server that ignores \
+             account/read holds the turn open forever, because AppServer::request \
+             waits on its oneshot until the child's stdout closes",
+        );
+        assert!(
+            verdict.is_ok(),
+            "a check that could not be obtained is not evidence of a metered run; \
+             a timeout must fail open exactly as a rejected method does: {verdict:?}"
+        );
+    }
+
+    /// A stand-in for an app server that answers what it knows and silently
+    /// ignores what it does not — i.e. any build predating `account/read`.
+    async fn silent_app_server() -> AppServer {
+        let script = r#"
+import sys, json
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    m = json.loads(line)
+    if m.get("method") == "initialize":
+        print(json.dumps({"jsonrpc":"2.0","id":m["id"],"result":{"codexHome":"/tmp"}}), flush=True)
+    # Everything else, account/read included, is read and dropped on the floor.
+"#;
+        let mut cmd = tokio::process::Command::new("python3");
+        cmd.arg("-c").arg(script);
+        AppServer::spawn(cmd)
+            .await
+            .expect("the silent app server should start")
     }
 
     fn test_provider() -> CodexProvider {
