@@ -178,6 +178,31 @@ describe('IngestPanel model selection', () => {
     await waitFor(() => expect(mocks.checkModel).not.toHaveBeenCalled());
     expect(mocks.start).not.toHaveBeenCalled();
   });
+
+  it('does not inherit a chat model a knowledge macro cannot drive', async () => {
+    mocks.modelAndProvider.currentProvider = 'claude_code';
+    mocks.modelAndProvider.currentModel = 'opus-5';
+
+    render(<IngestPanel />);
+    stageSomeText();
+
+    // `claude_code` reaches `complete_with_model` with its `tools` dropped, so a
+    // digest dispatched at it narrates every call as prose and writes nothing.
+    // Preselecting it costs the user a full model run for an empty base.
+    expect(modelLabels()).not.toContain('claude_code / opus-5');
+
+    // And the reason offered is the true one. "No model configured" would send a
+    // user whose chat model works perfectly well to Settings to fix nothing.
+    const trigger = await screen.findByTestId('knowledge-model-picker-trigger');
+    expect(trigger).toHaveTextContent(/can’t digest sources/);
+    expect(trigger).not.toHaveTextContent(/no model configured/i);
+
+    const digest = screen.getByTestId('knowledge-digest-button');
+    expect(digest).toHaveAttribute('aria-disabled', 'true');
+    fireEvent.click(digest);
+    await waitFor(() => expect(mocks.checkModel).not.toHaveBeenCalled());
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
 });
 
 describe('IngestPanel model loading state', () => {

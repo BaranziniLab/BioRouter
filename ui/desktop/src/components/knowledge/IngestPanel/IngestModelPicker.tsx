@@ -21,17 +21,20 @@ import {
   getOrderedProviderGroups,
   type OrderedProviderGroup,
 } from '../../settings/providers/providerOrdering';
+import { providerCanRunIngest } from './resolveIngestModel';
 
 interface Props {
   /** `null` when no model could be resolved — the trigger says so instead of naming a vendor. */
   value: ModelRef | null;
   /**
    * Why `value` is null, when it is. "No model configured" is a verdict on the
-   * user's setup, and it is wrong in both of the other states: `loading` is an
-   * answer still in flight, `unavailable` is a knowledge base whose manifest
-   * could not be read — nothing there is the user's configuration to fix.
+   * user's setup, and it is wrong in all three of the other states: `loading` is
+   * an answer still in flight, `unavailable` is a knowledge base whose manifest
+   * could not be read, and `unsupported` is a perfectly good configuration whose
+   * only model happens to be one a knowledge macro cannot drive — nothing there
+   * is the user's configuration to fix.
    */
-  valueState?: 'resolved' | 'loading' | 'unavailable';
+  valueState?: 'resolved' | 'loading' | 'unavailable' | 'unsupported';
   onChange: (v: ModelRef) => void;
   disabled?: boolean;
   saving?: boolean;
@@ -42,22 +45,42 @@ interface ProviderModelsSection extends OrderedProviderGroup {
 }
 
 /**
- * The "no configured provider has a model" state (ui-spec §4.12 #8).
+ * The empty popover (ui-spec §4.12 #8) — and it has two meanings, not one.
  *
  * ⚠ Its own component, and rendered only inside the OPEN popover, because
  * `useNavigate` throws outside a router. Hoisting the hook to the picker would
  * make the picker un-renderable in every test that does not wrap it in a
  * `MemoryRouter` — and the picker is rendered for real by `IngestPanel.test.tsx`,
  * which is one of the suites §9 says this pass must not break.
+ *
+ * ⚠ **"No models available / Configure a provider in Settings." is a verdict on
+ * the user's setup, and it is false for the excluded-only user.** They have a
+ * provider, it is configured, it is working, and it is bound to their chat
+ * composer — it simply cannot carry the tool calls a digest is made of. Left
+ * unchanged, that headline sat directly above the footer note explaining that
+ * the provider they configured is fine, so the popover was telling them both
+ * things at once in the same 256px box: go set one up, and the one you set up
+ * works. The action is the same in both branches (Settings really is the way
+ * out — they do need a second provider), so what has to change is only the
+ * claim about what is wrong.
+ *
+ * The reason is deliberately NOT repeated here. The footer note is the one
+ * place that names which providers were left out and says they still work in
+ * chat, and it renders in this branch too; saying it twice in a popover this
+ * small is how a correction turns back into noise.
  */
-function NoModelsAvailable() {
+function NoModelsAvailable({ excludedOnly }: { excludedOnly: boolean }) {
   const navigate = useNavigate();
   return (
     <EmptyState
       compact
       icon={Brain}
-      title="No models available"
-      description="Configure a provider in Settings."
+      title={excludedOnly ? 'No model here can digest' : 'No models available'}
+      description={
+        excludedOnly
+          ? 'Digesting needs a provider that can make tool calls on its own. Adding one takes a minute in Settings.'
+          : 'Configure a provider in Settings.'
+      }
       actions={
         <Button
           type="button"
@@ -97,17 +120,39 @@ export function IngestModelPicker({
   const [query, setQuery] = useState('');
   const [sections, setSections] = useState<ProviderModelsSection[]>([]);
   const [providerDisplayNames, setProviderDisplayNames] = useState<Record<string, string>>({});
+  /**
+   * Display names of the configured providers this picker left out, so the
+   * footer can say so. Derived rather than constant: a user with no coding-agent
+   * provider configured is told nothing, because for them there is nothing to
+   * explain and the line would be pure noise.
+   */
+  const [excludedProviderLabels, setExcludedProviderLabels] = useState<string[]>([]);
 
   useEffect(() => {
     void (async () => {
       try {
         const providers = await getProviders(false);
-        const configuredProviders = providers.filter((provider) => provider.is_configured);
-        const names = configuredProviders.reduce<Record<string, string>>((acc, provider) => {
+        const allConfigured = providers.filter((provider) => provider.is_configured);
+        const names = allConfigured.reduce<Record<string, string>>((acc, provider) => {
           acc[provider.name] = provider.metadata.display_name ?? provider.name;
           return acc;
         }, {});
         setProviderDisplayNames(names);
+
+        // A provider that cannot carry tool calls on the macro path is not a
+        // model the user can choose badly — it is a model that writes nothing,
+        // every time, after a full run. See `providerCanRunIngest`. The names
+        // still go into `providerDisplayNames` above, so the trigger can label a
+        // value that was stored before this exclusion existed, and the footer
+        // can name what it left out instead of removing them in silence.
+        const configuredProviders = allConfigured.filter((provider) =>
+          providerCanRunIngest(provider.name)
+        );
+        setExcludedProviderLabels(
+          allConfigured
+            .filter((provider) => !providerCanRunIngest(provider.name))
+            .map((provider) => names[provider.name] ?? provider.name)
+        );
 
         const modelResults = await fetchModelsForProviders(configuredProviders, getProviderModels);
         const availableModelsByProvider = modelResults.reduce<Record<string, string[]>>(
@@ -147,6 +192,7 @@ export function IngestModelPicker({
       } catch (err) {
         console.warn('IngestModelPicker: failed to load providers', err);
         setSections([]);
+        setExcludedProviderLabels([]);
       }
     })();
   }, [getProviderModels, getProviders]);
@@ -172,7 +218,12 @@ export function IngestModelPicker({
       ? 'Loading model…'
       : valueState === 'unavailable'
         ? 'Knowledge base unavailable'
-        : 'No model configured';
+        : valueState === 'unsupported'
+          ? // Not "No model configured": there IS one, it is the chat model, and
+            // it works in chat. Naming the real obstacle is what stops the user
+            // being sent to Settings to fix something that is not broken.
+            'Chat model can’t digest sources'
+          : 'No model configured';
 
   const needle = query.trim().toLowerCase();
   function matches(provider: ProviderDetails, model: string): boolean {
@@ -243,7 +294,12 @@ export function IngestModelPicker({
           <CommandInput placeholder="Search models" aria-label="Search models" autoFocus />
           <CommandList aria-label="Knowledge models">
             {!hasModels ? (
-              <NoModelsAvailable />
+              // An empty list has two causes and they need different words.
+              // `excludedProviderLabels` is the discriminator: it is non-empty
+              // only when this picker itself removed a configured provider, so
+              // a non-empty list here means the user's setup is fine and the
+              // list is empty because of us.
+              <NoModelsAvailable excludedOnly={excludedProviderLabels.length > 0} />
             ) : visibleRows.length === 0 ? (
               <CommandEmpty>
                 <p className="text-body text-text-muted">No models match</p>
@@ -297,13 +353,34 @@ export function IngestModelPicker({
               )
             )}
           </CommandList>
-          {hasModels && (
+          {(hasModels || excludedProviderLabels.length > 0) && (
             <div className="flex-none border-t border-border-subtle px-2 py-2">
-              <Badge variant="chip">Set as default</Badge>
-              <p className="mt-1 text-supporting text-text-muted">
-                This model digests staged sources and scheduled knowledge curation. Chat replies
-                still use the model selected in the chat composer.
-              </p>
+              {hasModels && (
+                <>
+                  <Badge variant="chip">Set as default</Badge>
+                  <p className="mt-1 text-supporting text-text-muted">
+                    This model digests staged sources and scheduled knowledge curation. Chat replies
+                    still use the model selected in the chat composer.
+                  </p>
+                </>
+              )}
+              {/* A provider that vanishes from a list without explanation reads
+                  as a bug, and the user's next move is to go and re-check a
+                  configuration that is already correct. Naming it — and saying
+                  it still works in chat — is the difference between an omission
+                  and an answer. Rendered only when something was actually left
+                  out, so the line never appears for a user it cannot help. */}
+              {excludedProviderLabels.length > 0 && (
+                <p
+                  data-testid="knowledge-model-picker-excluded"
+                  className={`text-supporting text-text-muted ${hasModels ? 'mt-2' : ''}`}
+                >
+                  {excludedProviderLabels.join(' and ')}{' '}
+                  {excludedProviderLabels.length === 1 ? 'is' : 'are'} not listed: these models only
+                  receive tools inside a chat, so a digest would finish having written nothing. They
+                  still work in chat.
+                </p>
+              )}
             </div>
           )}
         </Command>
