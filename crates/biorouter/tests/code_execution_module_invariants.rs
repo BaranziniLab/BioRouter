@@ -7,10 +7,16 @@
 //! whose extension key equals its own tool name — and no test noticed for the
 //! life of the repository, because every fixture in
 //! `code_execution_extension.rs` used a server and a tool with *different*
-//! names. A hand-written fixture can only cover the shapes its author thought
-//! of; this test derives its cases from whatever is actually installed, so a
-//! newly bundled extension (or a newly added tool on an existing one) is
-//! covered the day it lands, with no edit here.
+//! names.
+//!
+//! The TOOL names are read from the live `ExtensionManager`, so a tool added to
+//! an existing extension is covered the day it lands with no edit here. The
+//! EXTENSION list below is hand-maintained, because the in-process servers
+//! (`datasql`, `files`, `compute`, `appcontrol`) are injected per session by
+//! `routes/apps.rs` rather than registered here, and a stdio extension needs a
+//! subprocess. So this is a broad net, not a closed proof — the closed proof for
+//! the export mechanism itself is the synthetic-fixture matrix in
+//! `code_execution_extension.rs`'s unit tests.
 //!
 //! It is deliberately shaped as "enumerate reality, assert the property" rather
 //! than "assert chatrecall works": the collision is a *class* of bug, and the
@@ -34,14 +40,21 @@ const SESSION: &str = "module-invariants";
 
 /// Every bundled extension we can stand up in-process without network,
 /// credentials or a spawned subprocess.
-async fn manager_with_the_bundled_extensions() -> Arc<ExtensionManager> {
+async fn manager_with_the_bundled_extensions() -> (Arc<ExtensionManager>, Vec<&'static str>) {
     let temp = tempfile::TempDir::new().unwrap();
     let session_manager = Arc::new(SessionManager::new(temp.path().to_path_buf()));
     let manager = Arc::new(ExtensionManager::new(
         Arc::new(Mutex::new(None)),
         session_manager,
     ));
+    let mut failed: Vec<&'static str> = Vec::new();
 
+    // ⚠ An extension that fails to load must be COUNTED, not silently dropped.
+    // The platform extensions are in-process constructors with no fallible
+    // branch, so a guard on the number of *modules* is satisfied by exactly the
+    // servers that cannot fail — while the builtins, which carry the large
+    // majority of the tools, all vanish. Such a guard reports green having swept
+    // a fraction of its stated surface.
     for name in [
         "developer",
         "computercontroller",
@@ -49,12 +62,9 @@ async fn manager_with_the_bundled_extensions() -> Arc<ExtensionManager> {
         "memory",
         "knowledge",
         "agent_drafter",
+        "tutorial",
     ] {
-        // A builtin that cannot start in this environment must not silently
-        // shrink the matrix — but it must not fail the run either, since the
-        // point is the property, not the inventory. Record and move on; the
-        // assertion at the end of the test guards against an EMPTY matrix.
-        let _ = manager
+        if manager
             .add_extension(ExtensionConfig::Builtin {
                 name: name.to_string(),
                 description: name.to_string(),
@@ -63,7 +73,11 @@ async fn manager_with_the_bundled_extensions() -> Arc<ExtensionManager> {
                 bundled: Some(true),
                 available_tools: vec![],
             })
-            .await;
+            .await
+            .is_err()
+        {
+            failed.push(name);
+        }
     }
 
     for name in [
@@ -71,19 +85,24 @@ async fn manager_with_the_bundled_extensions() -> Arc<ExtensionManager> {
         "todo",
         "skills",
         "workspace",
+        "extensionmanager",
         "code_execution",
     ] {
-        let _ = manager
+        if manager
             .add_extension(ExtensionConfig::Platform {
                 name: name.to_string(),
                 description: name.to_string(),
                 bundled: Some(true),
                 available_tools: vec![],
             })
-            .await;
+            .await
+            .is_err()
+        {
+            failed.push(name);
+        }
     }
 
-    manager
+    (manager, failed)
 }
 
 async fn exec(manager: &Arc<ExtensionManager>, code: &str) -> String {
@@ -127,7 +146,13 @@ fn is_js_safe(name: &str) -> bool {
 
 #[tokio::test]
 async fn every_bundled_tool_is_callable_through_every_documented_import_form() {
-    let manager = manager_with_the_bundled_extensions().await;
+    let (manager, failed_to_load) = manager_with_the_bundled_extensions().await;
+
+    assert!(
+        failed_to_load.is_empty(),
+        "extensions failed to load, so the matrix below would sweep only part of its stated \
+         surface and still report green: {failed_to_load:?}"
+    );
 
     let tools = manager
         .get_prefixed_tools_excluding("code_execution", None)
@@ -145,10 +170,14 @@ async fn every_bundled_tool_is_callable_through_every_documented_import_form() {
             .push(tool_name.to_string());
     }
 
+    // ⚠ Assert on the TOOL count, not the server count. The bundled builtins
+    // carry the overwhelming majority of the tools, and a threshold set at the
+    // number of servers is met by the handful that cannot fail to load.
+    let tool_total: usize = by_server.values().map(Vec::len).sum();
     assert!(
-        by_server.len() >= 4,
-        "the matrix collapsed to {} servers — the fixture stopped loading extensions, \
-         so a green result here would prove nothing: {:?}",
+        by_server.len() >= 10 && tool_total >= 90,
+        "the matrix collapsed to {} servers / {tool_total} tools — the fixture stopped loading \
+         extensions, so a green result here would prove nothing: {:?}",
         by_server.len(),
         by_server.keys().collect::<Vec<_>>()
     );

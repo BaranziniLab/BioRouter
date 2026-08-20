@@ -430,12 +430,19 @@ record_result(chatrecall({ query: "cohort" }));"#,
 #[tokio::test]
 async fn date_filters_include_their_own_boundary_day() {
     let h = Harness::new().await;
+
+    // ⚠ Take the boundary BEFORE seeding, not after. Deriving "today" from a
+    // clock read that happens after the write makes the test fail if the two
+    // straddle midnight UTC: the boundary would be the next day and the message
+    // would sit just before it. Reading first means the message is always at or
+    // after this instant, whichever day it lands on.
+    let start_of_today = chrono::Utc::now().format("%Y-%m-%dT00:00:00Z").to_string();
     h.seed("SPOKE graph work", &["SPOKE knowledge graph traversal"])
         .await;
 
-    // Today, at midnight: the message was written seconds ago, so an
-    // `after_date` of today 00:00:00 must still find it.
-    let today = chrono::Utc::now().format("%Y-%m-%dT00:00:00Z").to_string();
+    // The message was written seconds ago, so an `after_date` of today 00:00:00
+    // must still find it.
+    let today = start_of_today;
     let code = format!(
         r#"import {{ chatrecall }} from "chatrecall";
 record_result(chatrecall({{ query: "SPOKE", after_date: "{today}" }}));"#
@@ -491,11 +498,17 @@ record_result(chatrecall({{ session_id: "{id}" }}));"#
     for body in &bodies {
         // `unique-body-1` is a prefix of nothing else, but `unique-body-1` vs
         // `unique-body-10` would collide at total >= 10; the fixtures stop at 6.
+        // ⚠ `== 1`, not `<= 1`. C3 changed TWO things: the `skip_count`
+        // arithmetic AND the guard that decides whether the "Last Few Messages"
+        // block is emitted at all. `<= 1` is blind to the second: invert the
+        // guard so the block never renders and every body is seen ZERO times,
+        // which `<= 1` happily accepts. At totals 4, 5 and 6 each body must
+        // appear exactly once.
         let seen = text.matches(body.as_str()).count();
-        assert!(
-            seen <= 1,
-            "`{body}` was printed {seen} times at total={total} — the first/last \
-             windows overlap:\n{text}"
+        assert_eq!(
+            seen, 1,
+            "`{body}` was printed {seen} times at total={total}; expected exactly once \
+             (0 = a window vanished, 2 = the windows overlap):\n{text}"
         );
     }
 }
@@ -593,11 +606,13 @@ record_result(chatrecall({ query: "SPOKE", limit: 2 }));"#,
         "a capped search must name the lever that widens it:\n{text}"
     );
 
-    // And an uncapped search must NOT carry the disclosure.
+    // And an uncapped search must NOT carry the disclosure. (Plain terms: the
+    // FTS sanitiser quotes every whitespace-separated token as a literal prefix
+    // term, so an "OR" written here would be searched for, not obeyed.)
     let uncapped = h
         .exec_ok(
             r#"import { chatrecall } from "chatrecall";
-record_result(chatrecall({ query: "zzzunmatchedzzz OR SPOKE", limit: 50 }));"#,
+record_result(chatrecall({ query: "SPOKE", limit: 50 }));"#,
         )
         .await;
     assert!(
@@ -650,5 +665,272 @@ record_result(chatrecall({{ session_id: "{id}" }}));"#
         text.contains("text_editor"),
         "clipping must not hide WHICH tool ran:\n{}",
         text.chars().take(500).collect::<String>()
+    );
+}
+
+/// `before_date`'s half of the date fix had no coverage at all, and it is the
+/// half whose behaviour CHANGED: the old RFC3339 bind compared 'T' against the
+/// stored space and so swept in the whole of the boundary day, where the new
+/// bind stops at the midnight the caller actually named.
+#[tokio::test]
+async fn before_date_stops_at_the_instant_it_names() {
+    let h = Harness::new().await;
+    h.seed("SPOKE graph work", &["SPOKE knowledge graph traversal"])
+        .await;
+
+    // Midnight today: the message was written since, so it is NOT before it.
+    let midnight_today = chrono::Utc::now().format("%Y-%m-%dT00:00:00Z").to_string();
+    let code = format!(
+        r#"import {{ chatrecall }} from "chatrecall";
+record_result(chatrecall({{ query: "SPOKE", before_date: "{midnight_today}" }}));"#
+    );
+    assert!(
+        h.exec_ok(&code).await.contains("No results found"),
+        "before_date must exclude messages written after the instant it names"
+    );
+
+    // End of today: the message is before it.
+    let end_of_today = chrono::Utc::now().format("%Y-%m-%dT23:59:59Z").to_string();
+    let code = format!(
+        r#"import {{ chatrecall }} from "chatrecall";
+record_result(chatrecall({{ query: "SPOKE", before_date: "{end_of_today}" }}));"#
+    );
+    assert!(
+        h.exec_ok(&code).await.contains("SPOKE graph work"),
+        "before_date at end of day must include a message written today"
+    );
+}
+
+/// A reasoning model's message is `[Thinking(very long), Text(the answer)]`.
+/// Clipping the JOINED parts spends the whole budget on the reasoning and
+/// truncates away the reply — so LOAD would show everything except the thing it
+/// was called to show.
+#[tokio::test]
+async fn load_mode_does_not_let_a_long_thinking_block_bury_the_answer() {
+    let h = Harness::new().await;
+    let id = h
+        .seed_messages(
+            "Reasoned answer",
+            vec![
+                Message::user().with_text("how many patients?"),
+                Message::assistant()
+                    .with_thinking("z".repeat(30_000), "sig")
+                    .with_text("THE-ANSWER-IS-4182"),
+            ],
+        )
+        .await;
+
+    let code = format!(
+        r#"import {{ chatrecall }} from "chatrecall";
+record_result(chatrecall({{ session_id: "{id}" }}));"#
+    );
+    let text = h.exec_ok(&code).await;
+
+    assert!(
+        text.contains("THE-ANSWER-IS-4182"),
+        "the answer was clipped away by the thinking block that precedes it"
+    );
+    assert!(
+        text.contains("truncated"),
+        "the thinking block should still be marked as clipped"
+    );
+}
+
+/// `limit: 0` must not read as "the user never discussed this".
+#[tokio::test]
+async fn a_non_positive_limit_falls_back_to_the_default() {
+    let h = Harness::new().await;
+    h.seed("SPOKE graph work", &["SPOKE knowledge graph traversal"])
+        .await;
+
+    for limit in ["0", "-3"] {
+        let code = format!(
+            r#"import {{ chatrecall }} from "chatrecall";
+record_result(chatrecall({{ query: "SPOKE", limit: {limit} }}));"#
+        );
+        let text = h.exec_ok(&code).await;
+        assert!(
+            text.contains("SPOKE graph work"),
+            "limit={limit} produced a false negative instead of falling back:\n{text}"
+        );
+    }
+}
+
+/// A rendered tool call must not carry a doubled label.
+#[tokio::test]
+async fn a_rendered_tool_call_is_labelled_once() {
+    let h = Harness::new().await;
+    let tool_call = rmcp::model::CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: "developer__shell".into(),
+        arguments: Some(object!({ "command": "ls" })),
+    };
+    let id = h
+        .seed_messages(
+            "Tool label",
+            vec![
+                Message::user().with_text("list"),
+                Message::assistant().with_tool_request("c1", Ok(tool_call)),
+            ],
+        )
+        .await;
+
+    let code = format!(
+        r#"import {{ chatrecall }} from "chatrecall";
+record_result(chatrecall({{ session_id: "{id}" }}));"#
+    );
+    let text = h.exec_ok(&code).await;
+    assert!(
+        !text.contains("Tool: Tool:"),
+        "the tool label is doubled:\n{text}"
+    );
+    assert!(
+        text.contains("developer__shell"),
+        "the tool must still be named:\n{text}"
+    );
+}
+
+/// The truncation disclosure must survive a row that fails to render.
+///
+/// It used to be derived from the count of messages that came back AFTER
+/// rendering, so a search that really did hit its `LIMIT` could report one fewer
+/// and silently drop its own warning. Deriving it from the raw row count fixes
+/// that; this pins the ordinary case so the derivation cannot quietly regress to
+/// the rendered count.
+#[tokio::test]
+async fn the_cap_disclosure_is_derived_from_rows_not_from_rendered_messages() {
+    let h = Harness::new().await;
+    for i in 0..4 {
+        h.seed(&format!("SPOKE session {i}"), &["SPOKE knowledge graph"])
+            .await;
+    }
+
+    // Exactly at the cap: SQL returned `limit` rows, so more may exist.
+    let at_cap = h
+        .exec_ok(
+            r#"import { chatrecall } from "chatrecall";
+record_result(chatrecall({ query: "SPOKE", limit: 4 }));"#,
+        )
+        .await;
+    assert!(
+        at_cap.contains("at least") && at_cap.contains("may be"),
+        "a search that returned exactly `limit` rows must disclose that more may exist:\n{at_cap}"
+    );
+
+    // Below the cap: complete answer, no hedge.
+    let below = h
+        .exec_ok(
+            r#"import { chatrecall } from "chatrecall";
+record_result(chatrecall({ query: "SPOKE", limit: 10 }));"#,
+        )
+        .await;
+    assert!(
+        !below.contains("at least"),
+        "a complete answer must not be hedged:\n{below}"
+    );
+}
+
+/// The excerpt must contain the term that matched.
+///
+/// bm25 can rank a very long message first because it discusses the query term
+/// deep inside it. A head clip then shows the unrelated opening — the model is
+/// told the message matched and shown text that does not contain the term.
+#[tokio::test]
+async fn a_search_excerpt_is_centred_on_the_match_not_the_start() {
+    let h = Harness::new().await;
+    // ⚠ The filler needs whitespace around the term. FTS5 tokenises on
+    // non-alphanumerics, so gluing the needle to 20k filler characters makes it
+    // part of one enormous token and nothing matches — a fixture bug that reads
+    // exactly like a broken excerpt.
+    let filler = vec!["alpha"; 4_000].join(" ");
+    let body = format!("{filler} ribosomebiogenesis {filler}");
+    h.seed("Long analysis", &[body.as_str()]).await;
+
+    let text = h
+        .exec_ok(
+            r#"import { chatrecall } from "chatrecall";
+record_result(chatrecall({ query: "ribosomebiogenesis" }));"#,
+        )
+        .await;
+
+    assert!(
+        text.contains("ribosomebiogenesis"),
+        "the excerpt does not contain the term that matched:\n{}",
+        text.chars().take(400).collect::<String>()
+    );
+    assert!(
+        text.contains("earlier text not shown"),
+        "a centred window must say that it skipped the head:\n{}",
+        text.chars().take(400).collect::<String>()
+    );
+    assert!(
+        text.len() < 8_000,
+        "excerpt is unbounded: {} chars",
+        text.len()
+    );
+}
+
+/// LOAD must show a tool response's payload, not the FTS index's placeholder.
+/// Half the messages in an agentic session are tool responses; "the model ran a
+/// command and then something happened" is not a transcript.
+#[tokio::test]
+async fn load_mode_renders_a_tool_responses_payload() {
+    let h = Harness::new().await;
+    let tool_call = rmcp::model::CallToolRequestParams {
+        task: None,
+        meta: None,
+        name: "developer__shell".into(),
+        arguments: Some(object!({ "command": "ls" })),
+    };
+    let response = rmcp::model::CallToolResult::success(vec![rmcp::model::Content::text(
+        "PAYLOAD-FROM-THE-TOOL",
+    )]);
+    let id = h
+        .seed_messages(
+            "Tool response",
+            vec![
+                Message::user().with_text("list"),
+                Message::assistant().with_tool_request("c1", Ok(tool_call)),
+                Message::user().with_tool_response("c1", Ok(response)),
+            ],
+        )
+        .await;
+
+    let code = format!(
+        r#"import {{ chatrecall }} from "chatrecall";
+record_result(chatrecall({{ session_id: "{id}" }}));"#
+    );
+    let text = h.exec_ok(&code).await;
+
+    assert!(
+        text.contains("PAYLOAD-FROM-THE-TOOL"),
+        "the tool response rendered as a placeholder instead of its payload:\n{text}"
+    );
+}
+
+/// Centring must not panic on a non-ASCII transcript.
+///
+/// The match offset comes from a lowercased copy, and `to_lowercase` is not
+/// length-preserving ("İ" becomes two chars), so a byte index taken against the
+/// copy points somewhere else in the original — potentially mid-codepoint, which
+/// is a panic, not a wrong answer.
+#[tokio::test]
+async fn a_centred_excerpt_survives_a_non_ascii_message() {
+    let h = Harness::new().await;
+    let filler = vec!["İstanbul café — 日本語のテキスト"; 900].join(" ");
+    let body = format!("{filler} mitochondria {filler}");
+    h.seed("Unicode analysis", &[body.as_str()]).await;
+
+    let text = h
+        .exec_ok(
+            r#"import { chatrecall } from "chatrecall";
+record_result(chatrecall({ query: "mitochondria" }));"#,
+        )
+        .await;
+
+    assert!(
+        text.contains("mitochondria"),
+        "the excerpt lost the match on a non-ASCII message"
     );
 }

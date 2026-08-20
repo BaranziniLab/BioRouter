@@ -37,7 +37,7 @@ The extension registers a single tool.
 
 | Tool | Description |
 |------|-------------|
-| `chatrecall` | Search past chat, or load session summaries. In **search mode** (a `query`) it returns messages grouped by session and ordered by recency, and supports date filters. In **load mode** (a `session_id`) it returns the first and last three messages of that session. |
+| `chatrecall` | Search past chat, or load session summaries. In **search mode** (a `query`) it returns messages grouped by session, best match first, each clipped to an excerpt; `limit` caps *messages*, not sessions. Date filters compare exact instants against when a message was written, so `before_date: '…T00:00:00Z'` stops at midnight rather than covering that day. In **load mode** (a `session_id`) it returns the first and last few messages of that session, each clipped to a longer excerpt. |
 
 You can obtain session IDs from the [CLI command reference](../../cli/command-reference.md).
 

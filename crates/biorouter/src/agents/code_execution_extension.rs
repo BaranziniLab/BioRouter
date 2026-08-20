@@ -506,28 +506,32 @@ fn create_server_module(
                     // not the tool's own function object.
                     //
                     // Both shapes are callable and both carry the siblings, so
-                    // both fix the bug. Forwarding is better on two counts, and
-                    // neither is visible from the type:
+                    // both fix the bug. The reason to forward is ONE measured
+                    // difference, not a general tidiness argument:
                     //
-                    // 1. Using the tool's own function makes every sibling an
-                    //    own property OF THE TOOL. `Object.getOwnPropertyNames`
-                    //    on it then reports the whole server, which is a lie
-                    //    about a value the script also holds directly through
-                    //    `import { tool }`.
-                    // 2. It also makes the namespace hold ITSELF (`ns.x.x.x…`).
-                    //    `record_result` serialises with `JsValue::to_json`,
-                    //    whose cycle detection returns `Err`, which the `.ok()`
-                    //    there swallows — so a script that put the namespace in
-                    //    its result silently got boa's debug rendering with
-                    //    `[Cycle]` in it instead of JSON. Measured both ways.
+                    // Reusing the tool's function makes the namespace hold
+                    // ITSELF (`ns.x.x.x…`). `record_result` serialises with
+                    // `JsValue::to_json`, whose cycle detection returns `Err`,
+                    // and the `.ok()` there swallows it — so a script that put
+                    // the namespace in its result silently got boa's debug
+                    // rendering with `[Cycle]` in it instead of JSON. A separate
+                    // wrapper has no cycle and serialises normally.
                     //
-                    // The wrapper costs one extra call frame on colliding
-                    // servers only, and leaves the tool's own function pristine.
+                    // ⚠ What this does NOT buy, despite looking like it should:
+                    // the value a script receives from `import { tool }` on a
+                    // colliding server is this wrapper, and it carries the
+                    // sibling tools as own properties either way. Measured:
+                    // `Object.getOwnPropertyNames` returns
+                    // `[length, name, <every tool>]` under both shapes. Only the
+                    // inner function stays clean, and nothing reaches it except
+                    // the double hop `ns.x.x`.
+                    //
+                    // Costs one extra call frame, on colliding servers only.
                     Some(js_func) => {
                         let target: boa_engine::JsObject = js_func.clone().into();
                         NativeFunction::from_copy_closure_with_captures(
                             |this, args, target: &boa_engine::JsObject, context| {
-                                target.clone().call(this, args, context)
+                                target.call(this, args, context)
                             },
                             target,
                         )
@@ -3847,10 +3851,13 @@ record_result([typeof ns["{tool}"], typeof srv["{tool}"], typeof ns.srv].join(",
 
     /// The colliding server's namespace must NOT be the tool's own function.
     ///
-    /// Both shapes are callable, so every other test here passes either way —
-    /// this is the one that pins the choice. Reusing the tool's function makes
-    /// the sibling tools own properties OF THE TOOL, so a script that inspects
-    /// the value it imported by name is told about the whole server.
+    /// This pins the structural half of that choice: the namespace carries the
+    /// siblings, the underlying tool does not. The half that actually matters to
+    /// a script is pinned by `a_colliding_namespace_still_serialises_as_json` —
+    /// reusing the tool's function makes the namespace self-referential and
+    /// costs `record_result` its JSON. Note what is NOT asserted here: the value
+    /// `import { fetch }` yields is the namespace, so it carries the siblings
+    /// under either shape.
     #[test]
     fn a_colliding_server_does_not_pollute_the_tools_own_function() {
         let tools = server_tools("fetch", &["fetch", "fetch_html"]);
