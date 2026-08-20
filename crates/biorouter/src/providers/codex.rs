@@ -70,6 +70,34 @@ fn known_models() -> Vec<ModelInfo> {
     ]
 }
 
+/// The sentence to append to a failed turn when the model name is the likely
+/// cause.
+///
+/// Codex's app server reports an unknown model as an `error` notification with
+/// **no message and no category**, so the turn surfaces as "the Codex app
+/// server reported an error" plus the generic invitation to retry — advice that
+/// can never come true, for a request that will fail identically forever.
+/// Measured: `gpt-5.5-codex` (a plausible-looking name that does not exist)
+/// produced exactly that, and nothing in it named the model.
+///
+/// Deliberately a *hint on the failure path* rather than a check before the
+/// call. An unlisted name is usually a typo and occasionally a model OpenAI
+/// shipped after this list was written, and refusing the second to catch the
+/// first would make Biorouter the reason a working model cannot be used. So an
+/// unlisted model is still sent; it just stops failing anonymously.
+fn unknown_model_hint(model: &str) -> String {
+    let known = known_models();
+    if known.iter().any(|m| m.name == model) {
+        return String::new();
+    }
+    let names: Vec<&str> = known.iter().map(|m| m.name.as_str()).collect();
+    format!(
+        " — and `{model}` is not one of the models this build knows Codex to \
+         offer ({}). If that name is a typo, no retry will fix it",
+        names.join(", ")
+    )
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct CodexProvider {
     command: PathBuf,
@@ -501,6 +529,7 @@ impl Provider for CodexProvider {
             let detail = outcome
                 .failure
                 .unwrap_or_else(|| "Codex returned an empty response".to_string());
+            let detail = format!("{detail}{}", unknown_model_hint(&model_config.model_name));
             return Err(ProviderError::RequestFailed(detail));
         }
 
@@ -810,6 +839,46 @@ mod tests {
             &json!({"error":{"message":"rate limited"}}),
         ));
         assert_eq!(outcome.failure.as_deref(), Some("rate limited"));
+    }
+
+    /// An unknown model must not fail anonymously.
+    ///
+    /// Codex reports one as an `error` notification carrying no message and no
+    /// category, so the turn reaches the user as "the Codex app server reported
+    /// an error" plus the generic invitation to retry — an instruction that can
+    /// never come true for a request that will fail identically forever. This
+    /// is the one thing the provider knows and the app server does not: which
+    /// names it believes Codex offers.
+    #[test]
+    fn a_failed_turn_names_an_unknown_model_and_the_ones_that_exist() {
+        let hint = unknown_model_hint("gpt-5.5-codex");
+        assert!(
+            hint.contains("gpt-5.5-codex"),
+            "the hint must name the model that was asked for: {hint}"
+        );
+        assert!(
+            hint.contains("gpt-5.5") && hint.contains("gpt-5.3-codex"),
+            "and the ones that exist, so the fix is in the message: {hint}"
+        );
+        assert!(
+            hint.contains("no retry will fix it"),
+            "and must contradict the retry advice it is appended to: {hint}"
+        );
+    }
+
+    /// ⚠ And it must stay SILENT for a model that is known, or every unrelated
+    /// failure — a rate limit, a dropped connection — gains a paragraph about
+    /// model names and sends the reader after the wrong thing.
+    #[test]
+    fn a_known_model_adds_nothing_to_a_failure() {
+        for m in known_models() {
+            assert_eq!(
+                unknown_model_hint(&m.name),
+                "",
+                "{} is a declared model and must not be second-guessed",
+                m.name
+            );
+        }
     }
 
     #[test]
