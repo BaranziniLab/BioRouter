@@ -147,6 +147,17 @@ Isolation is not a sandbox, and this section is the honest statement of the boun
   session's; see the `cwd` row above and the note under `--setting-sources ""` — with the user's
   `PATH` (augmented) and `HOME`. Read-only for Codex by configuration; for Claude Code the built-ins are
   off rather than the process being confined.
+- **⚠ On Codex, it also loads the user's own MCP servers.** This is a real gap and it is not
+  symmetric between the two providers. Claude Code is launched with `--strict-mcp-config`, which
+  makes BioRouter's bridge the *only* MCP server the child sees. Codex has no equivalent, and the
+  `config` object BioRouter sends on `thread/start` is **merged** with `~/.codex/config.toml`
+  rather than replacing it — so every MCP server the user has declared there is loaded into the
+  child as well, and its tools run outside BioRouter's inspectors, permission mode,
+  `.biorouterignore` and vault. Measured against codex 0.147.0 with a canary server in a scratch
+  `CODEX_HOME`. The intended fix is to give the child a scratch `CODEX_HOME` holding only its auth
+  file; that needs a live signed-in Codex to validate, because a scratch home that loses the
+  credential breaks the provider outright. Until it lands, **treat a Codex child as having whatever
+  reach the user's own MCP configuration grants it**, and prefer Claude Code where that matters.
 - **It has network access**, because it must reach its vendor to do inference at all.
 - **It has whatever BioRouter's tools can do**, which is the intended surface, gated as described in
   [the tool bridge](tool-bridge.md#what-still-fires-on-a-bridged-call).

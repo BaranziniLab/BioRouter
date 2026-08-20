@@ -201,6 +201,25 @@ impl CodexProvider {
         // and Biorouter has its own web tools behind its own gates.
         let mut config = json!({ "tools": { "web_search": false } });
         if let Some(url) = bridge_url {
+            // ⚠ KNOWN GAP, and it is not symmetric with Claude Code.
+            //
+            // This ADDS `biorouter` to the child's MCP servers; it does not
+            // replace the set. Codex has no `--strict-mcp-config` equivalent, and
+            // this `config` object is merged with the user's own
+            // `~/.codex/config.toml` rather than overriding it — so any MCP server
+            // declared there is also loaded into the child, and its tools execute
+            // outside Biorouter's inspectors, permission mode, `.biorouterignore`
+            // and vault. Measured against codex 0.147.0 with a canary server in a
+            // scratch `CODEX_HOME`.
+            //
+            // Claude Code closes exactly this with `--strict-mcp-config`, so do
+            // NOT read the two providers as equivalently isolated. The intended
+            // fix is to point the child at a scratch `CODEX_HOME` carrying only
+            // the auth file, which needs a live signed-in Codex to validate
+            // (a scratch home that loses the credential breaks the provider
+            // outright). Until then this is disclosed in
+            // `docs/providers/coding-agents/child-agent-isolation.md` rather than
+            // papered over.
             config["mcp_servers"] = json!({ "biorouter": { "url": url } });
             // ⚠ Tell the model which set of tools actually works, because the two
             // it can see are not equally usable and the broken pair looks more

@@ -689,8 +689,6 @@ pub fn has_entry_unlocked(root: &Path, kb_id: &str) -> bool {
     }
 }
 
-/// Drop the entry when the base is deleted, so a later base reusing the id is
-/// classified by its own creator rather than by a base that no longer exists.
 /// Carry a base's classification across a RENAME, on all three axes.
 ///
 /// ⚠ **Without this, renaming a knowledge base declassifies it.** Every map
@@ -750,6 +748,14 @@ pub fn rename_unlocked(root: &Path, from: &str, to: &str) -> Result<()> {
     save(root, &store)
 }
 
+/// Drop the entry when the base is deleted, so a later base reusing the id is
+/// classified by its own creator rather than by a base that no longer exists.
+///
+/// ⚠ This is also the ONLY thing that removes an owning institution: nothing
+/// else writes `store.affiliations` downward, so an affiliation stamp is
+/// permanent for the life of the base. That asymmetry is why a raise must land
+/// only where a write actually happens — see `macros::lint`, where a read-only
+/// scan used to stamp a base it never modified.
 pub fn forget_unlocked(root: &Path, kb_id: &str) -> Result<()> {
     let mut store = load_for_write(root)?;
     // Both halves, and the provenance one FIRST so the early return below cannot
