@@ -68,6 +68,8 @@ import {
 import { expandTilde } from './utils/pathUtils';
 import { friendlyArtifactFileError } from './utils/artifactFileErrors';
 import { isFilePathAllowedForPreview } from './utils/pathContainment';
+import { normalizeExternalHttpUrl } from './utils/externalUrl';
+import { findBrxtArgument, isBrxtFile } from './utils/launchArguments';
 import log from './utils/logger';
 import { ensureWinShims } from './utils/winShims';
 import { addRecentDir, loadRecentDirs } from './utils/recentDirs';
@@ -570,6 +572,11 @@ if (process.platform !== 'darwin') {
         handleProtocolUrl(protocolUrl);
       }
 
+      const brxtArg = findBrxtArgument(commandLine);
+      if (brxtArg) {
+        app.whenReady().then(() => handleBrxtFileOpen(brxtArg));
+      }
+
       // Only focus existing windows for non-bot/workflow URLs
       const existingWindows = BrowserWindow.getAllWindows();
       if (existingWindows.length > 0) {
@@ -598,7 +605,7 @@ if (process.platform !== 'darwin') {
   }
 
   // Check if launched with a .brxt file argument (Windows/Linux double-click)
-  const brxtArg = process.argv.slice(1).find((arg) => arg.endsWith('.brxt'));
+  const brxtArg = findBrxtArgument(process.argv.slice(1));
   if (brxtArg) {
     app.whenReady().then(() => handleBrxtFileOpen(brxtArg));
   }
@@ -825,7 +832,7 @@ app.on('will-finish-launching', () => {
 // Handle drag-and-drop onto dock icon
 app.on('open-file', async (event, filePath) => {
   event.preventDefault();
-  if (filePath.endsWith('.brxt')) {
+  if (isBrxtFile(filePath)) {
     if (app.isReady()) {
       handleBrxtFileOpen(filePath);
     } else {
@@ -2286,21 +2293,7 @@ ipcMain.handle('window:ensure-content-width', (event, minWidth: number) => {
 
 ipcMain.handle('open-external', async (_event, url: string) => {
   try {
-    if (typeof url !== 'string' || url.length > 8 * 1024) {
-      throw new Error('Blocked: invalid or oversized URL');
-    }
-    const parsed = new URL(url);
-    if (
-      (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') ||
-      parsed.username !== '' ||
-      parsed.password !== ''
-    ) {
-      throw new Error(`Blocked: unsafe URL protocol '${parsed.protocol}'`);
-    }
-    // Pass the normalized URL — shell.openExternal and the WHATWG URL parser
-    // can disagree on edge-case inputs (embedded auth, backslashes, etc.),
-    // and using the parsed.href guarantees shell sees what we validated.
-    await shell.openExternal(parsed.href);
+    await shell.openExternal(normalizeExternalHttpUrl(url));
   } catch (err) {
     console.error('open-external blocked:', err);
   }
@@ -2445,7 +2438,7 @@ ipcMain.handle('open-notifications-settings', async () => {
       return true;
     } else if (process.platform === 'win32') {
       // Windows: Open notification settings in Settings app
-      spawn('ms-settings:notifications', { shell: true });
+      await shell.openExternal('ms-settings:notifications');
       return true;
     } else if (process.platform === 'linux') {
       // Linux: Try different desktop environments
@@ -5357,27 +5350,11 @@ async function appMain() {
     }
   });
 
-  ipcMain.on('open-in-chrome', (_event, url) => {
+  ipcMain.on('open-in-chrome', async (_event, url) => {
     try {
-      // Validate URL
-      const parsedUrl = new URL(url);
-
-      // Only allow http and https protocols
-      if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-        console.error('Invalid URL protocol. Only HTTP and HTTPS are allowed.');
-        return;
-      }
-
-      // On macOS, use the 'open' command with Chrome
-      if (process.platform === 'darwin') {
-        spawn('open', ['-a', 'Google Chrome', url]);
-      } else if (process.platform === 'win32') {
-        // On Windows, start is built-in command of cmd.exe
-        spawn('cmd.exe', ['/c', 'start', '', 'chrome', url]);
-      } else {
-        // On Linux, use xdg-open with chrome
-        spawn('xdg-open', [url]);
-      }
+      // Despite the legacy channel name, use Electron's non-shell URL opener.
+      // Passing a renderer URL through cmd.exe made &, | and ^ executable.
+      await shell.openExternal(normalizeExternalHttpUrl(url));
     } catch (error) {
       console.error('Error opening URL in browser:', error);
     }

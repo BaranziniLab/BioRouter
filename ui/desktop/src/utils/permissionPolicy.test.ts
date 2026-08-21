@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   isAllowedArtifactFrameNavigation,
   isAllowedRendererPermission,
@@ -15,16 +17,14 @@ describe('permissionPolicy', () => {
   });
 
   it('keeps packaged artifact files outside the renderer directory', () => {
-    const appUrl = new URL(
-      'file:///Applications/Biorouter.app/Contents/Resources/renderer/index.html'
-    );
+    const rendererDir = path.resolve('test-fixtures', 'packaged-app', 'renderer');
+    const appUrl = pathToFileURL(path.join(rendererDir, 'index.html'));
     expect(
-      isAppOrigin(
-        'file:///Applications/Biorouter.app/Contents/Resources/renderer/assets/app.js',
-        appUrl
-      )
+      isAppOrigin(pathToFileURL(path.join(rendererDir, 'assets', 'app.js')).href, appUrl)
     ).toBe(true);
-    expect(isAppOrigin('file:///tmp/biorouter-artifacts/artifact-1.html', appUrl)).toBe(false);
+    expect(
+      isAppOrigin(pathToFileURL(path.resolve('test-fixtures', 'artifact-1.html')).href, appUrl)
+    ).toBe(false);
   });
 
   it('never hands Biorouter itself to the external browser', () => {
