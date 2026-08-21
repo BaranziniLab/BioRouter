@@ -55,6 +55,8 @@ DESK="$ROOT/ui/desktop"
 NOTARY="$ROOT/notarization"
 SIGN_IDENTITY="Developer ID Application: University of California at San Francisco (F3YYBXAFJ8)"
 TEAM_ID="F3YYBXAFJ8"
+RELEASE_REPOSITORY="${BIOROUTER_RELEASE_REPOSITORY:-BaranziniLab/biorouter}"
+RELEASE_PROVENANCE_SCHEMA=1
 
 # The docker cross-compile recipes (linux/windows images, mingw winpthread
 # linker wrap, LZMA_API_STATIC, the glibc-2.31 pin) live in ONE place so the
@@ -122,6 +124,117 @@ ensure_host_node_deps() {
   )
 }
 
+# The release phases are intentionally resumable, which also means a later phase
+# can otherwise consume artifacts built from a different checkout. Keep a local,
+# ignored manifest that binds every uploaded byte to the clean source commit from
+# which the backend build started. The manifest is not itself a release asset.
+release_provenance_file() {
+  printf '%s/dist/release-build-%s.tsv\n' "$ROOT" "$1"
+}
+
+release_file_sha256() {
+  shasum -a 256 "$1" | awk '{print $1}'
+}
+
+release_file_size() {
+  if stat -f %z "$1" >/dev/null 2>&1; then
+    stat -f %z "$1"
+  else
+    stat -c %s "$1"
+  fi
+}
+
+require_clean_release_tree() {
+  local dirty
+  dirty="$(git -C "$ROOT" status --porcelain --untracked-files=normal)"
+  [ -z "$dirty" ] || die "release source tree is not clean; commit or remove source changes before building:\n$dirty"
+}
+
+release_provenance_value() {
+  local file="$1" key="$2"
+  awk -F '\t' -v key="$key" '
+    $1 == key { value=$2; count++ }
+    END { if (count != 1) exit 1; print value }
+  ' "$file"
+}
+
+start_release_provenance() {
+  local v="$1" file tmp source_sha
+  [ "$(current_version)" = "$v" ] \
+    || die "Cargo.toml version $(current_version) does not match release $v"
+  require_clean_release_tree
+  source_sha="$(git -C "$ROOT" rev-parse HEAD)"
+  file="$(release_provenance_file "$v")"
+  mkdir -p "$(dirname "$file")"
+  tmp="$(mktemp "${file}.XXXXXX")"
+  {
+    printf 'schema\t%s\n' "$RELEASE_PROVENANCE_SCHEMA"
+    printf 'version\t%s\n' "$v"
+    printf 'source_sha\t%s\n' "$source_sha"
+    printf 'created_at\t%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  } >"$tmp"
+  mv "$tmp" "$file"
+  log "release provenance started at $source_sha"
+}
+
+assert_release_source() {
+  local v="$1" file source_sha
+  file="$(release_provenance_file "$v")"
+  [ -f "$file" ] || die "release provenance missing: run scripts/release.sh backends $v before packaging"
+  [ "$(release_provenance_value "$file" schema)" = "$RELEASE_PROVENANCE_SCHEMA" ] \
+    || die "unsupported or corrupt release provenance: $file"
+  [ "$(release_provenance_value "$file" version)" = "$v" ] \
+    || die "release provenance version does not match $v"
+  [ "$(current_version)" = "$v" ] \
+    || die "Cargo.toml version $(current_version) does not match release $v"
+  source_sha="$(release_provenance_value "$file" source_sha)"
+  [ "$(git -C "$ROOT" rev-parse HEAD)" = "$source_sha" ] \
+    || die "HEAD changed after release builds started; rebuild all artifacts from the final source commit"
+  require_clean_release_tree
+}
+
+record_release_asset() {
+  local v="$1" file="$2" manifest rel digest size tmp
+  assert_release_source "$v"
+  [ -f "$file" ] || die "release artifact missing: $file"
+  case "$file" in
+    "$ROOT"/*) rel="${file#"$ROOT"/}" ;;
+    *) die "release artifact is outside the repository: $file" ;;
+  esac
+  manifest="$(release_provenance_file "$v")"
+  digest="$(release_file_sha256 "$file")"
+  size="$(release_file_size "$file")"
+  tmp="$(mktemp "${manifest}.XXXXXX")"
+  awk -F '\t' -v rel="$rel" '!( $1 == "asset" && $2 == rel )' "$manifest" >"$tmp"
+  printf 'asset\t%s\t%s\t%s\n' "$rel" "$digest" "$size" >>"$tmp"
+  mv "$tmp" "$manifest"
+  log "recorded release provenance: $(basename "$file")"
+}
+
+verify_release_provenance() {
+  local v="$1" manifest file rel expected entry count digest size expected_count=0 actual_count
+  assert_release_source "$v"
+  manifest="$(release_provenance_file "$v")"
+  while IFS= read -r file; do
+    expected_count=$((expected_count + 1))
+    rel="${file#"$ROOT"/}"
+    count="$(awk -F '\t' -v rel="$rel" '$1 == "asset" && $2 == rel { count++ } END { print count+0 }' "$manifest")"
+    [ "$count" -eq 1 ] || die "release provenance must contain exactly one entry for $rel"
+    entry="$(awk -F '\t' -v rel="$rel" '$1 == "asset" && $2 == rel { print $3 "\t" $4 }' "$manifest")"
+    IFS=$'\t' read -r digest size <<<"$entry"
+    [ -f "$file" ] || die "release artifact missing: $file"
+    expected="$(release_file_sha256 "$file")"
+    [ "$digest" = "$expected" ] || die "release artifact changed after build: $rel"
+    expected="$(release_file_size "$file")"
+    [ "$size" = "$expected" ] || die "release artifact size changed after build: $rel"
+  done < <(release_assets "$v")
+  actual_count="$(awk -F '\t' '$1 == "asset" { count++ } END { print count+0 }' "$manifest")"
+  [ "$actual_count" -eq "$expected_count" ] \
+    || die "release provenance contains $actual_count assets; expected exactly $expected_count"
+  [ "$expected_count" -eq 11 ] || die "internal release asset list changed; expected exactly 11 assets"
+  log "release provenance verified for 11 assets at $(release_provenance_value "$manifest" source_sha)"
+}
+
 # ── bump ────────────────────────────────────────────────────────────────────
 cmd_bump() {
   local v="$1"
@@ -166,6 +279,8 @@ PY
 # on its own. Cleans the target dir first to force a from-scratch compile
 # against the pinned glibc (cached objects would keep stale symbol versions).
 cmd_linux-backend() {
+  local v="$1"
+  assert_release_source "$v"
   ensure_docker
   log "cross-compiling linux-gnu backend (docker, $LINUX_RUST_IMG)"
   rm -rf "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" \
@@ -225,6 +340,7 @@ run_cross_release() { # <cross function> <target volume> <cargo command> <post c
 
 cmd_backends() {
   local v="$1"
+  start_release_provenance "$v"
   activate_hermit
   log "compiling mac arm64 release backend"
   cargo build --release
@@ -243,7 +359,8 @@ cmd_backends() {
            /usr/src/myapp/target/x86_64-pc-windows-gnu/release/ && \
      $WIN_DLL_STAGE"
 
-  cmd_linux-backend
+  cmd_linux-backend "$v"
+  assert_release_source "$v"
   log "all 4 backends compiled"
 }
 
@@ -254,7 +371,7 @@ stage_bin() { # <src-dir> <ext>
 
 # ── mac packaging (sign + notarize, Node 24 via hermit) ───────────────────────
 cmd_mac-arm64() {
-  local v="$1"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
+  local v="$1"; assert_release_source "$v"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
   ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
   stage_bin "$ROOT/target/release"
   log "building + notarizing macOS arm64 dmg"
@@ -264,24 +381,30 @@ cmd_mac-arm64() {
   # path for a dmg it had not built. The `||` is gone from package.json now; this
   # check is the belt to that braces, and mirrors what cmd_linux already does.
   local dmg="$DESK/out/make/Biorouter-$v-arm64.dmg"
+  local updater_zip="$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip"
   [ -f "$dmg" ] || die "mac-arm64 reported success but produced no dmg at $dmg"
+  record_release_asset "$v" "$dmg"
+  record_release_asset "$v" "$updater_zip"
   log "arm64 dmg: $dmg"
 }
 
 cmd_mac-intel() {
-  local v="$1"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
+  local v="$1"; assert_release_source "$v"; activate_hermit; load_apple_creds; ensure_mac_dmg_deps
   ls /Volumes/Biorouter* >/dev/null 2>&1 && { umount /Volumes/Biorouter* 2>/dev/null || true; }
   stage_bin "$ROOT/target/x86_64-apple-darwin/release"
   log "building + notarizing macOS Intel dmg"
   ( cd "$DESK" && APPLE_ID="$APPLE_ID" APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD" npm run bundle:intel )
   local dmg="$DESK/out/make/Biorouter-$v-x64.dmg"
+  local updater_zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
   [ -f "$dmg" ] || die "mac-intel reported success but produced no dmg at $dmg"
+  record_release_asset "$v" "$dmg"
+  record_release_asset "$v" "$updater_zip"
   log "x64 dmg: $dmg"
 }
 
 # ── windows packaging (host forge, Node 24) ───────────────────────────────────
 cmd_windows() {
-  local v="$1"; activate_hermit; ensure_host_node_deps
+  local v="$1"; assert_release_source "$v"; activate_hermit; ensure_host_node_deps
   local WR="$ROOT/target/x86_64-pc-windows-gnu/release"
   [ -f "$WR/biorouterd.exe" ] || die "windows backend missing — run: scripts/release.sh backends $v"
   rm -rf "$DESK/src/bin"; mkdir -p "$DESK/src/bin"
@@ -290,12 +413,13 @@ cmd_windows() {
   ( cd "$DESK" && npm run bundle:windows )
   local zip="$DESK/out/make/zip/win32/x64/Biorouter-win32-x64-$v.zip"
   [ -f "$zip" ] || die "windows reported success but produced no zip at $zip"
+  record_release_asset "$v" "$zip"
   log "windows zip: $zip"
 }
 
 # ── linux packaging (fully dockerized; run LAST — corrupts node_modules) ───────
 cmd_linux() {
-  local v="$1"; ensure_docker
+  local v="$1"; assert_release_source "$v"; ensure_docker
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouterd" ] || die "linux backend missing — run: scripts/release.sh backends $v"
   log "packaging Linux deb + rpm (docker)"
   docker volume create biorouter-linux-npm-cache >/dev/null 2>&1 || true
@@ -312,6 +436,8 @@ cmd_linux() {
   local rpm="$DESK/out/make/rpm/x64/Biorouter-$v-1.x86_64.rpm"
   [ -f "$deb" ] || die "linux phase reported success but produced no deb at $deb"
   [ -f "$rpm" ] || die "linux phase reported success but produced no rpm at $rpm"
+  record_release_asset "$v" "$deb"
+  record_release_asset "$v" "$rpm"
   log "deb: $deb"
   log "rpm: $rpm"
   # `npm ci`, NOT `npm install`: install rewrites package-lock.json, and the
@@ -323,10 +449,12 @@ cmd_linux() {
 # Independent of the GUI packaging — does NOT corrupt node_modules. Builds and
 # smoke-tests both packages in clean containers.
 cmd_cli-linux() {
-  local v="$1"; ensure_docker
+  local v="$1"; assert_release_source "$v"; ensure_docker
   [ -f "$ROOT/target/x86_64-unknown-linux-gnu/release/biorouter" ] || die "linux backend missing — run: scripts/release.sh backends $v"
   log "building CLI-only Linux packages (deb + rpm)"
   bash "$ROOT/scripts/build-cli-linux-packages.sh" "$v"
+  record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
+  record_release_asset "$v" "$ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
   log "cli deb: $ROOT/dist/cli/biorouter-cli_${v}_amd64.deb"
   log "cli rpm: $ROOT/dist/cli/biorouter-cli-${v}-1.x86_64.rpm"
 }
@@ -336,17 +464,19 @@ cmd_cli-linux() {
 # used for Debian/Ubuntu deployments and verifies that no local profiles or
 # credential material were packaged.
 cmd_headless-linux() {
-  local v="$1"; ensure_docker; ensure_host_node_deps
+  local v="$1"; assert_release_source "$v"; ensure_docker; ensure_host_node_deps
   log "building headless Linux browser artifact"
   "$ROOT/scripts/package-headless-linux.sh"
   local tarball="$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
   [ -f "$tarball" ] || die "headless artifact missing: $tarball"
+  record_release_asset "$v" "$tarball"
   log "headless tarball: $tarball ($(du -h "$tarball" | cut -f1))"
 }
 
 # ── verify ────────────────────────────────────────────────────────────────────
 cmd_verify() {
   local v="$1" ok=1
+  assert_release_source "$v"
   "$ROOT/scripts/check-brand-consistency.sh"
   local arm="$DESK/out/make/Biorouter-$v-arm64.dmg"
   local x64="$DESK/out/make/Biorouter-$v-x64.dmg"
@@ -382,6 +512,7 @@ cmd_verify() {
     grep -q "Biorouter-darwin-arm64-$v.zip" "$yml" && grep -q "Biorouter-darwin-x64-$v.zip" "$yml" \
       && log "latest-mac.yml references both arch zips ✓" || { echo "latest-mac.yml missing an arch zip"; ok=0; }
   fi
+  verify_release_provenance "$v"
   if [ -d "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" ]; then
     log "arm64 gatekeeper: $(spctl --assess --type execute --verbose "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" 2>&1 | tr '\n' ' ')"
     xcrun stapler validate "$DESK/out/Biorouter-darwin-arm64/Biorouter.app" >/dev/null 2>&1 && log "arm64 app stapled ✓" || { echo "arm64 NOT stapled"; ok=0; }
@@ -404,7 +535,7 @@ cmd_verify() {
 ARM64_ZIP_REL="zip/darwin/arm64"
 X64_ZIP_REL="zip/darwin/x64"
 cmd_mac-manifest() {
-  local v="$1"; activate_hermit
+  local v="$1"; assert_release_source "$v"; activate_hermit
   local armzip="$DESK/out/make/$ARM64_ZIP_REL/Biorouter-darwin-arm64-$v.zip"
   local x64zip="$DESK/out/make/$X64_ZIP_REL/Biorouter-darwin-x64-$v.zip"
   [ -f "$armzip" ] || die "mac arm64 zip missing — run: scripts/release.sh mac-arm64 $v"
@@ -420,6 +551,7 @@ cmd_mac-manifest() {
       --version "$v" --arm64-zip "$armzip" --x64-zip "$x64zip" --out "$DESK/out/make" )
   [ -f "$DESK/out/make/latest-mac.yml" ] \
     || die "manifest generation reported success but wrote no latest-mac.yml"
+  record_release_asset "$v" "$DESK/out/make/latest-mac.yml"
   log "latest-mac.yml: $DESK/out/make/latest-mac.yml"
 }
 
@@ -440,46 +572,185 @@ release_assets() {
     "$ROOT/dist/biorouter-headless-linux-x64.tar.gz"
 }
 
+require_remote_main_exact() {
+  local v="$1" local_sha remote_sha remote_version
+  git -C "$ROOT" fetch origin main:refs/remotes/origin/main --quiet \
+    || die "could not fetch origin/main; refusing to use a potentially stale remote ref"
+  local_sha="$(git -C "$ROOT" rev-parse HEAD)"
+  remote_sha="$(git -C "$ROOT" rev-parse origin/main)"
+  [ "$local_sha" = "$remote_sha" ] \
+    || die "HEAD ($local_sha) must exactly equal origin/main ($remote_sha) before drafting or publishing"
+  remote_version="$(git -C "$ROOT" show origin/main:Cargo.toml 2>/dev/null \
+    | perl -0ne 'print $1 if /\[workspace\.package\].*?version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s')"
+  [ "$remote_version" = "$v" ] \
+    || die "origin/main is at version '$remote_version' but this release is $v"
+  RELEASE_SOURCE_SHA="$local_sha"
+}
+
+verify_remote_release_assets() {
+  local v="$1" manifest releases_json stamp_file
+  assert_release_source "$v"
+  manifest="$(release_provenance_file "$v")"
+  releases_json="$(mktemp)"
+  stamp_file="$(mktemp)"
+  if ! gh api "repos/$RELEASE_REPOSITORY/releases?per_page=100" >"$releases_json"; then
+    rm -f "$releases_json" "$stamp_file"
+    die "could not read GitHub release assets for v$v"
+  fi
+  if ! python3 - "$releases_json" "$manifest" "$v" "$stamp_file" <<'PY'
+from datetime import datetime
+import json
+import os
+import sys
+
+releases_path, manifest_path, version, stamp_path = sys.argv[1:]
+with open(releases_path, encoding="utf-8") as handle:
+    releases = json.load(handle)
+matches = [release for release in releases if release.get("tag_name") == f"v{version}"]
+if len(matches) != 1:
+    raise SystemExit(f"expected exactly one GitHub release tagged v{version}; found {len(matches)}")
+release = matches[0]
+if release.get("draft") is not True:
+    raise SystemExit(f"v{version} is not a draft release")
+
+local_assets = {}
+with open(manifest_path, encoding="utf-8") as handle:
+    for raw_line in handle:
+        fields = raw_line.rstrip("\n").split("\t")
+        if fields[0] != "asset":
+            continue
+        if len(fields) != 4:
+            raise SystemExit("malformed release provenance asset entry")
+        name = os.path.basename(fields[1])
+        if name in local_assets:
+            raise SystemExit(f"duplicate local release asset name: {name}")
+        local_assets[name] = {"digest": fields[2].lower(), "size": int(fields[3])}
+
+remote_assets = release.get("assets") or []
+if len(local_assets) != 11 or len(remote_assets) != 11:
+    raise SystemExit(
+        f"expected exactly 11 local and 11 uploaded assets; found {len(local_assets)} local and {len(remote_assets)} uploaded"
+    )
+remote_by_name = {}
+for asset in remote_assets:
+    name = asset.get("name")
+    if not name or name in remote_by_name:
+        raise SystemExit(f"missing or duplicate uploaded asset name: {name!r}")
+    remote_by_name[name] = asset
+if set(remote_by_name) != set(local_assets):
+    missing = sorted(set(local_assets) - set(remote_by_name))
+    extra = sorted(set(remote_by_name) - set(local_assets))
+    raise SystemExit(f"uploaded asset set differs from local files; missing={missing}, extra={extra}")
+
+latest_update = None
+for name, local in local_assets.items():
+    remote = remote_by_name[name]
+    digest = remote.get("digest")
+    expected_digest = f"sha256:{local['digest']}"
+    if not isinstance(digest, str) or digest.lower() != expected_digest:
+        raise SystemExit(f"uploaded digest differs for {name}: expected {expected_digest}, got {digest!r}")
+    if remote.get("size") != local["size"]:
+        raise SystemExit(f"uploaded size differs for {name}: expected {local['size']}, got {remote.get('size')!r}")
+    updated_at = remote.get("updated_at")
+    if not isinstance(updated_at, str):
+        raise SystemExit(f"uploaded asset has no updated_at timestamp: {name}")
+    try:
+        parsed = datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise SystemExit(f"invalid uploaded asset timestamp for {name}: {updated_at}") from exc
+    if latest_update is None or parsed > latest_update[0]:
+        latest_update = (parsed, updated_at)
+with open(stamp_path, "w", encoding="utf-8") as handle:
+    handle.write(latest_update[1])
+PY
+  then
+    rm -f "$releases_json" "$stamp_file"
+    die "GitHub draft assets do not exactly match the 11 local release files"
+  fi
+  LATEST_DRAFT_ASSET_UPDATED_AT="$(<"$stamp_file")"
+  rm -f "$releases_json" "$stamp_file"
+  log "all 11 uploaded asset digests match local files"
+}
+
+require_fresh_windows_smoke() {
+  local v="$1" latest_asset_update="$2" manifest runs_json source_sha
+  manifest="$(release_provenance_file "$v")"
+  source_sha="$(release_provenance_value "$manifest" source_sha)"
+  runs_json="$(mktemp)"
+  if ! gh run list --workflow release-artifact-smoke.yml --limit 100 \
+    --json displayTitle,conclusion,startedAt,headSha,url >"$runs_json"; then
+    rm -f "$runs_json"
+    die "could not read native Windows smoke workflow runs"
+  fi
+  if ! python3 - "$runs_json" "$v" "$source_sha" "$latest_asset_update" <<'PY'
+from datetime import datetime
+import json
+import sys
+
+runs_path, version, source_sha, latest_asset_update = sys.argv[1:]
+with open(runs_path, encoding="utf-8") as handle:
+    runs = json.load(handle)
+try:
+    latest_upload = datetime.fromisoformat(latest_asset_update.replace("Z", "+00:00"))
+except ValueError as exc:
+    raise SystemExit(f"invalid latest draft asset timestamp: {latest_asset_update}") from exc
+
+eligible = []
+for run in runs:
+    if run.get("displayTitle") != f"Release artifact smoke v{version}":
+        continue
+    if run.get("conclusion") != "success" or run.get("headSha") != source_sha:
+        continue
+    started_at = run.get("startedAt")
+    if not isinstance(started_at, str):
+        continue
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+    except ValueError:
+        continue
+    if started > latest_upload:
+        eligible.append(run)
+if not eligible:
+    raise SystemExit(
+        f"no successful Windows smoke for source {source_sha} started after the latest draft asset upload ({latest_asset_update})"
+    )
+PY
+  then
+    rm -f "$runs_json"
+    die "native Windows release smoke must be rerun successfully after the latest draft asset upload"
+  fi
+  rm -f "$runs_json"
+  log "native Windows smoke is newer than every draft asset upload"
+}
+
 cmd_draft() {
   local v="$1"
   local notes="$ROOT/docs/releases/notes/v$v.md"
   [ -f "$notes" ] || die "release notes missing: $notes"
 
-  # ⚠ The tag is cut from `--target main`, i.e. from what GITHUB has, not from
-  # this working tree. Nothing in this script pushes, so a release built and
-  # verified entirely from local commits would tag the PREVIOUS version's tree
-  # and ship assets that disagree with the source the tag points at. Refuse
-  # instead, and say exactly what to do.
-  git -C "$ROOT" fetch origin main --quiet 2>/dev/null || true
-  git -C "$ROOT" merge-base --is-ancestor HEAD origin/main 2>/dev/null \
-    || die "HEAD is not on origin/main, so 'gh release create --target main' would tag a tree without this release. Run: git push origin main"
-  local remote_version
-  remote_version="$(git -C "$ROOT" show origin/main:Cargo.toml 2>/dev/null \
-    | perl -0ne 'print $1 if /\[workspace\.package\].*?version\s*=\s*"([0-9]+\.[0-9]+\.[0-9]+)"/s')"
-  [ "$remote_version" = "$v" ] \
-    || die "origin/main is at version '$remote_version' but this release is $v. Push the bump first: git push origin main"
+  require_remote_main_exact "$v"
   cmd_mac-manifest "$v"
+  verify_release_provenance "$v"
   local assets=()
   while IFS= read -r asset; do
     [ -f "$asset" ] || die "release asset missing: $asset"
     assets+=("$asset")
   done < <(release_assets "$v")
   log "creating draft GitHub release v$v"
-  gh release create "v$v" --draft --target main --title "Biorouter v$v" \
+  gh release create "v$v" --draft --target "$RELEASE_SOURCE_SHA" --title "Biorouter v$v" \
     --notes-file "$notes" "${assets[@]}"
   log "draft ready: $(gh release view "v$v" --json url --jq .url)"
 }
 
 cmd_publish() {
   local v="$1"
+  require_remote_main_exact "$v"
   cmd_verify "$v"
-  local is_draft windows_smoke
+  local is_draft
   is_draft="$(gh release view "v$v" --json isDraft --jq .isDraft 2>/dev/null || true)"
   [ "$is_draft" = true ] || die "v$v must exist as a draft release before publication"
-  windows_smoke="$(gh run list --workflow release-artifact-smoke.yml --limit 30 \
-    --json displayTitle,conclusion \
-    --jq "[.[] | select(.displayTitle == \"Release artifact smoke v$v\" and .conclusion == \"success\")] | length")"
-  [ "$windows_smoke" -gt 0 ] || die "native Windows release smoke has not passed for v$v"
+  verify_remote_release_assets "$v"
+  require_fresh_windows_smoke "$v" "$LATEST_DRAFT_ASSET_UPDATED_AT"
   gh release edit "v$v" --draft=false
   log "published: $(gh release view "v$v" --json url --jq .url)"
 }
@@ -549,6 +820,12 @@ resolve_version() {
       ;;
   esac
 }
+
+# Focused tests source this file to exercise the fail-closed helpers with local
+# fixtures. Direct invocations continue through the command dispatcher below.
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
 
 CMD="${1:-}"; VER="${2:-}"
 case "$CMD" in
