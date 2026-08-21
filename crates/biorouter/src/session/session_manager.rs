@@ -14307,14 +14307,22 @@ mod tests {
             .unwrap();
 
         let pool = SessionStorage::create_pool(&db);
+        let options = pool
+            .connect_options()
+            .as_ref()
+            .clone()
+            .busy_timeout(std::time::Duration::from_secs(30));
+        pool.set_connect_options(options);
         let reconciling = pool.clone();
         let reconcile =
             tokio::spawn(async move { SessionStorage::ensure_privacy_schema(&reconciling).await });
 
         // Long enough for the spawned reconcile to reach whichever statement
-        // blocks on the write lock; the pool's busy timeout is 5s, so it is
-        // still waiting rather than failing. A short sleep here can only produce
-        // a false pass, never a false failure.
+        // blocks on the write lock. This deliberately extends only the test
+        // pool's busy timeout: a loaded Windows runner can delay this task for
+        // more than the production five-second budget before the competitor is
+        // released, which tests scheduler load rather than migration ordering.
+        // A short sleep here can only produce a false pass, never a false failure.
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
         for (column, sql_type) in [
