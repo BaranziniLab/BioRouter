@@ -33,17 +33,20 @@ contents:
     file_info:
       mode: 0755
 
-# libxcb is linked for clipboard/terminal support; declare it so a clean,
-# headless system pulls it in on install. git is recommended at runtime for
-# repository/knowledge-base features (uv/node are checked by `biorouter doctor`).
+# libxcb is linked for clipboard/terminal support, and zlib is linked through
+# libgit2; declare both so a clean, headless system pulls them in on install.
+# git is recommended at runtime for repository/knowledge-base features (uv/node
+# are checked by `biorouter doctor`).
 overrides:
   deb:
     depends:
       - libxcb1
+      - zlib1g
     recommends:
       - git
   rpm:
     depends:
       - libxcb
+      - zlib
     recommends:
       - git

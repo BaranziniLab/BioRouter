@@ -5,19 +5,21 @@
 # by the packages we actually ship.
 #
 # Why this needs a guard at all. The two binaries are not static. Beyond glibc
-# they carry exactly one DT_NEEDED entry — libxcb.so.1, pulled in by `arboard`
-# (clipboard, biorouter-cli) and `xcap` (screen capture, biorouter-mcp). NEEDED
-# is not a soft dependency: the loader resolves it before `main` runs, so a box
-# without libxcb gets `error while loading shared libraries` and exit 127 on
+# they currently carry two DT_NEEDED entries: libxcb.so.1, pulled in by `arboard`
+# (clipboard, biorouter-cli) and `xcap` (screen capture, biorouter-mcp), and
+# libz.so.1, pulled in by the vendored libgit2 through `libz-sys`. NEEDED is not
+# a soft dependency: the loader resolves it before `main` runs, so a box without
+# either library gets `error while loading shared libraries` and exit 127 on
 # `--version`. There is no lazy path and no degraded mode to fall back to.
 #
 # That is fine, and invisible to users, precisely BECAUSE the packages declare
-# it — `packaging/cli/nfpm.yaml` names libxcb1 (deb) / libxcb (rpm), so apt and
-# dnf install it alongside the binaries. The failure this script exists to catch
-# is the day those two facts drift apart: someone adds a crate that links a
-# second system library, the cross build links fine, `cargo check` sees nothing,
-# the glibc floor is untouched — and the shipped .deb quietly stops working on a
-# clean machine, because nothing in the pipeline compares what the ELF asks the
+# it — `packaging/cli/nfpm.yaml` names libxcb1 and zlib1g (deb) / libxcb and zlib
+# (rpm), so apt and dnf install them alongside the binaries. The failure this
+# script exists to catch is the day those two facts drift apart: someone adds a
+# crate that links another system library, the cross build links fine, and
+# `cargo check` sees nothing. The glibc floor is untouched, yet the shipped .deb
+# quietly stops working on a clean machine, because nothing in the pipeline
+# compares what the ELF asks the
 # loader for against what the package tells the package manager to install.
 # Comparing those two lists is this script's whole job.
 #
@@ -65,7 +67,8 @@ BASE_LIBS="ld-linux-x86-64.so.2 libc.so.6 libdl.so.2 libgcc_s.so.1 libm.so.6 lib
 # base set has to appear here AND in both packaging specs. Adding a row is a
 # deliberate act: it means we have decided to ask users for another system
 # library, so the row and the two spec edits belong in one commit.
-PACKAGE_MAP="libxcb.so.1:libxcb1:libxcb"
+PACKAGE_MAP="libxcb.so.1:libxcb1:libxcb
+libz.so.1:zlib1g:zlib"
 
 # readelf, not objdump: readelf parses any ELF regardless of the architecture it
 # was built for, so this works when the pinned image resolves to arm64 (a
