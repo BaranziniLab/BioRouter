@@ -41,6 +41,10 @@ const MAX_MODULE_SEARCH_RESULTS: usize = 12;
 const MAX_MODULE_SEARCH_TERMS: usize = 16;
 const MAX_MODULE_SEARCH_TERM_CHARS: usize = 256;
 const MAX_MODULE_SEARCH_TOKENS: usize = 32;
+const MODULE_SEARCH_TOKEN_STOP_WORDS: &[&str] = &[
+    "a", "an", "and", "create", "draft", "find", "for", "get", "in", "make", "maker", "of", "on",
+    "or", "search", "show", "the", "to", "tool", "tools", "use", "with",
+];
 /// Cap on per-run sub-call telemetry records (issue #28) so a loop-heavy
 /// script cannot grow the result meta without bound; calls past the cap are
 /// counted, not recorded.
@@ -1806,6 +1810,7 @@ impl CodeExecutionClient {
                     })
                 })
                 .filter(|token| token.chars().count() >= 2)
+                .filter(|token| !MODULE_SEARCH_TOKEN_STOP_WORDS.contains(token))
                 .filter(|token| seen.insert((*token).to_string()))
                 .take(MAX_MODULE_SEARCH_TOKENS)
                 .map(str::to_string)
@@ -3262,6 +3267,26 @@ mod tests {
         assert!(
             text.contains("No tools matched"),
             "only the first {MAX_MODULE_SEARCH_TOKENS} phrase tokens may affect matching: {text}"
+        );
+
+        let generic_intent = CodeExecutionClient::handle_search(
+            &tools,
+            &[
+                "create skill".to_string(),
+                "make skill".to_string(),
+                "skill maker".to_string(),
+                "draft skill".to_string(),
+            ],
+            false,
+        )
+        .unwrap();
+        let text = match &generic_intent[0].raw {
+            RawContent::Text(text) => text.text.as_str(),
+            _ => panic!("Expected text"),
+        };
+        assert!(
+            text.contains("No tools matched"),
+            "generic intent verbs must not manufacture a module-search match: {text}"
         );
     }
 

@@ -1202,7 +1202,9 @@ async fn case25_calling_a_non_function_explains_itself() {
         "the engine's own message must survive, got: {out}"
     );
     assert!(
-        out.contains("parsed object when the tool's result is JSON"),
+        out.contains("JSON results are parsed objects")
+            && out.contains("imported module member")
+            && out.contains("One possible cause"),
         "the opaque engine error must carry its explanation, got: {out}"
     );
     assert!(
